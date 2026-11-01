@@ -22,6 +22,7 @@
  * previous runtime and its backups. Every update, rollback, refusal and
  * failure is a ledger entry.
  */
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { createHash, randomUUID, verify as signatureValid, X509Certificate } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { accessSync, chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -30,14 +31,14 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
-import { clearWords, durableJson, LINGERING_LIMIT_MS, lingeringRun, lingeringWords, settleLeftoverRecords, sqliteLock, desktopUpdateWaitingOf, stoppedWaitingWords, updateWaitingWords, verifiedDatabaseBackup, type UpdateWaiting } from "./desktop-update.js";
+import { clearWords, durableJson, LINGERING_LIMIT_MS, lingeringRun, lingeringWords, settleLeftoverRecords, sqliteLock, lockHeld, desktopUpdateWaitingOf, stoppedWaitingWords, updateWaitingWords, verifiedDatabaseBackup, type UpdateWaiting } from "./desktop-update.js";
 import { activeUpdateWork, freezeUpdateGate, installUpdateGate, removeUpdateGate, updateAdmissionPaused, updateGateOwned } from "./desktop-update-gate.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { removeTerminalUpdateGate } from "./terminal-catalog.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
-import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS } from "./store.js";
+import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS } from "./store.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
@@ -424,7 +425,7 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // v126: a receipt's state, acceptance time and held item, a trigger's credential generation and turned-away count,
   // and who made a card read none, 0, or none. A table with an earlier rule (flow_trigger's v115 move) keeps it too.
   // v128: a lead message's pending flag reads waiting exactly for a team queue's unadmitted operator message.
-  ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS))
+  ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS))
     .map(([table, rule]) => [table, { ...EARLIER_RULES[table], ...rule }])),
 };
 /** The tables a migration may remove whole (v115's removed features). */
@@ -1199,7 +1200,7 @@ export function runtimeUpdateStatus(stateDir: string): RuntimeUpdateStatus {
   let j: RuntimeUpdateJournal | null = null;
   try { j = readRuntimeUpdate(stateDir); } catch { j = null; }
   let running = false;
-  if (j && !runtimeUpdateTerminal(j.phase)) { const lock = sqliteLock(join(j.stageDir, "worker.sqlite")); running = lock === null; lock?.close(); }
+  if (j && !runtimeUpdateTerminal(j.phase)) running = lockHeld(join(j.stageDir, "worker.sqlite"));
   const whatsNew = j && j.kind === "update" && j.phase === "complete" && !j.seen ? { version: j.to.version, notes: j.notes ?? [] } : null;
   let last: RuntimeUpdateJournal | null = null;
   try { last = lastCompletedUpdate(stateDir); } catch { last = null; }
@@ -1246,7 +1247,8 @@ export function releaseStalledUpdate(stateDir: string, now: Date): string | null
  * waiting update, `toolroll update`'s or the desktop app's. */
 export function waitingUpdate(databaseFile: string, inTheWay: (run: number) => boolean, now: Date, desktopStates?: readonly string[]): UpdateWaiting | null {
   const stateDir = dirname(databaseFile);
-  try { releaseStalledUpdate(stateDir, now); } catch { /* an unreadable record is shown as it is */ }
+  // A page visit only reads (docs/plans/get-side-effects.md): the console's background pass releases a stalled update.
+  if (!inReadOnlyRequest()) { try { releaseStalledUpdate(stateDir, now); } catch { /* an unreadable record is shown as it is */ } }
   return updateWaitingOf(stateDir, inTheWay) ?? desktopUpdateWaitingOf(databaseFile, inTheWay, desktopStates);
 }
 export function markWhatsNewSeen(stateDir: string): void {

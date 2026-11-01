@@ -352,6 +352,19 @@ export function rawTakesDeliveries(raw: unknown): boolean {
   return one["kind"] === "webhook" || ((one["kind"] === "github" || one["kind"] === "linear") && one["delivery"] === "webhook");
 }
 
+/** Whether a trigger brings in items from anyone (chat-management.md §0a.3): GitHub issues or pull requests from anyone,
+ * or mail from any sender. A widening: it takes a person's password, on every road that adds one. */
+export function admitsAnyone(config: TriggerConfig): boolean {
+  return (config.kind === "github" && config.from === "anyone") || (config.kind === "email" && config.sender === null);
+}
+
+/** The same, read leniently from a raw trigger before validation (so the form can ask for the password first). */
+export function rawAdmitsAnyone(raw: unknown): boolean {
+  if (raw === null || typeof raw !== "object") return false;
+  const one = raw as Record<string, unknown>;
+  return (one["kind"] === "github" && one["from"] === "anyone") || (one["kind"] === "email" && (typeof one["sender"] !== "string" || one["sender"].trim() === ""));
+}
+
 export function takesDeliveries(config: TriggerConfig): boolean {
   return config.kind === "webhook" || ((config.kind === "github" || config.kind === "linear") && config.delivery === "webhook");
 }
@@ -433,13 +446,18 @@ export type TriggerMade = { ok: true; id: number; said: string; reveal: TriggerR
  * may a trigger that takes deliveries be made with an address. Without it a webhook is made with none (its panel's
  * set-up, which asks for the password, makes one), and GitHub/Linear webhook delivery is refused.
  */
-export function addFlowTriggerTo(store: Store, flow: FlowRow, raw: unknown, actor: string, now: Date, dir: string | null, options: { shown?: boolean; ingress?: "proved" } = {}): TriggerMade {
+export function addFlowTriggerTo(store: Store, flow: FlowRow, raw: unknown, actor: string, now: Date, dir: string | null, options: { shown?: boolean; ingress?: "proved";
+  /** The person proved themselves for this act (a password, or a session under Passwordless): a trigger that admits
+   * anyone is added only then. */
+  widening?: "proved" } = {}): TriggerMade {
   const definition = flowDefinitionOf(flow);
   if (definition === null || flow.state !== "active") return { ok: false, message: "This flow can't take triggers right now." };
   let config: TriggerConfig;
   try { config = validateTriggerConfig(raw, { store, flow, definition, actor }); } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "That trigger isn't valid." }; }
   if (takesDeliveries(config) && dir === null) return { ok: false, message: "Webhook addresses are set up on the console." };
   if (takesDeliveries(config) && config.kind !== "webhook" && options.ingress !== "proved") return { ok: false, message: "Webhook delivery is set up on the flow's trigger panel, with your password." };
+  // Items from anyone come in only on a person's proof (chat-management.md §0a.3): never from a card, an import or a template alone.
+  if (admitsAnyone(config) && options.ingress !== "proved" && options.widening !== "proved") return { ok: false, message: "A trigger that brings in items from anyone takes your password. Add it on the flow's Triggers panel." };
   // v126: a webhook made where no one is shown its address (the gallery, an import) is made with none: its first
   // set-up or New address makes one and shows it. A webhook made on its panel is shown its address now.
   const token = takesDeliveries(config) && options.ingress === "proved" && (options.shown !== false || config.kind !== "webhook") ? randomBytes(24).toString("base64url") : null;
@@ -619,7 +637,11 @@ export type TriggerIo = { gh: Runner; fetch: typeof fetch; dir: string | null;
   /** How mail is read (default: IMAP; tests pass a scripted mailbox). */
   mail?: MailReader;
   /** v90: how a schedule's script runs (default: the same runner as gh) and where (default: beside the database). */
-  shell?: Runner; scratch?: string };
+  shell?: Runner; scratch?: string;
+  /** Whether this machine can confine a script (tests only; default: the macOS sandbox or bubblewrap is here). */
+  fenceAvailable?: () => boolean;
+  /** The home folder a launch is fenced around (tests only; default: this user's). */
+  home?: string };
 export type TriggerPass = { added: number; checked: number; problems: string[] };
 
 /** Every trigger in one project that is due: schedules and other flows here, GitHub, Linear and email by asking them. */
@@ -789,20 +811,25 @@ async function fireScript(store: Store, trigger: FlowTriggerRow, config: Extract
   const missing = (config.secrets ?? []).filter(name => saved[name] === undefined);
   if (missing.length > 0) return done(false, `${script.name} needs the secret${missing.length === 1 ? "" : "s"} ${missing.join(", ")}. Save ${missing.length === 1 ? "it" : "them"} on the flow first.`);
   // Loaded when a script first runs: the runner reaches the builder's modules, which reach back to these triggers.
-  const { cardsFromOutput, cleanFolder, runCode } = await import("./flow-code.js");
-  const { agentFence } = await import("./agent-fence.js");
+  const { cardsFromOutput, cleanFolder, flowLaunch, runCode } = await import("./flow-code.js");
   const scratch = io.scratch ?? join(io.dir ?? tmpdir(), "flow-scratch");
   const folder = cleanFolder(scratch, `flow-trigger-${trigger.id}`);
   // Its cards run on their own only if it ran the very code a grant signed: pinned just before and just after the run.
   const pin = scheduled && grantSignsScriptOf(store, flow.id, trigger.id, now) ? () => scriptProvenanceOf(store, flow.repo, script.name) : null;
   const before = pin === null ? null : await pin();
   let ran: CodeResult;
+  // A full boundary around its clean folder, though it has no checkout (flow-code.ts flowLaunch).
+  const launch = flowLaunch(store, { repo: flow.repo, folder, scratch, copy: false, policy: store.flowFencePolicy(flow.id), ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }), ...(io.home === undefined ? {} : { home: io.home }) });
   try {
+    if (launch !== null && "problem" in launch) return done(false, launch.problem);
     ran = await runCode({ script, cwd: folder, root: flow.repo, scratch, shell: io.shell ?? io.gh,
       input: { flow: { id: flow.id, name: flow.name }, trigger: trigger.id, lastRun: trigger.lastAt }, secrets: Object.fromEntries((config.secrets ?? []).map(name => [name, saved[name]!])),
       env: { FLOW_NAME: flow.name, FLOW_TRIGGER_ID: String(trigger.id), FLOW_PROJECT: flow.repo, FLOW_LAST_RUN: trigger.lastAt ?? "" },
-      fence: agentFence({ databaseFile: store.databaseFile(), worktree: folder }) });
-  } finally { rmSync(folder, { recursive: true, force: true }); }
+      launch });
+  } finally {
+    if (launch !== null && !("problem" in launch)) launch.dispose();
+    rmSync(folder, { recursive: true, force: true });
+  }
   if (ran.state === "failed") return done(false, ran.said.split("\n")[0]!);
   const ranScript = pin === null ? null : scriptRanDigestOf(before, await pin(), script);
   const items = cardsFromOutput(ran.printed);

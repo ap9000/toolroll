@@ -1,3 +1,4 @@
+import { syncProjectIdentities, type ProjectIdentities } from "../project-identity.js";
 import { OWNER_ACTIONS,sharedActionPayload } from '../chat-actions.js';
 import { CONSOLE_FORMS,readForm,type FormFieldOf,type FormView } from "../contracts/console-api.js";
 import type { TaskFamily } from "../store.js";
@@ -28,8 +29,10 @@ import { PersistentSessions,SESSION_COOKIE,sessionWithinLifetime,type Session,ty
 /** Shared browser, credential and project guards. Runtime access is lazy to preserve server initialization order. */
 export interface GuardsRuntime {
   store: Store;
-  liveCeiling: () => { repos: string[]; roots: readonly string[]; };
+  liveCeiling: () => { repos: string[]; roots: readonly string[]; canon?: (path: string) => string | null };
   codingProjects: () => string[];
+  /** Project identities read without touching folders (project-identity.ts); absent: the synchronous reads. */
+  identities?: ProjectIdentities;
   unscopedMode: boolean;
   managedRepos: () => string[];
   ceiling: import("../project.js").ProjectCeiling;
@@ -43,6 +46,7 @@ export interface GuardsRuntime {
   sessions: PersistentSessions;
 }
 export function createSharedGuards(runtime: GuardsRuntime) {
+  const syncIdentities = syncProjectIdentities();
 
   // v99: wrong passwords. One address guessing across names runs out of tries here; each name
   // locks on its own (sign-in-guard.ts), and every lock, whatever road it came by, is kept.
@@ -161,8 +165,9 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     const header = request.headers["x-standing-orders-project"];
     if (header === undefined) return fallback();
     if (Array.isArray(header)) return undefined;
-    const canonical = canonicalProject(header);
-    if (canonical === null || !visible(canonical)) return undefined;
+    // A request's path, never resolved on this thread (project-identity.ts): a known identity or exactly a saved one.
+    const canonical = identities().vouched(header, savedIdentities);
+    if (canonical === undefined || !visible(canonical)) return undefined;
     return canonical;
   }
 
@@ -183,7 +188,8 @@ export function createSharedGuards(runtime: GuardsRuntime) {
       case 'form-path': {
         const path = body?.get('path')?.trim() ?? '';
         // Invalid/missing paths keep the opener's existing 400 response and recoverable form.
-        return path === '' ? null : canonicalProject(path);
+        // Never resolved here: an unknown path passes on to the opener, which resolves it off the thread and checks again.
+        return path === '' ? null : identities().vouched(path, savedIdentities) ?? null;
       }
       case 'task': {
         const task = matchTaskPath(url.pathname, '(?:/[a-z-]+)?$');
@@ -361,5 +367,10 @@ export function createSharedGuards(runtime: GuardsRuntime) {
   function runVisible(run: Run): boolean {
     return visible(taskRepoOf(run.taskRef));
   }
+  // Defined last, so the reviewed functions above keep their places (password-freshness.test.ts).
+  /** Project identities read without touching a folder (project-identity.ts); absent: the synchronous reads. */
+  function identities(): ProjectIdentities { return runtime.identities ?? syncIdentities; }
+  /** The projects `up` proved and admitted (each its own identity): what a request may name without a read. */
+  function savedIdentities(): string[] { return runtime.managedRepos(); }
   return { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, resolveRouteProject, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible };
 }

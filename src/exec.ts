@@ -8,9 +8,10 @@
  */
 
 import { ACP_LINE_CAP, createAcpConversation } from "./acp-client.js";
-import { linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, type FenceGrants } from "./agent-fence.js";
+import { linuxFenceAvailable, macosFenceAvailable, sandboxedSpawn, type FenceGrants } from "./agent-fence.js";
+import { withoutProtectedEnv } from "./protected-storage.js";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { readlinkSync, realpathSync } from "node:fs";
 import { observeProcessTree, stopProcessTree, type ProcessTreeObserver } from "./process-tree.js";
 import { jsonlDiscriminants } from "./jsonl-discriminants.js";
 import { createContainer, currentContainment, type AttachOutcome, type Container, type ContainmentBackendId } from "./containment.js";
@@ -18,6 +19,7 @@ import type { Store } from "./store.js";
 import { claudeLimitsOf, noteLimits } from "./provider-limits.js";
 import type { LiveInput } from "./live-input.js";
 import { sleep as defaultSleep } from "./sleep.js";
+import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
 
 export type ExecResult = {
   /** Process exit code, or one of the synthetic codes below. */
@@ -36,6 +38,13 @@ export type ExecResult = {
    * returned — a transport exit alone never proves that.
    */
   containment?: ContainmentOutcome;
+  /** The signal that ended the process, when one did (its `code` then reads 1, as it always has): kept apart so a
+   * killed command is never mistaken for one that exited 1 on its own (release check 3261). Only the buffered
+   * process-group transport says. */
+  signal?: NodeJS.Signals | null;
+  /** This process (the plane) ended it with its hard stop (terminateLiveProviders: a worker shutting down), not
+   * anything the command or another process did. */
+  stoppedByPlane?: boolean;
 };
 
 export type ContainmentOutcome =
@@ -180,6 +189,8 @@ export type RunOptions = ProcessTreeObserver & {
 
 /** Live provider children, for the deterministic stop. Registered only when `processGroup` was set. */
 const liveProviders = new Set<import("node:child_process").ChildProcess>();
+/** Children this process's own hard stop ended: their results say so (`stoppedByPlane`). */
+const hardStopped = new WeakSet<import("node:child_process").ChildProcess>();
 
 /** Live children by owner tag (v52): the exact-attempt stop's handle. A
  * child is registered here beside liveProviders when its options named an
@@ -211,20 +222,33 @@ export class ContainmentRefusal extends Error {
 }
 
 /**
- * The command as it runs inside the agent fence (sandbox-exec or bubblewrap wrapping it), or as it is when it has no
- * fence. A spawn whose confinement is required and that no backend here can wrap is refused (ContainmentRefusal):
- * nothing runs, and nothing falls back to running it unwrapped.
+ * The command as it runs inside the agent fence (Anthropic's sandbox-runtime wrapping it: agent-fence.ts
+ * sandboxedSpawn), with the environment that needs beside the caller's, or as it is when it has no fence. A spawn whose
+ * confinement is required and that no sandbox here can wrap is refused (ContainmentRefusal): nothing runs, and nothing
+ * falls back to running it unwrapped.
  */
-export function confined(file: string, args: readonly string[], bag: { fence?: readonly string[] | undefined; fenceGrants?: FenceGrants | undefined; confinement?: "required" | undefined }): { file: string; args: string[] } {
+export function confined(file: string, args: readonly string[], bag: { fence?: readonly string[] | undefined; fenceGrants?: FenceGrants | undefined; confinement?: "required" | undefined; cwd?: string | undefined; temp?: string | undefined }): { file: string; args: string[]; env: Record<string, string> } {
   const fence = bag.fence ?? [];
-  if (fence.length > 0 && macosFenceAvailable()) return macosFenced(file, args, fence, bag.fenceGrants);
-  if (fence.length > 0 && linuxFenceAvailable()) return linuxFenced(file, args, fence, bag.fenceGrants);
+  // A fence is only ever made by fenceFor (agent-fence.ts), which marks it required: one without the mark was put
+  // together some other way, and would run bare wherever no OS fence applies. Nothing runs.
+  if (fence.length > 0 && bag.confinement !== "required") throw new ContainmentRefusal("This process was given a fence that isn't marked required, so it was not started.");
+  if (fence.length > 0 && (macosFenceAvailable() || linuxFenceAvailable())) {
+    try { return sandboxedSpawn(file, args, fence, bag.fenceGrants, bag.cwd, bag.temp); }
+    catch (error) { throw new ContainmentRefusal(`The sandbox couldn't be made, so nothing was started: ${error instanceof Error ? error.message : String(error)}`); }
+  }
   if (bag.confinement === "required") {
     throw new ContainmentRefusal(fence.length === 0
       ? "This process must run inside the agent fence, and it was given none."
       : "This machine can't confine a build (no macOS sandbox, no working bubblewrap), so nothing was started.");
   }
-  return { file, args: [...args] };
+  return { file, args: [...args], env: {} };
+}
+
+/** A spawn's environment with what its sandbox needs added (nothing added: the caller's, as it was). */
+export function withSandboxEnv<T extends Record<string, string | undefined>>(env: T | undefined, added: Record<string, string>, fenced = false): T | Record<string, string | undefined> | undefined {
+  // A fenced launch never gets a chat or vault variable (protected-storage.ts), whoever made its environment.
+  if (fenced) return withoutProtectedEnv({ ...(env ?? process.env), ...added });
+  return Object.keys(added).length === 0 ? env : { ...(env ?? process.env), ...added };
 }
 
 /** A spawn callback refused custody AFTER the child existed: the caller
@@ -266,7 +290,9 @@ function spawnContained(
   contain = true,
 ): ContainedSpawn {
   // The agent fence wraps the target itself (sandbox-exec then execs it, same pid).
-  ({ file, args } = confined(file, args, bag));
+  const sandboxed = confined(file, args, { ...bag, cwd: spawnOptions.cwd, temp: spawnOptions.env?.["TMPDIR"] });
+  ({ file, args } = sandboxed);
+  spawnOptions = { ...spawnOptions, env: withSandboxEnv(spawnOptions.env, sandboxed.env, (bag.fence?.length ?? 0) > 0) };
   // The policy refusal comes first: nothing is reserved, recorded or
   // spawned for a spawn that cannot be contained as required.
   const effective = contain ? currentContainment() : null;
@@ -483,6 +509,7 @@ function killGroup(child: import("node:child_process").ChildProcess): void {
 export function terminateLiveProviders(): number {
   let terminated = 0;
   for (const child of liveProviders) {
+    hardStopped.add(child);
     killGroup(child);
     terminated += 1;
   }
@@ -689,8 +716,8 @@ export function run(file: string, args: readonly string[], options: RunOptions =
 
   // The plain road wraps exactly as the process-group road does: a fence given here is never dropped, and a spawn
   // whose confinement is required and can't be wrapped refuses before anything runs.
-  let wrapped: { file: string; args: string[] };
-  try { wrapped = confined(file, args, options); }
+  let wrapped: { file: string; args: string[]; env: Record<string, string> };
+  try { wrapped = confined(file, args, { ...options, cwd, temp: childEnv?.["TMPDIR"] }); }
   catch (error) {
     if (!(error instanceof ContainmentRefusal)) throw error;
     return Promise.resolve({ code: CONTAINMENT_REFUSED_CODE, stdout: "", stderr: error.message, timedOut: false, notFound: false, containment: { refused: error.message } });
@@ -698,7 +725,10 @@ export function run(file: string, args: readonly string[], options: RunOptions =
   return retryTransientSpawn(
     () =>
       new Promise<SpawnAttempt>(resolve => {
-        execFile(
+        // execFile's timeout sends SIGTERM and nothing more: a process that survives it (one that ignores or blocks
+        // it) never exits, and its caller would wait forever. SIGKILL follows a short grace later.
+        let hardKill: ReturnType<typeof setTimeout> | undefined;
+        const child = execFile(
           wrapped.file,
           wrapped.args,
           {
@@ -708,9 +738,10 @@ export function run(file: string, args: readonly string[], options: RunOptions =
             encoding: "utf8",
             shell: false,
             windowsHide: true,
-            ...(childEnv === undefined ? {} : { env: childEnv }),
+            ...((env => env === undefined ? {} : { env }))(withSandboxEnv(childEnv, wrapped.env, (options.fence?.length ?? 0) > 0)),
           },
           (error, stdout, stderr) => {
+            if (hardKill !== undefined) clearTimeout(hardKill);
             if (error === null) {
               resolve({ result: { code: 0, stdout, stderr, timedOut: false, notFound: false }, transient: false });
               return;
@@ -721,9 +752,16 @@ export function run(file: string, args: readonly string[], options: RunOptions =
             });
           },
         );
+        if (timeoutMs > 0) {
+          hardKill = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } }, timeoutMs + TERM_GRACE_MS);
+          hardKill.unref?.();
+        }
       }),
   );
 }
+
+/** How long a timed-out plain command has to exit after SIGTERM before it is killed outright. */
+export const TERM_GRACE_MS = 2_000;
 
 /**
  * The buffered transport for process-group providers (claude): spawn
@@ -803,6 +841,7 @@ function runBufferedGroup(
 
     let settled = false;
     let transient = false;
+    let endSignal: NodeJS.Signals | null = null;
     const finish = (code: number | null): void => {
       if (settled) return;
       settled = true;
@@ -822,6 +861,8 @@ function runBufferedGroup(
             timedOut: timedOut && !overflowed,
             notFound,
             ...containmentOf(container, empty, attachFailure),
+            ...(endSignal === null ? {} : { signal: endSignal }),
+            ...(hardStopped.has(child) ? { stoppedByPlane: true } : {}),
           },
           transient,
         });
@@ -833,7 +874,7 @@ function runBufferedGroup(
       if (stderr === "") stderr = String(error);
       finish(null);
     });
-    child.on("close", code => finish(code));
+    child.on("close", (code, signal) => { endSignal = code === null ? signal ?? null : null; finish(code); });
     if (bag.stdin !== undefined && child.stdin !== null) {
       child.stdin.on("error", () => {
         inputFailed = true;
@@ -1564,15 +1605,16 @@ function processRows(): ProcessRow[] | null {
  * wrapper around it), down to the agent's own process (the first whose command is the agent's launch, `names`), then
  * every live, non-zombie process beneath it, with its group. The agent itself and any wrapper are never counted.
  */
-function liveUnderAgent(root: number, names: readonly string[]): { pid: number; group: number }[] | null {
+function liveUnderAgent(root: number, names: readonly string[], rootIsWrapper = false): { pid: number; group: number }[] | null {
   const rows = processRows();
   if (rows === null) return null;
   const children = new Map<number, ProcessRow[]>();
   for (const row of rows) children.set(row.parent, [...(children.get(row.parent) ?? []), row]);
   const self = rows.find(row => row.pid === root);
-  const named = (row: ProcessRow) => names.some(name => row.name === name || row.name.endsWith(`/${name}`));
+  const named = (row: ProcessRow) => agentNamed(row, names);
   // The agent: the root when it is the agent (macOS sandbox-exec execs in place), else the first named descendant.
-  let agent: number | null = self !== undefined && named(self) ? root : null;
+  // On Linux the root is the sandbox launch helper (sandbox-launch.ts, itself node): never taken for the agent.
+  let agent: number | null = !rootIsWrapper && self !== undefined && named(self) ? root : null;
   const pending = [...(children.get(root) ?? [])];
   while (agent === null && pending.length > 0) {
     const row = pending.shift()!;
@@ -1588,6 +1630,22 @@ function liveUnderAgent(root: number, names: readonly string[]): { pid: number; 
     below.push(...(children.get(row.pid) ?? []));
   }
   return found;
+}
+
+/** The program a Linux process runs (its /proc exe), or null: elsewhere, or unreadable. */
+function linuxProgramOf(pid: number): string | null {
+  if (process.platform !== "linux") return null;
+  try { return readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "").split("/").pop() || null; } catch { return null; }
+}
+
+/**
+ * Whether a listed process is the agent's launch (`names`): by its listed name, or on Linux by the program it runs,
+ * since a listing there shows the main thread's name, which Node 24 sets to "MainThread".
+ */
+export function agentNamed(row: { pid: number; name: string }, names: readonly string[], programOf: (pid: number) => string | null = linuxProgramOf): boolean {
+  if (names.some(name => row.name === name || row.name.endsWith(`/${name}`))) return true;
+  const program = programOf(row.pid);
+  return program !== null && names.includes(program);
 }
 
 /** How long each shutdown step waits: session/close's answer, then exit after stdin closes, then exit after SIGTERM. */
@@ -1768,7 +1826,7 @@ export function runAcpSession(
             forceKill();
           });
         },
-        liveDescendants: () => process.platform === "win32" ? null : exited() || child.pid === undefined ? [] : liveUnderAgent(child.pid, agentNames),
+        liveDescendants: () => process.platform === "win32" ? null : exited() || child.pid === undefined ? [] : liveUnderAgent(child.pid, agentNames, child.spawnargs.some(arg => arg.endsWith("sandbox-launch.js"))),
       });
     } catch { /* the caller's own failure */ }
 
@@ -1863,21 +1921,17 @@ function syntheticMessageLine(content: string, truncated: boolean): string {
  *
  *   - a bounded identity witness for `system`/`init`: the first init signal,
  *     the first usable session id, and one conflicting id
- *   - the FIRST primary `result` event, selected STRUCTURALLY (finding 10):
- *     origin absent or `origin.kind === "human"` — an allowlist, so a
- *     background task's result (or any future origin kind) can never be
- *     mistaken for the main query's accounting. Later results are dropped.
+ *   - the FIRST primary `result` event, selected STRUCTURALLY (finding 10;
+ *     stream-scope.ts `primaryResultEvent`): top-level, and origin absent or
+ *     `origin.kind === "human"` — an allowlist, so a subagent's or background
+ *     task's result (or any future origin kind) can never be mistaken for the
+ *     main query's accounting. Later results are dropped. A subagent's init
+ *     never enters the identity witness.
  *
  * The result's stdout is the retained lines joined — a synthetic, bounded
  * envelope `claudeParse` reads exactly like test fixtures. Timeout,
  * process-group, kill, and spawn semantics match `runStreamJsonl`.
  */
-function primaryResultOrigin(event: Record<string, unknown>): boolean {
-  const origin = event["origin"];
-  if (origin === undefined || origin === null) return true;
-  if (typeof origin === "object" && String((origin as Record<string, unknown>)["kind"] ?? "") === "human") return true;
-  return false; // task-notification, channel, peer, coordinator, unknown: never the envelope
-}
 
 /** The usage fields Claude reports per message (not per session): a live session's account adds them up. */
 const LIVE_SUMMED_USAGE = ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] as const;
@@ -1940,6 +1994,11 @@ export function runClaudeStreamJsonl(
     let initLine: string | null = null;
     let initIdentityLine: string | null = null;
     let conflictingInitLine: string | null = null;
+    /** v140: the first init's model, and the first top-level init naming another (the parser reads them as a conflict:
+     * unknown, never one of them). Kept even within one session id. */
+    let initModel: string | null = null;
+    let initModelLine: string | null = null;
+    let modelConflictLine: string | null = null;
     let initSessionId: string | null = null;
     let resultLine: string | null = null;
     let resultOverflowed = false;
@@ -2029,8 +2088,16 @@ export function runClaudeStreamJsonl(
       }
       if (event === null || typeof event !== "object") return;
       const type = String(event["type"] ?? "");
-      if (type === "system" && String(event["subtype"] ?? "") === "init") {
+      // A subagent's init, words and result are not the session's (stream-scope.ts): they never witness its identity,
+      // name its session, fire its receipt or stand as its result. They still reach the observers below, which filter
+      // for themselves.
+      if (type === "system" && String(event["subtype"] ?? "") === "init" && topLevelEvent(event)) {
         if (initLine === null) initLine = line;
+        const model = typeof event["model"] === "string" ? event["model"] : null;
+        if (model !== null) {
+          if (initModel === null) { initModel = model; initModelLine = line; }
+          else if (model !== initModel && modelConflictLine === null) modelConflictLine = line;
+        }
         const id = transportSessionId(event["session_id"]);
         let identityWitness = false;
         if (id !== null) {
@@ -2054,12 +2121,11 @@ export function runClaudeStreamJsonl(
         // Top-level only (finding 11): assistant events carry no origin;
         // parent_tool_use_id is the correlation field, and a subagent's
         // words prove nothing about the main prompt.
-        const parent = event["parent_tool_use_id"];
-        if (parent === undefined || parent === null) fireReceipt();
+        if (topLevelEvent(event)) fireReceipt();
       } else if (type === "rate_limit_event") {
         // v105: the plan's usage windows, as Claude says them each turn (the Tasks page's limits).
         noteLimits(claudeLimitsOf(event));
-      } else if (type === "result" && (resultLine === null || live !== null) && primaryResultOrigin(event)) {
+      } else if (type === "result" && (resultLine === null || live !== null) && primaryResultEvent(event)) {
         // A live session ends a turn with a result each time: the run's account is the last one, with every main
         // result's usage and turns added up (account). After an oversized main result the retained result stays the
         // fail-closed overflow, but later results still count toward its cost.
@@ -2118,7 +2184,7 @@ export function runClaudeStreamJsonl(
       liveProviders.delete(child);
       framing.finish();
       live?.detach();
-      const lines = [initLine, initIdentityLine, conflictingInitLine, accountedResultLine(), overflowLine]
+      const lines = [initLine, initIdentityLine, conflictingInitLine, initModelLine, modelConflictLine, accountedResultLine(), overflowLine]
         .filter((one): one is string => one !== null)
         .filter((line, index, all) => all.indexOf(line) === index);
       const settlement = container === null ? Promise.resolve<boolean | null>(null) : settleContainer(container, options);

@@ -16,15 +16,25 @@ export type RequestFacts = {
   returnTo: string;
   actor?: string;
   createdTask?: string;
+  /** This request's latency timeline (latency-timeline.ts): kept when the answer was slow. */
+  timeline?: import("../latency-timeline.js").Timeline;
   browser?: boolean;
   workspaceRead?: boolean;
+  /** Receipt reconciliation, task and result reads (`request`, `task`, `result`): work is read afresh, never cached. */
+  freshWork?: boolean;
+  /** A workspace re-read's If-None-Match: the content validator it holds from its last read. */
+  workspaceIfNoneMatch?: string;
   workspaceRequest?: string | null;
   workCounts?: ReturnType<typeof workCountsByProject>;
   workCrew?: { project: string | null; page: WorkIndexPage };
+  /** The chrome this request already read (console-chrome.ts keys): one snapshot per request, however often it asks. */
+  chromeReads?: Map<string, unknown>;
   lens?: string | null;
   workspaceValidator?: { key: string; revision: string; expiresAt: number; etag: string };
   /** Passwordless is on and this is a signed-in browser: ceremony password fields render as nothing (html.ts reauth). */
   passwordless?: boolean;
+  /** The browser session's open project (display only: the sidebar's picker names it). */
+  openProject?: string | null;
 };
 
 /**

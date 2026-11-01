@@ -782,6 +782,53 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect((await fetch(url('/live?room=chat'), { redirect: 'manual' })).status).not.toBe(200);
   });
 
+  test('agents view slice 8: the Live grid shows the owner\'s own running reply, and only to them', async () => {
+    const cookie = await login(), csrf = await mint(cookie);
+    const robin = addApprover(store, 'robin', T0, { name: 'alex', token: approverToken });
+    if (!robin.ok) throw new Error(robin.reason);
+    const robinCookie = ((await fetch(url('/login'), { method: 'POST', body: new URLSearchParams({ name: 'robin', token: robin.token }), redirect: 'manual' })).headers.get('set-cookie') ?? '').split(';')[0]!;
+    const leadsOf = async (who: string) => ((await (await fetch(url('/agents/live'), { headers: { cookie: who } })).json()) as { leads: { thread: number; turn: number | null; state: string; scope: string; title: string; lines: string[]; chatHref: string; taskHref: string | null; stepAt: string[] }[] }).leads;
+    let finish!: (value: Response) => void;
+    script.push(() => new Promise<Response>(resolve => { finish = resolve; }) as unknown as Response);
+    expect((await sendJson(cookie, { csrf, task: 'a', message: 'Where is this?', request: 'd'.repeat(32), 'request-session': '1' })).status).toBe(202);
+    let leads = await leadsOf(cookie);
+    for (let i = 0; i < 100 && leads.length === 0; i++) { await new Promise(resolve => setTimeout(resolve, 10)); leads = await leadsOf(cookie); }
+    expect(leads).toMatchObject([{ scope: 'task', title: 'task a', state: 'working', chatHref: '/chat?task=a', taskHref: '/t/a' }]);
+    expect(leads[0]!.turn).toEqual(expect.any(Number));
+    expect(leads[0]!.stepAt.length).toBeGreaterThan(0);
+    // Another approver never sees it.
+    expect(await leadsOf(robinCookie)).toEqual([]);
+    // Codex av8 r2 #4: the thread closes after the tile was projected and before delivery: nothing of it is delivered.
+    const thread = leads[0]!.thread, real = store.liveLeadThreadFor.bind(store);
+    let closing = true;
+    store.liveLeadThreadFor = (...args: Parameters<Store["liveLeadThreadFor"]>) => {
+      const read = real(...args);
+      if (closing && read?.id === thread) { closing = false; store.handle.prepare("UPDATE lead_thread SET closed_at = ? WHERE id = ?").run(T0.toISOString(), thread); }
+      return read;
+    };
+    try { expect(await leadsOf(cookie)).toEqual([]); } finally { store.liveLeadThreadFor = real; }
+    store.handle.prepare("UPDATE lead_thread SET closed_at = NULL WHERE id = ?").run(thread);
+    expect(await leadsOf(cookie)).toHaveLength(1);
+    finish(answer([{ type: 'text', text: 'Here.' }]));
+    await settle();
+    leads = await leadsOf(cookie);
+    expect(leads).toMatchObject([{ state: 'done' }]);
+    // The account loses the project: the ended turn's tile goes with it.
+    store.handle.prepare("UPDATE approver SET projects_json = '[]' WHERE name = 'alex'").run();
+    expect(await leadsOf(cookie)).toEqual([]);
+  });
+
+  test('agents view slice 8 r2: a membership reply\'s finished answer shows whole on its lead tile', async () => {
+    store.setChatConfig({ provider: 'claude-subscription', model: 'default', dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, 'alex', T0);
+    const cookie = await login(), csrf = csrfFrom(await page(cookie));
+    if (store.activeLeadSession('alex') === null) expect((await post(cookie, '/chat/mate/mint', { csrf, token: approverToken })).status).toBe(303);
+    subscriptionAnswers.push({ text: 'All 24 tests passed.', calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null });
+    expect((await sendJson(cookie, { csrf, task: 'a', message: 'How did the tests go?', request: 'e'.repeat(32), 'request-session': String(store.activeLeadSession('alex')!.id) })).status).toBe(202);
+    await settle();
+    const leads = ((await (await fetch(url('/agents/live'), { headers: { cookie } })).json()) as { leads: { state: string; lines: string[] }[] }).leads;
+    expect(leads).toMatchObject([{ state: 'done', lines: ['All 24 tests passed.'] }]);
+  });
+
   test('a revoked browser stream gets no reply started later by another session', async () => {
     const oldCookie = await login(); await mint(oldCookie);
     const old = await chatRoom(oldCookie, 'chat?task=a');
@@ -1490,15 +1537,24 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(html).not.toContain('class="thread"');
   });
 
-  test("a membership chat opens ready to talk: no password card, a live conversation, settings one tap away", async () => {
+  test("a membership chat opens ready to talk: no password card, a visit starts nothing, the first message starts the conversation", async () => {
     store.setChatConfig({ provider: "codex-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", T0);
     const cookie = await login();
+    const counts = () => store.raw().prepare("SELECT (SELECT COUNT(*) FROM lead_session) AS sessions, (SELECT COUNT(*) FROM lead_thread) AS threads").get();
     expect(store.activeLeadSession("alex")).toBeNull();
     const html = await page(cookie);
-    expect(store.activeLeadSession("alex")).not.toBeNull();
+    // Quiet page visits: the page shows the composer, and nothing was started.
+    expect(store.activeLeadSession("alex")).toBeNull();
+    expect(counts()).toEqual({ sessions: 0, threads: 0 });
     expect(html).not.toContain('action="/chat/mate/mint"');
     expect(html).not.toContain('autocomplete="current-password"');
     expect(html).toContain('href="/settings/lead">Lead settings</a>');
+    expect(html).toContain('name="request-session" value="0"');
+    // The first message starts it: one session, one thread.
+    subscriptionAnswers.push({ text: "Hello.", calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null });
+    expect((await post(cookie, "/chat", { csrf: csrfFrom(html), message: "Hi", "request-session": "0" })).status).toBe(303);
+    await settle();
+    expect(counts()).toEqual({ sessions: 1, threads: 1 });
     // Reloading keeps the same conversation rather than starting another.
     const first = store.activeLeadSession("alex")!.id;
     await page(cookie);
@@ -1507,6 +1563,105 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     store.endLeadSessionsFor("alex", "alex", T0);
     await (await fetch(url("/chat?settings=1"), { headers: { cookie } })).text();
     expect(store.activeLeadSession("alex")).toBeNull();
+  });
+
+  test("quiet page visits: no chat, task or project page view starts a session, thread or turn, or reaches the provider", async () => {
+    store.setChatConfig({ provider: "codex-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", T0);
+    const cookie = await login();
+    const counts = () => store.raw().prepare(`SELECT (SELECT COUNT(*) FROM lead_session) AS sessions, (SELECT COUNT(*) FROM lead_thread) AS threads,
+      (SELECT COUNT(*) FROM lead_message) AS messages, (SELECT COUNT(*) FROM mate_turn) AS turns`).get();
+    const project = encodeURIComponent(repoDir);
+    const pages = ["/chat", "/chat?task=a", `/chat?project=${project}`, "/t/a", `/work?project=${project}`, "/chat/mate/status?task=a", "/lead/status", "/chat/task-status?task=a"];
+    const visitAll = async () => {
+      for (const path of pages) {
+        for (const shown of [path, path + (path.includes("?") ? "&" : "?") + "format=workspace"]) {
+          const response = await fetch(url(shown), { headers: { cookie } });
+          await response.text();
+          expect(response.status, shown).toBeLessThan(400);
+        }
+      }
+    };
+    await visitAll();
+    expect(counts()).toEqual({ sessions: 0, threads: 0, messages: 0, turns: 0 });
+    expect(subscriptionRequests).toHaveLength(0);
+    // The task page's own panel says there is no conversation yet: its sends bind to session 0.
+    const task = await (await fetch(url("/t/a?format=workspace"), { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
+    expect(task.conversation?.sessionId).toBe(0);
+    expect(task.conversation?.messages).toEqual([]);
+    // With a conversation running (started by a send), a visit to another scope still opens no thread there.
+    const csrf = csrfFrom(await page(cookie));
+    subscriptionAnswers.push({ text: "Hello.", calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null });
+    expect((await sendJson(cookie, { csrf, message: "Hi", request: "d".repeat(32), "request-session": "0" })).status).toBe(202);
+    await settle();
+    const started = counts();
+    expect(started).toMatchObject({ sessions: 1, threads: 1, turns: 1 });
+    await visitAll();
+    expect(counts()).toEqual(started);
+    expect(subscriptionRequests).toHaveLength(1);
+  });
+
+  test("the first send starts exactly one conversation, and a retry or double submit of it starts nothing more", async () => {
+    store.setChatConfig({ provider: "codex-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", T0);
+    const cookie = await login();
+    const counts = () => store.raw().prepare(`SELECT (SELECT COUNT(*) FROM lead_session) AS sessions, (SELECT COUNT(*) FROM lead_thread) AS threads,
+      (SELECT COUNT(*) FROM lead_message WHERE role = 'operator') AS messages, (SELECT COUNT(*) FROM mate_turn) AS turns`).get();
+    const csrf = csrfFrom(await (await fetch(url("/t/a"), { headers: { cookie } })).text());
+    // Nothing starts for a message that would be refused.
+    expect((await sendJson(cookie, { csrf, task: "a", message: "  ", request: "e".repeat(32), "request-session": "0" })).status).toBe(400);
+    expect((await sendJson(cookie, { csrf, task: "a", message: "my key is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", request: "e".repeat(32), "request-session": "0" })).status).toBe(400);
+    expect(counts()).toEqual({ sessions: 0, threads: 0, messages: 0, turns: 0 });
+    // A double submit: the same request, twice at once.
+    subscriptionAnswers.push({ text: "On it.", calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null });
+    const fields = { csrf, task: "a", message: "What is left on this task?", request: "f".repeat(32), "request-session": "0" };
+    const both = await Promise.all([sendJson(cookie, fields), sendJson(cookie, fields)]);
+    expect(both.map(one => one.status).sort()).toEqual([202, 202]);
+    await settle();
+    // And a retry after it settled.
+    expect((await sendJson(cookie, fields)).status).toBe(202);
+    await settle();
+    expect(counts()).toEqual({ sessions: 1, threads: 1, messages: 1, turns: 1 });
+    expect(subscriptionRequests).toHaveLength(1);
+    // A different message from a page that still shows no conversation is refused, not sent into this one.
+    const other = await sendJson(cookie, { ...fields, request: "0".repeat(31) + "1", message: "Another" });
+    expect(other.status).toBe(409);
+    expect(counts()).toEqual({ sessions: 1, threads: 1, messages: 1, turns: 1 });
+    // The task page now shows the started conversation.
+    const task = await (await fetch(url("/t/a?format=workspace"), { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
+    expect(task.conversation?.sessionId).toBe(store.activeLeadSession("alex")!.id);
+    // Once that conversation ended, or its ceiling changed, a retry of the send that started it starts nothing again:
+    // the start is recorded with the request, durably (a restart forgets nothing).
+    const first = store.activeLeadSession("alex")!;
+    store.raw().prepare("UPDATE lead_session SET ceiling_digest = ? WHERE id = ?").run("f".repeat(64), first.id);
+    expect((await sendJson(cookie, fields)).status).toBe(409);
+    expect((await post(cookie, "/chat/mate/end", { csrf })).status).toBe(303);
+    expect((await sendJson(cookie, fields)).status).toBe(409);
+    expect(counts()).toMatchObject({ sessions: 1, turns: 1 });
+    expect(store.leadStartReceipt("alex", "f".repeat(32))).toEqual({ session: first.id });
+    expect(subscriptionRequests).toHaveLength(1);
+  });
+
+  test("quiet page visits: a task chat not started yet still follows its task, read only, and a result page docks the conversation without starting it", async () => {
+    store.setChatConfig({ provider: "codex-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", T0);
+    const cookie = await login();
+    const counts = () => store.raw().prepare(`SELECT (SELECT COUNT(*) FROM lead_session) AS sessions, (SELECT COUNT(*) FROM lead_thread) AS threads,
+      (SELECT COUNT(*) FROM mate_turn) AS turns`).get();
+    const status = await (await fetch(url("/chat/mate/status?task=a&version=old"), { headers: { cookie } })).json() as { session: number | null; task: string; fragments?: { live: string | null } };
+    expect(status.session).toBe(0);
+    expect(status.task).toBe("a");
+    expect(status.fragments?.live).toContain("task-chat-live");
+    // A finished build's result page: its task's conversation docks beside it, not started.
+    sealScopeFixture(store, "a", approverToken);
+    const ref = store.refFor("built-in", "a").id;
+    const run = store.startRun({ taskRef: ref, leaseId: "l", runner: "r", branch: "b", worktree: "/w", now: clockNow, ...presented(store, ref, "builder") });
+    store.stampRun(run, { scopeDigest: store.getScope("a")!.digest, baseRevision: "1".repeat(40) });
+    store.recordOutcomeFacts(run, { headRevision: "2".repeat(40), handoff: "Done." });
+    store.finishRun(run, { outcome: "built", committed: true, now: clockNow });
+    store.setTaskState("a", "done", clockNow);
+    const result = await fetch(url(`/review?result=a&run=${run}&format=workspace`), { headers: { cookie } });
+    expect(result.status).toBe(200);
+    const shown = await result.json() as import("./browser-workspace.js").BrowserWorkspace;
+    expect(shown.conversation?.sessionId).toBe(0);
+    expect(counts()).toEqual({ sessions: 0, threads: 0, turns: 0 });
   });
 
   test("a change in reachable projects starts a new thread as before; the old one stays readable above a divider and never reaches the model", async () => {
@@ -1527,22 +1682,25 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     store.raw().prepare("UPDATE lead_thread SET ceiling_digest = ? WHERE approver = 'alex' AND closed_at IS NULL").run("f".repeat(64));
     const before = counts() as { sessions: number; threads: number };
     html = await page(cookie);
-    // Exactly what a GET did before: one new session and one new thread, no more.
-    expect(counts()).toEqual({ sessions: before.sessions + 1, threads: before.threads + 1 });
+    // Quiet page visits: the page shows the old words as the earlier conversation and starts nothing.
+    expect(counts()).toEqual(before);
     const workspace = workspaceOf(html);
+    expect(workspace.conversation?.sessionId).toBe(0);
     expect(workspace.conversation?.messages).toEqual([]);
     expect(workspace.conversation?.previous?.messages.map(one => one.text)).toEqual(["Remember the payments route", "The old route was through the payments project."]);
     // Reading again, or refreshing the workspace, writes nothing more.
-    const after = counts();
     await page(cookie);
     const refreshed = await (await fetch(url("/chat?format=workspace"), { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
     expect(refreshed.conversation?.previous?.messages).toHaveLength(2);
-    expect(counts()).toEqual(after);
-    // The new thread's model input carries none of the old thread's words.
+    expect(counts()).toEqual(before);
+    // The first message starts exactly one new session and one new thread; the new thread's model input carries
+    // none of the old thread's words.
     const fresh = csrfFrom(html);
     subscriptionAnswers.push({ text: "Starting fresh.", calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null });
-    expect((await post(cookie, "/chat", { csrf: fresh, message: "What can you reach now?" })).status).toBe(303);
+    expect((await post(cookie, "/chat", { csrf: fresh, message: "What can you reach now?", "request-session": "0" })).status).toBe(303);
     await settle();
+    expect(counts()).toEqual({ sessions: before.sessions + 1, threads: before.threads + 1 });
+    expect(workspaceOf(await page(cookie)).conversation?.previous?.messages).toHaveLength(2);
     expect(subscriptionRequests).toHaveLength(2);
     const input = JSON.stringify(subscriptionRequests[1]);
     expect(input).toContain("What can you reach now?");
@@ -2186,10 +2344,19 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
     expect(settingsData.view).toMatchObject({ kind: "settings", permission: { mode: "auto", canManage: true }, quality: { mode: "default", canManage: true } });
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(settings)?.[1] ?? "";
 
-    const global = await fetch(`${base}/settings/permission-default`, {
+    // Widening to Full access takes the password (chat-management.md §0a.3): without it nothing changes.
+    const unproved = await fetch(`${base}/settings/permission-default`, {
       method: "POST",
       headers: { cookie, origin: base },
       body: new URLSearchParams({ csrf, "permission-mode": "bypassPermissions" }),
+      redirect: "manual",
+    });
+    expect(unproved.status).toBe(303);
+    expect(store.permissionDefault().mode).toBe("auto");
+    const global = await fetch(`${base}/settings/permission-default`, {
+      method: "POST",
+      headers: { cookie, origin: base },
+      body: new URLSearchParams({ csrf, "permission-mode": "bypassPermissions", password: approverToken }),
       redirect: "manual",
     });
     expect(global.status).toBe(303);

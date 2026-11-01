@@ -983,6 +983,9 @@ function AddTrigger({ view, csrf, open, onResult }: { view: BrowserFlowView; csr
   };
   const v = (key: string) => fields[key] ?? defaults[kind]?.[key] ?? "";
   const ingress = kind === "webhook" || ((kind === "github" || kind === "linear") && v("delivery") === "webhook");
+  // Items from anyone (GitHub from anyone, mail from any sender): an ordinary step-up (chat-management.md §0a.3).
+  const anyone = !ingress && ((kind === "github" && v("from") === "anyone") || (kind === "email" && v("sender").trim() === ""));
+  const passwordless = useContext(Passwordless);
   const set = (key: string) => (event: { target: { value: string } }) => setFields(current => ({ ...current, [key]: event.target.value }));
   const source = setup.otherFlows.find(one => String(one.id) === v("flow"));
   const submit = async (event: { preventDefault: () => void }) => {
@@ -990,7 +993,7 @@ function AddTrigger({ view, csrf, open, onResult }: { view: BrowserFlowView; csr
     const trigger: Record<string, unknown> = { kind, zone: v("zone") || null };
     for (const key of TRIGGER_KEYS[kind] ?? []) trigger[key] = key === "questions" ? v(key).split("\n") : key === "flow" ? Number(v(key)) : v(key) || null;
     setBusy(true);
-    const result = await send(`${view.flow.href}/triggers`, { trigger: JSON.stringify(trigger), ...(ingress ? { password } : {}) }, csrf);
+    const result = await send(`${view.flow.href}/triggers`, { trigger: JSON.stringify(trigger), ...(ingress || anyone ? { password } : {}) }, csrf);
     if (result.ok) setPassword("");
     setBusy(false);
     onResult(result, kind);
@@ -1076,7 +1079,8 @@ function AddTrigger({ view, csrf, open, onResult }: { view: BrowserFlowView; csr
         <option value="">{view.stages.find(one => one.id === view.start)?.title ?? "The first zone"}</option>
         {view.stages.filter(one => one.id !== view.start).map(one => <option key={one.id} value={one.id}>{one.title}</option>)}</select></Field>}
       {ingress && <StepUp view={view} password={password} setPassword={setPassword} credential />}
-      {kind !== "chat" && <Button type="submit" size="sm" className="self-start" disabled={busy || (kind === "flow" && setup.otherFlows.length === 0) || (ingress && !stepUpReady(view, password))}><Plus className="size-4" />Add trigger</Button>}
+      {anyone && <StepUp view={view} password={password} setPassword={setPassword} />}
+      {kind !== "chat" && <Button type="submit" size="sm" className="self-start" disabled={busy || (kind === "flow" && setup.otherFlows.length === 0) || (ingress && !stepUpReady(view, password)) || (anyone && !stepUpReady(view, password, passwordless))}><Plus className="size-4" />Add trigger</Button>}
     </form>
   </details>;
 }

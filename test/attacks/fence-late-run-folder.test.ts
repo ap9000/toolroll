@@ -1,13 +1,15 @@
 /**
  * Attack: read another run's private launch folder (`so-tools-*`: its tool config and broker token; `so-codex-*`: a
  * Codex build's own home) that was made after this build's fence was fixed, so no launch-time listing could name it.
- * Guard: Seatbelt denies the whole namespace by pattern, giving back only this launch's own folder; Codex denies the
- * prefixes by glob (`so-tools-*`, `so-tools-*` + `/**`).
+ * Guard: the sandbox runtime is given the namespace as read and write denies by pattern (`<root>/so-tools-*`), this
+ * launch's own folder read again; on a Mac its Seatbelt profile matches the pattern, so a later folder is denied too
+ * (on Linux the runtime expands a pattern when it launches: a later folder there is its accepted limit). Codex denies
+ * the prefixes by glob (`so-tools-*`, `so-tools-*` + `/**`).
  */
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { agentFence, codexFenceArgv, fenceGrants, macosFenced, runFolders, RUN_FOLDER_PREFIXES } from "../../src/agent-fence.js";
+import { agentFence, codexFenceArgv, fenceGrants, runFolders, RUN_FOLDER_PREFIXES, sandboxedSpawn } from "../../src/agent-fence.js";
 import { spawnSync } from "node:child_process";
 import { codexSandbox, expectNoMarker, lines, marker, needs, q, seatbelt, underCodex, useScratch, write } from "./harness.js";
 
@@ -45,14 +47,14 @@ describe("attack: reading another run's so-tools-*/so-codex-*/so-net-*/so-cmd-* 
     const { worktree, root, own, fence, grants } = setup();
     const secret = marker("late-seatbelt");
     // The spawn is fixed first (as a launch fixes it), the other run's folders made after.
-    const { file, args } = macosFenced("/bin/sh", ["-c", [
+    const { file, args, env } = sandboxedSpawn("/bin/sh", ["-c", [
       ...RUN_FOLDER_PREFIXES.map(prefix => `cat ${q(join(root, `${prefix}later`, "secret.json"))} 2>/dev/null || echo ${prefix}denied`),
       `ls ${q(root)} >/dev/null && echo temp-listed`,
       `cat ${q(join(own, "mcp.json"))} && echo x > ${q(join(own, "scratch"))} && echo own-written`,
       `mkdir ${q(join(root, "plain"))} && echo temp-written`,
-    ].join("\n")], fence, grants);
+    ].join("\n")], fence, grants, worktree);
     later(root, secret);
-    const result = spawnSync(file, args, { cwd: worktree, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: undefined } });
+    const result = spawnSync(file, args, { cwd: worktree, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: undefined, ...env } });
     expectNoMarker(result, secret);
     expect(lines(result), result.stderr).toEqual(["so-tools-denied", "so-codex-denied", "so-net-denied", "so-cmd-denied", "temp-listed", "own-tools", "own-written", "temp-written"]);
     expect(readFileSync(join(own, "scratch"), "utf8")).toBe("x\n");

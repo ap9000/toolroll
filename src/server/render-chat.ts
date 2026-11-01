@@ -1184,8 +1184,15 @@ export function leadAfterComposerHtml(data: { messages: LeadMessage[]; pending: 
   return html`<div id="chat-after-composer" data-chat-region="after">${data.messages.length === 0 && data.pending === null ? leadPromptStarters(data.focusTask) : ""}</div>`;
 }
 
+/** A conversation shown before it exists (quiet page visits): its page binds sends to this session id, and the first
+ * send starts the conversation (chatSend). A visit never starts one. */
+export const NOT_STARTED_SESSION = 0;
+
 export function leadPage(chrome: Chrome, data: LeadThreadRows & {
-  session: LeadSession;
+  /** Null: no conversation yet; the first message starts one. */
+  session: LeadSession | null;
+  /** Whose conversation this is (the session's approver once it exists). */
+  approver: string;
   /** A project's own thread (v77); null for the lead conversation or a task. */
   chatProject?: string | null;
   follow?: { enabled: boolean; detail: string };
@@ -1206,16 +1213,20 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
   const subscription = isSubscriptionChatProvider(data.config.provider);
   const chatProject = data.focusTask === null ? data.chatProject ?? null : null;
   const returnTo = data.focusTask !== null ? taskChatHref(data.focusTask.id) : chatProject !== null ? projectChatHref(chatProject) : "/chat";
+  const sessionId = data.session?.id ?? NOT_STARTED_SESSION;
+  const approver = data.session?.approver ?? data.approver;
   const controlsHtml = joinHtml([
-    html`<details class="lead-follow"><summary>Automatic crew updates${data.follow?.enabled ? ' · On' : ''}</summary><p class="meta">${data.follow?.detail ?? 'Automatic crew updates are off.'}</p>${
+    data.session === null ? "" : html`<details class="lead-follow"><summary>Automatic crew updates${data.follow?.enabled ? ' · On' : ''}</summary><p class="meta">${data.follow?.detail ?? 'Automatic crew updates are off.'}</p>${
       postForm("/chat/mate/follow", html`${data.follow?.enabled ? '' : html`<p>The lead responds when results or decisions arrive. Uses this conversation’s ${subscription ? 'membership usage, with no dollar maximum' : 'remaining spend allowance'} and daily turn limit. Existing task approvals still apply.</p>`}<button type="submit" class="quiet">${data.follow?.enabled ? 'Pause updates' : 'Enable updates'}</button>`, { returnTo, hidden: { enabled: data.follow?.enabled ? 'no' : 'yes' } })}</details>`,
     html`<details class="chat-limits chat-session-details"><summary>Conversation details<span class="meta">${subscription ? "membership" : data.config.provider}</span></summary>\n${joinHtml([
       html`<div class="chat-budget"><span class="mono">${data.config.provider} · ${data.config.model}</span><span>${data.turnsToday} / ${data.config.dailyTurns} turns today</span>${
         subscription
           ? html`<span>membership login · no dollar ceiling</span>`
-          : html`<span>this conversation: ${chatMoney(data.session.spentMicrousd)} of ${chatMoney(data.session.ceilingMicrousd)}</span><span>this week ${chatMoney(data.weeklySpent)} of ${chatMoney(data.config.weeklyCeilingMicrousd)}</span>`}</div>`,
-      html`<p class="meta">Started ${data.session.mintedAt.slice(0, 16).replace("T", " ")}Z. It stays open until you end it; only bounded recent context is sent to the model.</p>`,
-      postForm("/chat/mate/end", html`<button type="submit" class="quiet">End the conversation and forget the thread</button>`, { attrs: { class: "inline" }, returnTo }),
+          : html`<span>this conversation: ${chatMoney(data.session?.spentMicrousd ?? 0)} of ${chatMoney(data.session?.ceilingMicrousd ?? 0)}</span><span>this week ${chatMoney(data.weeklySpent)} of ${chatMoney(data.config.weeklyCeilingMicrousd)}</span>`}</div>`,
+      data.session === null
+        ? html`<p class="meta">No conversation yet. Send a message to start one.</p>`
+        : html`<p class="meta">Started ${data.session.mintedAt.slice(0, 16).replace("T", " ")}Z. It stays open until you end it; only bounded recent context is sent to the model.</p>`,
+      data.session === null ? "" : postForm("/chat/mate/end", html`<button type="submit" class="quiet">End the conversation and forget the thread</button>`, { attrs: { class: "inline" }, returnTo }),
       data.recent.length === 0
         ? ""
         : html`<p class="meta">Recent turns: ${joinHtml(data.recent
@@ -1250,8 +1261,8 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
       html`<label>Message<textarea id="chat-message" name="message" rows="1" maxlength="${LEAD_MESSAGE_MAX_CHARS}" placeholder="${data.focusTask !== null ? "Ask about this task…" : chatProject !== null ? `Ask about ${projectName(chatProject)}…` : "Describe what you want done…"}"></textarea></label>`,
       html`<button type="submit" aria-label="${data.pending === null ? "send message" : "send message — it waits for the current reply"}">Send</button>`,
     ], "\n"), {
-      attrs: { class: "card composer", id: latestReply === null && data.pending === null ? "latest" : "chat-composer", "aria-label": "message the lead", "data-chat-session": data.session.id, "data-chat-task": data.focusTask?.id ?? "", "data-chat-user": data.session.approver, "data-chat-busy": data.pending === null ? "0" : "1", "data-chat-version": leadChatVersion(data), "data-chat-approval": data.focusTask?.approval?.digest ?? "" },
-      hidden: { request: randomBytes(16).toString("hex"), "request-session": data.session.id, task: data.focusTask?.id, project: chatProject, result: data.resultRunId },
+      attrs: { class: "card composer", id: latestReply === null && data.pending === null ? "latest" : "chat-composer", "aria-label": "message the lead", "data-chat-session": sessionId, "data-chat-task": data.focusTask?.id ?? "", "data-chat-user": approver, "data-chat-busy": data.pending === null ? "0" : "1", "data-chat-version": leadChatVersion(data), "data-chat-approval": data.focusTask?.approval?.digest ?? "" },
+      hidden: { request: randomBytes(16).toString("hex"), "request-session": sessionId, task: data.focusTask?.id, project: chatProject, result: data.resultRunId },
     }),
     // Concise pass (2026-09-13): the status line speaks only when there is
     // a state to report — a reply in progress here, the connection from
@@ -1270,7 +1281,7 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
     { chrome, functional: { script: CHAT_CONTINUITY_SCRIPT + CHAT_UI_SCRIPT + (data.focusTask === null ? "" : RESULT_REVIEW_SCRIPT), fetches: true },
       workspace: {
         conversation: {
-          sessionId: data.session.id, user: data.session.approver, version: leadChatVersion(data),
+          sessionId, user: approver, version: leadChatVersion(data),
           messages: leadBrowserMessages(data, data.focusTask === null && chatProject === null ? null : returnTo, { task: data.focusTask?.id ?? null, project: chatProject }),
           pendingTurnId: data.pending?.id ?? null, requestId: randomBytes(16).toString('hex'), maxChars: LEAD_MESSAGE_MAX_CHARS,
           taskId: data.focusTask?.id ?? null, resultRunId: data.resultRunId ?? null, project: chatProject,
@@ -1291,7 +1302,12 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
   /** Live replies (chat streaming): per thread, the turn being answered —
    * each step's tools in plain words and its text as it is written. Memory
    * only and display only; the saved turn stays the record. */
-  export type LiveTurn = { steps: LeadLiveStep[]; done: boolean; ok: boolean; listeners: Set<() => void>; expiry?: NodeJS.Timeout };
+  export type LiveTurn = { steps: LeadLiveStep[]; done: boolean; ok: boolean; listeners: Set<() => void>; expiry?: NodeJS.Timeout;
+    /** For the Live grid's lead tile (agents-live-lead.ts): the turn's id once it says it, when it started and ended, and
+     * when each step began (epoch ms). Never sent to the chat room. */
+    turn?: number; startedAt?: number; endedAt?: number; stepAt?: number[];
+    /** Per step: its text is the provider's finished answer, secret-checked whole (lead.ts `final`). */
+    confirmed?: boolean[] };
 
   export type ChatEnablement =
     | { ok: true; billing: "metered"; config: ChatConfig & { provider: DirectChatProviderId }; key: string; keySource: "environment" | "stored"; price: import("../converse.js").ModelPrice; credentialKey: string }

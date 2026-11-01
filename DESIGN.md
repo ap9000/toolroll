@@ -1,6 +1,6 @@
 ---
 name: Signal
-description: "The Toolroll control plane: a neutral grey frame with paper sheets inset into it, ink for every act, and an ink accent for what waits on a person; colour is kept for status."
+description: "The Toolroll control plane: a neutral grey frame with paper sheets inset into it, ink for every act, and amber for what waits on a person (a thin outline and a chip with a dot); colour is kept for status."
 colors:
   signal: "#171717"
   signal-hover: "#383838"
@@ -309,7 +309,7 @@ components:
 
 **Creative North Star: "The Chart Light"**
 
-Signal is printed in quiet greys and ink, the way Vercel, Linear and GitHub are: the interface is achromatic, and colour is kept for status (building, complete, warning, danger), where it carries meaning. Toolroll is a control plane for unattended coding agents, and most of what it shows needs nobody: builds running, results filed, queues moving. That material is grey and black on paper. What waits on a person is marked by ink weight, not a hue: the needs-you count is a solid ink pill, a waiting task's badge is a strong ink chip, and the one verb that settles it is the ink button. A person should be able to glance at the screen, see the solid ink, open the one thing that needs them, act, and leave. (Until 2026-09-30 this accent was chart magenta; it remains a preset.)
+Signal is printed in quiet greys and ink, the way Vercel, Linear and GitHub are: the interface is achromatic, and colour is kept for status (building, complete, warning, danger), where it carries meaning. Toolroll is a control plane for unattended coding agents, and most of what it shows needs nobody: builds running, results filed, queues moving. That material is grey and black on paper. What waits on a person is marked in amber, and only that: the thing that needs them (an agent's tile, a waiting card) wears a thin full amber outline and an amber "Needs you" chip with a dot, never a fill and never an edge stripe. The one verb that settles it stays an ink button, and the counts that lead to it stay ink pills. A person should be able to glance at the screen, see the solid ink, open the one thing that needs them, act, and leave. (Until 2026-09-30 this accent was chart magenta; it remains a preset.)
 
 The surface is the Raycast and Arc canon, played straight. A neutral grey frame holds the sidebar directly, and the work sits on white paper sheets inset 8px into that frame: the main sheet, and beside it the Crew sheet. Density is Raycast-compact, with 13px rows and 32px controls at a desk. Depth comes from the contrast between frame and paper, one soft sheet shadow, and 1px hairlines inside the sheets. Words are set in Geist and machine facts in Geist Mono. Every act a person can take is ink: a black button in light mode, a near-white one in dark.
 
@@ -317,7 +317,7 @@ The system rejects the dashboard default. Status does not get coloured everywher
 
 **Key Characteristics:**
 - Grey frame, paper sheets, 8px inset and 12px sheet corners; the sidebar sits on the frame, not on a sheet.
-- Ink is the colour of every act; the ink accent is kept for "a person is needed", plus focus, caret and selection.
+- Ink is the colour of every act, plus focus, caret and selection; amber is kept for "a person is needed".
 - Geist for words, Geist Mono only for machine facts (ids, counts, seals, paths, shortcut keys).
 - Compact desk density (13px body, 32px controls, 52px sheet headers) that becomes 44px touch targets on phones.
 - Flat and hairline-first: one soft sheet shadow, a smaller pill shadow for the raised current item, a deeper one only for floating menus and dialogs.
@@ -325,10 +325,10 @@ The system rejects the dashboard default. Status does not get coloured everywher
 
 ## Colors
 
-The palette is a true neutral grey ramp with one the ink accent and four quiet status hues. Every token has a light and a dark value. The frontmatter keys ending in `-dark` are the dark-scheme values of the same roles. They are defined once, in the generated `src/design/tokens.css`, and every surface reads them: server pages, the React workspace, and the pre-script fallback.
+The palette is a true neutral grey ramp with one ink accent and four quiet status hues (amber among them, for what waits on you). Every token has a light and a dark value. The frontmatter keys ending in `-dark` are the dark-scheme values of the same roles. They are defined once, in the generated `src/design/tokens.css`, and every surface reads them: server pages, the React workspace, and the pre-script fallback.
 
 ### Primary
-- **Ink accent** (signal, #171717 light / #ededed dark): the default accent, used for what waits on a person. It fills the sidebar's needs-you count, the "Needs you" tab count and the Results menu count. It is the text of an attention badge ("Needs your decision") on its grey wash, and the fill of the one verb that resolves a waiting screen (Approve, Inspect the result, the result page's next act). It is also focus, caret and selection.
+- **Ink accent** (signal, #171717 light / #ededed dark): the default accent, the ink that answers what waits on a person (the waiting thing itself is marked in amber). It fills the sidebar's needs-you count, the "Needs you" tab count and the Results menu count. It is the text of an attention badge ("Needs your decision") on its grey wash, and the fill of the one verb that resolves a waiting screen (Approve, Inspect the result, the result page's next act). It is also focus, caret and selection.
 - **Ink wash** (signal-soft, #e8e8e8 / #2e2e2e): the fill behind attention badge text and the 3px focus halo around a focused field or composer — one step stronger than the neutral badge fill, so a waiting badge still reads first.
 - **Selection** (selection, #d4d4d4 / #3a3a3a): text selection highlight, with ink text on it.
 - **A chosen accent** (Settings → Appearance, per browser in the `so-accent` cookie as six hex digits): a person may re-pigment the signal with any colour from a compact picker (a saturation and brightness plane, a hue slider and a hex field), with Pantone's colours of the year as preset dots (`src/accent-colors.ts`). Ink is the default; violet and chart magenta are the first presets. Each colour keeps its hue and gives up only lightness, and chroma where sRGB requires it, until it reads: in light its text passes 4.5:1 on its own wash, and in dark 6:1 on the dark paper. The page previews the colour live and prints the derived tokens in a `<style data-accent>` after the shared stylesheet once it is saved. A colour near grey or near a status hue is labelled as such. Only the signal tokens change; every rule about where the signal may appear stays the same.
@@ -347,18 +347,18 @@ The palette is a true neutral grey ramp with one the ink accent and four quiet s
 
 ### Status
 - **Vermilion** (danger, #c4320a / #ff977d; soft #feebe7 / 12%): failure and irreversible acts. It is used on a failed status card's border (at 50%), on problem alerts inside a failed card, on the Cancel task fold, and on Remove / Delete ghost buttons. It sits deliberately off the accent hue so a failure can never be read as "waits on you".
-- **Amber** (warning, #ab6400 / #ffca16; soft #fff4d5 / 12%): setup trouble and caution. It covers a failing trigger, a secret not yet saved, "several are connected and none was chosen", a lost connection, the result page's list of things worth a look, and deferred notices.
+- **Amber** (warning, #ab6400 / #ffca16; soft #fff4d5 / 12%): waits on you. A thing that needs a person wears a thin full amber outline (1px, the whole edge) and an amber "Needs you" chip with a dot: an agent asking or gone quiet on the Agents view first. Never an amber fill behind a card and never an edge stripe. Setup trouble that a person must fix (a failing trigger, a secret not yet saved, "several are connected and none was chosen", a lost connection) waits on them too, and uses the same token as a soft badge.
 - **Live Blue** (info, #0d74ce / #70b8ff; soft #e6f4fe / 12%): something is running right now. It appears on the live dot, a scout badge, a version notice, and a run that is still in progress.
 - **Built Green** (success, #218358 / #3dd68c; soft #e6f6eb / 12%): done and passed, used for "Checks passed", "Open now" and a finished live step.
 
 ### Named Rules
-**The One Signal Rule.** The accent (ink by default) in its solid or attention form means that a person is needed, and nothing else. Its only other jobs are focus, caret, selection and the brand mark. A screen that waits on nobody shows no solid accent beyond the brand mark. Status hues never stand in for it.
+**The One Signal Rule.** Amber means that a person is needed, and nothing else; the ink accent in its solid form is the one verb that answers it. The accent's only other jobs are focus, caret, selection and the brand mark. A screen that waits on nobody shows no amber and no solid accent beyond the brand mark. Other status hues never stand in for amber.
 
 **The Ink Acts Rule.** Every act a person can take is ink (primary) or a paper pill (outline). The accent verb is the exception (with the ink default it looks like any ink button; a chosen colour makes it stand out). There is at most one per screen or card, and only when that screen waits on the person.
 
 **The Quiet List Rule.** In a list, the colour goes on the status badge and the row's action stays an outline button. Nine accent buttons in a list would shout.
 
-**The Status Keeps Its Hue Rule.** Failure is vermilion, setup trouble is amber, live is blue, and done is green. Accent is never a failure, a warning, or a card border. A problem line inside a card that has not failed is neutral (raised fill, ink text), not red.
+**The Status Keeps Its Hue Rule.** Failure is vermilion, waits on you is amber, live is blue, and done is green. Accent is never a failure, a warning, or a card border. A problem line inside a card that has not failed is neutral (raised fill, ink text), not red.
 
 ## Typography
 
@@ -441,7 +441,7 @@ Signal is flat by construction. Depth comes from three layers of material rather
 
 The corners nest: the further in a surface sits, the smaller its radius. Sheets, dialogs, the composer, user chat bubbles and segmented tab tracks are 12px. Cards, dropdown menus and the slash menu are 10px. Buttons, inputs, nav pills, alerts, notices and active tab triggers are 8px. Menu items and small source chips are 6px. Badges are 5px. Counts are full pills (9999px) so a number can never be mistaken for a state badge. Status dots are circles: 6px for the live dot, 8px in lists and menus, 10px on a status card.
 
-Borders are always 1px. Hairline is used for separation and cards, control line for field boundaries, and a status hue at reduced strength only on a failed card (vermilion at 50%) or the Cancel fold (vermilion at 30%). A coloured left stripe is never used as an accent. Callouts are a soft fill with a full hairline or no border at all.
+Borders are always 1px. Hairline is used for separation and cards, control line for field boundaries, and a status hue only on a failed card (vermilion at 50%), the Cancel fold (vermilion at 30%), or a card that waits on a person (amber at full strength, the whole edge). A coloured left stripe is never used as an accent. Callouts are a soft fill with a full hairline or no border at all.
 
 The brand mark is three 3.5px bars skewed −10°, with the middle bar taller (20px against 13px), filled in the ink accent. It sits beside a 13.5px / 600 wordmark with −0.02em tracking.
 
@@ -461,13 +461,16 @@ Quiet, compact, and ink by default. The colour is saved for the one verb that se
 ### Badges (status chips)
 - **Style:** 5px corners, 1px by 6px padding, 11.5px / 500 on an 18px line, in sentence case. The text is the hue and the fill is its soft wash. There is no border.
 - **Tones:** neutral (the default, for any fact), attention (accent, a person is needed), danger, warning, info and success. A status's tone comes from one mapping (`toneOf`), so a task reads the same in the list, in the Crew sheet and on its own page.
+- **Status chip:** 20px tall, 6px corners, 11.5px / 500 words with 6px between a 6px dot and the word, on the tone's soft wash with ink words and the tone in the dot (`Badge size="chip" dot`, and `.chip` with `.chip-dot` on server pages; after ReUI's light badge; the Agents → Live chip), so every chip reads at 4.5:1 whatever its hue. The dot is decoration; the word carries the state.
+- **Needs you chip:** the amber wash with an amber dot. Its words lean 15% toward ink (`text-needs`), because amber text alone reads 4.21:1 on its wash in light; mixed it reads above 5:1, and above 9:1 in dark. It sits on the thing that waits (the pinned "Needs you" bar, a waiting tile or card), once per thing, never on every row of a list.
 - **Peek chips:** on the Projects page, only "N waiting on you" takes colour (attention). Running, queued and built today are neutral facts.
 
 ### Cards / Containers
 - **Corner Style:** 10px.
 - **Background:** paper, on a paper sheet, so a card is defined by its hairline border and not by its fill.
 - **Shadow Strategy:** none. See Elevation.
-- **Border:** a 1px hairline. A failed status card takes vermilion at 50% and nothing else changes colour. A waiting card keeps a neutral border, and its badge and single accent verb carry the wait.
+- **Border:** a 1px hairline. A failed status card takes vermilion at 50%. A card that waits on a person (a status card whose headline is Needs you, a waiting tile or board card) takes a thin full amber outline (1px `--so-warning`, the whole edge), never an amber fill and never an edge stripe; its single ink verb still answers it.
+- **Frame (well and panels):** a group of panels sits in a raised well (raised fill, hairline, 10px corners, 4px padding) with its heading on the well's fill above them; each panel is paper with a hairline and corners 5px tighter, so the arcs stay concentric (`Frame`, `FrameHeader`, `FramePanel`, after ReUI's Frame; `.frame` on server pages). No shadow on a panel, and a Frame never nests in a card or another Frame.
 - **Internal Padding:** 20px (14px on phones), with a 16px gap between blocks (12px on phones). Grouped folds (task details, Manage) are one card with zero padding, divided by hairlines, each fold with a 15px / 600 summary and a rotating chevron.
 
 ### Inputs / Fields
@@ -516,12 +519,12 @@ Pinned below the thread, outside its scroll, so it never moves with the messages
 ## Do's and Don'ts
 
 ### Do:
-- **Do** keep the ink accent for what waits on a person: the needs-you count, an attention badge, and the one verb that resolves the wait, plus focus, caret, selection and the brand mark.
+- **Do** mark what waits on a person in amber (a thin full outline and a chip with a dot, never a fill or an edge stripe), and keep ink for the one verb that resolves the wait, the counts that lead to it, focus, caret, selection and the brand mark.
 - **Do** make every other act ink (primary) or a paper pill (outline). In lists, rows' actions are outline buttons and the badge carries the colour.
 - **Do** put work on paper sheets (12px corners, sheet shadow) inset 8px into frame grey, with the sidebar directly on the frame.
 - **Do** separate with 1px hairlines inside a sheet. Lists sit between hairlines and facts sit under one, without being boxed in cards.
 - **Do** use Geist for every word and Geist Mono (tabular) for ids, counts, seals, paths and keys.
-- **Do** map failure to vermilion (#c4320a / #ff977d), setup trouble to amber, live to blue, and done to green, as soft badges or small dots.
+- **Do** map failure to vermilion (#c4320a / #ff977d), waits on you to amber, live to blue, and done to green, as soft badges or small dots.
 - **Do** size controls at 32px at a desk and 44px on phones, and set phone inputs at 16px.
 - **Do** dissolve the frame at 900px and below: the sheet fills the screen with no inset, radius or shadow.
 - **Do** drop the Crew sheet on pages whose content is already the crew (the Tasks list, board, queue and flows).
@@ -529,7 +532,7 @@ Pinned below the thread, outside its scroll, so it never moves with the messages
 - **Do** keep motion to 120ms colour transitions and an 80ms / 140ms page fade-through, and remove all of it under `prefers-reduced-motion`.
 
 ### Don't:
-- **Don't** colour a card's border or a heading accent to announce a wait. The badge and the single accent verb already say it. (The flow canvas's decision cards still carry a accent outline. That is a known divergence, not the rule.)
+- **Don't** announce a wait with anything but the amber outline and the Needs you chip: no amber fill, no edge stripe, no coloured heading.
 - **Don't** put more than one accent verb on a screen or card, and don't make a recommended option accent. A recommendation is not urgency.
 - **Don't** use accent, or any hue near it, for failure. Failure is vermilion.
 - **Don't** colour a problem line red inside a card that has not failed. Render it neutral (raised fill, ink text).

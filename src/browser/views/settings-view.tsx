@@ -11,7 +11,7 @@ import { digestTimes } from "../../digest-times.js";
 import { BrandIcon } from "../brand-mark.js";
 import { PhoneCard } from "../first-run.js";
 import {
-  Badge, Button, Card, CardDescription, CardHeader, CardTitle, Collapsible, CollapsibleContent, CollapsibleTrigger,
+  Badge, Button, Card, CardDescription, CardHeader, CardTitle, Collapsible, Frame, FrameHeader, FramePanel, CollapsibleContent, CollapsibleTrigger,
   Input, Label, RadioCard, RadioGroup, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Separator, Switch, cn, toast,
 } from "../components/ui/index.js";
 
@@ -172,6 +172,29 @@ function DefaultChoice({ title, description, action, field, value, canManage, ch
   </Section>;
 }
 
+/** The starting permission for new tasks. Moving to Full access widens every new task, so it asks for the password
+ * (an ordinary step-up: under Passwordless the signed-in session is enough); moving back to Auto saves at once. */
+function PermissionChoice({ value, canManage, changed, csrf }: { value: string; canManage: boolean; changed: string | null; csrf: string }) {
+  const base = useId();
+  const [chosen, setChosen] = useState(value);
+  const form = useRef<HTMLFormElement>(null);
+  const widening = chosen === "bypassPermissions" && value !== "bypassPermissions";
+  const options = [{ value: "auto", title: "Auto", description: "Asks before risky actions." }, { value: "bypassPermissions", title: "Full access", description: "Never asks and can change files anywhere on this computer. Trusted repositories only." }];
+  return <Section title="Unattended permissions" description="The starting choice for new tasks. Approved tasks keep their setting.">
+    {canManage && csrf ? <PostForm ref={form} action="/settings/permission-default">
+      <RadioGroup name="permission-mode" defaultValue={value} onValueChange={next => { setChosen(next); if (next !== "bypassPermissions" && next !== value) setTimeout(() => form.current?.requestSubmit(), 0); }} className="grid gap-2 desk:grid-cols-2" aria-label="Unattended permissions">
+        {options.map(one => <RadioCard key={one.value} id={`${base}-${one.value}`} value={one.value} title={one.title} description={one.description} />)}
+      </RadioGroup>
+      {widening && <div className="mt-3 flex flex-wrap items-end gap-3">
+        <Reauth><div className="grid min-w-56 flex-1 gap-2"><Label htmlFor={`${base}-password`}>Your password</Label><Input id={`${base}-password`} type="password" name="password" autoComplete="current-password" /></div></Reauth>
+        <Button type="submit">Use Full access</Button>
+      </div>}
+      <noscript><Button type="submit" className="mt-3">Save</Button></noscript>
+    </PostForm> : <p className="text-sm"><strong>{value === "bypassPermissions" ? "Full access" : "Auto"}</strong> <span className="text-muted-foreground">· an approver can change this</span></p>}
+    {changed && <p className="text-body text-muted-foreground">{changed}</p>}
+  </Section>;
+}
+
 /** The email account: Send email steps send from it and Email inbox triggers read it — a mail server, or a
  * Google account instead. Passwords and the Google client secret are written here and never shown again. */
 function Email({ email, csrf }: { email: NonNullable<BrowserSettingsView["email"]>; csrf: string }) {
@@ -248,7 +271,7 @@ function Providers({ providers, csrf }: { providers: NonNullable<BrowserSettings
           <CollapsibleContent>
             <PostForm action="/settings/provider-key" className="mt-3 grid gap-3 rounded-lg bg-muted p-4">
               <input type="hidden" name="provider" value={one.provider} />
-              {one.connection && <p className="provider-connection text-sm"><strong>{one.connection.words}</strong> {one.connection.facts} · <a className="underline underline-offset-4" href={one.connection.checkHref}>Check again</a></p>}
+              {one.connection && <p className="provider-connection text-sm"><strong>{one.connection.words}</strong> {one.connection.facts} · <button type="submit" className="underline underline-offset-4" formAction={one.connection.checkAction} formNoValidate>Check again</button></p>}
               <p className="text-body text-muted-foreground">{one.usage} · <code className="font-mono text-xs">{one.envName}</code></p>
               {one.subscriptionCapable && <div className="grid gap-2"><Label htmlFor={`${one.provider}-auth`}>Sign-in</Label>
                 <Select name="auth-mode" defaultValue={one.mode}>
@@ -459,21 +482,22 @@ export function SettingsView({ view, csrf }: { view: BrowserSettingsView; csrf: 
     {view.legacyWebhookWarning && <p data-legacy-webhooks className="text-sm text-foreground">Legacy webhooks are deprecated. Connect <a className="inline-flex min-h-11 items-center underline underline-offset-4 focus-visible:outline focus-visible:outline-2" href="/settings/slack">Slack</a> or <a className="inline-flex min-h-11 items-center underline underline-offset-4 focus-visible:outline focus-visible:outline-2" href="/settings/discord">Discord</a> in Chat settings.</p>}
     <nav aria-label="Settings sections" className="grid gap-4 phone:gap-3">
       {view.groups.map(group => <section key={group.title} aria-labelledby={`settings-${slug(group.title)}`} className="grid gap-2 phone:gap-1.5">
-        <h2 id={`settings-${slug(group.title)}`} className="text-sm font-semibold text-muted-foreground">{group.title}</h2>
-        <div className="grid grid-cols-2 gap-2 desk:grid-cols-4 phone:gap-1.5">
-          {group.tiles.map(tile => <a key={tile.href} href={tile.href} className="flex min-h-12 items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 text-sm font-semibold phone:min-h-11 phone:gap-2 phone:px-2.5 transition-colors hover:bg-accent [&>svg]:size-[18px] [&>svg]:shrink-0 [&>svg]:text-primary">
-            {tile.brand === undefined ? TILE_ICONS[tile.href] : <BrandIcon id={tile.brand} />}
-            <span className="grid min-w-0 gap-0.5">{tile.label}
-              {tile.status && <span className="flex items-center gap-1.5 text-body text-muted-foreground"><StatusDot tone={tile.status.tone} />{tile.status.words}</span>}</span></a>)}
-        </div>
+        {/* One well per group (ReUI Frame): its title on the raised fill, then the areas as paper panels. */}
+        <Frame>
+          <FrameHeader><h2 id={`settings-${slug(group.title)}`} className="text-sm font-semibold">{group.title}</h2></FrameHeader>
+          <div className="grid grid-cols-2 gap-1 desk:grid-cols-4">
+            {group.tiles.map(tile => <FramePanel key={tile.href} asChild className="flex min-h-12 items-center gap-2.5 px-3 py-2 text-sm font-semibold phone:min-h-11 phone:gap-2 phone:px-2.5 transition-colors hover:bg-accent [&>svg]:size-[18px] [&>svg]:shrink-0 [&>svg]:text-primary"><a href={tile.href}>
+              {tile.brand === undefined ? TILE_ICONS[tile.href] : <BrandIcon id={tile.brand} />}
+              <span className="grid min-w-0 gap-0.5">{tile.label}
+                {tile.status && <span className="flex items-center gap-1.5 text-body text-muted-foreground"><StatusDot tone={tile.status.tone} />{tile.status.words}</span>}</span></a></FramePanel>)}
+          </div>
+        </Frame>
         {group.title === "Chat apps" && view.phone && <PhoneCard phone={view.phone} csrf={csrf} dismissable={false} />}
       </section>)}
     </nav>
     <Section title="Appearance"><Themes view={view} csrf={csrf} /></Section>
     <Section id="accent" title="Accent colour" description="The one colour that marks what needs you."><AccentPicker view={view} csrf={csrf} /></Section>
-    {view.permission && <DefaultChoice title="Unattended permissions" description="The starting choice for new tasks. Approved tasks keep their setting." action="/settings/permission-default" field="permission-mode"
-      value={view.permission.mode} canManage={view.permission.canManage} changed={view.permission.changed} csrf={csrf}
-      options={[{ value: "auto", title: "Auto", description: "Asks before risky actions." }, { value: "bypassPermissions", title: "Full access", description: "Never asks and can change files anywhere on this computer. Trusted repositories only." }]} />}
+    {view.permission && <PermissionChoice value={view.permission.mode} canManage={view.permission.canManage} changed={view.permission.changed} csrf={csrf} />}
     {view.quality && <DefaultChoice title="Quality mode" description="Publishing and deploying still need their own approval." action="/settings/quality-default" field="quality-mode"
       value={view.quality.mode} canManage={view.quality.canManage} changed={view.quality.changed} csrf={csrf}
       options={[{ value: "default", title: "Default", description: "Everyday agents and the repository check." }, { value: "strict", title: "Strict / release", description: "Strongest agents. Release approval stays separate." }]} />}

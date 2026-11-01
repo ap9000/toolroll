@@ -33,6 +33,7 @@ import { PULL_REQUEST_SETTINGS_CSS } from "../pull-request-ui.js";
 import { RECIPE_CSS } from "../recipe-ui.js";
 import { REQUEST_LIMITS_CSS } from "../request-budget-ui.js";
 import { RETENTION_CSS } from "../retention-ui.js";
+import { crumbsHtml, SETTINGS_KIT_CSS, type Crumb } from "../settings-kit.js";
 import { SKILLS_CSS } from "../skills-ui.js";
 import { SPEND_CSS } from "../spend-ui.js";
 import { SSO_CSS } from "../sso-ui.js";
@@ -160,7 +161,7 @@ export const INBOX_TABS_CSS = '.inbox-tabs{display:inline-flex;gap:2px;max-width
   '.inbox-ask{margin:18px 0 0}.inbox-ask>h2{display:flex;align-items:baseline;gap:8px;margin:0 0 4px;font-size:15px;font-weight:600}.inbox-ask>h2 .count{font:500 12px var(--so-mono,ui-monospace,monospace);font-variant-numeric:tabular-nums;color:var(--so-muted)}.inbox-ask h3{font-size:13px;font-weight:600;margin:12px 0 4px}' +
   '.inbox-unread{display:none;position:absolute;top:4px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--so-signal)}' +
   '@media (max-width:760px){.inbox-tabs{display:flex;width:100%}.inbox-tabs a{flex:1;justify-content:center;min-height:44px;padding:0 6px}.inbox-unread{display:block}}';
-export const WORKSPACE_STYLE = styleAsset(STYLE + BRAND_MARK_CSS + INBOX_TABS_CSS + APPROVAL_RULES_CSS + SPEND_CSS + RETENTION_CSS + STORAGE_CSS + UPDATES_CSS + LIMITS_CSS + MONITORING_CSS + INTEGRATIONS_CSS + BACKUP_CSS + EXPORT_CSS + PROJECT_DELETE_CSS + POLICY_CSS + EVIDENCE_PACK_CSS + THEME_CONTROLS_CSS + CODING_CSS + CODING_SHIPPING_CSS + RECIPE_CSS + SKILLS_CSS + TOOLS_CSS + FLOWS_CSS + SUBAGENT_CSS + KITS_CSS + STARTERS_CSS + GALLERY_CSS + SSO_CSS + CREDENTIALS_CSS + REQUEST_LIMITS_CSS + PEOPLE_AUDIT_CSS + KNOWLEDGE_CSS + MODELS_CSS + CHAT_POLISH_CSS + TRANSITIONS_CSS + WORKSPACE_MOTION_CSS + ASSIGNMENT_CSS + TASK_STATUS_CSS + LEAD_CONTEXT_CSS + PULL_REQUEST_SETTINGS_CSS + CHECK_SETTINGS_CSS + DISCLOSURE_CSS + '.learning{min-width:0;overflow-wrap:anywhere}.learning .card{min-width:0}.learning code,.learning blockquote,.learning pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.learning button,.learning summary,.learning .button-link{min-height:44px}.learning button{white-space:nowrap}.learning summary{padding:12px 0;cursor:pointer}.learning form{margin:12px 0}.learning select{max-width:100%}.learning blockquote{margin:8px 0}.learning ul{padding-left:20px}');
+export const WORKSPACE_STYLE = styleAsset(STYLE + BRAND_MARK_CSS + INBOX_TABS_CSS + APPROVAL_RULES_CSS + SPEND_CSS + RETENTION_CSS + STORAGE_CSS + UPDATES_CSS + LIMITS_CSS + MONITORING_CSS + INTEGRATIONS_CSS + BACKUP_CSS + EXPORT_CSS + PROJECT_DELETE_CSS + POLICY_CSS + EVIDENCE_PACK_CSS + THEME_CONTROLS_CSS + CODING_CSS + CODING_SHIPPING_CSS + RECIPE_CSS + SKILLS_CSS + TOOLS_CSS + FLOWS_CSS + SUBAGENT_CSS + KITS_CSS + STARTERS_CSS + GALLERY_CSS + SSO_CSS + CREDENTIALS_CSS + REQUEST_LIMITS_CSS + PEOPLE_AUDIT_CSS + KNOWLEDGE_CSS + MODELS_CSS + CHAT_POLISH_CSS + TRANSITIONS_CSS + WORKSPACE_MOTION_CSS + ASSIGNMENT_CSS + TASK_STATUS_CSS + LEAD_CONTEXT_CSS + PULL_REQUEST_SETTINGS_CSS + CHECK_SETTINGS_CSS + DISCLOSURE_CSS + SETTINGS_KIT_CSS + '.learning{min-width:0;overflow-wrap:anywhere}.learning .card{min-width:0}.learning code,.learning blockquote,.learning pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.learning button,.learning summary,.learning .button-link{min-height:44px}.learning button{white-space:nowrap}.learning summary{padding:12px 0;cursor:pointer}.learning form{margin:12px 0}.learning select{max-width:100%}.learning blockquote{margin:8px 0}.learning ul{padding-left:20px}');
 
 /** Everything the sidebar needs to draw itself for one request. */
 export type Chrome = {
@@ -210,6 +211,8 @@ export type Chrome = {
   csrf?: string;
   /** Where a switch made on this screen returns to. */
   returnTo?: string;
+  /** The settings frame's breadcrumb ("Settings / <page>", settings-kit.ts), set by sendScreen; absent elsewhere. */
+  crumbs?: Crumb[];
 };
 
 /**
@@ -469,7 +472,7 @@ export function chromeScript(): string {
     `if(ev.key==="?"){toggleHelp();ev.preventDefault();return;}` +
     `if(ev.key==="j"||ev.key==="k"){rove(ev.key==="j"?1:-1,ev);return;}` +
     `if(pending==="g"){pending=null;` +
-    `var map={b:"/board",i:"/",w:"/workbench",d:"/done",q:"/board?view=order",f:"/fleet",t:"/tasks",a:"/activity",p:"/projects"};` +
+    `var map={b:"/board",i:"/",w:"/workbench",d:"/done",q:"/board?view=order",f:"/fleet",t:"/work",a:"/activity",p:"/projects"};` +
     `if(map[ev.key]){go(map[ev.key]);ev.preventDefault();}return;}` +
     `if(ev.key==="g"){pending="g";setTimeout(function(){pending=null;},800);}});` +
     `})();`
@@ -723,9 +726,11 @@ ${update === undefined ? "" : html`<div class="banner update-banner" data-update
 ${postForm(update.dismissHref, html`<button type="submit">Dismiss</button>`, { attrs: { class: "inline" }, hidden: { version: update.version } })}</div>`}`;
   // The scope bar sits between the banners and the main/split body, so it
   // can never disappear with a responsive pane (portfolio arc §1).
+  // The settings frame's breadcrumb sits above the page's own h1 (its only h1).
+  const crumbs = chrome.crumbs === undefined ? "" : crumbsHtml(chrome.crumbs);
   const content =
     chrome.listPane === undefined
-      ? html`<div class="content">${demoBanner}${scopeBar}<main>${main}</main></div>`
+      ? html`<div class="content">${demoBanner}${scopeBar}${crumbs}<main>${main}</main></div>`
       : html`<div class="content">${demoBanner}${scopeBar}<div class="split">\
 <div class="list-pane">${chrome.listPane}</div>\
 <div class="detail"><main>${main}</main></div>\
@@ -882,7 +887,7 @@ export function workToolRows(scoped = false, _offersChat = false, offersCode = f
     ...(offersCode ? [{ key: "code" as const, href: "/term", label: "Live", hint: "your own terminals: Claude Code, Codex or a shell" }] : []),
     { key: "inbox", href: "/inbox", label: "Inbox", hint: "questions, approvals, and repairs to act on" },
     { key: "board", href: "/board", label: "Board", hint: "lanes by state, with the order view" },
-    { key: "tasks", href: "/tasks", label: "Task list", hint: "everything, filterable by state" },
+    { key: "tasks", href: "/work", label: "Task list", hint: "everything, filterable by state" },
     { key: "recipes", href: "/recipes", label: "Recipes", hint: "choose, customize, and reuse a workflow" },
     { key: "workbench", href: "/workbench", label: "Portfolio", hint: "every project and live build in one place" },
     { key: "ledger", href: "/ledger", label: "Action ledger", hint: "who acted, what happened, and the result" },

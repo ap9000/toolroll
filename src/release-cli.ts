@@ -15,12 +15,22 @@ const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url
 import { checkedEnvelopeJson } from "./contracts/cli.js";
 import { RELEASE_LIMITS, runRelease, type ReleaseAdapters, type ReleaseOutcome } from "./release.js";
 import { processes, releaseAdapters } from "./release-adapters.js";
-import { releaseGate, type GateReleaseWorld } from "./release-gate.js";
-import { databasePath, type Database } from "./store.js";
+import { journals, releaseGate, type GateReleaseWorld } from "./release-gate.js";
+import { rescueDeployment, type RescueWorld } from "./deploy-rescue.js";
+import { databasePath, openStore, revokeRelease, type Database } from "./store.js";
+import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit, setUnsandboxedCarry } from "./release-carry.js";
+import { authenticateApprover, machineActing, personProof, proveCredential } from "./scope.js";
+import { allowAutoPublish, setReleaseApproval } from "./release-auto.js";
+import { createNightlyCheckFlow } from "./nightly-check.js";
+import { aliasNightlyLane, optInGithubNightly, retireNightlyLane } from "./nightly-github.js";
+import { parseSchedule } from "./flow-schedule.js";
 
 export const RELEASE_HELP = `toolroll release <branch> — release Toolroll itself, from a pushed branch with an open pull request
 
-  Requires an active approver's scope approval (the only human step) and a passing Full check on the exact commit.
+  First looks at the pull request's checks: a required check that failed stops before anything is filed or sent for
+  approval, and checks not started or still running are named and waited for (stopping if they don't finish within
+  the gate's limit). Then requires an active approver's scope approval (the only human step) and a passing Full check
+  on the exact commit.
   Completes that result, drains, backs up, deploys and relinks both CLI names to that commit. After PR checks pass,
   squash-merges, deletes the matching remote branch, verifies the merged tree and tags. Both macOS legs gate npm
   publication; Homebrew waits for its checks to register and all pass before merging.
@@ -33,13 +43,57 @@ toolroll release --release-gate <id> [--yes] — lift the update pause a deploym
   database, service definition and running service are all still the previous build's. --yes lifts that one pause.
   Any missing or contradicting evidence refuses and leaves the pause in place.
 
+toolroll release --recover-deploy [--stage <dir>] [--yes] — put back a deployment that stopped half way
+
+  Finds the one unfinished deployment (or the stage named) and shows what its recovery will do; --yes does it. When
+  the old service isn't proved stopped, it boots the service out and stops what it left running, but only processes
+  proved, by exact runtime path and arguments, to be that deployment's own; then it starts the previous service
+  again, waits for it, and lifts the update pause. Anything it can't prove refuses. Safe to run again.
+
+toolroll release carry <release> --to <commit> [--request <id>] — carry a person's release approval to a later commit
+
+  Only tests, docs and the changelog may change after the approval, within the limits, with an identical production
+  build. Anything else is refused, naming the commit, path and rule, and that commit needs a person's approval.
+
+toolroll release revoke <release> — stop carrying later commits (before the merge starts)
+
+toolroll release nightly --repo <path> --as <you> --token <password> [--schedule daily:03:00@<zone>] [--start]
+  — the full release check of main's head every night, approved once with your password; it never deploys,
+  merges or completes, and a failure tells you and holds composed releases until a full check passes
+
+toolroll release nightly --github --repo <path> --as <you> --token <password> — read GitHub's Nightly runs on main
+  for this project (its recorded GitHub remote): a lane that fails its tests holds every deploy of the project, a
+  release's merge and its tag until a later nightly passes it, or the release's own CI re-ran it after the failure and
+  passed. --lane-alias <lane-id> <new name> says a renamed job is the same lane; --lane-retire <lane-id> retires a
+  lane no required check names any more (both with your password)
+
+toolroll release ask-every-commit on|off --repo <path> [--as <you> --token <password>] — this project's releases ask
+  for every later commit (on), or carry test-only commits again (off: your password, never the lead's token)
+
+toolroll release auto-approve on|off --repo <path> [--as <you> --token <password>] — this project's release approval:
+  on approves a release automatically once its pull request's CI and the release check pass on the exact commit
+  (your password typed now, never the lead's token or a remembered login); off asks you again (no password).
+
+toolroll release publish-ok <task> --as <you> --token <password> — let an automatically approved release that was held
+  after its merge (its checks stopped passing) go on to its tag, publication and Homebrew (a person only)
+
+toolroll release unsandboxed-carry on|off --repo <path> [--as <you> --token <password>] — carry release approvals
+  when this project's checks aren't sandboxed (on: your password, never the lead's token). With it on, later
+  test-only commits of a release run outside the sandbox without being shown to you first. Off by default; it counts
+  only for releases approved while it is on.
+
 Options
+  --no-carry             every later commit of this release asks for approval again
+  --to <commit>          with carry: the later commit
+  --request <id>         with carry: the request's own id, so a retry is the same request
   --repo <path>          the gate checkout the release check runs in (default: this checkout)
   --new                  release a new commit on the branch, setting the earlier unfinished release aside
   --limit <step>=<min>   change one step's time limit (${Object.entries(RELEASE_LIMITS).map(([step, minutes]) => `${step} ${minutes}`).join(", ")})
   --tap <owner/name>     the Homebrew tap (default ap9000/homebrew-toolroll)
   --release-gate <id>    check (and with --yes, lift) one update pause left before a deployment's swap
-  --yes                  with --release-gate: lift the pause once it is proved safe
+  --yes                  with --release-gate: lift the pause once it is proved safe; with --recover-deploy: recover
+  --recover-deploy       recover the unfinished deployment (see above)
+  --stage <dir>          with --recover-deploy: the deployment's staging folder, when more than one is unfinished
   --json                 answer with one machine envelope
 
 A runner's lease is returned with \`toolroll worker release <lease>\`.`;
@@ -57,30 +111,59 @@ export type ReleaseCliDeps = {
   warn?: (line: string) => void;
   /** What --release-gate reads and changes (release-gate.ts); the installation's own by default. */
   gateWorld?: GateReleaseWorld;
+  /** What --recover-deploy reads and runs (deploy-rescue.ts); the installation's own by default. */
+  rescueWorld?: RescueWorld;
+  /** The plane's database for the authority commands (default: this installation's). */
+  database?: string;
+  now?: () => Date;
 };
 
-const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate"]);
-const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes"]);
+const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request", "--as", "--token", "--schedule", "--stage", "--lane-retire"]);
+const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry", "--start", "--recover-deploy", "--github"]);
 
 export async function runReleaseCommand(args: readonly string[], write: (line: string) => void, deps: ReleaseCliDeps = {}): Promise<number> {
-  const json = args.includes("--json");
+  // The flag, not a secret's value that happens to read "--json".
+  // A secret is never exactly one of these names (the loop below refuses that as a missing value).
+  const bare = new Set(args.filter(one => BARE_FLAGS.has(one)));
+  const json = bare.has("--json");
   const refuse = (reason: string, message: string, code: number) => {
     write(json ? checkedEnvelopeJson({ ok: false, command: "release", reason, message }) : message);
     return code;
   };
   const positional: string[] = [];
   const limits: Record<string, number> = {};
-  let repo: string | undefined, tap: string | undefined, gate: string | undefined;
+  let stage: string | undefined, laneRetire: string | undefined, laneAlias: [string, string] | undefined;
+  let repo: string | undefined, tap: string | undefined, gate: string | undefined, to: string | undefined, request: string | undefined, as: string | undefined, token: string | undefined, scheduleFlag: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i]!;
-    if (BARE_FLAGS.has(arg)) continue;
+    const raw = args[i]!;
+    if (BARE_FLAGS.has(raw)) continue;
+    // `--lane-alias <lane-id> <new name>`: two values, neither a flag of this command.
+    if (raw === "--lane-alias") {
+      const [id, name] = [args[i + 1], args[i + 2]];
+      if (id === undefined || name === undefined || id.startsWith("--") || name.startsWith("--")) return refuse("usage", "--lane-alias takes <lane-id> <new name>.", 2);
+      laneAlias = [id, name];
+      i += 2;
+      continue;
+    }
+    // `--flag=value` for every value flag; a secret (--token) is also the next argument even when it starts with "--".
+    const equals = raw.startsWith("--") ? raw.indexOf("=") : -1;
+    const arg = equals === -1 ? raw : raw.slice(0, equals);
     if (VALUE_FLAGS.has(arg)) {
-      const value = args[i + 1];
-      if (value === undefined || value.startsWith("--")) return refuse("usage", `${arg} takes a value.`, 2);
-      i += 1;
+      const value = equals === -1 ? args[i + 1] : raw.slice(equals + 1);
+      // A secret may start with "--"; it is the value unless it is exactly one of this command's flags (never swallowed).
+      const namesFlag = value !== undefined && (BARE_FLAGS.has(value) || VALUE_FLAGS.has(value.split("=")[0]!));
+      if (value === undefined || (equals === -1 && value.startsWith("--") && (arg !== "--token" || namesFlag))) return refuse("usage", `${arg} takes a value.`, 2);
+      if (equals === -1) i += 1;
       if (arg === "--repo") repo = value;
+      else if (arg === "--to") to = value;
+      else if (arg === "--request") request = value;
+      else if (arg === "--as") as = value;
+      else if (arg === "--token") token = value;
+      else if (arg === "--schedule") scheduleFlag = value;
       else if (arg === "--tap") tap = value;
       else if (arg === "--release-gate") gate = value;
+      else if (arg === "--stage") stage = value;
+      else if (arg === "--lane-retire") laneRetire = value;
       else {
         const match = /^([a-z]+)=([0-9]+)$/.exec(value);
         if (match === null || !(match[1]! in RELEASE_LIMITS) || Number(match[2]) < 1) return refuse("usage", `--limit takes <step>=<minutes> for one of: ${Object.keys(RELEASE_LIMITS).join(", ")}.`, 2);
@@ -88,15 +171,29 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
       }
       continue;
     }
-    if (arg.startsWith("--")) return refuse("usage", `Unknown option ${arg}.\n${RELEASE_HELP}`, 2);
+    if (raw.startsWith("--")) return refuse("usage", `Unknown option ${arg}.\n${RELEASE_HELP}`, 2);
     positional.push(arg);
   }
-  if (args.includes("--help")) { write(RELEASE_HELP); return 0; }
+  if (bare.has("--help")) { write(RELEASE_HELP); return 0; }
   if (gate !== undefined) {
     if (positional.length > 0 || args.some(arg => ["--repo", "--limit", "--tap", "--new"].includes(arg))) return refuse("usage", "--release-gate <id> takes no branch or release options.", 2);
-    return runGateRelease(gate, args.includes("--yes"), write, json, deps.gateWorld ?? installedGateWorld());
+    return runGateRelease(gate, bare.has("--yes"), write, json, deps.gateWorld ?? installedGateWorld());
   }
-  if (args.includes("--yes")) return refuse("usage", "--yes goes with --release-gate <id>; a release needs no confirmation beyond the owner's approval.", 2);
+  if (bare.has("--recover-deploy")) {
+    if (positional.length > 0 || args.some(arg => ["--repo", "--limit", "--tap", "--new", "--release-gate"].includes(arg.split("=")[0]!))) return refuse("usage", "--recover-deploy takes only --stage <dir>, --yes and --json.", 2);
+    return runRescue(stage, bare.has("--yes"), write, json, deps.rescueWorld ?? installedRescueWorld(deps.cwd ?? process.cwd()));
+  }
+  if (stage !== undefined) return refuse("usage", "--stage goes with --recover-deploy.", 2);
+  if (bare.has("--yes")) return refuse("usage", "--yes goes with --release-gate <id> or --recover-deploy; a release needs no confirmation beyond the owner's approval.", 2);
+  if (bare.has("--github") || laneAlias !== undefined || laneRetire !== undefined) {
+    if (positional[0] !== "nightly" || positional.length !== 1) return refuse("usage", "--github, --lane-alias and --lane-retire go with `toolroll release nightly`.", 2);
+    if ([bare.has("--github"), laneAlias !== undefined, laneRetire !== undefined].filter(Boolean).length !== 1 || scheduleFlag !== undefined || bare.has("--start")) return refuse("usage", "Use one of --github, --lane-alias or --lane-retire, without --schedule or --start.", 2);
+    return runGithubNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, alias: laneAlias, retire: laneRetire }, write, json, deps);
+  }
+  if (positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: bare.has("--start") }, write, json, deps);
+  if (["carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok"].includes(positional[0] ?? "") && positional.length === 2) {
+    return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry" | "auto-approve" | "publish-ok", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
+  }
   if (positional.length !== 1) return refuse("usage", `Which branch? \`toolroll release <branch>\`.\n${RELEASE_HELP}`, 2);
   const branch = positional[0]!;
 
@@ -116,7 +213,7 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   const adapters = deps.adapters === undefined
     ? releaseAdapters({ checkout, say, ...(tap === undefined ? {} : { tap }), ...(limits["deploy"] === undefined ? {} : { deployMinutes: limits["deploy"] }) })
     : { ...deps.adapters, say };
-  const outcome = await runRelease({ branch, checkout, stateDir, limits, fresh: args.includes("--new") }, adapters);
+  const outcome = await runRelease({ branch, checkout, stateDir, limits, fresh: bare.has("--new"), noCarry: bare.has("--no-carry") }, adapters);
   return report(outcome, write, json, lines);
 }
 
@@ -156,6 +253,42 @@ function installedGateWorld(): GateReleaseWorld {
   };
 }
 
+/** The installation's deployments, its plane's records and the release's own recovery road, for --recover-deploy. */
+function installedRescueWorld(cwd: string): RescueWorld {
+  const database = databasePath(process.env, homedir());
+  const stateDir = dirname(database);
+  const adapters = releaseAdapters({ checkout: cwd, say: line => process.stderr.write(`${line}\n`) });
+  return {
+    database, stateDir,
+    journals: () => journals(stateDir),
+    runWorktree: run => {
+      if (!existsSync(database)) return null;
+      const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
+      try {
+        const row = db.prepare("SELECT worktree FROM run WHERE id = ?").get(run);
+        return typeof row?.["worktree"] === "string" && row["worktree"] !== "" ? row["worktree"] : null;
+      } catch { return null; } finally { db.close(); }
+    },
+    recover: async input => {
+      const answer = await adapters.toolroll.recoverDeploy(input);
+      return answer.ok ? { ok: true } : { ok: false, message: answer.message };
+    },
+  };
+}
+
+async function runRescue(stage: string | undefined, yes: boolean, write: (line: string) => void, json: boolean, world: RescueWorld): Promise<number> {
+  let outcome: Awaited<ReturnType<typeof rescueDeployment>>;
+  try { outcome = await rescueDeployment(stage, yes, world); }
+  catch (error) { outcome = { ok: false, reason: "failed", message: `${(error as Error).message} Run \`toolroll release --recover-deploy --yes\` again once the cause is fixed.` }; }
+  if (!outcome.ok) {
+    write(json ? checkedEnvelopeJson({ ok: false, command: "release", reason: outcome.reason, message: outcome.message }) : `✗ ${outcome.message}`);
+    return outcome.reason === "usage" ? 2 : 3;
+  }
+  if (json) { write(checkedEnvelopeJson({ ok: true, command: "release", recovery: { acted: outcome.acted, stage: outcome.stage, phase: outcome.phase, said: outcome.words } })); return 0; }
+  for (const line of outcome.words) write(outcome.acted ? `✓ ${line}` : line);
+  return 0;
+}
+
 function runGateRelease(id: string, yes: boolean, write: (line: string) => void, json: boolean, world: GateReleaseWorld): number {
   let outcome: ReturnType<typeof releaseGate>;
   try { outcome = releaseGate(id, world, yes); } catch (error) { outcome = { ok: false, reason: "error", message: `${(error as Error).message} The update pause was left as it is.` }; }
@@ -171,4 +304,154 @@ function runGateRelease(id: string, yes: boolean, write: (line: string) => void,
   for (const line of outcome.proof) write(`  • ${line}`);
   if (!outcome.released) write(`Lift it: toolroll release --release-gate ${outcome.id} --yes`);
   return 0;
+}
+
+/**
+ * The release's authority from the command line (release-once.md): ask for a carry (anyone may ask, the lead
+ * included; only the rules decide), stop carrying (only ever stricter), or change the project's carry setting
+ * (turning carrying back on is a person's own command, never the lead's or a remote token's).
+ */
+async function runAuthorityCommand(command: "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry" | "auto-approve" | "publish-ok", target: string, flags: { to: string | undefined; request: string | undefined; repo: string | undefined; as: string | undefined; token: string | undefined },
+  write: (line: string) => void, json: boolean, deps: ReleaseCliDeps): Promise<number> {
+  const name = `release ${command}`;
+  const answer = (ok: boolean, fields: Record<string, unknown>, words: string, code: number) => {
+    write(json ? checkedEnvelopeJson({ ok, command: name, ...fields } as never) : words);
+    return code;
+  };
+  const database = deps.database ?? databasePath(process.env, homedir());
+  if (!existsSync(database)) return answer(false, { reason: "no-plane", message: "This machine has no Toolroll database." }, "This machine has no Toolroll database.", 1);
+  const store = openStore(database);
+  const now = (deps.now ?? (() => new Date()))();
+  try {
+    if (command === "ask-every-commit") {
+      if (target !== "on" && target !== "off") return answer(false, { reason: "usage", message: "ask-every-commit takes on or off." }, "ask-every-commit takes on or off.", 2);
+      if (flags.repo === undefined) return answer(false, { reason: "usage", message: "Name the project with --repo <path>." }, "Name the project with --repo <path>.", 2);
+      // Turning carrying back on relaxes a release's rules: a person's own ceremony, as an approval needs (a password
+      // typed now, a re-check, or their own session), never a lead or remote token. Turning it off is only stricter.
+      let actor = "cli";
+      if (target === "off") {
+        const refused = (message: string) => answer(false, { reason: "person-only", message }, message, 1);
+        if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person turns carrying back on, never the lead or a remote token.");
+        if (flags.as === undefined || flags.token === undefined) return refused("Turning carrying back on needs your password: add --as <you> --token <password>.");
+        const proved = authenticateApprover(store, flags.as, flags.token, flags.repo);
+        if (!proved.ok || !personProof(proved.method)) return refused("Only an approver of this project, proved as a person, turns carrying back on.");
+        actor = flags.as;
+      }
+      setAskEveryReleaseCommit(store, flags.repo, target === "on", actor, now);
+      const words = target === "on" ? "Every later release commit in this project asks for approval." : "Later test-only release commits ship under the release approval.";
+      return answer(true, { repo: flags.repo, ask: target === "on" }, words, 0);
+    }
+    if (command === "publish-ok") {
+      // A person's own decision to go on after an automatic release's checks stopped passing past its merge: never the
+      // lead, a remote token or a mode.
+      const refused = (message: string) => answer(false, { reason: "person-only", message }, message, 1);
+      if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person lets a held release go on, never the lead or a remote token.");
+      if (flags.as === undefined || flags.token === undefined || flags.token === "") return refused("Letting a held release go on needs your password: add --as <you> --token <password>.");
+      const repo = store.lookupRef(target)?.repo ?? null;
+      if (repo === null) return answer(false, { reason: "not-found", message: `No release task ${target}.` }, `No release task ${target}.`, 1);
+      const proved = authenticateApprover(store, flags.as, flags.token, repo);
+      if (!proved.ok || !personProof(proved.method)) return refused("Only an approver of this project, proved as a person, lets a held release go on.");
+      const allowed = allowAutoPublish(store, { taskId: target, by: flags.as, now });
+      return allowed.ok ? answer(true, { task: target }, `Release task ${target} may be tagged and published: rerun \`toolroll release\` to go on.`, 0) : answer(false, { reason: "refused", message: allowed.why }, allowed.why, 1);
+    }
+    if (command === "auto-approve") {
+      if (target !== "on" && target !== "off") return answer(false, { reason: "usage", message: "auto-approve takes on or off." }, "auto-approve takes on or off.", 2);
+      if (flags.repo === undefined) return answer(false, { reason: "usage", message: "Name the project with --repo <path>." }, "Name the project with --repo <path>.", 2);
+      const repo = store.listProjects().map(one => one.path).find(path => path === flags.repo) ?? null;
+      if (repo === null) return answer(false, { reason: "not-found", message: "That isn't a project Toolroll knows." }, "That isn't a project Toolroll knows.", 1);
+      // Turning it on lets releases approve themselves: a credential act (docs/plans/passwordless.md), only a password
+      // typed now by an approver of this project — never the lead's token, an API token, a remembered login or a session.
+      // Turning it off only asks a person again, so it needs no password.
+      let actor = flags.as ?? "cli";
+      if (target === "on") {
+        const refused = (message: string) => answer(false, { reason: "person-only", message }, message, 1);
+        if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person turns on automatic release approval, never the lead or a remote token.");
+        if (flags.as === undefined || flags.token === undefined || flags.token === "") return refused("Turning on automatic release approval needs your password: add --as <you> --token <password>.");
+        const proved = proveCredential(store, flags.as, flags.token, repo);
+        if (!proved.ok) return refused("Only an approver of this project, with their password typed now, turns on automatic release approval.");
+        actor = flags.as;
+      }
+      const changed = setReleaseApproval(store, repo, target === "on", actor, now);
+      const words = target === "on"
+        ? "Releases in this project approve themselves once the pull request's CI and the release check pass on the exact commit. You're told when one does; anything red still asks you."
+        : `Releases in this project ask you again.${changed.withdrawn.length === 0 ? "" : ` ${changed.withdrawn.length} automatic approval${changed.withdrawn.length === 1 ? " was" : "s were"} taken back.`}`;
+      return answer(true, { repo, autoApprove: target === "on", changed: changed.changed, withdrawn: changed.withdrawn }, words, 0);
+    }
+    if (command === "unsandboxed-carry") {
+      if (target !== "on" && target !== "off") return answer(false, { reason: "usage", message: "unsandboxed-carry takes on or off." }, "unsandboxed-carry takes on or off.", 2);
+      if (flags.repo === undefined) return answer(false, { reason: "usage", message: "Name the project with --repo <path>." }, "Name the project with --repo <path>.", 2);
+      // Turning it on relaxes a release's rules: a person's own ceremony, as an approval needs, never a lead or remote
+      // token. Turning it off is only stricter.
+      let actor = "cli";
+      if (target === "on") {
+        const refused = (message: string) => answer(false, { reason: "person-only", message }, message, 1);
+        if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person turns this on, never the lead or a remote token.");
+        if (flags.as === undefined || flags.token === undefined) return refused("Turning this on needs your password: add --as <you> --token <password>.");
+        const proved = authenticateApprover(store, flags.as, flags.token, flags.repo);
+        if (!proved.ok || !personProof(proved.method)) return refused("Only an approver of this project, proved as a person, turns this on.");
+        actor = flags.as;
+      }
+      setUnsandboxedCarry(store, flags.repo, target === "on", actor, now);
+      const words = target === "on"
+        ? "Release approvals approved from now on carry when this project's checks aren't sandboxed: later test-only commits will run outside the sandbox without being shown to you first."
+        : "Release approvals carry only when this project's checks are sandboxed.";
+      return answer(true, { repo: flags.repo, unsandboxedCarry: target === "on" }, words, 0);
+    }
+    const id = Number(target);
+    if (!Number.isSafeInteger(id) || id < 1) return answer(false, { reason: "usage", message: `${target} isn't a release id.` }, `${target} isn't a release id.`, 2);
+    if (command === "revoke") {
+      const done = revokeRelease(store, id, "cli", now);
+      return done.ok ? answer(true, { release: id }, `Release ${id} no longer carries later commits.`, 0) : answer(false, { reason: "refused", message: done.why }, done.why, 1);
+    }
+    if (flags.to === undefined || !/^[0-9a-f]{40}$/.test(flags.to)) return answer(false, { reason: "usage", message: "carry takes --to <full commit id>." }, "carry takes --to <full commit id>.", 2);
+    const result = await proveCarry(store, { authority: id, to: flags.to, ...(flags.request === undefined ? {} : { requestId: flags.request }), now });
+    if (result.ok) return answer(true, { release: id, task: result.taskId, retried: result.retried, carry: { files: result.carry.files, lines: result.carry.changedLines } },
+      `Carried release ${id} to ${flags.to.slice(0, 7)}: task ${result.taskId} (${result.carry.files} files, ${result.carry.changedLines} lines).`, 0);
+    return answer(false, { reason: result.reason, message: result.message, ...(result.path === undefined ? {} : { path: result.path }) }, carryRefusalWords(result, flags.to), 1);
+  } finally { store.close(); }
+}
+
+/** `toolroll release nightly`: the nightly full check on main, approved with a person's password (nightly-check.ts). */
+async function runNightlyCommand(flags: { repo: string | undefined; as: string | undefined; token: string | undefined; schedule: string | undefined; start: boolean }, write: (line: string) => void, json: boolean, deps: ReleaseCliDeps): Promise<number> {
+  const answer = (ok: boolean, fields: Record<string, unknown>, words: string, code: number) => { write(json ? checkedEnvelopeJson({ ok, command: "release nightly", ...fields } as never) : words); return code; };
+  if (flags.repo === undefined) return answer(false, { reason: "usage", message: "Name the project with --repo <path>." }, "Name the project with --repo <path>.", 2);
+  if (flags.as === undefined || flags.token === undefined) return answer(false, { reason: "usage", message: "The nightly check is approved with your password: add --as <you> --token <password>." }, "The nightly check is approved with your password: add --as <you> --token <password>.", 2);
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return answer(false, { reason: "person-only", message: "Only a person sets up the nightly check." }, "Only a person sets up the nightly check.", 1);
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const schedule = flags.schedule ?? `daily:03:00${zone ? `@${zone}` : ""}`;
+  if (parseSchedule(schedule) === null) return answer(false, { reason: "usage", message: `${schedule} isn't a schedule (daily:03:00@Europe/Paris, say).` }, `${schedule} isn't a schedule (daily:03:00@Europe/Paris, say).`, 2);
+  const database = deps.database ?? databasePath(process.env, homedir());
+  const store = openStore(database);
+  try {
+    const made = createNightlyCheckFlow(store, { repo: flags.repo, schedule, as: flags.as, token: flags.token, start: flags.start }, (deps.now ?? (() => new Date()))());
+    if (!made.ok) return answer(false, { reason: "refused", message: made.message }, made.message, 1);
+    return answer(true, { flow: made.flow, trigger: made.trigger, schedule }, `The nightly check of main runs ${schedule}${flags.start ? "" : " once you turn its schedule on"} (flow ${made.flow}).`, 0);
+  } finally { store.close(); }
+}
+
+/** `toolroll release nightly --github | --lane-alias | --lane-retire`: GitHub's nightly as release debt
+ * (nightly-github.ts), each a person's step proved with their password now. */
+async function runGithubNightlyCommand(flags: { repo: string | undefined; as: string | undefined; token: string | undefined; alias: [string, string] | undefined; retire: string | undefined },
+  write: (line: string) => void, json: boolean, deps: ReleaseCliDeps): Promise<number> {
+  const answer = (ok: boolean, fields: Record<string, unknown>, words: string, code: number) => { write(json ? checkedEnvelopeJson({ ok, command: "release nightly", ...fields } as never) : words); return code; };
+  if (flags.repo === undefined) return answer(false, { reason: "usage", message: "Name the project with --repo <path>." }, "Name the project with --repo <path>.", 2);
+  if (flags.as === undefined || flags.token === undefined) return answer(false, { reason: "usage", message: "This needs your password: add --as <you> --token <password>." }, "This needs your password: add --as <you> --token <password>.", 2);
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return answer(false, { reason: "person-only", message: "Only a person changes how GitHub's nightly holds releases." }, "Only a person changes how GitHub's nightly holds releases.", 1);
+  const store = openStore(deps.database ?? databasePath(process.env, homedir()));
+  const now = (deps.now ?? (() => new Date()))();
+  try {
+    if (flags.alias !== undefined) {
+      const [laneId, name] = flags.alias;
+      const done = aliasNightlyLane(store, { repo: flags.repo, laneId, name, as: flags.as, token: flags.token }, now);
+      return done.ok ? answer(true, { lane: laneId, name }, `Jobs named "${name}" now count for lane ${laneId}.`, 0) : answer(false, { reason: "refused", message: done.message }, done.message, 1);
+    }
+    if (flags.retire !== undefined) {
+      const done = retireNightlyLane(store, { repo: flags.repo, laneId: flags.retire, as: flags.as, token: flags.token }, now);
+      return done.ok ? answer(true, { lane: flags.retire, closed: done.closed }, `Retired lane ${flags.retire}${done.closed > 0 ? `; ${done.closed} open failure${done.closed === 1 ? "" : "s"} closed` : ""}.`, 0)
+        : answer(false, { reason: "refused", message: done.message }, done.message, 1);
+    }
+    const made = optInGithubNightly(store, { repo: flags.repo, as: flags.as, token: flags.token }, now);
+    return made.ok ? answer(true, { github: made.slug, lanes: made.lanes }, `GitHub's nightly for ${made.slug} now holds this project's deploys, release merges and tags while a lane fails (${made.lanes} lanes).`, 0)
+      : answer(false, { reason: "refused", message: made.message }, made.message, 1);
+  } finally { store.close(); }
 }

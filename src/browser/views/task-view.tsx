@@ -14,7 +14,7 @@ import type { AssignmentCard } from "../../assignment-ui.js";
 import type { BrowserTaskDetailGroup, BrowserTaskFact, BrowserTaskMore, BrowserTaskSection, BrowserTaskTab, BrowserTaskThreadItem, BrowserTaskView } from "../../browser-workspace.js";
 import { GuardedHtml } from "../guarded-html.js";
 import { Journey } from "../first-run.js";
-import { Badge, Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, Textarea, cn } from "../components/ui/index.js";
+import { Badge, Button, Card, Timeline, TimelineItem, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, Textarea, cn } from "../components/ui/index.js";
 import { ConfirmStoppedForm, HEADLINE_GLYPH, RebuildForm, StatusDetails, StatusHeadline, StatusWhy } from "./status-summary.js";
 import { RETRY_NOTE_LIMIT } from "../../needs-you.js";
 import { TEXT_LIMITS } from "../../text-limits.js";
@@ -159,7 +159,8 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
   const [steering, setSteering] = useState(false);
   const pausedLine = pause?.state == null || stuck !== null ? null : pause.state === "pausing" ? "Pausing…"
     : pausedWords({ until: pause.until ?? null, limitMs: pause.limitMs ?? null }, iso => shortWhen(iso, new Date(), viewerZone(), true));
-  return <Card data-task-status data-work-status={card.token} data-headline={card.status.headline} aria-label="Task status" className={cn(failed && "border-destructive/50")}>
+  return <Card data-task-status data-work-status={card.token} data-headline={card.status.headline} aria-label="Task status" className={cn(failed && "border-destructive/50", card.status.headline === "Needs you" && "border-warning")}>
+    {view.journey != null && <Journey steps={view.journey} />}
     <div className="flex flex-wrap items-center gap-x-4 gap-y-3 phone:gap-y-2.5">
       <div className="min-w-0 flex-1 basis-64">
         <StatusHeadline status={card.status} />
@@ -333,18 +334,13 @@ export function TaskDetails({ view }: { view: BrowserTaskView }) {
     {attempts !== null && <section aria-labelledby="details-attempts" className="flex flex-col gap-2 border-t border-border pt-4 text-body">
       <h2 id="details-attempts" className="flex items-center gap-1.5 text-caption text-muted-foreground">Attempts <Badge>{attempts.attempts.length}</Badge></h2>
       {/* A timeline (after Linear's activity log): one status glyph per attempt on a hairline, oldest first. */}
-      <ol className="flex flex-col" data-attempt-timeline>
-        {attempts.attempts.map((attempt, index) => <li key={attempt.taskId} data-attempt-task={attempt.taskId}
-          className="relative grid grid-cols-[14px_minmax(0,1fr)] gap-x-2.5 pb-3 last:pb-0">
-          {index < attempts.attempts.length - 1 && <span aria-hidden="true" className="absolute bottom-0 left-[6.5px] top-[19px] w-px bg-border" />}
-          <StatusGlyph kind={attemptGlyph(attempt.label)} className="mt-[3px]" />
-          <div className="min-w-0">
-            <a href={attempt.href} className="font-medium hover:underline hover:underline-offset-4 phone:inline-flex phone:min-h-11 phone:items-center">{attempt.label}</a>
-            {attempt.runId !== null && <> · <a href={`/r/${attempt.runId}`} className="text-muted-foreground hover:underline">Run #{attempt.runId}</a></>}
-            {attempt.detail !== null && <p className="text-muted-foreground">{attempt.detail}</p>}
-          </div>
-        </li>)}
-      </ol>
+      <Timeline data-attempt-timeline>
+        {attempts.attempts.map(attempt => <TimelineItem key={attempt.taskId} data-attempt-task={attempt.taskId} indicator={<StatusGlyph kind={attemptGlyph(attempt.label)} />}>
+          <a href={attempt.href} className="font-medium hover:underline hover:underline-offset-4 phone:inline-flex phone:min-h-11 phone:items-center">{attempt.label}</a>
+          {attempt.runId !== null && <> · <a href={`/r/${attempt.runId}`} className="text-muted-foreground hover:underline">Run #{attempt.runId}</a></>}
+          {attempt.detail !== null && <p className="text-muted-foreground">{attempt.detail}</p>}
+        </TimelineItem>)}
+      </Timeline>
       {attempts.lead !== null && <p className="text-muted-foreground">Lead: {attempts.lead.label}{attempts.lead.active ? "" : " · access ended"}</p>}
     </section>}
   </div>;
@@ -479,7 +475,8 @@ const primaryActionNow = (): HTMLElement | null =>
  * around it) and puts the cursor where it starts (its password, when it asks for one); it never acts by itself.
  * The button is found again after every render, so a live update that swaps it (Retry appearing, a new approval)
  * is followed. */
-function PinnedAction({ waiting }: { waiting: boolean }) {
+function PinnedAction({ headline }: { headline: "Needs you" | "Failed" | null }) {
+  const waiting = headline !== null;
   const [action, setAction] = useState<{ element: HTMLElement; label: string } | null>(null);
   const [hidden, setHidden] = useState(true);
   const tracked = useRef<{ element: HTMLElement | null; label: string; observer: IntersectionObserver | null }>({ element: null, label: "", observer: null });
@@ -507,9 +504,7 @@ function PinnedAction({ waiting }: { waiting: boolean }) {
   };
   return <div data-pinned-action role="region" aria-label="What this task needs from you"
     className="sticky bottom-0 z-20 -mx-1 mt-2 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 shadow-lg phone:-mx-4 phone:rounded-none phone:border-x-0 phone:border-b-0 phone:pb-[max(12px,var(--safe-bottom))]">
-    <span className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium">
-      <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-attention" />Needs you
-    </span>
+    <span className="flex min-w-0 flex-1 items-center">{headline === "Failed" ? <Badge tone="danger" size="chip" dot>Failed</Badge> : <Badge tone="needs" size="chip" dot>Needs you</Badge>}</span>
     <Button type="button" variant="attention" onClick={reach} className="shrink-0">{action.label}<ArrowRight /></Button>
   </div>;
 }
@@ -590,7 +585,7 @@ export function TaskView({ view, chat = null, details = true, csrf = "", result 
       </p>}
     </header>
 
-    {view.journey != null && <Journey steps={view.journey} />}
+    {view.journey != null && view.status === null && <Journey steps={view.journey} />}
 
     {view.status !== null
       ? <StatusCard view={view} card={view.status} csrf={csrf} />
@@ -618,6 +613,6 @@ export function TaskView({ view, chat = null, details = true, csrf = "", result 
 
     {details && <div className="border-t border-border pt-2"><TaskDetails view={view} /></div>}
 
-    <PinnedAction waiting={view.status?.status.headline === "Needs you" || view.status?.status.headline === "Failed"} />
+    <PinnedAction headline={view.status?.status.headline === "Needs you" || view.status?.status.headline === "Failed" ? view.status.status.headline : null} />
   </div>;
 }

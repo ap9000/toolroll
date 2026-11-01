@@ -215,16 +215,23 @@ get("pages", "workbench", "/workbench", free);
 get("tasks", "board", "/board", { limited: "collection" });
 get("tasks", "review", "/review", { limited: "collection" });
 get("settings", "spend", "/spend", { ...free, ...anyOperator("An instance operator sees spend.", "/") });
+get("settings", "settings.spend", "/settings/spend", { ...free, ...anyOperator("An instance operator sets spending limits.", "/settings") });
 get("pages", "ledger", "/ledger", { limited: "unscoped", ...free });
 get("pages", "activity", "/activity");
 get("tasks", "done", "/done", { limited: "collection" });
 get("settings", "mode", "/mode");
 get("people", "people.page", "/people", { limited: "unscoped", ...free });
 get("pages", "system", "/system");
-get("tasks", "tasks", "/tasks", { limited: "collection" });
+// Where every "Connect a builder" leads: read-only, open to a project-limited person (the handler shows only a visible project).
+get("pages", "start-builder", "/start-builder", { limited: "unscoped", ...free });
+get("tasks", "tasks", "/tasks", { limited: "collection", ...free }); // a redirect to /work now: never sent to the project opener first
 get("tasks", "queue", "/queue");
 get("pages", "peek", "/peek", free);
 get("pages", "agents", "/agents", { limited: "unscoped", ...free });
+// The Agents view's Live grid (docs/plans/agents-view.md §3): read-only, every request filtered to what the viewer may see.
+// Browser sessions only, like the transcript and the peek: no token (a lead's, a runner's, a remote one) reads live output.
+get("pages", "agents.live", "/agents/live", { limited: "unscoped", callers: ["cookie"], ...free });
+get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/1" });
 get("pages", "fleet", "/fleet", free);
 get("tasks", "tasks.new", "/tasks/new", { limited: "collection", ...free });
 get("tasks", "task.page", `^\\/t\\/${TASK}$`, { project: "task", limited: "resource", ...free, sample: "/t/one" });
@@ -312,6 +319,10 @@ post("tasks", "code.start", "/code/start", CODING_ACT);
 post("tasks", "term.start", "/term/start", { ...TERM, scope: "step-up" });
 for (const one of ["close", "remove"]) post("tasks", `term.${one}`, `^\\/term\\/${TERMINAL}\\/${one}$`, { ...TERM, sample: `/term/${"a".repeat(32)}/${one}` });
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
+// Reading a coding checkout runs git in a folder an agent writes, so it is a POST with the form token, never a page
+// visit (docs/plans/get-side-effects.md): the session's changes, and the review-for-shipping preview.
+post("tasks", "code.changes-read", `^\\/code\\/${SESSION}\\/changes$`, { project: "coding", limited: "self", callers: ["cookie"], sample: `/code/${"a".repeat(32)}/changes` });
+post("tasks", "code.ship-preview", `^\\/code\\/${SESSION}\\/ship\\/preview$`, { project: "coding", limited: "self", callers: ["cookie"], sample: `/code/${"a".repeat(32)}/ship/preview` });
 // Any other coding action answers "not found" after the same access check.
 post("tasks", "code.act-other", "^\\/code(\\/.*)?$", { ...CODING_ACT, sample: "/code/unknown" });
 post("settings", "settings.skills-revise", "/settings/skills/revise", { project: "form", limited: "unscoped", ...approver("Sign in to revise a test.", "/settings/skills") });
@@ -359,6 +370,7 @@ post("settings", "settings.project-live-view", "/settings/project/live-view", { 
 post("settings", "settings.project-network", "/settings/project/network", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-writes", "/settings/project/writes", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-check-access", "/settings/project/check-access", { scope: "step-up", callers: ["cookie"] });
+post("settings", "settings.project-sandbox", "/settings/project/sandbox", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-delete", "/settings/project/delete", { scope: "step-up", ...operator("An instance operator deletes projects.", "/settings/project") });
 // Lead sweeps (docs/plans/lead-fan-out.md): the table, and cancelling what isn't ready. The handler shows a sweep only in
 // a project the reader can see, and acts only for an approver.
@@ -368,6 +380,9 @@ post("tasks", "sweep.cancel-rest", "^\\/sweeps\\/[1-9][0-9]{0,9}\\/cancel-rest$"
 // (the handler proves it as a credential act); turning it off is one click, so the row itself is not a step-up.
 get("settings", "settings.passwordless", "/settings/passwordless", { ...free, ...operator("An instance operator sets Passwordless.", "/settings") });
 post("settings", "settings.passwordless-send", "/settings/passwordless", { callers: ["cookie"], ...operator("An instance operator sets Passwordless.", "/settings") });
+// Release approval (docs/plans/auto-approve-green.md): an approver of the project, from a browser. Approving releases
+// automatically takes a typed password (the handler proves it as a credential act); asking again is one click.
+post("settings", "settings.release-approval-send", "/settings/release-approval", { callers: ["cookie"], ...approver("An approver sets how releases are approved.", "/settings/approval") });
 post("pages", "ledger.checkpoint", "/ledger/checkpoint", operator("An instance operator makes ledger checkpoints.", "/ledger"));
 const SETTINGS_ACT_ROLES: Record<string, RoleOptions> = {
   policy: operator("An instance operator sets the policy.", "/settings/policy"),
@@ -377,10 +392,12 @@ const SETTINGS_ACT_ROLES: Record<string, RoleOptions> = {
   updates: operator("An instance operator updates Toolroll.", "/settings"),
   "updates/seen": operator("An instance operator updates Toolroll.", "/settings"),
   "updates/cancel": operator("An instance operator updates Toolroll.", "/settings"),
+  "updates/check": operator("An instance operator updates Toolroll.", "/settings"),
   retention: operator("An instance operator sets retention.", "/settings"),
   storage: operator("An instance operator looks after storage.", "/settings"),
   "storage/clean": operator("An instance operator looks after storage.", "/settings"),
   "storage/discard": operator("An instance operator looks after storage.", "/settings"),
+  "storage/check": operator("An instance operator looks after storage.", "/settings"),
   "backups/now": operator("An instance operator looks after backups.", "/settings"),
   backups: operator("An instance operator looks after backups.", "/settings"),
   data: operator("An instance operator exports data.", "/settings"),
@@ -389,12 +406,16 @@ const SETTINGS_ACT_ROLES: Record<string, RoleOptions> = {
   "tools/connect": approver("Sign in as an approver to connect tools.", "/settings/tools"),
   "tools/change": approver("Sign in as an approver to manage tools.", "/settings/tools"),
 };
-for (const one of ["policy", "approval", "request-limits", "sessions", "sign-in", "updates", "updates/seen", "updates/cancel", "retention", "storage", "storage/clean", "storage/discard", "pull-requests", "checks", "backups/now", "backups", "data", "integrations/test", "monitoring", "tools/connect", "tools/change", "appearance"]) {
+for (const one of ["policy", "approval", "request-limits", "sessions", "sign-in", "updates", "updates/seen", "updates/cancel", "updates/check", "retention", "storage", "storage/clean", "storage/discard", "storage/check", "pull-requests", "pull-requests/check", "checks", "backups/now", "backups", "data", "integrations/test", "monitoring", "tools/connect", "tools/change", "appearance"]) {
   post(one === "sessions" ? "people" : "settings", `settings.${one.replaceAll("/", "-")}-send`, `/settings/${one}`, { ...(["policy", "approval", "request-limits", "sessions", "sign-in", "updates", "updates/seen", "updates/cancel", "retention", "storage", "storage/clean", "storage/discard", "pull-requests", "checks", "backups", "data", "monitoring", "tools/connect", "tools/change"].includes(one) ? { scope: "step-up" as const } : {}), ...SETTINGS_ACT_ROLES[one] });
 }
 post("settings", "settings.flows-on", "/settings/flows/on", { limited: "collection", ...approver("An approver switches starter flows on.", "/settings/flows") });
+post("settings", "settings.integrations-youiyoux", "/settings/integrations/youiyoux", { limited: "collection", ...approver("An approver turns youiyoux requests on or off.", "/settings/integrations") });
 const MODELS = approver("Sign in as an approver to change models.", "/settings/models");
-for (const one of ["check", "watch", "update", "agent"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, MODELS);
+for (const one of ["check", "watch", "update"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, MODELS);
+// Changing which model a role uses: an instance operator's browser step-up (the handler proves the password, or the
+// Passwordless session; model-choices.ts re-proves the session and standing inside its one transaction).
+for (const one of ["agent", "apply"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, { scope: "step-up", ...operator("An instance operator changes models.", "/settings/models") });
 // Any other models action answers the models area's own refusal.
 post("settings", "settings.models-act", "^\\/settings\\/models\\/.*$", { sample: "/settings/models/unknown", ...MODELS });
 post("settings", "settings.knowledge-refresh", "/settings/knowledge/refresh", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to refresh project context.", "/settings/knowledge") });
@@ -402,6 +423,9 @@ post("settings", "settings.knowledge-proposal", "/settings/knowledge/proposal", 
 post("settings", "settings.knowledge-decision", "/settings/knowledge/decision", { project: "form", ...approver("Sign in as an approver to change project decisions.", "/settings/knowledge") });
 post("settings", "settings.knowledge-change", "/settings/knowledge/change", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to change project knowledge.", "/settings/knowledge") });
 post("settings", "settings.learning-change", "/settings/learning/change", { project: "form", limited: "unscoped" });
+// A page shows the last check; these ask again (docs/plans/get-side-effects.md).
+post("settings", "control.models-refresh", "/control/models-refresh", anyApprover("Project setup requires an approver."));
+post("settings", "settings.connection-check", "/settings/connection/check", anyApprover("An approver checks a sign-in.", "/settings"));
 for (const one of ["setup-preview", "setup-approve", "instructions-preview", "instructions-approve"]) post("settings", `control.${one}`, `/control/${one}`, { ...(one.endsWith("approve") ? { scope: "step-up" as const } : {}) });
 for (const [service, name] of [["slack", "Slack"], ["teams", "Teams"], ["discord", "Discord"]] as const) {
   for (const one of ["connect", "pair", "unpair", "disconnect", "alerts"]) post("settings", `settings.${service}-${one}`, `/settings/${service}/${one}`, { scope: "step-up", ...approver(`An installation approver can connect ${name}.`, "/settings") });
@@ -413,6 +437,7 @@ post("settings", "settings.telegram-unpair", "/settings/telegram/unpair", { limi
 for (const one of ["messaging", "permission-default", "quality-default", "notifications", "notifications/mute", "telegram-digest", "provider-key", "provider-key-clear", "telegram-token", "email", "email-test", "email-read-test", "google", "google/disconnect"]) {
   post("settings", `settings.${one.replaceAll("/", "-")}-send`, `/settings/${one}`);
 }
+post("pages", "projects.github-list", "/projects/github", { callers: ["cookie"], ...anyApprover("your login can watch — adding projects is an approver's act") });
 post("pages", "projects.select", "/projects/select", { project: "form-path", limited: "unscoped", viewer: true });
 post("pages", "projects.remove", "/projects/remove", { project: "form", ...operator("An instance operator removes projects.", "/settings/project") });
 post("pages", "projects.open", "/projects/open", { project: "form-path" });
@@ -450,6 +475,7 @@ post("tasks", "task.act.retry-review", `^\\/t\\/${TASK}\\/retry-review$`, { proj
 post("tasks", "task.act.complete", `^\\/t\\/${TASK}\\/complete$`, { project: "task", limited: "resource", sample: "/t/one/complete", ...approver("Only an approver can mark a result complete.") });
 post("tasks", "task.act.merge", `^\\/t\\/${TASK}\\/merge$`, { project: "task", limited: "resource", sample: "/t/one/merge", ...approver("Only an approver can merge.") });
 post("tasks", "task.act.confirm-stopped", `^\\/t\\/${TASK}\\/confirm-stopped$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/confirm-stopped", ...approver("Only an approver can confirm a build stopped.") });
+post("tasks", "task.act.stop-carrying", `^\\/t\\/${TASK}\\/stop-carrying$`, { project: "task", limited: "resource", sample: "/t/one/stop-carrying", ...approver("Only an approver can stop carrying a release.") });
 post("tasks", "task.act.stop", `^\\/t\\/${TASK}\\/stop$`, { project: "task", limited: "resource", sample: "/t/one/stop" });
 post("tasks", "task.act.pause", `^\\/t\\/${TASK}\\/pause$`, { project: "task", limited: "resource", sample: "/t/one/pause" });
 post("tasks", "task.act.resume-arm", `^\\/t\\/${TASK}\\/resume-arm$`, { project: "task", limited: "resource", sample: "/t/one/resume-arm" });
@@ -460,6 +486,9 @@ post("pages", "projects.onboard-preview", "/projects/onboard-preview", { project
 post("pages", "projects.onboard-confirm", "/projects/onboard-confirm", { scope: "step-up", project: "none" });
 post("chat", "push.subscribe", "/push/subscribe", { scope: "step-up" });
 post("chat", "push.remove", "/push/remove");
+// Ask this computer's agent CLIs again (docs/plans/get-side-effects.md): Chat's first run and Settings → Lead's Check
+// now. GET /lead/status only reads the last answer.
+post("chat", "lead.check", "/lead/check", { callers: ["cookie"] });
 post("chat", "onboarding.phone-dismiss", "/onboarding/phone/dismiss", approver("An approver puts this away.", "/chat"));
 const LEAD_WORDS: Record<string, string> = { identity: "An approver names their lead.", about: "An approver edits what their lead knows about them.", "promise/cancel": "An approver manages the lead's promises.", on: "An approver turns the lead on." };
 for (const one of ["identity", "about", "promise/cancel", "on"]) post("settings", `settings.lead-${one.replaceAll("/", "-")}`, `/settings/lead/${one}`, approver(LEAD_WORDS[one]!, "/settings/lead"));

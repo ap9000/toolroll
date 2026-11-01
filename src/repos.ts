@@ -11,6 +11,7 @@
  * untrusted input and gets validated like any other.
  */
 
+import { closeSync as closeFd, constants as fsConstants, fstatSync, openSync as openFd, readSync, renameSync as renameFile, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { configBase, namedPath } from "./names.js";
@@ -212,6 +213,10 @@ export async function updateProjectRegistry(
       held = false; // abandon: no unlink, no publication
       return { ok: false, reason: "abandoned", message: "the registry lock aged out before the update could publish — nothing changed; try again" };
     }
+    // Each line this update removes counts one more removal, written BEFORE the list is published: whoever holds a
+    // start's authority for a saved line (upDeferredRetry) sees that it was removed, even if it was saved again since.
+    const gone = current.repos.filter(one => !next.repos.includes(one));
+    if (gone.length > 0) bumpRegistryRemovals(file, gone, `${process.pid}.${token.slice(0, 8)}`);
     const temp = `${file}.${process.pid}.${token.slice(0, 8)}.tmp`;
     const fd = openSync(temp, "wx");
     writeSync(fd, `${JSON.stringify({ version: CONFIG_VERSION, ...next }, null, 2)}
@@ -259,4 +264,44 @@ function readProjectRegistry(parsed: unknown): ProjectRegistry | null {
 
 function sortUnique(repos: readonly string[]): string[] {
   return [...new Set(repos)].sort();
+}
+
+/** Beside the saved list: how many times each line has been removed from it (written under its lock). */
+export function registryRemovalsFile(file: string): string {
+  return `${file}.removals.json`;
+}
+
+/**
+ * How many times each saved line has been removed, as recorded under the saved list's lock. A file that can't be read
+ * as one answers null: its caller treats every line as changed (fail closed).
+ */
+export function registryRemovals(file: string): Record<string, number> | null {
+  let fd: number;
+  try { fd = openFd(registryRemovalsFile(file), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? {} : null; }
+  try {
+    const held = fstatSync(fd);
+    if (!held.isFile() || held.size > 4 * 1024 * 1024) return null;
+    const buffer = Buffer.alloc(held.size);
+    const read = held.size === 0 ? 0 : readSync(fd, buffer, 0, buffer.length, 0);
+    const parsed = JSON.parse(buffer.toString("utf8", 0, read)) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const out: Record<string, number> = {};
+    for (const [line, count] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!Number.isSafeInteger(count) || (count as number) < 0) return null;
+      out[line] = count as number;
+    }
+    return out;
+  } catch { return null; } finally { closeFd(fd); }
+}
+
+/** One more removal for each of `lines`, written whole and renamed into place. Called only under the list's lock. */
+function bumpRegistryRemovals(file: string, lines: readonly string[], tag: string): void {
+  const kept = registryRemovals(file);
+  // An unreadable record starts again from the clock, so no count read before can come round again.
+  const counts = kept ?? {};
+  for (const line of lines) counts[line] = kept === null ? Date.now() : (counts[line] ?? 0) + 1;
+  const temp = `${registryRemovalsFile(file)}.${tag}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(counts)}\n`, { flag: "wx", mode: 0o600 });
+  renameFile(temp, registryRemovalsFile(file));
 }

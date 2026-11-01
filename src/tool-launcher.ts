@@ -5,23 +5,19 @@
  * against codex-cli 0.156), so nothing rides Codex's environment. A build's
  * launch file names its run's tool broker (tool-broker.ts) and that launch's
  * token, and this process relays stdio to it over HTTP; the tool's own
- * secrets stay in the broker. A launch file naming a local program or a web
- * server with its values is still run as before.
+ * secrets stay in the broker. A launch file naming a local program is refused
+ * (docs/plans/sandbox-parity.md C2): Codex starts this launcher outside its
+ * command sandbox, so a program started here would run unfenced; every local
+ * server runs in the broker, inside the server fence.
  */
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { ToolSpec } from "./project-tools.js";
 
 type LaunchFile = { spec: ToolSpec; values: Record<string, string> };
 
-function runLocal(spec: ToolSpec, values: Record<string, string>): void {
-  const child = spawn(spec.command!, spec.args, { env: { ...process.env, ...values }, stdio: "inherit" });
-  const forward = (signal: NodeJS.Signals) => { try { child.kill(signal); } catch { /* gone */ } };
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => forward(signal));
-  child.on("error", error => { process.stderr.write(`the tool could not start: ${error.message}\n`); process.exit(127); });
-  child.on("exit", (code, signal) => process.exit(code ?? (signal === null ? 1 : 128)));
-}
+/** The refusal for a launch file naming a local program: nothing is started (126, "could not be executed"). */
+const LOCAL_LAUNCH_REFUSED = "This tool's launch names a local program, which only Toolroll's tool broker may start (inside its fence); nothing was started.";
 
 /** stdio ↔ streamable HTTP: each line from Codex is POSTed; JSON or event-stream answers go back as lines. */
 function relayWeb(spec: ToolSpec, values: Record<string, string>): void {
@@ -80,4 +76,7 @@ try {
   process.exit(2);
 }
 if (launch.spec.transport === "http") relayWeb(launch.spec, launch.values);
-else runLocal(launch.spec, launch.values);
+else {
+  process.stderr.write(`${LOCAL_LAUNCH_REFUSED}\n`);
+  process.exit(126);
+}

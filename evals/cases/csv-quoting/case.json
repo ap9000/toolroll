@@ -1,0 +1,23 @@
+{
+  "id": "csv-quoting",
+  "kind": "build",
+  "title": "Quote CSV fields",
+  "goal": "Revise csv(rows) in csv.js to support comma, quote and newline characters in fields: quote such fields and double any quote inside them. Join fields with commas and records with CRLF, and end non-empty output with a final CRLF. An empty list of rows returns an empty string. Keep the csv export.",
+  "touches": [
+    "csv.js",
+    "test/csv.test.mjs"
+  ],
+  "pin": {
+    "provider": "claude",
+    "model": "claude-sonnet-5-5"
+  },
+  "maxDispatches": 2,
+  "timeoutMinutes": 15,
+  "grade": {
+    "files": [
+      "csv.js"
+    ]
+  },
+  "expected": "pass",
+  "validatedBy": null
+}

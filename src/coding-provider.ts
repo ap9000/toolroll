@@ -1,11 +1,18 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { TextDecoder } from "node:util";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
+import { readDenyPath } from "./project-sandbox.js";
+import { dirname, join } from "node:path";
+import { codexFenceConfig, fenceFor, FENCE_POLICY_CURRENT, runFolders, taskBoundary, trustedWorktreeBinding } from "./agent-fence.js";
+import type { CodingPermissions } from "./coding-workspace.js";
+import type { Store } from "./store.js";
+import { poolRootOf } from "./worktree.js";
 import { currentBootId } from "./boot-identity.js";
 import { createContainer, currentContainment, type Container } from "./containment.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { observeProcessTree, sampleProcessTree, stopProcessTree, type ProcessObservationFailure } from "./process-tree.js";
 import { isOwnEnv } from "./names.js";
+import { isProtectedEnvName } from "./protected-storage.js";
 import { sleep } from "./sleep.js";
 
 /** Read-only recovery witnesses, never authority to signal historical PIDs.
@@ -83,8 +90,9 @@ export function codingEnvironment(): NodeJS.ProcessEnv {
     // Preserve native Codex auth, HOME, PATH, CODEX_HOME and project config.
     // A parent desktop session's control pipe and identity do not belong to
     // this independent native client. Keep install/runtime paths such as
-    // CODEX_MCP_NODE_PATH. Service credentials stay with the web service.
-    if (isOwnEnv(key) || /^(TELEGRAM|SLACK|DISCORD)_.*(TOKEN|SECRET|KEY)$/i.test(key) || /^CODEX_APP_TOOLS_/.test(key) || invokingSession.has(key) || key === "NODE_OPTIONS" || key === "NODE_PATH") delete env[key];
+    // CODEX_MCP_NODE_PATH. Service credentials stay with the web service; no chat or vault variable reaches it
+    // (protected-storage.ts).
+    if (isOwnEnv(key) || isProtectedEnvName(key) || /^CODEX_APP_TOOLS_/.test(key) || invokingSession.has(key) || key === "NODE_OPTIONS" || key === "NODE_PATH") delete env[key];
   }
   return env;
 }
@@ -387,4 +395,32 @@ export function createCodexCodingProvider(options: { cwd?: string; command?: str
     custody,
     close,
   };
+}
+
+/**
+ * An interactive Codex session's confinement (docs/plans/sandbox-parity.md C3): the permission profile a Codex build
+ * gets (agent-fence.ts codexFenceConfig), as the thread's config overrides: Toolroll's state, every other launch's
+ * folder and every other checkout in the plane's pools and the coding sessions' own pool denied, the session's own
+ * worktree given back; Codex's workspace writes; no network (Codex's command sandbox can't route through a proxy, and
+ * sessions have never had one). The worktree is bound to its project by the plane's own records first; anything that
+ * doesn't prove refuses the session.
+ */
+export function codingSessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, worktreeRoot: string): (input: { repo: string; worktree: string }) => CodingPermissions {
+  return input => sessionPermissions(store, { ...input, worktreeRoot });
+}
+
+function sessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, input: { repo: string; worktree: string; worktreeRoot: string }): CodingPermissions {
+  const databaseFile = store.databaseFile();
+  if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return { problem: "The coding session has no state folder to fence, so it was not started." };
+  try {
+    const poolRoots = [join(dirname(databaseFile), "worktrees"), input.worktreeRoot, ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
+    const binding = trustedWorktreeBinding(input.repo, input.worktree, poolRoots);
+    const boundary = taskBoundary({ worktree: input.worktree, provider: "codex", binding, policy: FENCE_POLICY_CURRENT });
+    // The project's read denies, read live (a session seals none; they only narrow).
+    const readDeny = store.projectSandbox(input.repo).readDeny.map(one => readDenyPath(one, homedir()));
+    const launch = fenceFor("build", { databaseFile, worktree: input.worktree, boundary, binding, runFolders: runFolders(null), poolRoots, readDeny, policy: FENCE_POLICY_CURRENT });
+    return { config: codexFenceConfig(launch.fence, false, launch.fenceGrants) };
+  } catch {
+    return { problem: "The session's worktree couldn't be bound to its project, so the session was not started." };
+  }
 }

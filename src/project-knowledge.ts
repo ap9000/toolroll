@@ -1,5 +1,5 @@
 /** Project-owned context, independent of provider memory. Never grants authority. */
-import { execFileSync } from 'node:child_process';
+import { checkoutGitSync } from './teardown-git.js';
 import { acceptedIdentities, carryProject, learningIdentity, learningSha } from './project-learning.js';
 import { currentActor } from './actor.js';
 import { decisionLines, getDecision, listDecisions } from './project-memory.js';
@@ -38,7 +38,11 @@ CREATE TRIGGER IF NOT EXISTS knowledge_snapshot_no_delete BEFORE DELETE ON knowl
 `;
 export type { Knowledge, KnowledgeDraft, KnowledgeReference, KnowledgeSelection };
 const EMPTY: Knowledge = { instructions: '', references: [] };
-const git = (repo: string, args: string[]) => execFileSync('git', ['--no-optional-locks','-C',repo,...args], { encoding:'utf8', maxBuffer:200_000, stdio:['ignore','pipe','pipe'] }).trimEnd();
+// No --no-lazy-fetch: through a frozen read view, which refuses a partial clone from the config git runs with.
+// Every git version through a frozen read view (eval-harness review 1, finding 7): the repository's config is copied
+// once and inspected (an include, a command or a partial clone refused), so an include pointing at a FIFO can't hang
+// the plane, and every call is bounded.
+const git = (repo: string, args: string[]) => checkoutGitSync(repo, args, { timeoutMs: 10_000, maxBuffer: 200_000 }).trimEnd();
 function clean(value: string, bytes: number): string {
   if (Buffer.byteLength(value) > bytes || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]/u.test(value)) throw Error('This text is too long or is not readable text.');
   if (scanForSecrets(value).length) throw Error('Remove credentials or secrets before saving.');

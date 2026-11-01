@@ -32,7 +32,7 @@ describe("command-running settings refuse teardown", () => {
 });
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "./exec.js";
@@ -45,14 +45,21 @@ test.each(["GPG.SSH.defaultKeyCommand", "FiLtEr.X.ClEaN", "IncludeIf.gitdir:X.PA
 });
 
 test("removal scans the target config immediately and refuses its command", async () => {
-  const calls: { cwd: string | undefined; args: readonly string[] }[] = [];
-  const git = teardownGit(async (_file, args, options) => {
-    calls.push({ cwd: options?.cwd, args });
-    return { code: 0, stdout: options?.cwd === "/target" ? listing(["worktree", "gpg.ssh.defaultKeyCommand", "planted"]) : "", stderr: "", timedOut: false, notFound: false };
-  });
-  expect(refusal(await git("/repo", ["worktree", "remove", "--force", "/target"]))).toContain("gpg.ssh.defaultkeycommand");
-  expect(calls.map(call => call.cwd)).toEqual(["/repo", "/target"]);
-  expect(calls.every(call => call.args.includes("--no-includes"))).toBe(true);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "teardown-scan-")));
+  const repo = join(root, "repo"), target = join(root, "target");
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "initial"], { cwd: repo });
+    execFileSync("git", ["worktree", "add", "-q", "--detach", target], { cwd: repo });
+    const calls: { cwd: string | undefined; args: readonly string[] }[] = [];
+    const git = teardownGit(async (_file, args, options) => {
+      calls.push({ cwd: options?.cwd, args });
+      return { code: 0, stdout: options?.cwd === target ? listing(["worktree", "gpg.ssh.defaultKeyCommand", "planted"]) : "", stderr: "", timedOut: false, notFound: false };
+    });
+    expect(refusal(await git(repo, ["worktree", "remove", "--force", target]))).toContain("gpg.ssh.defaultkeycommand");
+    expect(calls.map(call => call.cwd)).toEqual([repo, target]);
+    expect(calls.every(call => call.args.includes("--no-includes"))).toBe(true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("status and removal refuse an initialized staged gitlink without executing its clean filter", async () => {
@@ -83,14 +90,25 @@ test("status and removal refuse an initialized staged gitlink without executing 
 });
 
 test("inspection always has non-recursing flags and the hardened environment", async () => {
-  const git = teardownGit(async (_file, args, options) => {
-    expect(options?.env).toMatchObject({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" });
-    if (!args.includes("config")) expect(args.slice(0, TEARDOWN_FLAGS.length)).toEqual(TEARDOWN_FLAGS);
-    if (args.includes("status") || args.includes("diff")) expect(args).toContain("--ignore-submodules=all");
-    return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
-  });
-  await git("/nonexistent-fixture", ["status", "--porcelain"]);
-  await git("/nonexistent-fixture", ["diff", "--", "file"]);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "teardown-flags-")));
+  const repo = join(root, "repo");
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    const seen: (readonly string[])[] = [];
+    const git = teardownGit(async (_file, args, options) => {
+      seen.push(args);
+      expect(options?.env).toMatchObject({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" });
+      if (!args.includes("config")) expect(args.slice(0, TEARDOWN_FLAGS.length)).toEqual(TEARDOWN_FLAGS);
+      if (args.includes("status") || args.includes("diff")) expect(args).toContain("--ignore-submodules=all");
+      return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
+    });
+    await git(repo, ["status", "--porcelain"]);
+    await git(repo, ["diff", "--", "file"]);
+    // The stub ran: the inspection, the index preflight and the command, each time.
+    expect(seen.filter(args => args.includes("status")).length).toBe(1);
+    expect(seen.filter(args => args.includes("diff")).length).toBe(1);
+    expect(seen.filter(args => args.includes("config")).length).toBe(2);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("removal from the shared repository refuses the target worktree's fsmonitor command", async () => {
@@ -146,25 +164,38 @@ describe("the plane's git on a build's checkout (checkoutGit)", () => {
 
 test("checkoutGit's status never enters a submodule whose config would run a command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "so-checkout-sub-"));
-  const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_TERMINAL_PROMPT: "0" };
+  // Each setup step bounded: one that stalls fails here, naming its command, instead of as the test's own timeout.
+  // 120 s, not 30: the 0.9.82 release check (full suite loading the Mac) saw a setup step pass 30 s (run 3281).
+  const git = (cwd: string, ...args: string[]) => {
+    try { return execFileSync("git", args, { cwd, env, timeout: 120_000, killSignal: "SIGKILL" }); }
+    catch (error) { throw new Error(`setup: git ${args.join(" ")} failed: ${error instanceof Error ? error.message : String(error)}`); }
+  };
   const inner = join(dir, "inner");
   mkdirSync(inner);
-  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: inner, env });
+  git(inner, "init", "-q", "-b", "main");
   writeFileSync(join(inner, "f"), "x\n");
-  execFileSync("git", ["add", "f"], { cwd: inner, env });
-  execFileSync("git", ["commit", "-q", "-m", "x"], { cwd: inner, env });
+  git(inner, "add", "f");
+  git(inner, "commit", "-q", "-m", "x");
   const outer = join(dir, "outer");
   mkdirSync(outer);
-  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: outer, env });
-  execFileSync("git", ["-c", "protocol.file.allow=always", "submodule", "add", "-q", inner, "sub"], { cwd: outer, env });
+  git(outer, "init", "-q", "-b", "main");
+  // The submodule is built with plumbing, not `git submodule add`: Apple's git-submodule shell script hung on the
+  // release Mac (0.9.82, run 3281) before running any git. A clone, its gitlink and .gitmodules are all the test needs.
+  git(dir, "-c", "protocol.file.allow=always", "clone", "-q", inner, join(outer, "sub"));
+  const head = git(inner, "rev-parse", "HEAD").toString().trim();
+  git(outer, "config", "-f", ".gitmodules", "submodule.sub.path", "sub");
+  git(outer, "config", "-f", ".gitmodules", "submodule.sub.url", inner);
+  git(outer, "update-index", "--add", "--cacheinfo", `160000,${head},sub`);
+  git(outer, "add", ".gitmodules");
   const marker = join(dir, "ran");
-  execFileSync("git", ["config", "core.fsmonitor", `touch ${marker}; true`], { cwd: join(outer, "sub") });
+  git(join(outer, "sub"), "config", "core.fsmonitor", `touch ${marker}; true`);
   writeFileSync(join(outer, "sub", "f"), "changed\n");
   const status = await checkoutGit()("git", ["status", "--porcelain"], { cwd: outer, env });
   expect(status.code).toBe(0);
   expect(existsSync(marker)).toBe(false);
   rmSync(dir, { recursive: true, force: true });
-});
+}, 300_000);
 
 test("a global filter that would run the checkout's own file never runs: global config contributes values only", async () => {
   const dir = mkdtempSync(join(tmpdir(), "so-checkout-global-"));
@@ -282,3 +313,21 @@ test.each([
   expect(refusal(result) !== null).toBe(refusedOne);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("a config parse that Git doesn't finish in time still refuses, and says so, not 'an unreadable file'", async () => {
+  // Two macOS CI runs (0.9.80, #261) refused a clean release checkout as "includes another file (an unreadable file)":
+  // a loaded runner's `git config --file` ran past its limit. Still a refusal; now named as a slow machine.
+  const dir = mkdtempSync(join(tmpdir(), "so-checkout-slow-parse-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+  const slow = join(dir, "..", `slow-git-${process.pid}-${Date.now()}`);
+  const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  writeFileSync(slow, `#!/bin/sh\ncase " $* " in *" --name-only "*) sleep 30 ;; esac\nexec "${real}" "$@"\n`, { mode: 0o755 });
+  const seen: string[][] = [];
+  const started = Date.now();
+  const result = await teardownGit(async (file, args, options) => { seen.push([...args]); return run(file, args, options); }, {}, undefined, slow)(dir, ["status"]);
+  expect(refusal(result)).toMatch(/didn't finish reading it in time/);
+  expect(refusal(result)).not.toMatch(/unreadable/);
+  expect(seen).toEqual([]);
+  expect(Date.now() - started).toBeLessThan(25_000);
+  rmSync(dir, { recursive: true, force: true }); rmSync(slow, { force: true });
+}, 40_000);

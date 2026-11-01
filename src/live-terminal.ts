@@ -443,9 +443,11 @@ export class TerminalHost {
    * End the program and everything that is its own: SIGHUP to every member (an interactive shell gives each job its own
    * process group, so the leader's group is not enough), then SIGKILL, re-reading the process table each time so a
    * child started during the close is caught too. Membership is the leader's descendants, every process with this
-   * terminal as its controlling terminal (started before the program ended), and every one noted while it ran, by pid
-   * and start time. A process that detached itself from the terminal AND its parents before it was noted is not seen —
-   * the same as any terminal. Resolves when the sweep is done; never waits without bound.
+   * terminal as its controlling terminal while the program runs, and every one noted while it ran, by pid and start
+   * time (membersOf). Each signal goes only to a process still that pid and start time; a process on the terminal after
+   * the program ended that was never noted, or a pid now someone else's, is never signalled and leaves the close
+   * uncertain. A process that detached itself from the terminal AND its parents before it was noted is not seen — the
+   * same as any terminal. Resolves when the sweep is done; never waits without bound.
    */
   close(id: string, by: "owner" | "console" = "owner"): Promise<void> {
     const session = this.sessions.get(id);
@@ -462,16 +464,35 @@ export class TerminalHost {
     const pause = sleep;
     const leaderGone = () => session.pty === null;
     let readable = true;
+    // Processes on its terminal after it ended that were never noted: maybe someone else's, never signalled.
+    const ambiguous = new Set<number>();
     const members = (): Map<number, string> => {
       const table = this.processes();
       if (table === null) { readable = false; return new Map(); }
-      const found = membersOf(table, session);
+      const found = membersOf(table, session, ambiguous);
       for (const [pid, started] of found) session.known.set(pid, started);
       return found;
     };
-    const signal = (found: ReadonlyMap<number, string>, name: "SIGHUP" | "SIGKILL") => {
-      if (!leaderGone()) { try { process.kill(-session.leader, name); } catch { /* gone */ } try { session.pty?.kill(name); } catch { /* gone */ } }
-      for (const pid of found.keys()) { try { process.kill(pid, name); } catch { /* gone */ } }
+    // Each signal goes only to the process it was meant for: the table is read again right before, and a pid whose
+    // start time is no longer the one recorded (gone, or a pid used again) is skipped, and the close is uncertain. The
+    // leader's group only while it runs: its pid is our unreaped child until the pty reports its exit, and, where the
+    // table reads, still the leader that started. A table that can't be read signals the leader alone (the close is
+    // uncertain then anyway).
+    const signal = (found: ReadonlyMap<number, string>, name: "SIGHUP" | "SIGSTOP" | "SIGKILL") => {
+      const table = this.processes();
+      if (table === null) readable = false;
+      const leaderStarted = session.known.get(session.leader);
+      if (!leaderGone() && (table === null || (leaderStarted !== undefined && table.get(session.leader)?.started === leaderStarted))) {
+        try { process.kill(-session.leader, name); } catch { /* gone */ }
+        try { session.pty?.kill(name); } catch { /* gone */ }
+      }
+      if (table === null) return;
+      for (const [pid, started] of found) {
+        const now = table.get(pid);
+        if (now === undefined) continue;
+        if (now.started !== started) { ambiguous.add(pid); continue; }
+        try { process.kill(pid, name); } catch { /* gone */ }
+      }
     };
     let cleanup: "clean" | "uncertain" = "uncertain";
     try {
@@ -487,9 +508,20 @@ export class TerminalHost {
         if (leaderGone() && members().size === 0 && readable) { cleanup = "clean"; return; }
       }
       for (let round = 0; round < 20; round += 1) {
-        const found = members();
+        let found = members();
         if (!readable) return;
         if (found.size === 0 && leaderGone()) { cleanup = "clean"; return; }
+        // Stopped first, then read again until nothing new appears: a stopped process can't fork, so a child one started
+        // just before it stopped is still its descendant here and is killed with it. Killed while running, a parent can
+        // fork between the read and the kill, and its child goes to launchd unnoted.
+        for (let settle = 0; settle < 5; settle += 1) {
+          signal(found, "SIGSTOP");
+          const again = members();
+          if (!readable) return;
+          const grew = [...again.keys()].some(pid => !found.has(pid));
+          found = again;
+          if (!grew) break;
+        }
         signal(found, "SIGKILL");
         await pause(100);
       }
@@ -507,7 +539,7 @@ export class TerminalHost {
           for (const pid of residents ?? []) { const row = table!.get(pid); if (row !== undefined) session.residentsSeen.set(pid, row.started); }
         }
       }
-      session.cleanup = readable && leaderGone() ? cleanup : "uncertain";
+      session.cleanup = readable && leaderGone() && ambiguous.size === 0 ? cleanup : "uncertain";
       if (session.endedAt === null) session.endedAt = this.clock().toISOString();
       this.ledger.release(session.id, session.cleanup);
       this.noteCustody();
@@ -579,23 +611,26 @@ export function readProcessTable(): ProcessTable | null {
 
 /**
  * A terminal's processes in this table, by pid and start time: what was noted while it ran (still the same process),
- * the leader, everything whose controlling terminal is its terminal and that started before it ended (a later process
- * on a reused device is someone else's), and every descendant of those. Never this console itself.
+ * the leader while it runs, everything whose controlling terminal is its terminal while it runs, and every descendant
+ * of those. Never this console itself. Once the program has ended its terminal's name is no one's proof: the device
+ * may already be someone else's, so a process on it that wasn't noted is not a member; it goes in `ambiguous` (when
+ * given), and the close that meets one says it is uncertain rather than signal it.
  */
-export function membersOf(table: ProcessTable, session: { leader: number; tty: string | null; known: ReadonlyMap<number, string>; exitedAt: number | null }): Map<number, string> {
+export function membersOf(table: ProcessTable, session: { leader: number; tty: string | null; known: ReadonlyMap<number, string>; exitedAt: number | null }, ambiguous?: Set<number>): Map<number, string> {
   const found = new Map<number, string>();
-  const startedMs = (started: string) => Date.parse(started);
+  const live = session.exitedAt === null;
+  const onTerminal = (tty: string) => session.tty !== null && tty === session.tty;
   for (const [pid, row] of table) {
     if (pid === process.pid || pid <= 1) continue;
     const noted = session.known.get(pid);
-    const ownTty = session.tty !== null && row.tty === session.tty && (session.exitedAt === null || startedMs(row.started) <= session.exitedAt + 1_000);
     // The leader by pid only while it runs: after it exits its pid may be someone else's (it is noted by start time).
-    if (noted === row.started || (pid === session.leader && session.exitedAt === null) || ownTty) found.set(pid, row.started);
+    if (noted === row.started || (pid === session.leader && live) || (live && onTerminal(row.tty))) found.set(pid, row.started);
   }
   for (let grew = true; grew;) {
     grew = false;
     for (const [pid, row] of table) if (!found.has(pid) && pid !== process.pid && found.has(row.ppid)) { found.set(pid, row.started); grew = true; }
   }
+  if (ambiguous !== undefined && !live) for (const [pid, row] of table) if (!found.has(pid) && pid !== process.pid && pid > 1 && onTerminal(row.tty)) ambiguous.add(pid);
   return found;
 }
 

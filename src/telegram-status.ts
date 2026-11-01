@@ -5,8 +5,8 @@ import { manualReviewOnly } from "./proof.js";
 import { diagnoseTaskDispatch, withDispatchDiagnoses, type DispatchDiagnosis } from "./dispatch.js";
 import type { Notification, Store } from "./store.js";
 import { familyCompleted } from "./result-completion.js";
-import { assignmentStatusFacts, plainReasonOf, stageOfDispatch, taskStatusOf, type TaskStatus } from "./task-status.js";
-import { assignmentOf } from "./assignment.js";
+import { approvedCheckOf, approvedCheckStateOf, assignmentStatusFacts, checksFactOf, plainReasonOf, stageOfDispatch, taskStatusOf, type TaskStatus } from "./task-status.js";
+import { assignmentChecksForRun, assignmentOf } from "./assignment.js";
 import { CHAT_CONTROLS, chatControlHref, chatResultHref, type ChatControl } from "./chat-controls.js";
 
 export type PhoneCommand = { kind: "status" } | { kind: "help" } | { kind: "task"; id: string } | { kind: "tasks" } | { kind: "lead" };
@@ -263,7 +263,12 @@ export function phoneTaskView(store: Store, repos: readonly string[], id: string
       const proof = store.proofVerdictFor(result.id);
       link = taskLinkFor(id, d, { run: result.id, verdict: proof !== null });
       const accepted = store.proofAcceptance(result.id) !== null;
-      const proofWords = { verified: "Checks passed at completion", attested: "Checks reported by the agent, not run by Toolroll", short: "Required saved material is missing", refuted: "The saved result conflicts with the approved scope" };
+      // Did the approved check pass (task-status.ts approvedCheckOf): read with the saved files, else no claim at all.
+      const checkNow = root === undefined || proof?.verdict !== "verified" ? null
+        : approvedCheckStateOf(approvedCheckOf(proof.verdict, proof.reasons, checksFactOf(assignmentChecksForRun(store, root, result.id, now), result.headRevision)));
+      const verifiedWords = root === undefined ? "Open the result to see its checks" : checkNow === "passed" ? "Checks passed at completion"
+        : checkNow === "failed" ? "Checks failed" : checkNow === "running" ? "Checks running" : "The check result couldn't be read";
+      const proofWords = { verified: verifiedWords, attested: "Checks reported by the agent, not run by Toolroll", short: "Required saved material is missing", refuted: "The saved result conflicts with the approved scope" };
       lines.push(`Checks: ${proof === null ? "No completion record saved" : manualReviewOnly(proof) ? accepted ? "Accepted by a person; the recorded checks are unchanged" : "A person must inspect this result; no recorded check failed" : proofWords[proof.verdict]}.`);
       if (manualReviewOnly(proof) && !accepted) lines.push('Reply “Send the result summary” for the checks, notes and screenshots.');
       if (proof !== null && proof.matrix.length > 0) lines.push(`Requirements: ${proof.matrix.filter(row => row.state === "pass").length}/${proof.matrix.length} satisfied in the saved record.`);

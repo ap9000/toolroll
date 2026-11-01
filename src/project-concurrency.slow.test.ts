@@ -149,8 +149,9 @@ describe("parallel builds from the service's builder", () => {
 
   /** Holds each build open until `together` have started, or until no other build has
    * started for a short grace after the latest one (every lane the watch would open
-   * starts in the same first pass), and records the most at once. */
-  const overlapping = (together: number, holdMs: number) => {
+   * starts in the same first pass), and records the most at once. A test that expects all
+   * `together` to start passes a long grace: it ends the moment they have, so it costs nothing. */
+  const overlapping = (together: number, holdMs: number, graceMs = 2_000) => {
     const seen = { active: 0, peak: 0, started: 0, checkouts: new Set<string>() };
     const agent: Runner = async (_file, args, options) => {
       const cwd = options?.cwd ?? "";
@@ -160,7 +161,7 @@ describe("parallel builds from the service's builder", () => {
       seen.peak = Math.max(seen.peak, seen.active);
       let lastStarted = seen.started;
       let quietSince = Date.now();
-      while (seen.started < together && Date.now() - quietSince < 2_000) {
+      while (seen.started < together && Date.now() - quietSince < graceMs) {
         await sleep(20);
         if (seen.started !== lastStarted) { lastStarted = seen.started; quietSince = Date.now(); }
       }
@@ -180,7 +181,8 @@ describe("parallel builds from the service's builder", () => {
 
   test("two tasks of one project build at once, each in its own checkout, under the default setting", async () => {
     const { runnerToken } = await setup(3, ["t-1", "t-2"]);
-    const { seen, agent } = overlapping(2, 300);
+    // A loaded release check can start the second build more than 2 s after the first.
+    const { seen, agent } = overlapping(2, 300, 30_000);
 
     expect(await watch(runnerToken, 60_000, agent, ["t-1", "t-2"]), lines.join("\n")).toBe(EXIT.ok);
 

@@ -1,15 +1,20 @@
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { provableCandidate } from "../test/deploy-candidate-fixture.js";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { installUpdateGate } from "./desktop-update-gate.js";
-import { BRANCH_GONE_LOOKS, BRANCH_GONE_PAUSE_MS, bumpFormula, cliRuntimes, deployedRuntime, gateStateOf, githubSlug, releaseAdapters, serviceRuntimes, stageGate, workflowRunsOnChange, type Exec } from "./release-adapters.js";
+import { BRANCH_GONE_LOOKS, BRANCH_GONE_PAUSE_MS, bumpFormula, cliRuntimes, deployedRuntime, gateStateOf, githubSlug, releaseAdapters, releaseAdapters as quietAdapters, serviceRuntimes, stageGate, workflowRunsOnChange, type Exec, type ReleaseRepo, type ReleaseTools } from "./release-adapters.js";
 import { openStore, type Database } from "./store.js";
 import { fakePid } from "../test/fake-pid.js";
 
 const root = () => mkdtempSync(join(tmpdir(), "so-release-adapters-"));
 const SHA = "a".repeat(40);
+/** The repository as the plane records it and the programs by absolute path (release-adapters.ts recordedReleaseRepo). */
+const REPO: ReleaseRepo = { checkout: "/rv", gitDir: "/rv/.git", remote: "https://github.com/ap9000/toolroll.git", slug: "ap9000/toolroll", ssh: false };
+const TOOLS: ReleaseTools = { git: "/usr/bin/git", gh: "/opt/homebrew/bin/gh", ssh: "/usr/bin/ssh" };
 
 describe("the release adapters", () => {
   test("read a GitHub remote, https or ssh", () => {
@@ -28,7 +33,7 @@ describe("the release adapters", () => {
     expect(gateStateOf(show, [{ name: "alex", role: "approver", revokedAt: null }])).toEqual({
       exists: true, candidate: SHA, scopeDigest: "d1",
       approval: { by: "alex", at: "2026-10-08T09:00:00.000Z", digest: "d1", basis: "password", role: "approver", active: true },
-      result: { run: 7, head: SHA, check: "passed", level: "full", receipt: "r1", worktree: "/w/7" }, failed: null,
+      result: { run: 7, head: SHA, check: "passed", level: "full", receipt: "r1", worktree: "/w/7" }, failed: null, pending: false,
       completion: { actor: "lead:alex", at: "y", digest: "r1" },
     });
     // A follow-up check still running on that commit is not a result yet.
@@ -36,6 +41,11 @@ describe("the release adapters", () => {
     // A newer build that ended without a result failed before its check.
     expect(gateStateOf({ ...show, runs: [...show.runs, { id: 9, role: "builder", outcome: "failed", finishedAt: "z" }] }).failed).toBe("run 9 ended failed");
     expect(gateStateOf({ ok: false, command: "task show", reason: "unknown-task" })).toMatchObject({ exists: false });
+    // Queued again (a regate) or building past the result: that result is the one before the rerun.
+    expect(gateStateOf({ ...show, task: { state: "queued" } }).pending).toBe(true);
+    expect(gateStateOf({ ...show, task: { state: "running" } }).pending).toBe(true);
+    expect(gateStateOf({ ...show, task: { state: "done" }, runs: [...show.runs, { id: 9, role: "builder", outcome: null, finishedAt: null }] }).pending).toBe(true);
+    expect(gateStateOf({ ...show, task: { state: "done" } }).pending).toBe(false);
   });
 
   test("find which runtime the services and both CLI names run", () => {
@@ -142,14 +152,15 @@ describe("the release adapters", () => {
     expect(await adapter.runtimeCommit(dist)).toBeNull();
   });
 
-  test("deploy and recovery invoke the candidate script with the persisted stage and bounded runtime", async () => {
-    const stage = root(), input = { stage, run: 7, worktree: "/w/7" };
-    const calls: { args: readonly string[]; options: unknown }[] = [];
-    const run: Exec = async (_command, args, options) => {
-      calls.push({ args, options });
-      return { code: 0, stdout: JSON.stringify({ runtime: "/new/dist" }), stderr: "" };
+  test("deploy and recovery run the approved commit's own script, extracted by the release, with the persisted stage and bounded runtime", async () => {
+    const stage = root(), database = join(stage, "orders.db"), { project, head: approved } = projectAt(stage);
+    const { runId, head } = provableCandidate(database, "deploy-me", "person", approved, project);
+    const input = { stage, run: runId, worktree: "/w/7" };
+    const calls: { command: string; args: readonly string[]; options: unknown }[] = [];
+    const run: Exec = async (command, args, options) => {
+      calls.push({ command, args, options });
+      return extracting(command, args) ?? { code: 0, stdout: JSON.stringify({ runtime: "/new/dist" }), stderr: "" };
     };
-    const database = join(stage, "no-such.db");
     const adapter = releaseAdapters({ checkout: "/rv", run, deployMinutes: 3, database, processes: () => [] }).toolroll;
     // A crash before preparation installed any gate needs no rollback.
     expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
@@ -157,12 +168,22 @@ describe("the release adapters", () => {
     expect(await adapter.deploy(input)).toEqual({ ok: true, runtime: "/new/dist" });
     writeFileSync(join(stage, "deployment.json"), "{}");
     expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
-    expect(calls.map(one => one.args)).toEqual([
-      ["scripts/deploy-browser.mjs", "--run", "7", "--stage", stage, "--yes"],
-      ["scripts/deploy-browser.mjs", "--run", "7", "--stage", stage, "--phase", "recover"],
+    const gitDir = realpathSync(join(project, ".git"));
+    const scripts = calls.filter(one => one.command === process.execPath);
+    expect(scripts.map(one => one.args.slice(1))).toEqual([
+      ["--run", String(runId), "--stage", stage, "--source", "/w/7", "--head", head, "--git-dir", gitDir, "--yes"],
+      ["--run", String(runId), "--stage", stage, "--source", "/w/7", "--head", head, "--git-dir", gitDir, "--phase", "recover"],
     ]);
-    for (const call of calls) expect(call.options).toMatchObject({ cwd: "/w/7", timeoutMs: 180_000 });
-    const failed = releaseAdapters({ checkout: "/rv", database, processes: () => [], run: async () => ({ code: 124, stdout: "", stderr: "recovery timed out" }) }).toolroll;
+    for (const call of scripts) {
+      // The script is the release's own extraction of the commit, run from there, never from the checkout.
+      const cwd = (call.options as { cwd: string }).cwd;
+      expect(call.args[0]).toBe(join(cwd, "scripts", "deploy-browser.mjs"));
+      expect(cwd).not.toBe("/w/7");
+      expect(call.options).toMatchObject({ timeoutMs: 180_000 });
+    }
+    // The extraction is this runtime's own (no git or tar through the stand-in), and only the node runs go out.
+    expect(calls.every(one => one.command === process.execPath)).toBe(true);
+    const failed = releaseAdapters({ checkout: "/rv", database, processes: () => [], run: async (command, args) => extracting(command, args) ?? { code: 124, stdout: "", stderr: "recovery timed out" } }).toolroll;
     expect(await failed.recoverDeploy(input)).toEqual({ ok: false, message: expect.stringMatching(/^recovery timed out \(the deployment journal is at an unreadable phase;/) });
   });
 
@@ -174,9 +195,11 @@ describe("the release adapters", () => {
   });
 
   test("an exit 0 without a runtime is a stop, not a deployment", async () => {
-    const stage = root();
-    const run: Exec = async () => ({ code: 0, stdout: "Add --yes to drain the plane, back up the database, and swap the service.", stderr: "" });
-    expect(await releaseAdapters({ checkout: "/rv", run, database: join(stage, "none.db") }).toolroll.deploy({ stage, run: 7, worktree: "/w/7" }))
+    const stage = root(), database = join(stage, "orders.db");
+    const { project, head } = projectAt(stage);
+    const { runId } = provableCandidate(database, "deploy-me", "person", head, project);
+    const run: Exec = async (command, args) => extracting(command, args) ?? { code: 0, stdout: "Add --yes to drain the plane, back up the database, and swap the service.", stderr: "" };
+    expect(await releaseAdapters({ checkout: "/rv", run, database }).toolroll.deploy({ stage, run: runId, worktree: "/w/7" }))
       .toEqual({ ok: false, message: "Add --yes to drain the plane, back up the database, and swap the service." });
   });
 
@@ -184,12 +207,13 @@ describe("the release adapters", () => {
     const ID = "0f1e2d3c-4b5a-4968-8776-655443322110";
     const paused = (phase: string, owned: boolean) => {
       const stage = root(), database = join(stage, "orders.db");
-      openStore(database).close();
+      const { project, head } = projectAt(stage);
+      const { runId } = provableCandidate(database, "deploy-me", "person", head, project);
       if (owned) { const db = new DatabaseSync(database) as unknown as Database; try { installUpdateGate(db, ID); } finally { db.close(); } }
       writeFileSync(join(stage, "deployment.json"), JSON.stringify({ id: ID, phase }));
-      return { stage, database, input: { stage, run: 7, worktree: "/w/7" } };
+      return { stage, database, input: { stage, run: runId, worktree: "/w/7" } };
     };
-    const exit1: Exec = async () => ({ code: 1, stdout: "", stderr: "The deployment stopped at preparing" });
+    const exit1: Exec = async (command, args) => extracting(command, args) ?? { code: 1, stdout: "", stderr: "The deployment stopped at preparing" };
 
     test("names its pause only when the journal is before the swap and the live pause is that deployment's", () => {
       expect(stageGate(paused("preparing", true).stage, () => ID)).toEqual({ id: ID, phase: "preparing" });
@@ -225,14 +249,16 @@ describe("the release adapters", () => {
     const run: Exec = async (command, args) => {
       calls.push([command, ...args]);
       const joined = args.join(" ");
-      if (joined.includes("/pulls/170/merge")) return { code: 0, stdout: JSON.stringify({ sha: "m".repeat(40), merged: true }), stderr: "" };
+      if (joined.includes("/pulls/170/merge")) return { code: 0, stdout: JSON.stringify({ sha: "b".repeat(40), merged: true }), stderr: "" };
+      // Which workflow each suite is a run of (the CI reader asks): none here.
+      if (joined.includes("/actions/runs")) return { code: 0, stdout: "", stderr: "" };
       if (joined.includes("check-runs")) return { code: 0, stdout: `{"id":9,"name":"x","status":"completed","conclusion":"success","app":"github-actions"}\n{"id":3,"name":"x","status":"completed","conclusion":"failure","app":null}\n`, stderr: "" };
       if (joined.includes("git/ref/tags/v0.9.52")) return { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" };
       return { code: 1, stdout: "", stderr: "unexpected" };
     };
-    const adapters = releaseAdapters({ checkout: "/rv", run });
-    expect(await adapters.github.merge("ap9000/toolroll", 170, SHA)).toBe("m".repeat(40));
-    expect(calls[0]).toEqual(["gh", "api", "-X", "PUT", "repos/ap9000/toolroll/pulls/170/merge", "-f", "merge_method=squash", "-f", `sha=${SHA}`]);
+    const adapters = releaseAdapters({ checkout: "/rv", run, tools: TOOLS });
+    expect(await adapters.github.merge("ap9000/toolroll", 170, SHA)).toBe("b".repeat(40));
+    expect(calls[0]).toEqual([TOOLS.gh, "api", "-X", "PUT", "repos/ap9000/toolroll/pulls/170/merge", "-f", "merge_method=squash", "-f", `sha=${SHA}`]);
     expect((await adapters.github.checks("ap9000/toolroll", SHA)).map(one => [one.conclusion, one.app])).toEqual([["failure", null], ["success", "github-actions"]]);
     expect(await adapters.github.tag("ap9000/toolroll", "v0.9.52")).toBeNull();
   });
@@ -250,23 +276,26 @@ describe("the release adapters", () => {
       calls.push(args);
       return { code: 0, stderr: "", stdout: args.includes("ls-remote") && head !== null ? `${head}\trefs/heads/release-me\n` : "" };
     };
-    const deletion = releaseAdapters({ checkout: "/rv", run }).repo.deleteBranch("release-me", SHA);
+    const deletion = releaseAdapters({ checkout: "/rv", run, releaseRepo: REPO, tools: TOOLS }).repo.deleteBranch("release-me", SHA);
     if (head !== null && head !== SHA) await expect(deletion).rejects.toThrow(/not deleted/);
     else await deletion;
-    expect(calls.filter(one => one.includes("push"))).toEqual(head === SHA
-      ? [["-C", "/rv", "push", `--force-with-lease=refs/heads/release-me:${SHA}`, "origin", ":refs/heads/release-me"]] : []);
+    // The recorded URL, never the checkout's origin, with the hardened settings ahead of the push.
+    expect(calls.filter(one => one.includes("push")).map(one => one.slice(one.indexOf("push")))).toEqual(head === SHA
+      ? [["push", "--no-verify", `--force-with-lease=refs/heads/release-me:${SHA}`, "toolroll-release", ":refs/heads/release-me"]] : []);
+    expect(calls.filter(one => one.includes("push")).every(one => one[0] === "--git-dir=/rv/.git" && one.includes("protocol.allow=never") && one.includes(`remote.toolroll-release.pushurl=${REPO.remote}`))).toBe(true);
   });
 
   test.each([[null, "resolves"], [SHA, "rejects"]] as const)("a failed delete is fine only when the branch is gone after it (%s)", async (after, outcome) => {
     let looks = 0;
     const run: Exec = async (_command, args) => {
       if (args.includes("push")) return { code: 1, stderr: "error: unable to delete 'release-me': remote ref does not exist", stdout: "" };
+      if (args.includes("config")) return { code: 0, stderr: "", stdout: "" };
       looks += 1;
       const head = looks === 1 ? SHA : after;
       return { code: 0, stderr: "", stdout: head === null ? "" : `${head}\trefs/heads/release-me\n` };
     };
     const paused: number[] = [];
-    const deletion = releaseAdapters({ checkout: "/rv", run, sleep: async ms => { paused.push(ms); } }).repo.deleteBranch("release-me", SHA);
+    const deletion = releaseAdapters({ checkout: "/rv", run, releaseRepo: REPO, tools: TOOLS, sleep: async ms => { paused.push(ms); } }).repo.deleteBranch("release-me", SHA);
     if (outcome === "resolves") await deletion;
     else await expect(deletion).rejects.toThrow(/deleting merged branch release-me failed: error: unable to delete/);
     expect(looks).toBe(outcome === "resolves" ? 2 : 1 + BRANCH_GONE_LOOKS);
@@ -278,10 +307,11 @@ describe("the release adapters", () => {
     let looks = 0;
     const run: Exec = async (_command, args) => {
       if (args.includes("push")) return { code: 1, stderr: "! [remote rejected] release-me (cannot lock ref 'refs/heads/release-me': unable to resolve reference)", stdout: "" };
+      if (args.includes("config")) return { code: 0, stderr: "", stdout: "" };
       looks += 1;
       return { code: 0, stderr: "", stdout: looks <= 3 ? `${SHA}\trefs/heads/release-me\n` : "" };
     };
-    await releaseAdapters({ checkout: "/rv", run, sleep: async () => {} }).repo.deleteBranch("release-me", SHA);
+    await releaseAdapters({ checkout: "/rv", run, releaseRepo: REPO, tools: TOOLS, sleep: async () => {} }).repo.deleteBranch("release-me", SHA);
     expect(looks).toBe(4);
   });
 
@@ -326,6 +356,8 @@ describe("the release adapters", () => {
   });
 
   test("a tap whose workflows can't be listed stops; one it can't read counts as checked", async () => {
+    // A 5xx is asked again (release-net.ts) before it stops; no real pauses here.
+    const releaseAdapters = (options: Parameters<typeof quietAdapters>[0]) => quietAdapters({ ...options, sleep: async () => {} });
     const unlisted: Exec = async (_command, args) => args.includes("repos/ap9000/homebrew-toolroll") ? { code: 0, stderr: "", stdout: "main\n" } : { code: 1, stderr: "HTTP 502", stdout: "" };
     await expect(releaseAdapters({ checkout: "/rv", run: unlisted }).homebrew.checked(SHA)).rejects.toThrow(/listing .*workflows at/);
     const unreadable: Exec = async (_command, args) => {
@@ -354,5 +386,76 @@ describe("the release adapters", () => {
   test("a successful HTTP response that refuses the tap merge is not a completed release", async () => {
     const run: Exec = async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ merged: false, message: "Required check is pending" }) });
     await expect(releaseAdapters({ checkout: "/rv", run }).homebrew.merge(12, SHA)).rejects.toThrow(/did not merge.*Required check is pending/);
+  });
+});
+
+/** A stand-in for the release's extraction of the approved commit: git archive and tar succeed (writing nothing). */
+function extracting(command: string, args: readonly string[]): { code: number; stdout: string; stderr: string } | null {
+  if (command === "git" && args.includes("archive")) return { code: 0, stdout: "", stderr: "" };
+  if (command === "tar") return { code: 0, stdout: "", stderr: "" };
+  return null;
+}
+
+/** A real project repository with an approved deployment script committed; its own Git directory is what the release
+ * reads the approved commit from. */
+function projectAt(stage: string): { project: string; head: string } {
+  const project = join(stage, "project");
+  mkdirSync(join(project, "scripts"), { recursive: true });
+  writeFileSync(join(project, "scripts", "deploy-browser.mjs"), "console.log('approved');\n");
+  const git = (...args: string[]) => execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main", ...args], { cwd: project, encoding: "utf8",
+    env: { PATH: process.env["PATH"] ?? "", HOME: stage, GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
+  git("init", "-q");
+  git("add", ".");
+  git("commit", "-q", "-m", "approved");
+  return { project, head: git("rev-parse", "HEAD") };
+}
+
+describe("the tap's formula version (pipeline-speed.md, P1: an older release never overwrites a newer formula)", () => {
+  test("reads the version the formula's tarball names, and orders versions numerically", async () => {
+    const { formulaVersion, versionAfter } = await import("./release-adapters.js");
+    expect(formulaVersion('class Toolroll < Formula\n  url "https://registry.npmjs.org/toolroll/-/toolroll-0.9.78.tgz"\n  sha256 "' + "a".repeat(64) + '"\n')).toBe("0.9.78");
+    expect(formulaVersion("no url here")).toBeNull();
+    expect(versionAfter("0.9.10", "0.9.9")).toBe(true);
+    expect(versionAfter("0.9.9", "0.9.10")).toBe(false);
+    expect(versionAfter("0.9.77", "0.9.77")).toBe(false);
+    expect(versionAfter("1.0.0", "0.99.99")).toBe(true);
+  });
+});
+
+describe("security scan: only the tap's own branch is a Homebrew change", () => {
+  test("a fork's pull request of the same branch name never counts", async () => {
+    const { tapOwnHead } = await import("./release-adapters.js");
+    const own = { isCrossRepository: false, headRepository: { name: "homebrew-toolroll" }, headRepositoryOwner: { login: "ap9000" } };
+    expect(tapOwnHead(own, "ap9000/homebrew-toolroll")).toBe(true);
+    expect(tapOwnHead({ ...own, isCrossRepository: true }, "ap9000/homebrew-toolroll")).toBe(false);
+    expect(tapOwnHead({ ...own, headRepositoryOwner: { login: "mallory" } }, "ap9000/homebrew-toolroll")).toBe(false);
+    expect(tapOwnHead({ ...own, headRepository: { name: "homebrew-other" } }, "ap9000/homebrew-toolroll")).toBe(false);
+    expect(tapOwnHead({ number: 1 }, "ap9000/homebrew-toolroll")).toBe(false);
+  });
+});
+
+describe("security scan: only exactly the formula bump is ever merged into the tap", () => {
+  const base = "b".repeat(40), head = "c".repeat(40), sha256 = "d".repeat(64);
+  const formula = "Formula/toolroll.rb";
+  const expected = `url "https://registry.npmjs.org/toolroll/-/toolroll-0.9.78.tgz"\nsha256 "${sha256}"\n`;
+  const view = { number: 12, headRefOid: head, headRefName: "toolroll-0.9.78", baseRefName: "main", state: "OPEN", isCrossRepository: false, headRepository: { name: "homebrew-toolroll" }, headRepositoryOwner: { login: "ap9000" } };
+  const compare = { status: "ahead", ahead_by: 1, behind_by: 0, merge_base_commit: { sha: base }, files: [{ filename: formula, status: "modified" }] };
+  const input = { tap: "ap9000/homebrew-toolroll", pr: 12, head, version: "0.9.78", formula, defaultBranch: "main", baseHead: base, baseVersion: "0.9.77", view, compare, expected, atHead: expected, sha256 };
+
+  test.each([
+    ["exactly the bump", {}, null],
+    ["a newer version landed since the state check", { baseVersion: "0.9.79" }, /already names newer/],
+    ["an unreadable current formula version", { baseVersion: null }, /current version/],
+    ["a change that also touches another file", { compare: { ...compare, files: [...compare.files, { filename: ".github/workflows/x.yml", status: "added" }] } }, /changes more than/],
+    ["a branch with an extra commit", { compare: { ...compare, ahead_by: 2 } }, /exactly one commit/],
+    ["a branch not on the default branch's head", { compare: { ...compare, merge_base_commit: { sha: "e".repeat(40) } } }, /isn't on main's head/],
+    ["a pull request into another base", { view: { ...view, baseRefName: "release" } }, /merges into release/],
+    ["a fork's pull request", { view: { ...view, isCrossRepository: true } }, /isn't the tap's own/],
+    ["a moved head", { view: { ...view, headRefOid: "f".repeat(40) } }, /isn't the tap's own/],
+    ["a formula with another sha256", { atHead: expected.replace(sha256, "a".repeat(64)) }, /sha256/],
+  ] as const)("%s", async (_name, over, why) => {
+    const { tapChangeProblem } = await import("./release-adapters.js");
+    const problem = tapChangeProblem({ ...input, ...over } as typeof input);
+    if (why === null) expect(problem).toBeNull(); else expect(problem).toMatch(why);
   });
 });

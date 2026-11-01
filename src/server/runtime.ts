@@ -1,3 +1,4 @@
+import { type ProjectIdentities } from "../project-identity.js";
 import type { FreshFacts } from '../scope.js';
 import type { createPersonalQueueRuntime } from '../lead-queue-runtime.js';
 import type { FlowRooms } from '../flow-live.js';
@@ -87,7 +88,9 @@ export interface ServerRuntime {
   clock: () => Date;
   taskRooms: TaskRooms;
   identify: (request: IncomingMessage, touch?: boolean, limited?: boolean, refusedToken?: { principal?: Principal; }) => Who | null;
-  liveCeiling: () => { repos: string[]; roots: readonly string[]; };
+  liveCeiling: () => { repos: string[]; roots: readonly string[]; canon?: (path: string) => string | null };
+  /** Project identities without reading folders on the console's thread (project-identity.ts). */
+  identities: ProjectIdentities;
   taskScreen: (response: ServerResponse, who: Who, taskId: string, problem: string | null, status: number, scopeDraft?: URLSearchParams, cancelDraft?: string, editPlan?: boolean, page?: TaskPageExtras) => void;
   runVisible: (run: Run) => boolean;
   runIsLive: (run: Pick<Run, "outcome" | "leaseId" | "taskRef">) => boolean;
@@ -115,18 +118,27 @@ export interface ServerRuntime {
   teamChatProvider: TeamChatProviderResolver;
   pullRequestTargetOf: (runId: number) => string | null;
   chatEnablement: () => ChatEnablement;
-  startLeadConversation: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true; }>, ceilingUsd: number, follow: boolean, now: Date) => number;
+  startLeadConversation: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true; }>, ceilingUsd: number, follow: boolean, now: Date, scope?: LeadThreadScope, request?: string) => number;
   projectFamilyPeek: (repo: string, now: Date) => ProjectPeek;
   needsYouBadge: (project: string | null) => { count: number; saturated: boolean; };
   liveRefreshSeconds: () => number;
+  /** One work index page for an already-admitted reader, read at most once per workspace revision (console-chrome.ts). */
+  sharedIndexPage: (access: import("../work-summary.js").WorkSummaryAccess, options: import("../work-index.js").WorkIndexOptions) => import("../work-index.js").WorkIndexPage;
   chatKeyFor: (provider: DirectChatProviderId) => { key: string; source: "environment" | "stored"; } | null;
   chatCatalog: () => Promise<import("../converse.js").CatalogModel[] | null>;
+  /** The catalog as last fetched: what a page shows. A page never fetches. */
+  chatCatalogKnown: () => import("../converse.js").CatalogModel[] | null;
   leadRecheckedAt: number;
   checkLocalAgents: (fresh?: boolean) => Promise<void>;
   localSignIn: { at: number; signedIn: boolean; states: Record<"claude" | "codex", ProviderConnection["state"] | "unverified">; } | null;
   agentSignInCommand: () => string;
   connectionCheck: (provider: ProviderId, fresh?: boolean) => Promise<ProviderConnection>;
-  modelCatalog: (key: string | null, refresh?: boolean) => Promise<OpenRouterModels>;
+  /** What the last sign-in check said: what a page shows. A page never checks (docs/plans/get-side-effects.md). */
+  connectionKnown: (provider: ProviderId) => ProviderConnection | null;
+  /** The last answer of each other check a page shows; a page only reads it. */
+  lastChecks: import("./last-checks.js").LastChecks;
+  checkRelease: () => Promise<{ version: string } | { problem: string }>;
+  modelCatalog: ((key: string | null, refresh?: boolean) => Promise<OpenRouterModels>) & { known: (key: string | null) => OpenRouterModels | null };
   modelSeams: CatalogSeams;
   toolsViewOf: (repo: string, codex: unknown[] | null, kit?: string | null, wanted?: string | null) => ToolsView;
   codexServers: (repo: string) => Promise<unknown[] | null>;
@@ -155,6 +167,8 @@ export interface ServerRuntime {
   consumeApprovalNonce: (nonce: string, name: string, taskId: string, digest: string) => boolean;
   recordSignIn: (actor: string, action: string, outcome: string, detail?: string | null) => void;
   ssoProvider: { issuer: string; provider: OidcProvider; at: number; } | null;
+  /** The identity provider as last discovered; a page never discovers it. */
+  providerKnown: (issuer: string) => import("../oidc.js").OidcProvider | null;
   providerFor: (issuer: string) => Promise<{ ok: true; provider: OidcProvider; } | { ok: false; said: string; }>;
   connectVisits: Map<string, ConnectVisit>;
   defaultProject: string | null;

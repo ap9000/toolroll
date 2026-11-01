@@ -29,7 +29,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { authenticate } from "./runner.js";
+import { authenticate, drainOf } from "./runner.js";
 import { pauseForAuth } from "./provider-auth.js";
 import {
   DEFAULT_MAX_OPEN_DECISIONS,
@@ -103,7 +103,10 @@ export type AcquireResult =
   | { ok: false; reason: "unauthorized-repo"; repo: string }
   /** A coordinator filed this and no password ceremony has sealed its
    * scope yet — nothing claims, plans, or runs it until one does. */
-  | { ok: false; reason: "coordinator-filed" };
+  | { ok: false; reason: "coordinator-filed" }
+  | { ok: false; reason: "watch-custody" }
+  /** The runner reported draining (v137 lifecycle): its stop has begun, so it takes no new work. */
+  | { ok: false; reason: "draining"; until: string };
 
 /** `fenced` means the lease was superseded; `unknown` means it never existed. */
 export type FenceResult =
@@ -201,12 +204,20 @@ function acquireLocked(
       // repo never even holds a claim.
       const gate = authenticate(store, runner, options.token);
       if (!gate.ok) return { ok: false as const, reason: "unauthenticated" as const, detail: gate.reason };
+      // DRAINING (v137): a runner whose stop has begun admits nothing new, on every claim road.
+      const drain = drainOf(store, gate.runner, now);
+      if (drain !== null) return { ok: false as const, reason: "draining" as const, until: drain.until };
       const placedRef = store.refForId(taskRef);
       const placedRepo = placedRef?.repo ?? null;
       if (placedRepo === null) return { ok: false as const, reason: "unplaced" as const };
       if (!gate.runner.repos.includes(placedRepo)) {
         return { ok: false as const, reason: "unauthorized-repo" as const, repo: placedRepo };
       }
+      // The watch may have lapsed while this pass awaited I/O, before its heartbeat callback ran. Runner tokens
+      // survive a role restart, so prove this exact watch in the claim transaction as well.
+      if (options.incarnation !== undefined && db.prepare(
+        "SELECT 1 FROM watch_lease WHERE runner = ? AND repo = ? AND owner = ? AND expires_at > ?",
+      ).get(runner, placedRepo, options.incarnation, stamp) === undefined) return { ok: false as const, reason: "watch-custody" as const };
       // THE COORDINATOR QUARANTINE in the one primitive every claim road
       // shares (MCP spec v6, round-3 f1): a coordinator-filed task whose
       // scope has not been sealed by the password ceremony claims for
@@ -243,7 +254,7 @@ function acquireLocked(
         return {
           ok: false as const,
           reason: "mode-ended" as const,
-          message: "the operating mode that approved this has ended — the approval falls back to a person",
+          message: "the approval it was sealed with no longer stands (an ended mode or flow grant, or an approval that wasn't a person's) — a person approves it again",
         };
       }
       // A LEAD SWEEP'S LIMIT, inside this write transaction so two runners can't both take the last slot: at most

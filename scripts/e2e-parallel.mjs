@@ -36,6 +36,7 @@ import { basename, join, resolve } from "node:path";
 import { exactly, here, retryCleared, retrySet, stopLeftovers } from "./e2e-kit.mjs";
 import { gateWords, limiter, openGate } from "./provider-gate.mjs";
 import { runSuite } from "./suite-lifecycle.mjs";
+import { result as checkResult, resultsEnabled } from "./check-results.mjs";
 
 /** Groups at once when --at-once doesn't say. */
 export const LANES = 4;
@@ -64,9 +65,13 @@ export async function runGroups({ groups, limit, run, retry = true, signal = nul
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const [script, ...given] = process.argv.slice(2);
   if (script === undefined) { console.error("Usage: node scripts/e2e-parallel.mjs <script.mjs> [--no-retry] [--at-once <n>] [--output <dir>] [options for every group]"); process.exit(2); }
-  const failFast = process.env.TOOLROLL_RELEASE_FAIL_FAST === "1";
+  // TOOLROLL_RELEASE_FAIL_FAST: the first failed group stops the others (and retries nothing). A release check keeps going
+  // instead (docs/plans/release-once.md) and says so with TOOLROLL_CHECK_KEEP_GOING; its scripted failures stay final
+  // with TOOLROLL_RELEASE_NO_RETRY.
+  const keepGoing = process.env.TOOLROLL_CHECK_KEEP_GOING === "1";
+  const failFast = process.env.TOOLROLL_RELEASE_FAIL_FAST === "1" && !keepGoing;
   const abort = new AbortController();
-  const retry = !failFast && !given.includes("--no-retry");
+  const retry = !failFast && process.env.TOOLROLL_RELEASE_NO_RETRY !== "1" && !given.includes("--no-retry");
   const keep = given.includes("--keep");
   const at = given.indexOf("--output");
   const onceAt = given.indexOf("--at-once");
@@ -84,7 +89,13 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const hasKind = one => journeys === "scripted" ? (one.ownScripted ?? one.scripted ?? 1) > 0 : journeys === "real" ? (one.real ?? 1) > 0 : true;
   const groups = listed.filter(one => (picked === null || picked.includes(one.name)) && hasKind(one));
   const name = basename(script, ".mjs").replace(/-e2e$/, "");
-  if (groups.length === 0) { console.log(`No ${journeys === "all" ? "" : `${journeys} `}journeys to run in ${picked === null ? "any group" : picked.join(", ")}.`); process.exit(0); }
+  if (groups.length === 0) {
+    checkResult({ kind: "journey-inventory", script: name, journeys, groups: [] });
+    checkResult({ kind: "journey-end", script: name, journeys });
+    console.log(`No ${journeys === "all" ? "" : `${journeys} `}journeys to run in ${picked === null ? "any group" : picked.join(", ")}.`); process.exit(0);
+  }
+  // The release check's inventory of groups, before any starts (only to its own pipe).
+  checkResult({ kind: "journey-inventory", script: name, journeys, groups: groups.map(one => one.name) });
   const out = resolve(at === -1 ? join(here, "evidence", `${name}-parallel-${new Date().toISOString().replace(/[:.]/g, "-")}`) : given[at + 1]);
   const started = Date.now();
   const minutes = ms => Math.round(ms / 6000) / 10;
@@ -96,6 +107,8 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   console.log(`Running ${groups.length} groups, at most ${limit} at once (${onceAt === -1 ? "the default" : "--at-once"} ${atOnce}${gate === null ? "" : `; real turns capped at ${gate.cap}`}): ${groups.map(one => one.name).join(", ")}`);
 
   const report = folder => { try { return JSON.parse(readFileSync(join(out, folder, "report.json"), "utf8")); } catch { return null; } };
+  /** Each run's result lines (from its fd 3, check-results.mjs), by its folder. */
+  const lineOf = new Map();
   // The first run's own --only is replaced by the journeys to retry (they are a subset of it).
   const without = (list, flag) => list.filter((one, index) => one !== flag && list[index - 1] !== flag);
 
@@ -118,8 +131,11 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       // when it ends, or the runner is interrupted, whatever it left in that group, or listed as still running in its
       // processes.json (a run killed outright never reaches its own finally), is stopped, then the folder goes, before a
       // retry starts (scripts/suite-lifecycle.mjs).
+      const lines = [];
+      lineOf.set(folder, lines);
       const one = await runSuite({
         signal: abort.signal,
+        ...(resultsEnabled ? { onResult: line => lines.push(line) } : {}),
         onExit: code => {
           if (failFast && code !== 0 && !abort.signal.aborted) {
             console.error(`TOOLROLL_CHECK_FAILURE ${name}/${group}: exit ${code}`);
@@ -168,6 +184,28 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   // The model calls every run made (the retries' too): scripted answers, and turns real models took.
   const calls = [...first, ...again].map(one => report(one.folder)?.modelCalls).filter(Boolean);
   if (calls.length > 0) console.log(`\nModel calls: ${calls.reduce((sum, one) => sum + one.scripted, 0)} scripted, ${calls.reduce((sum, one) => sum + one.real, 0)} real turns`);
+  // The release check's results, from the groups' own pipes, never from report.json: each group's journeys (a retry's
+  // outcomes over its first run's), and whether the group can be read journey by journey at all.
+  for (const one of finished) {
+    const first = runs.find(each => each.one.group === one.group);
+    const folders = [first.one.folder, ...(first.again === null ? [] : [first.again.folder])];
+    const states = new Map();
+    let ended = false, browserFailed = false;
+    for (const folder of folders) {
+      const lines = lineOf.get(folder) ?? [];
+      const end = lines.find(line => line.kind === "journey-end");
+      ended = end !== undefined;
+      browserFailed = end?.browserCheck === "failed";
+      for (const line of lines) if (line.kind === "journey" && typeof line.name === "string") states.set(line.name, line.state);
+    }
+    const cancelled = one.cancelled === true;
+    checkResult({ kind: "journey-group", script: name, journeys, group: one.group,
+      state: cancelled ? "not-run" : one.code === 0 ? "passed" : "failed",
+      retried: first.again !== null && one.code === 0,
+      unattributed: !cancelled && (!ended || browserFailed),
+      results: [...states].map(([journey, state]) => ({ name: journey, state })) });
+  }
+  checkResult({ kind: "journey-end", script: name, journeys });
   console.log(finished.map(one => `${one.code === 0 ? "✅" : "❌"} ${one.group.padEnd(width)}  ${one.minutes} min`).join("\n"));
   if (flaky.length > 0) console.log(`\nFlaky, passed on the second try:\n${flaky.map(one => `- ${one}`).join("\n")}`);
   console.log(`\n${groups.length - failed.length} of ${groups.length} groups passed${flaky.length > 0 ? ` (${flaky.length} flaky journey${flaky.length === 1 ? "" : "s"})` : ""} in ${minutes(Date.now() - started)} min — ${out}`);

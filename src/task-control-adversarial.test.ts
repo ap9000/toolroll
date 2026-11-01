@@ -55,6 +55,7 @@ function fixture() {
   store.createTask({ id: "draft", title: "Draft" }, now);
   const ref = store.refFor("built-in", "draft").id;
   store.placeTask(ref, root);
+  store.acquireWatchLease("worker", root, "dead-watch", 60_000, now);
   const claim = acquire(store, ref, "worker", { token: "fixture-only", now, incarnation: "dead-watch" });
   if (!claim.ok) throw new Error(JSON.stringify(claim));
   const id = store.startRun({ taskRef: ref, runner: "worker", leaseId: claim.claim.leaseId,

@@ -12,13 +12,13 @@ import { run as execRun } from "../exec.js";
 import { setFlowSecret } from "../flow-actions.js";
 import { addCardToFlow,advanceFlows,cancelFlowCard,crossProjectProblem,decideFlowCard,flowDefinitionOf,moveCardInFlow } from "../flow-engine.js";
 import { galleryHtml,galleryUseHtml } from "../flow-gallery-ui.js";
-import { galleryDefaults,galleryDiagram,galleryTemplateOf,galleryToolsOf,previewGallery,useGalleryTemplate,type GalleryAnswers,type GalleryPreview } from "../flow-gallery.js";
+import { galleryAdmitsAnyone,galleryDefaults,galleryDiagram,galleryTemplateOf,galleryToolsOf,previewGallery,useGalleryTemplate,type GalleryAnswers,type GalleryPreview } from "../flow-gallery.js";
 import { flowInsights } from "../flow-insights.js";
 import { assignFlowCard,commentOnFlowCard,watchFlowCard } from "../flow-people.js";
 import { saveScript } from "../flow-scripts.js";
 import { chooseFlowCard } from "../flow-send.js";
 import { exportFlow,fetchFlowFile,FlowFileError,importFlow,parseFlowFile,planFlowImport,type FlowImportPlan } from "../flow-share.js";
-import { addFlowTriggerTo, checkFlowTriggerNow, pressFlowButton, removeFlowTrigger, removeLinearKey, setFlowTriggerOn, renewFlowHook, saveHooksBase, saveLinearKey, saveSigningSecret, setUpFlowHook, changeFlowHookSender, setFlowHookScope, shareFlowButton, stopSharingFlowButton, rawTakesDeliveries } from "../flow-triggers.js";
+import { addFlowTriggerTo, checkFlowTriggerNow, pressFlowButton, removeFlowTrigger, removeLinearKey, setFlowTriggerOn, renewFlowHook, saveHooksBase, saveLinearKey, saveSigningSecret, setUpFlowHook, changeFlowHookSender, setFlowHookScope, shareFlowButton, stopSharingFlowButton, rawTakesDeliveries, rawAdmitsAnyone } from "../flow-triggers.js";
 import { FLOW_IMPORT_SCRIPT,flowFallbackHtml,flowImportHtml,flowsListHtml,flowView } from "../flows-ui.js";
 import { FLOW_TEMPLATES,FlowContractError,validateFlowDefinition,withZoneNames } from "../flows.js";
 import { prepareUnattendedCandidates,parseUnattendedAsk,revokeUnattended,signUnattended,untilWords } from "../flow-unattended.js";
@@ -34,7 +34,7 @@ import { createWorkflowPreview,exportRecipe,findRecipe,importRecipe,launchWorkfl
 import { isAlive as runnerAlive } from "../runner.js";
 import { createSubagentFrom,labelOf,nameOf,saveSoul,sendSubagentSummaries,setSubagentState,subagentSettings } from "../subagent-admin.js";
 import { addRoutine,removeRoutine,runRoutine } from "../subagent-desk.js";
-import { editMemory,forgetMemory,tellSubagent } from "../subagent-memory.js";
+import { ACCEPT as ACCEPT_SUGGESTION,editMemory,forgetMemory,tellSubagent } from "../subagent-memory.js";
 import { grantTool,revokeTool,rulesFromForm,setToolRules } from "../subagent-tools.js";
 import { sendSubagentWeeklies,undoCall } from "../subagent-week.js";
 import { answerSubagentQuestion } from "../subagent-work.js";
@@ -47,7 +47,7 @@ import { redirect,respond,SAFETY,taskHref } from "./http.js";
 import { html, type Html } from "../html.js";
 import { type Who } from "./session.js";
 export function createFlowsHandlers(runtime: ServerRuntime) {
-  const { store, clock, sendScreen, chromeFor, consoleProjects, options, visible, liveCeiling, providerHome, toolHome, restricted, evidenceRoot, authenticateApprover, authenticateCredential, projectOf, unscopedMode, ceiling, authorizeMutation } = runtime;
+  const { identities, store, clock, sendScreen, chromeFor, consoleProjects, options, visible, liveCeiling, providerHome, toolHome, restricted, evidenceRoot, authenticateApprover, authenticateCredential, projectOf, unscopedMode, ceiling, authorizeMutation } = runtime;
 
   // ---- reads ---------------------------------------------------------------
 
@@ -304,11 +304,15 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     if (kit === null || !projects.includes(repo) || !store.accountCanAccess(who.name, repo)) return redirect(response, `/kits?problem=${encodeURIComponent("Choose one of your projects.")}`);
     const page = (key: "said" | "problem", words: string) => redirect(response, `/kits/${kit.id}?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
     if (step === "setup") {
-      const made = await setUpKit(store, kit, repo, who.name, now, options.configDir ?? null, { toolHome });
+      // Its tools come with it only on the person's proof (a password, or the session under Passwordless): a grant widens.
+      const proved = authenticateApprover(who, body.get("password") ?? "", repo).ok;
+      const made = await setUpKit(store, kit, repo, who.name, now, options.configDir ?? null, { toolHome }, proved ? { widening: "proved" } : {});
       return page(made.ok ? "said" : "problem", made.said);
     }
     if (step === "github") {
-      const made = addKitGithubTrigger(store, kit, repo, who.name, now, options.configDir ?? null);
+      // Issues from anyone on GitHub come into a flow: a widening, so it takes a password (chat-management.md §0a.3).
+      if (!authenticateApprover(who, body.get("password") ?? "", repo).ok) return page("problem", "Enter your Toolroll password to bring in GitHub issues. Nothing changed.");
+      const made = addKitGithubTrigger(store, kit, repo, who.name, now, options.configDir ?? null, "proved");
       return page(made.ok ? "said" : "problem", made.said);
     }
     const tried = addKitSample(store, kit, repo, who.name, now);
@@ -330,7 +334,10 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     const card = question === null ? null : store.getFlowCard(question.card);
     const flow = card === null ? null : store.getFlow(card.flow);
     const done = question === null || flow === null || !visible(flow.repo) ? { ok: false as const, said: "No such question." }
-      : answerSubagentQuestion(store, question.id, { choice: body.get("choice"), text: body.get("text"), by: who.name, via: "web" }, now);
+      // Accepting a looser rule it suggested takes the password (chat-management.md §0a.3); every other answer doesn't.
+      : question.suggestion !== null && body.get("choice") === ACCEPT_SUGGESTION && !authenticateApprover(who, body.get("password") ?? "").ok
+        ? { ok: false as const, said: "Enter your Toolroll password to change the rule." }
+        : answerSubagentQuestion(store, question.id, { choice: body.get("choice"), text: body.get("text"), by: who.name, via: "web", ...(question.suggestion !== null ? { widening: "proved" as const } : {}) }, now);
     if (wantsJson) return respond(response, done.ok ? 200 : 409, "application/json; charset=utf-8", JSON.stringify(done));
     const back = question === null ? "/settings/lead/subagents" : `/settings/lead/subagents/${question.subagent}`;
     return redirect(response, `${back}?${done.ok ? "said" : "problem"}=${encodeURIComponent(done.said)}`);
@@ -395,9 +402,21 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       // v94: which project tools it may use, and its rule for each action.
       const tool = body.get("tool") ?? "", op = body.get("op");
       const grant = store.subagentGrant(mate.id, tool);
-      const changed = op === "grant" ? await grantTool(store, mate, tool, who.name, now, { toolHome })
+      // Giving a subagent a tool widens what it does unasked: a password (chat-management.md §0a.3). Revoking and
+      // tightening a rule don't need one.
+      if (op === "grant" && !authenticateApprover(who, body.get("password") ?? "", mate.repo).ok) {
+        return redirect(response, `${back}?problem=${encodeURIComponent(`Enter your Toolroll password to let ${nameOf(mate)} use ${tool}. Nothing changed.`)}#tools`);
+      }
+      const changed = op === "grant" ? await grantTool(store, mate, tool, who.name, now, { toolHome }, { widening: "proved" })
         : op === "revoke" ? revokeTool(store, mate, tool, who.name, now)
-        : grant === null ? { ok: false as const, said: `${nameOf(mate)} doesn't use ${tool}.` } : setToolRules(store, mate, tool, rulesFromForm(grant, key => body.sent.get(key)), who.name, now);
+        : grant === null ? { ok: false as const, said: `${nameOf(mate)} doesn't use ${tool}.` } : (() => {
+          // Loosening a rule widens what it does unasked: a password (chat-management.md §0a.3); tightening needs none.
+          const changes = rulesFromForm(grant, key => body.sent.get(key));
+          const tried = setToolRules(store, mate, tool, changes, who.name, now);
+          if (tried.ok || !/takes your password/.test(tried.said)) return tried;
+          if (!authenticateApprover(who, body.get("password") ?? "", mate.repo).ok) return { ok: false as const, said: `Enter your Toolroll password to let ${nameOf(mate)} do more on its own. Nothing changed.` };
+          return setToolRules(store, mate, tool, changes, who.name, now, { widening: "proved" });
+        })();
       return redirect(response, `${back}?${changed.ok ? "said" : "problem"}=${encodeURIComponent(changed.said)}#tools`);
     }
     const done = part === "state" ? setSubagentState(store, mate, body.get("state") === "removed" ? "removed" : body.get("state") === "paused" ? "paused" : "active", who.name, now)
@@ -428,7 +447,10 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     let digest: string | null = null;
     try { digest = previewGallery(store, template, repo, answers, who.name, clock()).digest; } catch { digest = null; }
     if (digest === null || digest !== body.get("previewed")) return sendGalleryUse(response, who, template, projects, repo, answers, name, digest === null ? null : "Your answers changed. Check the preview, then create the flow.");
-    const used = useGalleryTemplate(store, template, repo, answers, { name, by: who.name, now: clock(), dir: options.configDir ?? null });
+    // A template whose trigger brings in items from anyone takes the password (chat-management.md §0a.3).
+    const anyone = galleryAdmitsAnyone(template);
+    if (anyone && !authenticateApprover(who, body.get("password") ?? "", repo).ok) return sendGalleryUse(response, who, template, projects, repo, answers, name, "Enter your Toolroll password: this flow brings in items from anyone.");
+    const used = useGalleryTemplate(store, template, repo, answers, { name, by: who.name, now: clock(), dir: options.configDir ?? null, ...(anyone ? { widening: "proved" as const } : {}) });
     if (!used.ok) return sendGalleryUse(response, who, template, projects, repo, answers, name, used.said);
     return redirect(response, `/flows/${used.flow}`);
   }
@@ -537,7 +559,10 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       // A trigger that takes deliveries mints an address: a credential act (docs/plans/passwordless.md).
       const ingress = rawTakesDeliveries(raw);
       if (ingress && !authenticateCredential(who, body.get("password") ?? "").ok) return answer(403, { ok: false, said: "Enter your Toolroll password to make a webhook address." });
-      const made = addFlowTriggerTo(store, flow, raw, who.name, now, dir, ingress ? { ingress: "proved" } : {});
+      // Items from anyone: a widening, an ordinary step-up (chat-management.md §0a.3).
+      const anyone = !ingress && rawAdmitsAnyone(raw);
+      if (anyone && !authenticateApprover(who, body.get("password") ?? "", flow.repo).ok) return answer(403, { ok: false, said: "Enter your Toolroll password to bring in items from anyone." });
+      const made = addFlowTriggerTo(store, flow, raw, who.name, now, dir, ingress ? { ingress: "proved" } : anyone ? { widening: "proved" } : {});
       if (made.ok) await prepareUnattendedCandidates(store, flow.id);
       return made.ok ? settle(made.said, made.reveal === null ? {} : { reveal: made.reveal }) : answer(400, { ok: false, said: made.message });
     }
@@ -718,10 +743,18 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       for (const field of ["repo", "projectRevision", "preview", "source", "sourceRevision", "document", "recipe", "recipeRevision", "purpose", "next"] as const) if (body.getAll(field).length > 1) throw new RecipeError(`Duplicated ${field} field.`);
       if (body.get("repo") !== project || (who.via === "cookie" && body.get("projectRevision") !== String(who.session.projectRevision))) throw new RecipeError("The open project changed. Reopen this recipe in the intended project.", 409);
       const rootMode = !unscopedMode && ceiling.roots.length > 0;
-      if (rootMode && !(await authorizedProject(liveCeiling(), project))) throw new RecipeError("The project is outside this server's access.", 403);
+      const decidedOn = identities.generation();
+      if (rootMode) {
+        // A mutation's target is resolved now, off the console's thread, and must still be the project it names.
+        const resolved = await identities.resolveNow(project);
+        if (resolved === "no-answer") throw new RecipeError("The project's folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment.", 503);
+        if (resolved !== project || !(await authorizedProject(liveCeiling(), resolved))) throw new RecipeError("The project is outside this server's access.", 403);
+      }
       const rechecked = authorizeMutation(request, who, readForm(posted, CONSOLE_FORMS.mutationGuard));
       if (rechecked !== null) throw new RecipeError(rechecked.message, rechecked.status);
       if (projectOf(who, request) !== project) throw new RecipeError("The open project changed. Preview the intended project again.", 409);
+      // An identity that changed during the awaits above undoes what they proved.
+      if (identities.generation() !== decidedOn) throw new RecipeError("A project folder changed while this was being checked. Try again.", 409);
       const revision = who.via === "cookie" ? who.session.projectRevision : 0;
       if (step === "prepare") {
         const id = body.get("recipe") ?? "", version = body.get("recipeRevision") ?? "";

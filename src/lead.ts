@@ -591,6 +591,10 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       return fail("malformed-reply", LEAD_FAILURE_COPY.unreadableUnknownCost, true);
     }
     const answer = result.answer;
+    // The streamed reply's finished text, once, secret-checked whole: only now may its last word show live.
+    if (!direct && input.onProgress !== undefined && !controller.signal.aborted && answer.text !== "" && scanForSecrets(answer.text).length === 0) {
+      progress({ kind: "text", turn: turnId, step: steps, text: answer.text, final: true });
+    }
     // Usage that cannot be true — more input tokens than bytes sent — is a
     // malformed reply with unknown cost, never a number to settle by.
     if (direct && answer.tokensIn > requestBytes) {
@@ -610,7 +614,10 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       return fail("over-reservation", LEAD_FAILURE_COPY.overReserved, true);
     }
     finishStep({ state: "answered", tokensIn: answer.tokensIn, tokensOut: answer.tokensOut, settledMicrousd: stepSettled, replyBytes: Buffer.byteLength(answer.text, "utf8"),
-      cacheReadTokens: answer.cacheReadTokens ?? null, cacheWriteTokens: answer.cacheWriteTokens ?? null });
+      cacheReadTokens: answer.cacheReadTokens ?? null, cacheWriteTokens: answer.cacheWriteTokens ?? null,
+      // v140: what the provider itself reported for this request (absent: unreported, kept NULL).
+      modelReported: answer.modelReported ?? null, providerTurns: answer.providerTurns ?? null, reportedCostUsd: answer.reportedCostUsd ?? null,
+      billingReported: answer.billingReported ?? null });
     tokensIn += answer.tokensIn;
     tokensOut += answer.tokensOut;
     if (answer.cacheReadTokens === undefined) cacheKnown = false; else cacheRead += answer.cacheReadTokens;

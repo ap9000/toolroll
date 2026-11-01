@@ -17,8 +17,8 @@
  * for a signal).
  */
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { constants as osConstants, tmpdir } from "node:os";
 import { join } from "node:path";
 
 export const OWNER_FILE = ".toolroll-temp-owner";
@@ -146,6 +146,8 @@ function installHandlers() {
     process.on(signal, () => {
       if (stopping) return;
       stopping = true;
+      // Said at once and synchronously: the exit below drops anything still queued for a pipe.
+      writeNow(2, `${signal} received: stopping ${groups.size === 0 ? "nothing (no suite is running)" : `${groups.size} running suite(s)`}, then exiting ${code}\n`);
       // Each suite gets its grace to stop what it started; then whatever is left goes with the exit.
       Promise.allSettled([...groups].map(([group, graceMs]) => stopGroup(group, { graceMs }))).finally(() => process.exit(code));
     });
@@ -154,23 +156,36 @@ function installHandlers() {
 
 /**
  * Run one suite in its own process group with its own temp root as TMPDIR. Resolves when the suite and everything
- * left in its group have ended and its root is gone: { code, signal, timedOut, ms, root, output } (output: what it
- * printed, unless `stdio` is "inherit"). `onData` sees each chunk as it comes.
+ * left in its group have ended and its root is gone: { code, signal, timedOut, cancelled (never
+ * started: aborted first), stopped (aborted while it ran), spawnFailed, startedAt, ms, root, output } (output: what it printed, unless `stdio` is "inherit"). `onData` sees each chunk as it comes, and
+ * `onExit(code, facts)` hears how it ended the moment its own process does — before its group is stopped and awaited —
+ * with the signal, timeout and spawn failure apart from the code (a signal is never folded into an "exit 1").
  */
-export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, prefix = "so-suite-", keep = false, graceMs = GRACE_MS, stdio = "pipe", onData = null, onSpawn = null, onExit = null, signal: abortSignal = null, beforeRemove = null, tempRoot = true }) {
+export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, prefix = "so-suite-", keep = false, graceMs = GRACE_MS, stdio = "pipe", onData = null, onSpawn = null, onExit = null, signal: abortSignal = null, beforeRemove = null, tempRoot = true, onResult = null }) {
   // `tempRoot: false`: a suite that keeps its own short temp root (the unit tests: test/temp-root.ts) runs without one
   // more folder level, which would push the socket paths its tests make past the OS limit (103 bytes on macOS).
-  if (abortSignal?.aborted) return Promise.resolve({ code: 130, signal: null, timedOut: false, cancelled: true, ms: 0, root: null, output: Buffer.alloc(0) });
+  if (abortSignal?.aborted) return Promise.resolve({ code: 130, signal: null, timedOut: false, cancelled: true, stopped: false, spawnFailed: false, startedAt: null, ms: 0, root: null, output: Buffer.alloc(0) });
   const root = tempRoot ? makeTempRoot(prefix, { keep }) : null;
   const at = Date.now();
+  const startedAt = new Date(at).toISOString();
   return new Promise(done => {
+    // `onResult`: the suite reports its results as JSON lines on fd 3, a pipe only this process holds (release checks,
+    // docs/plans/release-once.md). Without it, the suite is told no fd 3 is its own, whatever this process was told.
+    const results = onResult !== null && stdio !== "inherit";
     const child = spawn(command, args, {
       cwd, detached: process.platform !== "win32",
-      stdio: stdio === "inherit" ? ["inherit", "inherit", "inherit"] : ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...env, ...(root === null ? {} : { TMPDIR: root, TMP: root, TEMP: root }) },
+      stdio: stdio === "inherit" ? ["inherit", "inherit", "inherit"] : results ? ["ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
+      env: { ...process.env, ...env, ...(root === null ? {} : { TMPDIR: root, TMP: root, TEMP: root }), TOOLROLL_CHECK_RESULTS_FD: results ? "3" : undefined },
     });
     const chunks = [];
     for (const stream of [child.stdout, child.stderr]) stream?.on("data", chunk => { chunks.push(chunk); onData?.(chunk); });
+    let pending = "";
+    const resultLine = line => { if (line.trim() === "") return; let parsed; try { parsed = JSON.parse(line); } catch { return; } if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) onResult(parsed); };
+    const resultsDone = !results || child.stdio[3] == null ? Promise.resolve() : new Promise(resolve => { child.stdio[3].on("close", resolve); child.stdio[3].on("error", resolve); });
+    if (results) child.stdio[3]?.on("data", chunk => {
+      const lines = (pending + chunk.toString("utf8")).split("\n"); pending = lines.pop() ?? "";
+      for (const line of lines) resultLine(line);
+    });
     if (child.pid !== undefined) groups.set(child.pid, graceMs);
     const abort = () => { if (child.pid !== undefined) void stopGroup(child.pid, { graceMs }); };
     abortSignal?.addEventListener("abort", abort, { once: true });
@@ -178,26 +193,47 @@ export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, 
     let timedOut = false;
     const timer = timeoutMs === null ? null : setTimeout(() => { timedOut = true; void stopGroup(child.pid, { graceMs }); }, timeoutMs);
     let ended = false;
-    const end = async (code, signal) => {
+    const end = async (code, signal, spawnFailed = false) => {
       if (ended) return;
       ended = true;
       abortSignal?.removeEventListener("abort", abort);
-      onExit?.(timedOut ? 124 : code ?? 1);
+      // Stopped on purpose while it ran (the caller's abort): a cancellation, kept apart from its own failure.
+      const stopped = abortSignal?.aborted === true && !timedOut;
+      onExit?.(timedOut ? 124 : code ?? (signal === null ? 1 : 128 + (SIGNAL_NUMBERS[signal] ?? 0)), { signal: signal ?? null, timedOut, stopped, spawnFailed });
       if (timer !== null) clearTimeout(timer);
       // The suite's own process is gone; what it left in its group goes too, before its root does.
       if (child.pid !== undefined) { await stopGroup(child.pid, { graceMs }); groups.delete(child.pid); }
+      // Every result line the suite wrote, read to its end (bounded: the group is gone, so the pipe closes).
+      if (results) { await Promise.race([resultsDone, sleep(5_000)]); if (pending !== "") { resultLine(pending); pending = ""; } }
       // `beforeRemove`: the runner's own last word (stopping groups the suite listed as its own) while the root is there.
       try { await beforeRemove?.(); } catch { /* the root goes regardless */ }
       if (root !== null) { try { removeRoot(root); } catch { /* the plane's sweep takes it */ } }
-      done({ code: timedOut ? 124 : code ?? (signal === null ? 1 : 128 + (SIGNAL_NUMBERS[signal] ?? 0)), signal, timedOut, ms: Date.now() - at, root, output: Buffer.concat(chunks) });
+      done({ code: timedOut ? 124 : code ?? (signal === null ? 1 : 128 + (SIGNAL_NUMBERS[signal] ?? 0)), signal: signal ?? null, timedOut, cancelled: false, stopped, spawnFailed, startedAt, ms: Date.now() - at, root, output: Buffer.concat(chunks) });
     };
-    child.on("error", () => void end(127, null));
+    child.on("error", () => void end(127, null, child.pid === undefined));
     child.on("exit", (code, signal) => void end(code, signal));
     if (child.pid !== undefined) onSpawn?.(child.pid);
   });
 }
 
-const SIGNAL_NUMBERS = { SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGTERM: 15 };
+const SIGNAL_NUMBERS = osConstants.signals;
+
+/**
+ * Write `text` to `fd` (1 or 2) now, whole, before anything else happens: a pipe write Node would otherwise queue is
+ * lost when the process then exits (`process.exit` in a signal handler) or is killed. Used for what must reach the plane
+ * however the check ends: a part's end, a failed part's log. A full pipe is waited on in short sleeps, never dropped;
+ * a pipe that is gone (EPIPE) has nobody left to tell.
+ */
+export function writeNow(fd, text) {
+  let bytes = Buffer.from(String(text), "utf8"), waits = 0;
+  while (bytes.length > 0) {
+    try { bytes = bytes.subarray(writeSync(fd, bytes)); waits = 0; }
+    catch (error) {
+      if (error?.code !== "EAGAIN" || ++waits > 2_000) return;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+}
 
 if (process.argv[1] && import.meta.url === new URL(`file://${realpathSync(process.argv[1])}`).href) {
   const argv = process.argv.slice(2);

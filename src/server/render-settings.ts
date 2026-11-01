@@ -49,7 +49,7 @@ export function leadSettingsHtml(data: { config: import("../store.js").ChatConfi
   const summary = config === null
     ? data.signedIn !== null
       ? html`<p>The lead is off.</p>${postForm("/settings/lead/on", html`<button type="submit">Use your ${data.signedIn} sign-in</button>`, { returnTo })}`
-      : html`<p>The lead is off. Sign in an agent on this computer to turn it on:</p><p><code>${data.command}</code></p>`
+      : html`<p>The lead is off. Sign in an agent on this computer to turn it on:</p><p><code>${data.command}</code></p>${postForm("/lead/check", html`<button type="submit" class="secondary">Check again</button>`, { returnTo })}`
     : data.words !== null
       ? html`<p>The lead uses ${data.words}.</p><p class="meta">${config.model === "default" ? "Its default model" : `Model ${config.model}`} · up to ${config.dailyTurns} turns a day · no dollar spend. Every action it proposes waits for you to confirm it.</p>`
       : html`<p>The lead uses the ${config.provider === "anthropic-api" ? "Anthropic" : "OpenRouter"} API with ${config.model}.</p><p class="meta">Up to ${chatMoney(config.weeklyCeilingMicrousd)} a week · up to ${config.dailyTurns} turns a day.</p>`;
@@ -230,8 +230,8 @@ export function settingsPage(
       : joinHtml([
           html`<h2>Unattended permissions</h2>`,
           permissionDefault.canManage && csrf !== ""
-            ? postForm("/settings/permission-default", html`${permissionModeChoices("permission-mode", permissionDefault.mode)}<button type="submit">Save default</button>`,
-              { attrs: { class: "card permission-policy", "data-autosave": true } })
+            ? postForm("/settings/permission-default", html`${permissionModeChoices("permission-mode", permissionDefault.mode)}${permissionDefault.mode === "bypassPermissions" ? "" : reauth(html`<label>Your password <span class="meta">(needed for Full access)</span><input type="password" name="password" autocomplete="current-password"></label>`)}<button type="submit">Save default</button>`,
+              { attrs: { class: "card permission-policy" } })
             : html`<div class="card"><p><strong>${permissionDefault.mode === "bypassPermissions" ? "Full access" : "Auto"}</strong></p><p class="meta">An approver can change this default</p></div>`,
           permissionDefault.updatedAt === null
             ? ""
@@ -331,7 +331,7 @@ ${[
               html`<details class="provider-manage"><summary>Manage</summary>`,
               postForm("/settings/provider-key", joinHtml([
                 "",
-                one.connection === undefined ? "" : html`<p class="provider-connection"><strong>${connectionWords(one.connection)}</strong> ${[one.connection.email, one.connection.plan, one.connection.method].filter(Boolean).join(" · ")} · <a href="/settings?check-connection=${encodeURIComponent(one.provider)}#providers">Check again</a></p>`,
+                one.connection === undefined ? "" : html`<p class="provider-connection"><strong>${connectionWords(one.connection)}</strong> ${[one.connection.email, one.connection.plan, one.connection.method].filter(Boolean).join(" · ")} · <button type="submit" class="secondary" formaction="/settings/connection/check" formnovalidate>Check again</button></p>`,
                 html`<p class="meta">${one.mode === "subscription" ? "Uses its own sign-in, so no API-key spend" : "Uses the API key"} · <span class="mono">${one.envName}</span> · ${
                   one.set ? `key stored${one.updatedAt === null ? "" : ` ${one.updatedAt.slice(0, 10)}`}` : one.ambient ? "key in this server's environment" : "no key stored"}</p>`,
                 one.subscriptionCapable
@@ -459,7 +459,7 @@ ${one.retiredAt === null
           : one.set ? { tone: "ok" as const, words: "API key saved" } : one.ambient ? { tone: "ok" as const, words: "Key from this computer’s environment" } : { tone: "off" as const, words: "Not set up" };
       return {
         provider: one.provider, name, tone: status.tone, words: status.words,
-        connection: one.connection === undefined ? null : { words: connectionWords(one.connection), facts: [one.connection.email, one.connection.plan, one.connection.method].filter(Boolean).join(" · "), checkHref: `/settings?check-connection=${encodeURIComponent(one.provider)}#providers` },
+        connection: one.connection === undefined ? null : { words: connectionWords(one.connection), facts: [one.connection.email, one.connection.plan, one.connection.method].filter(Boolean).join(" · "), checkAction: "/settings/connection/check" },
         usage: `${one.mode === "subscription" ? "Uses its own sign-in, so no API-key spend" : "Uses the API key"} · ${one.set ? `key stored${one.updatedAt === null ? "" : ` ${one.updatedAt.slice(0, 10)}`}` : one.ambient ? "key in this server's environment" : "no key stored"}`,
         envName: one.envName, subscriptionCapable: one.subscriptionCapable, mode: one.mode, set: one.set,
       };
@@ -601,6 +601,7 @@ export const SETTINGS_GROUPS: [string, [string, string, Html][]][] = [
   ["Agents", [
     ["/settings/lead", "Lead", html`<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/>`],
     ["/settings/models", "Models", html`<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/>`],
+    ["/settings/spend", "Spend", html`<circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.6-.9-1.7-1.5-3-1.5-1.7 0-3 .9-3 2s1.3 1.7 3 2 3 .9 3 2-1.3 2-3 2c-1.3 0-2.4-.6-3-1.5M12 6v2M12 16v2"/>`],
     ["/settings/skills", "Skills", html`<path d="m12 3 1.9 5.8L20 10l-5 3.6L16.8 20 12 16.4 7.2 20 9 13.6 4 10l6.1-1.2z"/>`],
     ["/settings/tools", "Tools", html`<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>`],
     ["/settings/knowledge", "Knowledge", html`<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/>`],

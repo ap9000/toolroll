@@ -1,5 +1,8 @@
+import { mintSecret } from "./secret-mint.js";
 import { WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 import { checkAccessOf, widerThan, type CheckAccess } from "./check-access.js";
+import { PROJECT_SANDBOX_DEFAULT, sandboxOf, type ProjectSandbox } from "./project-sandbox.js";
+import type { FencePolicy } from "./agent-fence.js";
 import { networkFromValue, PROJECT_NETWORK_DEFAULT, projectNetworkFromValue, runNetworkFromValue, type NetworkProfile, type ProjectNetwork, type RunNetworkRecord } from "./egress.js";
 import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
@@ -59,9 +62,10 @@ import { hashSecret, mintLeadToken, parseCredential, secretMatches, tokenPurpose
  * nobody has designed yet is a column that will be wrong when they do.
  */
 
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 import { dirname } from "node:path";
 import { hostname } from "node:os";
 import { ownedProcessCount, runOwnerTag } from "./exec.js";
@@ -72,7 +76,10 @@ import { containerEmptiness } from "./container-state.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
-import { approvalOf, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
+import { liveReleaseOf } from "./scope.js";
+import { nightlyDebtHold } from "./nightly-github.js";
+import { releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
+import { APPROVAL_BASES, approvalOf, machineActing, personProof, proofDetailOf, quarantinedAuthor, sealOriginOf, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
 import {
   canonicalOverridesJson, canonicalRouteJson, isRiskLevel, isTaskSize, headroomFrom, makesNoPlan, legOf, overridesFromJson, phaseOfRole, recommendRoute, routeDigestOf, routeFromJson, routeProblems, routeStampProblem, ROUTE_ERA, type ExactSpec, type ProviderRoom, type CandidateTier, PROVIDER_ID_LIST, type TaskSize, type TaskSizing, type PhaseRoute, type PublicationAuthority, type RouteStamp, type ReadinessLookup, type ReadinessObservation, type ReadinessState, type RouteEvidenceKind, type RouteOverride,
@@ -92,6 +99,8 @@ import type { QualityMode } from "./quality.js";
 import type { ProgressSnapshot } from "./plan.js";
 import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 
+import { authorityStandsSql } from "./approval-authority.js";
+import { releasePolicyDigest, serializeReleaseCheckPurpose, storedReleaseCheckPurpose, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseCheckPurpose, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
@@ -106,10 +115,25 @@ import { REVIEW_SCHEMA, reviewSwitchWords, type ReviewSwitch } from "./review-sw
 import { SPEND_SCHEMA, billingOf, budgetStates, canPrice, claudeMachineBilling, countsToward, filersOf, monthOf, priceWork, seenBilling as seenBillingOf, spendItems, subagentFilers, usd, type Billing, type Budget, type BudgetAgent, type BudgetHold, type BudgetScope, type BudgetState, type SpendItem } from "./spend.js";
 import { DEFAULT_PERIODS, RETENTION_SCHEMA, periodWords, widenRetentionSchema, type RetentionKind, type RetentionPeriods } from "./retention.js";
 import { CHECKOUT_CLEANUP_SCHEMA, LANDED_CLEANUP_SCHEMA, STORAGE_SWEEP_SCHEMA, DEFAULT_CLEANUP, cleanupWords, type CheckoutCleanup } from "./storage.js";
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { IN_RANGE, LEDGER_CHAIN_SCHEMA, safeWhole, sealLedger, verifyLedgerChain, type LedgerChainReport, type VerifiedHead } from "./ledger-chain.js";
 import { NO_RULES, filerFor, isProtectedWork, protectedChanges, rulesWords, type ApprovalGate, type ApprovalRules, type ApproverKind, type Filer, type FilerKind } from "./approval-policy.js";
 import { configBase, envValue, namedPath } from "./names.js";
 import { PULL_REQUEST_SCHEMA } from "./pull-request-schema.js";
+import { chatTurnAmountOf, combineReportedModels, providerTurnsOf, reportedCostUsdOf, reportedModelOf, runAmountOf, type ReportedAmount } from "./reported-usage.js";
+import { usageOf } from "./run-efficiency.js";
+import { YOUIYOUX_FILED_VIA } from "./contracts/youiyoux-request.js";
+import { shownTermsDigest } from "./chat-terms.js";
+
+// PR #263 follow-up: the built-ins the Store money seal uses, captured as this module is evaluated, so code that later
+// replaces `Object.defineProperty` and the like can't fool the seal or the lock (lockStoreMoneyMethods refuses when
+// they've been replaced). The four sealed method references are recorded once, at the seal, in SEALED_MONEY_METHODS.
+const STORE_MONEY_METHODS = Object.freeze(["recordUsage", "settleRunSpend", "fixRunBilling", "finalizeChatTurn"] as const);
+const builtinDefineProperty = Object.defineProperty;
+const builtinGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const builtinFreeze = Object.freeze;
+const builtinIsFrozen = Object.isFrozen;
+const SEALED_MONEY_METHODS: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
 
 // v60 fenced older readers before the chat action cards; v61 adds notification
 // provenance and Telegram destination receipts, and readers below v61 refuse it.
@@ -467,6 +491,324 @@ CREATE TABLE IF NOT EXISTS run_resume (
 CREATE INDEX IF NOT EXISTS run_resume_by_run ON run_resume (run, id);
 `;
 
+/** v136: a run's own "Show commands in the live view" answer, captured once before its live file opens (live-detail.ts).
+ * Absent, unreadable or anything but 1 means off. */
+export const RUN_LIVE_DETAIL_SCHEMA = `
+CREATE TABLE IF NOT EXISTS run_live_detail (
+  run         INTEGER PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
+  commands    INTEGER NOT NULL CHECK (commands IN (0,1)),
+  captured_at TEXT NOT NULL
+);
+-- The Agents view's Live grid (docs/plans/agents-view.md §2.5): every role's running runs and its recently ended ones.
+-- (id > 0 keeps them to the grid's own query, which names it: no other query's plan is offered them.)
+CREATE INDEX IF NOT EXISTS run_live_open ON run (id) WHERE outcome IS NULL AND id > 0;
+CREATE INDEX IF NOT EXISTS run_live_recent ON run (finished_at) WHERE outcome IS NOT NULL AND id > 0;
+`;
+
+/** v137 (docs/plans/actors-lessons.md): explicit lifecycle, latency timelines and the continuous database copy. New
+ * tables only. A lifecycle row's `holder` binds it to one registration (a worker's registered_at) or one console
+ * process; a row whose holder no longer matches says nothing. Timelines are bounded and pruned as they are written. */
+export const V137_SCHEMA = `
+CREATE TABLE IF NOT EXISTS service_lifecycle (
+  component   TEXT PRIMARY KEY,
+  state       TEXT NOT NULL CHECK (state IN ('started','draining','stopped')),
+  holder      TEXT NOT NULL,
+  pid         INTEGER,
+  changed_at  TEXT NOT NULL,
+  beat_at     TEXT NOT NULL,
+  drain_until TEXT
+);
+CREATE TABLE IF NOT EXISTS latency_timeline (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind            TEXT NOT NULL CHECK (kind IN ('console','release-check','deploy')),
+  subject         TEXT NOT NULL,
+  task_id         TEXT,
+  run_id          INTEGER,
+  started_at      TEXT NOT NULL,
+  total_ms        INTEGER NOT NULL,
+  milestones_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS latency_timeline_by_kind ON latency_timeline (kind, id);
+CREATE INDEX IF NOT EXISTS latency_timeline_by_run ON latency_timeline (run_id) WHERE run_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS latency_timeline_by_task ON latency_timeline (task_id) WHERE task_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS live_backup (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  every_minutes INTEGER NOT NULL DEFAULT 5,
+  keep          INTEGER NOT NULL DEFAULT 24,
+  folder        TEXT,
+  holder        TEXT,
+  held_until    TEXT,
+  latest_file   TEXT,
+  latest_sha256 TEXT,
+  latest_at     TEXT,
+  latest_schema INTEGER,
+  latest_bytes  INTEGER,
+  tried_at      TEXT,
+  problem       TEXT
+);
+`;
+
+/** v139 (docs/plans/evals-nightly.md, part A): GitHub's nightly as release debt. New tables only. `nightly_lane` keeps
+ * one stable id per required check (its workflow file and name when it was seeded); `nightly_lane_alias` a person's
+ * rename of one. `github_nightly_cursor` is how far listing has got, `github_nightly_watch` every counted run still
+ * read again for new attempts. `nightly_lane_job` records each completed lane job once; `nightly_lane_failure` each
+ * test failure, open until a later counted nightly run passes that lane (or a person retires it). `nightly_exemption`
+ * is one release candidate's own pull-request job that passed a lane after its failure. Each lane job and failure keeps
+ * its run's creation time: only a run created later clears a failure. Kept apart from
+ * `main_check_failure`, whose `run` is a Toolroll run. */
+export const V139_SCHEMA = `
+CREATE TABLE IF NOT EXISTS nightly_lane (
+  repo          TEXT NOT NULL,
+  lane_id       TEXT NOT NULL,
+  workflow      TEXT NOT NULL,
+  display_name  TEXT NOT NULL,
+  seeded_at     TEXT NOT NULL,
+  retired_at    TEXT,
+  retired_by    TEXT,
+  retired_proof TEXT,
+  PRIMARY KEY (repo, lane_id)
+);
+CREATE TABLE IF NOT EXISTS nightly_lane_alias (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo    TEXT NOT NULL,
+  lane_id TEXT NOT NULL,
+  name    TEXT NOT NULL,
+  by      TEXT NOT NULL,
+  proof   TEXT NOT NULL,
+  at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS nightly_lane_alias_by_name ON nightly_lane_alias (repo, name, id);
+CREATE TABLE IF NOT EXISTS github_nightly_cursor (
+  repo          TEXT PRIMARY KEY,
+  page_cursor   TEXT NOT NULL,
+  last_ok_at    TEXT,
+  last_why      TEXT,
+  last_tried_at TEXT
+);
+CREATE TABLE IF NOT EXISTS github_nightly_watch (
+  repo            TEXT NOT NULL,
+  gh_run          INTEGER NOT NULL,
+  created_at      TEXT NOT NULL,
+  attempts_read   INTEGER NOT NULL DEFAULT 0 CHECK (attempts_read >= 0),
+  finished        INTEGER NOT NULL DEFAULT 0 CHECK (finished IN (0, 1)),
+  last_checked_at TEXT,
+  PRIMARY KEY (repo, gh_run)
+);
+CREATE TABLE IF NOT EXISTS nightly_lane_job (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo         TEXT NOT NULL,
+  lane_id      TEXT NOT NULL,
+  gh_run       INTEGER NOT NULL,
+  run_created_at TEXT NOT NULL,
+  attempt      INTEGER NOT NULL,
+  job_id       INTEGER NOT NULL,
+  sha          TEXT NOT NULL,
+  started_at   TEXT,
+  completed_at TEXT,
+  conclusion   TEXT,
+  cause        TEXT NOT NULL CHECK (cause IN ('passed','test-failure','runner-failure','not-run')),
+  read_at      TEXT NOT NULL,
+  UNIQUE (repo, gh_run, attempt, job_id)
+);
+CREATE INDEX IF NOT EXISTS nightly_lane_job_passes ON nightly_lane_job (repo, lane_id, started_at) WHERE cause = 'passed';
+CREATE TABLE IF NOT EXISTS nightly_lane_failure (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo           TEXT NOT NULL,
+  lane_id        TEXT NOT NULL,
+  gh_run         INTEGER NOT NULL,
+  run_created_at TEXT NOT NULL,
+  attempt        INTEGER NOT NULL,
+  job_id         INTEGER NOT NULL,
+  sha            TEXT NOT NULL,
+  completed_at   TEXT NOT NULL,
+  opened_at      TEXT NOT NULL,
+  cleared_at     TEXT,
+  cleared_by_job TEXT,
+  closed_why     TEXT,
+  UNIQUE (repo, gh_run, attempt, job_id)
+);
+CREATE INDEX IF NOT EXISTS nightly_lane_failure_open ON nightly_lane_failure (repo, id) WHERE cleared_at IS NULL;
+CREATE TABLE IF NOT EXISTS nightly_exemption (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  task         TEXT NOT NULL,
+  candidate    TEXT NOT NULL,
+  failure_id   INTEGER NOT NULL REFERENCES nightly_lane_failure(id),
+  pr           INTEGER NOT NULL,
+  gh_run       INTEGER NOT NULL,
+  attempt      INTEGER NOT NULL,
+  job_id       INTEGER NOT NULL,
+  started_at   TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  read_at      TEXT NOT NULL,
+  UNIQUE (task, candidate, failure_id)
+);
+`;
+
+/** v141 (docs/plans/evals-nightly.md, part C): the eval set's own records, written only by the installed plane's eval
+ * module (evals.ts). `eval_campaign` is one campaign (an eval set run or a reviewer run), sealed at admission, with the
+ * runner that owns it (so an interrupted one can be recovered); one canonical campaign runs at a time (settlement
+ * order). `eval_attempt` is one attempt of one case (unique per campaign, case, number and what it replaces: 0 for an
+ * original) and what it spent; `eval_invocation` each provider dispatch its world made, with what it was billed as
+ * (API dollars, subscription usage or unknown, never added together) and the model it reported. `eval_baseline_pin` and
+ * `eval_debt` are C2's (the owner's pinned baseline and regressed cases). New tables only; the columns are
+ * V141_ADDED_COLUMNS. No money limit (the owner, 2026-10-30): spending is recorded, not capped. */
+export const V141_SCHEMA = `
+CREATE TABLE IF NOT EXISTS eval_campaign (
+  id                TEXT PRIMARY KEY,
+  kind              TEXT NOT NULL DEFAULT 'eval' CHECK (kind IN ('eval','reviewer')),
+  canonical         INTEGER NOT NULL CHECK (canonical IN (0, 1)),
+  manifest_digest   TEXT NOT NULL,
+  build_digest      TEXT NOT NULL,
+  version           TEXT NOT NULL,
+  baseline_campaign TEXT,
+  k                 INTEGER NOT NULL CHECK (k >= 1),
+  sealed_json       TEXT NOT NULL,
+  started_by        TEXT NOT NULL,
+  started_proof     TEXT NOT NULL,
+  runner_host       TEXT NOT NULL,
+  runner_pid        INTEGER NOT NULL,
+  runner_started    TEXT,
+  admitted_at       TEXT NOT NULL,
+  finished_at       TEXT,
+  state             TEXT NOT NULL CHECK (state IN ('running','complete','incomplete')),
+  why               TEXT,
+  spending_unknown  INTEGER NOT NULL DEFAULT 0 CHECK (spending_unknown IN (0, 1)),
+  settled_at        TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_one_canonical ON eval_campaign (canonical) WHERE state = 'running' AND canonical = 1;
+CREATE TABLE IF NOT EXISTS eval_attempt (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign              TEXT NOT NULL REFERENCES eval_campaign(id),
+  case_id               TEXT NOT NULL,
+  case_version          TEXT NOT NULL,
+  n                     INTEGER NOT NULL CHECK (n >= 1),
+  replaces              INTEGER NOT NULL DEFAULT 0,
+  outcome               TEXT CHECK (outcome IN ('pass','fail','error','unevaluated')),
+  error_why             TEXT,
+  model_pinned          TEXT NOT NULL,
+  model_reported        TEXT,
+  dispatches            INTEGER,
+  api_microusd          INTEGER,
+  subscription_microusd INTEGER,
+  usage_unknown         INTEGER NOT NULL DEFAULT 0 CHECK (usage_unknown IN (0, 1)),
+  turns                 INTEGER,
+  tokens_in             INTEGER,
+  cache_read            INTEGER,
+  cache_write           INTEGER,
+  tokens_out            INTEGER,
+  tool_calls            INTEGER,
+  wall_ms               INTEGER,
+  world_dir             TEXT,
+  world_pgid            INTEGER,
+  world_processes_json  TEXT,
+  started_at            TEXT NOT NULL,
+  finished_at           TEXT,
+  UNIQUE (campaign, case_id, n, replaces)
+);
+CREATE TABLE IF NOT EXISTS eval_invocation (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt               INTEGER NOT NULL REFERENCES eval_attempt(id),
+  kind                  TEXT NOT NULL,
+  world_ref             TEXT NOT NULL,
+  recorded              INTEGER NOT NULL CHECK (recorded IN (0, 1)),
+  amount                TEXT NOT NULL CHECK (amount IN ('api','subscription','unknown')),
+  api_microusd          INTEGER CHECK (api_microusd IS NULL OR api_microusd >= 0),
+  subscription_microusd INTEGER CHECK (subscription_microusd IS NULL OR subscription_microusd >= 0),
+  model_reported        TEXT,
+  UNIQUE (attempt, world_ref)
+);
+CREATE TABLE IF NOT EXISTS eval_baseline_pin (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign            TEXT NOT NULL REFERENCES eval_campaign(id),
+  by                  TEXT NOT NULL,
+  proof               TEXT NOT NULL,
+  at                  TEXT NOT NULL,
+  accepted_worse_json TEXT
+);
+CREATE TABLE IF NOT EXISTS eval_debt (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id             TEXT NOT NULL,
+  case_version        TEXT NOT NULL,
+  campaign            TEXT NOT NULL REFERENCES eval_campaign(id),
+  baseline_campaign   TEXT NOT NULL,
+  opened_at           TEXT NOT NULL,
+  cleared_at          TEXT,
+  cleared_by_campaign TEXT,
+  waived_by           TEXT,
+  waived_proof        TEXT,
+  waived_why          TEXT
+);
+`;
+/** v141 (evals-nightly.md, Codex round 1 #4 and #10): how a run's billing was known — `evidence` (its own events, the
+ * key it was given, or its agent's admission) or `default` (this computer's usual billing, a guess) — and how a chat
+ * request was billed, as its own events said (null: they didn't). A guess or a silence is unknown money, never
+ * subscription usage. Saved rows read NULL: unknown. `run.cost_unknown` (PR #263 review): set once any turn of the run
+ * ended without its provider reporting a cost, and never cleared (recordRunCostUnknown); saved rows read 0, and their
+ * money is unknown all the same through their NULL billing basis. */
+export const V141_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  run: {
+    billing_basis: { definition: "TEXT CHECK (billing_basis IS NULL OR billing_basis IN ('evidence','default'))", saved: "NULL" },
+    cost_unknown: { definition: "INTEGER NOT NULL DEFAULT 0 CHECK (cost_unknown IN (0, 1))", saved: "0" },
+  },
+  chat_turn: { billing_reported: { definition: "TEXT CHECK (billing_reported IS NULL OR billing_reported IN ('subscription','api-key'))", saved: "NULL" } },
+});
+
+/** v142 (youiyoux-intake.ts): youiyoux change requests as tasks. `youiyoux_intake` is one row per project the intake
+ * has looked at: a person's on/off choice (`enabled` NULL: automatic, on while the project uses youiyoux) and the last
+ * pass's answer (whether the project uses youiyoux, how many request files couldn't be read, and the problem, if any).
+ * `youiyoux_request` is one row per request taken, keyed by project and request id: the task it became (NULL: left
+ * out, `note` says why), never filed again, the status last written beside it, with the console address its links
+ * named ('' for none), and where the person pointed (route, component, file:line), cleaned, for the task page. An
+ * options request (`kind`) also keeps the options file its agent writes (`proposal`, p-<its hex>), set when filed and
+ * never read from the request again: whether it went to the project's main checkout from which result (`proposal_state`,
+ * `proposal_run`, and why not in `proposal_note`; `taken`: a file was already there, so it was left and is never read
+ * for a decision), the digest of what was copied apart from what a decision changes (`proposal_digest`), and what a
+ * person decided on it in youiyoux's hub (`decided`, `decided_note`: what Toolroll did about it). New tables only. */
+export const V142_SCHEMA = `
+CREATE TABLE IF NOT EXISTS youiyoux_intake (
+  repo        TEXT PRIMARY KEY,
+  enabled     INTEGER CHECK (enabled IS NULL OR enabled IN (0, 1)),
+  uses        INTEGER NOT NULL DEFAULT 0 CHECK (uses IN (0, 1)),
+  changed_by  TEXT,
+  changed_at  TEXT,
+  checked_at  TEXT,
+  invalid     INTEGER NOT NULL DEFAULT 0 CHECK (invalid >= 0),
+  problem     TEXT
+);
+CREATE TABLE IF NOT EXISTS youiyoux_request (
+  repo          TEXT NOT NULL,
+  request       TEXT NOT NULL CHECK (length(request) = 12 AND request GLOB 'r-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'),
+  task_id       TEXT,
+  note          TEXT,
+  filed_at      TEXT NOT NULL,
+  status        TEXT CHECK (status IS NULL OR status IN ('queued','needs-you','building','ready','done','failed','stopped')),
+  detail        TEXT,
+  status_at     TEXT,
+  written_at    TEXT,
+  written_base  TEXT,
+  write_problem TEXT,
+  route         TEXT,
+  component     TEXT,
+  source_at     TEXT,
+  kind          TEXT NOT NULL DEFAULT 'change' CHECK (kind IN ('change','options')),
+  proposal      TEXT CHECK (proposal IS NULL OR (length(proposal) = 12 AND proposal GLOB 'p-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]')),
+  proposal_state TEXT CHECK (proposal_state IS NULL OR proposal_state IN ('copied','taken','missing','unsafe','retry')),
+  proposal_digest TEXT CHECK (proposal_digest IS NULL OR (length(proposal_digest) = 64 AND proposal_digest NOT GLOB '*[^0-9a-f]*')),
+  proposal_run  INTEGER,
+  proposal_note TEXT,
+  proposal_at   TEXT,
+  decided       TEXT CHECK (decided IS NULL OR decided IN ('chosen','dismissed')),
+  decided_at    TEXT,
+  decided_note  TEXT,
+  PRIMARY KEY (repo, request),
+  UNIQUE (task_id),
+  CHECK ((kind = 'options') = (proposal IS NOT NULL)),
+  CHECK (proposal_state IS NULL OR kind = 'options'),
+  CHECK (decided IS NULL OR coalesce(proposal_state = 'copied' AND proposal_digest IS NOT NULL, 0))
+);
+`;
+
 /** A project's "Show commands in the live view" (live-detail.ts): absent means off. */
 export const LIVE_DETAIL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS live_detail_setting (
@@ -770,7 +1112,39 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // agent-baseline-hardening.md arc 2) — only their workspace unless an approver chose anywhere.
 // v132 adds, and changes no saved row: how far a project's checks reach beyond the check fence (project_check_access;
 // check-access.ts, docs/plans/check-access.md) — sandboxed unless an instance operator widened it.
-export const SCHEMA_VERSION = 132;
+// v133 adds, and changes no saved row: a project's sandbox settings (project_sandbox; project-sandbox.ts,
+// docs/plans/sandbox-parity.md C9) — what its builds may not read, the macOS services and protected files they may — and
+// the fence policy a flow was made under (flow.fence_policy; saved flows read NULL: v1, the home configuration denied).
+// v134 adds, and changes no saved row: who gave each yes (docs/plans/approval-policy.md) — a protected-work vote's proof
+// (scope_approval_vote.proof) and a flow decision's authority (flow_event.authority), each NULL on saved rows: no proof
+// on record. Saved approvals a machine credential gave are read for what they are (approval-authority.ts), not rewritten.
+// v135 adds, and changes no saved row: one approval per release (docs/plans/release-once.md) — a release's authority
+// record, its carried commits and its deploy and merge operations (release_authority, release_carry,
+// release_operation), each release check attempt's intended mode, sealed before it runs (release_check_attempt), the
+// nightly full check on main and its open failures (nightly_check, main_check_failure), and a scope's release terms
+// (task_scope.release_terms_json; saved rows read NULL: no release terms).
+// v136 adds, and changes no saved row: each run's own "Show commands in the live view" answer, captured once before its
+// live file opens (run_live_detail; docs/plans/agents-view.md §2.4). Saved runs have none, which every reader takes as
+// commands off: permission is never recovered from a transcript or the project's current setting.
+// v137 adds, and changes no saved row (docs/plans/actors-lessons.md): each service component's lifecycle
+// (service_lifecycle: started, draining or stopped, with a short heartbeat), bounded per-operation latency timelines
+// (latency_timeline: slow console requests, release check parts, deploy phases) and the continuous database copy's
+// settings and latest verified copy (live_backup, one row; absent reads every 5 minutes, keep 24, beside the database).
+// v138 adds, and changes no saved row: a release check's purpose (task_scope.release_check_json; docs/plans/
+// pipeline-speed.md, P0) — this exact candidate is a release's check, for a release that can't carry. Saved rows read
+// NULL: no purpose (a termsless release task stays exactly as it was approved).
+// v139 adds, and changes no saved row: GitHub's nightly as release debt (docs/plans/evals-nightly.md, part A) — stable
+// lanes and a person's aliases, the read cursor and watch list, each lane job read, open lane failures and a release
+// candidate's exemptions (V139_SCHEMA, new tables only).
+// v140 adds, and changes no saved row: what the provider itself reported (docs/plans/evals-nightly.md, B1) — the exact
+// model of each run and chat request (run.model_reported, chat_turn.model_reported), a chat request's own turn count and
+// reported cost (chat_turn.provider_turns, reported_cost_usd). Saved rows read NULL: not reported, never 0.
+// v141 adds, and changes no saved row: the eval set's records (docs/plans/evals-nightly.md, part C) — campaigns,
+// attempts, each attempt's provider dispatches, the baseline pin and eval debt (V141_SCHEMA) — and how a run's or chat
+// request's billing was known (V141_ADDED_COLUMNS; saved rows NULL: unknown).
+// v142 adds, and changes no saved row: youiyoux change requests as tasks (V142_SCHEMA, new tables only) — each
+// project's intake choice and last answer, and each request taken, with the task it became.
+export const SCHEMA_VERSION = 142;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -908,7 +1282,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1028,6 +1402,153 @@ export const V129_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
     cache_write_tokens: { definition: "INTEGER CHECK (cache_write_tokens IS NULL OR cache_write_tokens >= 0)", saved: "NULL" },
   },
 });
+/** v134 (approval policy): how each protected-work vote was proved, and who decided a flow card at a decision zone.
+ * Saved rows read NULL: no proof or authority on record, which never counts as a person. */
+export const V134_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  scope_approval_vote: { proof: { definition: "TEXT", saved: "NULL" } },
+  flow_event: { authority: { definition: "TEXT", saved: "NULL" } },
+});
+/** v135 (docs/plans/release-once.md): a scope's release terms, part of its digest when present. Saved rows read NULL. */
+export const V135_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  task_scope: { release_terms_json: { definition: "TEXT", saved: "NULL" } },
+});
+/** v138 (docs/plans/pipeline-speed.md, P0): a scope's release check purpose, part of its digest when present. Saved
+ * rows read NULL. */
+export const V138_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  task_scope: { release_check_json: { definition: "TEXT", saved: "NULL" } },
+});
+/** v140 (docs/plans/evals-nightly.md, B1): what the provider itself reported. Recorded from now on; a saved row reads
+ * NULL (not reported), never 0. A chat request's cache tokens are v129's columns. */
+export const V140_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  run: { model_reported: { definition: "TEXT", saved: "NULL" } },
+  chat_turn: {
+    model_reported: { definition: "TEXT", saved: "NULL" },
+    provider_turns: { definition: "INTEGER CHECK (provider_turns IS NULL OR provider_turns >= 0)", saved: "NULL" },
+    reported_cost_usd: { definition: "REAL CHECK (reported_cost_usd IS NULL OR reported_cost_usd >= 0)", saved: "NULL" },
+  },
+});
+/**
+ * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
+ * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
+ * epoch goes up on every takeover. `release_carry` records each later commit carried under it, `release_operation` each
+ * deploy or merge that can't be undone. `release_check_attempt` seals a check's intended mode, inventory and context
+ * before it runs. `main_check_failure` keeps one row per item the nightly full check on main found failing, until a
+ * qualifying full pass clears that exact item; `nightly_check` records each nightly firing.
+ */
+export const RELEASE_ONCE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS release_authority (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo            TEXT NOT NULL,
+  generation      INTEGER NOT NULL,
+  previous        INTEGER REFERENCES release_authority(id),
+  version         TEXT NOT NULL,
+  pr              INTEGER NOT NULL,
+  branch          TEXT NOT NULL,
+  base            TEXT NOT NULL,
+  anchor_task     TEXT NOT NULL,
+  anchor_digest   TEXT NOT NULL,
+  approved_sha    TEXT NOT NULL,
+  approved_tree   TEXT NOT NULL,
+  artifact_digest TEXT,
+  tip_sha         TEXT NOT NULL,
+  tip_task        TEXT NOT NULL,
+  policy_json     TEXT NOT NULL,
+  policy_digest   TEXT NOT NULL,
+  verify_command  INTEGER NOT NULL,
+  verify_digest   TEXT NOT NULL,
+  access_digest   TEXT NOT NULL,
+  state           TEXT NOT NULL CHECK (state IN ('open','deploying','merge-reserved','merged','revoked','expired','superseded')),
+  rev             INTEGER NOT NULL DEFAULT 0,
+  lease_owner     TEXT,
+  lease_epoch     INTEGER NOT NULL DEFAULT 0,
+  lease_expires   TEXT,
+  expires_at      TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  ended_at        TEXT,
+  ended_by        TEXT,
+  UNIQUE (repo, version, pr, generation)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS release_authority_live ON release_authority (repo, version, pr)
+  WHERE state IN ('open','deploying','merge-reserved');
+CREATE INDEX IF NOT EXISTS release_authority_anchor ON release_authority (anchor_task);
+CREATE TABLE IF NOT EXISTS release_carry (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  authority       INTEGER NOT NULL REFERENCES release_authority(id),
+  task_id         TEXT NOT NULL UNIQUE,
+  scope_digest    TEXT NOT NULL,
+  request_id      TEXT NOT NULL,
+  from_sha        TEXT NOT NULL,
+  to_sha          TEXT NOT NULL,
+  to_tree         TEXT NOT NULL,
+  artifact_digest TEXT NOT NULL,
+  commits_json    TEXT NOT NULL,
+  changed_lines   INTEGER NOT NULL,
+  files           INTEGER NOT NULL,
+  churn           INTEGER NOT NULL,
+  runtime         TEXT NOT NULL,
+  proved_at       TEXT NOT NULL,
+  UNIQUE (authority, to_sha)
+);
+CREATE TABLE IF NOT EXISTS release_operation (
+  id              TEXT PRIMARY KEY,
+  authority       INTEGER NOT NULL REFERENCES release_authority(id),
+  kind            TEXT NOT NULL CHECK (kind IN ('deploy','merge')),
+  task_id         TEXT NOT NULL,
+  candidate       TEXT NOT NULL,
+  epoch           INTEGER NOT NULL,
+  state           TEXT NOT NULL CHECK (state IN ('reserved','running','succeeded','failed','unknown')),
+  external_ref    TEXT,
+  -- The sha256 of a secret only the reserving coordinator holds: a deploy run adopting this operation proves it.
+  secret_hash     TEXT,
+  -- 1: reserved by a person's own deploy run with no coordinator holding the release (its epoch is the one it found).
+  direct          INTEGER NOT NULL DEFAULT 0,
+  -- The process that reserved, then issued, the call: its pid, its start time and when it was recorded (real time).
+  -- Recovery settles a started operation only once that process is proven gone (review round 2).
+  issuer_pid      INTEGER,
+  issuer_started  TEXT,
+  issued_at       TEXT,
+  -- A person's direct deploy: the staging folder its deployment journals in.
+  stage           TEXT,
+  reserved_at     TEXT NOT NULL,
+  finished_at     TEXT,
+  detail          TEXT
+);
+CREATE INDEX IF NOT EXISTS release_operation_open ON release_operation (authority, state);
+CREATE TABLE IF NOT EXISTS release_check_attempt (
+  run              INTEGER PRIMARY KEY REFERENCES run(id),
+  authority        INTEGER REFERENCES release_authority(id),
+  mode             TEXT NOT NULL CHECK (mode IN ('full','targeted')),
+  base_run         INTEGER REFERENCES run(id),
+  plan_digest      TEXT,
+  snapshot_digest  TEXT,
+  inventory_digest TEXT NOT NULL,
+  context_digest   TEXT NOT NULL,
+  nonce_hash       TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  settled_at       TEXT
+);
+CREATE TABLE IF NOT EXISTS main_check_failure (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo            TEXT NOT NULL,
+  sha             TEXT NOT NULL,
+  run             INTEGER NOT NULL,
+  item            TEXT NOT NULL,
+  opened_at       TEXT NOT NULL,
+  cleared_by_run  INTEGER,
+  cleared_at      TEXT,
+  UNIQUE (repo, run, item)
+);
+CREATE INDEX IF NOT EXISTS main_check_failure_open ON main_check_failure (repo) WHERE cleared_at IS NULL;
+CREATE TABLE IF NOT EXISTS nightly_check (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo            TEXT NOT NULL,
+  sha             TEXT NOT NULL,
+  task            TEXT,
+  run             INTEGER,
+  outcome         TEXT,
+  at              TEXT NOT NULL
+);
+`;
 /** v130: a project's network (an approver's setting, egress.ts ProjectNetwork as JSON) and the installation's choice
  * whether an agent may run where no OS confinement exists (one row; 0 until an instance operator turns it on). */
 export const CONFINEMENT_SCHEMA = `
@@ -1061,6 +1582,16 @@ CREATE TABLE IF NOT EXISTS project_check_access (
   level       TEXT NOT NULL CHECK (level IN ('sandboxed', 'sign-ins', 'unsandboxed')),
   updated_at  TEXT NOT NULL,
   updated_by  TEXT NOT NULL
+);
+`;
+/** v133: a project's sandbox settings (project-sandbox.ts): JSON lists, each sorted, distinct and valid. */
+export const PROJECT_SANDBOX_SCHEMA = `
+CREATE TABLE IF NOT EXISTS project_sandbox (
+  repo              TEXT PRIMARY KEY,
+  read_deny_json    TEXT NOT NULL DEFAULT '[]',
+  mach_lookup_json  TEXT NOT NULL DEFAULT '[]',
+  updated_at        TEXT NOT NULL,
+  updated_by        TEXT NOT NULL
 );
 `;
 /** v129: a finished run's How it ran, derived from its own records on first view (display only: never a verdict). Its
@@ -2012,6 +2543,8 @@ export type Run = {
   costUsd: number | null;
   /** v129: the agent's turns where its provider reports them (Claude's num_turns); null when unknown. */
   agentTurns?: number | null;
+  /** v140: the exact model the provider itself reported (reported-usage.ts; several joined by " + "); null when unknown. */
+  modelReported?: string | null;
   /** HEAD after the agent, as accepted — what a publication may push. */
   headRevision: string | null;
   /** The validated terminal handoff's conclusion. */
@@ -5044,6 +5577,10 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(PROJECT_CHECK_ACCESS_SCHEMA);
   addColumn(db, "run", "sandbox_access", "TEXT");
   addColumn(db, "run", "sandbox_network", "TEXT");
+  // v133: a project's sandbox settings (a new table), and the fence policy each flow was made under (saved flows: NULL,
+  // read as v1).
+  db.exec(PROJECT_SANDBOX_SCHEMA);
+  addColumn(db, "flow", "fence_policy", "INTEGER");
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);
@@ -5146,6 +5683,36 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   convertChatTables(db);
   // v118: every machine credential into the one credential table, after every older step gave the old tables their last shape.
   mergeCredentialsForV118(db);
+  // v134: a vote's proof and a flow decision's authority (V134_ADDED_COLUMNS: saved rows read NULL, no proof on record).
+  for (const [table, columns] of Object.entries(V134_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
+  // v135: one approval per release (new tables only) and a scope's release terms (V135_ADDED_COLUMNS: saved rows NULL).
+  db.exec(RELEASE_ONCE_SCHEMA);
+  for (const [table, columns] of Object.entries(V135_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
+  // v136: each run's own live-view answer (a new table only; saved runs have none: commands off).
+  db.exec(RUN_LIVE_DETAIL_SCHEMA);
+  // v137: lifecycle, latency timelines and the continuous copy (new tables only).
+  db.exec(V137_SCHEMA);
+  // v138: a scope's release check purpose (V138_ADDED_COLUMNS: saved rows NULL, no purpose).
+  for (const [table, columns] of Object.entries(V138_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
+  // v139: GitHub's nightly as release debt (new tables only).
+  db.exec(V139_SCHEMA);
+  // v140: what the provider itself reported (V140_ADDED_COLUMNS: saved rows read NULL, not reported).
+  for (const [table, columns] of Object.entries(V140_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
+  // v141: the eval set's records (new tables) and how a run's or chat request's billing was known (saved rows NULL).
+  db.exec(V141_SCHEMA);
+  for (const [table, columns] of Object.entries(V141_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
+  // v142: youiyoux change requests as tasks (new tables only).
+  db.exec(V142_SCHEMA);
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -6358,12 +6925,17 @@ export class ReviewBindingError extends Error {
 }
 
 export class Store {
+  // PR #263: the money methods eval accounting pins are sealed on the prototype the moment the class is defined, before
+  // any other code can reach it (the class's first static element; pinned with sealStoreMoneyMethods).
+  static { sealStoreMoneyMethods(Store.prototype); }
   readonly telemetry: ServerTelemetry;
   private readonly db: Database;
   constructor(db: Database) {
     this.telemetry = new ServerTelemetry();
     // Outside in: telemetry, then the workspace revision (one bump per committed meaningful write), then SQLite.
     this.db = instrumentDatabase(trackWorkspaceWrites(db), this.telemetry);
+    // And on each instance: the sealed methods as its own locked properties, so nothing shadows one later.
+    lockStoreMoneyMethods(this);
   }
 
   /** TESTS ONLY: raw database access for migration fixtures. Production
@@ -7867,10 +8439,16 @@ export class Store {
       permissionMode?: UnattendedPermissionMode;
       qualityMode?: QualityMode;
       posture?: "escalated";
-      proposedVia?: "mate" | "coordinator" | "scout" | null;
+      proposedVia?: ScopeAuthor | null;
+      /** v135: release terms (release-once.md); undefined keeps the ones the scope carries, null removes them. */
+      releaseTerms?: ReleaseTerms | null;
+      /** v138: a release check's purpose; undefined keeps the scope's, null removes it. Never beside terms. */
+      releaseCheck?: ReleaseCheckPurpose | null;
     } = {},
   ): void {
     this.once(mutation, "saveScope", () => this.transact(() => {
+      // The text's current author mark, read before this write (approval policy §1.4).
+      const prior = this.db.prepare("SELECT proposed_via, release_terms_json, release_check_json FROM task_scope WHERE task_id = ?").get(scope.taskId);
       // THE filing invariant (foundations findings 5/13/19): every scope
       // row leaves this method either RESOLVED (working profile stamped,
       // digest recomputed to bind it, version 2) or UNRESOLVED with its
@@ -8029,6 +8607,14 @@ export class Store {
       // keeps its terms, and approval refuses them in words.
       const lowered = (one: ExecutionProfile): ExecutionProfile => { const verdict = underCeiling(orgPolicy, one); return verdict.ok ? verdict.profile : one; };
       if (profile !== null) profile = lowered(profile);
+      // v135: release terms the caller names, else the ones this scope already carries (a refile keeps them bound).
+      const priorTerms = storedReleaseTerms(prior?.["release_terms_json"]);
+      const releaseTerms = options.releaseTerms !== undefined ? options.releaseTerms : priorTerms.ok ? priorTerms.terms : null;
+      // v138: the release check purpose likewise; terms named now replace a kept purpose (a scope carries one or the other).
+      const priorPurpose = storedReleaseCheckPurpose(prior?.["release_check_json"]);
+      const releaseCheck = options.releaseCheck !== undefined ? options.releaseCheck
+        : options.releaseTerms != null ? null : priorPurpose.ok ? priorPurpose.purpose : null;
+      if (releaseTerms !== null && releaseCheck !== null) throw new Error("A scope carries release terms or a release check purpose, never both.");
       const digestInput = {
         goal: scope.goal,
         outOfScope: scope.outOfScope,
@@ -8037,6 +8623,8 @@ export class Store {
         acceptance: scope.acceptance,
         qualityMode,
         candidate: scope.candidate ?? null,
+        releaseTerms,
+        releaseCheck,
       };
       // EVERY route filed since v47 binds into the digest — routine-shaped
       // ones included — so approval freezes exactly which agent runs each
@@ -8068,8 +8656,8 @@ export class Store {
           `INSERT INTO task_scope
              (task_id, goal, out_of_scope, touches, budget_microusd, proposed_at, digest, approved_at, approved_by, approved_digest,
               profile_json, profile_state, unresolved_reason, digest_version, profile_provenance, proposed_chain_json, acceptance_json, quality_mode,
-              risk_level, proposed_route_json, route_era, candidate)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              risk_level, proposed_route_json, route_era, candidate, release_terms_json, release_check_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (task_id) DO UPDATE SET
              goal = excluded.goal, out_of_scope = excluded.out_of_scope,
              touches = excluded.touches, budget_microusd = excluded.budget_microusd,
@@ -8081,7 +8669,7 @@ export class Store {
              profile_provenance = excluded.profile_provenance, proposed_chain_json = excluded.proposed_chain_json,
              acceptance_json = excluded.acceptance_json, quality_mode = excluded.quality_mode,
              risk_level = excluded.risk_level, proposed_route_json = excluded.proposed_route_json, route_era = excluded.route_era,
-             candidate = excluded.candidate`,
+             candidate = excluded.candidate, release_terms_json = excluded.release_terms_json, release_check_json = excluded.release_check_json`,
         )
         .run(
           scope.taskId,
@@ -8110,10 +8698,15 @@ export class Store {
           // The durable era: every row this method writes is a routed row.
           ROUTE_ERA,
           scope.candidate ?? null,
+          releaseTerms === null ? null : serializeReleaseTerms(releaseTerms),
+          releaseCheck === null ? null : serializeReleaseCheckPurpose(releaseCheck),
         );
       // Who wrote THIS text (mate arc, ruling 2): set per write, so a human
-      // rewrite clears the lead's mark and a mate rewrite sets it.
-      this.db.prepare("UPDATE task_scope SET proposed_via = ? WHERE task_id = ?").run(options.proposedVia ?? null, scope.taskId);
+      // rewrite clears the lead's mark and a mate rewrite sets it — but only a
+      // person's write clears one (approval policy §1.4): the lead (its token)
+      // or a remote API run keeps any mark already there and never erases a
+      // quarantine by refiling, and the lead's own text is marked `lead`.
+      this.db.prepare("UPDATE task_scope SET proposed_via = ? WHERE task_id = ?").run(provenanceAfter(prior?.["proposed_via"], options.proposedVia ?? null), scope.taskId);
       return null;
     }));
   }
@@ -8131,7 +8724,7 @@ export class Store {
       const row = this.db.prepare("SELECT * FROM task_scope WHERE task_id = ?").get(taskId);
       if (row === undefined) return null;
       const scope = readScope(row);
-      const proposedVia = row["proposed_via"] === null || row["proposed_via"] === undefined ? null : (String(row["proposed_via"]) as "mate" | "coordinator" | "scout");
+      const proposedVia = row["proposed_via"] === null || row["proposed_via"] === undefined ? null : (String(row["proposed_via"]) as ScopeAuthor);
       const draft = { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, qualityMode: scope.qualityMode ?? "default" };
       this.saveScope(
         { ...scope, proposedAt: now.toISOString(), digest: digestOf(draft) },
@@ -8147,9 +8740,21 @@ export class Store {
    * approved profile — one UPDATE, no re-resolution, so what is sealed is
    * exactly what the signed digest was bound to. Returns false when the
    * scope vanished mid-ceremony. */
-  sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat" | "grant"; modeDigest: string }, approverKind?: ApproverKind): boolean {
+  sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat" | "grant" | "schedule" | "auto-check" | "auto-green"; modeDigest: string;
+    /** A chat seal of a deploy gate: the release card it came from (chat-management.md §0a.5). A chat seal of a task
+     * filed from outside text: `terms`, and the digest of every word the card showed (chat-terms.ts). */
+    card?: "release" | "terms"; cardDigest?: string }, approverKind?: ApproverKind): boolean {
     return (
       this.once(mutation, "sealScopeApproval", () => {
+        // ONLY A PERSON'S SEAL HAS NO BASIS (approval policy, phase 1): with none given this is the person's
+        // ceremony (scope.ts approve), so a machine — the lead's token, a remote API run — never mints one, whatever
+        // road it came by.
+        if (basis === undefined && machineActing()) return false;
+        // A RELEASE WAITING FOR CI (Codex review round 1, finding 4): filed while its pull request's checks still ran,
+        // only the automatic road (which proves CI itself) seals it until the plane read exact-head CI passing.
+        if (basis?.kind !== "auto-check" && basis?.kind !== "auto-green" && releaseCiHoldOf(this, taskId) !== null) return false;
+        // `carried` is written by the carry transaction alone (carryReleaseApproval), never through a seal.
+        if ((basis as { kind: string } | undefined)?.kind === "carried") return false;
         // THE COORDINATOR QUARANTINE, enforced in the primitive (MCP spec
         // v6, round-3 f1): mode coverage never admits a coordinator-filed
         // task — console, CLI `task scope`, and direct callers alike hit
@@ -8168,15 +8773,26 @@ export class Store {
             .prepare("SELECT 1 AS hit FROM task_scope WHERE task_id = ? AND proposed_via IN ('mate','coordinator','scout')")
             .get(taskId);
           if (writtenByLead !== undefined) return false;
+          // THE OUTSIDE-REQUEST QUARANTINE (youiyoux-intake.ts): a task filed from a youiyoux change request is text
+          // anyone who can write the project's folder wrote, so only a person who read every word of it approves it.
+          // Its provenance is immutable, so no road around this exists. A mode, a grant, a schedule, auto-check and
+          // auto-green (approvals no person read) never seal it. A person's own ceremony does. So does their paired-
+          // chat tap, only with the digest of every word the card showed (`terms`, chat-terms.ts), recomputed below
+          // from the live scope: a card that cut a word, or terms that changed since, seal nothing.
+          if (basis.kind !== "chat" && this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA) return false;
           // CHECK ACCESS (v132, check-access.ts): a scope whose checks reach beyond the fence (sign-ins, or no sandbox at
           // all) seals only on a person's password ceremony — never a mode, a grant, a chat confirmation or a carry.
           const profileText = this.db.prepare("SELECT profile_json FROM task_scope WHERE task_id = ?").get(taskId)?.["profile_json"];
           let sealedAccess: unknown;
+          // SANDBOX WIDENINGS (v133, project-sandbox.ts): extra macOS services seal, likewise,
+          // only on a person's own password yes to exactly them.
+          let sandboxWidened = false;
           try {
             const stored = typeof profileText === "string" ? JSON.parse(profileText) as { profile?: Record<string, unknown> | null } | null : null;
             sealedAccess = stored?.profile?.["checkAccess"];
+            sandboxWidened = stored?.profile?.["machLookup"] !== undefined;
           } catch { sealedAccess = "unreadable"; }
-          if (sealedAccess !== undefined) return false;
+          if (sealedAccess !== undefined || sandboxWidened) return false;
         }
         // SEPARATION OF DUTIES (v102), enforced in the primitive so no road
         // around it exists: a project's rules can refuse the requester, and
@@ -8203,6 +8819,33 @@ export class Store {
         const authority = scopeAuthorityOf(readScope(working), { authMode: provider => readAuthModeStrict(provider) });
         if (!authority.ok) return false;
         if (routeProblems(authority.route).length > 0) return false;
+        // RELEASE TERMS (release-once.md): only a person's own yes (the ceremony or a paired-chat tap) seals them, and
+        // that yes opens the release's authority record in this same transaction — or the seal doesn't stand.
+        const terms = storedReleaseTerms(working["release_terms_json"]);
+        if (!terms.ok) return false;
+        // A DEPLOY GATE FROM CHAT (chat-management.md §0a.5): a signed candidate or release terms seal from chat only
+        // with the release card's evidence (its act and card digest), never through the plain plan card or a generic
+        // one. Read from the raw row, so a terms column that doesn't parse is a deploy gate too.
+        const deployGate = (typeof working["candidate"] === "string" && working["candidate"] !== "") || working["release_terms_json"] != null || working["release_check_json"] != null;
+        // A RELEASE CHECK PURPOSE (v138) seals, like terms, only on a person's own yes: the ceremony or a paired-chat tap
+        // through the release card — never a mode, a grant, a carry or an automatic seal (those need terms).
+        const purpose = storedReleaseCheckPurpose(working["release_check_json"]);
+        if (!purpose.ok) return false;
+        if (purpose.purpose !== null && basis !== undefined && basis.kind !== "chat") return false;
+        if (deployGate && basis?.kind === "chat" && !(basis.card === "release" && typeof basis.cardDigest === "string" && /^[0-9a-f]{64}$/.test(basis.cardDigest))) return false;
+        // The outside-request quarantine's chat road (above): the card showed every word of these live terms.
+        if (basis?.kind === "chat" && this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA
+          && !(basis.card === "terms" && typeof basis.cardDigest === "string" && basis.cardDigest === shownTermsDigest(readScope(working)))) return false;
+        // AUTOMATIC RELEASE SEALS (auto-approve-green.md): only on a release task (a candidate and release terms signed
+        // in), only naming the evidence row the plane wrote for exactly this task, kind, digest and candidate.
+        const automatic = basis?.kind === "auto-check" || basis?.kind === "auto-green";
+        if (automatic) {
+          if (terms.terms === null || typeof working["candidate"] !== "string" || working["candidate"] === "") return false;
+          const evidence = autoEvidenceOf(this, taskId, basis!.modeDigest, basis!.kind as "auto-check" | "auto-green");
+          if (evidence === null || evidence.digest !== String(working["digest"]) || evidence.candidate !== working["candidate"] || evidence.by !== by) return false;
+        }
+        if (terms.terms !== null && basis !== undefined && basis.kind !== "chat" && !automatic) return false;
+        if (terms.terms !== null && releaseSealProblem(this, terms.terms) !== null) return false;
         const changed = this.db
           .prepare(
             `UPDATE task_scope
@@ -8220,6 +8863,10 @@ export class Store {
               WHERE task_id = ?`,
           )
           .run(now.toISOString(), by, basis === undefined ? "password" : basis.kind, basis === undefined ? null : basis.modeDigest, taskId);
+        // `auto-check` only lets the check run: it opens no release authority (only `auto-green` and a person's yes do).
+        if (changed.changes > 0 && terms.ok && terms.terms !== null && basis?.kind !== "auto-check") {
+          if (openReleaseAuthority(this, { taskId, digest: String(working["digest"]), terms: terms.terms, by, now }) === null) throw new ReleaseSealRefused();
+        }
         if (changed.changes > 0) {
           // The project's tools this yes saw (v80): a later addition needs a later yes.
           this.sealProjectTools(taskId, String(working["digest"]), now);
@@ -8242,12 +8889,18 @@ export class Store {
                   taskRef: Number(ref["id"]), kind: "scope-approved", identity: `t${Number(ref["id"])}`,
                   subject: "Scope approved",
                   body: basis === undefined
-                    ? `Approved by ${currentActor()?.lead === true ? "the lead" : lifecycleWords(by, 40)}. A connected worker can take it next.`
+                    ? `Approved by ${lifecycleWords(by, 40)}. A connected worker can take it next.`
                     : basis.kind === "chat"
                       ? `Approved by ${lifecycleWords(by, 40)} in chat. A connected worker can take it next.`
                       : basis.kind === "grant"
                         ? "Approved automatically: its flow runs on its own. A connected worker can take it next."
-                        : "Approved automatically under the operating mode. A connected worker can take it next.",
+                        : basis.kind === "schedule"
+                          ? "Approved by its standing order. A connected worker can take it next."
+                          : basis.kind === "auto-check"
+                            ? "Checking automatically: it approves itself once CI and the release check pass."
+                          : basis.kind === "auto-green"
+                            ? "Approved automatically: CI and the release check passed."
+                          : "Approved automatically under the operating mode. A connected worker can take it next.",
                   link: chatControlHref("task", taskId),
                 },
                 now,
@@ -8274,7 +8927,7 @@ export class Store {
 
   getScope(taskId: string): Scope | null {
     const row = this.db.prepare("SELECT * FROM task_scope WHERE task_id = ?").get(taskId);
-    return row === undefined ? null : readScope(row);
+    return row === undefined ? null : sealedAs(this, readScope(row));
   }
 
   /**
@@ -8286,22 +8939,23 @@ export class Store {
    * scopes answer true: this belt only ever REMOVES mode authority.
    */
   modeApprovalLive(taskRef: number, now: Date): boolean {
-    // A flow's "runs on its own" grant (flow-unattended.ts) is held to the same belt.
+    // Approval policy §1.5: an allowlist over the seal that exists. No seal claims no authority (a pre-approval
+    // planner, a scope-free check — the role gates decide those); a seal stands only on an authority that still does
+    // (approval-authority.ts), so a lead seal, a null basis or a word this code doesn't write is dead here.
     const dead = this.db
       .prepare(
         `SELECT 1 AS dead FROM task_scope
           JOIN task_ref ON task_ref.id = ? AND task_ref.backend = 'built-in' AND task_scope.task_id = task_ref.external_id
          WHERE task_scope.approved_at IS NOT NULL
-           AND ((task_scope.approval_basis = 'mode'
-           AND NOT EXISTS (SELECT 1 FROM operating_mode om
-                            JOIN approver signer ON signer.name = om.signed_by
-                           WHERE om.repo = task_ref.repo AND om.revoked_at IS NULL
-                             AND om.absolute_expiry > ? AND om.digest = task_scope.mode_digest
-                             AND signer.revoked_at IS NULL AND signer.role = 'approver' AND ${accountReachesSql("signer", "task_ref.repo")}))
-             OR (task_scope.approval_basis = 'grant' AND NOT ${grantStandsSql("task_scope.mode_digest", "?", "task_ref.repo")}))`,
+           AND NOT ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`,
       )
-      .get(taskRef, now.toISOString(), now.toISOString());
-    return dead === undefined;
+      .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString());
+    if (dead !== undefined) return false;
+    // A release task (release-once.md): the whole live-release predicate, beyond what the SQL can say.
+    const external = this.db.prepare("SELECT external_id FROM task_ref WHERE id = ? AND backend = 'built-in'").get(taskRef);
+    if (external === undefined) return true;
+    const live = liveReleaseOf(this, String(external["external_id"]), "dispatch", now);
+    return !live.applies || live.ok;
   }
 
   // ---- approvers ----------------------------------------------------------
@@ -8359,15 +9013,9 @@ export class Store {
       .get(repo);
     if (row === undefined) return null;
     if (Date.parse(String(row["absolute_expiry"])) <= now.getTime()) {
-      this.transact(() => {
-        this.db
-          .prepare("UPDATE operating_mode SET revoked_at = ?, revoked_by = ?, revoke_reason = 'expired' WHERE id = ? AND revoked_at IS NULL")
-          .run(now.toISOString(), "the-clock", Number(row["id"]));
-        this.db
-          .prepare("INSERT INTO operating_mode_event (mode, kind, actor, at) VALUES (?, 'expired-closed', 'the-clock', ?)")
-          .run(Number(row["id"]), now.toISOString());
-        this.reconcileIntentsForMode(String(row["repo"]), null, now);
-      });
+      // A page visit only reads (docs/plans/get-side-effects.md): it sees no mode, and the background pass or the
+      // next path that acts closes it.
+      if (!inReadOnlyRequest()) this.closeExpiredMode(Number(row["id"]), String(row["repo"]), now);
       return null;
     }
     return {
@@ -8378,6 +9026,34 @@ export class Store {
       signedBy: String(row["signed_by"]),
       absoluteExpiry: String(row["absolute_expiry"]),
     };
+  }
+
+  /** Close every operating mode past its expiry (the background pass). Returns how many were closed. */
+  closeExpiredModes(now: Date): number {
+    // The same rows activeMode would close: unrevoked, signed by a standing approver, past their expiry.
+    const rows = this.db.prepare(`SELECT operating_mode.id, operating_mode.repo, operating_mode.absolute_expiry FROM operating_mode
+      JOIN approver ON approver.name = operating_mode.signed_by AND approver.revoked_at IS NULL AND approver.role = 'approver'
+     WHERE operating_mode.revoked_at IS NULL`).all();
+    let closed = 0;
+    for (const row of rows) {
+      if (Date.parse(String(row["absolute_expiry"])) > now.getTime()) continue;
+      this.closeExpiredMode(Number(row["id"]), String(row["repo"]), now);
+      closed++;
+    }
+    return closed;
+  }
+
+  private closeExpiredMode(id: number, repo: string, now: Date): void {
+    this.transact(() => {
+      const closed = this.db
+        .prepare("UPDATE operating_mode SET revoked_at = ?, revoked_by = ?, revoke_reason = 'expired' WHERE id = ? AND revoked_at IS NULL")
+        .run(now.toISOString(), "the-clock", id);
+      if (Number(closed.changes) !== 1) return;
+      this.db
+        .prepare("INSERT INTO operating_mode_event (mode, kind, actor, at) VALUES (?, 'expired-closed', 'the-clock', ?)")
+        .run(id, now.toISOString());
+      this.reconcileIntentsForMode(repo, null, now);
+    });
   }
 
   /** Sign (or renew) a mode: closes any predecessor with a typed event and
@@ -8788,7 +9464,8 @@ export class Store {
     // Only people who can still approve here count: a vote from an account since revoked, demoted or moved off the project doesn't.
     const standing = (name: string) => { const account = this.accountOf(name); return account !== null && account.revokedAt === null && account.role === "approver" && this.accountCanAccess(name, repo); };
     const digest = scope === undefined ? "" : String(scope["digest"]);
-    const voters = new Set(this.db.prepare("SELECT approver FROM scope_approval_vote WHERE task_id = ? AND digest = ?").all(taskId, digest).map(row => String(row["approver"])).filter(standing));
+    // Only a person's vote counts (approval policy §1.3): a machine's, or one with no recorded proof, is history only.
+    const voters = new Set(this.db.prepare("SELECT approver, proof FROM scope_approval_vote WHERE task_id = ? AND digest = ?").all(taskId, digest).filter(row => personVote(this.db, taskId, digest, row)).map(row => String(row["approver"])).filter(standing));
     const already = voters.has(by);
     voters.add(by);
     for (const name of requesters) voters.delete(name);
@@ -8806,10 +9483,10 @@ export class Store {
     if (!rules.protectProject && rules.protectedPaths.length === 0) return null;
     const hits = changed === null ? null : protectedChanges(rules, changed);
     if (hits !== null && hits.length === 0) return null;
-    const scope = this.db.prepare("SELECT approved_by, approved_digest FROM task_scope WHERE task_id = ?").get(taskId);
+    const scope = this.db.prepare("SELECT approved_by, approved_digest, approved_at, approval_basis FROM task_scope WHERE task_id = ?").get(taskId);
     const approvedDigest = scope?.["approved_digest"] == null ? "" : String(scope["approved_digest"]);
     const standing = (name: string) => { const account = this.accountOf(name); return account !== null && account.revokedAt === null && account.role === "approver" && this.accountCanAccess(name, repo); };
-    const voters = new Set(this.db.prepare("SELECT approver FROM scope_approval_vote WHERE task_id = ? AND digest = ?").all(taskId, approvedDigest).map(row => String(row["approver"])).filter(standing));
+    const voters = new Set(this.db.prepare("SELECT approver, proof FROM scope_approval_vote WHERE task_id = ? AND digest = ?").all(taskId, approvedDigest).filter(row => personVote(this.db, taskId, approvedDigest, row)).map(row => String(row["approver"])).filter(standing));
     // Whoever asked for the work never counts as the second pair of eyes on it, whatever the requester rule says.
     const requesters = this.requestersOf(taskId);
     for (const name of requesters) voters.delete(name);
@@ -8817,13 +9494,32 @@ export class Store {
     const approver = scope?.["approved_by"] == null ? null : String(scope["approved_by"]);
     const what = hits === null ? "files this project protects (its changed files couldn't be read)" : `protected files (${hits.slice(0, 3).join(", ")}${hits.length > 3 ? ` and ${hits.length - 3} more` : ""})`;
     if (completer === null) return `This result changed ${what}, so a person other than its approver marks it complete.`;
-    if (completer === approver || requesters.has(completer) || !standing(completer)) return `This result changed ${what}, and ${approver ?? "one person"} approved its scope alone. Someone else has to mark it complete.`;
-    return null;
+    // Two DISTINCT people across the votes, the seal and the completion (approval policy §1.7a): the seal's approver
+    // counts only when a person's proof stands behind that seal (never a lead or other machine credential under their
+    // name, and never a seal with no proof on record: fail closed, as personApprovalOf), a
+    // requester never counts, and someone who already voted is not a second person by also completing.
+    const people = new Set(voters);
+    const basis = scope?.["approval_basis"];
+    // (The approver is the first pair of eyes and may be who asked; the second may not.)
+    if (approver !== null && (basis === "password" || basis === "chat") && scope?.["approved_at"] != null
+      && sealOriginOf(this, taskId, approver, approvedDigest, String(scope["approved_at"])).origin === "person") people.add(approver);
+    const before = people.size;
+    if (!requesters.has(completer) && standing(completer)) people.add(completer);
+    // No seal on record at all (nothing to pair with): the completer, if they can still approve here, is the person.
+    if (approver === null && people.size > before && voters.size === 0) return null;
+    // Two distinct people across the votes, the person-made seal and the completer. Each person counts once, so one
+    // person voting and completing is still one; a voter who completes a seal another person made is two.
+    if (people.size >= 2) return null;
+    return `This result changed ${what}, and ${approver ?? "one person"} approved its scope alone. Someone else has to mark it complete.`;
   }
 
   /** One person's yes to these exact bytes (protected work counts two). */
-  recordApprovalVote(taskId: string, digest: string, by: string, now: Date): void {
-    const fresh = this.db.prepare("INSERT OR IGNORE INTO scope_approval_vote (task_id, digest, approver, at) VALUES (?,?,?,?)").run(taskId, digest, by, now.toISOString());
+  recordApprovalVote(taskId: string, digest: string, by: string, now: Date, proof: string): void {
+    // How this yes was proved rides with it (approval policy §1.3): the counters count only a person's.
+    // A person's yes replaces a row a machine credential left for the same person and bytes (or one with no proof).
+    const fresh = this.db.prepare(`INSERT INTO scope_approval_vote (task_id, digest, approver, at, proof) VALUES (?,?,?,?,?)
+      ON CONFLICT (task_id, digest, approver) DO UPDATE SET at = excluded.at, proof = excluded.proof
+      WHERE COALESCE(scope_approval_vote.proof, '') NOT IN ('password-now','sso-now','fresh-password','fresh-sso','session','cli-login','chat','passkey')`).run(taskId, digest, by, now.toISOString(), proof);
     if (fresh.changes > 0) {
       const repo = this.db.prepare("SELECT repo FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, taskId)?.["repo"];
       this.recordAction({ at: now.toISOString(), actor: by, repo: repo == null ? null : String(repo), taskId, runId: null, action: "approval recorded", outcome: "recorded", source: "work", detail: `digest ${digest.slice(0, 12)}` });
@@ -9149,7 +9845,7 @@ export class Store {
   /** A single-use door into the instance (U2): 128-bit token, sha256
    * stored, role pinned at mint, 72 hours. Only the caller's own
    * authentication gates this — an approver mints; a viewer cannot. */
-  mintInvite(role: "approver" | "viewer", mintedBy: string, now: Date, token: () => string = () => randomBytes(16).toString("base64url"), projects: ProjectAccess = null): { token: string; id: number; expiresAt: string } {
+  mintInvite(role: "approver" | "viewer", mintedBy: string, now: Date, token: () => string = () => mintSecret(16), projects: ProjectAccess = null): { token: string; id: number; expiresAt: string } {
     const access = normalizeProjectAccess(projects);
     return this.transact(() => {
       if (!this.isInstanceOperator(mintedBy)) throw new Error("Only an instance operator can invite people.");
@@ -11381,6 +12077,19 @@ export class Store {
     return row === undefined ? null : { flow: Number(row["flow"]), card: Number(row["card"]), entry: Number(row["card_entry"]), sourceJson: String(row["source_json"]) };
   }
 
+  /** v142: where a task filed from a youiyoux change or options request came from, as kept when it was filed
+   * (youiyoux-intake.ts; a revision reads its first version's): the request, its kind, and where the person pointed. Null for every other task. */
+  youiyouxOriginOf(taskId: string): { request: string; kind: "change" | "options"; route: string | null; component: string | null; at: string | null } | null {
+    const text = (value: unknown) => typeof value === "string" && value !== "" ? value : null;
+    let id: string | null = taskId;
+    for (let hop = 0; id !== null && hop < 20; hop++) {
+      const row = this.db.prepare("SELECT request, kind, route, component, source_at FROM youiyoux_request WHERE task_id = ?").get(id);
+      if (row !== undefined) return { request: String(row["request"]), kind: row["kind"] === "options" ? "options" : "change", route: text(row["route"]), component: text(row["component"]), at: text(row["source_at"]) };
+      id = this.lookupRef(id)?.revisionOf ?? null;
+    }
+    return null;
+  }
+
   // ---- the revision boundary: ONE field-by-field policy -------------------
 
   /**
@@ -13382,7 +14091,7 @@ export class Store {
     if (route === null) {
       return { ok: false, reason: "unreadable", detail: scope.approvedRouteJson == null ? "the approval sealed no agent route — re-file the scope and approve it again" : "the approval's sealed agent route cannot be read — re-file the scope and approve it again" };
     }
-    const fields = { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default" };
+    const fields = { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default", releaseTerms: scope.releaseTerms ?? null, releaseCheck: scope.releaseCheck ?? null };
     const chain = scope.approvalKind === "chain" ? chainFromJson(scope.approvedChainJson ?? null) : null;
     const target = chain !== null ? { chain } : (scope.approvedProfile ?? null);
     if (target === null) return { ok: false, reason: "unreadable", detail: "the approval sealed no agent profile — re-file the scope and approve it again" };
@@ -13786,6 +14495,13 @@ export class Store {
       /** v129: the request's cache read and write tokens, where its provider reports them (unknown stays NULL). */
       cacheReadTokens?: number | null;
       cacheWriteTokens?: number | null;
+      /** v140: what the provider itself reported for this request — its exact model, its own turn count and its
+       * reported cost in dollars (a subscription's is usage, not billed). Absent or null: not reported. */
+      modelReported?: string | null;
+      providerTurns?: number | null;
+      reportedCostUsd?: number | null;
+      /** v141: how the request's own events said it was billed (a subscription harness); absent or null: unknown. */
+      billingReported?: "subscription" | "api-key" | null;
     },
     now: Date,
   ): boolean {
@@ -13793,7 +14509,8 @@ export class Store {
     const changed = this.db
       .prepare(
         `UPDATE chat_turn SET state = ?, failure_reason = ?, tokens_in = ?, tokens_out = ?,
-           settled_microusd = ?, unknown_spend = ?, reply_bytes = ?, candidate_count = ?, cache_read_tokens = ?, cache_write_tokens = ?, finished_at = ?
+           settled_microusd = ?, unknown_spend = ?, reply_bytes = ?, candidate_count = ?, cache_read_tokens = ?, cache_write_tokens = ?,
+           model_reported = ?, provider_turns = ?, reported_cost_usd = ?, billing_reported = ?, finished_at = ?
          WHERE id = ? AND generation = ? AND state IN ('queued','running')`,
       )
       .run(
@@ -13807,6 +14524,10 @@ export class Store {
         outcome.candidateCount ?? null,
         outcome.cacheReadTokens ?? null,
         outcome.cacheWriteTokens ?? null,
+        reportedModelOf(outcome.modelReported),
+        providerTurnsOf(outcome.providerTurns),
+        reportedCostUsdOf(outcome.reportedCostUsd),
+        outcome.billingReported === "subscription" || outcome.billingReported === "api-key" ? outcome.billingReported : null,
         now.toISOString(),
         id,
         generation,
@@ -17573,6 +18294,10 @@ export class Store {
     now: Date,
   ): void {
     this.transact(() => {
+      // The nightly check of main is a check only (release-once.md, part 3): nothing merges it.
+      if (nightlyPublication(this, intent.publication)) throw new Error(NIGHTLY_CHECK_ONLY);
+      // A release's result merges only through its coordinator (release-once.md; security review): no intent for it.
+      if (releasePublication(this, intent.publication)) throw new Error(RELEASE_MERGES_ONLY);
       const mode = this.activeMode(intent.repo, now);
       let state = "pending";
       let basis = "grant";
@@ -17704,8 +18429,18 @@ export class Store {
   ): { ok: true } | { ok: false; outcome: "raced" | "superseded" | "waiting-human"; why: string } {
     return this.transact(() => {
       const row = this.db
-        .prepare("SELECT state, generation, head_sha, grant_terms_hash, authority_basis, mode_digest FROM merge_intent WHERE id = ?")
+        .prepare("SELECT state, generation, head_sha, grant_terms_hash, authority_basis, mode_digest, publication FROM merge_intent WHERE id = ?")
         .get(id);
+      // The shared merge authority (release-once.md, part 3): a nightly check of main never merges, by any road.
+      if (row !== undefined && nightlyPublication(this, Number(row["publication"]))) {
+        this.settleMergeIntent(id, generation, "refused", now, { error: NIGHTLY_CHECK_ONLY, from: "claimed" });
+        return { ok: false as const, outcome: "superseded" as const, why: NIGHTLY_CHECK_ONLY };
+      }
+      // Nor does a release's result, whatever intent was planted for it: only `toolroll release` merges it.
+      if (row !== undefined && releasePublication(this, Number(row["publication"]))) {
+        this.settleMergeIntent(id, generation, "refused", now, { error: RELEASE_MERGES_ONLY, from: "claimed" });
+        return { ok: false as const, outcome: "superseded" as const, why: RELEASE_MERGES_ONLY };
+      }
       if (row === undefined || String(row["state"]) !== "claimed" || Number(row["generation"]) !== generation) {
         return { ok: false as const, outcome: "raced" as const, why: "the claim moved" };
       }
@@ -17842,6 +18577,10 @@ export class Store {
     },
     now: Date,
   ): number {
+    // The nightly check of main is a check only: it is never published, so no pull request or merge can follow.
+    if (nightlyTaskRef(this, intent.taskRef)) throw new Error(NIGHTLY_CHECK_ONLY);
+    // Nor is a release's task: `toolroll release` merges its own pull request, so no publication (and no merge sweep) has it.
+    if (releaseTaskRef(this, intent.taskRef)) throw new Error(RELEASE_MERGES_ONLY);
     const inserted = this.db
       .prepare(
         `INSERT INTO publication
@@ -18164,7 +18903,8 @@ export class Store {
 
   createFlow(flow: { repo: string; name: string; definitionJson: string; by: string }, now: Date): number {
     const stamp = now.toISOString();
-    return Number(this.db.prepare("INSERT INTO flow (repo, name, definition_json, revision, state, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, 1, 'active', ?, ?, ?, ?)")
+    // A flow made from 0.9.70 on runs under fence policy v2 (agent-fence.ts FencePolicy); one made before stays v1.
+    return Number(this.db.prepare("INSERT INTO flow (repo, name, definition_json, revision, state, created_by, created_at, updated_by, updated_at, fence_policy) VALUES (?, ?, ?, 1, 'active', ?, ?, ?, ?, 2)")
       .run(flow.repo, flow.name, flowDefinitionForStore(flow.definitionJson), flow.by, stamp, flow.by, stamp).lastInsertRowid);
   }
 
@@ -18231,14 +18971,17 @@ export class Store {
   /** Move a card to a zone (a fresh entry: its step runs again), with the history line. `expectEntry` makes a stale move a no-op. */
   moveFlowCard(id: number, move: { to: string; outcome: FlowEventOutcome; actor: string; note?: string | null; task?: string | null; expectEntry?: number;
     /** v91: said in the card's history only; the card's note ({{note}}) is left as it is. */
-    historyNote?: string }, now: Date): boolean {
+    historyNote?: string;
+    /** v134: who decided a decision move (approval policy §1.7): a person, a subagent, or a machine credential. Only a
+     * person's approval lets a Pull request zone merge. Absent on other moves. */
+    authority?: FlowDecisionAuthority }, now: Date): boolean {
     return this.transact(() => {
       const card = this.getFlowCard(id);
       if (card === null || card.state !== "active" || (move.expectEntry !== undefined && card.entry !== move.expectEntry)) return false;
       const stamp = now.toISOString();
       this.db.prepare("UPDATE flow_card SET stage = ?, entry = entry + 1, task = ?, waiting = NULL, note = COALESCE(?, note), updated_at = ? WHERE id = ?")
         .run(move.to, move.task ?? null, move.note ?? null, stamp, id);
-      this.db.prepare("INSERT INTO flow_event (card, from_stage, to_stage, outcome, actor, note, at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, card.stage, move.to, move.outcome, move.actor, move.historyNote ?? move.note ?? null, stamp);
+      this.db.prepare("INSERT INTO flow_event (card, from_stage, to_stage, outcome, actor, note, at, authority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(id, card.stage, move.to, move.outcome, move.actor, move.historyNote ?? move.note ?? null, stamp, move.authority ?? null);
       return true;
     });
   }
@@ -18267,10 +19010,12 @@ export class Store {
     });
   }
 
-  flowEvents(card: number): { fromStage: string | null; toStage: string; outcome: FlowEventOutcome; actor: string; note: string | null; at: string }[] {
+  flowEvents(card: number): { fromStage: string | null; toStage: string; outcome: FlowEventOutcome; actor: string; note: string | null; at: string; authority: FlowDecisionAuthority | null }[] {
     return this.db.prepare("SELECT * FROM flow_event WHERE card = ? ORDER BY id").all(card).map(row => ({
       fromStage: row["from_stage"] === null ? null : String(row["from_stage"]), toStage: String(row["to_stage"]), outcome: String(row["outcome"]) as FlowEventOutcome,
       actor: String(row["actor"]), note: row["note"] === null ? null : String(row["note"]), at: String(row["at"]),
+      // A word this code doesn't write (or a move from before v134) is no recorded authority.
+      authority: FLOW_DECISION_AUTHORITIES.find(one => one === row["authority"]) ?? null,
     }));
   }
 
@@ -19061,7 +19806,7 @@ export class Store {
   }
 
   /** How one attempt was kept away from Toolroll's own secrets (the agent fence), kept beside its tools. */
-  recordRunFence(run: number, fence: { method: string; paths: number }, now: Date): void {
+  recordRunFence(run: number, fence: { method: string; paths: number; policy?: 1 | 2; digest?: string; engine?: string }, now: Date): void {
     this.db.prepare(`INSERT INTO run_tool (run, tools_json, created_at) VALUES (?, json_object('fence', json(?)), ?)
       ON CONFLICT (run) DO UPDATE SET tools_json = json_set(tools_json, '$.fence', json(?))`).run(run, JSON.stringify(fence), now.toISOString(), JSON.stringify(fence));
   }
@@ -19081,7 +19826,7 @@ export class Store {
     return runNetworkFromValue(parsed);
   }
 
-  runFence(run: number): { method: string; paths: number } | null {
+  runFence(run: number): { method: string; paths: number; policy?: 1 | 2; digest?: string; engine?: string } | null {
     const row = this.db.prepare("SELECT json_extract(tools_json, '$.fence') AS fence FROM run_tool WHERE run = ?").get(run);
     if (row === undefined || row["fence"] === null) return null;
     const read = readStoreColumn("run_tool.tools_json.fence", row["fence"]);
@@ -20428,7 +21173,8 @@ export class Store {
     | { ok: false; reason: "watch-busy"; holder: string; until: string } {
     return this.transact(() => {
       const stamp = now.toISOString();
-      const expires = new Date(now.getTime() + ttlMs).toISOString();
+      // Never longer than MAX_WATCH_LEASE_MS, whatever a caller asks: a crashed holder's project is free within a minute.
+      const expires = new Date(now.getTime() + Math.min(ttlMs, MAX_WATCH_LEASE_MS)).toISOString();
       const row = this.db
         .prepare("SELECT * FROM watch_lease WHERE runner = ? AND repo = ?")
         .get(runner, repo);
@@ -20473,7 +21219,7 @@ export class Store {
           WHERE runner = ? AND repo = ? AND owner = ? AND expires_at > ?`,
       )
       .run(
-        new Date(now.getTime() + ttlMs).toISOString(),
+        new Date(now.getTime() + Math.min(ttlMs, MAX_WATCH_LEASE_MS)).toISOString(),
         now.toISOString(),
         runner,
         repo,
@@ -20487,6 +21233,13 @@ export class Store {
     this.db
       .prepare("UPDATE watch_lease SET expires_at = ? WHERE runner = ? AND repo = ? AND owner = ?")
       .run(now.toISOString(), runner, repo, owner);
+  }
+
+  /** Lapse every watch lease a runner holds now: its holder was proved gone (runner.ts registerRunnerIfIdle). The rows
+   * stay, so the next acquire takes them over and recovers the superseded incarnation as after any crash. */
+  expireWatchLeasesOf(runner: string, now: Date): number {
+    const stamp = now.toISOString();
+    return Number(this.db.prepare("UPDATE watch_lease SET expires_at = ? WHERE runner = ? AND expires_at > ?").run(stamp, runner, stamp).changes);
   }
 
   /** The first still-unexpired watch lease this runner holds, if any (arc 2:
@@ -22335,6 +23088,14 @@ export class Store {
 
   // ---- idempotency --------------------------------------------------------
 
+  /** Which conversation a page's first send started (quiet page visits): recorded with the start, in the same
+   * transaction, so a retry of that send never starts another, even after a restart or once that one has ended. */
+  leadStartReceipt(approver: string, request: string): { session: number } | null {
+    const row = this.db.prepare("SELECT result FROM mutation WHERE idempotency_key = ? AND operation = 'mate-start'")
+      .get(`mate-start:${approver}:${request}`);
+    return row === undefined ? null : parseStoreColumn("mutation.result", row["result"]) as { session: number };
+  }
+
   /** A chat send receipt contains no message text. The session is part of
    * its namespace; callers must prove that session before reading it. */
   leadRequestReceipt(session: number, request: string): { digest: string; turn: number } | null {
@@ -22538,6 +23299,57 @@ export class Store {
       return { before, after };
     });
   }
+
+  // ---- sandbox parity (docs/plans/sandbox-parity.md). Kept last in the class: the freshness tripwire pins positions.
+
+  /** The scout's browser ran outside Toolroll's fence under its launch contract (scout-browser.ts): which exception. */
+  recordRunBrowser(run: number, browser: { containment: string; tool: string }, now: Date): void {
+    const json = JSON.stringify(browser);
+    this.db.prepare(`INSERT INTO run_tool (run, tools_json, created_at) VALUES (?, json_object('browser', json(?)), ?)
+      ON CONFLICT (run) DO UPDATE SET tools_json = json_set(tools_json, '$.browser', json(?))`).run(run, json, now.toISOString(), json);
+  }
+
+  runBrowser(run: number): { containment: string; tool: string } | null {
+    const row = this.db.prepare("SELECT json_extract(tools_json, '$.browser') AS browser FROM run_tool WHERE run = ?").get(run);
+    if (row === undefined || row["browser"] === null) return null;
+    try {
+      const parsed = JSON.parse(String(row["browser"])) as { containment?: unknown; tool?: unknown };
+      return typeof parsed.containment === "string" && typeof parsed.tool === "string" ? { containment: parsed.containment, tool: parsed.tool } : null;
+    } catch { return null; }
+  }
+  /** A project's sandbox settings (project-sandbox.ts): its saved lists, or none. A damaged row keeps what it can read
+   * of its read denies (never fewer) and grants nothing else. */
+  projectSandbox(repo: string): ProjectSandbox {
+    const row = this.db.prepare("SELECT read_deny_json, mach_lookup_json FROM project_sandbox WHERE repo = ?").get(repo);
+    if (row === undefined) return { ...PROJECT_SANDBOX_DEFAULT };
+    const read = (text: unknown): unknown => { try { return typeof text === "string" ? JSON.parse(text) : null; } catch { return null; } };
+    return sandboxOf({ readDeny: read(row["read_deny_json"]), machLookup: read(row["mach_lookup_json"]) });
+  }
+
+  /** An approver changed a project's sandbox settings (their password was proved by the caller): saved whole, and in
+   * the ledger as before → after. The account is proved again inside the write. Refused: null, nothing written. */
+  setProjectSandbox(repo: string, wanted: ProjectSandbox, by: string, now: Date): { before: ProjectSandbox; after: ProjectSandbox } | null {
+    return this.transact(() => {
+      const account = this.accountOf(by);
+      if (account === null || account.revokedAt !== null || account.role !== "approver" || !this.accountCanAccess(by, repo)) return null;
+      const before = this.projectSandbox(repo);
+      const clean = sandboxOf(wanted);
+      this.db.prepare(`INSERT INTO project_sandbox (repo, read_deny_json, mach_lookup_json, updated_at, updated_by) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (repo) DO UPDATE SET read_deny_json = excluded.read_deny_json, mach_lookup_json = excluded.mach_lookup_json,
+        updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
+        .run(repo, JSON.stringify(clean.readDeny), JSON.stringify(clean.machLookup), now.toISOString(), by);
+      const after = this.projectSandbox(repo);
+      const words = (one: ProjectSandbox) => `read-deny ${one.readDeny.length === 0 ? "none" : one.readDeny.join(",")}; mach ${one.machLookup.length === 0 ? "none" : one.machLookup.join(",")}`;
+      this.recordPolicy(by, repo, "sandbox", words(before), words(after), now);
+      return { before, after };
+    });
+  }
+
+  /** The fence policy a flow was made under (agent-fence.ts FencePolicy): v2 for one made from 0.9.70; v1 otherwise. */
+  flowFencePolicy(flow: number): FencePolicy {
+    return this.db.prepare("SELECT fence_policy FROM flow WHERE id = ?").get(flow)?.["fence_policy"] === 2 ? 2 : 1;
+  }
+
 }
 
 /** A stored count or id that must be a whole, non-negative number — a
@@ -22588,6 +23400,7 @@ function readRun(row: Record<string, unknown>): Run {
     tokensIn: row["tokens_in"] === null || row["tokens_in"] === undefined ? null : Number(row["tokens_in"]),
     tokensOut: row["tokens_out"] === null || row["tokens_out"] === undefined ? null : Number(row["tokens_out"]),
     agentTurns: row["agent_turns"] === null || row["agent_turns"] === undefined ? null : Number(row["agent_turns"]),
+    modelReported: row["model_reported"] === null || row["model_reported"] === undefined ? null : String(row["model_reported"]),
     costUsd: row["cost_usd"] === null || row["cost_usd"] === undefined ? null : Number(row["cost_usd"]),
     headRevision:
       row["head_revision"] === null || row["head_revision"] === undefined
@@ -23574,11 +24387,22 @@ export function scopeTermsProblem(row: Record<string, unknown>): string | null {
   // null for a person) is corruption, never a value that slips past the
   // quarantine because it is not literally 'mate'.
   const via = row["proposed_via"];
-  if (via !== null && via !== undefined && via !== "mate" && via !== "coordinator" && via !== "scout") return "the proposed-via marker is not one this code writes";
+  if (via !== null && via !== undefined && via !== "mate" && via !== "coordinator" && via !== "scout" && via !== "lead") return "the proposed-via marker is not one this code writes";
   const era = row["route_era"];
   if (era !== null && era !== undefined && (typeof era !== "number" || !Number.isSafeInteger(era) || era < 1 || era > ROUTE_ERA)) return "the route era is not one this code writes";
   for (const column of ["digest", "proposed_at"]) {
     if (typeof row[column] !== "string") return `${column.replace("_", " ")} is not stored as text`;
+  }
+  // v135: release terms read back exactly, or the row states why (a reader that didn't select them skips this).
+  if ("release_terms_json" in row) {
+    const terms = storedReleaseTerms(row["release_terms_json"]);
+    if (!terms.ok) return terms.problem;
+  }
+  // v138: likewise the release check purpose, and never beside terms.
+  if ("release_check_json" in row) {
+    const purpose = storedReleaseCheckPurpose(row["release_check_json"]);
+    if (!purpose.ok) return purpose.problem;
+    if (purpose.purpose !== null && row["release_terms_json"] != null) return "the scope carries both release terms and a release check purpose";
   }
   for (const column of ["approved_at", "approved_by", "approved_digest", "profile_json", "approved_profile_json", "proposed_chain_json", "approved_chain_json", "proposed_route_json", "approved_route_json", "unresolved_reason"]) {
     if (row[column] !== null && row[column] !== undefined && typeof row[column] !== "string") return `${column.replace(/_/g, " ")} is not stored as text`;
@@ -23596,10 +24420,11 @@ function readScope(row: Record<string, unknown>): Scope {
     proposedAt: String(row["proposed_at"]),
     digest: String(row["digest"]),
     budgetMicrousd: row["budget_microusd"] === null || row["budget_microusd"] === undefined ? null : Number(row["budget_microusd"]),
+    // Only the authorities this code writes; any other stored word reads as `unknown`, which no reader treats as a yes.
     approvalBasis:
       row["approval_basis"] === null || row["approval_basis"] === undefined
         ? null
-        : (String(row["approval_basis"]) as "password" | "mode" | "chat" | "grant"),
+        : APPROVAL_BASES.find(one => one === row["approval_basis"]) ?? "unknown",
     modeDigest: row["mode_digest"] === null || row["mode_digest"] === undefined ? null : String(row["mode_digest"]),
     approvedAt: row["approved_at"] === null ? null : String(row["approved_at"]),
     approvedBy: row["approved_by"] === null ? null : String(row["approved_by"]),
@@ -23630,7 +24455,9 @@ function readScope(row: Record<string, unknown>): Scope {
       row["approved_route_json"] === null || row["approved_route_json"] === undefined ? null : String(row["approved_route_json"]),
     routeEra: row["route_era"] === null || row["route_era"] === undefined ? null : Number(row["route_era"]),
     candidate: typeof row["candidate"] === "string" && row["candidate"] !== "" ? row["candidate"] : null,
-    proposedVia: row["proposed_via"] === "mate" || row["proposed_via"] === "coordinator" || row["proposed_via"] === "scout" ? row["proposed_via"] : null,
+    releaseTerms: (() => { const read = storedReleaseTerms(row["release_terms_json"]); return read.ok ? read.terms : null; })(),
+    releaseCheck: (() => { const read = storedReleaseCheckPurpose(row["release_check_json"]); return read.ok ? read.purpose : null; })(),
+    proposedVia: row["proposed_via"] === "mate" || row["proposed_via"] === "coordinator" || row["proposed_via"] === "scout" || row["proposed_via"] === "lead" ? row["proposed_via"] : null,
   };
 }
 
@@ -23809,4 +24636,823 @@ function readAcpCheck(row: Record<string, unknown>): AcpCheckRequest {
     step1Passed: Number(row["step1_passed"]) === 1, step2Passed: Number(row["step2_passed"]) === 1, result: text("result"), finishedAt: text("finished_at"),
     settledAt: text("settled_at"),
   };
+}
+
+/**
+ * Who wrote a scope's text after this write (docs/plans/approval-policy.md §1.4), from trusted context only. A person's
+ * write sets what the caller says (null for their own words), as always. A machine's write — the lead's token or a
+ * remote API run — never clears or downgrades a mark: a quarantined author (a chat proposal, a scout, a coordinator)
+ * stays, and otherwise the lead's write is marked `lead` (a remote run's keeps whatever was there).
+ */
+export function provenanceAfter(prior: unknown, requested: ScopeAuthor | null): ScopeAuthor | null {
+  if (!machineActing()) return requested;
+  const was = prior === "mate" || prior === "coordinator" || prior === "scout" || prior === "lead" ? prior : null;
+  if (quarantinedAuthor(was)) return was;
+  if (quarantinedAuthor(requested)) return requested;
+  return currentActor()?.lead === true ? "lead" : (requested ?? was);
+}
+
+/** Who decided a flow card at a decision zone (v134, approval policy §1.7). */
+export type FlowDecisionAuthority = "person" | "subagent" | "lead" | "remote";
+export const FLOW_DECISION_AUTHORITIES: readonly FlowDecisionAuthority[] = ["person", "subagent", "lead", "remote"];
+
+/** Whether a protected-work vote is a person's (approval policy §1.3): the proof stored with it, or for a vote from
+ * before votes kept one, the approver's own proof row for those bytes. None on record is no person. */
+function personVote(db: Database, taskId: string, digest: string, row: Record<string, unknown>): boolean {
+  if (typeof row["proof"] === "string") return personProof(row["proof"]);
+  // The approver's newest proof row for these exact bytes, parsed (either form); none is no person.
+  const proof = db.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = 'approval proved' AND actor = ? ORDER BY id DESC LIMIT 50")
+    .all(taskId, String(row["approver"])).find(one => proofDetailOf(one["detail"])?.digest === digest);
+  return personProof(proof === undefined ? null : String(proof["outcome"]));
+}
+
+/**
+ * A scope's approval read for what its seal really was (approval policy §1.5): a seal that says `password` or `chat`
+ * but that a machine credential made reads as `lead` (the lead's token) or `unknown` (any other machine credential),
+ * and a standing order's old firing as `schedule`. Nothing is rewritten; every reader of getScope sees the truth.
+ */
+function sealedAs(store: Store, scope: Scope): Scope {
+  if (scope.approvedAt === null || scope.approvedBy === null || scope.approvedDigest === null) return scope;
+  if (scope.approvalBasis !== "password" && scope.approvalBasis !== "chat") return scope;
+  const origin = sealOriginOf(store, scope.taskId, scope.approvedBy, scope.approvedDigest, scope.approvedAt);
+  if (origin.origin === "machine") return { ...scope, approvalBasis: origin.lead ? "lead" : "unknown" };
+  if (origin.origin === "automation") return { ...scope, approvalBasis: "schedule" };
+  return scope;
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// One approval per release (docs/plans/release-once.md, schema v135). Free functions over the store, kept together at
+// the end of this file.
+
+/** A release check attempt, sealed before its command runs (release_check_attempt). */
+export type CheckAttempt = {
+  run: number;
+  authority: number | null;
+  mode: "full" | "targeted";
+  baseRun: number | null;
+  planDigest: string | null;
+  snapshotDigest: string | null;
+  inventoryDigest: string;
+  contextDigest: string;
+  nonceHash: string;
+  createdAt: string;
+  settledAt: string | null;
+};
+
+function readCheckAttempt(row: Record<string, unknown>): CheckAttempt {
+  const text = (key: string) => row[key] == null ? null : String(row[key]);
+  return {
+    run: Number(row["run"]), authority: row["authority"] == null ? null : Number(row["authority"]),
+    mode: row["mode"] === "targeted" ? "targeted" : "full", baseRun: row["base_run"] == null ? null : Number(row["base_run"]),
+    planDigest: text("plan_digest"), snapshotDigest: text("snapshot_digest"), inventoryDigest: String(row["inventory_digest"]),
+    contextDigest: String(row["context_digest"]), nonceHash: String(row["nonce_hash"]), createdAt: String(row["created_at"]), settledAt: text("settled_at"),
+  };
+}
+
+/** Seal a check attempt before its command is spawned. Once written it never changes (bar its settled mark). */
+export function recordCheckAttempt(store: Store, attempt: Omit<CheckAttempt, "createdAt" | "settledAt">, now: Date): void {
+  store.handle.prepare(`INSERT INTO release_check_attempt (run, authority, mode, base_run, plan_digest, snapshot_digest, inventory_digest, context_digest, nonce_hash, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(attempt.run, attempt.authority, attempt.mode, attempt.baseRun, attempt.planDigest, attempt.snapshotDigest,
+    attempt.inventoryDigest, attempt.contextDigest, attempt.nonceHash, now.toISOString());
+}
+
+/** A run's sealed check attempt, or null. */
+export function checkAttemptOf(store: Store, run: number): CheckAttempt | null {
+  const row = store.handle.prepare("SELECT * FROM release_check_attempt WHERE run = ?").get(run);
+  return row === undefined ? null : readCheckAttempt(row);
+}
+
+/** Release terms as this code writes them: the contract's own reading of them, serialized. */
+export function serializeReleaseTerms(terms: ReleaseTerms): string {
+  const read = readReleaseTerms(terms);
+  if (!read.ok) throw new Error(`The release terms don't match their contract: ${read.issues[0]?.line ?? "invalid"}`);
+  return JSON.stringify(read.value);
+}
+
+// ---- one approval per release: the authority record (release-once.md, part 1) --------------------------------------
+
+export {
+  LIVE_RELEASE_STATES, belongsToRelease, newestReleaseGeneration, outstandingReleaseOperations, releaseAuthority, releaseAuthorityOfTask, releaseCarries,
+  releaseCarryTo, releaseOperation, releaseOperations, releaseSealProblem,
+  type ReleaseAuthority, type ReleaseCarry, type ReleaseOperation, type ReleaseState,
+} from "./release-authority.js";
+import {
+  LIVE_RELEASE_STATES, autoEvidenceOf, belongsToRelease, newestReleaseGeneration, outstandingReleaseOperations, releaseAuthority, releaseCarryTo, releaseOperation, releaseSealProblem,
+  type ReleaseCarry, type ReleaseOperation,
+} from "./release-authority.js";
+
+/**
+ * Open a release's authority for a person's seal of its terms (inside the seal's transaction): the next generation,
+ * superseding the live one. False when it can't (releaseSealProblem), which refuses the seal.
+ */
+export function openReleaseAuthority(store: Store, input: { taskId: string; digest: string; terms: ReleaseTerms; by: string; now: Date }): number | null {
+  const { terms, now } = input;
+  if (releaseSealProblem(store, terms) !== null) return null;
+  const live = newestReleaseGeneration(store, terms.repo, terms.packageVersion, terms.pr);
+  if (live !== null && LIVE_RELEASE_STATES.includes(live.state)) {
+    store.handle.prepare("UPDATE release_authority SET state = 'superseded', ended_at = ?, ended_by = ?, rev = rev + 1 WHERE id = ? AND rev = ?")
+      .run(now.toISOString(), input.by, live.id, live.rev);
+  }
+  const policyJson = JSON.stringify(terms.policy);
+  const result = store.handle.prepare(`INSERT INTO release_authority (repo, generation, previous, version, pr, branch, base, anchor_task, anchor_digest, approved_sha, approved_tree,
+      artifact_digest, tip_sha, tip_task, policy_json, policy_digest, verify_command, verify_digest, access_digest, state, rev, lease_epoch, expires_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'open', 0, 0, ?, ?)`).run(
+    terms.repo, (live?.generation ?? 0) + 1, live?.id ?? null, terms.packageVersion, terms.pr, terms.branch, terms.base, input.taskId, input.digest, terms.approvedSha, terms.approvedTree,
+    terms.approvedSha, input.taskId, policyJson, releasePolicyDigest(terms.policy), terms.grant.id, terms.grant.digest, terms.access, terms.expiresAt, now.toISOString());
+  const id = Number(result.lastInsertRowid);
+  store.recordAction({ at: now.toISOString(), actor: input.by, repo: terms.repo, taskId: input.taskId, runId: null, action: "release approved", outcome: "open", source: "work",
+    detail: `release ${id} · generation ${(live?.generation ?? 0) + 1} · ${terms.packageVersion} · pull request #${terms.pr} · ${terms.approvedSha}` });
+  return id;
+}
+
+/** Seal the anchor's artifact digest once (the person's seal authorized building that approved commit). */
+export function sealAnchorArtifact(store: Store, id: number, digest: string, now: Date): boolean {
+  return store.transact(() => {
+    const changed = store.handle.prepare("UPDATE release_authority SET artifact_digest = ?, rev = rev + 1 WHERE id = ? AND artifact_digest IS NULL AND state = 'open'").run(digest, id);
+    if (Number(changed.changes) === 1) store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: releaseAuthority(store, id)?.repo ?? null, taskId: releaseAuthority(store, id)?.anchorTask ?? null, runId: null,
+      action: "release artifact sealed", outcome: "ok", source: "work", detail: `release ${id} · ${digest}` });
+    return Number(changed.changes) === 1;
+  });
+}
+
+/** Take (or keep) a release's lease. A takeover by another owner raises the epoch, which fences every operation the
+ * old owner reserved. */
+export function takeReleaseLease(store: Store, id: number, owner: string, now: Date, ttlMs = 10 * 60_000): { ok: true; epoch: number } | { ok: false; why: string } {
+  return store.transact(() => {
+    const authority = releaseAuthority(store, id);
+    if (authority === null) return { ok: false as const, why: `No release ${id}.` };
+    const held = authority.leaseOwner !== null && authority.leaseOwner !== owner && authority.leaseExpires !== null && authority.leaseExpires > now.toISOString();
+    if (held) return { ok: false as const, why: `Release ${id} is being run by ${authority.leaseOwner} until ${authority.leaseExpires}.` };
+    // A person's own deploy still at work holds the release as a lease would: nothing takes it over (review round 2).
+    const direct = outstandingReleaseOperations(store, id).find(op => op.direct && !releaseIssuerGone(op));
+    if (direct !== undefined) return { ok: false as const, why: `A deploy of this release (operation ${direct.id}, process ${direct.issuer?.pid ?? "unknown"}) is still running.` };
+    const epoch = authority.leaseOwner === owner && authority.leaseExpires !== null && authority.leaseExpires > now.toISOString() ? authority.leaseEpoch : authority.leaseEpoch + 1;
+    const changed = store.handle.prepare("UPDATE release_authority SET lease_owner = ?, lease_epoch = ?, lease_expires = ?, rev = rev + 1 WHERE id = ? AND rev = ?")
+      .run(owner, epoch, new Date(now.getTime() + ttlMs).toISOString(), id, authority.rev);
+    return Number(changed.changes) === 1 ? { ok: true as const, epoch } : { ok: false as const, why: "The release changed while taking its lease; try again." };
+  });
+}
+
+/** Renew a lease this owner still holds at this epoch. */
+export function renewReleaseLease(store: Store, id: number, owner: string, epoch: number, now: Date, ttlMs = 10 * 60_000): boolean {
+  const changed = store.handle.prepare("UPDATE release_authority SET lease_expires = ? WHERE id = ? AND lease_owner = ? AND lease_epoch = ? AND lease_expires > ?")
+    .run(new Date(now.getTime() + ttlMs).toISOString(), id, owner, epoch, now.toISOString());
+  return Number(changed.changes) === 1;
+}
+
+/**
+ * Reserve a deploy or a merge of the release tip (the freeze happens here, in the store): a deploy moves `open` to
+ * `deploying` (or, already deploying, reserves a new attempt of the same frozen candidate); a merge moves `deploying`
+ * to `merge-reserved`. `epoch` null is a direct deploy by a person: it takes the current epoch, and only while no
+ * coordinator holds a live lease. Refused while any earlier operation is unsettled.
+ */
+export function reserveRelease(store: Store, input: { authority: number; kind: "deploy" | "merge"; taskId: string; candidate: string; epoch: number | null; operationId: string; now: Date; secret?: string; issuer?: ReleaseIssuer; stage?: string }):
+  { ok: true; operation: ReleaseOperation } | { ok: false; why: string } {
+  return store.transact(() => {
+    const a = releaseAuthority(store, input.authority);
+    if (a === null) return { ok: false as const, why: `No release ${input.authority}.` };
+    // Early approval authorizes the check, never an irreversible operation before the plane confirms exact-head CI.
+    if (releaseCiRunningOf(store, input.taskId) !== null) return { ok: false as const, why: "This release still waits for GitHub CI. Resume it with `toolroll release`." };
+    const at = input.now.toISOString();
+    // Expiry stops every live state; an operation already reserved settles only through reconciliation.
+    if (a.expiresAt <= at) return { ok: false as const, why: "The release approval expired." };
+    if (a.tipTask !== input.taskId || a.tipSha !== input.candidate) return { ok: false as const, why: `Task ${input.taskId} is not the release's current commit.` };
+    const leased = a.leaseOwner !== null && a.leaseExpires !== null && a.leaseExpires > at;
+    if (input.epoch === null ? leased : input.epoch !== a.leaseEpoch || !leased) return { ok: false as const, why: input.epoch === null ? `A release coordinator (${a.leaseOwner}) holds this release; let it deploy.` : "This coordinator no longer holds the release's lease." };
+    const outstanding = outstandingReleaseOperations(store, a.id);
+    if (outstanding.length > 0) return { ok: false as const, why: `An earlier ${outstanding[0]!.kind} (${outstanding[0]!.id}) hasn't been settled yet.` };
+    // The whole live-release predicate, inside this transaction, at this moment (review round 1): the approver's
+    // standing and access, the grant and the sandbox, the generation and the tip, and open main-check debt.
+    const live = liveReleaseOf(store, input.taskId, input.kind, input.now);
+    if (!live.applies || !live.ok) return { ok: false as const, why: `The release can't ${input.kind}: ${live.applies && !live.ok ? live.why : "the task isn't part of it"}.` };
+    // GitHub's nightly lane debt, in this same transaction (evals-nightly.md, part A2).
+    const nightly = releaseNightlyProblem(store, { repo: a.repo, taskId: input.taskId, candidate: input.candidate, kind: input.kind, now: input.now });
+    if (nightly !== null) return { ok: false as const, why: nightly };
+    const next = input.kind === "deploy"
+      ? a.state === "open" || a.state === "deploying" ? "deploying" : null
+      : a.state === "deploying" || a.state === "merge-reserved" ? "merge-reserved" : null;
+    if (next === null) return { ok: false as const, why: `The release is ${a.state}, so it can't ${input.kind}.` };
+    const changed = store.handle.prepare("UPDATE release_authority SET state = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(next, a.id, a.rev);
+    if (Number(changed.changes) !== 1) return { ok: false as const, why: "The release changed while reserving; try again." };
+    const issuer = input.issuer ?? currentReleaseIssuer();
+    store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, secret_hash, direct, issuer_pid, issuer_started, issued_at, stage, reserved_at) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?, ?)")
+      .run(input.operationId, a.id, input.kind, input.taskId, input.candidate, a.leaseEpoch, input.secret === undefined ? null : createHash("sha256").update(input.secret).digest("hex"), input.epoch === null ? 1 : 0,
+        issuer.pid, issuer.started, issuer.at, input.stage ?? null, at);
+    store.recordAction({ at, actor: "toolroll", repo: a.repo, taskId: input.taskId, runId: null, action: `release ${input.kind} reserved`, outcome: next, source: "work", detail: `release ${a.id} · operation ${input.operationId} · epoch ${a.leaseEpoch}` });
+    return { ok: true as const, operation: releaseOperation(store, input.operationId)! };
+  });
+}
+
+/** The external call's own fence, taken immediately before the call is spawned: `reserved` → `running` (issuing) only
+ * at the epoch that reserved it, while that epoch still holds the lease (a direct deploy's epoch is checked as
+ * reserved) and the release stands, recording the process that issues it. False: the call must not start. */
+export function runReleaseOperation(store: Store, id: string, epoch: number, now: Date, issuer: ReleaseIssuer = currentReleaseIssuer()): boolean {
+  return store.transact(() => {
+    const op = releaseOperation(store, id);
+    const a = op === null ? null : releaseAuthority(store, op.authority);
+    if (op === null || a === null || op.state !== "reserved" || op.epoch !== epoch || a.leaseEpoch !== epoch) return false;
+    if (releaseCiRunningOf(store, op.taskId) !== null) return false;
+    // Past the expiry nothing new starts; the reserved operation is settled by reconciliation instead.
+    if (a.expiresAt <= now.toISOString()) return false;
+    // The lease that reserved it still holds (a person's direct deploy: still no coordinator holding the release), and
+    // the live-release predicate still accepts it, at this moment (review round 1).
+    const at = now.toISOString();
+    const leased = a.leaseOwner !== null && a.leaseExpires !== null && a.leaseExpires > at;
+    const direct = Number(store.handle.prepare("SELECT direct FROM release_operation WHERE id = ?").get(id)?.["direct"] ?? 0) === 1;
+    if (direct ? leased : !leased) return false;
+    const live = liveReleaseOf(store, op.taskId, op.kind, now);
+    if (!live.applies || !live.ok) return false;
+    if (releaseNightlyProblem(store, { repo: a.repo, taskId: op.taskId, candidate: op.candidate, kind: op.kind, now }) !== null) return false;
+    const changed = store.handle.prepare("UPDATE release_operation SET state = 'running', issuer_pid = ?, issuer_started = ?, issued_at = ? WHERE id = ? AND state = 'reserved' AND epoch = ?")
+      .run(issuer.pid, issuer.started, issuer.at, id, epoch);
+    if (Number(changed.changes) === 1) store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: op.taskId, runId: null, action: `release ${op.kind} started`, outcome: "running", source: "work", detail: `operation ${id}` });
+    return Number(changed.changes) === 1;
+  });
+}
+
+/** Settle an operation: `succeeded`, `failed` or `unknown` (reconciled later). A merge that succeeded ends the release
+ * as `merged`; one that failed puts it back to `deploying`. */
+export function finishReleaseOperation(store: Store, id: string, outcome: "succeeded" | "failed" | "unknown", facts: { externalRef?: string | null; detail?: string | null }, now: Date, epoch: number): boolean {
+  return store.transact(() => {
+    const op = releaseOperation(store, id);
+    if (op === null || op.state === "succeeded" || op.state === "failed") return false;
+    // Fenced by the epoch that holds the release now (review round 1): a coordinator that lost the lease settles nothing.
+    if (releaseAuthority(store, op.authority)?.leaseEpoch !== epoch) return false;
+    store.handle.prepare("UPDATE release_operation SET state = ?, external_ref = COALESCE(?, external_ref), detail = ?, finished_at = ? WHERE id = ?")
+      .run(outcome, facts.externalRef ?? null, facts.detail ?? null, outcome === "unknown" ? null : now.toISOString(), id);
+    const a = releaseAuthority(store, op.authority)!;
+    if (op.kind === "merge" && outcome === "succeeded") store.handle.prepare("UPDATE release_authority SET state = 'merged', ended_at = ?, ended_by = 'toolroll', rev = rev + 1 WHERE id = ?").run(now.toISOString(), a.id);
+    if (op.kind === "merge" && outcome === "failed" && a.state === "merge-reserved") store.handle.prepare("UPDATE release_authority SET state = 'deploying', rev = rev + 1 WHERE id = ?").run(a.id);
+    store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: op.taskId, runId: null, action: `release ${op.kind} ${outcome}`, outcome, source: "work", detail: `operation ${id}${facts.detail ? ` · ${facts.detail}` : ""}` });
+    return true;
+  });
+}
+
+/** Stop carrying later commits: any active approver, any time before the merge starts. */
+export function revokeRelease(store: Store, id: number, by: string, now: Date): { ok: true } | { ok: false; why: string } {
+  return store.transact(() => {
+    const a = releaseAuthority(store, id);
+    if (a === null) return { ok: false as const, why: `No release ${id}.` };
+    if (a.state === "merge-reserved" || a.state === "merged") return { ok: false as const, why: "The merge already started, so the release can't be stopped now." };
+    if (!LIVE_RELEASE_STATES.includes(a.state)) return { ok: false as const, why: `The release is already ${a.state}.` };
+    store.handle.prepare("UPDATE release_authority SET state = 'revoked', ended_at = ?, ended_by = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(now.toISOString(), by, id, a.rev);
+    store.recordAction({ at: now.toISOString(), actor: by, repo: a.repo, taskId: a.anchorTask, runId: null, action: "release revoked", outcome: "revoked", source: "work", detail: `release ${id}` });
+    return { ok: true as const };
+  });
+}
+
+/** Write the carry, in the one transaction that re-proves every mutable fact first (release-carry.ts proveCarry). */
+export type CarryWrite = {
+  authority: number; expectRev: number; expectTip: string; to: string; toTree: string; requestId: string; artifactDigest: string;
+  commits: ReleaseCarry["commits"]; changedLines: number; files: number; churn: number; runtime: string; taskId: string; title: string;
+};
+
+/**
+ * THE carry transaction (release-carry.ts proveCarry step 4), one BEGIN IMMEDIATE: every mutable fact is proved again
+ * — the authority's `rev` and tip, its state and expiry and the whole live-release predicate (liveReleaseOf), the
+ * anchor's sealed artifact digest equal to the candidate's, and whatever `recheck` re-reads (the policy, grant and
+ * check access as they are now) — then it writes the carried task and its scope (the anchor's approved terms, profile,
+ * route and acceptance verbatim, with candidate `to`), its seal (basis `carried`, reference `<authority>:<carry>`), the
+ * carry row, the new tip with `rev + 1`, and the ledger row. A carry already written for (authority, `to`) is returned
+ * as it is.
+ */
+export function carryReleaseApproval(store: Store, w: CarryWrite, now: Date, recheck: () => string | null): { ok: true; taskId: string; carry: ReleaseCarry } | { ok: false; why: string } {
+  return store.transact(() => {
+    const a = releaseAuthority(store, w.authority);
+    if (a === null) return { ok: false as const, why: `No release ${w.authority}.` };
+    const already = releaseCarryTo(store, a.id, w.to);
+    if (already !== null) return { ok: true as const, taskId: already.taskId, carry: already };
+    if (a.rev !== w.expectRev) return { ok: false as const, why: "The release changed since this carry was checked; check it again." };
+    if (a.tipSha !== w.expectTip) return { ok: false as const, why: "The release's current commit moved since this carry was checked." };
+    const live = liveReleaseOf(store, a.tipTask, "dispatch", now);
+    if (!live.applies || !live.ok) return { ok: false as const, why: live.applies && !live.ok ? `The release approval doesn't stand: ${live.why}.` : "The release's current commit isn't part of it." };
+    if (a.artifactDigest === null || a.artifactDigest !== w.artifactDigest) return { ok: false as const, why: "The production build differs from the approved one." };
+    const problem = recheck();
+    if (problem !== null) return { ok: false as const, why: problem };
+    if (store.getTask(w.taskId) !== null) return { ok: false as const, why: `A task ${w.taskId} already exists.` };
+    const anchorRow = store.handle.prepare("SELECT * FROM task_scope WHERE task_id = ?").get(a.anchorTask);
+    if (anchorRow === undefined) return { ok: false as const, why: "The approved release task has no scope." };
+    const anchor = readScope(anchorRow);
+    const route = routeFromJson(anchor.approvedRouteJson ?? null);
+    if (anchor.approvedProfile == null || route === null || anchor.releaseTerms == null) return { ok: false as const, why: "The approved release scope can't be read exactly." };
+    const fields = { goal: anchor.goal, outOfScope: anchor.outOfScope, touches: anchor.touches, budgetMicrousd: anchor.budgetMicrousd, acceptance: anchor.acceptance,
+      qualityMode: anchor.qualityMode ?? "default", candidate: w.to, releaseTerms: anchor.releaseTerms };
+    const digest = digestOf(fields, anchor.approvedProfile, route);
+    store.createTask({ id: w.taskId, title: w.title }, now);
+    const ref = store.refFor(BUILT_IN, w.taskId, "ours");
+    if (store.placeTask(ref.id, a.repo, {}, now) !== true) return { ok: false as const, why: "The carried task couldn't be placed in the project." };
+    // Its checks, as the anchor's: the Full release check.
+    store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: w.taskId, runId: null, action: "task checks chosen", outcome: "full", source: "request", detail: "Checks for this task: Full" });
+    const carryId = Number(store.handle.prepare(`INSERT INTO release_carry (authority, task_id, scope_digest, request_id, from_sha, to_sha, to_tree, artifact_digest, commits_json, changed_lines, files, churn, runtime, proved_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(a.id, w.taskId, digest, w.requestId, a.approvedSha, w.to, w.toTree, w.artifactDigest, JSON.stringify(w.commits),
+      w.changedLines, w.files, w.churn, w.runtime, now.toISOString()).lastInsertRowid);
+    // The anchor's approved row, copied; only the candidate, the digest and the seal differ. Nobody but this
+    // transaction writes basis `carried` (sealScopeApproval refuses it from every caller).
+    store.handle.prepare(`INSERT INTO task_scope (task_id, goal, out_of_scope, touches, budget_microusd, proposed_at, digest, approved_at, approved_by, approved_digest,
+        profile_json, profile_state, unresolved_reason, approved_profile_json, digest_version, profile_provenance, proposed_chain_json, approved_chain_json, acceptance_json,
+        quality_mode, risk_level, approval_basis, mode_digest, approval_kind, proposed_route_json, approved_route_json, route_era, candidate, proposed_via, release_terms_json)
+      SELECT ?, goal, out_of_scope, touches, budget_microusd, ?, ?, ?, approved_by, ?,
+        approved_profile_json, 'resolved', NULL, approved_profile_json, digest_version, profile_provenance, NULL, NULL, acceptance_json,
+        quality_mode, risk_level, 'carried', ?, 'profile', approved_route_json, approved_route_json, route_era, ?, proposed_via, release_terms_json
+      FROM task_scope WHERE task_id = ?`).run(w.taskId, now.toISOString(), digest, now.toISOString(), digest, `${a.id}:${carryId}`, w.to, a.anchorTask);
+    const moved = store.handle.prepare("UPDATE release_authority SET tip_sha = ?, tip_task = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(w.to, w.taskId, a.id, a.rev);
+    if (Number(moved.changes) !== 1) throw new Error("The release changed under its own transaction.");
+    store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: w.taskId, runId: null, action: "release carried", outcome: "carried", source: "work",
+      detail: `release ${a.id} · carry ${carryId} · ${a.tipSha} → ${w.to} · ${w.files} files · ${w.changedLines} lines · request ${w.requestId}` });
+    // One quiet task notification, no push.
+    store.enqueueNotification({ dedupeKey: `release-carried:${a.id}:${carryId}`, kind: "release-carried", subject: `Carried to ${w.to.slice(0, 7)}`,
+      body: `Release ${a.version} now ships ${w.to.slice(0, 7)} (${w.files} file${w.files === 1 ? "" : "s"}, ${w.changedLines} line${w.changedLines === 1 ? "" : "s"}) under ${anchor.approvedBy ?? "the"} release approval.`,
+      link: chatControlHref("task", w.taskId), source: { taskRef: ref.id } }, now);
+    return { ok: true as const, taskId: w.taskId, carry: releaseCarryTo(store, a.id, w.to)! };
+  });
+}
+
+/** Thrown inside a seal whose release authority can't open: the whole seal rolls back. */
+export class ReleaseSealRefused extends Error {}
+
+/**
+ * Whether a deploy run may adopt operation `id` (deploy-browser.mjs --operation): it is this release's running deploy of
+ * this candidate, reserved at the epoch that still holds a live lease, and the run proves the secret only the
+ * reserving coordinator holds (handed over on stdin, never in argv).
+ */
+export function adoptReleaseOperation(store: Store, input: { id: string; authority: number; candidate: string; secret: string; now: Date }): { ok: true } | { ok: false; why: string } {
+  const op = releaseOperation(store, input.id);
+  const a = releaseAuthority(store, input.authority);
+  if (op === null || a === null || op.authority !== a.id || op.kind !== "deploy" || op.candidate !== input.candidate || op.state !== "running") return { ok: false, why: `Operation ${input.id} isn't this release's running deploy.` };
+  if (op.epoch !== a.leaseEpoch || a.leaseOwner === null || a.leaseExpires === null || a.leaseExpires <= input.now.toISOString()) return { ok: false, why: "The coordinator that reserved this deploy no longer holds the release." };
+  const row = store.handle.prepare("SELECT secret_hash FROM release_operation WHERE id = ?").get(input.id);
+  const expected = row?.["secret_hash"];
+  const given = createHash("sha256").update(input.secret).digest("hex");
+  if (typeof expected !== "string" || expected.length !== given.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(given))) return { ok: false, why: "This run can't prove it is the coordinator's deploy." };
+  return { ok: true };
+}
+
+/** The nightly check of main is a check only (release-once.md, part 3). */
+export const NIGHTLY_CHECK_ONLY = "The nightly check of main is only a check; it is never published or merged.";
+/** Whether a task reference is a nightly check of main. */
+export function nightlyTaskRef(store: Store, taskRef: number): boolean {
+  return store.handle.prepare("SELECT 1 AS hit FROM nightly_check n JOIN task_ref r ON r.external_id = n.task AND r.backend = 'built-in' WHERE r.id = ?").get(taskRef) !== undefined;
+}
+/** Whether a publication belongs to a nightly check of main. */
+export function nightlyPublication(store: Store, publication: number): boolean {
+  const row = store.handle.prepare("SELECT task_ref FROM publication WHERE id = ?").get(publication);
+  return row !== undefined && nightlyTaskRef(store, Number(row["task_ref"]));
+}
+
+/** A release's result merges only through its coordinator: every other merge road refuses it. */
+export const RELEASE_MERGES_ONLY = "This result belongs to a release; it merges only through `toolroll release`.";
+/** Whether a task reference is a release's anchor or a carried release task. */
+export function releaseTaskRef(store: Store, taskRef: number): boolean {
+  const row = store.handle.prepare("SELECT external_id FROM task_ref WHERE id = ? AND backend = 'built-in'").get(taskRef);
+  return row !== undefined && belongsToRelease(store, String(row["external_id"]));
+}
+/** Whether a publication belongs to a release's task. */
+export function releasePublication(store: Store, publication: number): boolean {
+  const row = store.handle.prepare("SELECT task_ref FROM publication WHERE id = ?").get(publication);
+  return row !== undefined && releaseTaskRef(store, Number(row["task_ref"]));
+}
+
+/** The ledger act that records a trusted read of a project's recorded remote main (remote-main.ts). */
+export const TRUSTED_MAIN_ACTION = "remote main read";
+/** The identity of a project's recorded remote: its URL and the ledger record that last set it (0: set on admission
+ * with no record). A read of main stands only for the remote identity it was read from (review round 2). */
+export function trustedRemoteIdentity(store: Store, repo: string): { url: string; record: number } | null {
+  const url = store.projectRemote(repo);
+  if (url === null) return null;
+  const row = store.handle.prepare("SELECT id FROM action_ledger WHERE repo = ? AND action = 'project remote recorded' ORDER BY id DESC LIMIT 1").get(repo);
+  return { url, record: row === undefined ? 0 : Number(row["id"]) };
+}
+/** Record the commit the project's recorded remote main was at, as Toolroll's own process fetched it just now from
+ * `url`, bound to the remote's identity at this moment. Refused (nothing recorded) when `url` isn't the recorded one. */
+export function recordTrustedMain(store: Store, repo: string, sha: string, url: string, now: Date): boolean {
+  const identity = trustedRemoteIdentity(store, repo);
+  if (identity === null || identity.url !== url || !/^[0-9a-f]{40}$/.test(sha)) return false;
+  store.recordAction({ at: now.toISOString(), actor: "toolroll", repo, taskId: null, runId: null, action: TRUSTED_MAIN_ACTION, outcome: sha, source: "work", detail: JSON.stringify({ v: 2, sha, url, record: identity.record }) });
+  return true;
+}
+/** A failed read of the recorded remote: the last read no longer stands. */
+export function forgetTrustedMain(store: Store, repo: string, why: string, now: Date): void {
+  store.recordAction({ at: now.toISOString(), actor: "toolroll", repo, taskId: null, runId: null, action: TRUSTED_MAIN_ACTION, outcome: "unread", source: "work", detail: JSON.stringify({ v: 2, why: why.slice(0, 300) }) });
+}
+
+/**
+ * A pull request check failed after the deploy reservation (Alex, 2026-10-25): the candidate froze at deploy, so the
+ * release stops and asks a person again — even for the same commit, a new person-approved generation continues it.
+ */
+export function requireFreshReleaseApproval(store: Store, id: number, reason: string, epoch: number, now: Date): boolean {
+  return store.transact(() => {
+    const a = releaseAuthority(store, id);
+    if (a === null) return false;
+    // Already ended (revoked, expired, superseded, merged): no approval of it stands to carry the commit.
+    if (!LIVE_RELEASE_STATES.includes(a.state)) return a.state !== "merged";
+    if (a.leaseEpoch !== epoch || a.state === "merge-reserved") return false;
+    const changed = store.handle.prepare("UPDATE release_authority SET state = 'revoked', ended_at = ?, ended_by = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(now.toISOString(), `toolroll: ${reason}; a person approves it again`, id, a.rev);
+    if (Number(changed.changes) !== 1) return false;
+    store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: a.tipTask, runId: null, action: "release revoked", outcome: "needs-approval", source: "work", detail: `release ${id}: ${reason}` });
+    return true;
+  });
+}
+
+/** The process that reserves or issues a release operation: its pid, its start time, and when it was recorded. */
+export type ReleaseIssuer = { pid: number; started: string; at: string };
+/** This process, as a release operation's issuer. Real time, whatever clock a caller passes for the rest. */
+export function currentReleaseIssuer(): ReleaseIssuer {
+  const now = Date.now();
+  return { pid: process.pid, started: new Date(now - Math.round(process.uptime() * 1000)).toISOString(), at: new Date(now).toISOString() };
+}
+/**
+ * Whether an operation's issuer is proven gone (review round 2): no process has its pid, or the process that has it
+ * started after the issuer was recorded (so it is another one). Anything unknown — no issuer recorded, a start time
+ * that can't be read — is not proof, and the operation stays for a person.
+ */
+export function releaseIssuerGone(op: ReleaseOperation): boolean {
+  const issuer = op.issuer;
+  if (issuer === null || !Number.isSafeInteger(issuer.pid) || issuer.pid <= 0) return false;
+  try { process.kill(issuer.pid, 0); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return true;
+    if (code !== "EPERM") return false;
+  }
+  const started = processStartedAt(issuer.pid);
+  const recorded = Date.parse(issuer.at);
+  // ps shows whole seconds (a lower bound): a start a full second after the issuer was recorded is another process.
+  return started !== null && Number.isFinite(recorded) && started > recorded + 1000;
+}
+/** A live process's start time from ps (whole seconds, UTC), or null when it can't be read. */
+function processStartedAt(pid: number): number | null {
+  if (process.platform === "win32") return null;
+  try {
+    const raw = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1024, timeout: 1_000, killSignal: "SIGKILL" })
+      .trim().replace(/ +/g, " ");
+    const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{1,2}) (\d{2}:\d{2}:\d{2}) (\d{4})$/.exec(raw);
+    if (match === null) return null;
+    const at = Date.parse(`${match[2]!.padStart(2, "0")} ${match[1]} ${match[4]} ${match[3]} GMT`);
+    return Number.isFinite(at) ? at : null;
+  } catch { return null; }
+}
+
+// A run's own "Show commands in the live view" answer (schema v136, docs/plans/agents-view.md §2.4). Free functions over
+// the store, kept together at the end.
+
+/**
+ * Capture a run's live-view answer once, before its live file opens: the first capture stands (a second never changes
+ * it). Returns the answer now saved for the run; any failure, or a saved row that isn't plainly 1, is commands off.
+ */
+export function captureRunLiveDetail(store: Store, runId: number, commands: boolean, now: Date): boolean {
+  try {
+    store.handle.prepare("INSERT OR IGNORE INTO run_live_detail (run, commands, captured_at) VALUES (?, ?, ?)").run(runId, commands ? 1 : 0, now.toISOString());
+  } catch {
+    return false;
+  }
+  return runLiveCommands(store, runId);
+}
+
+/** Whether a run's live view may show commands: only its own captured answer, and only when that is plainly 1. Absent
+ * (a run from before v136, or one whose capture failed), unreadable or anything else is off. */
+export function runLiveCommands(store: Store, runId: number): boolean {
+  try {
+    const row = store.handle.prepare("SELECT commands FROM run_live_detail WHERE run = ?").get(runId);
+    return row !== undefined && row["commands"] === 1;
+  } catch {
+    return false;
+  }
+}
+
+/** One run as the Agents view's Live grid reads it (docs/plans/agents-view.md §2.5). */
+export type AgentsLiveRun = Run & { taskId: string; title: string; repo: string | null; builtIn: boolean };
+
+/**
+ * The Live grid's runs: every role's running run (no outcome yet) and every run that ended at or after `endedSince`,
+ * newest first — all of them (no cutoff before the caller's visibility filter: a viewer's agent is never hidden behind
+ * others'). Two indexed reads (run_live_open, run_live_recent), never a scan of all runs.
+ * Visibility is the caller's: it filters each by the console's ceiling and the viewer's access.
+ */
+export function agentsLiveRuns(store: Store, endedSince: Date): AgentsLiveRun[] {
+  const rows = store.handle.prepare(
+    `SELECT run.*, task_ref.external_id AS live_task_id, task_ref.repo AS live_task_repo, task.title AS live_task_title, task_ref.backend AS live_task_backend
+       FROM (SELECT id FROM run INDEXED BY run_live_open WHERE outcome IS NULL AND id > 0
+             UNION SELECT id FROM run INDEXED BY run_live_recent WHERE outcome IS NOT NULL AND id > 0 AND finished_at >= ?) AS picked
+       JOIN run ON run.id = picked.id
+       JOIN task_ref ON task_ref.id = run.task_ref
+       LEFT JOIN task ON task_ref.backend = ? AND task.id = task_ref.external_id
+      ORDER BY run.id DESC`,
+  ).all(endedSince.toISOString(), BUILT_IN) as Record<string, unknown>[];
+  return rows.map(row => ({
+    ...readRun(row),
+    taskId: String(row["live_task_id"]),
+    builtIn: row["live_task_backend"] === BUILT_IN,
+    title: row["live_task_title"] === null || row["live_task_title"] === undefined ? String(row["live_task_id"]) : String(row["live_task_title"]),
+    repo: row["live_task_repo"] === null || row["live_task_repo"] === undefined ? null : String(row["live_task_repo"]),
+  }));
+}
+
+
+
+/**
+ * This runner's watches a predecessor left needing recovery (Codex review round 1, finding 2): a watch lease still
+ * live, or one whose holder left a claim open (or a run open under a claim a reaper already released). A replacement
+ * worker takes each over — recovering the holder's incarnation in the same transaction — before it admits new work,
+ * whichever projects its start names (a project being removed when the predecessor died is in none of them).
+ */
+export function predecessorWatches(store: Store, runner: string, now: Date): { repo: string; owner: string }[] {
+  return store.handle.prepare(
+    `SELECT w.repo AS repo, w.owner AS owner FROM watch_lease w
+      WHERE w.runner = ? AND (w.expires_at > ? OR EXISTS (
+        SELECT 1 FROM claim c WHERE c.runner = w.runner AND c.incarnation = w.owner
+          AND (c.released_at IS NULL OR EXISTS (SELECT 1 FROM run r WHERE r.lease_id = c.lease_id AND r.outcome IS NULL))))
+      ORDER BY w.repo`,
+  ).all(runner, now.toISOString()).map(row => ({ repo: String(row["repo"]), owner: String(row["owner"]) }));
+}
+
+// ---- v137: lifecycle, latency timelines, the continuous copy (docs/plans/actors-lessons.md) ----------------------
+
+/** The longest a watch lease is taken or renewed for (durable-actors' MAX_HOST_LEASE_DURATION_MS). */
+export const MAX_WATCH_LEASE_MS = 60_000;
+
+/** A service component's lifecycle (durable-actors' host lifecycle reports): started, then heartbeats, then draining
+ * (no new admission; its own drain ends by drain_until), then stopped (retired). */
+export type LifecycleState = "started" | "draining" | "stopped";
+export type LifecycleRow = { component: string; state: LifecycleState; holder: string; pid: number | null; changedAt: string; beatAt: string; drainUntil: string | null };
+
+function lifecycleRowOf(row: Record<string, unknown>): LifecycleRow {
+  return { component: String(row["component"]), state: String(row["state"]) as LifecycleState, holder: String(row["holder"]), pid: row["pid"] == null ? null : Number(row["pid"]),
+    changedAt: String(row["changed_at"]), beatAt: String(row["beat_at"]), drainUntil: row["drain_until"] == null ? null : String(row["drain_until"]) };
+}
+
+/** One component's lifecycle row, or null (never reported: a component from before v137 says nothing). */
+export function lifecycleOf(store: Store, component: string): LifecycleRow | null {
+  const row = store.handle.prepare("SELECT * FROM service_lifecycle WHERE component = ?").get(component);
+  return row === undefined ? null : lifecycleRowOf(row);
+}
+
+/** Every reported component, by name. */
+export function lifecycles(store: Store): LifecycleRow[] {
+  return store.handle.prepare("SELECT * FROM service_lifecycle ORDER BY component").all().map(lifecycleRowOf);
+}
+
+/**
+ * Report a component's state. `started` replaces whatever an earlier holder left; `draining` and `stopped` only move the
+ * current holder's row (a stale process can't mark its successor draining), and never back from stopped. Returns
+ * whether the row now says what was asked.
+ */
+export function reportLifecycle(store: Store, component: string, state: LifecycleState, holder: string, now: Date, extra: { pid?: number | null; drainUntil?: Date | null } = {}): boolean {
+  const stamp = now.toISOString();
+  const until = extra.drainUntil == null ? null : extra.drainUntil.toISOString();
+  if (state === "started") {
+    store.handle.prepare(`INSERT INTO service_lifecycle (component, state, holder, pid, changed_at, beat_at, drain_until) VALUES (?, 'started', ?, ?, ?, ?, NULL)
+      ON CONFLICT(component) DO UPDATE SET state = 'started', holder = excluded.holder, pid = excluded.pid, changed_at = excluded.changed_at, beat_at = excluded.beat_at, drain_until = NULL`)
+      .run(component, holder, extra.pid ?? null, stamp, stamp);
+    return true;
+  }
+  const changed = store.handle.prepare(`UPDATE service_lifecycle SET state = ?, changed_at = ?, beat_at = ?, drain_until = CASE WHEN ? = 'draining' THEN ? ELSE drain_until END
+    WHERE component = ? AND holder = ? AND state <> 'stopped'`).run(state, stamp, stamp, state, until, component, holder).changes;
+  return Number(changed) === 1;
+}
+
+/** The short heartbeat: the current holder's row, while it is not stopped. False means another holder took it. */
+export function beatLifecycle(store: Store, component: string, holder: string, now: Date): boolean {
+  return Number(store.handle.prepare("UPDATE service_lifecycle SET beat_at = ? WHERE component = ? AND holder = ? AND state <> 'stopped'")
+    .run(now.toISOString(), component, holder).changes) === 1;
+}
+
+/** A milestone in a latency timeline: what happened, how long after the operation began (ms), and an optional short
+ * reason. Never a secret: route ids, phase and part names, fixed reason words. */
+export type Milestone = { name: string; ms: number; detail?: string };
+export type LatencyKind = "console" | "release-check" | "deploy";
+export type LatencyTimeline = { id: number; kind: LatencyKind; subject: string; taskId: string | null; runId: number | null; startedAt: string; totalMs: number; milestones: Milestone[] };
+/** At most this many milestones per timeline (the rest are dropped, the last kept), and timelines kept per kind. */
+export const MAX_MILESTONES = 40;
+export const TIMELINES_KEPT = 200;
+/** Timelines older than this go whatever their count. */
+export const TIMELINE_DAYS = 14;
+
+const plainText = (value: string, max: number): string => value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, max);
+
+/** Milestones made safe to keep: bounded in number and length, offsets whole non-negative milliseconds, in order. */
+export function boundedMilestones(milestones: readonly Milestone[]): Milestone[] {
+  const clean = milestones.filter(one => typeof one.name === "string" && Number.isFinite(one.ms)).map(one => ({
+    name: plainText(one.name, 80), ms: Math.max(0, Math.round(one.ms)),
+    ...(typeof one.detail === "string" && one.detail.trim() !== "" ? { detail: plainText(one.detail, 160) } : {}),
+  })).filter(one => one.name !== "");
+  return clean.length <= MAX_MILESTONES ? clean : [...clean.slice(0, MAX_MILESTONES - 1), clean[clean.length - 1]!];
+}
+
+/** Keep one timeline, then prune its kind to the newest TIMELINES_KEPT within TIMELINE_DAYS. */
+export function recordLatencyTimeline(store: Store, entry: { kind: LatencyKind; subject: string; taskId?: string | null; runId?: number | null; startedAt: Date; totalMs: number; milestones: readonly Milestone[] }, now: Date): number {
+  return store.transact(() => {
+    const id = Number(store.handle.prepare(`INSERT INTO latency_timeline (kind, subject, task_id, run_id, started_at, total_ms, milestones_json) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(entry.kind, plainText(entry.subject, 120), entry.taskId ?? null, entry.runId ?? null, entry.startedAt.toISOString(), Math.max(0, Math.round(entry.totalMs)),
+        JSON.stringify(boundedMilestones(entry.milestones))).lastInsertRowid);
+    const cutoff = new Date(now.getTime() - TIMELINE_DAYS * 86_400_000).toISOString();
+    store.handle.prepare(`DELETE FROM latency_timeline WHERE kind = ? AND (started_at < ? OR id <= (SELECT id FROM latency_timeline WHERE kind = ? ORDER BY id DESC LIMIT 1 OFFSET ?))`)
+      .run(entry.kind, cutoff, entry.kind, TIMELINES_KEPT);
+    return id;
+  });
+}
+
+/** Timelines, newest first: of one kind, one run's, or one task's. A row that doesn't read is left out. */
+export function latencyTimelines(store: Store, filter: { kind?: LatencyKind; runId?: number; taskId?: string; limit?: number }): LatencyTimeline[] {
+  const where: string[] = [], args: (string | number)[] = [];
+  if (filter.kind !== undefined) { where.push("kind = ?"); args.push(filter.kind); }
+  if (filter.runId !== undefined && filter.taskId !== undefined) { where.push("(run_id = ? OR task_id = ?)"); args.push(filter.runId, filter.taskId); }
+  else if (filter.runId !== undefined) { where.push("run_id = ?"); args.push(filter.runId); }
+  else if (filter.taskId !== undefined) { where.push("task_id = ?"); args.push(filter.taskId); }
+  const rows = store.handle.prepare(`SELECT * FROM latency_timeline${where.length === 0 ? "" : ` WHERE ${where.join(" AND ")}`} ORDER BY id DESC LIMIT ?`).all(...args, Math.min(200, Math.max(1, filter.limit ?? 20)));
+  return rows.flatMap(row => {
+    let milestones: Milestone[];
+    try { const parsed: unknown = JSON.parse(String(row["milestones_json"])); milestones = Array.isArray(parsed) ? boundedMilestones(parsed as Milestone[]) : []; } catch { return []; }
+    return [{ id: Number(row["id"]), kind: String(row["kind"]) as LatencyKind, subject: String(row["subject"]), taskId: row["task_id"] == null ? null : String(row["task_id"]),
+      runId: row["run_id"] == null ? null : Number(row["run_id"]), startedAt: String(row["started_at"]), totalMs: Number(row["total_ms"]), milestones }];
+  });
+}
+
+/** The continuous copy (live-backup.ts): how often, how many, where (null: `backups/live` beside the database). */
+export type LiveBackupSettings = { enabled: boolean; everyMinutes: number; keep: number; folder: string | null };
+export const DEFAULT_LIVE_BACKUP: LiveBackupSettings = { enabled: true, everyMinutes: 5, keep: 24, folder: null };
+/** The latest copy that passed its integrity check, as it was when it was made. */
+export type LiveBackupCopy = { file: string; sha256: string; madeAt: string; schemaVersion: number; bytes: number };
+export type LiveBackupState = { settings: LiveBackupSettings; latest: LiveBackupCopy | null; triedAt: string | null; problem: string | null };
+
+export function liveBackupState(store: Store): LiveBackupState {
+  const row = store.handle.prepare("SELECT * FROM live_backup WHERE id = 1").get();
+  if (row === undefined) return { settings: { ...DEFAULT_LIVE_BACKUP }, latest: null, triedAt: null, problem: null };
+  const latest = row["latest_file"] == null || row["latest_sha256"] == null || row["latest_at"] == null || row["latest_schema"] == null ? null
+    : { file: String(row["latest_file"]), sha256: String(row["latest_sha256"]), madeAt: String(row["latest_at"]), schemaVersion: Number(row["latest_schema"]), bytes: Number(row["latest_bytes"] ?? 0) };
+  return { settings: { enabled: Number(row["enabled"]) === 1, everyMinutes: Number(row["every_minutes"]), keep: Number(row["keep"]), folder: row["folder"] == null ? null : String(row["folder"]) },
+    latest, triedAt: row["tried_at"] == null ? null : String(row["tried_at"]), problem: row["problem"] == null ? null : String(row["problem"]) };
+}
+
+const liveBackupWords = (one: LiveBackupSettings): string => `${one.enabled ? `every ${one.everyMinutes} min` : "off"}, keep ${one.keep}, ${one.folder ?? "the default folder"}`;
+
+/** Change the continuous copy's settings; the ledger keeps before → after. A new folder forgets the latest copy (it is
+ * in the old one). */
+export function setLiveBackupSettings(store: Store, next: LiveBackupSettings, by: string, now: Date): LiveBackupSettings {
+  return store.transact(() => {
+    const before = liveBackupState(store).settings;
+    store.handle.prepare(`INSERT INTO live_backup (id, enabled, every_minutes, keep, folder) VALUES (1, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, every_minutes = excluded.every_minutes, keep = excluded.keep, folder = excluded.folder`)
+      .run(next.enabled ? 1 : 0, next.everyMinutes, next.keep, next.folder);
+    if (before.folder !== next.folder) store.handle.prepare("UPDATE live_backup SET latest_file = NULL, latest_sha256 = NULL, latest_at = NULL, latest_schema = NULL, latest_bytes = NULL WHERE id = 1").run();
+    if (liveBackupWords(before) !== liveBackupWords(next)) {
+      store.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: "continuous backup settings changed", outcome: "changed", source: "policy", detail: `${liveBackupWords(before)} → ${liveBackupWords(next)}` });
+    }
+    return liveBackupState(store).settings;
+  });
+}
+
+/** Take (or keep) the continuous copy's lease until `until`: one process copies at a time. */
+export function holdLiveBackup(store: Store, holder: string, now: Date, until: Date): boolean {
+  return store.transact(() => {
+    store.handle.prepare("INSERT OR IGNORE INTO live_backup (id) VALUES (1)").run();
+    return Number(store.handle.prepare("UPDATE live_backup SET holder = ?, held_until = ? WHERE id = 1 AND (holder IS NULL OR holder = ? OR held_until IS NULL OR held_until < ?)")
+      .run(holder, until.toISOString(), holder, now.toISOString()).changes) === 1;
+  });
+}
+
+export function releaseLiveBackup(store: Store, holder: string): void {
+  store.handle.prepare("UPDATE live_backup SET holder = NULL, held_until = NULL WHERE id = 1 AND holder = ?").run(holder);
+}
+
+/** A copy's outcome: a verified copy becomes the latest; a failure is kept as the problem (the latest stays). */
+export function recordLiveBackup(store: Store, outcome: { ok: true; copy: LiveBackupCopy } | { ok: false; problem: string }, now: Date): void {
+  store.handle.prepare("INSERT OR IGNORE INTO live_backup (id) VALUES (1)").run();
+  if (outcome.ok) {
+    store.handle.prepare("UPDATE live_backup SET latest_file = ?, latest_sha256 = ?, latest_at = ?, latest_schema = ?, latest_bytes = ?, tried_at = ?, problem = NULL WHERE id = 1")
+      .run(outcome.copy.file, outcome.copy.sha256, outcome.copy.madeAt, outcome.copy.schemaVersion, outcome.copy.bytes, now.toISOString());
+  } else {
+    store.handle.prepare("UPDATE live_backup SET tried_at = ?, problem = ? WHERE id = 1").run(now.toISOString(), plainText(outcome.problem, 300));
+  }
+}
+
+/** GitHub's nightly lane debt at a release's deploy or merge reservation and at its start (docs/plans/evals-nightly.md,
+ * part A2): the stored open failures less this exact task and candidate's fresh exemptions, read inside the caller's
+ * transaction (nightly-github.ts nightlyDebtHold). Null when nothing holds. */
+export function releaseNightlyProblem(store: Store, input: { repo: string; taskId: string; candidate: string; kind: "deploy" | "merge"; now: Date }): string | null {
+  return nightlyDebtHold(store, { repo: input.repo, taskId: input.taskId, candidate: input.candidate, phase: input.kind, release: true, now: input.now })?.why ?? null;
+}
+
+/** v140 (docs/plans/evals-nightly.md, B1): the exact model a run's provider itself reported, written once its turn's
+ * envelope is read. A resumed turn that adds to the run's usage adds its model too: unknown if either turn's is, the
+ * model when they agree, every model named when they differ (reported-usage.ts combineReportedModels). */
+export function recordRunModelReported(store: Store, runId: number, model: string | null, accumulate: boolean): void {
+  const reported = reportedModelOf(model);
+  store.transact(() => {
+    const row = store.handle.prepare("SELECT model_reported FROM run WHERE id = ?").get(runId);
+    if (row === undefined) return;
+    const prior = row["model_reported"] === null || row["model_reported"] === undefined ? null : String(row["model_reported"]);
+    store.handle.prepare("UPDATE run SET model_reported = ? WHERE id = ?").run(accumulate ? combineReportedModels(prior, reported) : reported, runId);
+  });
+}
+
+/** A run's accounting as recorded (the eval collector's read, docs/plans/evals-nightly.md part B): what its provider
+ * reported, its tokens normalized with their cache split (run-efficiency.ts usageOf), and its amount kept as API
+ * dollars, subscription usage or unknown (reported-usage.ts runAmountOf). Null when there is no such run. */
+export function runAccounting(store: Store, runId: number): {
+  provider: string; model: string | null; modelReported: string | null; agentTurns: number | null;
+  usage: { in: number | null; out: number | null; cacheRead: number | null; cacheWrite: number | null }; amount: ReportedAmount;
+} | null {
+  const row = store.handle.prepare(`SELECT run.provider, run.model, run.model_reported, run.agent_turns, run.tokens_in, run.tokens_out, run.cost_usd, run.usage_json,
+      run.billing_basis, run.cost_unknown, s.billing, s.microusd FROM run LEFT JOIN run_spend s ON s.run = run.id WHERE run.id = ?`).get(runId);
+  if (row === undefined) return null;
+  const n = (value: unknown): number | null => value === null || value === undefined ? null : Number(value);
+  const usage = usageOf({ provider: String(row["provider"]), model: row["model"] === null ? null : String(row["model"]), tokensIn: n(row["tokens_in"]), tokensOut: n(row["tokens_out"]),
+    usageJson: row["usage_json"] === null || row["usage_json"] === undefined ? null : String(row["usage_json"]) });
+  const billing = row["billing"] === "subscription" || row["billing"] === "api-key" ? row["billing"] : null;
+  return {
+    provider: String(row["provider"]),
+    model: row["model"] === null ? null : String(row["model"]),
+    modelReported: row["model_reported"] === null || row["model_reported"] === undefined ? null : String(row["model_reported"]),
+    agentTurns: n(row["agent_turns"]),
+    usage: { in: usage.in, out: usage.out, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite },
+    // v141: a guessed billing, or a cost the provider never reported on any turn (invoke.ts writes the cap or nothing
+    // then, and recordRunCostUnknown sets the sticky column), is unknown money. Anything but a recorded 0 is unknown.
+    amount: runAmountOf({ billing, spendMicrousd: n(row["microusd"]), costUsd: n(row["cost_usd"]),
+      basis: row["billing_basis"] === "evidence" || row["billing_basis"] === "default" ? row["billing_basis"] : null,
+      costUnknown: Number(row["cost_unknown"] ?? 1) !== 0 }),
+  };
+}
+
+/** A chat request's accounting as recorded (lead steps and fleet chat turns): what its provider reported and its
+ * amount kept as API dollars, subscription usage or unknown (reported-usage.ts chatTurnAmountOf). Null when absent. */
+export function chatTurnAccounting(store: Store, id: number): {
+  provider: string; model: string; modelReported: string | null; providerTurns: number | null; reportedCostUsd: number | null;
+  tokensIn: number | null; tokensOut: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null; amount: ReportedAmount;
+} | null {
+  const row = store.handle.prepare(`SELECT provider, model, model_reported, provider_turns, reported_cost_usd, tokens_in, tokens_out, cache_read_tokens, cache_write_tokens,
+      settled_microusd, unknown_spend, billing_reported FROM chat_turn WHERE id = ?`).get(id);
+  if (row === undefined) return null;
+  const n = (value: unknown): number | null => value === null || value === undefined ? null : Number(value);
+  const reportedCostUsd = n(row["reported_cost_usd"]);
+  return {
+    provider: String(row["provider"]),
+    model: String(row["model"]),
+    modelReported: row["model_reported"] === null || row["model_reported"] === undefined ? null : String(row["model_reported"]),
+    providerTurns: n(row["provider_turns"]),
+    reportedCostUsd,
+    tokensIn: n(row["tokens_in"]),
+    tokensOut: n(row["tokens_out"]),
+    cacheReadTokens: n(row["cache_read_tokens"]),
+    cacheWriteTokens: n(row["cache_write_tokens"]),
+    amount: chatTurnAmountOf({ provider: String(row["provider"]), settledMicrousd: n(row["settled_microusd"]), unknownSpend: Number(row["unknown_spend"]) === 1, reportedCostUsd,
+      billingReported: row["billing_reported"] === "subscription" || row["billing_reported"] === "api-key" ? row["billing_reported"] : null }),
+  };
+}
+
+/** v141 (evals-nightly.md, Codex round 1 #4): how a run's billing was known, beside the billing invoke.ts fixed —
+ * `evidence` (its own events, the key it was given, its agent's admission) or `default` (this computer's usual billing,
+ * a guess). Once any turn of the run was a guess the run's money stays unknown. */
+export function recordRunBillingBasis(store: Store, runId: number, basis: "evidence" | "default"): void {
+  store.handle.prepare("UPDATE run SET billing_basis = CASE WHEN billing_basis = 'default' THEN 'default' ELSE ? END WHERE id = ?").run(basis, runId);
+}
+
+/** v141 (PR #263 review): a run whose provider didn't report what a turn cost is unknown money for good. Set when a
+ * turn's cost is unknown, never cleared: a later turn (a review resume) that reports its own cost, and recordUsage's
+ * COALESCE over the usage note, can't make the run's spending read as measured again. */
+export function recordRunCostUnknown(store: Store, runId: number, unknown: boolean): void {
+  if (unknown !== true) return;
+  store.handle.prepare("UPDATE run SET cost_unknown = 1 WHERE id = ?").run(runId);
+}
+
+/** PR #263 security scan: the Store methods eval accounting pins by body (eval-hooks.ts PINNED_STORE_METHODS) made
+ * unwritable and unconfigurable on the prototype, from the class's own first static block, so no code runs between the
+ * class's definition and the seal. Each must still be the class's own plain method (a writable, configurable function),
+ * or loading refuses. The four references are recorded once, in a frozen module-private map, through the built-ins this
+ * module captured as it loaded; a second seal refuses. */
+export function sealStoreMoneyMethods(prototype: object): void {
+  const held = STORE_MONEY_METHODS.map(name => {
+    const one = builtinGetOwnPropertyDescriptor(prototype, name);
+    if (one === undefined || typeof one.value !== "function" || one.writable !== true || one.configurable !== true || one.value.name !== name) throw new Error(`Store.${name} isn't the class's own method`);
+    return one.value as unknown;
+  });
+  if (builtinIsFrozen(SEALED_MONEY_METHODS)) throw new Error("the Store money methods are already sealed");
+  STORE_MONEY_METHODS.forEach((name, at) => {
+    builtinDefineProperty(SEALED_MONEY_METHODS, name, { value: held[at], writable: false, configurable: false, enumerable: true });
+    builtinDefineProperty(prototype, name, { value: held[at], writable: false, configurable: false, enumerable: false });
+    const now = builtinGetOwnPropertyDescriptor(prototype, name);
+    if (now === undefined || now.value !== held[at] || now.writable !== false || now.configurable !== false) throw new Error(`Store.${name} couldn't be sealed`);
+  });
+  builtinFreeze(SEALED_MONEY_METHODS);
+}
+
+/** PR #263 security scan: each Store instance holds the sealed money methods as its own unwritable, unconfigurable
+ * properties (the constructor's last step), so shadowing one on an instance, by any means, throws. It uses only the
+ * built-ins captured as this module loaded, refuses when the globals were replaced since, and installs a method only
+ * when the prototype's value is the very reference recorded at the seal. `prototype` is Store's own unless a test
+ * says otherwise; either way nothing but the recorded references is ever installed. */
+export function lockStoreMoneyMethods(store: object, prototype: object = Store.prototype): void {
+  if (Object.defineProperty !== builtinDefineProperty || Object.getOwnPropertyDescriptor !== builtinGetOwnPropertyDescriptor || Object.freeze !== builtinFreeze || Object.isFrozen !== builtinIsFrozen) {
+    throw new Error("the Store money methods can't be locked: Object's built-ins were replaced");
+  }
+  if (!builtinIsFrozen(SEALED_MONEY_METHODS)) throw new Error("the Store money methods aren't sealed");
+  for (const name of STORE_MONEY_METHODS) {
+    const recorded = builtinGetOwnPropertyDescriptor(SEALED_MONEY_METHODS, name);
+    const sealed = builtinGetOwnPropertyDescriptor(prototype, name);
+    if (recorded === undefined || typeof recorded.value !== "function") throw new Error(`Store.${name} wasn't recorded at the seal`);
+    if (sealed === undefined || sealed.writable !== false || sealed.configurable !== false) throw new Error(`Store.${name} isn't sealed`);
+    if (sealed.value !== recorded.value) throw new Error(`Store.${name} isn't the sealed method`);
+    builtinDefineProperty(store, name, { value: recorded.value, writable: false, configurable: false, enumerable: false });
+    const now = builtinGetOwnPropertyDescriptor(store, name);
+    if (now === undefined || now.value !== recorded.value || now.writable !== false || now.configurable !== false) throw new Error(`Store.${name} couldn't be locked`);
+  }
 }

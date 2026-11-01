@@ -101,6 +101,8 @@ export function remoteUrlProblem(url: string): string | null {
 export type RemoteGit = (args: readonly string[]) => Promise<ExecResult>;
 export type RemoteMain = {
   url: string;
+  /** The private Git directory the read fetched into (plane-owned; gone at `close`). */
+  gitDir: string;
   /** The commit the recorded remote's main is at, as fetched just now. */
   main: string;
   /** Git in the private directory, hardened as above. */
@@ -165,7 +167,7 @@ export class RemoteMains {
       const got = await this.exec(dir, ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--", from, `+${head}:refs/toolroll/results/${head}`], "always");
       return got.code === 0 && this.clean(dir) && (await git(["cat-file", "-e", `${head}^{commit}`])).code === 0;
     };
-    return { ok: true, remote: { url, main, git, bring } };
+    return { ok: true, remote: { url, gitDir: dir, main, git, bring } };
   }
 
   close(): void {

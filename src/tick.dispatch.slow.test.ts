@@ -321,7 +321,9 @@ describe("tick, against real git", () => {
       'const counter = "node_modules/setup-count";',
       'const count = existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0;',
       'writeFileSync(counter, String(count + 1));',
-      'if (existsSync("dependency.request")) writeFileSync("node_modules/tool-ready", "ready\\n");',
+      // The check's own program appears only once the dependency is declared (review 2 #5: only a program the plane
+      // itself finds missing before the check starts is a launch failure the setup may repair).
+      'if (existsSync("dependency.request")) { mkdirSync("node_modules/.bin", { recursive: true }); writeFileSync("node_modules/.bin/check-tool", "#!/bin/sh\\nexec node scripts/verify.mjs\\n", { mode: 0o755 }); }',
       "",
     ].join("\n"));
     await writeFile(join(repo, "scripts", "verify.mjs"), [
@@ -330,7 +332,6 @@ describe("tick, against real git", () => {
       'const counter = "node_modules/verify-count";',
       'const count = existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0;',
       'writeFileSync(counter, String(count + 1));',
-      'if (!existsSync("node_modules/tool-ready")) process.exit(127);',
       "",
     ].join("\n"));
     await git(["add", ".gitignore", "scripts/setup.mjs", "scripts/verify.mjs"]);
@@ -342,7 +343,7 @@ describe("tick, against real git", () => {
     ]);
     const setupDigest = payload().digest as string;
     await run([
-      "verify", "set", "--repo", repo, "--command", "node scripts/verify.mjs",
+      "verify", "set", "--repo", repo, "--command", "node_modules/.bin/check-tool",
       "--self-heal", "--setup-digest", setupDigest,
       "--yes", "--as", "alex", "--token", approverToken, "--json",
     ]);
@@ -374,7 +375,8 @@ describe("tick, against real git", () => {
 
     const worktree = agentRan[0] as string;
     expect(readFileSync(join(worktree, "node_modules", "setup-count"), "utf8")).toBe("2");
-    expect(readFileSync(join(worktree, "node_modules", "verify-count"), "utf8")).toBe("2");
+    // The first attempt never started (its program was missing); only the retry ran the check.
+    expect(readFileSync(join(worktree, "node_modules", "verify-count"), "utf8")).toBe("1");
 
     await run(["task", "show", "t-heal", "--json"]);
     expect(payload().task.state).toBe("done");
@@ -387,7 +389,7 @@ describe("tick, against real git", () => {
     expect(payload()).toMatchObject({ ok: false, reason: "empty" });
     expect(agentRan).toHaveLength(1);
     expect(readFileSync(join(worktree, "node_modules", "setup-count"), "utf8")).toBe("2");
-    expect(readFileSync(join(worktree, "node_modules", "verify-count"), "utf8")).toBe("2");
+    expect(readFileSync(join(worktree, "node_modules", "verify-count"), "utf8")).toBe("1");
   });
 
   test("a stop fence admits nothing — ready work stays queued, no agent spawns (audit IV-1)", async () => {

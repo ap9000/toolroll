@@ -13,7 +13,7 @@ import { useState, type MouseEvent, type ReactNode } from "react";
 import type { BrowserCheckItem, BrowserResultPanel, BrowserResultView } from "../../browser-workspace.js";
 import { GuardedHtml } from "../guarded-html.js";
 import {
-  Badge, Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, Input, cn,
+  Alert, Badge, Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, Input, cn,
 } from "../components/ui/index.js";
 import { ACCEPT_NEEDS_REASON, acceptWithChecksOf, requirementsWordsOf, resultActsOf, type ResultActKind, type ResultActs } from "../../result-acts.js";
 import { toneOf } from "./tone.js";
@@ -102,24 +102,20 @@ function StatusCard({ selected, acts, answers, bare = false }: { selected: Selec
     if (mismatch === null && caveats.length === 0) return null;
     return <Card data-result-warnings aria-label="What to know about this result">
       {mismatch?.headline != null && <MismatchHeadline headline={mismatch.headline} />}
-      {mismatch !== null && mismatch.rows.length > 0 && <ul aria-label="What doesn't match" className="flex flex-col gap-1.5 text-body" data-mismatches={mismatch.rows.length}>
-        {mismatch.rows.map((one, index) => <li key={index} data-mismatch className="flex gap-2">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
-          <span className="min-w-0 [overflow-wrap:anywhere]">
+      {mismatch !== null && mismatch.rows.length > 0 && <Alert tone={failed ? "destructive" : "neutral"}><AlertTriangle aria-hidden="true" /><ul aria-label="What doesn't match" className="flex flex-col gap-1.5" data-mismatches={mismatch.rows.length}>
+        {mismatch.rows.map((one, index) => <li key={index} data-mismatch className="min-w-0 [overflow-wrap:anywhere]">
+          <span>
             {one.text}{one.path !== null && one.absent && <> <code className="font-mono text-xs">{one.path}</code> <span className="text-muted-foreground" data-mismatch-absent>— not in the saved changes</span></>}
             {one.href !== null && (one.path !== null || one.noteLabel !== null) && <> · <a href={one.href} data-mismatch-lines className={cn("font-medium text-foreground/80 underline decoration-border underline-offset-4 hover:decoration-muted-foreground", one.path !== null && "font-mono text-xs")}>{one.path !== null ? `${one.path}${one.lines === null ? "" : `, ${one.lines}`}` : one.noteLabel}</a></>}
           </span>
         </li>)}
-      </ul>}
-      {caveats.length > 0 && <ul className="flex flex-col gap-1 text-body" aria-label="Caveats" data-result-attention={caveats.length}>
-        {caveats.map(one => <li key={one} data-caveat className="flex gap-2">
-          <AlertTriangle className={cn("mt-0.5 size-3.5 shrink-0", failed ? "text-destructive" : "text-warning")} aria-hidden="true" />
-          <span className="min-w-0 [overflow-wrap:anywhere]">{one}</span>
-        </li>)}
-      </ul>}
+      </ul></Alert>}
+      {caveats.length > 0 && <Alert tone={failed ? "destructive" : "neutral"}><AlertTriangle aria-hidden="true" /><ul className="flex flex-col gap-1" aria-label="Caveats" data-result-attention={caveats.length}>
+        {caveats.map(one => <li key={one} data-caveat className="min-w-0 [overflow-wrap:anywhere]">{one}</li>)}
+      </ul></Alert>}
     </Card>;
   }
-  return <Card data-result-status={selected.status.token} data-headline={status?.headline ?? selected.status.label} aria-label="Result status">
+  return <Card data-result-status={selected.status.token} data-headline={status?.headline ?? selected.status.label} aria-label="Result status" className={cn(status?.headline === "Needs you" && "border-warning")}>
     <div className="min-w-0">
       {/* The blocking fact is the headline: the report doesn't match the changes. */}
       {mismatch?.headline != null ? <MismatchHeadline headline={mismatch.headline} />
@@ -135,22 +131,18 @@ function StatusCard({ selected, acts, answers, bare = false }: { selected: Selec
         {selected.failure.link !== null && <>{selected.failure.evidence !== null && " "}<a href={selected.failure.link.href} data-failure-log className={META_LINK}>{selected.failure.link.label}</a></>}
       </p>}
     </div>
-    {mismatch !== null && mismatch.rows.length > 0 && <ul aria-label="What doesn't match" className="flex flex-col gap-1.5 border-t border-border pt-3 text-body phone:pt-2" data-mismatches={mismatch.rows.length}>
-      {mismatch.rows.map((one, index) => <li key={index} data-mismatch className="flex gap-2">
-        <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
-        <span className="min-w-0 [overflow-wrap:anywhere]">
+    {mismatch !== null && mismatch.rows.length > 0 && <Alert tone={failed ? "destructive" : "neutral"}><AlertTriangle aria-hidden="true" /><ul aria-label="What doesn't match" className="flex flex-col gap-1.5" data-mismatches={mismatch.rows.length}>
+      {mismatch.rows.map((one, index) => <li key={index} data-mismatch className="min-w-0 [overflow-wrap:anywhere]">
+        <span>
           {one.text}{one.path !== null && one.absent && <> <code className="font-mono text-xs">{one.path}</code> <span className="text-muted-foreground" data-mismatch-absent>— not in the saved changes</span></>}
           {one.href !== null && (one.path !== null || one.noteLabel !== null) && <> · <a href={one.href} data-mismatch-lines className={cn("font-medium text-foreground/80 underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:-my-3 phone:inline-block phone:py-3", one.path !== null && "font-mono text-xs")}>{one.path !== null ? `${one.path}${one.lines === null ? "" : `, ${one.lines}`}` : one.noteLabel}</a></>}
         </span>
       </li>)}
-    </ul>}
+    </ul></Alert>}
     {status !== null && <StatusDetails status={status} />}
-    {caveats.length > 0 && <ul className="flex flex-col gap-1 text-body" aria-label="Caveats" data-result-attention={caveats.length}>
-      {caveats.map(one => <li key={one} data-caveat className="flex gap-2">
-        <AlertTriangle className={cn("mt-0.5 size-3.5 shrink-0", failed ? "text-destructive" : "text-warning")} aria-hidden="true" />
-        <span className="min-w-0 [overflow-wrap:anywhere]">{one}</span>
-      </li>)}
-    </ul>}
+    {caveats.length > 0 && <Alert tone={failed ? "destructive" : "neutral"}><AlertTriangle aria-hidden="true" /><ul className="flex flex-col gap-1" aria-label="Caveats" data-result-attention={caveats.length}>
+      {caveats.map(one => <li key={one} data-caveat className="min-w-0 [overflow-wrap:anywhere]">{one}</li>)}
+    </ul></Alert>}
   </Card>;
 }
 
@@ -332,7 +324,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
   return <Card data-result-decision={acts.primary ?? "none"} aria-label="Decision" data-dock={more ? "open" : "compact"}
     className={cn("gap-2 phone:gap-2", shown.length > 0 && "phone:sticky phone:bottom-[-20px] phone:z-10 phone:-mx-4 phone:rounded-none phone:border-x-0 phone:px-4 phone:py-3 phone:pb-[max(12px,var(--safe-bottom))] phone:shadow-[0_-4px_16px_rgb(0_0_0/.08)]")}>
     {line !== null && <p className={cn("flex max-w-[75ch] gap-2 text-body", rest)} data-decision-why {...(acts.line === null ? {} : { "data-cant-accept": "" })}>
-      <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />{line}</p>}
+      <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />{line}</p>}
     {selected.failure != null && selected.failure.retry === null && <p className="max-w-[75ch] text-body" data-failure-suggestion>
       <span className="font-semibold">What to change.</span> <span className="text-muted-foreground">{selected.failure.suggestion}</span></p>}
     {/* What comes next (notes ready, CI failing, no build): one line, whatever the acts. */}
@@ -476,6 +468,7 @@ function Details({ selected }: { selected: Selected }) {
       body: <p className="text-body text-muted-foreground">{panel.reviewHistory}</p> }]),
     ...(selected.efficiency == null ? [] : [{ id: "how-it-ran", title: "How it ran", hint: efficiencyLine(selected.efficiency), body: <EfficiencyBody one={selected.efficiency} /> }]),
     ...(selected.network == null ? [] : [{ id: "network", title: "Network", hint: networkLine(selected.network), body: <NetworkBody one={selected.network} /> }]),
+    ...(selected.timing == null || selected.timing.length === 0 ? [] : [{ id: "timing", title: "Where the time went", hint: selected.timing.map(one => `${one.title} ${one.total}`).join(" · "), body: <TimingBody groups={selected.timing} /> }]),
     ...(record === null ? [] : [{ id: "run-record", title: "Run record", hint: `Build #${record.build}`,
       body: <div className="flex flex-col gap-3 text-body">
         <dl className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5">
@@ -492,7 +485,7 @@ function Details({ selected }: { selected: Selected }) {
     {rows.map(row => <details key={row.id} id={row.id} className="group scroll-mt-4" data-cockpit-section={row.id}>
       <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 hover:bg-accent/50 phone:min-h-12 phone:px-4 [&::-webkit-details-marker]:hidden">
         <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
-        <h2 className="text-title leading-normal">{row.title}</h2>
+        <h2 className="shrink-0 text-title leading-normal">{row.title}</h2>
         {row.count !== undefined && <Badge>{row.count}</Badge>}
         {row.hint != null && <span className="min-w-0 truncate text-body text-muted-foreground">{row.hint}</span>}
       </summary>
@@ -578,5 +571,18 @@ export function ResultView({ view, csrf }: { view: BrowserResultView; csrf: stri
             </li>)}</ul>
           </Card>
       : <SelectedResult key={`${selected.taskId}:${selected.build ?? ""}`} selected={selected} csrf={csrf} />}
+  </div>;
+}
+
+/** Where the time went (latency-timeline.ts): each kept timeline's milestones, offset from its start. */
+function TimingBody({ groups }: { groups: NonNullable<Selected["timing"]> }) {
+  return <div className="flex flex-col gap-4 text-body" data-timing>
+    {groups.map((group, index) => <section key={index} className="flex flex-col gap-1.5">
+      <h3 className="text-sm font-medium">{group.title} <span className="text-muted-foreground">· {group.total}</span></h3>
+      <dl className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-3 gap-y-1">
+        {group.rows.map((row, at) => <div key={at} className="contents"><dt className="font-mono text-muted-foreground tabular-nums">{row.at}</dt>
+          <dd className="min-w-0 [overflow-wrap:anywhere]">{row.label}{row.detail !== null && <span className="text-muted-foreground"> · {row.detail}</span>}</dd></div>)}
+      </dl>
+    </section>)}
   </div>;
 }

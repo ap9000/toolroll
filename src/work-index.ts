@@ -1,18 +1,19 @@
 /** Paginated, permission-bound summaries of saved task facts. These reads do
  * not verify artifacts or authorize task operations; a build Toolroll can't
  * yet confirm stopped is read through the store's own read-only probe. */
+import { authorityStandsSql } from "./approval-authority.js";
 import { leadNameOf } from './lead-identity.js';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { accountReachesSql, readProjectAccess } from './project-access.js';
+import { readProjectAccess } from './project-access.js';
 import { pauseOnTaskProviders, providerName, signInReason } from './provider-auth.js';
 import type { ProviderId } from './provider.js';
 import { scopeTermsProblem, stopFactOf, type Store, type TaskState } from './store.js';
 import { assignmentChecksForRun, type AssignmentSnapshot } from './assignment.js';
 import type { WorkAction, WorkSummaryAccess } from './work-summary.js';
 import type { WorkStatus, WorkView } from './workspace-ui.js';
-import { checkBackingOf, completionBlockersOf, leadOnIt, plainReasonOf, replacedWords, requirementsOf, stageOfCode, taskStatusOf, unverifiedWhenRefuted, workToneOf, type ChecksFact, type TaskStatusFacts } from './task-status.js';
+import { approvedCheckOf, checkBackingOf, completionBlockersOf, leadOnIt, plainReasonOf, replacedWords, requirementsOf, stageOfCode, taskStatusOf, unverifiedWhenRefuted, workToneOf, type ChecksFact, type TaskStatusFacts } from './task-status.js';
 import { releaseCoverageOf, type ReleaseMemo } from './release-coverage.js';
 import { buildReviewOf } from './review-switch.js';
 import { shownVerdictOf } from './proof.js';
@@ -22,7 +23,6 @@ import { withFollowUps } from './result-follow-ups.js';
 import { LANDED_ACTOR, landedReasonOf } from './result-completion.js';
 import { ASKS, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedKey, type WaitKey } from './needs-you.js';
 import { LEAD_CLAIM_SQL, LEAD_IDLE_MS } from './lead-voice.js';
-import { grantStandsSql } from './flow-unattended.js';
 
 export type WorkIndexCounts = Record<WorkView, number>;
 export type WorkIndexItem = {
@@ -182,10 +182,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
       UNION ALL SELECT json_extract(leg.value,'$.provider') FROM json_each(CASE WHEN json_valid(sc.approved_route_json) THEN sc.approved_route_json ELSE '{}' END,'$.legs') leg
         WHERE json_extract(leg.value,'$.phase')='build'))) signed_out,
     (sc.approved_at IS NOT NULL AND sc.approved_by IS NOT NULL AND sc.approved_digest=sc.digest) approved,
-    ((sc.approval_basis IS NOT 'mode' AND sc.approval_basis IS NOT 'grant') OR (sc.approval_basis='mode' AND EXISTS(SELECT 1 FROM operating_mode om JOIN approver signer ON signer.name=om.signed_by
-      WHERE om.repo=c.repo AND om.digest=sc.mode_digest AND om.revoked_at IS NULL AND om.absolute_expiry>$now
-      AND signer.role='approver' AND signer.revoked_at IS NULL AND ${accountReachesSql("signer", "c.repo")}))
-      OR (sc.approval_basis='grant' AND ${grantStandsSql("sc.mode_digest", "$now", "c.repo")})) dispatch_approval,
+    ${authorityStandsSql("sc", "c.repo", "$now")} dispatch_approval,
     CASE WHEN sc.task_id IS NULL THEN 0 ELSE so_work_scope_valid(json_object(
       'touches',sc.touches,'acceptance_json',sc.acceptance_json,'budget_microusd',sc.budget_microusd,
       'goal',CASE WHEN typeof(sc.goal)='text' THEN '' ELSE sc.goal END,
@@ -471,7 +468,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   // automatic review and, with checks Off, the release check that covers it.
   const memo: ReleaseMemo = new Map();
   const readiness = (row: Row, checks: ChecksFact | null) => resultReadinessFacts(store, now, options.root, row, checks, memo);
-  return { items: page.map(row => itemOf(row, access.principal, probe, leadName, readiness)), projects, totals: rows[0] === undefined ? { ...EMPTY } : counts(rows[0]),
+  return { items: page.map(row => itemOf(row, access.principal, probe, leadName, readiness, options.root !== undefined)), projects, totals: rows[0] === undefined ? { ...EMPTY } : counts(rows[0]),
     groups: rows[0] === undefined ? { ...NO_GROUPS } : groupCounts(rows[0]), nextCursor, limit, view };
 }
 
@@ -549,21 +546,35 @@ function listChecksOf(own: 'passed' | 'failed' | null, level: string | null, fol
 }
 
 type ReadinessFacts = Pick<TaskStatusFacts, 'requirements' | 'accepted' | 'blockers'> & { checks: ChecksFact | null };
+/** A check as a read without the evidence files may show it: only what never claims a pass it can't prove. */
+function unreadChecksOf(checks: ChecksFact | null): ChecksFact | null {
+  if (checks === null) return null;
+  return checks.status === 'failed' || (checks.level === 'off' && checks.status !== 'passed' && checks.release == null) ? checks : null;
+}
+
 /** A ready result's requirements, acceptance and completion blockers from its saved records, as assignmentOf reads them. */
 function resultReadinessFacts(store: Store, now: Date, root: string | undefined, row: Row, recorded: ChecksFact | null, memo: ReleaseMemo): ReadinessFacts {
   const run = n(row, 'result_id'), repo = s(row, 'repo');
-  if (!run) return { checks: recorded };
+  if (!run) return { checks: root === undefined ? unreadChecksOf(recorded) : recorded };
   const report = s(row, 'result_role') === 'scout';
-  // No recorded check result (a build from before results were recorded, or none ran): read its saved receipt, as the page does.
-  const saved = root !== undefined && (recorded === null || recorded.status === 'not-run') ? assignmentChecksForRun(store, root, run, now) : null;
+  // Read its saved receipt, as the page does: a recorded result (or a verdict alone) is not a check that can still be
+  // read, and the row must never say passed while the task page says the check couldn't be read.
+  const read = root !== undefined && !report ? assignmentChecksForRun(store, root, run, now) : null;
+  // A recorded failure is never lost because its saved files can't be read now (fail closed: negatives stand).
+  const saved = read !== null && recorded?.status === 'failed' && (read.status === 'unavailable' || read.status === 'not-run')
+    ? { ...read, status: 'failed' as const, exitCode: recorded.exitCode } : read;
   const listed: ChecksFact | null = saved === null ? recorded : { status: saved.status, exitCode: saved.exitCode, head: s(row, 'result_head'),
     ...(saved.level == null ? {} : { level: saved.level }), ...(saved.running == null ? {} : { running: saved.running }), ...(saved.batch == null ? {} : { batch: saved.batch }) };
-  const checks: ChecksFact | null = listed?.level === 'off' && listed.status !== 'passed' && listed.status !== 'failed'
+  const covered: ChecksFact | null = listed?.level === 'off' && listed.status !== 'passed' && listed.status !== 'failed'
     ? { ...listed, release: releaseCoverageOf(store, root, repo, s(row, 'result_head'), { memo }) } : listed;
   const proof = store.proofVerdictFor(run), accepted = store.proofAcceptance(run) !== null;
+  // The approved check as the task page reads it (task-status.ts): a recorded pass with no readable check doesn't count.
+  // Without the evidence root nothing can be read, so the row makes no claim about the check at all: a recorded
+  // failure or checks Off still say so; a pass, or a missing check, is the result's own page to say.
+  const checks = report ? covered : root === undefined ? unreadChecksOf(covered) : approvedCheckOf(proof?.verdict ?? null, proof?.reasons ?? [], covered);
   const review = buildReviewOf(store, run);
   const high = review === null || review.sentBackAs !== null || review.state !== 'reviewed' ? 0 : review.high.length;
-  const checkRequired = requiredCheckCommandFor(store, repo, String(row['id']), checks?.level) !== null;
+  const checkRequired = root === undefined && checks === null ? false : requiredCheckCommandFor(store, repo, String(row['id']), checks?.level) !== null;
   const backing = checkBackingOf(checks);
   const requirements = requirementsOf(proof?.matrix, backing);
   const verdict = shownVerdictOf(proof?.verdict ?? null, { checkFailed: !report && checks?.status === 'failed', highFindings: high, reviewPending: review?.state === 'pending',
@@ -573,7 +584,7 @@ function resultReadinessFacts(store: Store, now: Date, root: string | undefined,
 }
 
 function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (taskId: string) => StopFact | null, leadName?: string,
-  readiness?: (row: Row, checks: ChecksFact | null) => ReadinessFacts): WorkIndexItem {
+  readiness?: (row: Row, checks: ChecksFact | null) => ReadinessFacts, readable = false): WorkIndexItem {
   const code = String(row['code']), id = String(row['id']);
   const custody = code === 'process-needs-attention' || (code === 'result-needs-attention' && n(row, 'custody_unresolved') === 1);
   const process = custody && probe !== undefined ? processNeedOf(probe(id)) : null;
@@ -662,15 +673,18 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     : coded.stage === 'needs-you' && (coded.need === undefined || coded.need === 'other') && INDEX_NEED[code] !== undefined ? { stage: 'needs-you', need: INDEX_NEED[code] } : coded;
   const checkStatus = s(row, 'check_status'), verdict = s(row, 'proof_verdict');
   const finished = reading.stage === 'finished' || reading.stage === 'complete';
-  const own = checkStatus === 'failed' || n(row, 'proof_failed_check') === 1 ? 'failed' as const : checkStatus === 'passed' || verdict === 'verified' ? 'passed' as const : null;
-  const listedChecks = !finished ? null : listChecksOf(own, s(row, 'check_level'), row['check_follows']);
-  const ready = reading.stage === 'finished' && readiness !== undefined ? readiness(row, listedChecks) : null;
+  // Only a recorded check is a pass; a verdict alone isn't one (task-status.ts approvedCheckOf reads it with the receipt).
+  const own = checkStatus === 'failed' || n(row, 'proof_failed_check') === 1 ? 'failed' as const : checkStatus === 'passed' ? 'passed' as const : null;
+  const recordedChecks = !finished ? null : listChecksOf(own, s(row, 'check_level'), row['check_follows']);
+  // A read without the evidence files claims no pass (unreadChecksOf); the readiness read below says the rest.
+  const listedChecks = readable ? recordedChecks : unreadChecksOf(recordedChecks);
+  const ready = reading.stage === 'finished' && readiness !== undefined ? readiness(row, recordedChecks) : null;
   // Toolroll marked it complete because its work landed: the reason, said once.
   const landed = code === 'complete' ? landedReasonOf(s(row, 'checked_actor'), s(row, 'checked_detail')) : null;
   const shared = taskStatusOf({ stage: reading.stage, ...(reading.need === undefined ? {} : { need: reading.need }), ...(reading.wait === undefined ? {} : { wait: reading.wait }),
     ...(process === null ? {} : { needContext: { build: process.build } }),
     reason: finished ? null : plainReasonOf(reading.stage, code, detail || null), report: s(row, 'result_role') === 'scout',
-    checks: ready?.checks ?? listedChecks,
+    checks: ready !== null ? ready.checks : listedChecks,
     ...(ready === null ? {} : { requirements: ready.requirements ?? null, ...(ready.accepted ? { accepted: true } : {}), ...(ready.blockers === undefined ? {} : { blockers: ready.blockers }) }),
     completedBy: code !== 'complete' || landed !== null ? null : n(row, 'completed_by_lead') === 1 ? 'the lead' : String(row['checked_actor']).replace(/^(?:operator|coordinator|lead):/, ''),
     ...(landed === null ? {} : { landed }),

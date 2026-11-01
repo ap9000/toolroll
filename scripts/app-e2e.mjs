@@ -56,7 +56,7 @@ if (group !== null && !(group in GROUPS)) { console.error(`No group "${group}". 
 
 // The real mail server for the email inbox: GreenMail in Docker, over TLS on 127.0.0.1:993 with a
 // certificate made for this run (the console and worker trust it, and only it, beside the usual ones).
-const docker = !flag("--list") && (group === null || group === "mail") && (() => { try { execFileSync("docker", ["info"], { stdio: "ignore", timeout: 20_000 }); return true; } catch { return false; } })();
+const docker = !flag("--list") && (group === null || group === "mail") && (() => { try { execFileSync("docker", ["info"], { stdio: "ignore", timeout: 20_000, killSignal: "SIGKILL" }); return true; } catch { return false; } })();
 let mailCert = null;
 const certDir = join(process.env.TMPDIR ?? "/tmp", `so-e2e-mail-${randomBytes(4).toString("hex")}`);
 if (docker) {
@@ -284,10 +284,13 @@ await journey("console", SCRIPTED, "Sign-in hardening and the audit trail: five 
   const locked = await tryPassword(secret);
   if (!/Too many wrong passwords\. Try again in 15 minutes\./.test(locked) || !guest.url().includes("/login")) throw new Error(`the right password after five wrong ones: ${locked.slice(0, 200)}`);
   await context.close();
-  // A policy change, the way Settings makes it, and back.
+  // A policy change, the way Settings makes it, and back. Widening to Full access takes the password (back to Auto
+  // needs none): without it nothing changes.
   await page.goto(`${base}/settings`);
+  const unproved = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": "bypassPermissions" }, headers: { origin: base }, maxRedirects: 0 });
+  if (!/Enter(%20|\+| )your(%20|\+| )Toolroll(%20|\+| )password/.test(unproved.headers()["location"] ?? "")) throw new Error(`Full access without the password: ${unproved.status()} ${unproved.headers()["location"]}`);
   for (const mode of ["bypassPermissions", "auto"]) {
-    const changed = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": mode }, headers: { origin: base }, maxRedirects: 0 });
+    const changed = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": mode, password: w.passwords.alex }, headers: { origin: base }, maxRedirects: 0 });
     if (changed.status() !== 303) throw new Error(`the permission default refused ${mode}: ${changed.status()}`);
   }
   await page.goto(`${base}/ledger?source=sign-in`); await page.waitForSelector("[data-ledger-id]");
@@ -445,15 +448,19 @@ await journey("console", SCRIPTED, "Monitoring: a webhook set in Settings gets t
   }
 });
 
-await journey("console", SCRIPTED, "Spend: the month's cost shows by project and person; a budget set on the Spend page is listed, and the month downloads as CSV", [], async () => {
+await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown cost show apart; a limit set on Settings → Spend is listed on the Spend page, and the month downloads as CSV", [], async () => {
   await page.goto(`${base}/spend`);
-  await page.locator(".spend-total").waitFor({ timeout: 15_000 });
-  const add = page.locator("details", { hasText: "Add a budget" });
+  await page.locator('.spend-figure[data-amount-kind="api"]').waitFor({ timeout: 15_000 });
+  if (await page.locator(".spend-figure").count() !== 3) throw new Error("the Spend page doesn't show its three figures");
+  await page.goto(`${base}/settings`);
+  await Promise.all([page.waitForNavigation(), page.locator('nav[aria-label="Settings sections"] a[href="/settings/spend"]').click()]);
+  const add = page.locator("details", { hasText: "Add a limit" });
   if (!(await add.evaluate(one => one.open))) await add.locator("summary").click();
   await add.locator('select[name="target"]').selectOption({ label: "Everything" });
   await add.locator('input[name="usd"]').fill("500");
   await add.locator('input[name="password"]').fill(w.passwords.alex);
   await Promise.all([page.waitForNavigation(), add.locator('button[type="submit"]').click()]);
+  await page.goto(`${base}/spend`);
   const budget = page.locator(".budget").first();
   if (!/Everything|whole installation/i.test(await budget.innerText()) || !/\$500/.test(await budget.innerText())) throw new Error(`the budget: ${(await page.locator(".spend").innerText()).slice(0, 400)}`);
   if (rows("SELECT 1 FROM budget WHERE scope_kind = 'installation' AND removed_at IS NULL").length !== 1) throw new Error("the budget isn't kept");
@@ -463,7 +470,7 @@ await journey("console", SCRIPTED, "Spend: the month's cost shows by project and
   await shot("spend-phone");
   await page.setViewportSize({ width: 1440, height: 900 });
   const csv = await page.request.get(`${base}/spend?format=csv`);
-  if (csv.status() !== 200 || !(await csv.text()).includes("time_utc,kind,project,person")) throw new Error(`the CSV: ${csv.status()}`);
+  if (csv.status() !== 200 || !(await csv.text()).includes("time_utc,source,role,project,person")) throw new Error(`the CSV: ${csv.status()}`);
   // Tasks folds usage to one line on a desk; a click shows the budget as a tile, and, once Claude has run here, the plan's windows as Claude said them.
   await page.goto(`${base}/work`);
   await page.locator('[data-usage-summary]').click({ timeout: 15_000 });
@@ -716,7 +723,12 @@ await journey("stop", SCRIPTED, "Stop a build while it runs, then resume it with
   cli(["task", "scope", id, "--goal", "Add divide(a, b) to src/math.js, throwing on division by zero, with tests for both in test/math.test.js.", "--acceptance", "divide works and refuses zero|check", ...auth]);
   const digest = cli(["task", "show", id]).scope.digest;
   cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
-  const running = await until("the build to start", async () => { const one = latestBuild(id); return one && !one.finished_at ? one : null; }, { timeoutMs: 180_000, everyMs: 1000 });
+  // Running means its agent has started (a stop before that is a different case: nothing ran yet). Every launch now
+  // checks the protected storage folders first, so the run's row comes a moment before its agent does.
+  const running = await until("the build's agent to start", async () => {
+    const one = latestBuild(id);
+    return one && !one.finished_at && rows(`SELECT provider_started_at FROM run WHERE id = ${one.id}`)[0]?.provider_started_at ? one : null;
+  }, { timeoutMs: 180_000, everyMs: 250 });
   await page.goto(`${base}/t/${id}`);
   const stop = page.locator("form.task-stop-form button");
   await stop.waitFor({ timeout: 15_000 });
@@ -1047,13 +1059,18 @@ async function mailServer() {
   try {
     execFileSync("docker", ["run", "-d", "--name", name, "-p", "127.0.0.1:993:3993", "-p", "127.0.0.1:3025:3025", "-v", `${join(certDir, "keystore.p12")}:/keystore.p12:ro`, "-e",
       "GREENMAIL_OPTS=-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=support:mail-pass@shop.example -Dgreenmail.users.login=email -Dgreenmail.tls.keystore.file=/keystore.p12 -Dgreenmail.tls.keystore.password=e2e-keystore",
-      "greenmail/standalone:2.1.3"], { stdio: "ignore", timeout: 120_000 });
-  } catch { throw new Skip("the mail server container couldn't start (is port 993 or 3025 taken?)"); }
+      "greenmail/standalone:2.1.3"], { stdio: "ignore", timeout: 120_000, killSignal: "SIGKILL" });
+  } catch {
+    // The Docker CLI ignores SIGTERM while the daemon hangs (a leftover container holding 993 or 3025 did that for
+    // hours), so the limit kills it outright, and the container it made is removed.
+    try { execFileSync("docker", ["rm", "-f", name], { stdio: "ignore", timeout: 60_000, killSignal: "SIGKILL" }); } catch { /* never made */ }
+    throw new Skip("the mail server container couldn't start (is port 993 or 3025 taken?)");
+  }
   const nodemailer = (await import(join(w.bin, "../../node_modules/nodemailer/dist/cjs/nodemailer.js"))).default;
   const { ImapFlow } = await import(join(w.bin, "../../node_modules/imapflow/dist/cjs/imap-flow.js"));
   const { simpleParser } = await import(join(w.bin, "../../node_modules/mailparser/index.js"));
   const smtp = nodemailer.createTransport({ host: "127.0.0.1", port: 3025, secure: false, ignoreTLS: true });
-  const stop = () => { smtp.close(); execFileSync("docker", ["rm", "-f", name], { stdio: "ignore" }); };
+  const stop = () => { smtp.close(); execFileSync("docker", ["rm", "-f", name], { stdio: "ignore", timeout: 60_000, killSignal: "SIGKILL" }); };
   try { await until("the mail server", async () => { await smtp.verify(); return true; }, { timeoutMs: 60_000, everyMs: 2000 }); } catch (error) { stop(); throw error; }
   /** Everything in someone's inbox (GreenMail signs a person in with their address as the password). */
   const inbox = async user => {
@@ -1097,6 +1114,8 @@ await journey("mail", SCRIPTED, "Email inbox: a real email becomes a card, Claud
     await page.click("[data-open-triggers]");
     if (!(await page.locator("[data-add-trigger] select").first().isVisible())) await page.getByText("Add a trigger", { exact: true }).click();
     await page.locator("[data-add-trigger] select").first().selectOption("email");
+    // Mail from any sender brings in work from anyone: the trigger takes the password.
+    await page.locator('[data-add-trigger] input[type="password"]').fill(w.passwords.alex);
     await page.locator('[data-add-trigger] button:has-text("Add trigger")').click();
     await until("the email trigger", async () => (await flowView(id)).triggers.some(one => one.kind === "email"), { timeoutMs: 15_000, everyMs: 500 });
     const checkNow = () => page.locator('[data-flow-drawer] button:has-text("Check now")').first().click();
@@ -1178,7 +1197,9 @@ await journey("mail", SCRIPTED, "Follow-ups: a card emails someone and waits; th
     await page.waitForSelector('[data-flow-zone-panel="wait"]');
     await shot("wait-zone-settings");
     await page.click('button:has-text("Discard")');
-    const gave = await until("Sam's card to finish without a reply", async () => { const one = await cardOf("order 43"); return one?.state === "done" ? one : null; }, { timeoutMs: (WAIT + 3) * 60_000, everyMs: 5000 });
+    // The wait zone decides how long this takes (WAIT minutes, then the nudge), so the release's 90-second cap on
+    // scripted waits can't apply; its own limit still bounds it.
+    const gave = await until("Sam's card to finish without a reply", async () => { const one = await cardOf("order 43"); return one?.state === "done" ? one : null; }, { timeoutMs: (WAIT + 3) * 60_000, everyMs: 5000, capped: false });
     if (gave.comments.length > 0) throw new Error("the stranger's message was taken as Sam's reply");
     if (!gave.history.some(one => one.text.includes(`No reply after ${WAIT} minutes`))) throw new Error(`its history: ${gave.history.map(one => one.text).join(" | ")}`);
     const nudge = (await mail.inbox("sam@example.com")).find(one => one.subject === "Re: Question about order 43");
@@ -1240,8 +1261,25 @@ await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a quest
   const question = await until("Maya to answer the question card", async () => { const one = await cardOf("Where is my order"); return one?.stage === "answered" ? one : null; }, { timeoutMs: 420_000, everyMs: 3000 });
   const reply = question.outputs.find(one => one.stage === "read")?.text ?? "";
   if (reply.length < 20) throw new Error(`her reply: ${reply}`);
-  const small = await until("Maya to approve the $30 refund on her own", async () => { const one = await cardOf("Charged twice"); return one?.stage === "refunded" ? one : null; }, { timeoutMs: 420_000, everyMs: 3000 });
-  if (!small.history.some(one => /Approved by Maya \(AI\)/.test(one.text))) throw new Error(`its history: ${small.history.map(one => one.text).join(" | ")}`);
+  // A scripted Maya approves the $30 refund on her own. A real one may instead bring it to you: "hand_off" is hers to use
+  // whenever she isn't sure (a duplicate charge she can't check), so a real run takes either decision, but only hers:
+  // her approval on its history, or the decision waiting on you with her note on it, which you then approve.
+  let small = await until(w.scripted ? "Maya to approve the $30 refund on her own" : "Maya to decide the $30 refund (approve it, or bring it to you)", async () => {
+    const one = await cardOf("Charged twice");
+    return one?.stage === "refunded" || (!w.scripted && one?.canDecide && one?.handoff != null) ? one : null;
+  }, { timeoutMs: 420_000, everyMs: 3000 });
+  let smallHandedOff = null;
+  if (small.stage !== "refunded") {
+    smallHandedOff = small.handoff.note;
+    await page.reload(); await page.waitForSelector("[data-zone]");
+    await page.locator(`[data-card="${small.id}"]`).click();
+    await page.waitForSelector(`[data-flow-card-panel="${small.id}"]`);
+    if (!/^Maya · Support:/.test(await page.locator("[data-subagent-handoff]").innerText())) throw new Error("Maya's note isn't on the $30 decision");
+    await page.click('[data-flow-card-panel] button:has-text("Approve")');
+    small = await until("the $30 refund to be approved by you", async () => { const one = await cardOf("Charged twice"); return one?.stage === "refunded" ? one : null; }, { timeoutMs: 30_000, everyMs: 1000 });
+  } else if (!small.history.some(one => /Approved by Maya \(AI\)/.test(one.text))) throw new Error(`its history: ${small.history.map(one => one.text).join(" | ")}`);
+  const approvedByYou = () => rows(`SELECT COUNT(*) AS n FROM flow_event WHERE actor = 'alex' AND outcome = 'approved'`)[0]?.n ?? 0;
+  const yoursBefore = approvedByYou();
   // The $400 one is over her limit: she brings it to the flow's owner (a decision, or a question first).
   const brought = await until("Maya to bring the $400 refund to you", async () => { const one = await cardOf("Broken TV"); return one?.canDecide || one?.question?.mine ? one : null; }, { timeoutMs: 420_000, everyMs: 3000 });
   await page.reload(); await page.waitForSelector("[data-zone]");
@@ -1263,7 +1301,7 @@ await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a quest
   }
   const told = rows(`SELECT subject FROM notification WHERE recipient = 'alex' AND subject LIKE 'Maya · Support%'`);
   if (told.length === 0) throw new Error("you weren't told by Maya, under her name");
-  if (rows(`SELECT 1 FROM flow_event WHERE actor = 'alex' AND outcome = 'approved'`).length === 0 && rows(`SELECT 1 FROM subagent_question WHERE answered_by = 'alex'`).length === 0) throw new Error("no person decided the $400 refund");
+  if (approvedByYou() <= yoursBefore && rows(`SELECT 1 FROM subagent_question WHERE answered_by = 'alex'`).length === 0) throw new Error("no person decided the $400 refund");
   // Paused, the zones she handles wait; resumed, she picks the card up.
   await page.goto(`${base}/settings/lead/subagents/${subagentId}`);
   await Promise.all([page.waitForNavigation(), page.click('button:has-text("Pause Maya")')]);
@@ -1284,7 +1322,7 @@ await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a quest
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   await putPhoneDown();
   if (wide) throw new Error("the subagent page scrolls sideways on a phone");
-  return { reply: reply.slice(0, 120), summary: (await page.locator(".subagent-summary").innerText()).slice(0, 200) };
+  return { reply: reply.slice(0, 120), summary: (await page.locator(".subagent-summary").innerText()).slice(0, 200), ...(smallHandedOff === null ? {} : { smallHandedOff: smallHandedOff.slice(0, 200) }) };
 });
 
 await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settings → Lead lists Maya with one Add subagent action on desktop and phone, an old teammate link lands on her page, and “ask Maya …” in chat is a card that, confirmed, puts one card on her desk and brings her answer back (D5)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {
@@ -1326,13 +1364,40 @@ await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settin
   );
   const asked = await askLead("Ask Maya to look up order #1204 and tell me when it ships.");
   const pending = await pendingCard(asked.reply, "the card asking Maya", { label: "Ask Maya" });
-  if (!/Look up order #1204 and tell me when it ships\./.test(await pending.innerText())) throw new Error("the card doesn't show exactly what goes to Maya");
+  const shownAsk = (await pending.innerText()).replace(/\s+/g, " ");
+  // A scripted lead's words are known; a real lead puts the ask in its own words, which must still carry the order.
+  if (w.scripted ? !/Look up order #1204 and tell me when it ships\./.test(shownAsk) : !/1204/.test(shownAsk)) throw new Error(`the card asking Maya: ${shownAsk.slice(0, 300)}`);
+  // The card's terms, one paragraph each: the first is exactly what goes to her.
+  const shownTerms = (await pending.locator(".so-card-body p").allInnerTexts()).map(one => one.replace(/\s+/g, " ").trim());
+  // Her desk is made when the first card lands on it, so what was there before is counted across every flow.
+  const deskBefore = rows("SELECT COALESCE(MAX(id), 0) AS id FROM flow_card")[0].id;
   await confirmCard(asked.reply, "Ask Maya");
   await shot("lead-asks-maya");
+  // Confirmed, exactly one card lands on her desk, from you, and it is word for word what the card showed.
   const desk = rows(`SELECT desk_flow FROM subagent WHERE id = ${maya}`)[0]?.desk_flow;
-  const cards = desk ? rows(`SELECT title, created_by FROM flow_card WHERE flow = ${desk} AND title LIKE 'Look up order #1204%'`) : [];
-  if (cards.length !== 1 || cards[0].created_by !== "alex") throw new Error(`Maya's desk has ${JSON.stringify(cards)}`);
-  const answer = await until("Maya's answer to reach you", async () => rows("SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex' AND body LIKE '%#1204%'")[0] ?? null, { timeoutMs: 120_000, everyMs: 1500 });
+  const cards = desk ? rows(`SELECT id, title, description, created_by FROM flow_card WHERE flow = ${desk} AND id > ${deskBefore}`) : [];
+  if (cards.length !== 1 || cards[0].created_by !== "alex" || !/1204/.test(`${cards[0].title} ${cards[0].description ?? ""}`)) throw new Error(`Maya's desk has ${JSON.stringify(cards)}`);
+  const sentAsk = String(cards[0].description ?? cards[0].title).replace(/\s+/g, " ").trim();
+  if (sentAsk === "" || shownTerms[0] !== sentAsk) throw new Error(`the card showed ${JSON.stringify(shownTerms[0] ?? "").slice(0, 300)}, but Maya got ${JSON.stringify(sentAsk).slice(0, 300)}`);
+  // Her answer to that card comes back to you. A real Maya with no order tool may ask you first: you tell her to say
+  // what she can; or say she can't, which comes back to you the same way.
+  const card = cards[0].id;
+  let answeredHer = null;
+  const answer = await until("Maya's answer to reach you", async () => {
+    const reply = rows(`SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex' AND dedupe_key LIKE 'teammate-reply:${card}:%'`)[0];
+    if (reply !== undefined) return reply;
+    const question = w.scripted ? undefined : rows(`SELECT id, question FROM subagent_question WHERE card = ${card} AND asked_of = 'alex' AND state = 'open'`)[0];
+    if (question !== undefined) {
+      await page.goto(`${base}/settings/lead/subagents/${maya}`);
+      const said = await post(`/settings/lead/subagents/questions/${question.id}/answer`, { text: "Tell me what you can from here, or that you can't look it up." });
+      if (said.status >= 400) throw new Error(`answering her question: ${said.status} ${said.body.slice(0, 200)}`);
+      answeredHer = question.question;
+    }
+    return null;
+  }, { timeoutMs: w.scripted ? 120_000 : 420_000, everyMs: 1500 });
+  if (w.scripted && !/#1204/.test(answer.body)) throw new Error(`her answer: ${answer.body}`);
+  if (String(answer.body).trim() === "") throw new Error("her answer is empty");
+  if (answeredHer !== null) answer.askedFirst = answeredHer.slice(0, 200);
   return { section: section.slice(0, 160), answer };
 });
 
@@ -1352,10 +1417,28 @@ await journey("maya", SCRIPTED, "The lead queue: a message sent while the lead a
   await say("Then list the open questions.");
   await waitFor(page.locator('[data-queue-state="queued"]').first(), "the second message shown Queued", { timeoutMs: 15_000 });
   if (await page.locator('[data-queue-state="queued"] .so-queued-remove').count() !== 1) throw new Error("the queued message has no Remove");
-  await until("both replies, in order", async () => (await messages.count()) >= before + 4, { timeoutMs: 60_000 });
+  await until("both replies, in order", async () => (await messages.count()) >= before + 4 && rows("SELECT 1 FROM lead_queue WHERE status = 'answered'").length === 1, { timeoutMs: w.scripted ? 60_000 : 2 * REAL_TURN_MS });
   const order = (await messages.allInnerTexts()).slice(before).map(one => one.replace(/\s+/g, " "));
+  // The order the product guarantees, whatever a real lead says: the queued message waited for the first turn to end
+  // and got the next turn of its own; each turn's reply is recorded under its turn, and the thread shows them in order.
+  const asked = rows("SELECT id, turn FROM lead_message WHERE role = 'operator' AND text = 'Summarise the refunds, slowly.' ORDER BY id DESC LIMIT 1")[0];
+  const queued = rows("SELECT m.id AS id, m.turn AS turn, q.turn_id AS admitted, q.status AS status FROM lead_queue q JOIN lead_message m ON m.id = q.message WHERE m.text = 'Then list the open questions.'");
+  if (asked?.turn == null || queued.length !== 1 || queued[0].status !== "answered" || queued[0].turn !== queued[0].admitted || !(queued[0].turn > asked.turn))
+    throw new Error(`the queued message didn't get a turn of its own after the first: asked ${JSON.stringify(asked)}, queued ${JSON.stringify(queued)}`);
+  const [first, second] = [asked.turn, queued[0].turn];
+  const turns = rows(`SELECT id, state, created_at, finished_at FROM mate_turn WHERE id IN (${first}, ${second}) ORDER BY id`);
+  if (turns.length !== 2 || turns.some(turn => turn.state !== "answered") || !(turns[0].finished_at <= turns[1].created_at))
+    throw new Error(`the second turn didn't wait for the first to end: ${JSON.stringify(turns)}`);
+  const replyOf = turn => rows(`SELECT id FROM lead_message WHERE role = 'assistant' AND turn = ${turn} AND text <> '' ORDER BY id`).map(row => row.id);
+  const [replyOne, replyTwo] = [replyOf(first), replyOf(second)];
+  if (replyOne.length === 0 || replyTwo.length === 0 || !(replyOne.at(-1) < replyTwo[0])) throw new Error(`the replies, by turn: ${JSON.stringify({ [first]: replyOne, [second]: replyTwo })}`);
+  const shown = await messages.evaluateAll(nodes => nodes.map(node => Number(node.getAttribute("data-message-id"))));
+  const where = id => shown.indexOf(id);
+  if ([asked.id, queued[0].id, replyOne[0], replyTwo[0]].some(id => where(id) < 0) || !(where(asked.id) < where(replyOne[0]) && where(replyOne.at(-1)) < where(replyTwo[0]) && where(queued[0].id) < where(replyTwo[0])))
+    throw new Error(`out of order on the page: ${JSON.stringify({ shown, asked: asked.id, queued: queued[0].id, replyOne, replyTwo, order })}`);
+  // A scripted lead's words are known, so a scripted run checks them word for word too.
   const at = words => order.findIndex(one => one.includes(words));
-  if (!(at("Summarise the refunds") < at("Refunds summarised") && at("Refunds summarised") < at("Open questions listed") && at("Then list the open questions") < at("Open questions listed")))
+  if (w.scripted && !(at("Summarise the refunds") < at("Refunds summarised") && at("Refunds summarised") < at("Open questions listed") && at("Then list the open questions") < at("Open questions listed")))
     throw new Error(`out of order: ${JSON.stringify(order)}`);
   const statuses = rows("SELECT status FROM lead_queue").map(one => one.status);
   if (statuses.length !== 1 || statuses[0] !== "answered") throw new Error(`lead queue rows: ${JSON.stringify(statuses)}`);
@@ -1505,6 +1588,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   await Promise.all([page.waitForNavigation(), page.click('form[data-new-subagent] button')]);
   const subagentId = Number(/\/settings\/lead\/subagents\/(\d+)/.exec(page.url())?.[1]);
   await page.selectOption('form.tool-add select[name="tool"]', "store");
+  await page.fill('form.tool-add input[name="password"]', w.passwords.alex);
   await Promise.all([page.waitForNavigation(), page.click('form.tool-add button')]);
   const shopRules = page.locator('[data-tool-grant="store"]');
   const ruleOf = action => shopRules.locator(`select[name="use.${action}"]`).inputValue();
@@ -1514,6 +1598,8 @@ createInterface({ input: process.stdin }).on("line", line => {
   await shopRules.locator('select[name="field.refund_order"]').selectOption("amount");
   await shopRules.locator('input[name="over.refund_order"]').fill("50");
   await shopRules.locator('select[name="use.delete_customer"]').selectOption("never");
+  // Ask first → on her own up to $50 loosens a rule: it takes the password.
+  await shopRules.locator('input[name="password"]').fill(w.passwords.alex);
   await Promise.all([page.waitForNavigation(), shopRules.locator('button:has-text("Save rules")').click()]);
   const rules = JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${subagentId} AND tool = 'store'`)[0]?.rules_json ?? "{}");
   if (rules.refund_order?.limit?.over !== 50 || rules.delete_customer?.use !== "never") throw new Error(`the saved rules: ${JSON.stringify(rules)}`);
@@ -1578,7 +1664,8 @@ createInterface({ input: process.stdin }).on("line", line => {
 // In the rosa group's own world the lead chat isn't on yet: this journey turns it on the same way first.
 await journey("rosa", REAL_MODEL, "The lead changes a subagent's tool rule from plain words, as a card you confirm (real Claude turn)", [TOOL_CHECK], async () => {
   if (!leadChatOn) await turnLeadChatOn();
-  const { reply } = await askLead("Rosa can refund orders up to $100 in the store without asking me now. Just draft it.");
+  // A chat card can only tighten a rule (letting her do more takes the password on her page), so the lead tightens one.
+  const { reply } = await askLead("Rosa should ask me before any refund over $20 in the store from now on; under that she can still refund on her own. Just draft it.");
   const pending = reply.locator('[data-view="chat-card"][data-card-state="pending"]:has([data-card-confirm])');
   await waitFor(pending.first(), "a card changing Rosa's rule in the lead's reply", { seen: async () => `the reply “${(await reply.innerText()).replace(/\s+/g, " ").slice(0, 300)}”` });
   // The lead may draft her soul file's words too: confirm each card it drafted; the rule itself is what's checked.
@@ -1590,7 +1677,7 @@ await journey("rosa", REAL_MODEL, "The lead changes a subagent's tool rule from 
   }
   const rules = await until("Rosa's refund rule to change", async () => {
     const saved = JSON.parse(rows("SELECT t.rules_json FROM subagent_tool t JOIN subagent m ON m.id = t.subagent WHERE m.handle = 'rosa' AND t.tool = 'store'")[0]?.rules_json ?? "{}");
-    return saved.refund_order?.limit?.over === 100 ? saved : null;
+    return saved.refund_order?.limit?.over === 20 ? saved : null;
   }, { timeoutMs: 30_000, everyMs: 1000 });
   if (rules.refund_order.use !== "free") throw new Error(`Rosa's refund rule: ${JSON.stringify(rules.refund_order)}`);
   return { rule: rules.refund_order };
@@ -1644,6 +1731,8 @@ await journey("memory", SCRIPTED, "Subagents remember and learn: Rosa keeps a cu
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   await putPhoneDown();
   if (wide) throw new Error("the subagent page scrolls sideways on a phone");
+  // Accepting a looser rule she suggested takes the password, on her page (a chat tap can't).
+  await offered.locator('input[name="password"]').fill(w.passwords.alex);
   await Promise.all([page.waitForNavigation(), offered.locator('button:has-text("Yes, change it")').click()]);
   const rule = JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${mate} AND tool = 'store'`)[0]?.rules_json ?? "{}").refund_order;
   if (JSON.stringify(rule) !== suggestion.rule_json) throw new Error(`her refund rule is ${JSON.stringify(rule)}, not the suggested ${suggestion.rule_json}`);
@@ -2142,9 +2231,11 @@ await journey("onboarding", SCRIPTED, "A fresh install with Claude Code signed i
   await until("the three-line greeting", async () => /Opening it in your browser now/.test(install.terminal()), { timeoutMs: 30_000, seen: install.terminal });
   const said = install.terminal().split("\n").filter(one => one.trim() !== "");
   const [account, password] = readFileSync(join(install.state, "up-login.txt"), "utf8").trim().split(" ");
-  const greeting = said.slice(said.findIndex(one => one.startsWith("Toolroll is on ")), said.findIndex(one => one.startsWith("Toolroll is on ")) + 3);
-  if (greeting.length !== 3 || greeting[0] !== `Toolroll is on ${install.base}/` || greeting[1] !== "Opening it in your browser now, already signed in." || !greeting[2].startsWith(`If it doesn't open, go to that address and sign in as ${account}: the password is in ~/`)) throw new Error(`the greeting: ${said.join(" | ")}`);
-  if (said.length > 4) throw new Error(`more than the greeting was printed: ${said.join(" | ")}`);
+  // Four lines (#276): the password line is an exact, quoted command to read the saved file, never the password.
+  const greeting = said.slice(said.findIndex(one => one.startsWith("Toolroll is on ")), said.findIndex(one => one.startsWith("Toolroll is on ")) + 4);
+  if (greeting.length !== 4 || greeting[0] !== `Toolroll is on ${install.base}/` || greeting[1] !== "Opening it in your browser now, already signed in." || greeting[2] !== `If it doesn't open, go to that address and sign in as ${account}.`
+    || !greeting[3].startsWith("Your password: run `cat -- '/") || !greeting[3].endsWith("/up-login.txt'`")) throw new Error(`the greeting: ${said.join(" | ")}`);
+  if (said.length > 5) throw new Error(`more than the greeting was printed: ${said.join(" | ")}`);
   if (install.terminal().includes(password) || install.terminal().includes("/login/once/")) throw new Error("the terminal shows the password or the sign-in link");
   await terminalShot(said.join("\n"), "1-terminal");
   // 2. The browser opens signed in, on Chat.
@@ -2292,14 +2383,34 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
     const texts = await on.locator('[data-workspace-chat] .ui-message--user[data-message-id] [data-steer-comment]').allInnerTexts();
     return (await on.locator("[data-workspace-chat] [data-message-id]").count()) > before && texts.some(text => steered.every(part => text.includes(part)));
   }, { timeoutMs: 30_000, everyMs: 500, seen: async () => (await on.locator('[data-workspace-chat] .ui-message--user[data-message-id]').allInnerTexts()).slice(-2).join(" | ").slice(0, 400) });
-  const sent = freshRows(install.db, "SELECT text FROM lead_message WHERE role = 'operator' ORDER BY id DESC LIMIT 5").map(one => String(one.text));
-  if (!sent.some(text => text.startsWith(`On ${JSON.stringify(path)}:${line}`) && text.includes(`(run #${built})`))) throw new Error(`the lead wasn't sent the file, line and run: ${sent.join(" | ").slice(0, 400)}`);
-  // The thread itself, while the lead works (its steps) and once it has answered (a code block and a card to confirm).
+  const sentRows = freshRows(install.db, "SELECT id, text FROM lead_message WHERE role = 'operator' ORDER BY id DESC LIMIT 5");
+  const comment = sentRows.find(one => String(one.text).startsWith(`On ${JSON.stringify(path)}:${line}`) && String(one.text).includes(`(run #${built})`));
+  if (comment === undefined) throw new Error(`the lead wasn't sent the file, line and run: ${sentRows.map(one => String(one.text)).join(" | ").slice(0, 400)}`);
+  // The thread itself, while the lead works (its steps) and once it has answered (its reply and a card to confirm).
   await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}`);
   await waitFor(on.locator("[data-live-reply] .so-live-steps li").first(), "the lead's steps while it answers", { timeoutMs: 30_000 });
   await bothSizes(on, "chat-thread-live");
-  await waitFor(on.locator('[data-workspace-chat] [data-message-id] pre.chat-code').first(), "the lead's reply with its code block", { timeoutMs: 60_000 });
-  await waitFor(on.locator('[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you').first(), "the card waiting on you", { timeoutMs: 30_000 });
+  // The reply is the comment's own turn, answered, recorded under that turn and shown in the thread after the comment.
+  const answered = await until("the lead's answer to the comment", async () => {
+    const turn = freshRows(install.db, `SELECT m.turn AS turn FROM lead_message m JOIN mate_turn t ON t.id = m.turn WHERE m.id = ${comment.id} AND t.state = 'answered'`)[0]?.turn;
+    return turn == null ? null : freshRows(install.db, `SELECT id FROM lead_message WHERE role = 'assistant' AND turn = ${turn} AND text <> '' ORDER BY id`).map(one => one.id);
+  }, { timeoutMs: REAL_TURN_MS, everyMs: 1000 });
+  if (answered.length === 0) throw new Error("the lead's turn for the comment ended with no reply");
+  await waitFor(on.locator(`[data-workspace-chat] [data-message-id="${answered.at(-1)}"]`), "the lead's reply in the thread", { timeoutMs: 30_000 });
+  const shown = await on.locator("[data-workspace-chat] [data-message-id]").evaluateAll(nodes => nodes.map(node => Number(node.getAttribute("data-message-id"))));
+  if (!(shown.indexOf(comment.id) >= 0 && shown.indexOf(comment.id) < shown.indexOf(answered[0]))) throw new Error(`the reply isn't shown after the comment: ${JSON.stringify({ shown, comment: comment.id, answered })}`);
+  // A scripted lead's reply carries a code block, so a scripted run sees it rendered as one (a real lead may not write one).
+  if (w.scripted) await waitFor(on.locator(answered.map(id => `[data-workspace-chat] [data-message-id="${id}"] pre.chat-code`).join(", ")).first(), "the lead's reply with its code block", { timeoutMs: 30_000 });
+  // What the lead does with the comment waits on you: a scripted lead drafts a card to confirm; a real one drafts a card
+  // (a follow-up task, or changes to the result) or asks you first, as buttons under its reply.
+  const waitsOnYou = w.scripted ? '[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you'
+    : '[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you, [data-workspace-chat] .so-owner-ask .so-owner-ask-options button';
+  await waitFor(on.locator(waitsOnYou).first(), w.scripted ? "the card waiting on you" : "the card or question waiting on you", { timeoutMs: 30_000, seen: async () => {
+    const turn = freshRows(install.db, `SELECT turn FROM lead_message WHERE id = ${comment.id}`)[0]?.turn;
+    const drafted = freshRows(install.db, `SELECT kind, state FROM lead_proposal WHERE turn = ${turn ?? 0}`);
+    const said = freshRows(install.db, `SELECT text FROM lead_message WHERE id IN (${answered.join(", ")})`).map(one => String(one.text)).join(" | ");
+    return `drafted ${JSON.stringify(drafted)}; said ${JSON.stringify(said.slice(0, 600))}`;
+  } });
   await bothSizes(on, "chat-thread");
   // On a phone the task opens as a sheet; put it away to show the thread itself.
   await on.setViewportSize({ width: 390, height: 844 });

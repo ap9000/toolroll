@@ -150,6 +150,16 @@ test("auth and changed conversation identities require explicit reconnection", a
   expect(sameConversation(fixture(), changed)).toBe(false);
   const otherRun = fixture(); otherRun.conversation!.resultRunId = 10;
   expect(sameConversation(fixture(), otherRun)).toBe(false);
+  // Quiet page visits: a page shown before its conversation existed (session 0) is the same one once its own send started
+  // it (session 7 here), but not one another tab started, not one of another task, and a started one changing again
+  // still needs reconnection.
+  const unstarted = fixture(); unstarted.conversation!.sessionId = 0;
+  expect(sameConversation(unstarted, fixture(), 7)).toBe(true);
+  expect(sameConversation(unstarted, fixture())).toBe(false);
+  expect(sameConversation(unstarted, fixture(), 8)).toBe(false);
+  const elsewhere = fixture(); elsewhere.conversation!.taskId = "task-b";
+  expect(sameConversation(unstarted, elsewhere, 7)).toBe(false);
+  expect(sameConversation(fixture(), unstarted)).toBe(false);
 });
 
 test("conditional reads preserve an unchanged view without parsing a body, and still honor auth failures", async () => {

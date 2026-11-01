@@ -87,3 +87,84 @@ test("a replaced thread stays readable above the divider; its cards have no butt
   expect(chat.querySelector("#chat-thread")!.textContent).toContain("What can you reach now?");
   expect(chat.querySelector("#chat-thread")!.textContent).not.toContain("payments");
 });
+
+test("quiet page visits: a page shown before its conversation existed adopts the one its own send started, and the next draft survives a reload there", async () => {
+  const started = (over: Partial<BrowserWorkspace> = {}) => workspace({ conversation: { ...workspace().conversation!, sessionId: 9 }, ...over });
+  let readAs: (request: string | null) => BrowserWorkspace = () => started();
+  const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === "POST") {
+      const body = new URLSearchParams(String(init.body));
+      expect(body.get("request-session")).toBe("0");
+      return new Response(JSON.stringify({ ok: true, session: 9, task: "", request: body.get("request") }), { status: 202, headers: { "content-type": "application/json" } });
+    }
+    const asked = new URL(String(input), "http://x").searchParams.get("request");
+    return new Response(JSON.stringify(readAs(asked)), { status: 200, headers: { "content-type": "application/json" } });
+  });
+  vi.stubGlobal("fetch", fetcher);
+  readAs = asked => started({ receipt: asked ? { request: asked, received: true } : null });
+  await mount(workspace({ conversation: { ...workspace().conversation!, sessionId: 0 } }));
+  const type = (value: string) => act(() => {
+    const box = document.querySelector<HTMLTextAreaElement>("#lead-message")!;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, value);
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await type("Start the release notes");
+  await act(async () => { document.querySelector<HTMLFormElement>("form[data-workspace-composer]")!.requestSubmit(); });
+  await act(async () => { await new Promise(done => setTimeout(done, 20)); });
+  // Adopted: no reconnect prompt, and the next draft is kept under the started conversation (session 9).
+  expect(document.body.textContent).not.toContain("This conversation changed or ended");
+  await type("And the changelog");
+  const keys = Object.keys(sessionStorage).filter(one => one.startsWith("standing-orders:workspace-draft:"));
+  expect(keys.some(key => JSON.parse(sessionStorage.getItem(key)!).session === 9 && sessionStorage.getItem(key)!.includes("And the changelog"))).toBe(true);
+  // Nothing stays behind under session 0: a reload of a page with no conversation never resurrects the sent message.
+  expect(keys.filter(key => JSON.parse(sessionStorage.getItem(key)!).session === 0)).toEqual([]);
+});
+
+test("quiet page visits: a refresh begun before the first send, landing while it is on its way, does not disconnect the page", async () => {
+  let acknowledge!: () => void, release!: () => void, posted = false;
+  const started = workspace({ conversation: { ...workspace().conversation!, sessionId: 9 } });
+  const unstarted = workspace({ conversation: { ...workspace().conversation!, sessionId: 0 } });
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === "POST") {
+      posted = true;
+      const request = new URLSearchParams(String(init.body)).get("request");
+      await new Promise<void>(done => { acknowledge = done; });
+      return new Response(JSON.stringify({ ok: true, session: 9, task: "", request }), { status: 202, headers: { "content-type": "application/json" } });
+    }
+    const asked = new URL(String(input), "http://x").searchParams.get("request");
+    // The first read is held until after the send went out; it then shows the started conversation with no receipt.
+    if (!posted) await new Promise<void>(done => { release = done; });
+    return new Response(JSON.stringify(posted ? { ...started, receipt: asked ? { request: asked, received: true } : null } : unstarted), { status: 200, headers: { "content-type": "application/json" } });
+  }));
+  await mount(unstarted);
+  await act(async () => { window.dispatchEvent(new Event("online")); await new Promise(done => setTimeout(done, 5)); });
+  await act(() => {
+    const box = document.querySelector<HTMLTextAreaElement>("#lead-message")!;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "Start it");
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => { document.querySelector<HTMLFormElement>("form[data-workspace-composer]")!.requestSubmit(); await new Promise(done => setTimeout(done, 5)); });
+  posted = true;
+  const reconnecting = () => [...document.querySelectorAll("button")].some(one => one.textContent === "Reconnect");
+  await act(async () => { release(); await new Promise(done => setTimeout(done, 20)); });
+  expect(reconnecting()).toBe(false);
+  await act(async () => { acknowledge(); await new Promise(done => setTimeout(done, 40)); });
+  expect(reconnecting()).toBe(false);
+  expect(document.body.textContent).not.toContain("Delivery is not confirmed");
+});
+
+test("quiet page visits: a conversation another tab started is not adopted without this page's own acknowledgement or receipt", async () => {
+  // The send's answer never arrives (lost acknowledgement); the read finds a conversation holding no receipt of it.
+  vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "POST"
+    ? Promise.reject(new Error("lost"))
+    : new Response(JSON.stringify(workspace({ conversation: { ...workspace().conversation!, sessionId: 12 }, receipt: null })), { status: 200, headers: { "content-type": "application/json" } })));
+  await mount(workspace({ conversation: { ...workspace().conversation!, sessionId: 0 } }));
+  await act(() => {
+    const box = document.querySelector<HTMLTextAreaElement>("#lead-message")!;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "Start it");
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => { document.querySelector<HTMLFormElement>("form[data-workspace-composer]")!.requestSubmit(); });
+  await act(async () => { await new Promise(done => setTimeout(done, 20)); });
+  expect(document.body.textContent).toContain("This conversation changed or ended");
+});

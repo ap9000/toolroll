@@ -88,6 +88,8 @@ describe("the machine envelope", () => {
     // hits first, not only on the happy one.
     const operateTable: Record<string, string[]> = {
       sync: ["--json"],
+      // evals without an action is the usage road: nothing is admitted or spent.
+      evals: ["--json"],
       // The usage road terminates without binding a port or minting anything.
       up: ["--for", "not-a-number", "--json"],
       onboard: ["--agent", "nope", "--json"],

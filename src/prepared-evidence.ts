@@ -1,5 +1,5 @@
 /** Committed image inventory, never claimed checks, completion, or approval. */
-import { execFileSync } from 'node:child_process';
+import { noLazyFetch, viewedGitSync } from './teardown-git.js';
 import { createHash } from 'node:crypto';
 import { lstatSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -7,7 +7,8 @@ import { imageDimensions, looksLikeProtocolFile, readMailbox, SCREENSHOT_BYTE_CA
 import { parseProof, PROOF_LIMITS, SCREENSHOT_EVIDENCE_MIN_BYTES, SCREENSHOT_EVIDENCE_MIN_HEIGHT, SCREENSHOT_EVIDENCE_MIN_WIDTH, serializeProof, type ParsedProof } from './proof.js';
 
 export const PREPARED_EVIDENCE_FILE = 'standing-orders.evidence.json';
-export const PREPARED_EVIDENCE_GIT = ['--literal-pathspecs', '--no-lazy-fetch', '--no-replace-objects', '--no-optional-locks'] as const;
+/** Read flags: --no-lazy-fetch where git has it; a partial clone is refused where it doesn't (teardown-git.ts). */
+export const preparedEvidenceGit = (): string[] => ['--literal-pathspecs', ...noLazyFetch(), '-c', 'protocol.allow=never', '--no-replace-objects', '--no-optional-locks'];
 const nextAction = 'Ask Codex to prepare review screenshots and commit them with standing-orders.evidence.json, then review the new result.';
 const fail = (detail: string): never => { throw Error(`Review screenshots are not ready. ${nextAction} ${detail}`); };
 const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -17,8 +18,12 @@ export type PreparedEvidence = { proof: ParsedProof; files: { path: string; sha2
 export function readPreparedEvidence(repo: string, candidate: string, required = false): PreparedEvidence | null {
   if (!/^[a-f0-9]{40}$/.test(candidate)) fail('The saved commit is invalid.');
   const git = (args: string[], cap: number): Buffer => {
-    try { return execFileSync('git', [...PREPARED_EVIDENCE_GIT, '-C', repo, ...args], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000, maxBuffer: cap }); }
-    catch { return fail('The committed screenshot inventory could not be read.'); }
+    try {
+      // Every git version through a frozen read view, bounded (eval-harness review 1, finding 7).
+      const ran = viewedGitSync(repo, [...preparedEvidenceGit(), ...args], { timeoutMs: 10_000, maxBuffer: cap, buffer: true });
+      if (ran.status !== 0) throw new Error('git failed');
+      return ran.stdout;
+    } catch { return fail('The committed screenshot inventory could not be read.'); }
   };
   const blob = (path: string, cap: number): Buffer | null => {
     const entries = git(['ls-tree', '-z', '-l', candidate, '--', path], 2048).toString('utf8').split('\0').filter(Boolean);

@@ -22,10 +22,11 @@ import { unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { run } from "./exec.js";
+import { checkoutGit } from "./teardown-git.js";
 import { auditOf, isProviderId } from "./provider.js";
 import type { Store } from "./store.js";
 import { currentClaim, heartbeat } from "./claim.js";
-import { heartbeat as runnerHeartbeat } from "./runner.js";
+import { heartbeat as runnerHeartbeat, RUNNER_HEARTBEAT_MS } from "./runner.js";
 import { parseDecision, type ParsedDecision, type Problem } from "./decision.js";
 import { parsePlan, type ParsedPlan, type PlanProblem } from "./plan.js";
 import { PLAN_MODEL_SCHEMA } from "./contracts/plan.js";
@@ -68,7 +69,7 @@ const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
 const DEFAULT_PLAN_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_PLAN_TURNS = CLAUDE_LIMITS.maxTurns;
-const DEFAULT_PULSE_MS = 60_000;
+const DEFAULT_PULSE_MS = RUNNER_HEARTBEAT_MS;
 
 export type PlanRequest = {
   /** v105: what's left of a monthly budget this API-key work counts toward (the CLI's own cap), when one does. */
@@ -672,10 +673,13 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
     branch,
     now,
     agent,
-    git = run,
+    git: givenGit = run,
     timeoutMs = DEFAULT_PLAN_TIMEOUT_MS,
     maxTurns = DEFAULT_PLAN_TURNS,
   } = request;
+  // The plane's git on the plan's checkout (agent-written, and its repository shared with every build) runs hardened, against
+  // a frozen view of the repository's config and info (teardown-git.ts checkoutGit); an injected runner is used as given.
+  const git = givenGit === run ? checkoutGit(run, "build", { repo: store.getWorktree(worktree)?.repo ?? null }) : givenGit;
   // An ACP agent works with full access inside the fence: it builds and repairs, and is never handed a plan (routing refuses it first).
   if (request.provider !== undefined && isAcpProvider(request.provider)) {
     return { ok: false, kind: "failure", reason: "provider-unsupported", message: `${ACP_AGENTS[request.provider].name} builds and repairs only — configure the planner to claude, codex or gemini` };
@@ -773,7 +777,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
 
   // The live window (peek): the same transcript file the builder keeps,
   // so `toolroll peek` and the run page can watch this session too.
-  const liveLog = withRunActivity(openLiveLog(root, request.runId, liveLogContext(store, taskRef, worktree)), store, request.runId, clock);
+  const liveLog = withRunActivity(openLiveLog(root, request.runId, liveLogContext(store, request.runId, taskRef, worktree, clock())), store, request.runId, clock);
   // The durable run row, not a caller's duplicate options, is the route
   // every correction inherits.
   const provider = logicalRun.provider;

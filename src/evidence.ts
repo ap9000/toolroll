@@ -43,6 +43,7 @@ export type { HandoffArtifact } from "./contracts/handoff.js";
 import type { Artifact, Store } from "./store.js";
 import type { ExecResult } from "./exec.js";
 import { encodeBaseTreeSnapshot, parseBaseTreeSnapshot, type BaseTreeEntry } from "./peek.js";
+import { noLazyFetch } from "./teardown-git.js";
 
 /** The park mailbox pattern. Each run's actual name carries a nonce; see `mailboxName`. */
 export const MAILBOX_PREFIX = "STANDING-ORDERS-PARK-";
@@ -139,6 +140,19 @@ export const EVIDENCE_CAPS: Record<Artifact["kind"], number> = {
   // to hold the JSON-escaped form of that bounded content plus provenance.
   "review-context": 200 * 1024 * 1024,
 };
+
+/**
+ * The bound a writer may seal a kind at with storeEvidence's `cap`, above its default: a release check's sealed report and
+ * inventory (check-report.ts CHECK_ARTIFACT_CAP, 256 KiB). Readers accept exactly what writers may seal: 0.9.77 sealed
+ * reports up to 256 KiB but read structured output back only to 64 KiB, so every full report over that (~85 KiB for a
+ * 585-file suite) read as "no longer verifies" and the release's check as unavailable.
+ */
+export const SEALED_EVIDENCE_CAPS: Partial<Record<Artifact["kind"], number>> = { "structured-output": 256 * 1024 };
+
+/** The most a stored artifact of this kind may hold: its default cap, or the larger bound a sealed payload may use. */
+export function evidenceReadCap(kind: Artifact["kind"]): number {
+  return Math.max(EVIDENCE_CAPS[kind], SEALED_EVIDENCE_CAPS[kind] ?? 0);
+}
 
 export function evidenceRoot(home: string): string {
   // Same continuity rule as the database: evidence recorded under an older
@@ -455,9 +469,11 @@ export function storeEvidence(
   content: Buffer,
   capture: string,
   now: Date,
-  options: { redacted?: boolean; captureStatus?: "ok" | "failed"; sourceBytesOriginal?: number } = {},
+  options: { redacted?: boolean; captureStatus?: "ok" | "failed"; sourceBytesOriginal?: number; cap?: number } = {},
 ): number {
-  const cap = EVIDENCE_CAPS[kind];
+  // `cap`: a sealed structured payload with its own documented bound (a release check's report: 256 KiB), never above what
+  // a reader of this kind accepts (evidenceReadCap): a record written larger would never verify again.
+  const cap = options.cap === undefined ? EVIDENCE_CAPS[kind] : Math.min(options.cap, evidenceReadCap(kind));
   const stored = content.subarray(0, cap);
   // Some callers that deliberately summarize/bound a source before storage
   // may still report its true original size. This keeps `truncated` honest
@@ -545,7 +561,7 @@ function withArtifactFile<T extends { ok: boolean }>(
     );
   if (!wellFormed) return { ok: false, problem: "the key is not a normalized relative path" };
 
-  const cap = EVIDENCE_CAPS[artifact.kind];
+  const cap = evidenceReadCap(artifact.kind);
   if (artifact.bytesStored > cap) {
     return { ok: false, problem: "the record claims more bytes than its kind may store" };
   }
@@ -1068,7 +1084,9 @@ async function captureBaseTreeInner(
   runId: number,
   now: Date,
 ): Promise<{ ok: boolean }> {
-  const args = ["--no-lazy-fetch", "--no-replace-objects", "--no-optional-locks", "ls-tree", "-r", "-l", "-z", base];
+  const args = [...noLazyFetch(), "-c", "protocol.allow=never", "--no-replace-objects", "--no-optional-locks", "ls-tree", "-r", "-l", "-z", base];
+  // `git` is the builder's hardened checkout git (a frozen view): on a git without --no-lazy-fetch it refuses a partial
+  // clone from the same config it runs with (teardown-git.ts lazyFetchSetting).
   const listed = await git("git", args, { cwd: repoRoot, envAllowlist: ["PATH", "HOME"] });
   const command = `git ls-tree -r -l -z ${base} (exit ${listed.code})`;
   const refuse = (): { ok: false } => {

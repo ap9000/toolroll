@@ -80,10 +80,14 @@ export function cardReference(source: SourceLike | null | undefined): string {
 export type TaskOrigin = {
   flow: { name: string; href: string } | "hidden" | "removed" | null;
   source: { label: string; proved: string; url: string | null; host: string | null } | null;
+  /** A youiyoux change or options request (youiyoux-intake.ts): its id, its kind, and where the person pointed. */
+  request?: { id: string; kind: "change" | "options"; route: string | null; component: string | null; at: string | null } | null;
 };
 
-/** A task's origin, or null when it came from neither a flow nor an outside event. */
+/** A task's origin, or null when it came from neither a flow, an outside event nor a youiyoux request. */
 export function originOf(store: Store, taskId: string, canSee: (repo: string) => boolean): TaskOrigin | null {
+  const request = store.youiyouxOriginOf(taskId);
+  if (request !== null) return { flow: null, source: null, request: { id: request.request, kind: request.kind, route: request.route, component: request.component, at: request.at } };
   const kept = store.taskSourceOf(taskId);
   const flowId = kept?.flow ?? Number(/^flow:(\d+)$/.exec(store.filedViaOf(taskId) ?? "")?.[1] ?? NaN);
   const snapshot = kept === null ? null : readSnapshot(kept.sourceJson);
@@ -95,8 +99,23 @@ export function originOf(store: Store, taskId: string, canSee: (repo: string) =>
   };
 }
 
+/** A youiyoux request by its kind: "youiyoux change request r-…" or "youiyoux options request r-…". */
+export function requestName(request: NonNullable<TaskOrigin["request"]>): string {
+  return `youiyoux ${request.kind === "options" ? "options" : "change"} request ${request.id}`;
+}
+
+/** Where a youiyoux request pointed, in words: "Button on /flows (src/button.tsx:12)". */
+export function requestWords(request: NonNullable<TaskOrigin["request"]>): string {
+  const what = [request.component, request.route === null ? null : `on ${request.route}`].filter(one => one !== null).join(" ");
+  return `${what === "" ? "" : what}${request.at === null ? "" : `${what === "" ? "" : " "}(${request.at})`}`;
+}
+
 /** The one line an approval shows about an outside event that started its work: context, never a term agreed to. */
 export function originNote(origin: TaskOrigin | null | undefined): string | null {
+  if (origin?.request != null) {
+    const where = requestWords(origin.request);
+    return `From ${requestName(origin.request)}${where === "" ? "" : `: ${where}`}. Whoever can write the project's folder wrote these words; read them all before you approve.`;
+  }
   if (origin?.source == null) return null;
   const where = origin.source.host === null ? "" : ` · ${origin.source.host}`;
   return `Started by an outside event: ${origin.source.label} (${origin.source.proved})${where}. The agent reads what it sent as data, not instructions.`;

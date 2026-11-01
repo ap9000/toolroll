@@ -27,6 +27,7 @@
  * touches the store; the builder's dispatcher records what happened.
  */
 import { randomUUID } from "node:crypto";
+import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
 
 /** The child's stdin, as the transport hands it over. */
 export type LiveInputIo = { write(line: string): void; end(): void };
@@ -58,12 +59,6 @@ export const userFrame = (text: string, uuid: string): string =>
 export const interruptFrame = (requestId: string, cancelQueued = false): string =>
   JSON.stringify({ type: "control_request", request_id: requestId, request: { subtype: "interrupt", ...(cancelQueued ? { cancel_queued: true } : {}) } });
 
-/** The session's own words count; a subagent's (parent_tool_use_id set) or a background task's never do. */
-const topLevel = (event: Record<string, unknown>): boolean => event["parent_tool_use_id"] === undefined || event["parent_tool_use_id"] === null;
-const primaryResult = (event: Record<string, unknown>): boolean => {
-  const origin = event["origin"];
-  return origin === undefined || origin === null || (typeof origin === "object" && String((origin as Record<string, unknown>)["kind"] ?? "") === "human");
-};
 
 export class LiveInput {
   readonly maxTurns: number;
@@ -172,8 +167,11 @@ export class LiveInput {
 
   /** Every parsed stdout event, in order. */
   observe(event: Record<string, unknown>): void {
+    // A subagent's events (parent_tool_use_id set) are never the session's: not its words, its control answers or its
+    // result (stream-scope.ts).
+    if (!topLevelEvent(event)) return;
     const type = String(event["type"] ?? "");
-    if (type === "assistant" && topLevel(event)) {
+    if (type === "assistant") {
       this.#turnActive = true;
       const message = event["message"] as Record<string, unknown> | undefined;
       const id = typeof message?.["id"] === "string" ? message["id"] : `turn-${this.#turns.size + 1}`;
@@ -189,7 +187,7 @@ export class LiveInput {
       const response = event["response"] as Record<string, unknown> | undefined;
       const requestId = typeof response?.["request_id"] === "string" ? response["request_id"] : null;
       if (requestId !== null && this.#interrupts.has(requestId) && response?.["subtype"] === "success" && this.#paused) this.#notifyPaused();
-    } else if (type === "result" && primaryResult(event)) {
+    } else if (type === "result" && primaryResultEvent(event)) {
       this.#turnActive = false;
       this.#interrupts.clear();
       if (this.#paused) {

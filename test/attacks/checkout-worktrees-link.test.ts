@@ -7,8 +7,8 @@
 import { mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { codexFenceArgv, linuxFenced } from "../../src/agent-fence.js";
-import { codexSandbox, expectNoMarker, lines, marker, needs, plane, q, seatbelt, underCodex, underSeatbelt, useScratch, write } from "./harness.js";
+import { codexFenceArgv, srtTermsOf } from "../../src/agent-fence.js";
+import { codexSandbox, expectNoMarker, lines, marker, needs, osFence, plane, q, underCodex, underSandbox, useScratch, write } from "./harness.js";
 
 describe("attack: a .git/worktrees symlink or planted entry becoming a grant", () => {
   const scratch = useScratch("wtlink");
@@ -52,16 +52,16 @@ describe("attack: a .git/worktrees symlink or planted entry becoming a grant", (
     const table = codexFenceArgv(fence, false, grants).find(arg => arg.startsWith("permissions.standing-orders.filesystem="))!;
     expect(table).toContain(`${q(join(at.home, ".toolroll"))}="deny"`);
     expect(table).not.toContain("tool-secrets");
-    const bwrap = linuxFenced("claude", [], fence, grants).args;
-    expect(bwrap[bwrap.indexOf(join(at.home, ".toolroll")) - 1]).toBe("--tmpfs");
-    expect(bwrap.join(" ")).not.toContain("tool-secrets");
+    const terms = srtTermsOf(fence, grants);
+    expect(terms.readConfig.denyOnly).toContain(join(at.home, ".toolroll"));
+    expect(JSON.stringify(terms)).not.toContain("tool-secrets");
   });
 
-  test("native Seatbelt: the planted link's target stays unreadable; genuine sibling metadata is read but not written", ctx => {
-    needs(ctx, seatbelt());
+  test("native: the planted link's target stays unreadable; genuine sibling metadata is read but not written", ctx => {
+    needs(ctx, osFence());
     const { secret, at, secrets, genuine } = setup();
     const { fence, grants } = at.launch("claude");
-    const result = underSeatbelt(probe(secrets, genuine[0]!, true), fence, grants, { cwd: at.active });
+    const result = underSandbox(probe(secrets, genuine[0]!, true), fence, grants, { cwd: at.active });
     expectNoMarker(result, secret);
     expect(lines(result), result.stderr).toEqual(HELD);
   });

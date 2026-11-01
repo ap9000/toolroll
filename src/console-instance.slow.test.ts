@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { spawn } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { agentFence, codexFenceArgv, macosFenceAvailable, macosFenced } from "./agent-fence.js";
+import { agentFence, codexFenceArgv, macosFenceAvailable, sandboxedSpawn } from "./agent-fence.js";
 import { claimInstance, instanceRunDir, openInstanceSocket, readInstance, runDirProblem } from "./console-instance.js";
 import { openStore, type Store } from "./store.js";
 import { shortTempDir } from "../test/short-temp.js";
@@ -95,10 +95,10 @@ describe.skipIf(!macosFenceAvailable())("a fenced build and the console's socket
     const worktree = join(dir, "wt"), home = join(dir, "home");
     mkdirSync(worktree); mkdirSync(home);
     const fence = agentFence({ databaseFile, worktree, home });
-    const { file, args } = macosFenced(process.execPath, ["-e", PROBE, databaseFile, socketPath], fence);
+    const { file, args, env } = sandboxedSpawn(process.execPath, ["-e", PROBE, databaseFile, socketPath], fence, undefined, worktree);
     // The socket answers on this process's event loop, so the fenced child runs asynchronously beside it.
     const result = await new Promise<{ stdout: string; status: number | null }>(resolve => {
-      const child = spawn(file, args, { cwd: worktree, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(file, args, { cwd: worktree, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
       let stdout = "";
       child.stdout.on("data", chunk => { stdout += String(chunk); });
       child.on("close", status => resolve({ stdout, status }));

@@ -463,6 +463,9 @@ describe("repos recorded remote", () => {
       }
       expect(await invoke(["repos", "add", repo, "--remote", "file:///tmp/evil.git", "--json"])).not.toBe(0);
       expect(await invoke(["repos", "add", repo, "--remote", "https://evil.example/shop.git", "--token", "lt_invalid", "--json"])).toBe(3);
+      // A lead token starting with "--" is the token (a wrong one here, so refused as auth), never a usage error; so is --token=.
+      expect(await invoke(["repos", "add", repo, "--remote", "https://evil.example/shop.git", "--token", "--lt_invalid", "--json"])).toBe(3);
+      expect(await invoke(["repos", "add", repo, "--remote", "https://evil.example/shop.git", "--token=--lt_invalid", "--json"])).toBe(3);
       const store = openStore(process.env["TOOLROLL_DB"]!);
       try {
         expect(store.projectRemote(store.listProjects()[0]!.path)).toBe(trusted);

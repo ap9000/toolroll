@@ -1253,11 +1253,12 @@ export function makeDemoRepos(root: string): { api: string; web: string } {
       writeFileSync(join(dir, file), content);
     }
     try {
-      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir, stdio: "ignore" });
-      execFileSync("git", ["add", "-A"], { cwd: dir, stdio: "ignore" });
+      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir, stdio: "ignore", timeout: 30_000 });
+      execFileSync("git", ["add", "-A"], { cwd: dir, stdio: "ignore", timeout: 30_000 });
       execFileSync("git", ["-c", "user.email=demo@localhost", "-c", "user.name=demo", "commit", "-q", "-m", "seed"], {
         cwd: dir,
         stdio: "ignore",
+        timeout: 30_000,
       });
     } catch {
       // No git on PATH: a plain directory still serves the demo.
@@ -1789,7 +1790,7 @@ export function createDemoLead(input: {
     for (const beat of [1, 2, 3, 4]) {
       const timer = setTimeout(() => {
         timers.delete(timer);
-        try { advance(clock()); } catch { /* the next read advances it again */ }
+        try { advance(clock()); } catch { /* the next beat or background pass advances it again */ }
       }, beat * stepMs + 20);
       timer.unref();
       timers.add(timer);
@@ -1798,8 +1799,10 @@ export function createDemoLead(input: {
   };
 
   return {
-    exchanges: () => { advance(clock()); return list; },
-    version: () => { advance(clock()); return changes; },
+    // Reads only (docs/plans/get-side-effects.md): the beat timers, the console's background pass and the person's own
+    // acts move the story on, never a page visit.
+    exchanges: () => list,
+    version: () => changes,
     ask(text, now) {
       advance(now);
       const asked = said(text);

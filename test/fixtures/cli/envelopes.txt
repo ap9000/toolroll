@@ -375,7 +375,17 @@ $ contract --commands --json → 0
         {
           "name": "yes",
           "takesValue": false,
-          "meaning": "with --release-gate: lift that one pause once it is proved"
+          "meaning": "with --release-gate: lift that one pause once it is proved; with --recover-deploy: recover"
+        },
+        {
+          "name": "recover-deploy",
+          "takesValue": false,
+          "meaning": "put back a deployment that stopped half way: stop only its own proved leftovers, restart the previous service, lift the pause"
+        },
+        {
+          "name": "stage",
+          "takesValue": true,
+          "meaning": "with --recover-deploy: the deployment's staging folder"
         }
       ],
       "notableReasons": [
@@ -5229,6 +5239,10 @@ $ task show t-readme --json → 0
     "approved": false,
     "reason": "never-proposed"
   },
+  "personApproval": {
+    "ok": false,
+    "why": "not approved yet"
+  },
   "route": {
     "kind": "unreadable",
     "source": null,
@@ -5526,6 +5540,26 @@ $ integrations --saved --json → 0
       }
     },
     {
+      "key": "youiyoux",
+      "group": "code",
+      "name": "youiyoux",
+      "usedBy": [],
+      "account": null,
+      "detail": "Starts by itself in a project with a youi.project.json",
+      "checked": true,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "not-set-up",
+      "action": {
+        "kind": "setup",
+        "label": "Set up",
+        "href": null,
+        "command": null
+      }
+    },
+    {
       "key": "email",
       "group": "mail",
       "name": "Email",
@@ -5628,7 +5662,7 @@ $ integrations --saved --json → 0
   ],
   "counts": {
     "connected": 3,
-    "not-set-up": 8,
+    "not-set-up": 9,
     "broken": 0
   },
   "secrets": {

@@ -1,7 +1,8 @@
 /**
- * Check access in the real fence (check-access.ts, invoke.ts): at `sign-ins` a check reads exactly Claude's and gh's
- * sign-in files and a private copy of Codex's, writes only its own Claude transcript folder, and nothing else of the
- * home configuration; at `sandboxed` none of it; at `unsandboxed` it runs with no OS fence at all.
+ * Check access in the real fence (check-access.ts, invoke.ts), under an approval sealed before 0.9.70 (fence policy v1,
+ * the home configuration denied): at `sign-ins` a check reads exactly Claude's, gh's and Codex's sign-in files itself,
+ * through its sandbox, writes only its own Claude transcript folder and Codex's session folders, and nothing else of
+ * the home configuration; at `sandboxed` none of it; at `unsandboxed` it runs with no OS fence at all.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -15,10 +16,8 @@ import { openStore, type Store } from "./store.js";
 import { outsideTempDir } from "../test/short-temp.js";
 
 const FENCED = macosFenceAvailable() || linuxFenceAvailable();
-/** Sign-ins are off for now (check-access.ts signInsAvailable): a sign-ins check runs nothing. The grant tests below
- * stay for when a race-free reader turns them back on. */
+/** Sign-ins are on where the OS fence is (check-access.ts signInsAvailable, sandbox parity C10). */
 const SIGN_INS = signInsAvailable();
-const REFUSAL = /Sign-ins can't be shared with checks yet, so nothing ran\./;
 /** A sign-ins check's network, as its caller proves it: here, its registries only (none for this project). */
 const NOWHERE = { version: 1 as const, mode: "allowlist" as const, hosts: [], loopback: "proxy-only" as const };
 let dir: string, home: string, repo: string, checkout: string, store: Store;
@@ -65,7 +64,7 @@ const probe = () => [
   reads("other-transcript", join(home, ".claude", "projects", "-some-other-project", "s.jsonl")),
   reads("gh-hosts", join(home, ".config", "gh", "hosts.yml")),
   reads("codex-direct", join(home, ".codex", "auth.json")),
-  `cat "$CODEX_HOME/auth.json" >/dev/null 2>&1 && test "$CODEX_HOME" != ${JSON.stringify(join(home, ".codex"))} && echo codex-own-copy || echo codex-none`,
+  `cat "$CODEX_HOME/auth.json" >/dev/null 2>&1 && test "$CODEX_HOME" = ${JSON.stringify(join(home, ".codex"))} && echo codex-home || echo codex-none`,
   reads("ssh", join(home, ".ssh", "id_test")),
   reads("aws", join(home, ".aws", "credentials")),
   `touch ${JSON.stringify(join(claudeProjectFolder(home, checkout).path, "t.jsonl"))} 2>/dev/null && echo transcript-written || echo transcript-refused`,
@@ -76,28 +75,41 @@ const probe = () => [
 ].join("\n");
 
 describe.skipIf(!FENCED)("check access in the fence", () => {
-  test.skipIf(!SIGN_INS)("sign-ins: exactly the sign-in files, a private Codex home and its own transcript folder; nothing else", async () => {
+  test.skipIf(!SIGN_INS)("sign-ins: exactly the sign-in files (Codex's in its real home); nothing else", async () => {
     const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins", NOWHERE)("/bin/sh", ["-c", probe()], { cwd: checkout, env: { GH_CONFIG_DIR: join(home, ".ssh") } });
     expect(result.stdout.trim().split("\n"), result.stderr).toEqual([
       "claude-account-read", "claude-settings-read", "claude-history-refused", "other-transcript-refused", "gh-hosts-read",
-      "codex-direct-refused", "codex-own-copy", "ssh-refused", "aws-refused",
-      ...(process.platform === "darwin" ? ["transcript-written"] : ["transcript-refused"]), "memory-refused", "other-refused",
+      "codex-direct-read", "codex-home", "ssh-refused", "aws-refused",
+      // Under policy v1 (this check's: no approval sealed v2) the home configuration stays unwritten whole: the sandbox
+      // runtime can't write back inside a write deny, so not even its own transcript is written.
+      "transcript-refused",
+      // On Linux a write under a read-denied folder lands in the sandbox's own empty folder over it, never the real
+      // one (checked below).
+      ...(process.platform === "darwin" ? ["memory-refused", "other-refused"] : ["memory-written", "other-written"]),
       // A caller's GH_CONFIG_DIR never points the check (or its grant) elsewhere.
       `gh=${join(home, ".config", "gh")}`,
     ]);
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(claudeProjectFolder(home, checkout).path, "memory", "x.md"))).toBe(false);
+    expect(existsSync(join(claudeProjectFolder(home, checkout).path, "CLAUDE.md"))).toBe(false);
   });
 
   test("sandboxed: none of the home configuration", async () => {
     const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sandboxed")("/bin/sh", ["-c", probe()], { cwd: checkout });
     expect(result.stdout.trim().split("\n").slice(0, 12), result.stderr).toEqual([
       "claude-account-refused", "claude-settings-refused", "claude-history-refused", "other-transcript-refused", "gh-hosts-refused",
-      "codex-direct-refused", "codex-none", "ssh-refused", "aws-refused", "transcript-refused", "memory-refused", "other-refused",
+      "codex-direct-refused", "codex-none", "ssh-refused", "aws-refused", "transcript-refused",
+      // On Linux, writes under a masked folder land in the mask (the sandbox's own empty folder), never the real one.
+      ...(process.platform === "darwin" ? ["memory-refused", "other-refused"] : ["memory-written", "other-written"]),
     ]);
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(claudeProjectFolder(home, checkout).path, "CLAUDE.md"))).toBe(false);
   });
 
-  test.skipIf(!SIGN_INS)("sign-ins: a sign-in file that is a link is never granted", async () => {
+  test.skipIf(!SIGN_INS)("sign-ins: a sign-in file that is a link leads, inside the sandbox, only where the fence allows (positive control: unsandboxed it follows)", async () => {
     rmSync(join(home, ".config", "gh", "hosts.yml"));
     symlinkSync(join(home, ".ssh", "id_test"), join(home, ".config", "gh", "hosts.yml"));
+    expect(execFileSync("cat", [join(home, ".config", "gh", "hosts.yml")], { encoding: "utf8" })).toBe("ssh-key\n");
     const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins", NOWHERE)("/bin/sh", ["-c", [
       reads("gh-hosts", join(home, ".config", "gh", "hosts.yml")), reads("ssh", join(home, ".ssh", "id_test")),
     ].join("\n")], { cwd: checkout });
@@ -143,56 +155,12 @@ describe.skipIf(!FENCED || process.platform !== "darwin")("a check's short launc
   });
 });
 
-describe.skipIf(!FENCED || SIGN_INS)("sign-ins off: a sign-ins check runs nothing, in the real fence", () => {
-  test("no sign-in file is read, copied or granted: the command never starts", async () => {
-    const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins", NOWHERE)("/bin/sh", ["-c", probe()], { cwd: checkout });
-    expect(result.stdout).toBe("");
-    expect(result.code).toBe(1);
-    expect(result.stderr).toMatch(REFUSAL);
-    // The fence may make the (owner-only) copies folder; nothing was copied into it.
-    const copies = join(dir, "toolroll", "sign-in-copies");
-    expect(readdirSync(join(dir, "toolroll")).includes("sign-in-copies") ? readdirSync(copies) : []).toEqual([]);
-  });
-});
-
 describe.skipIf(!FENCED)("a sign-ins check with no network proved for it", () => {
   test("runs nothing", async () => {
     const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins")("/bin/sh", ["-c", "echo ran"], { cwd: checkout });
     expect(result.stdout).toBe("");
     expect(result.stderr).toMatch(/no network sealed for it/);
   });
-});
-
-describe.skipIf(!FENCED)("the sign-in copies folder (Linux checks' copies, fenced from everything)", () => {
-  test("in a state folder that isn't Toolroll's own, another build's fence and a check at each level can't read a sibling copy", async () => {
-    const { agentFence, macosFenceProfile, NO_GRANTS, SIGN_IN_COPIES_DIR } = await import("./agent-fence.js");
-    const { spawnSync } = await import("node:child_process");
-    const plain = join(dir, "plain-state");
-    mkdirSync(plain);
-    const other = openStore(join(plain, "orders.db"));
-    try {
-      // Building a fence makes the folder (owner-only) and fences it by name.
-      const fence = agentFence({ databaseFile: join(plain, "orders.db"), worktree: checkout, home });
-      const copies = join(realpathSync(plain), SIGN_IN_COPIES_DIR);
-      expect(fence).toContain(copies);
-      const sibling = join(copies, "c-999999-other");
-      mkdirSync(sibling);
-      writeFileSync(join(sibling, "0"), "token");
-      if (process.platform === "darwin") {
-        const ran = spawnSync("/usr/bin/sandbox-exec", ["-p", macosFenceProfile(fence, NO_GRANTS), "/bin/sh", "-c", reads("copy", join(sibling, "0"))], { encoding: "utf8" });
-        expect(ran.stdout.trim(), ran.stderr).toBe("copy-refused");
-      }
-      for (const level of ["sandboxed", "sign-ins"] as const) {
-        const result = await fencedCheckoutCommands(other, repo, checkout, run, undefined, level, NOWHERE)("/bin/sh", ["-c", reads("copy", join(sibling, "0"))], { cwd: checkout });
-        if (level === "sign-ins" && !SIGN_INS) { expect(result.stdout, result.stderr).toBe(""); expect(result.stderr).toMatch(REFUSAL); continue; }
-        expect(result.stdout.trim(), `${level}: ${result.stderr}`).toBe("copy-refused");
-      }
-    } finally { other.close(); }
-  });
-
-  // No sweep (Codex review): walking a folder a build might swap is the greater risk; a copy a launch that died left
-  // behind stays in this fenced, private folder (check-access-fence.test.ts: a linked root is never touched).
-
 });
 
 describe.skipIf(!FENCED || process.platform !== "darwin")("the home configuration by name, in the real macOS fence", () => {

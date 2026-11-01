@@ -62,8 +62,9 @@ describe("the built-in lead reads crew updates through the assignment inbox", ()
     store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "Seen.", activity: "" } }, now);
     return { ok: true, turn: opened.id, reply: "Seen.", activity: "", proposals: 0, steps: 1, stoppedAtCap: false, settledMicrousd: 0 };
   };
-  const pass = (now: Date) => runLeadFollowPass({ store, repos: () => [repo], evidenceRoot: root, clock: () => now,
-    provider: () => ({ config: {} as ChatConfig, key: null }), runTurn });
+  // The worker keeps beating while the lead follows (a one-minute liveness window): no update is about it going quiet.
+  const pass = (now: Date) => { store.touchRunner("builder-1", now); return runLeadFollowPass({ store, repos: () => [repo], evidenceRoot: root, clock: () => now,
+    provider: () => ({ config: {} as ChatConfig, key: null }), runTurn }); };
   const followEvents = () => store.handle.prepare("SELECT task_id, json_extract(outcome, '$.assignment.state') AS state FROM action_ledger WHERE action = ? AND actor LIKE 'follow:%' ORDER BY id")
     .all(ASSIGNMENT_STATUS_ACTION).map(row => [row["task_id"], row["state"]]);
   const privateBatches = () => store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action LIKE 'lead batch:%' OR action LIKE 'lead update:%' OR action LIKE 'lead observed:%'").get()!["n"];

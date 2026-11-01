@@ -18,6 +18,7 @@ import { answerSubagentQuestion } from "./subagent-work.js";
 import { grantTool, setToolRules } from "./subagent-tools.js";
 import { requestUndo, runRequestedUndos, sendSubagentWeeklies, undoCall, undoFor, weekOf } from "./subagent-week.js";
 import { claudeTurnRunner, SUBAGENT_TEMPLATES, type TurnRequest, type TurnRunner } from "./subagents.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
 
 const T0 = new Date("2026-09-23T10:00:00.000Z"); // a Wednesday
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -29,6 +30,8 @@ beforeEach(async () => {
   calls = join(dir, "calls.log");
   store = openStore(join(dir, "orders.db"));
   if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
+  // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+  if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
   const server = join(dir, "desk-mcp.mjs");
   writeFileSync(server, `import { createInterface } from "node:readline";
 import { appendFileSync } from "node:fs";
@@ -51,7 +54,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   ] }) }, T0);
   store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, T0);
   mate = store.subagentByHandle(repo, "maya")!;
-  expect(await grantTool(store, mate, "desk", "alex", T0, { toolHome: dir })).toMatchObject({ ok: true });
+  expect(await grantTool(store, mate, "desk", "alex", T0, { toolHome: dir }, { widening: "proved" })).toMatchObject({ ok: true });
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -103,7 +106,7 @@ test("the week counts what it did, what it cost and what people overrode, and re
 
 test("a person undoes a call with the action its manager named: the same input, as them; a failed undo leaves the call; the lead's undo is made by the worker", async () => {
   expect(setToolRules(store, mate, "desk", { add_label: { use: "free", undo: "add_label" } }, "alex", T0)).toMatchObject({ ok: false });
-  expect(setToolRules(store, mate, "desk", { add_label: { use: "free", undo: "remove_label" }, remove_label: { use: "never" } }, "alex", T0)).toMatchObject({ ok: true });
+  expect(setToolRules(store, mate, "desk", { add_label: { use: "free", undo: "remove_label" }, remove_label: { use: "never" } }, "alex", T0, { widening: "proved" })).toMatchObject({ ok: true });
   const card = cardFor("Label the printer ticket");
   await runFlowSteps(store, repo, at(1), io(turns(
     { action: "use_tool", tool: "desk.add_label", input: '{"ticket": "T-1", "label": "urgent"}', reason: "It's urgent." },

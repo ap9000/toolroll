@@ -1,3 +1,15 @@
+import { secretFolder } from "./tool-secret-store.js";
+import { acceptedIdentities, recoverLearning } from "./project-learning.js";
+import { syncProjectIdentities, type ProjectIdentities } from "./project-identity.js";
+import { firstTasksOffThread, recoverLearningOffThread } from "./learning-look.js";
+import { loadOrCreateVapidKeys } from "./push.js";
+import { checkoutPlan } from "./checkout-cleanup.js";
+import { latestReleaseFor } from "./server/render-settings.js";
+import { LastChecks } from "./server/last-checks.js";
+import { readProviderKey } from "./keys.js";
+import { closeExpiredUnattendedGrants } from "./flow-unattended.js";
+import { isKeyedProvider } from "./acp-agents.js";
+import { PROVIDER_IDS } from "./provider.js";
 import { taskMovedSince } from "./chat-ask.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { signInsUnavailableWords } from "./check-access.js";
@@ -5,18 +17,19 @@ import { LIVE_VIEW_CONSENT, liveCommandsShown, liveViewConsentDigest } from "./l
 import { html, htmlString, jsonScript, textHtml, type Html } from "./html.js";
 import type { RunActivity } from "./activity-line.js";
 import { browserAssetsAvailable,browserWorkspaceDocument } from './browser-shell.js';
-import { NO_COUNTS, projectStates, STATE_WORDS, type ProjectState } from './agent-state.js';
+import { accessKey, countsKey, indexKey, projectSummaryOf, RevisionCache, summaryKey } from './console-chrome.js';
 import { usageChipOf } from './limits-ui.js';
-/** Tasks the rail lists under a project; the rest are a count that links to the project's tasks. */
-const RAIL_TASKS = 6;
 /** Any header a proxy adds: a request carrying one is never "from this computer" (password freshness, one-time links). */
 const PROXY_HEADER = /^(forwarded|via|x-forwarded-.+|x-real-ip|x-client-ip|x-original-.+|x-cluster-client-ip|true-client-ip|cf-connecting-ip|fastly-client-ip|x-proxyuser-ip)$/i;
-/** Asks a project names for the chime (its count is complete beyond them). */
-const ASKS_PER_PROJECT = 100;
-import { boundProjectSummary,browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserAsk,type BrowserProjectState,type BrowserRailTask,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
+/** How often the background checks look at what is due (docs/plans/get-side-effects.md), and how often this
+ * computer's agent sign-ins are asked again. */
+const BACKGROUND_CHECKS_MS = 30_000;
+const LOCAL_AGENTS_EVERY_MS = 2 * 60_000;
+import { browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserProjectState,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
 import { sharedActionPayload } from './chat-actions.js';
 import { prepareCodingContext } from './coding-context.js';
 import { CodingWorkspace } from './coding-workspace.js';
+import { codingSessionPermissions } from './coding-provider.js';
 import { CONSOLE_FORMS,readForm,type FormFieldOf,type FormView } from "./contracts/console-api.js";
 import type { DemoLead } from "./demo.js";
 import { createFlowRooms,flowFingerprint } from "./flow-live.js";
@@ -25,10 +38,12 @@ import { configureLeadFollow,recordLeadFollowFailure,runLeadFollowPass } from '.
 import { leadNameOf } from "./lead-identity.js";
 import { createLiveBus,followWorkspace } from "./live-bus.js";
 import { startMaintenance } from './maintenance.js';
+import { asReadOnlyRequest } from './read-only-request.js';
 import { connectionsOf,localConnectOf,oneClickOf,type ConnectVisit } from "./mcp-connect.js";
 import { MOBILE_VIEWPORT_SCRIPT } from "./mobile-viewport.js";
 import { projectAuthority } from "./project-access.js";
-import { discoverTools,projectToolsOf,secretsSetFor,TOOL_CATALOG,toolSecretStorage,toolStanding } from "./project-tools.js";
+import { discoverTools,projectToolsOf,savedProjectMcp,secretsSetFor,TOOL_CATALOG,toolSecretStorage,toolStanding } from "./project-tools.js";
+import { lookProjectMcp } from "./folder-look.js";
 import { toolRefusal } from "./policy.js";
 import { isEdgeAddress,refuseEdge } from "./server/edge-refusal.js";
 import { announcePasswordBearer, isPasswordBearer, PASSWORD_BEARER_REFUSED, passwordBearerAccepted } from "./password-bearer.js";
@@ -47,7 +62,8 @@ import { createTeamRuntime } from './team-runtime.js';
 import { createPersonalQueueRuntime } from './lead-queue-runtime.js';
 import type { LeadQueueRow } from './lead-queue.js';
 import { type ToolsView } from "./tools-ui.js";
-import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage } from "./work-index.js";
+import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage, type WorkIndexOptions, type WorkIndexPage } from "./work-index.js";
+import type { WorkSummaryAccess } from "./work-summary.js";
 import { WORKSPACE_MOTION_SCRIPT } from "./workspace-motion.js";
 import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-revision.js";
 /**
@@ -94,6 +110,7 @@ import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-re
  */
 
 import { createHash,randomBytes } from "node:crypto";
+import { keepSlowRequest, Timeline } from "./latency-timeline.js";
 import { readFileSync } from "node:fs";
 import { createServer,type IncomingMessage,type Server,type ServerResponse } from "node:http";
 import { homedir,hostname } from "node:os";
@@ -111,7 +128,7 @@ import { hasForbiddenControls } from "./decision.js";
 import { UPDATE_PAUSED,updateAdmissionPaused } from "./desktop-update-gate.js";
 import { scanForSecrets } from "./evidence.js";
 import { run as execRun } from "./exec.js";
-import { firstRunSteps,signInCommandFor,type FirstRunStep,type FirstTaskSuggestion } from "./first-run.js";
+import { findFirstTasks,firstRunSteps,signInCommandFor,type FirstRunStep,type FirstTaskSuggestion } from "./first-run.js";
 import { installMethod } from "./install-method.js";
 import { createIntegrationMonitor } from "./integrations.js";
 import { logEvent } from "./log.js";
@@ -156,6 +173,7 @@ import { createChatHandlers } from './server/chat.js';
 import { createLiveHandlers } from './server/live.js';
 import { createTerminalHandlers, terminalHostFor } from './server/terminals.js';
 import { passwordlessOn } from './passwordless.js';
+import { keepTypedFields, openProjectFor, settingsCrumbs } from './settings-kit.js';
 import { createSweepHandlers } from './server/sweeps.js';
 import { createFlowsHandlers } from './server/flows.js';
 import type { HandlerContext } from './server/handler-context.js';
@@ -167,7 +185,7 @@ import { createSettingsHandlers } from './server/settings.js';
 import { requestContext } from "./server/request-context.js";
 import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
 import { BODY_CAP,form,loginHref,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
-import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
+import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,NOT_STARTED_SESSION,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
 import { type ProjectPeek } from "./server/render-pages.js";
 import { ssoStepUps,wrongHostPage } from "./server/render-people.js";
 import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,sessionWithinLifetime,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SsoIntent,type Who } from "./server/session.js";
@@ -190,6 +208,9 @@ type ReviewFacts
 } from "./workspace-ui.js";
 import { WorktreePool } from "./worktree.js";
 export function createDecisionServer(options: ServeOptions): DecisionServer {
+  // Identities come from what the console's start resolved off its thread (startConsole); a path that didn't answer
+  // stays unresolved, kept restrictive. Without them (embedders, tests) the old synchronous reads apply.
+  const identities = options.identities ?? syncProjectIdentities();
   const { projectFamilyPeek, familiesInView, familyTasksInView, revisionDestination, runIsLive, runIsTaskResult, revisionViewOf, taskViewData, routeViewOf, taskChatFocus, pullRequestTargetOf, failureOf, explainAttempt, taskScreen, armTaskResume, planViewOf, planContractViewOf, revisionDocOf, revisionLedgerOf, resultDetailOf } = createTaskViews({
     get store() { return store; },
     get projectCounts() { return projectCounts; },
@@ -213,12 +234,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible } = createSharedGuards({
     get store() { return store; },
     get liveCeiling() { return liveCeiling; },
+    identities,
     get codingProjects() { return codingProjects; },
     get unscopedMode() { return unscopedMode; },
     get managedRepos() { return managedRepos; },
     get ceiling() { return ceiling; },
     get allowedHost() { return allowedHost; },
-    get defaultProject() { return defaultProject; },
+    get defaultProject() { return defaultProject(); },
     get actionTarget() { return actionTarget; },
     get team() { return team; },
     get joinSourceOf() { return joinSourceOf; },
@@ -233,7 +255,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   if (coding === null && options.localRunner !== undefined && !store.isDemo()) {
     const database = store.handle.prepare('PRAGMA database_list').all().find(row => row['name'] === 'main')?.['file'];
     if (typeof database === 'string' && database !== '') {
-      try { coding = new CodingWorkspace({ database: `${database}.coding.sqlite`, worktreeRoot: join(dirname(database), 'coding-worktrees'), admissionPaused: () => updateAdmissionPaused(store.raw()), authorize: (actor, repo) => codingActorAllowed(actor) && codingProjectAllowed(repo), context: input => prepareCodingContext(store, { ...input, root: join(dirname(database), 'coding-context') }) }); }
+      try { coding = new CodingWorkspace({ database: `${database}.coding.sqlite`, worktreeRoot: join(dirname(database), 'coding-worktrees'), permissions: codingSessionPermissions(store, join(dirname(database), 'coding-worktrees')), admissionPaused: () => updateAdmissionPaused(store.raw()), authorize: (actor, repo) => codingActorAllowed(actor) && codingProjectAllowed(repo), context: input => prepareCodingContext(store, { ...input, root: join(dirname(database), 'coding-context') }) }); }
       catch (error) { codingProblem = error instanceof Error ? error.message : 'The coding workspace could not open.'; }
     }
   }
@@ -272,13 +294,29 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     };
   };
   const workspaceRevision = prepareWorkspaceRevision(store);
+  // The sidebar, the Tasks count and the crew: read at most once per workspace revision per reader's exact access
+  // (console-chrome.ts), and filled from a read worker before a page renders when one is attached.
+  const chromeReads = new RevisionCache(workspaceRevision, clock);
   const workspaceIncarnation = randomBytes(16).toString('hex');
   const workspaceValidators = new WorkspaceValidatorCache();
   const providerHome = options.connectionHome ?? homedir();
   const checkConnection = createConnectionChecker({ home: providerHome, clock, ...(options.connectionProbe === undefined ? {} : { probe: options.connectionProbe }) });
   // Every sign-in check the console makes also answers a sign-in pause.
+  // Whether this computer can fence agents: asked once as the console starts (a sandbox running /usr/bin/true), so
+  // Settings → Project never starts a process (docs/plans/get-side-effects.md).
+  const fenceHere = options.fenceAvailable === undefined ? macosFenceAvailable() || linuxFenceAvailable() : false;
+  // Phone notifications' signing pair, made once as the console starts so /push/key only reads it.
+  if (options.telegramTokenFile !== undefined) { try { loadOrCreateVapidKeys(dirname(options.telegramTokenFile)); } catch { /* /push/key says push is not set up */ } }
+  // The last answer of every other check a page shows (docs/plans/get-side-effects.md).
+  const lastChecks = new LastChecks();
+  /** The newest release, asked of npm (Settings → Updates shows the last answer). */
+  const checkRelease = () => lastChecks.run("release", () => latestReleaseFor(options.updates?.latest));
+  // What each sign-in check said last: what a page shows (docs/plans/get-side-effects.md). A page never checks.
+  const knownConnections = new Map<ProviderId, ProviderConnection>();
+  const connectionKnown = (provider: ProviderId): ProviderConnection | null => knownConnections.get(provider) ?? null;
   const connectionCheck = async (provider: ProviderId, fresh?: boolean): Promise<ProviderConnection> => {
     const value = await checkConnection(provider, fresh);
+    knownConnections.set(provider, value);
     try { noteSignInProbe(store, provider, value.state, clock()); } catch { /* the pause keeps its own state */ }
     return value;
   };
@@ -397,6 +435,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (found.ok) ssoProvider = { issuer, provider: found.provider, at: Date.now() };
     return found;
   }
+  /** The identity provider as last discovered: what starting a sign-in uses (a GET, so it fetches nothing,
+   * docs/plans/get-side-effects.md). Discovered as the console starts, by the background checks every ten minutes, and
+   * when sign-in settings are saved or tested. */
+  function providerKnown(issuer: string): OidcProvider | null {
+    return ssoProvider !== null && ssoProvider.issuer === issuer ? ssoProvider.provider : null;
+  }
+  { const settings = ssoSettings(); if (settings !== null) void providerFor(settings.issuer).catch(() => undefined); }
   /** Password sign-in is only for instance operators when the provider says so (a way in if it's down). */
   const passwordAllowed = (name: string) => { const settings = ssoSettings(); return settings === null || settings.passwords === "everyone" || store.isInstanceOperator(name); };
   const minutesWords = (ms: number) => { const minutes = Math.max(1, Math.ceil(ms / 60_000)); return minutes >= 120 ? `${Math.round(minutes / 60)} hours` : `${minutes} minute${minutes === 1 ? "" : "s"}`; };
@@ -414,24 +459,27 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   let joinGlobal = { tokens: 30, refilledAt: Date.now() };
   const approvalNonces = new Map<string, ApprovalNonce>();
 
-  // Resolve startup authority once. Missing paths remain restrictive.
-  // Native additions come only from the controller after its admission checks.
-  const { ceiling, unresolved: unresolvedRepos } = resolveCeiling(
+  // Startup authority: the configured repos and roots as their identities say (startupCeiling). Missing or unresolved
+  // paths remain restrictive. Native additions come only from the controller after its admission checks.
+  const { ceiling, unresolved: unresolvedRepos, defaultProject, configured, configuredPaths } = startupCeiling(
     [...(options.repo === undefined ? [] : [options.repo]), ...(options.repos ?? [])],
     options.projectRoots ?? [],
+    options.identities === undefined ? undefined : identities,
+    identities.strict,
   );
-  /** The project every fresh session opens with: the sole configured repo, else none. */
-  const defaultProject = ceiling.repos.length === 1 && ceiling.roots.length === 0 ? ceiling.repos[0] as string : null;
 
   /** No ceiling configured at all: the legacy trust-everything mode, named. */
-  const unscopedMode = ceiling.repos.length === 0 && ceiling.roots.length === 0;
+  // An `up` console (it is handed its admitted set) is never unscoped: with every saved project away it is empty.
+  // Judged by what was configured, never by what has resolved so far: a console whose folders haven't answered yet is
+  // scoped and empty, not unscoped.
+  const unscopedMode = !configured && options.admittedRepos === undefined;
   /** Per-row visibility under the ceiling — the authorization question for reads. */
   /** The exact repositories this console serves now: `up`'s live admitted set when it supplies one, else startup's. */
   const exactRepos = (): readonly string[] => options.admittedRepos?.() ?? ceiling.repos;
   const liveCeiling = () => {
     const repos = [...exactRepos(), ...(options.additionalProjectRepos?.() ?? [])];
     // An admitted set that is empty for now is an empty ceiling, never the legacy unscoped mode.
-    return { repos: repos.length === 0 && ceiling.roots.length === 0 && !unscopedMode ? [NO_PROJECT] : repos, roots: ceiling.roots };
+    return { repos: repos.length === 0 && ceiling.roots.length === 0 && !unscopedMode ? [NO_PROJECT] : repos, roots: ceiling.roots, canon: identities.strict };
   };
   /** The explicit, currently proved project list. The callback is supplied
    * only by `up`, after it has independently checked git-ness and the root
@@ -449,7 +497,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const repos: string[] = [];
     const gone = goneRepos();
     for (const path of [...exactRepos(), ...(options.currentRepos?.() ?? [])]) {
-      const canonical = canonicalProject(path) ?? path;
+      const canonical = identities.hot(path);
       if (seen.has(canonical) || !visible(canonical) || gone.has(canonical)) continue;
       seen.add(canonical);
       repos.push(canonical);
@@ -464,11 +512,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     access: projectAccessOf(repo),
     network: { setting: store.projectNetwork(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     writes: { setting: store.projectWrites(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
+    sandbox: { setting: store.projectSandbox(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     checkAccess: {
       setting: store.projectCheckAccess(repo), changed: store.projectCheckAccessChange(repo),
       canNarrow: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo),
       canWiden: who.via === "cookie" && !store.isDemo() && store.isInstanceOperator(who.name),
-      unconfinedHere: !(options.fenceAvailable?.() ?? (macosFenceAvailable() || linuxFenceAvailable())) && store.unfencedAgentsAllowed(),
+      unconfinedHere: !(options.fenceAvailable?.() ?? fenceHere) && store.unfencedAgentsAllowed(),
       signInsUnavailable: signInsUnavailableWords(options.platform ?? process.platform),
     },
     liveView: (() => {
@@ -529,7 +578,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // A service that connects by signing in (or an app's own Connect) is offered only that way.
       catalog: TOOL_CATALOG.filter(one => !names.has(one.name) && oneClickOf(one.name) === null && localConnectOf(one.name) === null),
       connections: connectionsOf(store, repo, toolHome), kit, wanted,
-      found: discoverTools(repo, codex, toolHome).filter(one => !names.has(one.spec.name)),
+      // The project's own .mcp.json as the background pass last read it off the console's thread (never read here).
+      found: discoverTools(repo, codex, toolHome, process.env, options.identities === undefined ? undefined : savedProjectMcp.get(repo) ?? null).filter(one => !names.has(one.spec.name)),
       storage: toolSecretStorage(),
     };
   };
@@ -613,7 +663,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const server = createServer((request, response) => {
     instrumentRequest(store.telemetry, request, response);
     // Every password checked while answering counts against where this request came from (sign-in-guard.ts).
-    void withPasswordSource(joinSourceOf(request), () => handle(request, response)).catch(error => {
+    // A GET or HEAD only reads (docs/plans/get-side-effects.md): store reads that would tidy up as they go don't.
+    const answer = () => handle(request, response);
+    void withPasswordSource(joinSourceOf(request), () => request.method === "GET" || request.method === "HEAD" ? asReadOnlyRequest(answer) : answer()).catch(error => {
       // Every unhandled error is logged (v99): the path and the message, never the request's body or query.
       logEvent("error", "serve.error", { method: request.method, path: redactedPath(new URL(request.url ?? "/", "http://placeholder").pathname), error: error instanceof Error ? error.message : String(error) });
       if (envValue(process.env, "SERVE_DEBUG") === "1") console.error("SERVE ERROR:", error);
@@ -729,6 +781,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // uses the address it reached), reads one row, and says nothing else about the installation.
     const method = request.method ?? "GET";
     const matchedRoute = matchRoute(method, hook.pathname);
+    // Where a slow answer's time went (latency-timeline.ts): milestones by route id only, kept when it took a second.
+    const timeline = new Timeline();
+    timeline.mark("route matched");
     const edgeRoute = matchedRoute?.stage === 'edge' ? matchedRoute : null;
     const wrongMethodEdge = edgeRoute === null ? ROUTES.find(row => row.stage === 'edge' && new RegExp(row.pattern).test(hook.pathname)) ?? null : null;
     // D7: a password on a request still signs in this release, announced on every answer and named in every refusal;
@@ -770,7 +825,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Passive polls authenticate without extending the browser session.
     const fragmentName = url.searchParams.get("fragment");
     const workspaceRead = method === "GET" && url.searchParams.get('format') === 'workspace';
-    const touch = !(method === "GET" && (edgeRoute?.domain === 'live' || workspaceRead || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname) || url.pathname === '/term/state'));
+    const touch = !(method === "GET" && (edgeRoute?.domain === 'live' || workspaceRead || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname) || url.pathname === '/term/state'
+      // The Agents view's Live grid only watches: its polls never extend or write the session.
+      || url.pathname === '/agents/live' || /^\/agents\/live\/[0-9]{1,15}$/.test(url.pathname) || (url.pathname === '/agents' && url.searchParams.get('view') === 'live')));
     const refuseBudget = (admitted: Admission): boolean => {
       if (admitted.ok) return false;
       request.resume();
@@ -782,6 +839,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (refuseBudget(admitPasswordSource(request))) return;
     const refusedToken: { principal?: Principal } = {};
     const who = identify(request, touch, edgeRoute?.domain === 'live', refusedToken);
+    timeline.mark("signed in");
     if (refusedToken.principal !== undefined) {
       if (refuseBudget(requestBudget.admit(refusedToken.principal.tokenId, "api"))) return;
       if (method === "POST") {
@@ -818,6 +876,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       browser: who.via === 'cookie',
       // Passwordless (read once for rendering; every act proves it again at the act): ceremony fields render as nothing.
       passwordless: who.via === 'cookie' && passwordlessOn(store),
+      openProject: who.via === 'cookie' ? who.session.project : null,
       // v100: signed in with the identity provider: its label, and whether it checked them recently enough to stand in for a password.
       // Cockpit B2: "fresh" is an explicit re-check made on request and not yet spent (read live; one step-up uses it).
       sso: who.via === 'cookie' && who.session.sso !== undefined ? { label: ssoSettings()?.label ?? "your identity provider",
@@ -825,8 +884,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       refusal: (answer: ServerResponse, status: number, body: Html) => sendScreen(answer, status,
         screen(status === 404 ? "Not found" : "Request refused", body, { chrome: chromeFor(who.via === "cookie" ? who.session.project : null, "work") })),
       workspaceRead,
+      freshWork: ["request", "task", "result"].some(name => url.searchParams.has(name)),
+      ...(workspaceRead && typeof request.headers['if-none-match'] === 'string' ? { workspaceIfNoneMatch: request.headers['if-none-match'] } : {}),
       workspaceRequest: url.searchParams.get('request'),
+      timeline,
     };
+    response.once("finish", () => keepSlowRequest(store, timeline, matchedRoute?.id ?? "unmatched", response.statusCode, clock()));
     if (method === "GET" || method === "POST") return freshFacts.run(fresh, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
       if (edgeRoute?.domain === 'live') return dispatchEdge(edgeRoute, { url, who, request, response, method });
       const body = method === "POST" ? await form(request, (matchedRoute?.stage === "console" ? matchedRoute.bodyCap : undefined) ?? BODY_CAP) : null;
@@ -874,6 +937,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
             // no database row changed (for example an expired worker lease).
             facts.workspaceValidator = { key, revision, expiresAt,
               etag: '"' + createHash('sha256').update(`${key}:${revision}:${expiresAt}`).digest('hex') + '"' };
+          }
+          await prefetchChrome(route, url, who);
+          timeline.mark("chrome and worker reads");
+          // The worker wait lets a sign-out, credential/access change or console ceiling change land. Prove the
+          // cookie and route again before rendering protected content or answering with a content validator.
+          if (who.via === 'cookie') {
+            const current = identify(request, false);
+            if (current?.via !== 'cookie' || current.session !== who.session) return redirect(response, loginHref(url.pathname + url.search));
+            if (!projectRequestAllowed(route, route.project, url, who, request, response, null)) return;
           }
           return handleGet(route, url, who, request, response);
         }
@@ -936,7 +1008,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     const known = new Set(["/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/save", "/recipes/launch", "/tasks/add", "/queue/move", "/queue/note", "/people/invite", "/people/invite-revoke", "/people/revoke", "/people/projects", "/projects/select", "/projects/open", "/mode/confirm", "/mode/sign", "/mode/revoke", "/settings/chat-approval/save", "/settings/chat-approval/off", "/settings/project/live-view"]);
     const placed = url.pathname === "/tasks/add" ? body?.get("repo")?.trim() : null;
-    return { repo: url.pathname.startsWith("/people/") ? null : placed ? canonicalProject(placed) ?? placed : projectOf(who, request) ?? null, taskId: null, runId: null,
+    return { repo: url.pathname.startsWith("/people/") ? null : placed ? identities.strict(placed) ?? placed : projectOf(who, request) ?? null, taskId: null, runId: null,
       action: known.has(url.pathname) ? url.pathname.slice(1).replaceAll("/", " ") : "console request" };
   }
 
@@ -1045,8 +1117,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       .finally(() => { localSignInChecking = null; });
     return localSignInChecking;
   }
+  /** The last answer only (docs/plans/get-side-effects.md): this computer is asked again by the background checks or a
+   * person's Check now, never because a page was opened. */
   function localAgentSignedIn(): boolean | null {
-    if (localSignInChecking === null && (localSignIn === null || Date.now() - localSignIn.at > 30_000)) void checkLocalAgents();
     return localSignIn?.signedIn ?? null;
   }
   /**
@@ -1114,12 +1187,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const allCoordinatorRows = store.listCoordinatorProposals({ repos: managedRepos(), states: ["pending", "confirmed", "refused"], limit: 30 });
     const coordinatorProposals = focusTask !== null ? allCoordinatorRows.filter(one => focusTask.family.versions.some(version => version.id === one.payload["task"]))
       : chatProject !== null ? allCoordinatorRows.filter(one => one.repo === chatProject) : allCoordinatorRows;
-    const opened = store.openLeadThread(who.name, principal.ceilingDigest, now, chatScopeOf(focusTask, chatProject));
-    const proposals = store.listLeadProposals(opened.thread.id);
+    // A visit only reads (quiet page visits): this opens no thread. The first message opens it (chatSend), and a
+    // live thread kept under another ceiling is what that message replaces, so it reads here as the earlier one.
+    const found = store.liveLeadThreadFor(who.name, chatScopeOf(focusTask, chatProject));
+    const thread = found !== null && found.ceilingDigest === principal.ceilingDigest ? found : null;
+    const proposals = thread === null ? [] : store.listLeadProposals(thread.id);
     // One reply runs at a time per person; this thread shows it only when
     // the reply is its own.
     const live = store.liveLeadTurnFor(who.name);
-    const messages = store.listLeadMessages(opened.thread.id, 40);
+    const messages = thread === null ? [] : store.listLeadMessages(thread.id, 40);
     // The lead's question with buttons, while its reply is the last word in the thread.
     const last = messages.at(-1);
     const asking = last?.role === "assistant" && last.turn !== null && store.getLeadTurn(last.turn)?.approver === who.name ? store.leadAskOpen(last.turn, now) : null;
@@ -1130,9 +1206,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Answered questions stay readable above the answer; only their buttons go.
     const asks = new Map(messages.flatMap(one => { const asked = one.role === "assistant" && one.turn !== null ? store.leadAsk(one.turn) : null; return asked === null ? [] : [[asked.turn, asked] as const]; }));
     // The person's queued messages in this thread: each shows waiting (with Remove) or why it was not sent.
-    const queue = new Map(personalQueue.queue.forThread(opened.thread.id).map(row => [row.message, row] as const));
-    // The thread a ceiling change replaced (ruling 9): read after the open, display only.
-    const replaced = store.replacedLeadThread(opened.thread);
+    const queue = new Map(thread === null ? [] : personalQueue.queue.forThread(thread.id).map(row => [row.message, row] as const));
+    // The thread a ceiling change replaced (ruling 9), display only: closed already, or still live under the old ceiling.
+    const replaced = thread !== null ? store.replacedLeadThread(thread)
+      : found !== null && found.scope.kind === "lead" && store.listLeadMessages(found.id, 1).length > 0 ? found : null;
     const previousProposals = replaced === null ? [] : store.listLeadProposals(replaced.id);
     return {
       previous: replaced === null ? null : { messages: store.listLeadMessages(replaced.id, 40), proposals: previousProposals, decisions: decisionsFor(store, previousProposals) },
@@ -1144,7 +1221,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       proposals,
       decisions: decisionsFor(store, [...proposals, ...coordinatorProposals]),
       coordinatorProposals,
-      pending: live !== null && live.thread === opened.thread.id ? live : null,
+      pending: live !== null && thread !== null && live.thread === thread.id ? live : null,
       recent: store.recentLeadTurns(who.name, 5),
     };
   }
@@ -1158,21 +1235,21 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** The Ask panel (v77): the conversation a task, result or project page
    * docks beside itself — that page's own thread, the same session and
    * cards as /chat. Null when this person has no lead chat here. A page
-   * view may start a membership conversation, as /chat does. */
+   * view starts nothing (quiet page visits): with no membership
+   * conversation yet, the panel binds its sends to NOT_STARTED_SESSION and
+   * the first message starts one (chatSend). */
   function dockedConversation(who: Who, focusTask: TaskChatFocus | null, chatProject: string | null, now: Date, back: string, resultRunId: number | null = null): import("./browser-workspace.js").BrowserConversation | null {
     if (who.via !== "cookie" || who.role !== "approver" || (focusTask === null && chatProject === null)) return null;
     const enabled = chatEnablement();
     const principal = enabled.ok ? leadPrincipal(who) : null;
     if (!enabled.ok || principal === null) return null;
-    let session = store.activeLeadSession(who.name);
-    if ((session === null || session.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription" && !requestContext.getStore()?.workspaceRead) {
-      startLeadConversation(who, principal, enabled, 0, false, now);
-      session = store.activeLeadSession(who.name);
-    }
-    if (session === null || session.ceilingDigest !== principal.ceilingDigest || session.approverGeneration !== principal.generation) return null;
+    const found = store.activeLeadSession(who.name);
+    const notStarted = (found === null || found.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription";
+    const session = notStarted ? null : found;
+    if (!notStarted && (session === null || session.ceilingDigest !== principal.ceilingDigest || session.approverGeneration !== principal.generation)) return null;
     const rows = leadConversationRows(who, principal, focusTask, now, chatProject);
     return {
-      sessionId: session.id, user: session.approver, version: leadChatVersion({ ...rows, focusTask }),
+      sessionId: session?.id ?? NOT_STARTED_SESSION, user: session?.approver ?? who.name, version: leadChatVersion({ ...rows, focusTask }),
       messages: leadBrowserMessages(rows, back, { task: focusTask?.id ?? null, project: chatProject }),
       pendingTurnId: rows.pending?.id ?? null, requestId: randomBytes(16).toString("hex"), maxChars: LEAD_MESSAGE_MAX_CHARS,
       taskId: focusTask?.id ?? null, resultRunId, project: focusTask === null ? chatProject : null,
@@ -1183,14 +1260,21 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** Start the person's lead conversation: the session every later turn
    * debits (a membership spends nothing; direct API gets a per-conversation
    * ceiling) and its thread. Starting ends any older session. */
-  function startLeadConversation(who: Who & { via: "cookie" }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true }>, ceilingUsd: number, follow: boolean, now: Date): number {
+  function startLeadConversation(who: Who & { via: "cookie" }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true }>, ceilingUsd: number, follow: boolean, now: Date, scope: LeadThreadScope = LEAD_THREAD, request?: string): number {
+    // A page's first send (quiet page visits) starts it under that send's request: the start and its record are one
+    // write, so a retry of the same request finds the conversation it started and never starts another.
+    if (request !== undefined) {
+      return store.transact(() => store.replay({ idempotencyKey: `mate-start:${who.name}:${request}`, actor: who.name, at: now }, "mate-start",
+        () => ({ session: startLeadConversation(who, principal, enabled, ceilingUsd, follow, now, scope) })).session);
+    }
     const ceilingMicrousd = enabled.billing === "subscription" ? 0 : Math.round(ceilingUsd * 1_000_000);
     const termsDigest = createHash("sha256").update(`${ceilingMicrousd}\n${principal.ceilingDigest}`).digest("hex");
     const sessionId = store.mintLeadSession(
       { approver: who.name, approverGeneration: principal.generation, credentialKey: enabled.credentialKey, ceilingMicrousd, ceilingDigest: principal.ceilingDigest, termsDigest },
       now,
     );
-    const thread = store.openLeadThread(who.name, principal.ceilingDigest, now).thread;
+    // The thread the first message goes to (quiet page visits: a task's first message opens only the task's thread).
+    const thread = store.openLeadThread(who.name, principal.ceilingDigest, now, scope).thread;
     if (follow) configureLeadFollow(store, principal, store.getLeadSession(sessionId)!, thread, true, now);
     leadSaid.delete(who.session.csrf);
     return sessionId;
@@ -1217,8 +1301,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function chatEnablement(): ChatEnablement {
     if (store.isDemo()) return { ok: false, code: "demo", why: "this is a demo database — chat cannot contact an external model" };
     if (unscopedMode) return { ok: false, code: "unscoped", why: "chat needs at least one added project" };
-    if (options.currentRepos === undefined && unresolvedRepos.length > 0) {
-      return { ok: false, code: "unresolved", why: "a configured project path did not resolve at startup — fix it and restart before chat will run" };
+    if (options.currentRepos === undefined && unresolvedRepos().length > 0) {
+      return { ok: false, code: "unresolved", why: "a configured project folder hasn't been found yet — chat runs once it answers; if its path is wrong, fix it and restart" };
     }
     if (managedRepos().length === 0) return { ok: false, code: "empty", why: "add a project first — chat will include it automatically" };
     const config = store.getChatConfig();
@@ -1266,6 +1350,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * catalog is unreachable; callers fall back to the compiled table. */
   let catalogCache: { at: number; models: import("./converse.js").CatalogModel[] } | null = null;
 
+  /** The catalog as last fetched, for a page to show (docs/plans/get-side-effects.md): a page never fetches it. The
+   * background checks keep it current while an OpenRouter key is saved; saving a choice fetches it (chatCatalog). */
+  function chatCatalogKnown(): import("./converse.js").CatalogModel[] | null {
+    return chatKeyFor("openrouter-api") === null ? null : catalogCache?.models ?? null;
+  }
   async function chatCatalog(): Promise<import("./converse.js").CatalogModel[] | null> {
     const key = chatKeyFor("openrouter-api")?.key;
     if (key === undefined) return null;
@@ -1292,7 +1381,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function paletteIndexTag(project: string | null): Html {
     const admitted = project === null ? admissionList() : null;
     const entries: { label: string; href: string }[] = [
-      { label: "work", href: "/work" },
+      { label: "tasks", href: "/work" },
       { label: "needs you", href: "/work?view=needs-you" },
       { label: "inbox", href: "/" },
       { label: "board", href: "/board?scope=all" },
@@ -1301,7 +1390,6 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       { label: "flows", href: "/flows" },
       { label: "done", href: "/done" },
       { label: "review cockpit", href: "/review" },
-      { label: "task list", href: "/tasks" },
       { label: "fleet", href: "/fleet" },
       { label: "activity", href: "/activity" },
       { label: "action ledger", href: "/ledger" },
@@ -1316,8 +1404,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       entries.push({ label: `${one.id} — ${one.title}`, href: `/t/${encodeURIComponent(one.id)}` });
     }
     const saturated = open.length > 200;
-    const safeEntries = restricted() ? entries.filter(one => ["/work", "/work?view=needs-you", "/", "/board", "/flows", "/done", "/review", "/tasks", "/runs", "/projects", "/ledger"].includes(one.href) || one.href.startsWith("/t/")) : entries;
-    return jsonScript(saturated ? [...safeEntries, { label: "… more in the task list", href: "/tasks" }] : safeEntries, { id: "palette-index" });
+    const safeEntries = restricted() ? entries.filter(one => ["/work", "/work?view=needs-you", "/", "/board", "/flows", "/done", "/review", "/runs", "/projects", "/ledger"].includes(one.href) || one.href.startsWith("/t/")) : entries;
+    return jsonScript(saturated ? [...safeEntries, { label: "… more in Tasks", href: "/work" }] : safeEntries, { id: "palette-index" });
   }
 
   /**
@@ -1351,6 +1439,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * are what sensitivity strips.
    */
   function sendScreen(response: ServerResponse, status: number, s: Screen): void {
+    requestContext.getStore()?.timeline?.mark("handler done; rendering");
     // Sensitivity is the page as authored (cockpit §2, R14): its own explicit word, else a password field it was written
     // with — judged before an identity-provider sign-in replaces that field, so an SSO step-up page stays sensitive.
     const authored = s.sensitive ?? (
@@ -1362,12 +1451,18 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const ssoFacts = requestContext.getStore()?.sso;
     if (ssoFacts !== undefined) {
       const back = requestContext.getStore()?.returnTo ?? "/";
-      s = { ...s, body: ssoStepUps(s.body, ssoFacts, back), ...(s.workspace?.pageHtml == null ? {} : { workspace: { ...s.workspace, pageHtml: ssoStepUps(s.workspace.pageHtml, ssoFacts, back) } }) };
+      // A typed-only proof (settings-kit.ts) stays a password field: its handler takes nothing else.
+      s = { ...s, body: keepTypedFields(s.body, ssoStepUps, ssoFacts, back), ...(s.workspace?.pageHtml == null ? {} : { workspace: { ...s.workspace, pageHtml: keepTypedFields(s.workspace.pageHtml, ssoStepUps, ssoFacts, back) } }) };
       if (s.workspace?.view?.kind === "flow") s = { ...s, workspace: { ...s.workspace, view: { ...s.workspace.view, stepUp: { label: ssoFacts.label, fresh: ssoFacts.fresh, confirmHref: `/login/sso?reauth=1&return=${encodeURIComponent(back)}` } } } };
     }
     // D5: team chat (the central team service) is deprecated; /chat?team=1 still opens this release, but nothing links to it.
     const sensitive = authored || s.forceSensitive === true;
     const requestFacts = requestContext.getStore();
+    // The settings frame (settings-kit.ts): its breadcrumb, for the shell and the workspace alike.
+    if (s.chrome !== undefined && s.chrome.crumbs === undefined) {
+      const crumbs = settingsCrumbs(new URL(requestFacts?.returnTo ?? '/', 'http://standing-orders.local').pathname, s.title, htmlString(s.body));
+      if (crumbs !== undefined) s = { ...s, chrome: { ...s.chrome, crumbs } };
+    }
     if (requestFacts?.browser && s.chrome && !s.forceSensitive && (requestFacts.workspaceRead || browserAssetsAvailable())) {
       const path = new URL(requestFacts.returnTo, 'http://standing-orders.local');
       path.searchParams.delete('format');
@@ -1381,12 +1476,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const notices = [...(extras.notices ?? [])];
       if (s.chrome.modeBanner) notices.push(s.chrome.modeBanner.words);
       if (s.chrome.updateWaiting) notices.push(s.chrome.updateWaiting.words);
+      if (options.draining?.() === true) notices.push('Toolroll is restarting (draining). Saved work is kept; new builds start once it is back.');
       let crew: Pick<BrowserWorkspace, 'crew' | 'crewTruncated'> = { crew: [], crewTruncated: false };
       try {
         const project = s.chrome.active === 'chat' ? null : s.chrome.project;
         crew = extras.team?.tasks ? browserCrewFromIndex(extras.team.tasks, extras.team.selected?.id) : requestFacts.workCrew?.project === project ? browserCrewFromIndex(requestFacts.workCrew.page)
           // The reader's own lead's claims read "<name> is on it" here too.
-          : browserCrewOf(store, clock(), { principal: 'operator', repos: managedRepos(), includeUnplaced: false, viewer: requestFacts.actor ?? null }, { evidenceRoot, project });
+          : (() => {
+            const access = { principal: 'operator' as const, repos: managedRepos(), includeUnplaced: false, viewer: requestFacts.actor ?? null };
+            return chromeRead(`crew\u0000${accessKey(access)}\u0000${project ?? ''}`, () => browserCrewOf(store, clock(), access, { evidenceRoot, project }));
+          })();
       } catch { notices.push('Crew updates are unavailable. Open Tasks to inspect saved work.'); }
       // A running row says what its agent did last, and when (the task page's own line).
       try {
@@ -1425,6 +1524,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const request = requestFacts.workspaceRequest;
       const workspace: BrowserWorkspace = {
         version: 1, path: currentPath, title: s.title, user: requestFacts.actor ?? '', csrf: requestFacts.csrf, sensitive,
+        // The project picker names the open project; the settings frame carries its breadcrumb.
+        // Only a project this person may see now: never the raw saved path (settings-kit.ts openProjectFor).
+        openProject: openProjectFor(requestFacts.openProject ?? null, s.chrome.project, s.chrome.projects ?? []),
+        ...(s.chrome.crumbs === undefined ? {} : { crumbs: s.chrome.crumbs }),
         ...(requestFacts.passwordless === true ? { passwordless: true } : {}),
         ...(requestFacts.actor ? { leadName: leadNameOf(store, requestFacts.actor) } : {}),
         refreshUrl: path.pathname + path.search,
@@ -1467,7 +1570,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           workspaceValidators.set(validator.key, validator);
           response.setHeader('ETag', validator.etag);
         }
-        return respond(response, status, 'application/json; charset=utf-8', JSON.stringify(workspace));
+        const body = JSON.stringify(workspace);
+        // Every other page's re-read after a live `change` (chat keeps its own validator, and its receipt, task and
+        // result reads none): when what it renders now is exactly what the page holds, it hears 304 and keeps its view
+        // (no transfer, no re-render).
+        if (status === 200 && validator === undefined && path.pathname !== '/chat') {
+          const etag = '"w' + createHash('sha256').update(body).digest('base64url') + '"';
+          response.setHeader('ETag', etag);
+          if (requestFacts.workspaceIfNoneMatch === etag) return respond(response, 304, 'application/json; charset=utf-8', '');
+        }
+        return respond(response, status, 'application/json; charset=utf-8', body);
       }
       const nonce = randomBytes(16).toString('base64');
       // React owns the conversation and its refresh/draft lifecycle. Native
@@ -1504,8 +1616,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return page(response, status, document, nonce, s.functional?.fetches === true || chromeLayer || sensitiveChrome !== "");
   }
   /** The needs-you count every surface wears, read from this request's own
-   * Work counts (one query per request, never a cached earlier one), so a
-   * live page's badge and its Needs you tab always agree. */
+   * Work counts (one read per request, kept only while the workspace revision
+   * it was read at stands), so a live page's badge and its Needs you tab
+   * always agree. */
   function needsYouBadge(project: string | null): { count: number; saturated: boolean } {
     return needsYouCount(project);
   }
@@ -1534,42 +1647,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function projectSummary(): BrowserProjectState[] {
     const projects = sidebarProjects();
     const actor = requestContext.getStore()?.actor ?? '';
-    const states = new Map(projectStates(store, workAccess(), actor, clock(), evidenceRoot, projects.map(one => one.path)).map(one => [one.repo, one]));
-    // A row that needs a person or failed says what the Tasks list says it needs (its own next step); a row at work says
-    // what its agent did last; a finished one says Done.
-    const asking = [...states.values()].flatMap(one => one.families.slice(0, RAIL_TASKS)).filter(one => one.state === 'needs-you' || one.state === 'failed').map(one => one.rootId);
-    const needWords = new Map<string, string>();
-    if (asking.length > 0) {
-      try {
-        // Every row the rail may list, in pages the index allows.
-        for (let at = 0; at < asking.length; at += WORK_INDEX_MAX_LIMIT)
-          for (const item of workIndexPage(store, clock(), workAccess(), { roots: asking.slice(at, at + WORK_INDEX_MAX_LIMIT), limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot }).items)
-            needWords.set(item.rootId, item.status.detail !== '' ? item.status.detail : item.status.label);
-      } catch { /* the rows keep their state's words */ }
-    }
-    // The chime's subjects: an opaque key per obligation and version, scoped to this reader (no words, no ids in it).
-    const keyOf = (...parts: (string | number)[]) => createHash('sha256').update([actor, ...parts].join('\u0000')).digest('base64url').slice(0, 22);
-    // Newest first, so a new ask always has a key however many older ones wait (those were heard when they were new).
-    const asksOf = (state: ProjectState | undefined): BrowserAsk[] => [
-      ...(state?.families ?? []).flatMap(one => one.ask === undefined ? [] : [{ at: one.ask.at, ask: { key: keyOf('task', one.rootId, one.ask.version), task: one.rootId, run: one.ask.run, at: one.ask.at } }]),
-      ...(state?.flowAsks ?? []).map(one => ({ at: one.at, ask: { key: keyOf('flow', one.card, one.stage, one.entry), task: null, run: null, at: one.at } })),
-    ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, ASKS_PER_PROJECT).map(one => one.ask);
-    const railOf = (state: ProjectState | undefined) => {
-      const families = state?.families ?? [];
-      const tasks = families.slice(0, RAIL_TASKS).flatMap((one): BrowserRailTask[] => {
-        const task = store.getTask(one.rootId);
-        const line = one.state === 'needs-you' || one.state === 'failed' ? needWords.get(one.rootId) ?? null : one.line;
-        return task === null ? [] : [{ id: one.rootId, title: task.title, href: `/t/${encodeURIComponent(one.rootId)}`, state: one.state, line: line ?? STATE_WORDS[one.state] }];
-      });
-      return { tasks, more: Math.max(0, families.length - RAIL_TASKS), asks: asksOf(state) };
-    };
-    const rows: BrowserProjectState[] = projects.map(one => {
-      const state = states.get(one.path);
-      return { path: one.path, name: one.name, href: `/work?project=${encodeURIComponent(one.path)}`, state: state?.state ?? 'idle', counts: state?.counts ?? { ...NO_COUNTS }, ...railOf(state) };
-    });
-    const unplaced = states.get(null);
-    if (unplaced !== undefined && unplaced.state !== 'idle') rows.push({ path: null, name: 'No project', href: '/work', state: unplaced.state, counts: unplaced.counts, ...railOf(unplaced) });
-    return boundProjectSummary(rows);
+    const access = workAccess();
+    return chromeRead(summaryKey(actor, access, projects), () => projectSummaryOf(store, clock(), access, actor, projects, evidenceRoot));
   }
   /** What one account may see now, as the summary room keys it: a narrowed ceiling or grant is a different key, so a
    * snapshot read for the wider scope never reaches it. Null: no such account. */
@@ -1661,12 +1740,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       ...(scope === undefined ? {} : { scope }),
     };
   }
-  // All project counts are read together. No task artifacts or processes are
-  // inspected to paint a badge or a project switcher.
+  // All project counts are read together, at most once per workspace revision
+  // for this reader's access. No task artifacts or processes are inspected to
+  // paint a badge or a project switcher.
   function projectCounts(now: Date) {
     const facts = requestContext.getStore();
     if (facts?.workCounts !== undefined) return facts.workCounts;
-    const counts = workCountsByProject(store, now, workAccess());
+    const access = workAccess();
+    const counts = chromeRead(countsKey(access), () => workCountsByProject(store, now, access));
     if (facts !== undefined) facts.workCounts = counts;
     return counts;
   }
@@ -1674,6 +1755,58 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const count = projectCounts(clock()).filter(one => project === null || one.repo === project)
       .reduce((sum, one) => sum + one.totals['needs-you'], 0);
     return { count, saturated: false };
+  }
+  /** One work index page for an already-admitted reader, through the chrome cache: a whole view the chat landing reads
+   * on every refresh. */
+  function sharedIndexPage(access: WorkSummaryAccess, options: WorkIndexOptions): WorkIndexPage {
+    // Receipt reconciliation, task and result reads always read work afresh (disk state included).
+    if (requestContext.getStore()?.freshWork === true) return workIndexPage(store, clock(), access, options);
+    return chromeRead(indexKey(access, options), () => workIndexPage(store, clock(), access, options));
+  }
+  /** A chrome read for this request: what it already read (its prefetch included) stands for the whole request, else
+   * the revision cache's value, else `compute()` now. */
+  function chromeRead<T>(key: string, compute: () => T): T {
+    const facts = requestContext.getStore();
+    const held = facts?.chromeReads?.get(key);
+    if (held !== undefined) return held as T;
+    const value = chromeReads.read(key, compute);
+    if (facts !== undefined) (facts.chromeReads ??= new Map()).set(key, value);
+    return value;
+  }
+  /** The chat landing's three whole views (chat.ts chatHomeOf), as it asks for them. */
+  const chatHomeViews = (): WorkIndexOptions[] => (["all", "needs-you", "completed"] as const)
+    .map(view => ({ view, limit: WORK_INDEX_MAX_LIMIT, ...(evidenceRoot === undefined ? {} : { root: evidenceRoot }) }));
+  /** Pages that wear the chrome (the sidebar's states and the Tasks count). */
+  const CHROME_PAGES = new Set(["home", "work", "board", "agents", "agents.live", "task.page", "run.page", "chat.page", "review", "tasks", "inbox",
+    "next", "done", "projects.page", "flows.page", "flow.page", "settings.page", "decision.page", "menu"]);
+  /** Before a chromed page renders: its chrome reads (and the chat landing's views) run on a read worker, so the
+   * request thread finds them cached instead of computing them. The reader is the one this request admitted; the keys
+   * carry its exact access (console-chrome.ts). Without a worker, or when one fails, the page computes them as before. */
+  async function prefetchChrome(route: RouteDeclaration, url: URL, who: Who): Promise<void> {
+    if (reads === null || who.via !== "cookie" || !CHROME_PAGES.has(route.id)) return;
+    try {
+      const actor = requestContext.getStore()?.actor ?? "";
+      const access = workAccess(), projects = sidebarProjects(), now = clock();
+      // Populate only the revision cache. Each answer must still pass its revision/expiry check when rendering:
+      // another job can remain pending while an earlier answer's approval or Needs-you state changes.
+      const fill = async <T>(key: string, read: () => Promise<T>) => { await chromeReads.fill(key, read); };
+      const jobs = [
+        fill(countsKey(access), () => reads.workCounts(now, access)),
+        fill(summaryKey(actor, access, projects), () => reads.projectSummary(now, access, actor, projects, evidenceRoot)),
+      ];
+      if (route.id === "chat.page") {
+        if (!["project", "room", "team"].some(name => url.searchParams.has(name)) && requestContext.getStore()?.freshWork !== true)
+          for (const options of chatHomeViews()) jobs.push(fill(indexKey(access, options), () => reads.workIndexPage(now, access, options)));
+        // The conversation's briefing (chat.ts: the fleet snapshot's states), read as chat reads it.
+        const repos = managedRepos();
+        if (repos.length > 0 && requestContext.getStore()?.freshWork !== true) {
+          const fleet = { principal: "operator" as const, repos, includeUnplaced: false, viewer: who.name };
+          const options: WorkIndexOptions = { limit: 100, ...(evidenceRoot === undefined ? {} : { root: evidenceRoot }) };
+          jobs.push(fill(indexKey(fleet, options), () => reads.workIndexPage(now, fleet, options)));
+        }
+      }
+      await Promise.all(jobs);
+    } catch { /* the page computes what is missing */ }
   }
   /** A live page's own beat without a docked chat: 10 s while any admitted task is building, else 30 s. */
   function liveRefreshSeconds(): number {
@@ -1767,6 +1900,97 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       onError: error => recordLeadFollowFailure(store, error, clock()),
     });
   });
+  // Background checks (docs/plans/get-side-effects.md): what pages show about this computer's agent sign-ins and the
+  // services Toolroll uses is asked here, on a timer, and a page reads the last answer. A page visit never starts a
+  // process or a network call, and never acts on what a check finds: lifting a sign-in pause and the lead-by-default
+  // rule run from this pass (or a person's Check now), not from a GET.
+  let backgroundChecks: ReturnType<typeof startMaintenance> | null = null;
+  let agentsCheckedAt = 0;
+  if (options.backgroundChecks === true) server.once('listening', () => {
+    // This Toolroll's folder for secrets, checked once now, so a page can read which are set without preparing it.
+    try { secretFolder(); } catch { /* a page says secrets can't be read; the next action reports why */ }
+    backgroundChecks = startMaintenance({ intervalMs: options.backgroundChecksMs ?? BACKGROUND_CHECKS_MS, shouldStop: () => leadClosing,
+      run: async () => {
+        const now = Date.now();
+        const waits: Promise<unknown>[] = [];
+        if (now - agentsCheckedAt >= (options.backgroundChecksMs ?? LOCAL_AGENTS_EVERY_MS)) {
+          agentsCheckedAt = now;
+          waits.push(checkLocalAgents());
+          // The other agents Settings lists: their last answer is what the page shows.
+          for (const provider of PROVIDER_IDS.filter(isKeyedProvider).filter(one => one !== "claude" && one !== "codex")) waits.push(connectionCheck(provider).catch(() => undefined));
+        }
+        // Project identities, resolved off the thread: what pages asked about, and answers gone stale.
+        waits.push(identities.refresh([...configuredPaths, ...exactRepos(), ...(options.currentRepos?.() ?? []), ...store.listProjects().map(one => one.path), ...store.knownRepos()]));
+        integrations.refreshIfDue();
+        const sso = ssoSettings();
+        if (sso !== null && (ssoProvider === null || ssoProvider.issuer !== sso.issuer || Date.now() - ssoProvider.at >= 10 * 60_000)) waits.push(providerFor(sso.issuer));
+        if (chatKeyFor("openrouter-api") !== null) waits.push(chatCatalog());
+        const openrouter = readProviderKey("openrouter", providerHome);
+        // The cache answers until its list is due again (ten minutes, or 30 s after a failure), then fetches.
+        if (openrouter !== null) waits.push(modelCatalog(openrouter));
+        // What used to be closed by whichever page read it first: an operating mode or a flow's "runs on its own"
+        // grant past its expiry, a stalled update, old coordinator proposals. (Lead turns past their deadline are the
+        // follow pass's, which settles them even while an update drains.)
+        const at = clock();
+        store.closeExpiredModes(at);
+        closeExpiredUnattendedGrants(store, at);
+        store.sweepCoordinatorProposals(at);
+        // The demo's scripted story, if a beat timer missed (its pages only read it).
+        try { options.demoLead?.advance(at); } catch { /* the next pass tries again */ }
+        const databaseFile = store.databaseFile();
+        if (databaseFile !== null && !updateChecksOff(process.env, options.configDir ?? dirname(databaseFile)).off) {
+          const last = lastChecks.known<{ version: string } | { problem: string }>("release");
+          if (lastChecks.due("release", last !== null && "problem" in last.value ? 60_000 : 15 * 60_000)) waits.push(checkRelease());
+        }
+        // Chat's first tasks (issues and TODOs) while the first run is open and nothing is filed yet.
+        if (firstRunStepsNow(clock()) !== null && !store.hasAnyWork()) {
+          for (const repo of managedRepos()) {
+            const entry = firstTasks.get(repo);
+            if (entry !== undefined && (entry.reading || entry.until > Date.now())) continue;
+            const reading = { until: Date.now() + 10 * 60_000, found: entry?.found ?? null, reading: true };
+            firstTasks.set(repo, reading);
+            // A test's runner reads in-process; otherwise in a process of its own (learning-look.ts), so the hardened
+            // git's synchronous reads of the project's folder never hold the console's thread.
+            waits.push((options.firstTaskRunner !== undefined ? findFirstTasks(repo, options.firstTaskRunner) : firstTasksOffThread(repo)).then(found => { reading.found = found; }, () => {}).finally(() => { reading.reading = false; }));
+          }
+        }
+        // Learning recovered from reviewed runs (and a project's saved rows carried to its current identity), which
+        // Settings → Learning and Knowledge used to do as they opened.
+        if (lastChecks.due("learning", 10 * 60_000)) {
+          waits.push(lastChecks.run("learning", async () => {
+            // Its reads of each project's Git folder are synchronous, so with a database file they run in a process of
+            // their own (learning-look.ts): a folder that doesn't answer costs its own recovery, never the console. An
+            // in-memory database (a test) can't be shared, so it is read here.
+            if (databaseFile !== null) {
+              await recoverLearningOffThread({ databaseFile, evidenceRoot, repos: managedRepos() }, options.learningRunner === undefined ? {} : { runner: options.learningRunner });
+              return;
+            }
+            for (const repo of managedRepos()) {
+              try { acceptedIdentities(store, repo); } catch { /* the next pass tries again */ }
+              try { recoverLearning(store, evidenceRoot, repo); } catch { /* the next pass tries again */ }
+            }
+          }));
+        }
+        // What Codex has configured, per project, for Settings → Tools to offer.
+        for (const repo of managedRepos()) {
+          // The project's own .mcp.json, read off the console's thread (folder-look.ts) for the Tools page and the lead.
+          if (options.identities !== undefined && lastChecks.due(`project-mcp:${repo}`, 10 * 60_000)) {
+            waits.push(lastChecks.run(`project-mcp:${repo}`, async () => { const looked = await lookProjectMcp(repo); if (looked.ok) savedProjectMcp.set(repo, looked.value); return looked.ok; }));
+          }
+          if (lastChecks.due(`codex-tools:${repo}`, 10 * 60_000)) waits.push(lastChecks.run(`codex-tools:${repo}`, () => codexServers(repo)));
+        }
+        if (databaseFile !== null && lastChecks.due("storage", 30 * 60_000)) {
+          waits.push(lastChecks.run("storage", () => checkoutPlan(store, storagePool(databaseFile), clock(), { manual: true })));
+        }
+        // The same reading the chrome does, outside a page visit, so it releases a stalled `toolroll update` and a stalled
+        // desktop update in every folder the chrome looks in.
+        if (databaseFile !== null) { try { waitingUpdate(databaseFile, run => store.stopQuiescenceProblem(run) !== null, at); } catch { /* shown as last saved */ } }
+        await Promise.all(waits);
+      },
+      onError: () => { /* each check keeps its own last answer; the next pass asks again */ },
+    });
+    void backgroundChecks.runNow();
+  });
   // Keep native process custody until shutdown has verified agent/tool exit.
   // Coding custody does not depend on subagents or the lead's follow pass, so
   // it closes at once and never waits behind a model turn: a stop must release
@@ -1792,7 +2016,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     liveHandlers.close();
     detachReads();
     liveFollower.close();
-    void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(personalQueue.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())])
+    void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(personalQueue.close()), bounded(leadMaintenance?.stop()), bounded(backgroundChecks?.stop()), bounded(reads?.close())])
       // The server always closes; a terminal whose processes couldn't be proved stopped is the close's error.
       .then(() => closeServer(error => callback?.(error ?? terminalClosing.problem ?? undefined))).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
@@ -1865,8 +2089,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get projectFamilyPeek(): ServerRuntime['projectFamilyPeek'] { return projectFamilyPeek; },
     get needsYouBadge(): ServerRuntime['needsYouBadge'] { return needsYouBadge; },
     get liveRefreshSeconds(): ServerRuntime['liveRefreshSeconds'] { return liveRefreshSeconds; },
+    get sharedIndexPage(): ServerRuntime['sharedIndexPage'] { return sharedIndexPage; },
     get chatKeyFor(): ServerRuntime['chatKeyFor'] { return chatKeyFor; },
     get chatCatalog(): ServerRuntime['chatCatalog'] { return chatCatalog; },
+    get chatCatalogKnown(): ServerRuntime['chatCatalogKnown'] { return chatCatalogKnown; },
     get leadRecheckedAt(): ServerRuntime['leadRecheckedAt'] { return leadRecheckedAt; },
     set leadRecheckedAt(value) { leadRecheckedAt = value; },
     get checkLocalAgents(): ServerRuntime['checkLocalAgents'] { return checkLocalAgents; },
@@ -1874,6 +2100,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     set localSignIn(value) { localSignIn = value; },
     get agentSignInCommand(): ServerRuntime['agentSignInCommand'] { return agentSignInCommand; },
     get connectionCheck(): ServerRuntime['connectionCheck'] { return connectionCheck; },
+    get connectionKnown(): ServerRuntime['connectionKnown'] { return connectionKnown; },
+    get lastChecks(): ServerRuntime['lastChecks'] { return lastChecks; },
+    get checkRelease(): ServerRuntime['checkRelease'] { return checkRelease; },
     get modelCatalog(): ServerRuntime['modelCatalog'] { return modelCatalog; },
     get modelSeams(): ServerRuntime['modelSeams'] { return modelSeams; },
     get toolsViewOf(): ServerRuntime['toolsViewOf'] { return toolsViewOf; },
@@ -1903,8 +2132,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get ssoProvider(): ServerRuntime['ssoProvider'] { return ssoProvider; },
     set ssoProvider(value) { ssoProvider = value; },
     get providerFor(): ServerRuntime['providerFor'] { return providerFor; },
+    get providerKnown(): ServerRuntime['providerKnown'] { return providerKnown; },
     get connectVisits(): ServerRuntime['connectVisits'] { return connectVisits; },
-    get defaultProject(): ServerRuntime['defaultProject'] { return defaultProject; },
+    get defaultProject(): ServerRuntime['defaultProject'] { return defaultProject(); },
     get googleVisits(): ServerRuntime['googleVisits'] { return googleVisits; },
     get setupAttemptsLeft(): ServerRuntime['setupAttemptsLeft'] { return setupAttemptsLeft; },
     set setupAttemptsLeft(value) { setupAttemptsLeft = value; },
@@ -1946,6 +2176,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get revisionLedgerOf(): ServerRuntime['revisionLedgerOf'] { return revisionLedgerOf; },
     get firstTasks(): ServerRuntime['firstTasks'] { return firstTasks; },
     get authenticateCredential(): ServerRuntime['authenticateCredential'] { return authenticateCredential; },
+    get identities(): ServerRuntime['identities'] { return identities; },
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime);
@@ -2025,3 +2256,48 @@ export { diffFileAnchor,editorFileHref,needActionOf,orderChangedFiles,plainConcl
 export { settingsGroups,settingsTiles } from "./server/render-settings.js";
 export { decisionAnswerScript,earlierVersionsWords,revisionLineageWords,type RouteView } from "./server/render-tasks.js";
 export { SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type DecisionServer } from "./server/session.js";
+
+/**
+ * The console's configured repos and roots. Without identities (embedders and tests) they resolve once, synchronously,
+ * as before. With them, the console resolves them in the background after it listens (operate.ts startConsole), so
+ * each is read from the last answer: a configured path counts by its real path from the moment its folder answers,
+ * and until then only by its spelling, which the strict `canon` never matches for an unresolved row.
+ */
+function startupCeiling(repos: readonly string[], roots: readonly string[], identities: ProjectIdentities | undefined, canon: (path: string) => string | null): {
+  ceiling: { readonly repos: readonly string[]; readonly roots: readonly string[]; canon: (path: string) => string | null };
+  unresolved: () => readonly string[];
+  /** The project every fresh session opens with: the sole configured repo once resolved, else none. */
+  defaultProject: () => string | null;
+  /** Whether any repo or root was configured at all (an unscoped console has none). */
+  configured: boolean;
+  /** Every configured repo and root as given: what the background pass resolves, answered or not. */
+  configuredPaths: readonly string[];
+} {
+  const configured = repos.length > 0 || roots.length > 0;
+  const configuredPaths = [...repos, ...roots];
+  if (identities === undefined) {
+    const once = resolveCeiling(repos, roots);
+    return {
+      ceiling: { ...once.ceiling, canon },
+      unresolved: () => once.unresolved,
+      defaultProject: () => once.ceiling.repos.length === 1 && once.ceiling.roots.length === 0 ? once.ceiling.repos[0] as string : null,
+      configured,
+      configuredPaths,
+    };
+  }
+  // Only resolved entries authorize: an unresolved configured path is in no list, so it matches nothing (not even its
+  // own spelling) and is no session's default until its folder answers.
+  const resolved = (paths: readonly string[]): string[] => [...new Set(paths.flatMap(path => { const real = identities.known(path); return typeof real === "string" ? [real] : []; }))];
+  const ceiling = {
+    get repos() { return resolved(repos); },
+    get roots() { return resolved(roots); },
+    canon,
+  };
+  return {
+    ceiling,
+    unresolved: () => [...repos, ...roots].filter(path => typeof identities.known(path) !== "string"),
+    defaultProject: () => repos.length === 1 && roots.length === 0 ? resolved(repos)[0] ?? null : null,
+    configured,
+    configuredPaths,
+  };
+}

@@ -16,7 +16,7 @@ import type { ServerRuntime } from './runtime.js';
 import { personChip,refuse,screen } from "./chrome.js";
 import { redirect,respond,sayTo } from "./http.js";
 /** people handlers, moved without changing their route bodies. */
-import { randomBytes,timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { type FormFieldOf,type FormView } from "../contracts/console-api.js";
 import { listCoordinators } from "../coordinator.js";
@@ -26,8 +26,9 @@ import { personAuditHtml,personHref } from "../people-audit-ui.js";
 import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
 import { credentialProof,hashPassword,proveAccountNow } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
-import { joinDeadPage,joinFormPage,loginPage,signupPage } from "./render-people.js";
+import { joinDeadPage,joinFormPage,loginPage,SIGNUP_NAME,SIGNUP_PASSWORD_MIN,signupPage } from "./render-people.js";
 import { SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
+import { setupCodeMatches,signupCookie,signupFromHere } from "./signup-gate.js";
 
 /** Clock skew allowed between the provider and this server when reading auth_time — forward only (a provider clock
  * running ahead). auth_time is in whole seconds, so a check made in the visit's own second is floored below startedAt:
@@ -42,7 +43,7 @@ export function sameVisitCheck(authTime: number | null, startedAt: number, now: 
   return Math.min(Math.max(at, startedAt), now);
 }
 export function createPeopleHandlers(runtime: ServerRuntime) {
-  const { joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, authenticateCredential, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
+  const { joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, authenticateCredential, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, cookieSecure, consoleOrigin, providerFor, providerKnown, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
 
   // v101: Settings → Sessions & tokens: where you're signed in, and your API tokens. An instance operator can see everyone's.
   async function sessionsPage(ctx: HandlerContext): Promise<void> {
@@ -314,6 +315,10 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
   async function signInPage(ctx: EdgeContext): Promise<void> {
     const { url, response } = ctx;
     if (options.setupCode !== undefined && store.listApprovers().length === 0) {
+      // The form's same-site proof (signup-gate.ts): a post without it never reaches the setup code.
+      if (runtime.setupAttemptsLeft > 0) response.setHeader("Set-Cookie", signupCookie(cookieSecure));
+      // Its own post then carries this console's Origin (the console's default no-referrer sends `null`).
+      response.setHeader("Referrer-Policy", "same-origin");
       return page(response, 200, signupPage(null, runtime.setupAttemptsLeft));
     }
     return page(response, 200, loginPage(null, loginReturn(url.searchParams.get("return")), ssoOffer()));
@@ -339,7 +344,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     if (!passwordAllowed(held.account)) return page(response, 403, loginPage(`Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`, "/chat", ssoOffer()));
     const id = randomBytes(32).toString("hex");
     sessions.set(id, { ...arrival(request), name: held.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
-      project: defaultProject, projectRevision: 1 });
+      project: runtime.defaultProject, projectRevision: 1 });
     recordSignIn(held.account, "signed in", "one-time link");
     response.setHeader("Set-Cookie", `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`);
     return redirect(response, "/chat");
@@ -356,8 +361,11 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     if (intent !== "sign-in" && who?.via !== "cookie") return redirect(response, loginHref(returnTo));
     const origin = consoleOrigin(request.headers.host);
     if (origin === null) return page(response, 400, loginPage("Sign in from this computer (localhost) or from your https address.", returnTo, ssoOffer()));
-    const found = await providerFor(settings.issuer);
-    if (!found.ok) return page(response, 502, loginPage(`${settings.label} isn't answering: ${found.said}`, returnTo, ssoOffer()));
+    // Discovered as the console starts and in the background (docs/plans/get-side-effects.md): following this link
+    // fetches nothing.
+    const known = providerKnown(settings.issuer);
+    if (known === null) return page(response, 503, loginPage(`${settings.label} isn't answering yet. Try again in a moment.`, returnTo, ssoOffer()));
+    const found = { provider: known };
     const visit = newOidcVisit(), redirectUri = `${origin}${SSO_CALLBACK}`;
     for (const [key, one] of ssoVisits) if (one.expires < Date.now()) ssoVisits.delete(key);
     // Bounded: anyone may start a sign-in, so the oldest waiting ones give way.
@@ -420,7 +428,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     const account = store.accountOf(signedIn.account)!;
     const id = randomBytes(32).toString("hex");
     sessions.set(id, { ...arrival(request), name: signedIn.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
-      project: defaultProject, projectRevision: 1, sso: { at: handoff.checkedAt ?? 0 } });
+      project: runtime.defaultProject, projectRevision: 1, sso: { at: handoff.checkedAt ?? 0 } });
     recordSignIn(signedIn.account, "signed in", settings.label);
     response.setHeader("Set-Cookie", [signInSpent("/login/sso/finish"), `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
     return redirect(response, handoff.returnTo);
@@ -428,35 +436,49 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
 
   async function signupSend(ctx: EdgeContext): Promise<void> {
     const { request, response } = ctx;
+    // A re-shown form posts again: its Origin must name this console too (signup-gate.ts).
+    response.setHeader("Referrer-Policy", "same-origin");
     // Only while the table is empty, only with the printed code, only
     // five tries: the bootstrap door underneath is atomic, so two first
     // visitors serialize to one owner.
     if (options.setupCode === undefined || store.listApprovers().length > 0) {
-      return page(response, 409, loginPage("an account already exists — sign in"));
+      return page(response, 409, loginPage("An account already exists. Sign in."));
     }
     if (runtime.setupAttemptsLeft <= 0) {
-      return page(response, 403, signupPage("too many wrong codes — restart the server to get a fresh code", 0));
+      return page(response, 403, signupPage(null, 0));
+    }
+    // Another site's post (or one without this page's cookie) is refused before it can spend a try.
+    if (!signupFromHere(request, runtime.allowedHost)) {
+      request.resume();
+      response.setHeader("Set-Cookie", signupCookie(cookieSecure));
+      return page(response, 403, signupPage("This form had expired, so it was reloaded. Enter the details again.", runtime.setupAttemptsLeft));
     }
     const body = readForm(await form(request), CONSOLE_FORMS.signup);
     const code = (body.get("code") ?? "").trim();
     const name = (body.get("name") ?? "").trim();
     const password = body.get("password") ?? "";
-    const given = Buffer.from(code.padEnd(64, " "), "utf8");
-    const wanted = Buffer.from(options.setupCode.padEnd(64, " "), "utf8");
-    if (code === "" || !timingSafeEqual(given, wanted)) {
+    // Re-read after the body: concurrent posts all waited above, and only the tries still left may be compared.
+    // From here to the decrement nothing awaits, so check and spend are one step.
+    if (runtime.setupAttemptsLeft <= 0) {
+      return page(response, 403, signupPage(null, 0));
+    }
+    if (!setupCodeMatches(code, options.setupCode)) {
       runtime.setupAttemptsLeft -= 1;
-      return page(response, 403, signupPage("that is not the setup code the server printed", runtime.setupAttemptsLeft));
+      // What was typed comes back except the code and the password (never echoed); the count rides the code's note.
+      return page(response, 403, signupPage(runtime.setupAttemptsLeft > 0
+        ? { field: "code", text: "That isn't the setup code Toolroll printed. Check the terminal and try again." }
+        : "That wasn't the setup code, and that was the last try. Restart Toolroll to get a new code.", runtime.setupAttemptsLeft, name));
     }
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
-      return page(response, 400, signupPage("a username is letters, digits, dots, dashes — up to 64", runtime.setupAttemptsLeft));
+    if (!SIGNUP_NAME.test(name)) {
+      return page(response, 400, signupPage({ field: "name", text: "Use only letters, digits, dots, dashes or underscores, starting with a letter or digit." }, runtime.setupAttemptsLeft, name));
     }
-    if (password.length < 8) {
-      return page(response, 400, signupPage("a password is at least 8 characters", runtime.setupAttemptsLeft));
+    if (password.length < SIGNUP_PASSWORD_MIN) {
+      return page(response, 400, signupPage({ field: "password", text: `Use at least ${SIGNUP_PASSWORD_MIN} characters.` }, runtime.setupAttemptsLeft, name));
     }
     const made = store.bootstrapApproverIfNone(name, hashPassword(password), clock());
-    if (!made.ok) return page(response, 409, loginPage("an account already exists — sign in"));
+    if (!made.ok) return page(response, 409, loginPage("An account already exists. Sign in."));
     const authenticated = authenticateAccount(store, name, password);
-    if (authenticated === null || !authenticated.ok) return page(response, 500, loginPage("the account was created but could not sign in — try again"));
+    if (authenticated === null || !authenticated.ok) return page(response, 500, loginPage("The account was created, but signing in failed. Sign in with it now."));
     const id = randomBytes(32).toString("hex");
     sessions.set(id, {
       ...arrival(request),
@@ -467,7 +489,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
       createdAt: Date.now(),
       sawBoardAt: null,
       lastSeen: Date.now(),
-      project: defaultProject,
+      project: runtime.defaultProject,
       projectRevision: 1,
       // A password typed on this computer starts this session's freshness window (cockpit B2); from anywhere else, never.
       ...(fromThisComputer(request) ? { passwordAt: Date.now() } : {}),
@@ -520,7 +542,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
       createdAt: Date.now(),
       sawBoardAt: null,
       lastSeen: Date.now(),
-      project: defaultProject,
+      project: runtime.defaultProject,
       projectRevision: 1,
       // A password typed to sign in on this computer starts this session's freshness window (cockpit B2); from anywhere
       // else (a phone, a proxy) it signs in and proves nothing more.
@@ -610,7 +632,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
       createdAt: Date.now(),
       sawBoardAt: null,
       lastSeen: Date.now(),
-      project: defaultProject,
+      project: runtime.defaultProject,
       projectRevision: 1,
     });
     response.setHeader(

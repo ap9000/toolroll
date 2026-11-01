@@ -4,6 +4,7 @@
  * and provider keys over real HTTP.
  */
 
+import { TEMPLATES } from "./templates.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, readFileSync, writeFileSync } from "node:fs";
@@ -679,7 +680,8 @@ describe("the first run: three plain steps to a first result", () => {
   const signedOut = async (file: string) => ({ code: 1, stdout: file === "codex" ? "Not logged in\n" : JSON.stringify({ loggedIn: false }), stderr: "", timedOut: false, notFound: false });
   const quietRepo = async () => ({ code: 1, stdout: "", stderr: "", timedOut: false, notFound: false });
   const boot = async (options: Record<string, unknown> = {}) => {
-    server = createDecisionServer({ store, evidenceRoot, clock: () => new Date(), connectionProbe: signedOut, firstTaskRunner: quietRepo, ...options });
+    // The console's background checks ask this machine and the project (docs/plans/get-side-effects.md); pages only read.
+    server = createDecisionServer({ store, evidenceRoot, clock: () => new Date(), connectionProbe: signedOut, firstTaskRunner: quietRepo, backgroundChecks: true, ...options });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     if (typeof address !== "object" || address === null) throw new Error("no address");
@@ -710,7 +712,7 @@ describe("the first run: three plain steps to a first result", () => {
     await vi.waitFor(async () => expect(await agentStep(cookie)).not.toContain("claude auth login"));
   });
 
-  test("with no worker registered yet, the first render checks this machine, and shows the step as checking until it answers", async () => {
+  test("with no worker registered yet, the background check asks this machine, and pages show the step as checking until it answers", async () => {
     let answer: (() => void) | null = null;
     const probe = vi.fn((file: string) => new Promise<Awaited<ReturnType<typeof signedIn>>>(done => {
       const reply = () => { void signedIn(file).then(done); };
@@ -737,8 +739,8 @@ describe("the first run: three plain steps to a first result", () => {
     const cookie = await login();
     expect(await agentStep(cookie)).toContain("claude auth login");
     await new Promise(resolve => setTimeout(resolve, 50));
+    // This machine may be asked (the background checks), but its answer never decides for a worker elsewhere.
     expect(await agentStep(cookie)).toContain("claude auth login");
-    expect(probe).not.toHaveBeenCalled();
     store.recordProviderReadiness("far-1", [{ provider: "codex", state: "ready", reason: "installed; logged in", probe: "identity" }], new Date());
     expect(await agentStep(cookie)).not.toContain("claude auth login");
   });
@@ -751,7 +753,7 @@ describe("the first run: three plain steps to a first result", () => {
     expect((await fetch(url("/inbox"), { headers: { cookie }, signal: AbortSignal.timeout(3_000) })).status).toBe(200);
     const chat = await (await fetch(url("/chat?format=workspace"), { headers: { cookie }, signal: AbortSignal.timeout(3_000) })).json() as import("./browser-workspace.js").BrowserWorkspace;
     expect(chat.firstRun!.suggestions.map(one => one.source)).toEqual(["generic", "generic", "generic"]);
-    // The reads were started, in the background.
+    // The reads were started by the background checks, never by the pages.
     expect(never.mock.calls.map(([file]) => file)).toEqual(expect.arrayContaining(["claude", "gh"]));
   });
 
@@ -833,6 +835,13 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
   const csrfFrom = async (cookie: string): Promise<string> => {
     const html = await (await fetch(url("/projects"), { headers: { cookie } })).text();
     return /name="csrf" value="([0-9a-f]{64})"/.exec(html)?.[1] as string;
+  };
+  // Listing asks GitHub, so it is a POST (docs/plans/get-side-effects.md): opening the page alone lists nothing.
+  const githubPage = async (cookie: string): Promise<string> => {
+    expect(await (await fetch(url("/projects/github"), { headers: { cookie } })).text()).toContain("List repositories");
+    const listed = await fetch(url("/projects/github"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf: await csrfFrom(cookie) }), redirect: "manual" });
+    expect(listed.headers.get("location")).toBe("/projects/github");
+    return (await fetch(url("/projects/github"), { headers: { cookie } })).text();
   };
 
   const boot = async (options: Record<string, unknown>) => {
@@ -945,7 +954,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     });
     await boot({ projectRoots: [root], ghList });
     const cookie = await login();
-    const page = await (await fetch(url("/projects/github"), { headers: { cookie } })).text();
+    const page = await githubPage(cookie);
     // The on-disk clone is offered as add + open, with its path said plainly.
     expect(page).toContain("add + open");
     expect(page).toContain(cloned);
@@ -984,7 +993,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     });
     await boot({ projectRoots: [root], ghList });
     const cookie = await login();
-    const page = await (await fetch(url("/projects/github"), { headers: { cookie } })).text();
+    const page = await githubPage(cookie);
     // Neither local directory mapped: both rows offer the clone ceremony.
     expect(page).not.toContain("add + open");
     expect((renderedHtmlOf(page).match(/Clone here/g) ?? []).length).toBe(2);
@@ -1007,7 +1016,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     });
     await boot({ projectRoots: [root], ghList });
     const cookie = await login();
-    const page = await (await fetch(url("/projects/github"), { headers: { cookie } })).text();
+    const page = await githubPage(cookie);
     expect(page).toContain("alex/fine");
     // A non-ISO stamp was already rejected at ingestion in production; the
     // page never renders a raw one regardless.
@@ -1017,7 +1026,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
   test("a gh that is missing or signed out renders its words, never a broken page", async () => {
     await boot({ projectRoots: [root], ghList: async () => ({ ok: false as const, reason: "gh-auth" as const, message: "gh is not signed in — run `gh auth login --hostname github.com` where serve runs" }) });
     const cookie = await login();
-    const page = await (await fetch(url("/projects/github"), { headers: { cookie } })).text();
+    const page = await githubPage(cookie);
     expect(page).toContain("gh is not signed in");
   });
 
@@ -1129,6 +1138,9 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
       });
       expect(await refused.text()).toContain("outside what this server was configured to show");
       expect(store.getTask("smuggled")).toBeNull();
+      // A shipped template pre-fills the add page, as ?template= did on the old list.
+      const lint = TEMPLATES.find(one => one.name === "lint-sweep")!;
+      expect(await (await fetch(url("/tasks/new?template=lint-sweep"), { headers: { cookie } })).text()).toContain(lint.title);
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
@@ -1341,19 +1353,22 @@ describe("the first account (setup review): sign up on the login page with the p
     rmSync(evidenceRoot, { recursive: true, force: true });
   });
 
+  // The page that shows the form sets its same-site cookie; a post must carry it (signup-gate.ts).
+  const gate = async () => ((await fetch(`${base}/login`)).headers.get("set-cookie") ?? "").split(";")[0] as string;
+
   test("no accounts: the login page offers to create one; a wrong code refuses; the right code creates it and signs in; then the road is closed", async () => {
     const first = await (await fetch(`${base}/login`)).text();
     expect(first).toContain("Create the first account");
     expect(first).toContain('action="/signup"');
 
-    const wrong = await fetch(`${base}/signup`, { method: "POST", body: new URLSearchParams({ code: "000000", name: "alex", password: "correct horse battery" }), redirect: "manual" });
+    const wrong = await fetch(`${base}/signup`, { method: "POST", headers: { cookie: await gate(), origin: base }, body: new URLSearchParams({ code: "000000", name: "alex", password: "correct horse battery" }), redirect: "manual" });
     expect(wrong.status).toBe(403);
     expect(store.listApprovers()).toHaveLength(0);
 
-    const short = await fetch(`${base}/signup`, { method: "POST", body: new URLSearchParams({ code: "424242", name: "alex", password: "short" }), redirect: "manual" });
+    const short = await fetch(`${base}/signup`, { method: "POST", headers: { cookie: await gate(), origin: base }, body: new URLSearchParams({ code: "424242", name: "alex", password: "short" }), redirect: "manual" });
     expect(short.status).toBe(400);
 
-    const made = await fetch(`${base}/signup`, { method: "POST", body: new URLSearchParams({ code: "424242", name: "alex", password: "correct horse battery" }), redirect: "manual" });
+    const made = await fetch(`${base}/signup`, { method: "POST", headers: { cookie: await gate(), origin: base }, body: new URLSearchParams({ code: "424242", name: "alex", password: "correct horse battery" }), redirect: "manual" });
     expect(made.status).toBe(303);
     const cookie = (made.headers.get("set-cookie") ?? "").split(";")[0] as string;
     expect(cookie).toMatch(/=[0-9a-f]{64}$/);
@@ -1366,21 +1381,140 @@ describe("the first account (setup review): sign up on the login page with the p
     const again = await (await fetch(`${base}/login`)).text();
     expect(again).not.toContain("Create the first account");
     expect(again).toContain("Sign in");
-    const second = await fetch(`${base}/signup`, { method: "POST", body: new URLSearchParams({ code: "424242", name: "mallory", password: "correct horse battery" }), redirect: "manual" });
+    const second = await fetch(`${base}/signup`, { method: "POST", headers: { cookie: await gate(), origin: base }, body: new URLSearchParams({ code: "424242", name: "mallory", password: "correct horse battery" }), redirect: "manual" });
     expect(second.status).toBe(409);
+    expect(store.listApprovers()).toHaveLength(1);
+  });
+
+  // Settings revamp S3: a refusal keeps the username, never the code or the password, and marks the field it is about.
+  const post = async (fields: Record<string, string>, headers: Record<string, string> = {}) =>
+    fetch(`${base}/signup`, { method: "POST", headers: { cookie: await gate(), origin: base, ...headers }, body: new URLSearchParams(fields), redirect: "manual" });
+  const inputOf = (page: string, name: string) => [...page.matchAll(/<input\b[^>]*>/g)].map(one => one[0]).find(one => one.includes(` name="${name}"`)) ?? "";
+
+  test("a wrong code keeps the username, empties the code and the password, counts down and marks the code", async () => {
+    const wrong = await post({ code: "987654", name: "alex.p", password: "correct horse battery" });
+    expect(wrong.status).toBe(403);
+    expect(wrong.headers.get("cache-control")).toBe("no-store");
+    const page = await wrong.text();
+    expect(inputOf(page, "name")).toContain('value="alex.p"');
+    expect(inputOf(page, "code")).not.toContain("value=");
+    expect(inputOf(page, "password")).not.toContain("value=");
+    expect(page).not.toContain("987654");
+    expect(page).not.toContain("correct horse battery");
+    expect(inputOf(page, "code")).toMatch(/aria-invalid="true" aria-describedby="signup-code-note signup-problem" autofocus/);
+    expect(inputOf(page, "name")).not.toContain("aria-invalid");
+    expect(page).toMatch(/<p class="problem signup-problem" id="signup-problem" role="alert">/);
+    expect(page).toContain("4 tries left");
+    expect(store.listApprovers()).toHaveLength(0);
+  });
+
+  test("a bad username or a short password is marked on its own field, keeps the username and creates nothing", async () => {
+    const badName = await post({ code: "424242", name: "-<b>x", password: "correct horse battery" });
+    expect(badName.status).toBe(400);
+    const namePage = await badName.text();
+    expect(inputOf(namePage, "name")).toContain('value="-&lt;b&gt;x"');
+    expect(inputOf(namePage, "name")).toContain('aria-invalid="true"');
+    expect(inputOf(namePage, "code")).not.toContain("value=");
+    expect(namePage).not.toContain("424242");
+    expect(namePage).not.toContain("correct horse battery");
+
+    const short = await post({ code: "424242", name: "alex", password: "short12" });
+    expect(short.status).toBe(400);
+    const shortPage = await short.text();
+    expect(inputOf(shortPage, "password")).toMatch(/aria-invalid="true" aria-describedby="signup-password-note signup-problem"/);
+    expect(inputOf(shortPage, "password")).not.toContain("value=");
+    expect(inputOf(shortPage, "name")).toContain('value="alex"');
+    expect(shortPage).not.toContain("short12");
+    // Neither refusal spent a try or left an account behind.
+    expect(shortPage).toContain("5 tries left");
+    expect(store.listApprovers()).toHaveLength(0);
+  });
+
+  test("two first visitors with the right code make exactly one account", async () => {
+    const [one, two] = await Promise.all([
+      post({ code: "424242", name: "alex", password: "correct horse battery" }),
+      post({ code: "424242", name: "mallory", password: "correct horse battery" }),
+    ]);
+    expect([one.status, two.status].sort()).toEqual([303, 409]);
     expect(store.listApprovers()).toHaveLength(1);
   });
 
   test("five wrong codes close the road until restart", async () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const wrong = await fetch(`${base}/signup`, { method: "POST", body: new URLSearchParams({ code: "111111", name: "x", password: "correct horse battery" }), redirect: "manual" });
+      const wrong = await fetch(`${base}/signup`, { method: "POST", headers: { cookie: await gate(), origin: base }, body: new URLSearchParams({ code: "111111", name: "x", password: "correct horse battery" }), redirect: "manual" });
       expect(wrong.status).toBe(403);
+      const left = 4 - attempt, page = await wrong.text();
+      if (left > 0) expect(page).toContain(left === 1 ? "1 try left" : `${left} tries left`);
+      else expect(page).not.toContain('action="/signup"');
     }
-    const closed = await fetch(`${base}/signup`, { method: "POST", body: new URLSearchParams({ code: "424242", name: "x", password: "correct horse battery" }), redirect: "manual" });
+    const closed = await fetch(`${base}/signup`, { method: "POST", headers: { cookie: await gate(), origin: base }, body: new URLSearchParams({ code: "424242", name: "x", password: "correct horse battery" }), redirect: "manual" });
     expect(closed.status).toBe(403);
     expect(store.listApprovers()).toHaveLength(0);
     const page = await (await fetch(`${base}/login`)).text();
     expect(page).not.toContain('action="/signup"');
+  });
+
+
+  test("a post from another site, or without the page's cookie, is refused before it can spend a try", async () => {
+    const cookieless = await fetch(`${base}/signup`, { method: "POST", body: new URLSearchParams({ code: "111111", name: "x", password: "correct horse battery" }), redirect: "manual" });
+    expect(cookieless.status).toBe(403);
+    expect(cookieless.headers.get("set-cookie")).toMatch(/^so-signup=[^;]+; HttpOnly; SameSite=Strict; Path=\/signup/);
+    const forged = await fetch(`${base}/signup`, { method: "POST", headers: { cookie: "so-signup=AAAAAAAAAAAAAAAAAAAAAAAA.AAAA" }, body: new URLSearchParams({ code: "111111", name: "x", password: "correct horse battery" }), redirect: "manual" });
+    expect(forged.status).toBe(403);
+    expect((await post({ code: "111111", name: "x", password: "correct horse battery" }, { origin: "https://evil.example" })).status).toBe(403);
+    expect((await post({ code: "111111", name: "x", password: "correct horse battery" }, { "sec-fetch-site": "cross-site" })).status).toBe(403);
+    // No provenance at all (Origin: null, no Referer, no Fetch Metadata) fails closed, with the cookie and all.
+    const unnamed = await post({ code: "111111", name: "x", password: "correct horse battery" }, { origin: "null" });
+    expect(unnamed.status).toBe(403);
+    expect(await unnamed.text()).toContain("5 tries left");
+    // Same-origin Fetch Metadata with an opaque Origin is still the console's own post, and counts.
+    const own = await post({ code: "111111", name: "x", password: "correct horse battery" }, { origin: "null", "sec-fetch-site": "same-origin" });
+    expect(own.status).toBe(403);
+    expect(await own.text()).toContain("4 tries left");
+    // An explicit same-origin Origin works without Fetch Metadata (the helper sends exactly that).
+    const named = await post({ code: "111111", name: "x", password: "correct horse battery" });
+    expect(await named.text()).toContain("3 tries left");
+    // The form's page names its own origin on its posts.
+    expect((await fetch(`${base}/login`)).headers.get("referrer-policy")).toBe("same-origin");
+  });
+
+  test("a malformed code (non-ASCII, too long) is an ordinary counted wrong code, never a crash", async () => {
+    const accented = await post({ code: "4242é", name: "alex", password: "correct horse battery" });
+    expect(accented.status).toBe(403);
+    expect(await accented.text()).toContain("4 tries left");
+    const long = await post({ code: "4".repeat(200), name: "alex", password: "correct horse battery" });
+    expect(long.status).toBe(403);
+    expect(await long.text()).toContain("3 tries left");
+    expect(store.listApprovers()).toHaveLength(0);
+  });
+
+  test("six posts held open together still get only five tries: the right code sent last is refused", async () => {
+    const { request } = await import("node:http");
+    const { port } = new URL(base);
+    const cookie = await gate();
+    const held = Array.from({ length: 6 }, (_, index) => {
+      const body = new URLSearchParams({ code: index === 5 ? "424242" : "111111", name: "alex", password: "correct horse battery" }).toString();
+      const sent = request({ host: "127.0.0.1", port: Number(port), path: "/signup", method: "POST",
+        headers: { cookie, origin: base, "content-type": "application/x-www-form-urlencoded", "content-length": String(body.length) } });
+      const answered = new Promise<number>((resolve, reject) => { sent.on("response", reply => { reply.resume(); resolve(reply.statusCode ?? 0); }); sent.on("error", reject); });
+      sent.write(body.slice(0, 3));
+      return { sent, rest: body.slice(3), answered };
+    });
+    // Every post has its headers in (and has passed the early check) before any body finishes.
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const statuses: number[] = [];
+    for (const one of held) { one.sent.end(one.rest); statuses.push(await one.answered); }
+    expect(statuses).toEqual([403, 403, 403, 403, 403, 403]);
+    expect(store.listApprovers()).toHaveLength(0);
+  });
+
+  test("reopening the page after the tries are spent says why and how to recover", async () => {
+    for (let attempt = 0; attempt < 5; attempt += 1) await post({ code: "111111", name: "x", password: "correct horse battery" });
+    const reopened = await fetch(`${base}/login`);
+    expect(reopened.headers.get("set-cookie")).toBeNull();
+    const page = await reopened.text();
+    expect(page).not.toContain('action="/signup"');
+    expect(page).toMatch(/role="alert">Too many wrong setup codes\. Restart Toolroll to get a new code\./);
   });
 
   test("a server started without a setup code never offers sign-up", async () => {

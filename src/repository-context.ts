@@ -1,8 +1,8 @@
 /** Optional repository context. Callers admit project access; this module grants no authority.
  * The index is disposable. Every read hashes the current bounded tracked source set;
  * a missing/changed/unreadable index falls back to ordinary text search, never a task gate. */
+import { checkoutGitSync } from './teardown-git.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { scanForSecrets } from './evidence.js';
@@ -14,7 +14,10 @@ const CODE = /\.(?:[cm]?[jt]sx?)$/i;
 const TEXT = /\.(?:[cm]?[jt]sx?|md|txt|css|html|json)$/i;
 const MAX_NODES = 16_000, MAX_EDGES = 12_000;
 const sha = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
-const git = (repo: string, args: string[]) => execFileSync('git', ['--no-optional-locks', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2_000_000, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
+// Read-only and bounded, and always the hardened checkout git (a crew worktree is agent-written, and a page read or a
+// lead's refresh reads it alike): no filter, hook, program or network, its config and info frozen in a view of the
+// plane's own before they're inspected (teardown-git.ts checkoutGitSync).
+const git = (repo: string, args: string[]) => checkoutGitSync(repo, args, { timeoutMs: 10_000, maxBuffer: 2_000_000 }).trimEnd();
 const inside = (root: string, path: string) => { const r = relative(root, path); return r !== '..' && !r.startsWith('..' + sep) && !isAbsolute(r); };
 
 export type RepositoryContextRequest = {

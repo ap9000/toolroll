@@ -110,3 +110,84 @@ test("with it on, adding a webhook trigger (an address) still takes a typed pass
   expect(await add({ kind: "webhook" }, { password })).toMatchObject({ body: { ok: true } });
   expect(await add({ kind: "schedule", schedule: "daily 09:00", title: "Standup" })).toMatchObject({ body: { ok: true } });
 });
+
+test("the three widening actions take a password (an ordinary step-up: with Passwordless on, the session does)", async () => {
+  await new Promise<void>(resolve => server.close(() => resolve()));
+  // Settings → Unattended permissions answers only on a console with chat settings.
+  server = createDecisionServer({ store, evidenceRoot: home, repos: [home], terminalHost: null, configDir: home, telegramTokenFile: join(home, "telegram-token") } as Parameters<typeof createDecisionServer>[0]);
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const { setUpKit, kitOf, kitInstalled } = await import("./kits.js");
+  const kit = kitOf("support-desk")!;
+  expect(await setUpKit(store, kit, home, "alex", T0, home)).toMatchObject({ ok: true });
+  const mate = kitInstalled(store, kit, home)!.mate;
+  const cookie = await login();
+  const csrf = csrfOf(await page(cookie, "/settings/passwordless"));
+  const widen = {
+    fullAccess: (extra: Record<string, string> = {}) => post(cookie, "/settings/permission-default", { csrf, "permission-mode": "bypassPermissions", ...extra }),
+    toolGrant: (extra: Record<string, string> = {}) => post(cookie, `/settings/lead/subagents/${mate.id}/tools`, { csrf, op: "grant", tool: "stripe", ...extra }),
+    kitGithub: (extra: Record<string, string> = {}) => post(cookie, `/kits/${kit.id}/github`, { csrf, repo: home, ...extra }),
+  };
+  // No password: refused, nothing changes.
+  expect((await widen.fullAccess()).location).toMatch(/Enter your Toolroll password to start new tasks with Full access/);
+  expect(store.permissionDefault().mode).toBe("auto");
+  expect((await widen.toolGrant()).location).toMatch(/Enter your Toolroll password to let .* use stripe/);
+  expect((await widen.kitGithub()).location).toMatch(/Enter your Toolroll password to bring in GitHub issues/);
+  // A wrong one: the same.
+  expect((await widen.kitGithub({ password: "wrong" })).location).toMatch(/Enter your Toolroll password/);
+  // The password: each goes past the check (the tool and GitHub answers are this fixture's own).
+  expect((await widen.toolGrant({ password })).location).not.toMatch(/Enter your Toolroll password/);
+  expect((await widen.kitGithub({ password })).location).not.toMatch(/Enter your Toolroll password/);
+  expect((await widen.fullAccess({ password })).status).toBe(303);
+  expect(store.permissionDefault().mode).toBe("bypassPermissions");
+  // Back to Auto narrows: no password.
+  await post(cookie, "/settings/permission-default", { csrf, "permission-mode": "auto" });
+  expect(store.permissionDefault().mode).toBe("auto");
+  // Passwordless on: the signed-in session is the step-up.
+  await post(cookie, "/settings/passwordless", { csrf, action: "on", password });
+  await widen.fullAccess();
+  expect(store.permissionDefault().mode).toBe("bypassPermissions");
+  expect((await widen.kitGithub()).location).not.toMatch(/Enter your Toolroll password/);
+});
+
+test("a trigger that brings in items from anyone takes a password on every road; a team-only one doesn't", async () => {
+  const flow = store.createFlow({ repo: home, name: "Inbound", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "triage", title: "Triage", kind: "task", instructions: "Look." }], null)) }, T0);
+  const cookie = await login();
+  const csrf = csrfOf(await page(cookie, "/settings/passwordless"));
+  const add = async (trigger: object, extra: Record<string, string> = {}) => {
+    const response = await fetch(`${base}/flows/${flow}/triggers`, { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams({ csrf, trigger: JSON.stringify(trigger), ...extra }) });
+    return { status: response.status, body: await response.json() as { ok: boolean; said?: string } };
+  };
+  const github = { kind: "github", repo: "example/shop", watch: "issues", from: "anyone", delivery: "poll" };
+  const mail = { kind: "email", folder: "INBOX" };
+  for (const trigger of [github, mail]) {
+    expect(await add(trigger)).toMatchObject({ status: 403, body: { ok: false, said: "Enter your Toolroll password to bring in items from anyone." } });
+    expect(await add(trigger, { password: "wrong" })).toMatchObject({ status: 403 });
+  }
+  expect(store.flowTriggers(flow)).toHaveLength(0);
+  expect(await add({ ...github, from: "team" })).toMatchObject({ body: { ok: true } });
+  expect(await add({ ...mail, sender: "priya@example.com" })).toMatchObject({ body: { ok: true } });
+  expect(await add(github, { password })).toMatchObject({ body: { ok: true } });
+  expect(await add(mail, { password })).toMatchObject({ body: { ok: true } });
+  // Every other road (a chat card, an import, a template) adds one only with the person's proof.
+  const { addFlowTriggerTo } = await import("./flow-triggers.js");
+  expect(addFlowTriggerTo(store, store.getFlow(flow)!, github, "alex", T0, home)).toMatchObject({ ok: false, message: expect.stringContaining("takes your password") });
+  expect(addFlowTriggerTo(store, store.getFlow(flow)!, mail, "alex", T0, null, { shown: false })).toMatchObject({ ok: false });
+});
+
+test("loosening a subagent's tool rule, or accepting its suggestion to, takes a password; tightening doesn't", async () => {
+  const { setUpKit, kitOf, kitInstalled } = await import("./kits.js");
+  const kit = kitOf("support-desk")!;
+  await setUpKit(store, kit, home, "alex", T0, home);
+  const mate = kitInstalled(store, kit, home)!.mate;
+  store.saveSubagentGrant({ subagent: mate.id, tool: "shop", actions: [{ name: "refund", readOnly: false, input: null }], rules: { refund: { use: "ask" } } }, "alex", T0);
+  const cookie = await login();
+  const csrf = csrfOf(await page(cookie, "/settings/passwordless"));
+  const rule = (use: string, extra: Record<string, string> = {}) => post(cookie, `/settings/lead/subagents/${mate.id}/tools`, { csrf, tool: "shop", op: "rules", "use.refund": use, ...extra });
+  expect((await rule("free")).location).toMatch(/Enter your Toolroll password to let .* do more on its own/);
+  expect(store.subagentGrant(mate.id, "shop")?.rules["refund"]).toEqual({ use: "ask" });
+  expect((await rule("never")).location).not.toMatch(/password/);
+  expect(store.subagentGrant(mate.id, "shop")?.rules["refund"]).toEqual({ use: "never" });
+  expect((await rule("free", { password })).location).not.toMatch(/Enter your Toolroll password/);
+  expect(store.subagentGrant(mate.id, "shop")?.rules["refund"]).toEqual({ use: "free" });
+});

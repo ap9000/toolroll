@@ -16,8 +16,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Runner } from "./backend.js";
 import type { Store, VerifyCommand } from "./store.js";
+import { belongsToRelease } from "./release-authority.js";
 import type { ExecResult } from "./exec.js";
 import { run as execRun } from "./exec.js";
+import { hardenedGit } from "./teardown-git.js";
 import { approvedCommandShell, SETUP_ENV_ALLOWLIST, SETUP_ENV_DENYLIST } from "./builder.js";
 import { runWithIsolatedDatabase } from "./child-database.js";
 import { boundStreamHeadTail, readVerifiedArtifact, redactSecretLines, scanForSecrets, storeEvidence } from "./evidence.js";
@@ -80,6 +82,18 @@ export function followUpChecksOf(store: Store, runId: number, now: Date = new Da
       } catch { /* an unreadable receipt upgrades nothing */ }
     }
   }
+  // A pass stands only while its saved log still verifies and the command it ran is still the approved one, the same
+  // bar the build's own check receipt meets (verification-evidence.ts): otherwise it can't be read as a pass now.
+  const repo = root === undefined ? null : repoOfRun(store, runId);
+  const logVerifies = (artifactId: number | null): boolean => {
+    if (root === undefined || artifactId === null) return false;
+    const artifact = store.getArtifact(artifactId);
+    return artifact !== null && artifact.run === runId && artifact.kind === "structured-output" && artifact.capture === FOLLOW_UP_LOG && artifact.captureStatus !== "failed" && readVerifiedArtifact(root, artifact).ok;
+  };
+  const stillApproved = (level: RunLevel, digest: string): boolean => {
+    if (repo === null) return false;
+    try { return checkCommandFor(store, repo, level).command?.digest === digest; } catch { return false; }
+  };
   return rows.filter(row => row.action === CHECKS_REQUESTED && (row.outcome === "quick" || row.outcome === "full")).map(request => {
     const [head = "", why = "person", digest = "", recordedBase = ""] = (request.detail ?? "").split(" · ");
     const started = rows.find(row => row.action === CHECKS_STARTED && row.outcome === String(request.id)) ?? null;
@@ -93,7 +107,7 @@ export function followUpChecksOf(store: Store, runId: number, now: Date = new Da
       // With the evidence at hand, only a sealed receipt can say passed: for this result's own commit, and,
       // for a batch, a batch that names this result.
       if (status === "passed" && root !== undefined && (sealed === null || !sealed.ran || sealed.exitCode !== 0 || (sealed.head !== null && sealed.head !== head)
-        || (base.why === "batch" && sealed.batch === null))) {
+        || (base.why === "batch" && sealed.batch === null) || !logVerifies(sealed.log) || !stillApproved(base.level, digest))) {
         return { ...base, state: "not-run" as const, note: "The saved check result could not be verified." };
       }
       const exit = /exit (\d+)/.exec(finished.detail ?? "");
@@ -174,7 +188,8 @@ export type CheckRunDeps = { runner?: Runner; git?: Runner; now?: () => Date; sc
 export async function runFollowUpCheck(store: Store, root: string, request: number, deps: CheckRunDeps = {}): Promise<FollowUpCheck | null> {
   const now = deps.now ?? (() => new Date());
   const runner = deps.runner ?? execRun;
-  const git = deps.git ?? execRun;
+  // The project's repository and a checkout of a build's commit, both agent-writable: the hardened git (teardown-git.ts).
+  const git = deps.git ?? hardenedGit(execRun);
   const asked = store.handle.prepare("SELECT run_id FROM action_ledger WHERE id = ? AND action = ?").get(request, CHECKS_REQUESTED);
   if (asked === undefined) return null;
   const runId = Number(asked["run_id"]);
@@ -305,7 +320,28 @@ export function fullCheckGate(store: Store, runId: number, now: Date): FullCheck
   const fulls = followUpChecksOf(store, runId, now).filter(one => one.level === "full" && one.head === run.headRevision);
   // A Full build that waited for a batch check has had no check of its own: Merge waits for the batch, like Quick does.
   const batched = level === "full" && fulls.some(one => one.why === "batch");
-  if ((level === "full" && !batched) || (!batched && store.liveVerifyCommand(repo) === null)) return { state: "clear" };
+  // A recorded Full level is not a pass (review round 1): the build's own check must have passed, and a release
+  // check that re-ran only what failed is proved by its release alone, never cleared here.
+  if (level === "full" && !batched) {
+    const targeted = store.handle.prepare("SELECT 1 AS hit FROM release_check_attempt WHERE run = ? AND mode = 'targeted'").get(runId) !== undefined;
+    if (targeted) return { state: "failed", message: "This result's check re-ran only what failed; it merges only through its release." };
+    const own = store.handle.prepare("SELECT status FROM run_check WHERE run = ?").get(runId);
+    if (own !== undefined && own["status"] === "passed") return { state: "clear" };
+    // An ordinary task's own check didn't pass (or has no row): a Full check run again on this same commit decides
+    // (review round 2). A release's task never: it merges only through its release.
+    const taskId = store.refById(run.taskRef)?.externalId ?? null;
+    const last = fulls.at(-1);
+    if (last !== undefined && (taskId === null || !belongsToRelease(store, taskId))) {
+      if (last.state === "passed") return { state: "clear" };
+      if (last.state === "failed") return { state: "failed", message: `The full check failed on this commit${last.exitCode === null ? "" : ` (exit ${last.exitCode})`}. Fix it, or merge anyway.` };
+      if (last.state === "not-run") return { state: "not-run", message: `The full check didn't finish on this commit${last.note === null ? "" : `: ${last.note}`} Run it again, or merge anyway.` };
+      return { state: "waiting", message: "The full check is still running on this commit. Merge once it passes, or merge anyway." };
+    }
+    // No row is a check pending or never requested, never a pass (security review).
+    if (own === undefined) return { state: "not-requested", message: "The full check hasn't run on this commit yet. Merge once it passes, or merge anyway." };
+    return { state: "failed", message: "The full check didn't pass on this commit. Fix it, or merge anyway." };
+  }
+  if (!batched && store.liveVerifyCommand(repo) === null) return { state: "clear" };
   const last = fulls.at(-1);
   if (last === undefined) return { state: "not-requested", message: "The full check hasn't run on this commit yet. Merge once it passes, or merge anyway." };
   if (last.state === "passed") return { state: "clear" };

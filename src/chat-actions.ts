@@ -64,7 +64,7 @@ import { requestUndo, undoFor } from "./subagent-week.js";
 import { kitInstalled, kitOf, KITS, setUpKitNow } from "./kits.js";
 import { starterFlowOf, starterOf, startersFor, starterTerms, STARTER_FLOWS, switchOnStarter } from "./flow-starters.js";
 import { answerSubagentQuestion } from "./subagent-work.js";
-import { callWords, checkRule, defaultRule, grantListed, revokeTool, ruleWords, setToolRules } from "./subagent-tools.js";
+import { callWords, checkRule, defaultRule, grantListed, revokeTool, ruleLoosens, ruleWords, setToolRules } from "./subagent-tools.js";
 import { aboutYouOf, checkAboutYouLine, saveAboutYou, withAboutYouLine } from "./lead-about.js";
 import { CHAT_ACTION_FIELDS, readChatActionRequest, readSharedAction, SHARED_ACTION_VERSION, type ChatActionOperation, type SharedAction } from "./contracts/chat-actions.js";
 
@@ -490,12 +490,9 @@ export function prepareSharedAction(
         const named = projectToolsOf(store, repo).map(one => one.name);
         if (found === undefined) throw Error(`${project} has no tool called ${tool}.${named.length === 0 ? " Add it on the Tools page first." : ` Its tools: ${named.join(", ")}.`}${uses}`);
         if (grant !== null) throw Error(`${name} can already use ${tool}.`);
-        const actions = found.lastTest?.tools ?? [];
-        if (actions.length === 0) throw Error(`${tool} hasn't said what it can do yet. Test it on the Tools page first.`);
-        state = { rules: "" };
-        title = `Let ${name} use ${tool}`;
-        terms.push(...actions.map(one => `${one}: ${defaultRule({ name: one, readOnly: false }).use === "free" ? "does it" : "asks you first"}`),
-          `${name} asks for each call on its turn; Toolroll makes it by these rules, and every call is kept on the card. Change a rule any time.`);
+        if ((found.lastTest?.tools ?? []).length === 0) throw Error(`${tool} hasn't said what it can do yet. Test it on the Tools page first.`);
+        // Giving a subagent a tool takes the person's password (chat-management.md §0a.3), which never goes in chat.
+        throw Error(`Giving ${name} a tool takes your password. Open ${name}'s page in Toolroll, then Tools → Let ${name} use ${tool}.`);
       } else if (change === "revoke") {
         if (grant === null) throw Error(`${name} doesn't use a tool called ${tool}.${uses}`);
         state = { rules: JSON.stringify(grant.rules) };
@@ -507,6 +504,9 @@ export function prepareSharedAction(
         const limit = input["limitField"] === undefined || input["limitField"] === null || input["limitField"] === "" ? null : { field: input["limitField"], over: input["limitOver"] };
         const checked = checkRule(grant, action, { use: input["use"], limit, undo: input["undoWith"] ?? grant.rules[action]?.undo ?? "" });
         if (!checked.ok) throw Error(checked.said);
+        // Letting it do more on its own takes the person's password (chat-management.md §0a.3), never a card.
+        const info = grant.actions.find(one => one.name === action)!;
+        if (ruleLoosens(grant.rules[action] ?? defaultRule(info), checked.rule)) throw Error(`Letting ${name} do more with ${action} on its own takes your password. Change the rule on ${name}'s page in Toolroll.`);
         state = { rules: JSON.stringify(grant.rules) };
         title = `${name}: ${action} — ${ruleWords(checked.rule)}`;
         terms.push(`${tool} → ${action}: ${ruleWords(checked.rule)}.`, `Was: ${ruleWords(grant.rules[action] ?? { use: "ask" })}.`,
@@ -1278,7 +1278,7 @@ export function executeSharedAction(
       }
       else if (payload.operation === "kit_setup") {
         const kit = kitOf(String(req["kit"]))!;
-        const made = setUpKitNow(store, kit, repo, actor, now, null, true);
+        const made = setUpKitNow(store, kit, repo, actor, now, null);
         if (!made.ok) throw Error(made.said);
         return { ok: true as const, taskId: null, said: `${made.said} Try it with a sample card from its page.`, href: `/kits/${kit.id}?repo=${encodeURIComponent(repo)}` };
       }
@@ -1536,7 +1536,9 @@ function runSubagentAction(store: Store, payload: SharedAction, actor: string, n
     const grant = store.subagentGrant(mate.id, tool);
     if ((grant === null ? "" : JSON.stringify(grant.rules)) !== payload.state["rules"]) throw Error("Someone changed its tools since. Ask for a fresh proposal.");
     const found = projectToolsOf(store, mate.repo).find(one => one.name === tool);
-    const done = req["change"] === "grant" ? found === undefined ? { ok: false as const, said: `There's no tool called ${tool} any more.` } : grantListed(store, mate, found, null, actor, now)
+    // A grant takes the person's password on the subagent's page (chat-management.md §0a.3): never from a card.
+    if (req["change"] === "grant") throw Error("Giving a subagent a tool takes your password. Do it on its page in Toolroll.");
+    const done = req["change"] === "grant" ? found === undefined ? { ok: false as const, said: `There's no tool called ${tool} any more.` } : grantListed(store, mate, found, null, actor, now, {})
       : req["change"] === "revoke" ? revokeTool(store, mate, tool, actor, now)
       : setToolRules(store, mate, tool, { [String(req["action"])]: { use: req["use"], limit: req["limitField"] === undefined || req["limitField"] === null || req["limitField"] === "" ? null : { field: req["limitField"], over: req["limitOver"] },
         undo: req["undoWith"] ?? grant?.rules[String(req["action"])]?.undo ?? "" } }, actor, now);

@@ -8,7 +8,7 @@
  * Nothing live work uses goes (`liveWork`): while a run is open, a lease current or a checkout in use, each removal
  * and each signal first asks again whether that work uses the folder, and when its processes can't be read nothing
  * goes. Every scan and removal runs in a separate child: synchronous disk work must never delay the worker's lease
- * heartbeats (90 s). On Oct 12 the sweep starved those heartbeats and three builds ended interrupted half a second
+ * heartbeats (a lease lasts a minute). On Oct 12 the sweep starved those heartbeats and three builds ended interrupted half a second
  * after it finished. Once a run has ended, the next sweep removes what
  * it no longer uses.
  *

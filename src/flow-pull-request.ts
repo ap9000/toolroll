@@ -25,14 +25,21 @@ import type { FlowCardRow, FlowRow, Store } from "./store.js";
 
 export type PullRequestIo = { gh: Runner; evidenceRoot?: string };
 
-/** Whether a person approved this card at a "Person decides" zone since it was last built; their name when so. */
-export function approvedSinceBuild(store: Store, definition: FlowDefinition, card: FlowCardRow): string | null {
+/** Whether a person approved this card at a "Person decides" zone since it was last built; their name when so.
+ * The MOST RECENT decision governs (approval policy §1.7): it must be a person's recorded decision, after the card's
+ * last build by the current definition AND after the exact build being merged finished (`builtAt`), so editing the
+ * flow can't let an older person decision stand behind a newer machine one. */
+export function approvedSinceBuild(store: Store, definition: FlowDefinition, card: FlowCardRow, builtAt: string | null = null): string | null {
   const kindOf = (id: string | null) => definition.stages.find(one => one.id === id)?.kind ?? null;
   const events = store.flowEvents(card.id);
   let built = -1;
   events.forEach((event, index) => { if (kindOf(event.fromStage) === "task" || kindOf(event.toStage) === "task") built = index; });
-  const approval = events.slice(built + 1).reverse().find(event => event.outcome === "approved" && kindOf(event.fromStage) === "approval");
-  return approval === undefined ? null : approval.actor;
+  // The latest DECISION of any kind governs: only decideFlowCard writes `approved` or `sent-back` (from a decision
+  // zone), whatever the zones are called now, so a send-back after a yes takes that yes back.
+  const latest = events.slice(built + 1).reverse().find(event => event.outcome === "approved" || event.outcome === "sent-back");
+  if (latest === undefined || latest.authority !== "person") return null;
+  if (builtAt !== null && latest.at < builtAt) return null;
+  return latest.actor;
 }
 
 /** One pass of a Pull request zone for one card. Returns whether it changed anything. */
@@ -123,7 +130,7 @@ export async function pullRequestStep(store: Store, flow: FlowRow, definition: F
 
   // Checks pass.
   if (stage.merge === undefined) return passed(`${pr} passed its checks.`, `Pull request: ${link} (checks passed)`);
-  const approver = approvedSinceBuild(store, definition, card);
+  const approver = approvedSinceBuild(store, definition, card, store.getRun(runId)?.finishedAt ?? null);
   if (approver === null) return waiting(`Checks passed on ${pr}, but no person approved this card since it was built, so it wasn't merged. Merge it from its task, or send it through a decision.`);
   const merged = await mergePullRequest(store, { runId, by: `${approver} (approved in ${flow.name})`, exec: io.gh, method: stage.merge, clock: () => now });
   if (merged.ok) return passed(`Merged ${pr} (${stage.merge}).`, `Merged: ${link}`);

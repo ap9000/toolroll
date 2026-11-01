@@ -1,7 +1,7 @@
 /** The Agents board through the server: /peek opens it, an agent's question shows on it and in Needs you, Reply
  * reaches the running agent through the steering mailbox and closes that question, and an open agent's room holds
  * its viewer's pings while it is open. */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -388,7 +388,7 @@ describe("Settings → Project → Live view", () => {
     expect(liveCommandsShown(store, repoA)).toBe(true);
     // A run opened now carries the project's choice; another project is untouched.
     const run = running("t-live", repoA);
-    expect(liveLogContext(store, store.getRun(run)!.taskRef, "/pool/wt")).toEqual({ base: "/pool/wt", commands: true });
+    expect(liveLogContext(store, run, store.getRun(run)!.taskRef, "/pool/wt", new Date())).toEqual({ base: "/pool/wt", commands: true });
     expect(liveCommandsShown(store, repoB)).toBe(false);
     expect((await send(cookie, { repo: repoA, act: "off" })).location).toContain("said=Commands are hidden");
     expect(liveCommandsShown(store, repoA)).toBe(false);
@@ -408,5 +408,212 @@ describe("Settings → Project → Live view", () => {
     expect((await send(cookie, { repo: repoA, act: "on", password: robinToken })).status).toBe(403);
     const { liveCommandsShown } = await import("./live-detail.js");
     expect(liveCommandsShown(store, repoA)).toBe(false);
+  });
+});
+
+describe("the Live grid (docs/plans/agents-view.md §3)", () => {
+  const tiles = async (cookie: string) => {
+    const response = await fetch(url("/agents/live"), { headers: { cookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    return ((await response.json()) as { tiles: { runId: number; role: string; state: string; why: string | null; project: string | null; taskHref: string | null }[] }).tiles;
+  };
+
+  test("lists running and just-ended agents in the viewer's own projects, newest first, with Needs you", async () => {
+    const a = running("t-a", repoA), b = running("t-b", repoB), done = running("t-done", repoB), old = running("t-old", repoB);
+    store.finishRun(done, { outcome: "built", committed: true, now: new Date() });
+    store.finishRun(old, { outcome: "built", committed: true, now: new Date(Date.now() - 11 * 60_000) });
+    ask(b, "keep-button", "Keep the old button?");
+    store.handle.prepare("UPDATE run SET role = 'scout' WHERE id = ?").run(a); // every role is on the grid, not only builds
+    const alex = await tiles(await login("alex", alexToken));
+    expect(alex.find(tile => tile.runId === a)).toMatchObject({ role: "scout", state: "working" });
+    expect(alex.map(tile => tile.runId)).toEqual([done, b, a]);
+    expect(alex.find(tile => tile.runId === b)).toMatchObject({ state: "needs-you", why: "question" });
+    expect(alex.find(tile => tile.runId === done)).toMatchObject({ state: "done" });
+    // A task this console keeps links to its own page; one from an outside tracker has none.
+    expect(alex.find(tile => tile.runId === b)).toMatchObject({ taskHref: "/t/t-b" });
+    store.handle.prepare("UPDATE task_ref SET backend = 'linear' WHERE id = (SELECT task_ref FROM run WHERE id = ?)").run(a);
+    expect((await tiles(await login("alex", alexToken))).find(tile => tile.runId === a)).toMatchObject({ taskHref: null });
+    const robin = await tiles(await login("robin", robinToken));
+    expect(robin.map(tile => tile.runId)).toEqual([done, b]); // never another project's
+  });
+
+  test("watching changes nothing: ?view=live never marks a finished agent seen or offers a composer", async () => {
+    const run = running("t-seen", repoA);
+    store.finishRun(run, { outcome: "built", committed: true, now: new Date() });
+    const cookie = await login("alex", alexToken);
+    const live = await board(`/agents?view=live&run=${run}`, cookie);
+    expect(live.selected).toBeNull();
+    await tiles(cookie);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_view").get()?.["n"]).toBe(0);
+    // The List view still opens it, and that is a view.
+    expect((await board(`/agents?run=${run}`, cookie)).selected).not.toBeNull();
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(1);
+  });
+});
+
+describe("the Live grid's reads (docs/plans/agents-view.md §3)", () => {
+  let local: Server, localBase: string, skew = 0;
+  beforeEach(async () => {
+    skew = 0;
+    local = createDecisionServer({ store, evidenceRoot, repos: [repoA, repoB], clock: () => new Date(Date.now() + skew), localRunner: "builder-1" });
+    await new Promise<void>(resolve => local.listen(0, "127.0.0.1", resolve));
+    const address = local.address();
+    if (typeof address !== "object" || address === null) throw new Error("no address");
+    localBase = `http://127.0.0.1:${address.port}`;
+  });
+  afterEach(async () => { local.closeAllConnections?.(); await new Promise<void>(resolve => local.close(() => resolve())); });
+  const signIn = async (name: string, token: string) => {
+    const response = await fetch(`${localBase}/login`, { method: "POST", body: new URLSearchParams({ name, token }), redirect: "manual" });
+    return (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
+  };
+  const get = async (path: string, cookie: string) => {
+    const response = await fetch(`${localBase}${path}`, { headers: { cookie } });
+    return { status: response.status, body: await response.json() as Record<string, unknown> & { records?: unknown[]; cursor?: string } };
+  };
+  const record = async (run: number) => {
+    const { openLiveLog } = await import("./live.js");
+    const log = openLiveLog(evidenceRoot, run, { base: worktree, commands: false })!;
+    log.observe({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "planning" }, { type: "tool_use", id: "t1", name: "Task", input: { description: "Check the tests" } }] } });
+    log.observe({ type: "assistant", parent_tool_use_id: "t1", message: { content: [{ type: "text", text: "running them" }, { type: "tool_use", id: "b1", name: "Bash", input: { command: "cat ~/.ssh/id_ed25519" } }] } });
+    return log;
+  };
+
+  test("the run's own records and its subagents', a window at a time, from a cursor; command detail withheld", async () => {
+    const run = running("t-read", repoA);
+    const log = await record(run);
+    const cookie = await signIn("alex", alexToken);
+    const main = await get(`/agents/live/${run}?file=main`, cookie);
+    expect(main.status).toBe(200);
+    expect(JSON.stringify(main.body.records)).toContain("planning");
+    const sub = await get(`/agents/live/${run}?file=sub`, cookie);
+    expect(sub.body.records).toEqual(expect.arrayContaining([expect.objectContaining({ k: "child", s: 1, desc: "Check the tests" }), expect.objectContaining({ k: "say", s: 1, t: ["running them"] })]));
+    expect(JSON.stringify(sub.body)).not.toContain("id_ed25519");
+    log.observe({ type: "assistant", parent_tool_use_id: "t1", message: { content: [{ type: "text", text: "all green" }] } });
+    log.close();
+    const next = await get(`/agents/live/${run}?file=sub&cursor=${encodeURIComponent(sub.body.cursor!)}`, cookie);
+    expect(JSON.stringify(next.body.records)).toContain("all green");
+    expect(JSON.stringify(next.body.records)).not.toContain("running them");
+    expect((await get(`/agents/live/${run}?file=sub&cursor=forged.cursor`, cookie)).body).toMatchObject({ restarted: true });
+  });
+
+  test("the room is each viewer's own: a file growing on a run they can see moves theirs only, and says no sizes", async () => {
+    const mine = running("t-room-a", repoA);
+    const log = await record(mine);
+    const open = async (cookie: string) => {
+      const controller = new AbortController();
+      const response = await fetch(`${localBase}/live?room=agents-live`, { headers: { cookie, accept: "text/event-stream" }, signal: controller.signal });
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      let text = "";
+      const until = async (pattern: RegExp, ms: number) => {
+        const deadline = Date.now() + ms;
+        while (!pattern.test(text) && Date.now() < deadline) {
+          const next = await Promise.race([reader.read(), new Promise<null>(resolve => setTimeout(() => resolve(null), deadline - Date.now()))]);
+          if (next === null || next.done) break;
+          text += new TextDecoder().decode(next.value);
+        }
+        return pattern.test(text);
+      };
+      return { until, text: () => text, reset: () => { text = ""; }, close: () => controller.abort() };
+    };
+    const alex = await open(await signIn("alex", alexToken));
+    const robin = await open(await signIn("robin", robinToken));
+    expect(await alex.until(/event: change/, 3_000)).toBe(true);
+    expect(await robin.until(/event: change/, 3_000)).toBe(true);
+    alex.reset(); robin.reset();
+    log.observe({ type: "assistant", parent_tool_use_id: "t1", message: { content: [{ type: "text", text: "more output" }] } });
+    expect(await alex.until(/event: change/, 6_000)).toBe(true);
+    expect(await robin.until(/event: change/, 2_500)).toBe(false); // robin can't see repoA: nothing moved for robin
+    expect(alex.text()).not.toMatch(/"size"|jsonl|\d+:\d+:\d+\//);
+    log.close(); alex.close(); robin.close();
+    // Watching takes no lease and marks nothing.
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_view").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
+  }, 20_000);
+
+  test("Codex av8 r2 #4: a viewer refused mid-stream leaves, and its page's stream ends (nothing else holds it open)", async () => {
+    const cookie = await signIn("alex", alexToken);
+    const controller = new AbortController();
+    const response = await fetch(`${localBase}/live?room=agents-live`, { headers: { cookie, accept: "text/event-stream" }, signal: controller.signal });
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    let text = "", ended = false;
+    const deadline = Date.now() + 8_000;
+    let narrowed = false;
+    while (!ended && Date.now() < deadline) {
+      const next = await Promise.race([reader.read(), new Promise<null>(resolve => setTimeout(() => resolve(null), 500))]);
+      if (next !== null && next.done) { ended = true; break; }
+      if (next !== null) text += new TextDecoder().decode(next.value);
+      // Once joined, the account narrows: its scope is no longer the room's.
+      if (!narrowed && /event: change/.test(text)) { store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'alex'").run(JSON.stringify([repoB])); narrowed = true; }
+    }
+    controller.abort();
+    expect(text).toMatch(/event: gone/);
+    expect(ended).toBe(true);
+  }, 15_000);
+
+  test("only a browser session reads: a lead's, a runner's and a remote token are each refused", async () => {
+    const run = running("t-tokens", repoA);
+    (await record(run)).close();
+    const { mintApiToken } = await import("./api-tokens.js");
+    const remote = mintApiToken();
+    store.createApiToken({ id: remote.id, account: "alex", name: "laptop", secretHash: remote.hash, access: "act", projects: null,
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(), by: "alex" }, new Date());
+    const lead = store.mintLeadCredential("alex", "alex", new Date()).token;
+    for (const bearer of [lead, "tok-builder-1", remote.token]) {
+      for (const path of [`/agents/live/${run}?file=main`, `/agents/live/${run}?file=sub`, "/agents/live", "/agents?view=live", "/live?room=agents-live"]) {
+        const response = await fetch(`${localBase}${path}`, { headers: { authorization: `Bearer ${bearer}` }, redirect: "manual" });
+        expect([303, 401, 403], `${path} as ${bearer.slice(0, 3)}`).toContain(response.status);
+        expect(await response.text()).not.toMatch(/planning|running them|Check the tests/);
+      }
+    }
+    const cookie = await signIn("alex", alexToken);
+    expect((await get(`/agents/live/${run}?file=main`, cookie)).status).toBe(200);
+    expect((await get("/agents/live", cookie)).status).toBe(200);
+  });
+
+  test("Codex av5: an ended session reads nothing; the Live page is a browser's only; watching never touches the session", async () => {
+    const run = running("t-av5", repoA);
+    (await record(run)).close();
+    const cookie = await signIn("alex", alexToken);
+    // The saved session ended (another process signed it out): the cookie alone reads nothing.
+    const saved = store.handle.prepare("SELECT * FROM web_session").all();
+    store.handle.prepare("DELETE FROM web_session").run();
+    const status = async (path: string) => (await fetch(`${localBase}${path}`, { headers: { cookie }, redirect: "manual" })).status;
+    expect(await status(`/agents/live/${run}?file=main`)).not.toBe(200);
+    expect(await status("/agents/live")).not.toBe(200);
+    for (const row of saved) store.handle.prepare(`INSERT INTO web_session (${Object.keys(row).join(", ")}) VALUES (${Object.keys(row).map(() => "?").join(", ")})`).run(...Object.values(row) as never[]);
+    expect((await get(`/agents/live/${run}?file=main`, cookie)).status).toBe(200);
+    // ?view=live refuses a token; a cookie still opens it.
+    const { mintApiToken } = await import("./api-tokens.js");
+    const remote = mintApiToken();
+    store.createApiToken({ id: remote.id, account: "alex", name: "laptop2", secretHash: remote.hash, access: "act", projects: null, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), by: "alex" }, new Date());
+    expect([401, 403]).toContain((await fetch(`${localBase}/agents?view=live`, { headers: { authorization: `Bearer ${remote.token}` }, redirect: "manual" })).status);
+    // Polling (a fresh session, past the persistence interval) writes nothing to it.
+    const watcher = await signIn("alex", alexToken);
+    const before = JSON.stringify(store.handle.prepare("SELECT id_hash, last_seen FROM web_session ORDER BY id_hash").all());
+    skew = 120_000;
+    const realNow = Date.now.bind(Date);
+    const later = vi.spyOn(Date, "now").mockImplementation(() => realNow() + 120_000); // past the session's once-a-minute save
+    try {
+      for (const path of [`/agents/live/${run}?file=main`, "/agents/live", "/agents?view=live"]) await fetch(`${localBase}${path}`, { headers: { cookie: watcher } });
+    } finally { later.mockRestore(); }
+    expect(JSON.stringify(store.handle.prepare("SELECT id_hash, last_seen FROM web_session ORDER BY id_hash").all())).toBe(before);
+  });
+
+  test("another project's run, an unknown file, another runner's run: refused or off, never read", async () => {
+    const run = running("t-other", repoA);
+    (await record(run)).close();
+    expect((await get(`/agents/live/${run}?file=main`, await signIn("robin", robinToken))).status).toBe(404);
+    const cookie = await signIn("alex", alexToken);
+    expect((await get(`/agents/live/${run}?file=../etc`, cookie)).status).toBe(400);
+    expect((await get(`/agents/live/${run}?file=main&extra=1`, cookie)).status).toBe(400);
+    store.handle.prepare("UPDATE run SET runner = 'elsewhere' WHERE id = ?").run(run);
+    expect((await get(`/agents/live/${run}?file=main`, cookie)).body).toEqual({ error: "off" });
+    // Reading changes nothing: no seen mark, no watch.
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_view").get()?.["n"]).toBe(0);
   });
 });

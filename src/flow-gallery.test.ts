@@ -16,7 +16,7 @@ import { createDecisionServer } from "./serve.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { reachableWithout, validateFlowDefinition } from "./flows.js";
 import { galleryHtml, galleryUseHtml } from "./flow-gallery-ui.js";
-import { BLANK, buildFromGallery, GALLERY, galleryDiagram, LINEAR_KEY, previewGallery, SEND_RESULT, type GalleryAnswers } from "./flow-gallery.js";
+import { BLANK, buildFromGallery, galleryAdmitsAnyone, GALLERY, galleryDiagram, LINEAR_KEY, previewGallery, SEND_RESULT, type GalleryAnswers } from "./flow-gallery.js";
 import { codeOutput } from "./flow-code.js";
 import { addToolTo } from "./project-tools.js";
 import { connectedSpec, connectionsOf, ONE_CLICK } from "./mcp-connect.js";
@@ -180,7 +180,12 @@ describe("flow gallery", () => {
         const digest = /name="previewed" value="([^"]*)"/.exec(shown)![1]!;
         expect(digest, template.id).not.toBe("");
         const before = store.listFlows([repo]).length;
-        const made = await post(`/flows/new/${template.id}`, { csrf, repo, name: "", intent: "create", previewed: digest, ...answers });
+        // A template that brings in items from anyone takes the password (chat-management.md §0a.3).
+        if (galleryAdmitsAnyone(template)) {
+          const unproved = await post(`/flows/new/${template.id}`, { csrf, repo, name: "", intent: "create", previewed: digest, ...answers });
+          expect(await unproved.text(), template.id).toContain("Enter your Toolroll password");
+        }
+        const made = await post(`/flows/new/${template.id}`, { csrf, repo, name: "", intent: "create", previewed: digest, ...answers, ...(galleryAdmitsAnyone(template) ? { password: alex.token } : {}) });
         expect(made.status, template.id).toBe(303);
         const flow = store.getFlow(Number(/^\/flows\/(\d+)$/.exec(made.headers.get("location") ?? "")?.[1]))!;
         expect(store.listFlows([repo])).toHaveLength(before + 1);

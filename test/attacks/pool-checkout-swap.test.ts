@@ -1,14 +1,14 @@
 /**
  * Attack: before a resume, the build replaces its own checkout with a symlink to a sibling task's checkout, so the
- * next launch of this task adopts (and is fenced around) the sibling's work. Guard: Seatbelt denies writing the own
- * checkout's root itself (it can't be removed or replaced); Codex leaves the folders above it read-only; and
+ * next launch of this task adopts (and is fenced around) the sibling's work. Guard: the sandbox runtime refuses removing
+ * or moving the checkout's root (it holds names the runtime protects, so it is an ancestor of a deny); Codex leaves the folders above it read-only; and
  * trustedWorktreeBinding refuses a checkout whose recorded name resolves anywhere else, or that sits under a link.
  */
 import { lstatSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { CheckoutBindingError, trustedWorktreeBinding } from "../../src/agent-fence.js";
-import { codexSandbox, marker, needs, plane, q, seatbelt, underCodex, underSeatbelt, useScratch } from "./harness.js";
+import { codexSandbox, marker, needs, osFence, plane, q, underCodex, underSandbox, useScratch } from "./harness.js";
 
 describe("attack: a build swapping its own checkout for a symlink to a sibling checkout before a resume", () => {
   const scratch = useScratch("swap");
@@ -29,16 +29,18 @@ describe("attack: a build swapping its own checkout for a symlink to a sibling c
     expect(trustedWorktreeBinding(at.main, at.sibling, [at.pool]).gitdir).toBe(join(at.main, ".git", "worktrees", "sibling-4567cdef"));
   });
 
-  test("native Seatbelt: the checkout root can't be replaced; the resume still refuses what is left", ctx => {
-    needs(ctx, seatbelt());
+  test("native: the checkout root can't be replaced; the resume still refuses what is left", ctx => {
+    needs(ctx, osFence());
     const at = setup();
     const { fence, grants } = at.launch("claude");
-    underSeatbelt(swap(at), fence, grants, { cwd: at.active });
+    underSandbox(swap(at), fence, grants, { cwd: at.active });
     expect(lstatSync(at.active).isDirectory()).toBe(true);
-    // Deleting the contents may remove .git: the resumed launch refuses rather than adopt anything.
-    expect(() => trustedWorktreeBinding(at.main, at.active, [at.pool])).toThrow(CheckoutBindingError);
+    // What deleting the contents left: the resumed launch binds the genuine checkout or refuses, never the sibling.
+    let bound: string | null = null;
+    try { bound = trustedWorktreeBinding(at.main, at.active, [at.pool]).gitdir; } catch (error) { expect(error).toBeInstanceOf(CheckoutBindingError); }
+    if (bound !== null) expect(bound).toBe(join(at.main, ".git", "worktrees", "task-0123abcd"));
     // Legitimate: inside the checkout everything is still writable, as the deletion just showed.
-    const work = underSeatbelt("mkdir -p a/b && echo ok > a/b/c && cat a/b/c", fence, grants, { cwd: at.active });
+    const work = underSandbox("mkdir -p a/b && echo ok > a/b/c && cat a/b/c", fence, grants, { cwd: at.active });
     expect(work.stdout.trim(), work.stderr).toBe("ok");
   });
 

@@ -20,13 +20,13 @@ import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import type { ToolCaller } from "./flow-actions.js";
 import { scrubSecrets } from "./flow-secrets.js";
 import { toolRefusal } from "./policy.js";
-import { callProjectTool, listProjectToolActions, projectToolsOf, readToolSecrets, type ProjectTool, type ToolSpec } from "./project-tools.js";
+import { callProjectTool, listProjectToolActions, projectToolsOf, readToolSecrets, toolServerFor, type ProjectTool, type ToolServerStore, type ToolSpec } from "./project-tools.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { Store, SubagentCallRow, SubagentGrantRow, SubagentRow, ToolActionInfo, ToolRule } from "./store.js";
 
 /** Lists what a tool offers; injectable so tests never start a server. */
 export type ToolLister = (spec: ToolSpec, values: Record<string, string>) => Promise<{ ok: true; actions: ToolActionInfo[] } | { ok: false; problem: string }>;
-export type ToolIo = { callTool?: ToolCaller; listTools?: ToolLister; toolHome?: string | undefined };
+export type ToolIo = { callTool?: ToolCaller; listTools?: ToolLister; toolHome?: string | undefined; fenceAvailable?: () => boolean };
 
 /** Actions whose names say they only read start as "do it"; everything else asks first until its manager says otherwise. */
 export const READ_VERB = /^(get|list|search|find|read|fetch|lookup|look_up|query|show|describe|count|check|view|retrieve)([_.-]|$)/i;
@@ -123,29 +123,49 @@ export async function refreshGrants(store: Store, mate: SubagentRow, now: Date, 
     if (grant.listedAt !== null && now.getTime() - Date.parse(grant.listedAt) < LISTING_MS) continue;
     const tool = tools.find(one => one.name === grant.tool);
     if (tool === undefined) continue;
-    const listed = await listed_(tool, mate.repo, io);
+    const listed = await listed_(store, tool, mate.repo, io);
     if (!listed.ok) continue;
-    store.saveSubagentGrant({ subagent: mate.id, tool: grant.tool, ...withActions(grant.rules, listed.actions), listedAt: now.toISOString() }, grant.updatedBy, now);
+    // The grant as it is now, after the listing's wait, in one transaction with the save: one taken away meanwhile stays
+    // gone, and only the tool's list of actions is new (rules changed meanwhile, tightened ones included, stand).
+    store.transact(() => {
+      const current = store.subagentGrant(mate.id, grant.tool);
+      if (current === null) return;
+      store.saveSubagentGrant({ subagent: mate.id, tool: grant.tool, ...withActions(current.rules, listed.actions), listedAt: now.toISOString() }, current.updatedBy, now);
+    });
   }
 }
 
-const listed_ = (tool: ProjectTool, repo: string, io: ToolIo) =>
-  (io.listTools ?? ((spec, values) => listProjectToolActions(spec, values, { timeoutMs: 60_000, omitEnv: ALL_CREDENTIAL_ENV })))(tool.spec, readToolSecrets(repo, tool.name, io.toolHome));
+const listed_ = (store: ToolServerStore, tool: ProjectTool, repo: string, io: ToolIo) =>
+  (io.listTools ?? ((spec, values) => listProjectToolActions(spec, values, { timeoutMs: 60_000, omitEnv: ALL_CREDENTIAL_ENV, server: serverOf(store, repo, io) })))(tool.spec, readToolSecrets(repo, tool.name, io.toolHome));
+
+/** Where a subagent's tool server starts: in the server fence (project-tools.ts toolServerFor), never bare. */
+const serverOf = (store: ToolServerStore, repo: string, io: ToolIo) => toolServerFor(store, repo, { ...(io.toolHome === undefined ? {} : { home: io.toolHome }), ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }) });
 
 /** Names only, from the tool's last test: what a grant starts with when it can't be listed right now. */
 const namesOnly = (tool: ProjectTool): ToolActionInfo[] => (tool.lastTest?.tools ?? []).map(name => ({ name, about: "", input: null, readOnly: false }));
 
-/** Let a subagent use one of the project's tools. Its actions start at their defaults: reading is free, everything else asks first. */
-export async function grantTool(store: Store, mate: SubagentRow, tool: string, by: string, now: Date, io: ToolIo = {}): Promise<Done> {
+/** Let a subagent use one of the project's tools. Its actions start at their defaults: reading is free, everything else asks first.
+ * A grant widens what it does unasked, so it takes the person's proof (a password, or a session under Passwordless):
+ * `widening: "proved"` (chat-management.md §0a.3). */
+export async function grantTool(store: Store, mate: SubagentRow, tool: string, by: string, now: Date, io: ToolIo = {},
+  /** `stillProved`: the proof re-checked after the listing's wait, in the same synchronous step as the save. */
+  options: { widening?: "proved"; stillProved?: () => boolean } = {}): Promise<Done> {
+  if (options.widening !== "proved") return grantRefused(tool);
   const found = projectToolsOf(store, mate.repo).find(one => one.name === tool);
   if (found === undefined) return { ok: false, said: `This project has no tool called ${tool}. Add it on the Tools page first.` };
   if (store.subagentGrant(mate.id, tool) !== null) return { ok: true, said: `It can already use ${tool}.` };
-  const listed = await listed_(found, mate.repo, io);
-  return grantListed(store, mate, found, listed.ok ? listed.actions : null, by, now);
+  const listed = await listed_(store, found, mate.repo, io);
+  if (options.stillProved !== undefined && !options.stillProved()) return grantRefused(tool);
+  return grantListed(store, mate, found, listed.ok ? listed.actions : null, by, now, { widening: "proved" });
 }
 
-/** A grant from what the tool offers (or, not reachable now, the names its last test found). */
-export function grantListed(store: Store, mate: SubagentRow, tool: ProjectTool, actions: ToolActionInfo[] | null, by: string, now: Date): Done {
+const grantRefused = (tool: string): Done => ({ ok: false, said: `Letting it use ${tool} takes your password. Do it on its page in Toolroll.` });
+
+/** A grant from what the tool offers (or, not reachable now, the names its last test found). Every road to a grant
+ * comes here: it takes the person's proof, and a tool it already uses keeps its rules (a grant never resets them). */
+export function grantListed(store: Store, mate: SubagentRow, tool: ProjectTool, actions: ToolActionInfo[] | null, by: string, now: Date, options: { widening?: "proved" } = {}): Done {
+  if (options.widening !== "proved") return grantRefused(tool.name);
+  if (store.subagentGrant(mate.id, tool.name) !== null) return { ok: true, said: `It can already use ${tool.name}.` };
   const offered = actions ?? namesOnly(tool);
   if (offered.length === 0) return { ok: false, said: `${tool.name} didn't say what it can do. Test it on the Tools page, then try again.` };
   store.saveSubagentGrant({ subagent: mate.id, tool: tool.name, ...withActions({}, offered), listedAt: actions === null ? null : now.toISOString() }, by, now);
@@ -180,14 +200,31 @@ export function checkRule(grant: Pick<SubagentGrantRow, "tool" | "actions">, act
   return withUndo({ use: "free", limit: { field, over } });
 }
 
-/** Set the rules for some of a granted tool's actions; the others keep theirs. */
-export function setToolRules(store: Store, mate: SubagentRow, tool: string, changes: Record<string, { use: unknown; limit?: { field: unknown; over: unknown } | null; undo?: unknown }>, by: string, now: Date): Done {
+/** How much a rule lets a subagent do unasked: never, ask first, on its own up to a limit, on its own. */
+const ruleRank = (rule: ToolRule): number => rule.use === "never" ? 0 : rule.use === "ask" ? 1 : rule.limit !== undefined ? 2 : 3;
+
+/** Whether `next` lets the subagent do more unasked than `before` (chat-management.md §0a.3): a higher rank, or a limit
+ * on another number or a higher one. The undo action is never authority. */
+export function ruleLoosens(before: ToolRule, next: ToolRule): boolean {
+  const was = ruleRank(before), now = ruleRank(next);
+  if (now !== was) return now > was;
+  return now === 2 && (next.limit!.field !== before.limit!.field || next.limit!.over > before.limit!.over);
+}
+
+/** Set the rules for some of a granted tool's actions; the others keep theirs. Loosening any of them takes the
+ * person's proof (a password, or a session under Passwordless): `widening: "proved"`; tightening never does. */
+export function setToolRules(store: Store, mate: SubagentRow, tool: string, changes: Record<string, { use: unknown; limit?: { field: unknown; over: unknown } | null; undo?: unknown }>, by: string, now: Date,
+  options: { widening?: "proved" } = {}): Done {
   const grant = store.subagentGrant(mate.id, tool);
   if (grant === null) return { ok: false, said: `It doesn't use ${tool}. Let it use ${tool} first.` };
   const rules = { ...grant.rules };
   for (const [action, change] of Object.entries(changes)) {
     const checked = checkRule(grant, action, change);
     if (!checked.ok) return { ok: false, said: checked.said };
+    const info = grant.actions.find(one => one.name === action)!;
+    if (options.widening !== "proved" && ruleLoosens(grant.rules[action] ?? defaultRule(info), checked.rule)) {
+      return { ok: false, said: `Letting it do more with ${action} on its own takes your password. Change the rule on its page in Toolroll.` };
+    }
     rules[action] = checked.rule;
   }
   store.saveSubagentGrant({ subagent: mate.id, tool, actions: grant.actions, rules }, by, now);
@@ -224,7 +261,7 @@ export async function makeCall(store: Store, call: SubagentCallRow, repo: string
   const values = readToolSecrets(repo, tool.name, io.toolHome);
   let answer;
   try {
-    answer = await (io.callTool ?? ((spec, secrets, name, given) => callProjectTool(spec, secrets, name, given, { timeoutMs: 120_000, omitEnv: ALL_CREDENTIAL_ENV })))(tool.spec, values, call.action, call.input);
+    answer = await (io.callTool ?? ((spec, secrets, name, given) => callProjectTool(spec, secrets, name, given, { timeoutMs: 120_000, omitEnv: ALL_CREDENTIAL_ENV, server: serverOf(store, repo, io) })))(tool.spec, values, call.action, call.input);
   } catch (error) {
     answer = { ok: false as const, problem: error instanceof Error ? error.message : "It couldn't be reached." };
   }

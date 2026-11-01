@@ -48,6 +48,7 @@ import type { ExecResult } from "./exec.js";
 import { EVIDENCE_CAPS, isBinaryAssetPath, isImagePath, readVerifiedArtifact, redactSecretLines, scanForSecrets, storeEvidence } from "./evidence.js";
 import { parseProof, type ApprovedCriterion, type CriterionJudgementWord, type ParsedProof } from "./proof.js";
 import type { Artifact, Store } from "./store.js";
+import { noLazyFetch } from "./teardown-git.js";
 
 /** Explicit bounds. Content bytes are UTF-8 of the stored (possibly
  * redacted) text; the aggregate is the sum over every stored item. */
@@ -564,14 +565,15 @@ export function citesSuppliedProvenance(
 
 type GitRunner = (file: string, args: readonly string[], options?: { cwd?: string; maxBuffer?: number }) => Promise<ExecResult>;
 
-const GIT_READ = ["--literal-pathspecs", "--no-lazy-fetch", "--no-replace-objects", "--no-optional-locks"] as const;
+/** Read flags: --no-lazy-fetch where git has it (the hardened runner refuses a partial clone where it doesn't). */
+const gitRead = (): string[] => ["--literal-pathspecs", ...noLazyFetch(), "-c", "protocol.allow=never", "--no-replace-objects", "--no-optional-locks"];
 
 /** One `ls-tree -l` entry: mode, type, object id, size (null for gitlinks). */
 type TreeEntry = { mode: string; type: string; object: string; size: number | null };
 
 async function treeEntries(git: GitRunner, cwd: string, revision: string, paths: readonly string[]): Promise<Map<string, TreeEntry> | null> {
   if (paths.length === 0) return new Map();
-  const listed = await git("git", [...GIT_READ, "ls-tree", "-z", "-l", revision, "--", ...paths], { cwd, maxBuffer: 4 * 1024 * 1024 });
+  const listed = await git("git", [...gitRead(), "ls-tree", "-z", "-l", revision, "--", ...paths], { cwd, maxBuffer: 4 * 1024 * 1024 });
   if (listed.code !== 0) return null;
   const entries = new Map<string, TreeEntry>();
   for (const record of listed.stdout.split("\u0000")) {
@@ -663,7 +665,7 @@ async function ancestorPatch(
     const head = runId === args.runId ? args.head : run?.headRevision;
     if (!base || !head || !SHA1.test(base) || !SHA1.test(head)) return fail(`run #${runId} has no exact patch endpoints`);
     for (const from of new Set([base, previousHead ?? base])) {
-      const ancestor = await git("git", [...GIT_READ, "merge-base", "--is-ancestor", from, head], { cwd: args.worktree });
+      const ancestor = await git("git", [...gitRead(), "merge-base", "--is-ancestor", from, head], { cwd: args.worktree });
       if (ancestor.code !== 0) return fail(`run #${runId}'s patch ancestry could not be verified`);
     }
     const before = await treeEntries(git, args.worktree, base, [path]);
@@ -866,7 +868,7 @@ export async function deriveReviewContext(
 
   // 3. Ancestry: is the source head an ancestor of this head?
   if (sourceHead !== null) {
-    const check = await git("git", [...GIT_READ, "merge-base", "--is-ancestor", sourceHead, args.head], { cwd: args.worktree });
+    const check = await git("git", [...gitRead(), "merge-base", "--is-ancestor", sourceHead, args.head], { cwd: args.worktree });
     if (check.code === 0) inventory.ancestry = { verified: true, detail: `${sourceHead} is an ancestor of ${args.head}` };
     else if (check.code === 1) {
       inventory.ancestry = { verified: false, detail: `${sourceHead} is not an ancestor of ${args.head} — the source work is not in this history` };
@@ -909,7 +911,7 @@ export async function deriveReviewContext(
   if (generalPaths.length === 0 && sourceScopeVerified) {
     const paths = sourceScope!.touches.filter(path => safeContextPath(path.replace(/\/$/, "")) && !/[?*\[\]]/.test(path));
     if (paths.length > 0) {
-      const listed = await git("git", [...GIT_READ, "ls-tree", "-r", "-z", "--name-only", args.head, "--", ...paths], { cwd: args.worktree, maxBuffer: 4 * 1024 * 1024 });
+      const listed = await git("git", [...gitRead(), "ls-tree", "-r", "-z", "--name-only", args.head, "--", ...paths], { cwd: args.worktree, maxBuffer: 4 * 1024 * 1024 });
       if (listed.code === 0) generalPaths.push(...[...new Set(listed.stdout.split("\0").filter(safeContextPath))].sort());
       else gapAll("capture-failed", "the committed source paths in the approved scope could not be listed");
     }
@@ -1003,7 +1005,7 @@ export async function deriveReviewContext(
           continue;
         }
         if (aggregate + entry.size > REVIEW_CONTEXT_LIMITS.aggregateBytes) { gap("aggregate-limit", `${entry.size} bytes would cross the ${REVIEW_CONTEXT_LIMITS.aggregateBytes}-byte aggregate limit`); continue; }
-        const read = await git("git", [...GIT_READ, "cat-file", "blob", entry.object], { cwd: args.worktree, maxBuffer: REVIEW_CONTEXT_LIMITS.itemBytes + 4096 });
+        const read = await git("git", [...gitRead(), "cat-file", "blob", entry.object], { cwd: args.worktree, maxBuffer: REVIEW_CONTEXT_LIMITS.itemBytes + 4096 });
         if (read.code !== 0) { gap("capture-failed", `blob ${entry.object} could not be read (git exit ${read.code})`); continue; }
         if (read.stdout.includes("\u0000") || Buffer.byteLength(read.stdout, "utf8") !== entry.size) { gap("binary", "not UTF-8 text"); continue; }
         // Re-encoding must reproduce the named blob. A literal U+FFFD is

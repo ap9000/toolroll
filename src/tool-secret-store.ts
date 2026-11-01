@@ -27,6 +27,7 @@
  * database records which key Toolroll made: a folder, key, link or lock that
  * something else put there first is refused, never used.
  */
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { spawnSync } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeSync, type Stats } from "node:fs";
@@ -452,6 +453,9 @@ export function secretFolder(state?: string): SecretFolder {
   if (problem !== undefined) throw new SecretStoreError(problem);
   const known = folders.get(root);
   if (known !== undefined && unchanged(known)) return known;
+  // A page visit prepares nothing (docs/plans/get-side-effects.md): the console prepares its folder as it starts, and
+  // an action checks a changed one again. Until then the page says secrets can't be read right now.
+  if (inReadOnlyRequest()) throw new SecretStoreError(NOT_READY);
   // Changed since it was checked (or never seen): checked against the same record (the database's, for Toolroll's
   // own folder; this process's, for a test's), and refused if it doesn't match.
   const named = pending.get(root);
@@ -632,6 +636,8 @@ export function readHeldSecret(state: string, name: string, file: readonly strin
   const path = pathIn(folder.root, file);
   const backend = secretBackend();
   if (backend === null) return readOwnFile(path);
+  // A page visit moves nothing and takes no lock (docs/plans/get-side-effects.md): the keychain, else the old file.
+  if (inReadOnlyRequest()) return readSealed(backend, folder, heldItem(folder, name)) ?? readOwnFile(path);
   return withSecretLock(folder, `held.${name}`, () => {
     moveHeldIn(backend, folder, name, path);
     return readSealed(backend, folder, heldItem(folder, name));

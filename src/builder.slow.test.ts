@@ -7,7 +7,7 @@ import { quickVerifyKey, runCheckLevel, setProjectCheckLevel } from "./check-lev
 import { setProjectBatchChecks } from "./batch-policy.js";
 import { followUpChecksOf, fullCheckGate } from "./result-follow-ups.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
-import { agentExitWords, build, NO_HANDOFF_WORDS, PROTECTED, WIP_COMMIT_WORDS, proveApprovedProfile, verificationExecutableMissing, type Runner } from "./builder.js";
+import { agentExitWords, build, NO_HANDOFF_WORDS, PROTECTED, WIP_COMMIT_WORDS, proveApprovedProfile, verificationExecutableMissing, approvedProgramMissing, launchFailedBeforeCheck, type Runner } from "./builder.js";
 import { routeDigestOf } from "./phase-routing.js";
 import { openStore, type Store } from "./store.js";
 import { register, retireRunnerIfCurrent } from "./runner.js";
@@ -311,6 +311,56 @@ describe("the builder's gates", () => {
     expect(store.handle.prepare("SELECT note FROM run_note WHERE run = ?").all(req.runId as number).map(row => String(row["note"]))).toContain(words);
   });
 
+  test("a result that wrote a protected name (an MCP server list, a nested Git hook) is refused at the handoff, its work kept (a backstop for what the sandbox runtime holds only at launch)", async () => {
+    const { mkdirSync } = await import('node:fs');
+    const { run } = await import('./exec.js');
+    const sh = (...args: string[]) => execFileSync('git', ['-C', wt, ...args], { encoding: 'utf8', env: {
+      ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x',
+    } }).trim();
+    sh('init', '-q', '-b', 'main'); sh('config', 'user.name', 't'); sh('config', 'user.email', 't@x');
+    writeSync2(join2(wt, 'README.md'), 'base\n');
+    sh('add', '.'); sh('commit', '-q', '-m', 'base');
+    sh('checkout', '-q', '-b', 'feat/a');
+    approveScope(); claimIt();
+    const plantingAgent: Runner = async (file, args, options) => {
+      mkdirSync(join2(wt, 'src'), { recursive: true }); writeSync2(join2(wt, 'src', 'guard.ts'), 'export const guard = true;\n');
+      writeSync2(join2(wt, '.mcp.json'), '{"mcpServers":{"x":{"command":"sh"}}}\n');
+      return agent(file, args, options);
+    };
+    const actualGit: Runner = async (file, args, options) => {
+      if (options?.cwd === REPO && args.includes('symbolic-ref')) return { ...OK, stdout: 'main\n' };
+      return run(file, args, { ...options, cwd: options?.cwd === REPO ? wt : options?.cwd });
+    };
+    const result = await build(store, request({ agent: plantingAgent, git: actualGit }));
+    expect(result).toMatchObject({ ok: false, reason: 'commit-failure', message: expect.stringContaining('The result changes .mcp.json, which builds may not write') });
+    expect(sh('rev-list', '--count', 'HEAD')).toBe('1');
+    expect(readFileSync(join2(wt, '.mcp.json'), 'utf8')).toContain('mcpServers');
+  });
+  test("a result that commits a link at a folder on the way to a protected name (pkg/.claude) is refused at the handoff", async () => {
+    const { mkdirSync } = await import('node:fs');
+    const { run } = await import('./exec.js');
+    const sh = (...args: string[]) => execFileSync('git', ['-C', wt, ...args], { encoding: 'utf8', env: {
+      ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x',
+    } }).trim();
+    sh('init', '-q', '-b', 'main'); sh('config', 'user.name', 't'); sh('config', 'user.email', 't@x');
+    writeSync2(join2(wt, 'README.md'), 'base\n');
+    sh('add', '.'); sh('commit', '-q', '-m', 'base');
+    sh('checkout', '-q', '-b', 'feat/a');
+    approveScope(); claimIt();
+    const plantingAgent: Runner = async (file, args, options) => {
+      mkdirSync(join2(wt, 'src'), { recursive: true }); writeSync2(join2(wt, 'src', 'guard.ts'), 'export const guard = true;\n');
+      const { symlinkSync } = await import('node:fs');
+      mkdirSync(join2(wt, 'pkg'), { recursive: true }); symlinkSync('/tmp/anywhere', join2(wt, 'pkg', '.claude'));
+      return agent(file, args, options);
+    };
+    const actualGit: Runner = async (file, args, options) => {
+      if (options?.cwd === REPO && args.includes('symbolic-ref')) return { ...OK, stdout: 'main\n' };
+      return run(file, args, { ...options, cwd: options?.cwd === REPO ? wt : options?.cwd });
+    };
+    const result = await build(store, request({ agent: plantingAgent, git: actualGit }));
+    expect(result).toMatchObject({ ok: false, reason: 'commit-failure', message: expect.stringContaining('The result changes pkg/.claude, which builds may not write') });
+    expect(sh('rev-list', '--count', 'HEAD')).toBe('1');
+  });
   test("a rerun (task regate) dispatches through the builder with no agent call and reruns the check on the last head (v70)", async () => {
     const { regateTask } = await import("./dispose.js");
     approveScope();
@@ -3277,7 +3327,10 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   /** Bind verification to one exact approved setup and mark the checkout as
    * already prepared. These tests isolate the post-commit recovery replay;
    * the ordinary pre-agent setup and its digest cache are covered above. */
-  const bindRecoverySetup = () => {
+  /** A check program no machine has (review 2 #5: only the plane's own lookup finding it missing allows a replay), and
+   * the shell's own line for it. */
+  const MISSING_PROGRAM = "so-missing-check-program", MISSING_LINE = `sh: ${MISSING_PROGRAM}: command not found`;
+  const bindRecoverySetup = (command = `${MISSING_PROGRAM} --run`) => {
     const setup = store.setWorktreeSetup(
       { repo: REPO, command: "npm ci", timeoutMs: 5_000, approvedBy: "alex" },
       T0,
@@ -3286,7 +3339,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     store.setVerifyCommand(
       {
         repo: REPO,
-        command: "npm test",
+        command,
         timeoutMs: 5_000,
         approvedBy: "alex",
         recoverySetupDigest: setup.digest,
@@ -3712,9 +3765,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     const verify: Runner = async (_file, _args, options) => {
       recordDatabase(options);
       verifyCalls++;
-      return verifyCalls === 1
-        ? { ...OK, code: 127, stderr: "tsc: command not found" }
-        : { ...OK, stdout: "tests passed" };
+      return { ...OK, stdout: "tests passed" };
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
 
@@ -3722,8 +3773,8 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(2);
-    expect(new Set(databases).size).toBe(3);
+    expect(verifyCalls).toBe(1); // The missing-program attempt never launched a process.
+    expect(new Set(databases).size).toBe(2);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "verified",
       reasons: [expect.stringContaining("approved setup command ran")],
@@ -3734,6 +3785,9 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     expect(log).toContain("Project check · retry after setup");
     expect(log).toContain("(exit 127)");
     expect(log).toContain("(exit 0)");
+    // Review 2 #5: the first attempt keeps its own class in the receipt.
+    const receipt = verificationEvidence(store, join2(wt, ".evidence"), req.runId as number);
+    expect(receipt.ok && JSON.parse(receipt.bytes!)).toMatchObject({ result: { setupReplayed: true, firstAttempt: { class: "launch", program: MISSING_PROGRAM, exitCode: 127 } } });
   });
 
   test("a dependency still missing after recovery is short after exactly one setup replay and one retry", async () => {
@@ -3748,7 +3802,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 127, stderr: "tsc: command not found" };
+      return { ...OK, code: 127, stderr: MISSING_LINE };
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
 
@@ -3756,7 +3810,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(2);
+    expect(verifyCalls).toBe(1);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: [expect.stringContaining("still unavailable")],
@@ -3778,7 +3832,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 127, stderr: "tsc: command not found" };
+      return { ...OK, code: 127, stderr: MISSING_LINE };
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
 
@@ -3786,7 +3840,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(1);
+    expect(verifyCalls).toBe(0);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: [expect.stringContaining("failed during automatic recovery")],
@@ -3802,7 +3856,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   test("a verification timeout stays distinct from a command that never started", async () => {
     claimIt();
     approveScope();
-    bindRecoverySetup();
+    bindRecoverySetup("sh -c true");
     let calls = 0;
     const req = request({ agent: agentWithProof(soundProof), verify: async () => {
       calls++;
@@ -3814,6 +3868,29 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     const receipt = store.artifactsFor(req.runId as number).find(isVerificationReceipt)!;
     const saved = readVerifiedArtifact(join2(wt, ".evidence"), receipt);
     expect(saved.ok && JSON.parse(saved.content.toString("utf8")).result.failure).toBe("timed-out");
+  });
+
+  // Release check 3261: a signal ended the check and the log said only "(exit 1)".
+  test("a check ended by a signal says so in its log; one Toolroll's own shutdown stopped never reads as finished", async () => {
+    claimIt();
+    approveScope();
+    bindRecoverySetup("sh -c true");
+    const killed = request({ agent: agentWithProof(soundProof), verify: async () => ({ ...OK, code: 1, signal: "SIGKILL" as const, stdout: "Release check against v0.9.75" }) });
+    expect(await build(store, killed)).toMatchObject({ ok: true, committed: true });
+    expect(checkLogFor(killed.runId as number)).toContain("(exit 1, ended by SIGKILL)");
+    expect(checkLogFor(killed.runId as number)).toContain("Project check · attempt 1: (exit 1 · ended by SIGKILL)");
+  });
+
+  test("a check Toolroll's own hard stop ended is recorded as stopped by Toolroll, never as an exit", async () => {
+    claimIt();
+    approveScope();
+    bindRecoverySetup("sh -c true");
+    const stopped = request({ agent: agentWithProof(soundProof), verify: async () => ({ ...OK, code: 1, signal: "SIGKILL" as const, stoppedByPlane: true }) });
+    expect(await build(store, stopped)).toMatchObject({ ok: true, committed: true });
+    const receipt = store.artifactsFor(stopped.runId as number).find(isVerificationReceipt)!;
+    const saved = readVerifiedArtifact(join2(wt, ".evidence"), receipt);
+    expect(saved.ok && JSON.parse(saved.content.toString("utf8")).result).toEqual({ configured: true, ran: false, attemptFailed: true, failure: "stopped-by-toolroll" });
+    expect(checkLogFor(stopped.runId as number)).toContain("stopped by Toolroll's own shutdown");
   });
 
   test("setup that changes tracked files stops recovery short and never retries verification", async () => {
@@ -3830,7 +3907,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 127, stderr: "tsc: command not found" };
+      return { ...OK, code: 127, stderr: MISSING_LINE };
     };
     const dirtyAfterSetupGit: Runner = async (file, args, options) => {
       if (args.includes("diff") && args.includes("--quiet")) {
@@ -3844,7 +3921,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(1);
+    expect(verifyCalls).toBe(0);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: [expect.stringContaining("changed tracked files")],
@@ -3869,7 +3946,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 127, stderr: "tsc: command not found" };
+      return { ...OK, code: 127, stderr: MISSING_LINE };
     };
     const movingHeadGit: Runner = async (file, args, options) => {
       if (args.includes("rev-parse") && !args.includes("--abbrev-ref")) {
@@ -3883,7 +3960,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(1);
+    expect(verifyCalls).toBe(0);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: ["automatic recovery stopped because the checkout moved away from the built commit"],
@@ -3901,18 +3978,12 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     let verifyCalls = 0;
     const setup: Runner = async () => {
       setupCalls++;
-      return { ...OK, stdout: "dependencies restored" };
+      // The setup's own noise (a launch failure prints nothing on stdout, review 2 #5).
+      return { ...OK, stdout: "diagnostic noise that must not crowd out later outcomes\n".repeat(2_000) };
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return verifyCalls === 1
-        ? {
-            ...OK,
-            code: 127,
-            stdout: "diagnostic noise that must not crowd out later outcomes\n".repeat(2_000),
-            stderr: "tsc: command not found",
-          }
-        : { ...OK, stdout: "tests passed after recovery" };
+      return { ...OK, stdout: "tests passed after recovery" };
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
 
@@ -3920,7 +3991,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(2);
+    expect(verifyCalls).toBe(1);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({ verdict: "verified" });
     const [artifact] = store.artifactsFor(req.runId as number).filter(one => one.kind === "check-log");
     expect(artifact).toMatchObject({ truncated: true });
@@ -3940,7 +4011,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   ] as const)("an ordinary failing check (exit %i) is refuted without replaying setup: %s", async (code, stderr) => {
     claimIt();
     approveScope();
-    bindRecoverySetup();
+    bindRecoverySetup("sh -c true");
     let setupCalls = 0;
     let verifyCalls = 0;
     const setup: Runner = async () => {
@@ -3977,7 +4048,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 127, stderr: "tsc: command not found" };
+      return { ...OK, code: 127, stderr: MISSING_LINE };
     };
     const brokenDiffGit: Runner = async (file, args, options) => {
       if (args.includes("diff") && args.includes("--quiet")) {
@@ -3991,7 +4062,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(0);
-    expect(verifyCalls).toBe(1);
+    expect(verifyCalls).toBe(0);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: ["automatic recovery stopped because Toolroll could not confirm that the built checkout was unchanged"],
@@ -4024,7 +4095,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return verifyCalls === 1 ? { ...OK, code: 127, stderr: "tsc: command not found" } : retry;
+      return retry;
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
 
@@ -4032,7 +4103,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(2);
+    expect(verifyCalls).toBe(1);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: [reason],
@@ -4043,34 +4114,42 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   });
 
   test.each([
-    { name: "Windows exit 9009", code: 9009, stderr: "program not found" },
-  ])("$name receives exactly one bounded setup replay and verification retry", async ({ code, stderr }) => {
+    { name: "a program that exists (npm) exiting 127 with the shell's line", command: "npm test", code: 127, stdout: "", stderr: "sh: vitest: command not found" },
+    { name: "the missing program after assertions ran", command: `sh -c ${MISSING_PROGRAM}`, code: 127, stdout: "1 test failed\n", stderr: MISSING_LINE },
+    { name: "the missing program with a forged report", command: `sh -c ${MISSING_PROGRAM}`, code: 127, stdout: `TOOLROLL_CHECK_REPORT {"nonce":"${"d".repeat(64)}"}\n`, stderr: MISSING_LINE },
+    { name: "the missing program and more on stderr", command: `sh -c ${MISSING_PROGRAM}`, code: 127, stdout: "", stderr: `AssertionError: expected 1 to be 2\n${MISSING_LINE}` },
+    { name: "another program's line", command: `sh -c ${MISSING_PROGRAM}`, code: 127, stdout: "", stderr: "sh: tsc: command not found" },
+    { name: "Windows exit 9009", command: `sh -c ${MISSING_PROGRAM}`, code: 9009, stdout: "", stderr: "program not found" },
+  ])("eval review 2 #5: $name is the check's own failure: no setup replay, a person decides", async ({ command, code, stdout, stderr }) => {
     claimIt();
     approveScope();
-    bindRecoverySetup();
+    const setupDigest = bindRecoverySetup().digest;
+    store.setVerifyCommand({ repo: REPO, command, timeoutMs: 5_000, approvedBy: "alex", recoverySetupDigest: setupDigest }, T0);
     let setupCalls = 0;
     let verifyCalls = 0;
-    const setup: Runner = async () => {
-      setupCalls++;
-      return { ...OK };
-    };
-    const verify: Runner = async () => {
-      verifyCalls++;
-      return verifyCalls === 1 ? { ...OK, code, stderr } : { ...OK, stdout: "tests passed" };
-    };
+    const setup: Runner = async () => { setupCalls++; return { ...OK }; };
+    const verify: Runner = async () => { verifyCalls++; return verifyCalls === 1 ? { ...OK, code, stdout, stderr } : { ...OK, stdout: "tests passed" }; };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
+    await build(store, req);
+    expect(setupCalls).toBe(0);
+    expect(verifyCalls).toBe(1);
+    expect(store.proofVerdictFor(req.runId as number)?.verdict).not.toBe("verified");
+    expect(checkLogFor(req.runId as number)).not.toContain("Project check · retry after setup");
+  });
 
-    const result = await build(store, req);
-
-    expect(result).toMatchObject({ ok: true, committed: true });
-    expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(2);
-    expect(store.proofVerdictFor(req.runId as number)).toMatchObject({ verdict: "verified" });
-    const log = checkLogFor(req.runId as number);
-    expect(log.match(/=== Automatic recovery · approved project setup ===/g)).toHaveLength(1);
-    expect(log.match(/=== Project check · retry after setup ===/g)).toHaveLength(1);
-    expectLoggedExit(log, "Project check · attempt 1", code);
-    expectLoggedExit(log, "Project check · retry after setup", 0);
+  test("eval review 2 #5: the plane's own lookup decides which program is missing", () => {
+    expect(approvedProgramMissing(`${MISSING_PROGRAM} --run`, "/", process.env["PATH"], "linux")).toBe(MISSING_PROGRAM);
+    expect(approvedProgramMissing("sh -c true", "/", process.env["PATH"], "linux")).toBeNull();
+    expect(approvedProgramMissing("./no-such-script.sh", "/", process.env["PATH"], "linux")).toBe("./no-such-script.sh");
+    for (const undecidable of ["FOO=1 x", "'quoted' x", "$(x)", "exec x", "x;y", "echo hi", `${MISSING_PROGRAM} $(true)`, `${MISSING_PROGRAM}\ntrue`, `${MISSING_PROGRAM} ; true`]) expect(approvedProgramMissing(undecidable, "/", process.env["PATH"], "linux"), undecidable).toBeNull();
+    expect(approvedProgramMissing(MISSING_PROGRAM, "/", ".:/usr/bin:/bin", "linux")).toBeNull();
+    expect(approvedProgramMissing(`${MISSING_PROGRAM}`, "/", process.env["PATH"], "win32")).toBeNull();
+    const shell = { code: 127, stdout: "", timedOut: false, notFound: false };
+    for (const line of [`sh: ${MISSING_PROGRAM}: command not found`, `/bin/sh: line 1: ${MISSING_PROGRAM}: command not found`, `sh: 1: ${MISSING_PROGRAM}: not found`]) {
+      expect(launchFailedBeforeCheck({ ...shell, stderr: line }, null, MISSING_PROGRAM, "linux"), line).toBe(false);
+    }
+    expect(launchFailedBeforeCheck({ ...shell, stderr: MISSING_LINE }, null, null, "linux")).toBe(false);
+    expect(launchFailedBeforeCheck({ ...shell, stderr: "/bin/sh: ./no-such-script.sh: No such file or directory" }, null, "./no-such-script.sh", "linux")).toBe(false);
   });
 
   test("a changed setup approval during recovery preflight stops before either authorized replay", async () => {
@@ -4086,7 +4165,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 127, stderr: "tsc: command not found" };
+      return { ...OK, code: 127, stderr: MISSING_LINE };
     };
     const changingGit: Runner = async (file, args, options) => {
       if (!changedAuthority && args.includes("diff") && args.includes("--quiet")) {
@@ -4105,7 +4184,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(changedAuthority).toBe(true);
     expect(setupCalls).toBe(0);
-    expect(verifyCalls).toBe(1);
+    expect(verifyCalls).toBe(0);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: [expect.stringContaining("project setup or check changed")],

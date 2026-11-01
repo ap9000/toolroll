@@ -7,7 +7,7 @@
  * what slips through: stale test temp folders, leftover processes, extra
  * staged runtimes and dependency installs unused for a week.
  */
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { DEPS_FOLDER, sharedCopies } from "./shared-deps.js";
@@ -109,7 +109,8 @@ export function diskBytes(paths: readonly string[]): Map<string, number> {
   if (process.platform !== "win32") {
     for (let at = 0; at < paths.length; at += 200) {
       const batch = paths.slice(at, at + 200);
-      const du = spawnSync("du", ["-sk", ...batch], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+      // Bounded: a slow disk leaves the rest unmeasured rather than holding everything up.
+      const du = spawnSync("du", ["-sk", ...batch], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 60_000 });
       for (const line of (du.stdout ?? "").split("\n")) {
         const match = /^(\d+)\t(.+)$/.exec(line);
         if (match !== null && batch.includes(match[2]!)) sizes.set(match[2]!, Number(match[1]) * 1024);
@@ -170,4 +171,29 @@ export function bytesWords(bytes: number): string {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
   if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MB`;
   return `${Math.round(bytes / 1024)} KB`;
+}
+
+/** diskBytes without holding the event loop: the same one `du` per 200 paths and the same bounds, awaited. A console
+ * measuring its checkouts (tens of GB) used to stall every page for as long as `du` took. */
+export async function diskBytesAsync(paths: readonly string[], run: typeof duOnce = duOnce): Promise<Map<string, number>> {
+  const sizes = new Map<string, number>();
+  if (paths.length === 0) return sizes;
+  if (process.platform !== "win32") {
+    for (let at = 0; at < paths.length; at += 200) {
+      const batch = paths.slice(at, at + 200);
+      for (const line of (await run(batch)).split("\n")) {
+        const match = /^(\d+)\t(.+)$/.exec(line);
+        if (match !== null && batch.includes(match[2]!)) sizes.set(match[2]!, Number(match[1]) * 1024);
+      }
+    }
+  }
+  for (const path of paths) if (!sizes.has(path)) sizes.set(path, treeBytes(path));
+  return sizes;
+}
+
+/** `du -sk` over a batch, its output whatever it managed (a slow disk or a failure answers what it has, or nothing). */
+function duOnce(batch: readonly string[]): Promise<string> {
+  return new Promise(resolve => {
+    execFile("du", ["-sk", ...batch], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 60_000 }, (_error, stdout) => resolve(typeof stdout === "string" ? stdout : ""));
+  });
 }

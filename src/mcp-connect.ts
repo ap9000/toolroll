@@ -213,7 +213,11 @@ export type ConnectVisit = { service: string; repo: string; by: string; kit: str
   /** The scope asked for, when one was: the grant when the token answer leaves `scope` out (RFC 6749 §5.1). */
   scope?: string | null;
   /** Where the service revokes a token, when its metadata said: a run's own token is revoked there when the run ends. */
-  revoke?: string | null };
+  revoke?: string | null;
+  /** The signer's account generation when the password was typed at Connect: a rotation or revocation since ends the visit. */
+  generation?: number;
+  /** From a kit: the one grant the password at Connect proved (its subagent, this tool, this project); nothing else. */
+  grant?: { subagent: number; tool: string; repo: string } | null };
 
 const json = async (fetcher: Fetch, url: string): Promise<Record<string, unknown> | null> => {
   try {
@@ -332,7 +336,9 @@ const tokensFrom = (body: TokenResponse, now: number) => ({
  * (or refresh its sign-in, when it's there already), keep the tokens in its
  * secrets, and test it.
  */
-export async function finishConnect(store: Store, visit: ConnectVisit, code: string, now: Date, options: { fetcher?: Fetch; home?: string | undefined; test?: boolean; omitEnv?: readonly string[] } = {}): Promise<{ ok: true; said: string } | { ok: false; said: string }> {
+export async function finishConnect(store: Store, visit: ConnectVisit, code: string, now: Date, options: { fetcher?: Fetch; home?: string | undefined; test?: boolean; omitEnv?: readonly string[];
+  /** The signer's standing, checked again after the token answer and before anything changes. */
+  stillStanding?: () => boolean } = {}): Promise<{ ok: true; said: string } | { ok: false; said: string }> {
   const service = oneClickOf(visit.service)!;
   const fetcher = options.fetcher ?? fetch, home = options.home;
   const spec = connectedSpec(service.id)!;
@@ -352,6 +358,7 @@ export async function finishConnect(store: Store, visit: ConnectVisit, code: str
   }
   const tokens = tokensFrom(body, now.getTime());
   if (tokens.access === null) return { ok: false, said: `${service.label} didn't send a sign-in token.` };
+  if (options.stillStanding !== undefined && !options.stillStanding()) return { ok: false, said: "Your access changed during the sign-in, so nothing was connected. Connect again." };
   if (had === undefined) {
     const added = addToolTo(store, visit.repo, spec, `${service.label}, connected by signing in`, visit.by, now, { home });
     if (!added.ok) return { ok: false, said: added.message };

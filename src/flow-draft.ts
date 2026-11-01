@@ -7,6 +7,7 @@
  * nothing is sent: a later zone shows it to a person, and a later step posts
  * it ({{stage.<id>}}).
  */
+import { inEvalWorld } from "./eval-gate.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { run } from "./exec.js";
 import { CLAUDE_NO_TOOLS_ARGS, CLAUDE_SIGNED_OUT, claudeJsonBody, claudeModelArgs, inScratchDir, type CommandRunner } from "./claude-print.js";
@@ -73,6 +74,8 @@ export function keptDraft(text: string): string {
 export function claudeDraftRunner(runner: CommandRunner = run): DraftRunner {
   return request =>
     inScratchDir("standing-orders-draft-", async dir => {
+      // An eval world makes no provider call it can't cap and record (eval-gate.ts).
+      if (inEvalWorld()) return { ok: false, said: "Drafts aren't written in an eval world." };
       const started = Date.now();
       const result = await runner("claude", [
         "-p", "--output-format", "json", ...CLAUDE_NO_TOOLS_ARGS, ...claudeModelArgs(request.model),

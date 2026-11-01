@@ -1,7 +1,10 @@
+import { releaseViewOf } from "../release-view.js";
+import { releaseCiRunningOf } from "../release-ci-hold.js";
+import { releaseObligationsOf } from "../release-recheck.js";
 import { approvalProofOf, freshlyApprovable, freshnessFor, withFreshness } from "../scope.js";
 import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
-import { taskBaseOf } from "../task-base.js";
+import { recentGitReads, taskBaseOf } from "../task-base.js";
 import { assignmentPresentationOf,historicalAssessmentReason } from '../assignment-presentation.js';
 import { html, joinHtml, type Html } from "../html.js";
 import { assignmentStatusOf,assignmentWithEvidence } from '../assignment-ui.js';
@@ -93,6 +96,9 @@ export interface TaskViewsRuntime {
   liveRefreshSeconds: () => number;
 }
 export function createTaskViews(runtime: TaskViewsRuntime) {
+  // The task page's base line reads Git through a frozen view of the project (~0.2-0.5 s on a large repository) and
+  // the page renders it twice per view and again on every live refresh: its answers are kept for a moment.
+  const baseGit = recentGitReads();
 
   /** The first task's way to Ready shows until the first Ready result, and stays on the installation's first task. */
   function guided(rootId: string, now: Date): boolean {
@@ -522,14 +528,17 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         incidents: ref === null ? [] : runtime.store.incidentsForTask(ref.id),
         coordinatorProposals: (() => {
           if (ref === null || ref.repo === null || who.role !== "approver") return null;
-          runtime.store.sweepCoordinatorProposals(now);
           const rows = runtime.store.listCoordinatorProposals({ repos: [ref.repo], taskId });
           return { rows, decisions: decisionsFor(runtime.store, rows), now };
         })(),
         steering: ref === null ? [] : runtime.store.listSteerNotes(ref.id),
-        base: taskBaseOf(runtime.store, taskId),
+        base: taskBaseOf(runtime.store, taskId, baseGit),
         steeringLive: ref !== null && runtime.store.steeringLiveBuild(ref.id, now) !== null,
         steeringRun: ref === null ? null : runtime.store.steeringLiveBuild(ref.id, now),
+        release: ref === null ? null : releaseViewOf(runtime.store, ref.externalId, now, authority => releaseObligationsOf(runtime.store, runtime.evidenceRoot, authority)),
+        canStopRelease: who.role === "approver" && who.via === "cookie",
+        autoRelease: ref === null ? null : autoReleaseOf(runtime.store.getScope(ref.externalId)),
+        releaseCiRunning: ref !== null && releaseCiRunningOf(runtime.store, ref.externalId) !== null,
         approvalProof: (() => {
           // The proof of the approval shown: its approver, its exact sealed digest (approvedDigest === digest when approved).
           const scope = ref === null ? null : runtime.store.getScope(ref.externalId);
@@ -814,7 +823,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     if (admittedFamily?.problem != null) return runtime.sendScreen(response, status, screen(admittedFamily.root.title,
       html`<h1>${admittedFamily.root.title}</h1><p>${admittedFamily.current.state}</p><p class="problem" data-history-problem>${admittedFamily.problem}</p>`, { chrome: runtime.chromeFor(admittedFamily.root.repo, "tasks") }));
     const data = taskViewData(taskId, who, problem);
-    if (data === null) return refuse(response, who, 404, "no such task", "/tasks");
+    if (data === null) return refuse(response, who, 404, "no such task", "/work");
     const family = runtime.familyOf(taskId);
     const presentedData = { ...data, rootId: family?.root.id ?? taskId, rootTitle: family?.root.title ?? data.task.title,
       ...(family === null || data.assignment != null ? {} : { history: familyHistory(family) }),
@@ -1142,4 +1151,11 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     };
   }
   return { guided, projectFamilyPeek, familiesInView, familyTasksInView, revisionDestination, earlierLiveVersions, familyHistory, freshAssignment, workRowOf, taskListPane, runIsLive, runIsTaskResult, revisionViewOf, taskViewData, routeViewOf, taskChatFocus, pullRequestTargetOf, taskPullRequestOf, failureOf, explainAttempt, runChecksHere, taskScreen, armTaskResume, planViewOf, planContractViewOf, revisionDocOf, revisionLedgerOf, progressOf, resultDetailOf };
+}
+
+/** A release task the plane approved (or is checking) itself, for the task page (docs/plans/auto-approve-green.md). */
+function autoReleaseOf(scope: Scope | null): { kind: "checking" | "approved"; candidate: string } | null {
+  if (scope === null || scope.approvedDigest !== scope.digest || (scope.candidate ?? null) === null) return null;
+  return scope.approvalBasis === "auto-green" ? { kind: "approved", candidate: scope.candidate! }
+    : scope.approvalBasis === "auto-check" ? { kind: "checking", candidate: scope.candidate! } : null;
 }

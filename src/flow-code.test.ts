@@ -22,6 +22,7 @@ import { addFlowTriggerTo, checkFlowTriggerNow, runFlowTriggers, type TriggerIo 
 import { setFlowSecret } from "./flow-secrets.js";
 import { cardsFromOutput, codeOutput } from "./flow-code.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
 
 const T0 = new Date("2026-09-25T09:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -40,6 +41,8 @@ beforeEach(() => {
   store = openStore(join(dir, "orders.db"));
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "fixture", T0);
   if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
+  // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+  if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 

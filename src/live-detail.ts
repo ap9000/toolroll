@@ -5,11 +5,13 @@
  * project with their password; turning it off is one step. Every change is
  * an action-ledger line.
  *
- * The writer reads it once, when it opens a run's live file: what is off
- * never reaches disk, and a change applies from the next run.
+ * Each run captures its answer once, before its live file opens
+ * (run_live_detail, v136): what is off never reaches disk, a change applies
+ * from the next run, and every reader withholds commands unless that run's
+ * own captured answer is on (never the transcript's say, never the setting now).
  */
 import { createHash } from "node:crypto";
-import type { Store } from "./store.js";
+import { captureRunLiveDetail, type Store } from "./store.js";
 
 /** The consent a "Show commands" form carries: a single-use nonce minted for this person and these exact terms. */
 export const LIVE_VIEW_CONSENT = "live-view";
@@ -43,9 +45,10 @@ export function setLiveCommands(store: Store, change: { repo: string; commands: 
   return { said: change.commands ? "Commands now show in the live view for this project, from the next run." : "Commands are hidden in the live view for this project, from the next run." };
 }
 
-/** A run's trusted context for its live file: its own checkout, and its project's setting, read now. */
-export function liveLogContext(store: Store, taskRef: number, worktree: string | null): { base: string | null; commands: boolean } {
+/** A run's trusted context for its live file: its own checkout, and its project's setting, captured for the run now —
+ * before the file opens. The writer uses the captured answer: a capture that fails writes no commands. */
+export function liveLogContext(store: Store, runId: number, taskRef: number, worktree: string | null, now: Date): { base: string | null; commands: boolean } {
   let repo: string | null = null;
   try { repo = store.refForId(taskRef)?.repo ?? null; } catch { repo = null; }
-  return { base: worktree, commands: liveCommandsShown(store, repo) };
+  return { base: worktree, commands: captureRunLiveDetail(store, runId, liveCommandsShown(store, repo), now) };
 }

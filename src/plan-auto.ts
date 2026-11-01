@@ -2,7 +2,7 @@ import type { Store } from "./store.js";
 import { releaseUnattendedRun, reserveUnattendedRun, unattendedGrantStands, type UnattendedGrant } from "./flow-unattended.js";
 import { modeTermsFromJson } from "./modes.js";
 import { plannerContractOf, plannerSourceDigest } from "./planner-source.js";
-import { modeFilingCoverage, propose } from "./scope.js";
+import { modeFilingCoverage, propose, quarantinedAuthor } from "./scope.js";
 
 export const PLAN_AUTO_SCHEMA = `CREATE TABLE IF NOT EXISTS plan_authorization (
   task_id TEXT PRIMARY KEY REFERENCES task(id),
@@ -25,7 +25,7 @@ export function applyModeToNewFiling(store: Store, taskId: string, actor: string
   const ref = store.lookupRef(taskId);
   const scope = store.getScope(taskId);
   const coverage = modeFilingCoverage(store, ref?.repo ?? null, actor, now);
-  if (ref === null || scope === null || scope.proposedVia != null || coverage === null) return;
+  if (ref === null || scope === null || quarantinedAuthor(scope.proposedVia) || coverage === null) return;
   const filed = propose(store, { taskId, goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, acceptance: scope.acceptance,
     budgetMicrousd: scope.budgetMicrousd ?? coverage.defaultBudgetMicrousd,
     qualityMode: scope.qualityMode ?? "default",
@@ -47,7 +47,7 @@ export function authorizePlanUnderMode(store: Store, taskId: string, actor: stri
     const source = plannerContractOf(store, taskId);
     if (!source.ok || source.contract.scope === null || source.contract.revision !== null) return false;
     const scope = source.contract.scope;
-    if (scope.proposedVia !== null || scope.acceptance.length === 0 || scope.touches.length === 0 || scope.terms.profileState !== "resolved" || store.scopeSealed(taskId)) return false;
+    if (quarantinedAuthor(scope.proposedVia) || scope.acceptance.length === 0 || scope.touches.length === 0 || scope.terms.profileState !== "resolved" || store.scopeSealed(taskId)) return false;
     store.raw().prepare(`INSERT INTO plan_authorization(task_id,source_digest,scope_digest,mode_digest,signed_by,created_at,basis) VALUES (?,?,?,?,?,?,'mode')
       ON CONFLICT(task_id) DO UPDATE SET source_digest=excluded.source_digest,scope_digest=excluded.scope_digest,mode_digest=excluded.mode_digest,signed_by=excluded.signed_by,created_at=excluded.created_at,basis='mode'`)
       .run(taskId, plannerSourceDigest(source.contract), scope.digest, mode.digest, actor, now.toISOString());
@@ -72,7 +72,7 @@ function escalatedPosture(store: Store, taskId: string): boolean {
 export function sealFlowFilingUnderGrant(store: Store, taskId: string, grant: UnattendedGrant, card: { flow: number; id: number }, now: Date): boolean {
   const ref = store.lookupRef(taskId);
   const scope = store.getScope(taskId);
-  if (ref === null || scope === null || scope.proposedVia != null || scope.profileState !== "resolved" || escalatedPosture(store, taskId)) return false;
+  if (ref === null || scope === null || quarantinedAuthor(scope.proposedVia) || scope.profileState !== "resolved" || escalatedPosture(store, taskId)) return false;
   if (!unattendedGrantStands(store, grant.digest, grant.signedBy, ref.repo, scope.touches, now)) return false;
   // The day's run is taken first, in one capped statement; a filing that then can't be sealed gives it back.
   if (!reserveUnattendedRun(store, grant, taskId, now)) return false;

@@ -27,7 +27,7 @@ import { claudeTurnRunner, parseSoul, readTurn, subagentActor, subagentLabel, TU
 import { passOn, shortenAsk, TEXT_LIMITS } from "./text-limits.js";
 import { LIMITS } from "./decision.js";
 import { callName, callOutcome, callWords, inputProblem, makeCall, offeredTools, refreshGrants, ruleFor, type OfferedTool, type ToolIo } from "./subagent-tools.js";
-import { answerSuggestion, considerSuggestion, memoriesFor, remember } from "./subagent-memory.js";
+import { ACCEPT, answerSuggestion, considerSuggestion, memoriesFor, remember } from "./subagent-memory.js";
 import { replyToAsker } from "./subagent-desk.js";
 import { claudeMachineBilling } from "./spend.js";
 
@@ -247,6 +247,8 @@ function carryOut(store: Store, flow: FlowRow, definition: FlowDefinition, stage
   }
   if (answer.action === "cant") {
     event("handled", `Couldn't handle “${card.title}”: ${answer.note}`);
+    // A zone that answers whoever asked tells them it couldn't, in its own words when it gave some: they always hear back.
+    if (stage.reply === true) replyToAsker(store, flow, card, mate, answer.note || (answer.reason === "" ? `${context.name} couldn't handle this.` : `${context.name} couldn't handle this: ${answer.reason}`), now);
     if (stage.onFail !== null) store.moveFlowCard(card.id, { to: stage.onFail, outcome: "fail", actor, note: answer.note === "" ? null : note(answer.note), expectEntry: card.entry }, now);
     else store.updateFlowCard(card.id, { waiting: `${context.name} couldn't handle it: ${answer.note}`.slice(0, 300) }, now);
     return { state: "failed", said: answer.note || "It couldn't handle this card.", log, decisionJson };
@@ -269,7 +271,9 @@ function carryOut(store: Store, flow: FlowRow, definition: FlowDefinition, stage
 }
 
 /** A person answers a subagent's question: once, by the person it was asked of; the card's turn is due again. */
-export function answerSubagentQuestion(store: Store, id: number, answer: { choice: string | null; text: string | null; by: string; via: string }, now: Date): { ok: true; said: string } | { ok: false; said: string } {
+export function answerSubagentQuestion(store: Store, id: number, answer: { choice: string | null; text: string | null; by: string; via: string;
+  /** The person proved themselves for this answer: only then may accepting a suggested rule loosen it. */
+  widening?: "proved" }, now: Date): { ok: true; said: string } | { ok: false; said: string } {
   return store.transact(() => {
     const question = store.subagentQuestion(id);
     if (question === null || question.state !== "open") return { ok: false as const, said: "That question was already answered." };
@@ -280,8 +284,10 @@ export function answerSubagentQuestion(store: Store, id: number, answer: { choic
     const card = store.getFlowCard(question.card);
     // v95: a rule change it suggested to its manager. Nothing about the card waits on it.
     if (question.suggestion !== null) {
+      // A suggestion loosens a rule: accepted only with the person's proof, on its page (chat-management.md §0a.3).
+      if (choice?.id === ACCEPT && answer.widening !== "proved") return { ok: false as const, said: "Changing this rule takes your password. Answer it on the subagent's page in Toolroll." };
       const mate = store.getSubagent(question.subagent);
-      const decided = mate === null ? { ok: false as const, said: "That subagent is off the team." } : answerSuggestion(store, mate, question.suggestion, { choice: choice?.id ?? null, text, by: answer.by }, now);
+      const decided = mate === null ? { ok: false as const, said: "That subagent is off the team." } : answerSuggestion(store, mate, question.suggestion, { choice: choice?.id ?? null, text, by: answer.by, ...(answer.widening === undefined ? {} : { widening: answer.widening }) }, now);
       store.answerSubagentQuestion(id, { choice: choice?.id ?? null, text, by: answer.by, via: answer.via }, now);
       store.addSubagentEvent({ subagent: question.subagent, card: question.card, entry: question.entry, kind: "answered", said: `${answer.by}: ${[choice?.label, text].filter(Boolean).join(" — ")}`, by: answer.by }, now);
       return decided;

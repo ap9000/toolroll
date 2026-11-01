@@ -22,10 +22,13 @@ import { failingChecks, summarizeChecks } from "./pulls.js";
 import { assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
-import { authenticateApprover } from "./scope.js";
+import { authenticateApprover, personProof } from "./scope.js";
 import { BRANCH_PREFIX, headWithin } from "./names.js";
 import type { VerifiedApprover } from "./principal.js";
 import type { Publication, Store } from "./store.js";
+import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, releaseTaskRef } from "./store.js";
+import { belongsToRelease } from "./release-authority.js";
+import { autoReleaseSealed } from "./release-auto.js";
 import { fullCheckGate, requestFollowUpChecks } from "./result-follow-ups.js";
 
 export type MergeMethod = "squash" | "merge" | "rebase";
@@ -155,6 +158,8 @@ export function pullRequestBlocker(store: Store, runId: number): string | null {
   const { grant } = publicationGrantOf(store, run.taskRef);
   if (grant === null || !grant.capabilities.includes("push-branch") || !grant.capabilities.includes("open-pr")) return "Pull requests aren't set up for this project.";
   if (run.headRevision === null || run.committed === false) return "This result has no commit to publish.";
+  if (nightlyTaskRef(store, run.taskRef)) return NIGHTLY_CHECK_ONLY;
+  if (releaseTaskRef(store, run.taskRef)) return RELEASE_MERGES_ONLY;
   if (run.branch === null || !headWithin(run.branch, grant.headPrefix)) return "This result's branch isn't one Toolroll may push.";
   if (store.hasRedactedTerminalDiff(runId)) return "This result's changes contain something that looks like a secret, so it won't be pushed.";
   const existing = store.publicationForRun(runId);
@@ -387,7 +392,11 @@ export async function mergeAsPerson(
   const run = store.getRun(input.runId);
   const repo = run === null ? null : store.refById(run.taskRef)?.repo ?? null;
   if (input.password === "") return refuse("password", "Enter your password to merge.");
-  if (!authenticateApprover(store, input.name, input.password, repo).ok) return refuse("password", "That password didn't work, or you can't merge in this project.");
+  const proved = authenticateApprover(store, input.name, input.password, repo);
+  if (!proved.ok) return refuse("password", "That password didn't work, or you can't merge in this project.");
+  // A merge by hand is a person's (approval policy §1.7): the lead's token or a remote API token proves a credential,
+  // not a person — `--anyway` included.
+  if (!personProof(proved.method)) return refuse("person-required", MERGE_NEEDS_PERSON);
   return mergePullRequest(store, { runId: input.runId, by: input.name, ...(input.anyway === true ? { anyway: true } : {}), ...(input.exec === undefined ? {} : { exec: input.exec }), ...(input.clock === undefined ? {} : { clock: input.clock }) });
 }
 
@@ -406,6 +415,15 @@ export async function mergePullRequest(
 ): Promise<Result<{ commit: string | null }>> {
   const exec = input.exec ?? execRun;
   const clock = input.clock ?? (() => new Date());
+  // The nightly check of main (release-once.md, part 3) is a check only: it never merges.
+  const mergedRun = store.getRun(input.runId);
+  const mergedTask = mergedRun === null ? null : store.refById(mergedRun.taskRef)?.externalId ?? null;
+  if (mergedTask !== null && store.handle.prepare("SELECT 1 AS hit FROM nightly_check WHERE task = ?").get(mergedTask) !== undefined) return refuse("check-only", "The nightly check of main is only a check; it never merges.");
+  // A release's task merges only through `toolroll release` (release-once.md), which proves the live release, reserves
+  // the merge at its lease's epoch and checks the exact pull request: never here, by hand or automatically.
+  if (mergedTask !== null && belongsToRelease(store, mergedTask)) return refuse("release", "This result belongs to a release; it merges only through `toolroll release`.");
+  // A release task the plane approved (or is checking) automatically (auto-approve-green.md) never merges here either.
+  if (mergedTask !== null && autoReleaseSealed(store, mergedTask)) return refuse("release", "This result was approved automatically for a release; it merges only through `toolroll release`.");
   const publication = store.publicationForRun(input.runId);
   const follow = publication === null ? null : followOf(store, publication.id);
   if (publication === null || follow === null || publication.prNumber === null) return refuse("no-pr", "This result has no open pull request to merge.");
@@ -526,3 +544,6 @@ export function newestPullRequestOf(store: Store, versions: readonly string[]): 
   }
   return null;
 }
+
+/** Why a machine credential's merge is refused (approval policy §1.7). */
+export const MERGE_NEEDS_PERSON = "Only a person can merge. Merge it on the task page or from your paired chat.";

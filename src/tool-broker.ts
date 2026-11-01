@@ -42,7 +42,7 @@ export type BrokerOptions = {
   /** Why a local server may not start unwrapped (no fence for it here), read when it would; null when it may. */
   unwrapped?: () => string | null;
   /** How a local server is started inside its run's fence, read when it starts (the fence is fixed after the tools). */
-  wrap?: () => ((file: string, args: readonly string[]) => { file: string; args: string[] }) | null;
+  wrap?: () => ((file: string, args: readonly string[], cwd?: string) => { file: string; args: string[]; env?: Record<string, string> }) | null;
 };
 
 export type ToolBroker = {
@@ -154,8 +154,8 @@ class LocalServer {
       const why = this.options.unwrapped?.() ?? null;
       if (why !== null) { this.refusal = why; return null; }
     }
-    const { file, args } = wrap === null ? { file: this.tool.spec.command!, args: [...this.tool.spec.args] } : wrap(this.tool.spec.command!, this.tool.spec.args);
-    const child = spawn(file, args, { env, ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }), stdio: ["pipe", "pipe", "ignore"], detached: process.platform !== "win32" });
+    const { file, args, env: sandboxEnv } = wrap === null ? { file: this.tool.spec.command!, args: [...this.tool.spec.args], env: undefined } : wrap(this.tool.spec.command!, this.tool.spec.args, this.options.cwd);
+    const child = spawn(file, args, { env: { ...env, ...(sandboxEnv ?? {}) }, ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }), stdio: ["pipe", "pipe", "ignore"], detached: process.platform !== "win32" });
     this.child = child;
     this.initialized = false;
     child.stdout?.setEncoding("utf8");

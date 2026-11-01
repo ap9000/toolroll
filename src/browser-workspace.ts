@@ -166,6 +166,8 @@ export type BrowserTasksView = {
   newTask: BrowserLink;
   /** v105: subscription windows and monthly budgets, one tile each (an instance operator's; null when there are none). */
   limits: BrowserLimits | null;
+  /** The stored-state filter (Any state, Queued, Running, Done, Failed, Cancelled), each a real link starting on page one. */
+  states?: (BrowserLink & { active: boolean })[];
 };
 /** One limit: a plan's usage window ("Claude · 5-hour, 48%") or a monthly budget ("shop · Budget, $4.20 of $10"). */
 export type BrowserTaskGroup = WorkIndexGroup;
@@ -191,7 +193,7 @@ export type BrowserSettingsView = {
   quality: { mode: string; canManage: boolean; changed: string | null } | null;
   providers: {
     provider: string; name: string; tone: 'ok' | 'warn' | 'off' | 'neutral'; words: string;
-    connection: { words: string; facts: string; checkHref: string } | null;
+    connection: { words: string; facts: string; checkAction: string } | null;
     usage: string; envName: string; subscriptionCapable: boolean; mode: 'subscription' | 'api-key'; set: boolean;
   }[] | null;
   legacyWebhookWarning?: string;
@@ -422,6 +424,8 @@ export type BrowserResultView = {
     efficiency?: import("./run-efficiency.js").RunEfficiency | null;
     /** What its network was and what its proxy saw (egress.ts): display only. */
     network?: import("./egress.js").RunNetworkRecord | null;
+    /** Where the time went: its release check's parts and the task's deploys (latency-timeline.ts), display only. */
+    timing?: import("./latency-timeline.js").TimingView | null;
     /** Words for the result's Accept: Accept and finish when offered, else the Needs you acceptance. */
     decision: BrowserResultDecision | null;
     checks: { detail: string; problem: boolean; logHref: string | null } | null;
@@ -677,6 +681,8 @@ export type BrowserAgentsView = {
   selected: BrowserAgentDetail | null;
   /** Shown when nothing is on the board. */
   empty: string | null;
+  /** The Live grid (?view=live): every running agent's live output, watching only. */
+  live?: boolean;
 };
 
 export type BrowserView = BrowserTasksView | BrowserSettingsView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView;
@@ -685,6 +691,10 @@ export type BrowserWorkspace = {
   version: 1; path: string; title: string; user: string; csrf: string; sensitive: boolean;
   /** Passwordless is on for this signed-in browser: ceremony password fields are left out (docs/plans/passwordless.md). */
   passwordless?: boolean;
+  /** The session's open project (its path), or null: the sidebar's project picker names it. */
+  openProject?: string | null;
+  /** The settings frame's breadcrumb ("Settings / <page>"; settings-kit.ts): the header shows it as links. */
+  crumbs?: { label: string; href: string | null }[];
   /** What this person named their lead (Settings → Lead): the chat header and every lead message say it. */
   leadName?: string;
   refreshUrl: string; receipt: { request: string; received: boolean } | null;

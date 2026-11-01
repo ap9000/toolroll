@@ -20,6 +20,7 @@ import { createRequire } from "node:module";
 import type { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
 import { BACKUP_EVERY_HOURS, MAX_KEEP } from "./backup-ui.js";
 import { verifyLedgerChain } from "./ledger-chain.js";
+import { DEFAULT_LIVENESS_MS } from "./runner.js";
 import { openStore, readSchemaVersion, SCHEMA_VERSION, type BackupSettings, type Database, type Store } from "./store.js";
 
 /** A scheduled backup's name: the database it came from (see `databaseTag`), then when it was made. Backups made
@@ -30,8 +31,8 @@ export const OLDEST_RESTORABLE = 103;
 export { BACKUP_EVERY_HOURS, MAX_KEEP };
 /** How long the console's lease lasts without a renewal: a console that stopped holds it no longer than this. */
 const LEASE_MS = 3 * 60_000;
-/** A worker that heartbeat this recently is taken to be running. */
-const RUNNER_FRESH_MS = 3 * 60_000;
+/** A worker that heartbeat this recently is taken to be running (runner.ts DEFAULT_LIVENESS_MS). */
+const RUNNER_FRESH_MS = DEFAULT_LIVENESS_MS;
 
 export const defaultBackupFolder = (databaseFile: string) => join(dirname(databaseFile), "backups");
 export const backupFolderOf = (settings: BackupSettings, databaseFile: string) => settings.folder ?? defaultBackupFolder(databaseFile);
@@ -255,7 +256,7 @@ export async function restoreDatabase(options: { databaseFile: string; file: str
     const store = openStore(databaseFile);
     try {
       const running = runningNow(store, now);
-      if (running.length > 0) refuse("running", `Toolroll is running (${running.join(" and ")}). Stop it first, then restore. If it has just stopped, wait a few minutes.`);
+      if (running.length > 0) refuse("running", `Toolroll is running (${running.join(" and ")}). Stop it first, then restore. If it has just stopped, wait a minute.`);
       folder = backupFolderOf(store.backupSettings(), databaseFile);
     } finally { store.close(); }
   }

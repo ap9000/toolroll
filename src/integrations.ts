@@ -34,6 +34,7 @@ import { LINEAR_URL, readHooksBase, readLinearKey } from "./flow-triggers.js";
 import { credentialModeOf, projectToolsOf, readToolSecrets, missingSecrets, secretsSetFor, testToolOf } from "./project-tools.js";
 import { origin, readMonitoring } from "./monitoring-settings.js";
 import { targetOf } from "./monitoring.js";
+import { youiyouxState } from "./youiyoux-intake.js";
 
 
 export type IntegrationState = "connected" | "not-set-up" | "broken";
@@ -43,7 +44,9 @@ export type IntegrationPlace = { href: string | null; command: string | null };
 export type IntegrationAction =
   | ({ kind: "setup"; label: "Set up" } & IntegrationPlace)
   | { kind: "test"; label: "Send test" }
-  | ({ kind: "fix"; label: "Fix"; words: string } & IntegrationPlace);
+  | ({ kind: "fix"; label: "Fix"; words: string } & IntegrationPlace)
+  /** A project's youiyoux requests: one switch, and the problem to fix when it is Broken. */
+  | { kind: "switch"; label: "Turn off" | "Turn on"; repo: string; on: boolean; words: string | null };
 
 export type Integration = {
   key: string;
@@ -512,10 +515,40 @@ function combine(target: Target, row: CheckRow | undefined): Integration {
   return { ...base, ...common, state: "connected", action: { kind: "test", label: "Send test" } };
 }
 
+/**
+ * youiyoux change requests, one row per project that uses youiyoux (youiyoux-intake.ts): Connected with how many of
+ * its requests are queued, Broken when the last pass couldn't read its folder or some of its files, or Not set up when
+ * a person turned it off; one row Not set up when no project uses it. Read from the store and the folders' presence.
+ */
+function youiyouxIntegrations(io: IntegrationIo): Integration[] {
+  // In the order every other row's keys come (combine), so `--json` reads alike.
+  const row = (key: string, account: string | null, facts: { usedBy?: string[]; detail: string | null; checkedAt?: string | null; lastSuccessAt?: string | null; lastError?: string | null; lastErrorAt?: string | null },
+    state: IntegrationState, action: IntegrationAction): Integration => ({
+    key, group: "code", name: "youiyoux", usedBy: facts.usedBy ?? [], account, detail: facts.detail, checked: true, checkedAt: facts.checkedAt ?? null,
+    lastSuccessAt: facts.lastSuccessAt ?? null, lastError: facts.lastError ?? null, lastErrorAt: facts.lastErrorAt ?? null, state, action,
+  });
+  const rows = io.repos.flatMap((repo): Integration[] => {
+    let state;
+    try { state = youiyouxState(io.store, repo); } catch { return []; }
+    if (!state.uses) return [];
+    const key = `youiyoux:${repo}`, account = basename(repo);
+    const turn = (on: boolean, words: string | null): IntegrationAction => ({ kind: "switch", label: on ? "Turn on" : "Turn off", repo, on, words });
+    if (state.off) return [row(key, account, { detail: "Turned off" }, "not-set-up", turn(true, null))];
+    const facts = { usedBy: [`Tasks in ${account}`], detail: `${plural(state.queued, "request")} queued`, checkedAt: state.checkedAt };
+    if (state.problem === null) return [row(key, account, { ...facts, lastSuccessAt: state.checkedAt }, "connected", turn(false, null))];
+    const words = scrubIntegrationText(state.problem);
+    return [row(key, account, { ...facts, lastError: words, lastErrorAt: state.checkedAt }, "broken", turn(false, words))];
+  });
+  return rows.length > 0 ? rows : [row("youiyoux", null, { detail: "Starts by itself in a project with a youi.project.json" }, "not-set-up", { kind: "setup", label: "Set up", href: null, command: null })];
+}
+
 /** Every integration as it stands now, from files and saved history only: no network, no process, never slow. */
 export function integrationsNow(io: IntegrationIo): Integration[] {
   const rows = readIntegrationChecks(io.store);
-  return targets(io).map(target => combine(target, rows.get(target.key)));
+  const list = targets(io).map(target => combine(target, rows.get(target.key)));
+  const linear = list.findIndex(one => one.key === "linear");
+  list.splice(linear + 1, 0, ...youiyouxIntegrations(io));
+  return list;
 }
 
 /** Run the checks (all, or the named ones), record each answer, and return the list. */
@@ -562,7 +595,9 @@ export function renderIntegrations(list: readonly Integration[], secrets: Secret
     const lines = [`${one.name.padEnd(width)}  ${STATE_WORDS[one.state].padEnd(10)}${facts === "" ? "" : `  ${facts}`}`];
     if (one.state !== "not-set-up") lines.push(`${"".padEnd(width)}  last success ${whenText(one.lastSuccessAt)}${one.lastError === null ? "" : ` · last error ${whenText(one.lastErrorAt)}: ${one.lastError}`}`);
     if (one.action.kind === "fix") lines.push(`${"".padEnd(width)}  Fix: ${one.action.words}${one.action.command === null || one.action.words.includes(one.action.command) ? "" : ` (run ${one.action.command})`}`);
-    if (one.action.kind === "setup") lines.push(`${"".padEnd(width)}  Set up: ${one.action.command !== null ? `run ${one.action.command}` : `Settings (${one.action.href ?? "/settings"})`}`);
+    if (one.action.kind === "switch" && one.action.words !== null) lines.push(`${"".padEnd(width)}  Fix: ${one.action.words}`);
+    if (one.action.kind === "switch" && one.action.on) lines.push(`${"".padEnd(width)}  Turn on: Settings → Integrations`);
+    if (one.action.kind === "setup" && (one.action.command !== null || one.action.href !== null)) lines.push(`${"".padEnd(width)}  Set up: ${one.action.command !== null ? `run ${one.action.command}` : `Settings (${one.action.href ?? "/settings"})`}`);
     return lines;
   }), ...note];
 }
@@ -570,17 +605,18 @@ export function renderIntegrations(list: readonly Integration[], secrets: Secret
 // ---------------------------------------------------------------- background
 
 export type IntegrationMonitor = {
-  /** The list now, without waiting; starts a background check when the last one is older than the cache. */
+  /** The list now, from the last answers saved. It only reads: a page calls it on every render (docs/plans/get-side-effects.md). */
   list(): Integration[];
-  /** Check now and wait (Send test, or the first answer in a test). */
+  /** Check now and wait (Send test, Check now, or the first answer in a test). */
   check(keys?: readonly string[]): Promise<Integration[]>;
+  /** The background pass: start a check when the last one is older than the cache. Never called from a page. */
+  refreshIfDue(): void;
   /** Whether a background check is running. */
   readonly checking: boolean;
 };
 
-/** Checks in the background with a short cache, as the first-run suggestions are: a render never waits on a check. */
 export function createIntegrationMonitor(io: () => IntegrationIo, options: { cacheMs?: number; now?: () => number } = {}): IntegrationMonitor {
-  const cacheMs = options.cacheMs ?? 60_000;
+  const cacheMs = options.cacheMs ?? 10 * 60_000;
   const now = options.now ?? Date.now;
   let lastStarted = 0;
   let running: Promise<unknown> | null = null;
@@ -595,12 +631,12 @@ export function createIntegrationMonitor(io: () => IntegrationIo, options: { cac
   };
   return {
     list() {
-      const current = io();
-      const list = integrationsNow(current);
-      if (running === null && now() - lastStarted >= cacheMs) void start();
-      return list;
+      return integrationsNow(io());
     },
     check: keys => start(keys),
+    refreshIfDue() {
+      if (running === null && now() - lastStarted >= cacheMs) void start();
+    },
     get checking() { return running !== null; },
   };
 }

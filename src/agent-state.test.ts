@@ -251,9 +251,12 @@ describe("a project's counts, over the Tasks list's own families", () => {
     const run = built("rechecked", "failed");
     store.recordRunCheck(run, { status: "failed", exitCode: 1, suites: [] }, NOW); // the recorded failure, too
     expect(of()[REPO]!.counts).toMatchObject({ failed: 1, "needs-you": 0 });
-    const request = store.recordAction({ at: NOW.toISOString(), actor: "operator:sam", repo: REPO, taskId: "rechecked", runId: run, action: "checks requested", outcome: "full", source: "work", detail: `${HEAD} · person` });
+    // A pass counts only with its saved log and the approved command it ran (result-follow-ups.ts), as the worker writes them.
+    const command = store.liveVerifyCommand(REPO)!;
+    const request = store.recordAction({ at: NOW.toISOString(), actor: "operator:sam", repo: REPO, taskId: "rechecked", runId: run, action: "checks requested", outcome: "full", source: "work", detail: `${HEAD} · person · ${command.digest}` });
     store.recordAction({ at: NOW.toISOString(), actor: "operator:sam", repo: REPO, taskId: "rechecked", runId: run, action: "checks started", outcome: String(request), source: "work" });
-    storeEvidence(store, root, run, "structured-output", "follow-up.json", Buffer.from(JSON.stringify({ request, head: HEAD, result: { ran: true, exitCode: 0 } })), "follow-up check receipt v1", NOW, { captureStatus: "ok" });
+    const log = storeEvidence(store, root, run, "structured-output", "follow-up.log", Buffer.from("612 passed\n"), "follow-up check log v1", NOW, { captureStatus: "ok" });
+    storeEvidence(store, root, run, "structured-output", "follow-up.json", Buffer.from(JSON.stringify({ request, head: HEAD, result: { ran: true, exitCode: 0 }, log: { artifactId: log } })), "follow-up check receipt v1", NOW, { captureStatus: "ok" });
     store.recordAction({ at: NOW.toISOString(), actor: "operator:sam", repo: REPO, taskId: "rechecked", runId: run, action: "checks finished", outcome: `${request}:passed`, source: "work", detail: "exit 0" });
     expect(of()[REPO]!.counts).toMatchObject({ failed: 0, "needs-you": 1 });
   });

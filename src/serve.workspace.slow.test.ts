@@ -6,7 +6,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Server } from "node:http";
 import { openStore, type Store } from "./store.js";
 import { acquire, release } from "./claim.js";
@@ -113,6 +113,30 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     rmSync(root, { recursive: true, force: true });
   });
 
+  test("Start a builder speaks for the task it came from, and the first-run step for the first task's project", async () => {
+    // Builder only in alpha; the only task in beta; All projects: the step is not done (alpha is not that task's project).
+    const ref = seedTask("t-beta", "Beta work", beta);
+    sealScopeFixture(store, "t-beta", approverToken, "Beta work");
+    void ref;
+    register(store, { name: "alpha-worker", host: "here", capacity: 1, repos: [alpha], now, newToken: () => "alpha-token" });
+    const cookie = await login();
+    const chat = workspaceOf(await page(cookie, "/chat"));
+    expect(chat.firstRun?.steps.find(one => one.key === "builder")).toMatchObject({ done: false });
+    expect(await page(cookie, "/inbox")).toMatch(/data-step="builder"><span class="mono" aria-hidden="true">○<\/span>/);
+    // The task's link names it; the page reports beta whatever is open, and the selection stays alpha.
+    await openProject(cookie, alpha);
+    const task = await page(cookie, "/t/t-beta");
+    expect(task).toMatch(/<a [^>]*href="\/start-builder\?task=t-beta"[^>]*>Connect a builder/);
+    expect(await page(cookie, "/start-builder?task=t-beta")).toContain(`<strong>No builder is connected</strong> to <strong>${basename(beta)}</strong>`);
+    expect(await page(cookie, "/start-builder")).toContain(`A builder is connected to <strong>${basename(alpha)}</strong>`);
+    // Unknown, or outside what this person may see: 404.
+    expect((await fetch(url("/start-builder?task=no-such-task"), { headers: { cookie } })).status).toBe(404);
+    const minted = store.mintInvite("approver", "alex", now, undefined, [alpha]);
+    expect(store.consumeInviteAndCreateAccount({ tokenValue: minted.token, name: "member", credentialHash: hashPassword(memberPassword) }, now).ok).toBe(true);
+    const member = await login("member", memberPassword);
+    expect((await fetch(url("/start-builder?task=t-beta"), { headers: { cookie: member } })).status).toBe(404);
+  });
+
   test("an unanswered question stays primary in Work and the task page when the builder disconnects", async () => {
     const ref = seedTask("t-question", "Choose a retry policy", alpha);
     sealScopeFixture(store, "t-question", approverToken, "Choose a retry policy");
@@ -203,22 +227,22 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
 
   test("project selection preserves the requested destination and rejects unsafe return paths", async () => {
     const cookie = await login();
-    const pending = await fetch(url("/tasks?state=done"), { headers: { cookie }, redirect: "manual" });
+    const pending = await fetch(url("/board?view=order"), { headers: { cookie }, redirect: "manual" });
     expect(pending.status).toBe(303);
-    expect(pending.headers.get("location")).toBe("/projects?return=%2Ftasks%3Fstate%3Ddone");
+    expect(pending.headers.get("location")).toBe("/projects?return=%2Fboard%3Fview%3Dorder");
     const picker = await page(cookie, pending.headers.get("location")!);
     const window = new Window();
     try {
       window.document.body.innerHTML = picker;
       const button = [...window.document.querySelectorAll('button.project-name')].find(one => one.textContent === "beta")!;
       const form = button.closest("form")!;
-      expect(form.querySelector('input[name="return"]')?.getAttribute("value")).toBe("/tasks?state=done");
+      expect(form.querySelector('input[name="return"]')?.getAttribute("value")).toBe("/board?view=order");
       const csrf = csrfOf(picker);
-      const invalid = await fetch(url("/projects/open"), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf, path: "/no/such/project", return: "/tasks?state=done" }) });
+      const invalid = await fetch(url("/projects/open"), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf, path: "/no/such/project", return: "/board?view=order" }) });
       expect(invalid.status).toBe(400);
-      expect(await invalid.text()).toContain('name="return" value="/tasks?state=done"');
-      const selected = await fetch(url(form.getAttribute("action")!), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf, path: beta, return: "/tasks?state=done" }), redirect: "manual" });
-      expect(selected.headers.get("location")).toBe("/tasks?state=done");
+      expect(await invalid.text()).toContain('name="return" value="/board?view=order"');
+      const selected = await fetch(url(form.getAttribute("action")!), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf, path: beta, return: "/board?view=order" }), redirect: "manual" });
+      expect(selected.headers.get("location")).toBe("/board?view=order");
       for (const bad of ["https://evil.example/", "//evil.example/", "/\\evil.example/", "/%2f%2fevil.example/"]) {
         const unsafe = await page(cookie, `/projects?return=${encodeURIComponent(bad)}`);
         window.document.body.innerHTML = unsafe;
@@ -243,6 +267,13 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const queue = await fetch(url("/queue"), { headers: { cookie }, redirect: "manual" });
     expect(queue.status).toBe(303);
     expect(queue.headers.get("location")).toBe("/board?view=order");
+    // The old task list answers as a redirect to Tasks (/work), keeping its state filter, and its template link opens
+    // the add page; an unknown state is still refused.
+    for (const [from, to] of [["/tasks", "/work"], ["/tasks?state=queued", "/work?state=queued"], ["/tasks?template=lint-sweep", "/tasks/new?template=lint-sweep"]] as const) {
+      const moved = await fetch(url(from), { headers: { cookie }, redirect: "manual" });
+      expect([moved.status, moved.headers.get("location")], from).toEqual([303, to]);
+    }
+    expect((await fetch(url("/tasks?state=bogus"), { headers: { cookie }, redirect: "manual" })).status).toBe(400);
 
     // A project-scoped login sees the SAME reduced tools it saw before —
     // no portfolio, fleet/requirements/mode/system or chat; project Learning is available.
@@ -266,12 +297,12 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect((await get("/settings")).status).toBe(200);
     // Opening the menu must not silently select a project. Project-bound
     // pages still require a selection, including after returning from Settings.
-    const tasks = await get("/tasks");
+    const tasks = await get("/board");
     expect(tasks.status).toBe(303);
-    expect(tasks.headers.get("location")).toBe("/projects?return=%2Ftasks");
+    expect(tasks.headers.get("location")).toBe("/projects?return=%2Fboard");
     await selectProject(cookie, alpha);
     expect((await get("/menu")).status).toBe(200);
-    expect((await get("/tasks")).status).toBe(200);
+    expect((await get("/board")).status).toBe(200);
     await selectProject(cookie, "");
     expect((await get("/menu")).status).toBe(200);
 
@@ -394,6 +425,33 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     await agree(id, "needs-approval", "Approve plan", "Approve & start");
     approve(store, id, "alex", now, store.getScope(id)!.digest, approverToken);
     await agree(id, "no-worker-registered", "Connect a builder");
+    // Connect a builder leads to Start a builder and its command, never back to the task's own page.
+    for (const path of ["/work", `/t/${id}`]) {
+      const shown = await page(cookie, path);
+      expect(shown, path).toMatch(new RegExp(`<a [^>]*href="/start-builder\\?task=${id}"[^>]*>Connect a builder`));
+      expect(shown, path).not.toMatch(/<a [^>]*href="[^"]*#run-status"[^>]*>Connect a builder/);
+    }
+    expect(await page(cookie, "/system")).toMatch(/<section id="builder"[^>]*><h2 id="builder-heading">Start a builder<\/h2>[\s\S]*>toolroll up<\/code>/);
+    // A live builder bound to another project doesn't connect this one: not on Start a builder, not in the first-run
+    // steps (dispatch's own answer, buildersFor).
+    register(store, { name: "beta-worker", host: "here", capacity: 1, repos: [beta], now, newToken: () => "beta-token" });
+    await openProject(cookie, alpha);
+    const builderStep = workspaceOf(await page(cookie, "/chat")).firstRun?.steps.find(one => one.key === "builder");
+    expect(builderStep).toMatchObject({ done: false, action: { href: "/start-builder" } });
+    expect(await page(cookie, "/start-builder")).toContain(`<strong>No builder is connected</strong> to <strong>${basename(alpha)}</strong>`);
+    await agree(id, "no-worker-registered", "Connect a builder");
+    // A project-limited person reaches the same instructions (System stays instance-only), told who can start one.
+    const limitedInvite = store.mintInvite("approver", "alex", now, undefined, [alpha]);
+    expect(store.consumeInviteAndCreateAccount({ tokenValue: limitedInvite.token, name: "limited", credentialHash: hashPassword(memberPassword) }, now).ok).toBe(true);
+    const limited = await login("limited", memberPassword);
+    expect(await page(limited, `/t/${id}`)).toMatch(new RegExp(`<a [^>]*href="/start-builder\\?task=${id}"[^>]*>Connect a builder`));
+    const limitedStart = await fetch(url("/start-builder"), { headers: { cookie: limited } });
+    expect(limitedStart.status).toBe(200);
+    const limitedPage = await limitedStart.text();
+    expect(limitedPage).toContain(">toolroll up</code>");
+    expect(limitedPage).toContain("takes someone who manages this Toolroll");
+    expect(limitedPage).not.toContain(basename(beta));
+    expect((await fetch(url("/system"), { headers: { cookie: limited } })).status).toBe(403);
     const blocker = seedTask('t-before-status', 'First task', alpha);
     store.addEdge(id, 't-before-status');
     await agree(id, 'waiting-dependency', 'View task details');
@@ -628,6 +686,21 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(await page(cookie, "/t/t-pr")).toContain('href="https://github.com/owner/repo/pull/482"');
     // Bad view values fall back to All; an unknown view is never an error.
     expect(await page(cookie, "/work?view=bogus")).toMatch(/<a href="\/work" class="active" aria-current="page"[^>]*>All/);
+    // The old task list's stored-state filter lives here now: only that state, every view link keeps it, an unknown
+    // state is refused as it was there.
+    const cancelledOnly = workspaceOf(await page(cookie, "/work?state=cancelled")).view as typeof needing;
+    expect(cancelledOnly.rows.map(row => row.id)).toEqual(["t-cancelled"]);
+    expect(cancelledOnly.states?.find(one => one.active)?.label).toBe("Cancelled");
+    expect(cancelledOnly.tabs.every(tab => tab.href.includes("state=cancelled"))).toBe(true);
+    expect(cancelledOnly.states?.[0]).toMatchObject({ label: "Any state", href: "/work" });
+    expect((await fetch(url("/work?state=nope"), { headers: { cookie } })).status).toBe(400);
+    // A filter that leaves nothing says so and offers every state again, keeping the view; the page without the
+    // React view lists the states as links too, and every row shows its id.
+    const none = workspaceOf(await page(cookie, "/work?view=running&state=cancelled")).view as typeof needing;
+    expect(none.empty).toEqual({ text: "No tasks are cancelled in this view.", action: { label: "Show every state", href: "/work?view=running" } });
+    const filteredHtml = await page(cookie, "/work?state=cancelled");
+    expect(filteredHtml).toContain('<nav class="work-states" aria-label="Task state">');
+    expect(filteredHtml).toContain('<span class="mono">t-cancelled</span>');
     // Every shortcut view has its own honest empty state.
     store.cancelTask("t-live", now); // a live claim refuses; the row stays — so check the empty copy on a fresh project instead
     await openProject(cookie, beta);
@@ -750,9 +823,9 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(rowsOf(work).map(row => row.id).sort()).toEqual(["t-alpha", "t-beta"]);
     expect(work).not.toContain("t-outside");
     // Project-bound pages still defer to the opener exactly as before.
-    const tasks = await fetch(url("/tasks"), { headers: { cookie }, redirect: "manual" });
+    const tasks = await fetch(url("/board"), { headers: { cookie }, redirect: "manual" });
     expect(tasks.status).toBe(303);
-    expect(tasks.headers.get("location")).toBe("/projects?return=%2Ftasks");
+    expect(tasks.headers.get("location")).toBe("/projects?return=%2Fboard");
     // A project-scoped account gets 404 for the other project's run — the
     // same answer as before, whatever project its session holds.
     const minted = store.mintInvite("approver", "alex", now, undefined, [alpha]);
@@ -999,9 +1072,10 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     // The receipt's criteria label still reads from the stored verdict.
     expect(queuedTask).toContain("the agent's own claim — not checked");
     expect(rowsOf(await page(cookie, "/work")).find(row => row.id === "t-rev")?.views).toEqual(["all", "needs-you"]);
-    // The older run keeps its own verdict: nothing masks a selected result.
+    // The older run keeps its own record: nothing masks a selected result. Its verdict recorded a pass, but it saved
+    // no check this page can read, so it is never called passed (task-status.ts approvedCheckOf).
     const olderPage = await page(cookie, `/r/${older}?record=1`);
-    expect(/<header class="result-head">[\s\S]*?data-work-status="([^"]+)"/.exec(olderPage)?.[1]).toBe("ready-to-review");
+    expect(/<header class="result-head">[\s\S]*?data-work-status="([^"]+)"/.exec(olderPage)?.[1]).toBe("check-unreadable");
     expect(olderPage).not.toContain("Waiting for review");
 
     // A live historical reviewer does not turn current work into Reviewing.

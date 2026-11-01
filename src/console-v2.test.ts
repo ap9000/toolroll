@@ -36,7 +36,7 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     return (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
   };
   const workspace = async (cookie: string, path: string): Promise<BrowserWorkspace> => {
-    // A visit starts the subscription conversation (a JSON read never does), as a browser's first load does.
+    // A browser's first load, then its JSON read (quiet page visits: neither starts a conversation).
     await (await fetch(url(path), { headers: { cookie } })).text();
     const response = await fetch(url(`${path}${path.includes("?") ? "&" : "?"}format=workspace`), { headers: { cookie } });
     if (response.status !== 200) throw new Error(`${path}: ${response.status} ${await response.text()}`);

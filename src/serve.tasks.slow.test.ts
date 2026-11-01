@@ -250,6 +250,33 @@ describe("A2 — the live peek over real HTTP: guards, fence, and the names-only
     expect(await (await fetch(url(`/r/${runId}?fragment=transcript&shape=records&from=0`), { headers: { cookie } })).json()).toEqual({ error: "off", notes: [], older: 0 });
   });
 
+  test("the transcript window withholds commands unless the run's own answer is on, whatever the file says (v136)", async () => {
+    const { serializeLiveRecord } = await import("./live-records.js");
+    const { liveLogPath } = await import("./live.js");
+    const { captureRunLiveDetail } = await import("./store.js");
+    const cookie = await login();
+    const at = new Date().toISOString();
+    mkdirSync(join(evidenceRoot, "live"), { recursive: true });
+    writeFileSync(liveLogPath(evidenceRoot, runId), [
+      { k: "open", at, detail: "commands" },
+      { k: "step", at, id: "s1", kind: "command", target: "cat ~/.ssh/id_ed25519" },
+      { k: "done", at, id: "s1", ok: true, out: ["ssh-ed25519 AAAA"] },
+    ].map(record => `${serializeLiveRecord(record as never)}\n`).join(""));
+    const read = async () => ({
+      records: await (await fetch(url(`/r/${runId}?fragment=transcript&shape=records&from=0`), { headers: { cookie } })).text(),
+      text: await (await fetch(url(`/r/${runId}?fragment=transcript&from=0`), { headers: { cookie } })).text(),
+    });
+    // No captured answer (a run from before v136): off, in both shapes.
+    const off = await read();
+    expect(off.records).not.toMatch(/id_ed25519|AAAA|"detail":"commands"/);
+    expect(off.text).not.toMatch(/id_ed25519|AAAA/);
+    // The run's own answer on: shown.
+    captureRunLiveDetail(store, runId, true, new Date());
+    const on = await read();
+    expect(on.records).toContain("id_ed25519");
+    expect(on.records).toContain("AAAA");
+  });
+
   test("steering: a browser session files a note; the task page shows its state (arc 1)", async () => {
     const cookie = await login();
     const taskHtml = await (await fetch(url("/t/peek-1"), { headers: { cookie } })).text();
@@ -660,6 +687,8 @@ describe("the queue (portfolio arc, slice 1b): move-to-front resolved server-sid
       taskId: id, goal: "go", outOfScope: null, touches: [], acceptance: [],
       proposedAt: at.toISOString(), digest: `d-${id}`, approvedAt: at.toISOString(), approvedBy: "alex", approvedDigest: `d-${id}`,
     });
+    // A person's seal (approval policy: an approval with no recorded authority stands on nothing).
+    store.handle.prepare("UPDATE task_scope SET approval_basis = 'password' WHERE task_id = ?").run(id);
     return ref;
   };
 

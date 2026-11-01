@@ -17,12 +17,16 @@
  * Fail-soft: a recording that throws never touches the build.
  */
 import type { AgentTurn, ToolKind } from "./agent-board.js";
+import { topLevelEvent } from "./stream-scope.js";
 
 type Observer = { observe(event: Record<string, unknown>): void; close(): void };
 
 /** What one stream event says about the turn; null when it says nothing. */
 export function turnSignalOf(event: Record<string, unknown>): Exclude<AgentTurn, "crashed"> | null {
   const type = typeof event["type"] === "string" ? event["type"] : "";
+  // A subagent's events are not the parent's turn: its result never marks the parent idle or clears its open tools,
+  // and its init or words never mark it busy (stream-scope.ts).
+  if (!topLevelEvent(event)) return null;
   switch (type) {
     // Claude stream-json: the session starts, the assistant speaks or calls a tool, a tool answers; then one result.
     case "system": return event["subtype"] === "init" ? "busy" : null;

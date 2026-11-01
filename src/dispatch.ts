@@ -7,7 +7,8 @@
  * diagnosis can go stale; it can never grant a lease.
  */
 
-import { isAlive } from "./runner.js";
+import { authorityStandsSql } from "./approval-authority.js";
+import { isAlive, type Runner } from "./runner.js";
 import { updateAdmissionPaused, UPDATE_PAUSED } from "./desktop-update-gate.js";
 import { approvalOf, type ExecutionProfile } from "./scope.js";
 import { plannerSourceProblemOf } from "./planner-source.js";
@@ -16,8 +17,6 @@ import { REVIEW_TOKENS, resultStatusOf, reviewFactsOf } from "./workspace-ui.js"
 import { replacedWords } from "./task-status.js";
 import { failedAttemptSentence, latestFinishedAttempt } from "./needs-you.js";
 import { buildReviewOf } from "./review-switch.js";
-import { grantStandsSql } from "./flow-unattended.js";
-import { accountReachesSql } from "./project-access.js";
 import { BUILT_IN, parseCapabilityKey, type ChatSnapshot, type ReviewRequestOrigin, type ReviewRetryState, type Store, type TaskState } from "./store.js";
 
 export const DEFAULT_MAX_OPEN_DECISIONS = 5;
@@ -190,15 +189,9 @@ export function scopeApprovedForDispatch(store: Store, taskRef: number, now: Dat
       `SELECT 1 AS hit FROM task_scope
        JOIN task_ref ON task_ref.id = ? AND task_scope.task_id = task_ref.external_id
        WHERE task_scope.approved_digest = task_scope.digest AND task_scope.approved_at IS NOT NULL
-         AND (COALESCE(task_scope.approval_basis, 'password') NOT IN ('mode', 'grant')
-           OR (task_scope.approval_basis = 'mode' AND EXISTS (SELECT 1 FROM operating_mode om
-                      JOIN approver signer ON signer.name = om.signed_by
-                     WHERE om.repo = task_ref.repo AND om.revoked_at IS NULL
-                       AND om.absolute_expiry > ? AND om.digest = task_scope.mode_digest
-                       AND signer.revoked_at IS NULL AND signer.role = 'approver' AND ${accountReachesSql("signer", "task_ref.repo")}))
-           OR (task_scope.approval_basis = 'grant' AND ${grantStandsSql("task_scope.mode_digest", "?", "task_ref.repo")}))`,
+         AND ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`,
     )
-    .get(taskRef, now.toISOString(), now.toISOString());
+    .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString());
   return row !== undefined;
 }
 
@@ -282,6 +275,32 @@ function approvedProfile(scope: ReturnType<Store["getScope"]>): ExecutionProfile
 }
 
 /** The read-side lifecycle answer. Project access limits dependency detail, never the readiness gate. */
+/** The builders that may take work in `repo`, as dispatch decides: registered and not retired (`all`), bound to the
+ * project (`eligible`; only the assigned one when a task names one), and checking in now (`alive`). The first-run
+ * "Builder connected" step reads the same answer, so it is done only when a task there could start. */
+export function buildersFor(store: Store, repo: string, now: Date, assignedRunner: string | null = null): { all: Runner[]; eligible: Runner[]; alive: Runner[] } {
+  const all = store.listRunners().filter(one => one.retiredAt === null);
+  const bound = all.filter(one => one.repos.includes(repo));
+  const eligible = assignedRunner === null ? bound : bound.filter(one => one.name === assignedRunner);
+  return { all, eligible, alive: eligible.filter(one => isAlive(one, now)) };
+}
+
+/** Whether a task in `repo` could start for want of nothing but a person: a live builder bound to it. */
+export function builderReadyFor(store: Store, repo: string | null, now: Date): boolean {
+  return repo !== null && buildersFor(store, repo, now).alive.length > 0;
+}
+
+/** The project the first-run "Builder connected" step speaks for, on Chat and the board alike: the open one; else the
+ * saved project of the first filed task the viewer may see (All projects); else, only before any task exists, the
+ * first managed project. Null when tasks exist but none sits in a project the viewer may see: then nothing says done. */
+export function firstRunBuilderRepo(store: Store, selected: string | null, visible: (repo: string | null) => boolean, managed: readonly string[]): string | null {
+  if (selected !== null) return selected;
+  const placed = store.handle.prepare("SELECT repo FROM task_ref WHERE repo IS NOT NULL ORDER BY id").all() as { repo: string }[];
+  const first = placed.find(row => visible(row.repo));
+  if (first !== undefined) return first.repo;
+  return store.hasAnyWork() ? null : managed[0] ?? null;
+}
+
 export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, readableRepos: readonly string[] | null = null): DispatchDiagnosis | null {
   const task = store.getTask(taskId);
   const ref = store.lookupRef(taskId);
@@ -392,9 +411,7 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
   const gap = missingCapability(store, ref.id, ref.repo, now);
   if (gap !== null) return answer("missing-requirement", "waiting", "Missing a requirement", gap, { action: "repair-capability", role });
 
-  const all = store.listRunners().filter(one => one.retiredAt === null);
-  const bound = all.filter(one => one.repos.includes(ref.repo as string));
-  const eligible = ref.assignedRunner === null ? bound : bound.filter(one => one.name === ref.assignedRunner);
+  const { all, eligible, alive } = buildersFor(store, ref.repo, now, ref.assignedRunner);
   if (eligible.length === 0) {
     const detail = ref.assignedRunner === null
       ? all.length === 0
@@ -403,7 +420,6 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
       : `This task is assigned to ${ref.assignedRunner}, but that builder is not connected to this project.`;
     return answer("no-worker-registered", "waiting", "Builder not connected", detail, { action: "start-worker", role });
   }
-  const alive = eligible.filter(one => isAlive(one, now));
   if (alive.length === 0) {
     return answer(
       "no-worker-online",

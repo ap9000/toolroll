@@ -39,6 +39,9 @@ absolute), sign-out, and "end this session" on the Sessions page are the protect
   - **inbound hooks**: a flow trigger's setup, secret, accepted sender or scope
     (`/flows/:flow/triggers/:trigger/{setup,secret,sender,scope}`) — they create ingress credentials or widen what is
     accepted;
+  - **project settings that widen what builds and checks reach** (docs/plans/chat-management.md §0a.4): a project's
+    network (`/settings/project/network`), where its builds may write (`/settings/project/writes`), how far its checks
+    reach (`/settings/project/check-access`) and its sandbox (`/settings/project/sandbox`);
   - **Passwordless itself**: turning it **on**. Turning it **off** is one click.
 
 ## How

@@ -9,7 +9,8 @@ import { runOperate, EXIT } from "./operate.js";
 import { checkAccessHere, checkAccessOf, checkNetworkOf, narrowestAccess, narrowestNetwork, signInHostsMissing, signInsAvailable, signInsUnavailableWords, widerThan } from "./check-access.js";
 import { resolveScopeProfile } from "./agentconfig.js";
 import { checkLaunchOf } from "./builder.js";
-import { checkoutLaunchOf, checkoutRunner, ranAtLine, signInsLaunch, widestRan } from "./invoke.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
+import { checkoutLaunchOf, checkoutRunner, keychainSignIns, ranAtLine, readKeychainSecret, signInsLaunch, widestRan } from "./invoke.js";
 
 const REPO = "/repo/main";
 let dir: string, db: string, store: Store, lines: string[];
@@ -203,111 +204,112 @@ describe("review round: authority, networks and per-command levels", () => {
   });
 });
 
-describe("sign-ins: off everywhere for now (reading a sign-in file resolves its folders by path; Node has no openat)", () => {
+describe("sign-ins: on wherever the OS fence is (0.9.70, sandbox parity C10: the check reads its own sign-in files through its sandbox)", () => {
   const PLATFORMS = ["darwin", "linux", "win32"] as const;
   const ranRun = (id: string) => {
     store.createTask({ id, title: id }, new Date());
     return store.startRun({ taskRef: store.refFor("built-in", id).id, leaseId: "l", runner: "r", branch: "b", worktree: "/w", route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" }, now: new Date() });
   };
   const ledger = () => store.handle.prepare("SELECT detail FROM action_ledger WHERE action = 'check access'").all().map(row => String(row["detail"]));
-  const REFUSAL = "Not available yet: sign-ins can't be shared with checks safely. Choose Sandboxed or Not sandboxed.";
 
-  test("the level: sign-ins is sandboxed on every platform, never wider; the other levels unchanged", () => {
+  test("the level: sign-ins is available on every platform; the other levels unchanged", () => {
     for (const platform of PLATFORMS) {
-      expect(signInsAvailable(platform)).toBe(false);
-      expect(checkAccessHere("sign-ins", platform)).toBe("sandboxed");
+      expect(signInsAvailable(platform)).toBe(true);
+      expect(checkAccessHere("sign-ins", platform)).toBe("sign-ins");
       expect(checkAccessHere("unsandboxed", platform)).toBe("unsandboxed");
-      expect(checkAccessHere("sandboxed", platform)).toBe("sandboxed");
-      expect(signInsUnavailableWords(platform)).toBe(REFUSAL);
+      expect(signInsUnavailableWords(platform)).toBeNull();
     }
   });
 
-  test("the CLI refuses sign-ins on every platform, even for an instance operator with a password typed now: nothing written, nothing in the ledger", async () => {
-    for (const platform of PLATFORMS) {
-      expect(await run(["sign-ins", "--repo", REPO, ...as("alex"), "--json"], platform)).toBe(EXIT.refused);
-      expect(payload()).toMatchObject({ ok: false, reason: "refused" });
-      expect(lines.join("\n")).toContain(REFUSAL);
-    }
+  test("the CLI widens to sign-ins only for an instance operator with a password; the ledger keeps it", async () => {
+    expect(await run(["sign-ins", "--repo", REPO, ...as("sam"), "--json"])).toBe(EXIT.refused);
     expect(store.projectCheckAccess(REPO)).toBe("sandboxed");
-    expect(ledger()).toEqual([]);
-    // The other two levels are as they were.
-    expect(await run(["unsandboxed", "--repo", REPO, ...as("alex"), "--json"])).toBe(EXIT.ok);
-    expect(await run(["sandboxed", "--repo", REPO, ...as("sam"), "--json"])).toBe(EXIT.ok);
+    expect(await run(["sign-ins", "--repo", REPO, ...as("alex"), "--json"])).toBe(EXIT.ok);
+    expect(store.projectCheckAccess(REPO)).toBe("sign-ins");
+    expect(ledger()).toHaveLength(1);
   });
 
-  test("a sign-ins level already saved (before this, or another database) shows as running sandboxed; narrowing it still works", async () => {
-    store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
-    for (const platform of PLATFORMS) {
-      expect(await run(["--repo", REPO, "--json"], platform)).toBe(EXIT.ok);
-      expect(payload()).toMatchObject({ ok: true, checkAccess: "sign-ins", runsAs: "sandboxed" });
-      expect(payload().missingHosts).toBeUndefined();
-    }
-    expect(await run(["--repo", REPO])).toBe(EXIT.ok);
-    expect(lines.join("\n")).toMatch(/saved with model and GitHub sign-ins, but its checks run sandboxed: sign-ins can't be shared with checks safely yet/);
-    expect(lines.join("\n")).not.toMatch(/can read your Claude/);
-    expect(await run(["sandboxed", "--repo", REPO, ...as("sam"), "--json"])).toBe(EXIT.ok);
-    expect(store.projectCheckAccess(REPO)).toBe("sandboxed");
-  });
-
-  test("a scope filed with sign-ins saved seals sandboxed on every platform (its digest never claims sign-ins it won't get)", () => {
+  test("a scope filed with sign-ins saved seals sign-ins (its digest says so)", () => {
     store.createTask({ id: "t-seal", title: "t" }, new Date());
     store.placeTask(store.lookupRef("t-seal")!.id, REPO);
     for (const phase of ["plan", "build", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "alex", new Date());
     store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
     for (const platform of PLATFORMS) {
       const resolved = resolveScopeProfile(store, REPO, undefined, { provider: "claude", model: "sonnet" }, platform);
-      if (!resolved.ok) throw new Error("profile");
-      expect(resolved.profile.checkAccess).toBeUndefined();
+      expect(resolved.ok && resolved.profile.checkAccess).toBe("sign-ins");
     }
-    // Not sandboxed is sealed as before.
-    store.setProjectCheckAccess(REPO, "unsandboxed", "alex", new Date(), { may: "widen" });
-    const open = resolveScopeProfile(store, REPO, undefined, { provider: "claude", model: "sonnet" });
-    expect(open.ok && open.profile.checkAccess).toBe("unsandboxed");
   });
 
-  test("an approval sealed with sign-ins before: a build's checks run sandboxed, with no network for sign-ins, and that is what the run is stamped with", () => {
-    const runId = ranRun("t-build");
-    const profile = { checkAccess: "sign-ins" } as Parameters<typeof checkLaunchOf>[2];
-    for (const platform of PLATFORMS) expect(checkLaunchOf(store, runId, profile, platform)).toEqual({ access: "sandboxed", network: null });
-    // Both stamping sites (the dispatch and each command) write exactly what checkLaunchOf answers.
-    const launch = checkLaunchOf(store, runId, profile);
-    store.stampRunCheckAccess(runId, launch.access, launch.network);
-    expect(store.runCheckAccess(runId)).toBe("sandboxed");
-    expect(store.runCheckNetwork(runId)).toBeNull();
-    expect(checkLaunchOf(store, runId, { checkAccess: "unsandboxed" } as Parameters<typeof checkLaunchOf>[2]).access).toBe("unsandboxed");
-  });
-
-  test("a saved result stamped sign-ins is checked sandboxed, and recorded as it ran", async () => {
-    const runId = ranRun("t-result");
+  test("a saved result stamped sign-ins with a sealed network runs sign-ins", async () => {
+    const result = ranRun("t-result");
     const net = { version: 1 as const, mode: "allowlist" as const, hosts: ["api.github.com"], loopback: "proxy-only" as const };
-    store.stampRunCheckAccess(runId, "sign-ins", net);
+    store.stampRunCheckAccess(result, "sign-ins", net);
     store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
-    for (const platform of PLATFORMS) expect(checkoutLaunchOf(store, REPO, [runId], platform)).toEqual({ access: "sandboxed", network: undefined });
-    const ranAt: string[] = [];
-    const runner = checkoutRunner(store, REPO, "/w", async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, notFound: false }), [runId], level => ranAt.push(level));
-    await runner("/bin/true", [], {});
-    expect(ranAt).toEqual(["sandboxed"]);
+    expect(checkoutLaunchOf(store, REPO, [result])).toMatchObject({ access: "sign-ins" });
   });
 
-  test("the belt: the sign-ins launch reads, copies and grants nothing on any platform, whatever level reaches it", async () => {
-    const { existsSync, mkdirSync, readdirSync } = await import("node:fs");
-    for (const platform of PLATFORMS) {
-      const own = join(dir, `launch-${platform}`);
-      mkdirSync(join(own, "tmp"), { recursive: true });
-      const result = await signInsLaunch(store, own, join(own, "tmp"), "/w", { version: 1, mode: "open", hosts: [], loopback: "proxy-only" }, [], platform);
-      expect(result).toEqual({ problem: "Sign-ins can't be shared with checks yet, so nothing ran." });
-      // Nothing was made: no private Codex home, no sign-in copies folder beside the database.
-      expect(readdirSync(own)).toEqual(["tmp"]);
-    }
-    expect(existsSync(join(dir, "sign-in-copies"))).toBe(false);
+  test("the launch grants the sign-in files by name, points Codex and gh at their real folders, and copies nothing", async () => {
+    const { mkdirSync, readdirSync } = await import("node:fs");
+    const own = join(dir, "launch");
+    mkdirSync(join(own, "tmp"), { recursive: true });
+    // A home of the test's own: the grants make the checkout's transcript folder and Codex's session folders.
+    const savedHome = process.env["HOME"];
+    process.env["HOME"] = join(dir, "home");
+    mkdirSync(join(dir, "home", ".codex"), { recursive: true });
+    (await import("node:fs")).writeFileSync(join(dir, "home", ".codex", "auth.json"), "{}");
+    try {
+    const result = await signInsLaunch(store, own, join(own, "tmp"), dir, { version: 1, mode: "open", hosts: [], loopback: "proxy-only" }, []);
+    if ("problem" in result) throw new Error(result.problem);
+    const { homedir } = await import("node:os");
+    const { realpathSync } = await import("node:fs");
+    expect(result.env).toMatchObject({ CODEX_HOME: join(homedir(), ".codex"), GH_CONFIG_DIR: join(homedir(), ".config", "gh") });
+    expect(result.grants.read).toContain(join(realpathSync(homedir()), ".codex", "auth.json"));
+    expect(readdirSync(own)).toEqual(["tmp"]);
+    await result.close();
+    } finally { if (savedHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = savedHome; }
+  });
+
+  test("macOS: the keychain's sign-ins are read outside and handed in as environment; the check itself gets no keychain", async () => {
+    const { mkdirSync } = await import("node:fs");
+    const own = join(dir, "launch-keychain");
+    mkdirSync(join(own, "tmp"), { recursive: true });
+    const fake: Record<string, string> = { "Claude Code-credentials": JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-synthetic-token", refreshToken: "never-passed" } }), "gh:github.com": `go-keyring-base64:${Buffer.from("gho_synthetic123456").toString("base64")}` };
+    const result = await signInsLaunch(store, own, join(own, "tmp"), dir, { version: 1, mode: "open", hosts: [], loopback: "proxy-only" }, [], "darwin", () => keychainSignIns("darwin", service => fake[service] ?? null));
+    if ("problem" in result) throw new Error(result.problem);
+    expect(result.env).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-synthetic-token", GH_TOKEN: "gho_synthetic123456" });
+    expect(JSON.stringify(result.env)).not.toContain("never-passed");
+    await result.close();
+    // Anything that isn't a plain token, or nothing there: left out. Not macOS: nothing read at all.
+    expect(keychainSignIns("darwin", service => service === "gh:github.com" ? "token with spaces\nand a line" : "not json")).toEqual({});
+    expect(keychainSignIns("darwin", () => null)).toEqual({});
+    let asked = false;
+    expect(keychainSignIns("linux", () => { asked = true; return "x"; })).toEqual({});
+    expect(asked).toBe(false);
+    // Under the test suite (TOOLROLL_SECRET_STORE=files), the real keychain is never read.
+    expect(keychainSignIns("darwin")).toEqual({});
+  });
+
+  // Inside the release check's fence (INSIDE_FENCE) a check is denied securityd outright (SEATBELT_NO_KEYCHAIN), so
+  // Toolroll's reader can't reach even a throwaway keychain there; CI and a developer's shell run it unfenced.
+  test.skipIf(process.platform !== "darwin" || INSIDE_FENCE)("macOS: a synthetic sign-in in a throwaway keychain is read by Toolroll's own reader", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const keychain = join(dir, "signins.keychain-db");
+    const security = (...args: string[]) => spawnSync("/usr/bin/security", args, { encoding: "utf8", timeout: 30_000 });
+    expect(security("create-keychain", "-p", "throwaway", keychain).status).toBe(0);
+    try {
+      expect(security("unlock-keychain", "-p", "throwaway", keychain).status).toBe(0);
+      expect(security("add-generic-password", "-a", "someone", "-s", "Claude Code-credentials", "-w", JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-throwaway" } }), "-A", keychain).status).toBe(0);
+      expect(keychainSignIns("darwin", service => readKeychainSecret(service, keychain))).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-throwaway" });
+    } finally { security("delete-keychain", keychain); }
   });
 
   test("with no OS sandbox here and unconfined running allowed, the CLI says checks run without one: never sandboxed", async () => {
     store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
     const none = () => false;
-    // Unconfined running not allowed: nothing runs unsandboxed, so the sandboxed answer stands.
+    // Unconfined running not allowed: nothing runs unsandboxed, so the saved level stands.
     expect(await run(["--repo", REPO, "--json"], "linux", none)).toBe(EXIT.ok);
-    expect(payload()).toMatchObject({ checkAccess: "sign-ins", runsAs: "sandboxed" });
+    expect(payload()).toMatchObject({ checkAccess: "sign-ins" });
+    expect(payload().runsAs).toBeUndefined();
     store.setUnfencedAgentsAllowed(true, "alex", new Date());
     expect(await run(["--repo", REPO, "--json"], "linux", none)).toBe(EXIT.ok);
     expect(payload()).toMatchObject({ checkAccess: "sign-ins", runsAs: "unsandboxed" });

@@ -8,6 +8,7 @@
  * them beside the monthly budgets.
  */
 import type { Billing } from "./spend.js";
+import { topLevelEvent } from "./stream-scope.js";
 
 export type LimitWindow = { window: string; usedPercent: number; windowMinutes: number | null; resetsAt: string | null; reached: boolean };
 /** A provider's reading: its windows (all of them, or `partial` when it named only one), and how it was seen billing. */
@@ -25,10 +26,12 @@ const epoch = (value: unknown): string | null => {
 };
 export const record = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
-/** A Claude stream event's limits, or null when it isn't a `rate_limit_event` or says nothing usable. */
+/** A Claude stream event's limits, or null when it isn't the session's own `rate_limit_event` or says nothing usable.
+ * A subagent's (parent_tool_use_id set) is never read: the session reports its own windows each turn, and a
+ * subagent-tagged reading can't be told apart from one shaped by the subagent's own traffic (stream-scope.ts). */
 export function claudeLimitsOf(event: unknown): LimitReading | null {
   const body = record(event);
-  if (body === null || body["type"] !== "rate_limit_event") return null;
+  if (body === null || body["type"] !== "rate_limit_event" || !topLevelEvent(body)) return null;
   const info = record(body["rate_limit_info"]);
   if (info === null) return null;
   const rejected = info["status"] === "rejected";

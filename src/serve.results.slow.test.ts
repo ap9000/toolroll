@@ -927,7 +927,15 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     };
     await boot({ publishExec });
     const cookie = await login();
-    const page = async () => (await fetch(url(`/settings/pull-requests?repo=${encodeURIComponent("/repo/main")}`), { headers: { cookie } })).text();
+    const read = async () => (await fetch(url(`/settings/pull-requests?repo=${encodeURIComponent("/repo/main")}`), { headers: { cookie } })).text();
+    // Opening the page asks git and GitHub nothing (docs/plans/get-side-effects.md); Check setup asks.
+    const first = await read();
+    expect(first).toContain("Check setup");
+    const page = async () => {
+      const checked = await post(cookie, "/settings/pull-requests/check", { csrf: csrfOf(first), repo: "/repo/main" });
+      expect(checked.status).toBe(303);
+      return read();
+    };
     const blocked = await page();
     expect(blocked).toContain("Can\u2019t turn on yet");
     expect(blocked).toContain("Your GitHub account can&#39;t push to alex/payouts. Ask for write access, then try again.");
@@ -1682,7 +1690,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       const work = await read("/work");
       expect(work.match(new RegExp(`class="work-row" data-task="${root}"`, "g"))).toHaveLength(1);
       expect(work).not.toContain(`class="work-row" data-task="${child}"`);
-      expect(await read("/tasks")).not.toContain(`href="/t/${child}"`);
+      expect(await read("/work")).not.toContain(`href="/t/${child}"`);
       const form = new RegExp(`<form method="post" action="/t/${child}/approve"[\\s\\S]*?</form>`).exec(chat)![0];
       const digest = /name="digest" value="([^"]+)"/.exec(form)![1]!;
       const nonce = /name="nonce" value="([^"]+)"/.exec(form)![1]!;
