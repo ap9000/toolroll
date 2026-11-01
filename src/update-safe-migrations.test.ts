@@ -56,6 +56,7 @@ describe("update-safe migrations", () => {
     // v139 only adds the GitHub nightly tables (lanes, aliases, cursor, watch list, lane jobs, failures, exemptions).
     // v140 only adds what a provider itself reported (run and chat request model, a chat request's turns and cost; saved rows NULL).
     // v141 only adds the eval set tables (campaigns, attempts, dispatches, the month ledger, baseline pins, eval debt).
+    // v142 only adds youiyoux's intake and request tables.
     expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142]);
     expect(UPDATE_SAFE_MIGRATIONS.every(version => version > 1 && version <= SCHEMA_VERSION)).toBe(true);
   });
@@ -202,6 +203,6 @@ console.log(JSON.stringify({ ok: read.ok, message: read.ok ? null : read.message
     // The release before it no longer reads the migrated file as its own: v116 is newer than it speaks.
     rmSync(file);
     execFileSync("cp", [backup, file]);
-    expect(tsx("read.ts")).toMatchObject({ ok: false, message: expect.stringMatching(/schema v141, written by a newer build/) });
+    expect(tsx("read.ts")).toMatchObject({ ok: false, message: expect.stringMatching(/schema v142, written by a newer build/) });
   }, 120_000);
 });
