@@ -685,6 +685,11 @@ export const CHAT_ACTION_PARITY: Record<
     how: "Reads current tasks, decisions, results and project knowledge from the local database through the shared engine, within the enrolled projects.",
     gap: "Dedicated Telegram and Slack journeys for this tool and live channel rendering remain unverified.",
   },
+  get_project_activity: {
+    support: "direct",
+    how: "Reads the project's Ready backlog, finished-to-decision elapsed time, explicit revisions and recorded cost for completed families in an accessible enrolled project through the shared engine.",
+    gap: "Dedicated Telegram and Slack journeys for this tool and live channel rendering remain unverified.",
+  },
   get_project_context: {
     support: "direct",
     how: "Reads bounded source excerpts or advisory import impact in an accessible enrolled project through the shared engine, with source-search fallback when its index is unavailable.",

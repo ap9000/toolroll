@@ -4,6 +4,7 @@ import { checkLevelFromWords, isCheckLevel } from "./check-levels.js";
 import { policyParts } from "./policy.js";
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
+import { projectOutcomes, projectOutcomesPage } from './project-outcomes.js';
 import { repositoryContextRead } from './repository-context.js';
 import { assignmentCatchUp } from './assignment-brief.js';
 import { CHAT_ACTIONS, CHAT_ACTION_FIELDS, isChatAction, prepareSharedAction, sharedActionNeedsReview, sharedActionPayload } from './chat-actions.js';
@@ -456,7 +457,7 @@ export function agentsOver(store: Store, taskId: string, now: Date): Record<stri
  * find_tools and advertised from the next request of the same reply.
  */
 export const LEAD_CORE_TOOLS: ReadonlySet<string> = new Set([
-  "find_tools", "get_brief", "recap", "list_repos", "get_project_context", "search_project_memory", "get_capabilities",
+  "find_tools", "get_brief", "recap", "list_repos", "get_project_context", "get_project_activity", "search_project_memory", "get_capabilities",
   "list_tasks", "get_task", "get_result", "get_diff", "get_check_log", "list_decisions", "get_decision",
   "get_actions", "get_action_status", "propose_action", "propose_task", "propose_scope", "propose_steer",
   "propose_answer", "propose_review", "remember", "ask_owner", "commit_to",
@@ -550,6 +551,14 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const repo = args['repo'] === undefined ? null : repoPathOf(ctx.who, args['repo']);
       if (args['repo'] !== undefined && repo === null) return { ok: false, message: 'Choose a project from list_repos.' };
       return { ok: true, body: assignmentCatchUp(ctx.store, ctx.now, { principal: 'operator', repos: ctx.who.repos }, repo === null ? {} : { repo }, ctx.evidenceRoot) };
+    },
+  },
+  get_project_activity: {
+    description: 'Read project Activity: current Ready backlog, finished-to-decision elapsed time, explicit revisions and recorded cost for completed families in the last 60 days. Includes coverage and a page of underlying tasks (offset: nextOffset for more); not review labor or a quality score.',
+    handle: (ctx, args) => {
+      const repo = repoPathOf(ctx.who, args['repo']);
+      if (!repo || !ctx.store.accountCanAccess(ctx.who.name, repo)) return { ok: false, message: 'Choose an available project from list_repos.' };
+      return { ok: true, body: projectOutcomesPage(projectOutcomes(ctx.store, repo, ctx.now, { principal: 'operator', repos: ctx.who.repos }), Number(args['offset'] ?? 0)) };
     },
   },
   get_project_context: {

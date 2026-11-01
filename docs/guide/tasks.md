@@ -47,6 +47,7 @@ Select a saved checkout once, then use the same task records from the terminal:
 ```sh
 toolroll project use /path/to/project
 toolroll project show
+toolroll project activity --json
 toolroll brief
 toolroll assignment show <task>
 toolroll task review <task> --brief
@@ -72,6 +73,19 @@ For an exact revision replay, reuse `--run`, `--source` and `--key` from its JSO
 result. A revision keeps the original task history and approval boundaries; a
 stale result cannot create another current version. Actual failed checks remain
 failed when a result is marked complete.
+
+**Projects → Activity** shows the open project's current Ready backlog and the last
+60 days of completed task families. Expand a measure to inspect its underlying
+results. The read-only `get_project_activity` lead tool and `toolroll project
+activity --json` use the same projection. It includes explicit revisions,
+recorded spend and cost coverage, completion actors, and saved check outcomes.
+Finished-to-decision time and oldest backlog age use the latest result's finish
+time as a proxy; neither measures human work. Family spend includes each recorded
+attempt once, including planning, scouting and retries. Missing costs stay unknown;
+recorded spend is a partial sum when coverage is incomplete. Completion is neither
+a passing check nor deployment. Reports are limited to 500 eligible families,
+most recently updated first, and label incomplete or truncated history. This is
+an observable baseline, not a quality score or a claim of improved productivity.
 
 ## What is in the current build
 
