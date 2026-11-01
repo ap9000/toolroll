@@ -96,6 +96,21 @@ const REPEAT = "Windows Job Object containment · c2 repeat";
 const runsOf = (job: Job) => (job.steps ?? []).map(step => step.run ?? "");
 
 describe("the CI workflows", () => {
+  test("every job that runs on a machine has a time limit, so a stalled runner fails in minutes, not GitHub's 6 hours", () => {
+    // 2026-11-01: two Linux shards hung 2.5 h in apt-get on a stalled Ubuntu mirror before any test ran.
+    for (const file of ["ci.yml", "release-candidate.yml"]) {
+      const one = workflow(file);
+      for (const [id, job] of Object.entries(one.jobs)) {
+        if ((job as { uses?: string }).uses !== undefined) continue;
+        const limit = (job as { "timeout-minutes"?: unknown })["timeout-minutes"];
+        expect(typeof limit === "number" && limit > 0 && limit <= 60, `${file}: ${id}`).toBe(true);
+        for (const step of job.steps ?? []) {
+          if ((step.run ?? "").includes("apt-get install")) expect((step as { "timeout-minutes"?: unknown })["timeout-minutes"], `${file}: ${id} apt step`).toBeLessThanOrEqual(10);
+        }
+      }
+    }
+  });
+
   test("every required check reports under its exact name on an ordinary pull request, run or skipped", () => {
     // 0.9.80: release-candidate.yml's skipped Node 22 jobs reported "node ${{ matrix.node }} · …", so main's protection
     // never saw "node 22 · ubuntu-latest" and blocked every pull request not from a release-* branch.
