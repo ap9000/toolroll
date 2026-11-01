@@ -18,7 +18,7 @@ import { learningHtml } from "../workspace-ui.js";
 import { adapterPolicy } from "./route-policy.js";
 
 import { createHash } from "node:crypto";
-import { dirname,join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { INSTALLATION_SCOPE } from "../agentconfig.js";
 import { rulesSummary } from "../approval-rules-ui.js";
 import { installMethod } from "../install-method.js";
@@ -72,6 +72,7 @@ import { startersHtml } from "../flow-starters-ui.js";
 import { starterOf,startersFor,switchOnStarter } from "../flow-starters.js";
 import { disconnectGoogle,googleConnected,googleConsent,readGoogleMail,saveGoogleClient } from "../google-mail.js";
 import { integrationsHtml } from "../integrations-ui.js";
+import { setYouiyouxIntake } from "../youiyoux-intake.js";
 import { clearProviderKey, keyStatus, plausibleKey, PROVIDER_KEY_ENV, readAuthMode, readProviderKey, saveProviderKey, setAuthMode, SUBSCRIPTION_CAPABLE, verdictWords, verifyProviderKey } from "../keys.js";
 import { decisionsHtml,framedSection,knowledgeHtml,MEMORY_INTRO,memorySearchHtml,proposalsHtml } from "../knowledge-ui.js";
 import { aboutYouOf,checkAboutYou,saveAboutYou } from "../lead-about.js";
@@ -1223,6 +1224,19 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const switched = switchOnStarter(store, starter, repo, who.name, clock(), options.configDir ?? null);
     return switched.ok ? back("said", switched.said) : back("problem", switched.said);
   }
+  // Settings → Integrations → youiyoux → Turn off / Turn on: whether a project's change requests become tasks.
+  async function integrationsYouiyoux(ctx: HandlerContext): Promise<void> {
+    const { who, response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.integrationsYouiyoux);
+    const repo = body.get("repo") ?? "";
+    const back = sayTo(response, "/settings/integrations");
+    const known = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])];
+    if (store.isDemo()) return refuse(response, who, 403, "An approver turns youiyoux requests on or off.", "/settings/integrations");
+    if (!known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/settings/integrations");
+    const on = body.get("on") === "1";
+    setYouiyouxIntake(store, repo, on, who.name, clock());
+    return back("said", on ? `youiyoux requests in ${basename(repo)} become tasks again.` : `youiyoux requests in ${basename(repo)} are off.`);
+  }
   // Settings → Integrations → Send test: one harmless read-only check of one integration, now.
   async function integrationsTest(ctx: HandlerContext): Promise<void> {
     const { who, response, posted } = ctx;
@@ -2313,6 +2327,7 @@ ${modeWords(terms)
     "settings.backups-send": backupsSave,
     "settings.data-send": dataExport,
     "settings.integrations-test-send": integrationsTest,
+    "settings.integrations-youiyoux": integrationsYouiyoux,
     "settings.monitoring-send": monitoringSave,
     "settings.tools-connect-send": toolsConnect,
     "settings.tools-change-send": toolsChange,

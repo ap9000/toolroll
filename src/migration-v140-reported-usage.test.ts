@@ -37,9 +37,9 @@ test.each([139, -139])("v%s: what a provider reported is added; saved runs and c
 
   expect(updateSafeSchema(139)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(140);
-  expect(SCHEMA_VERSION).toBe(141);
+  expect(SCHEMA_VERSION).toBe(142);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(141);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(142);
   // Saved rows keep every value they had, and what was never reported reads NULL, never 0.
   expect({ ...store.handle.prepare("SELECT tokens_in, tokens_out, cost_usd, agent_turns, model_reported FROM run WHERE id = ?").get(run) })
     .toEqual({ tokens_in: 10, tokens_out: 2, cost_usd: 0.01, agent_turns: 3, model_reported: null });

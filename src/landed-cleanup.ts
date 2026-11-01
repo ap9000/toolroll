@@ -248,8 +248,9 @@ function resultProblem(store: Store, runId: number, head: string | null): string
   return run.outcome === "no-change" || run.baseRevision === head ? "its result has no new work" : null;
 }
 
-/** Use the current manual completion guards. Only a recorded merge of this exact result can settle them. */
-function completionProblem(store: Store, assignment: AssignmentSnapshot, root: string): string | null {
+/** Use the current manual completion guards. Only a recorded merge of this exact result can settle them. Also why a
+ * youiyoux options task a person decided on in the hub stays for review (youiyoux-intake.ts). */
+export function completionProblem(store: Store, assignment: AssignmentSnapshot, root: string): string | null {
   if (assignment.state !== "ready-to-check" && assignment.state !== "complete") return "it needs a decision first";
   if (assignment.state === "complete") return null;
   const receipt = assignment.receipt!;

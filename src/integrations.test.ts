@@ -20,6 +20,7 @@ import { checkIntegrations, createIntegrationMonitor, integrationsNow, renderInt
 import { UNANSWERED_WORDS } from "./tool-secret-store.js";
 import { integrationsHtml } from "./integrations-ui.js";
 import { NO_OS_FENCE } from "../test/inside-fence.js";
+import { runYouiyouxIntake } from "./youiyoux-intake.js";
 
 const T0 = new Date("2026-09-30T09:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -274,4 +275,47 @@ test("each MCP tool says how its runs get credentials, by name only; the CLI and
     expect(await runOperate("integrations", ["--json", "--saved"], line => out.push(line), { databaseFile: join(dir, "orders.db"), now: T0, integrationIo: { toolHome: dir } } as Parameters<typeof runOperate>[3])).toBe(0);
     expect((JSON.parse(out.join("\n")) as { secrets: unknown }).secrets).toEqual({ kind: "files", words: "Secrets are protected by owner-only files on this computer." });
   } finally { store = openStore(join(dir, "orders.db")); }
+});
+
+test("youiyoux: Not set up until a project uses it, then Connected with its queue, Broken naming the bad file, and one switch per project that acts as the signed-in person", async () => {
+  const alex = addApprover(store, "alex", T0);
+  if (!alex.ok) throw new Error("alex");
+  store.upsertProject(repo, "shop", T0);
+  expect(one(integrationsNow(io()), "youiyoux")).toMatchObject({ state: "not-set-up", group: "code" });
+  mkdirSync(join(repo, ".youi", "requests"), { recursive: true });
+  const key = `youiyoux:${repo}`;
+  // The page never reads the project's folder: the worker's pass finds youiyoux there.
+  expect(integrationsNow(io()).some(row => row.key === key)).toBe(false);
+  runYouiyouxIntake(store, repo, T0, { dir, env: {} });
+  expect(one(integrationsNow(io()), key)).toMatchObject({ state: "connected", account: "shop", detail: "0 requests queued", action: { kind: "switch", label: "Turn off", repo, on: false } });
+  expect(integrationsNow(io()).some(row => row.key === "youiyoux")).toBe(false);
+  writeFileSync(join(repo, ".youi", "requests", "r-0123456789.json"), "{ not json");
+  runYouiyouxIntake(store, repo, at(1), { dir, env: {} });
+  const broken = one(integrationsNow(io()), key);
+  expect(broken).toMatchObject({ state: "broken", action: { kind: "switch", label: "Turn off", words: expect.stringContaining("r-0123456789.json: it isn't JSON") } });
+  expect(renderIntegrations([broken]).join("\n")).toContain("Fix: 1 request file couldn't be read");
+
+  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo, configDir: dir, integrationIo: { gh: noGh, fetch: botOk, reach: async () => {} } });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address !== "object") throw new Error("listen");
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const cookie = (await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: alex.token }), redirect: "manual" }))
+      .headers.getSetCookie().map(row => row.split(";")[0]!).find(row => row.startsWith("standing-orders_session="))!;
+    const page = await (await fetch(`${base}/settings/integrations`, { headers: { cookie } })).text();
+    expect(page).toMatch(new RegExp(`data-integration="youiyoux:[^"]+" data-state="broken"[\\s\\S]*?action="/settings/integrations/youiyoux"`));
+    const csrf = /name="csrf" value="([^"]+)"/.exec(page)![1]!;
+    const post = (form: Record<string, string>) => fetch(`${base}/settings/integrations/youiyoux`, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, redirect: "manual", body: new URLSearchParams({ csrf, ...form }) });
+    expect((await post({ repo: join(dir, "elsewhere"), on: "0" })).status).toBe(404);
+    expect((await post({ repo, on: "0" })).status).toBe(303);
+    expect(one(integrationsNow(io()), key)).toMatchObject({ state: "not-set-up", detail: "Turned off", action: { kind: "switch", label: "Turn on", on: true } });
+    expect(store.handle.prepare("SELECT enabled, changed_by FROM youiyoux_intake WHERE repo = ?").get(repo)).toMatchObject({ enabled: 0, changed_by: "alex" });
+    expect((await fetch(`${base}/settings/integrations/youiyoux`, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, redirect: "manual",
+      body: new URLSearchParams({ csrf: "stale", repo, on: "1" }) })).status).toBe(403);
+    expect(one(integrationsNow(io()), key).state).toBe("not-set-up");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 });

@@ -55,6 +55,7 @@ import { origin, readMonitoring } from "./monitoring-settings.js";
 import { logEvent } from "./log.js";
 import type { FlowAdvance } from "./flow-engine.js";
 import { FLOW_EVERY_MS, flowHousekeeping, moveCards, moveCardsAfter, type FlowIo } from "./flow-cadence.js";
+import { NO_YOUIYOUX_PASS, youiyouxOnboardLine } from "./youiyoux-intake.js";
 import { readHooksBase, scheduleFromWords, type TriggerIo } from "./flow-triggers.js";
 import { sendSubagentSummaries } from "./subagent-admin.js";
 import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
@@ -300,7 +301,7 @@ import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES,
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
-import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, saveConsoleUrl, savePrimary } from "./webhooks.js";
+import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, readUpConsoleUrl, saveConsoleUrl, savePrimary, UP_CONSOLE_FILE } from "./webhooks.js";
 import { auditOf, inspectionOf, isProviderId, MONEY_CAPABILITIES, PROVIDER_IDS, validModelId, validateSpec, type ProviderAudit, type ProviderId, ALL_CREDENTIAL_ENV } from "./provider.js";
 import { attestProvider, attestationOf, versionInRange, type AttestOutcome, type AttestationRange } from "./attest.js";
 import {
@@ -408,7 +409,7 @@ export type OperateOptions = {
   folderLook?: FolderLookOptions;
 };
 
-export type OnboardSeams = Partial<Pick<OnboardIo, "home" | "env" | "cwd" | "interactive" | "confirm" | "findRepo" | "checkConnection" | "pullRequests">>;
+export type OnboardSeams = Partial<Pick<OnboardIo, "home" | "env" | "cwd" | "interactive" | "confirm" | "findRepo" | "checkConnection" | "pullRequests" | "youiyoux">>;
 
 const STATES: readonly TaskState[] = ["queued", "running", "done", "failed", "cancelled"];
 
@@ -2557,6 +2558,7 @@ function flowIoOf(context: Context, pool: string, git: CommandRunner, base: stri
       dir: context.flowStepIo?.dir ?? dir, scratch: context.flowStepIo?.scratch ?? join(pool, "flow-checks"), base,
       ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }) },
     ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }),
+    youiyouxGit: gitOf(context.gitRunner),
   };
 }
 
@@ -3692,8 +3694,10 @@ async function tickCommand(
 
   settleFinished();
   const replied = replyPass.taken > 0 || replyPass.problem !== null;
-  const flows = flowPass.moved + flowPass.filed.length + flowPass.problems.length + triggerPass.added + triggerPass.problems.length + stepPass.ran + stepPass.problems.length === 0 && !replied ? {} : { flows: { ...flowPass,
-    ...(triggerPass.added + triggerPass.problems.length === 0 ? {} : { triggers: triggerPass }), ...(stepPass.ran + stepPass.problems.length === 0 ? {} : { steps: stepPass }), ...(replied ? { replies: replyPass } : {}) } };
+  const requestPass = housekeeping?.youiyoux ?? NO_YOUIYOUX_PASS;
+  const requested = requestPass.filed + requestPass.copied + requestPass.decided + requestPass.problems.length > 0;
+  const flows = flowPass.moved + flowPass.filed.length + flowPass.problems.length + triggerPass.added + triggerPass.problems.length + stepPass.ran + stepPass.problems.length === 0 && !replied && !requested ? {} : { flows: { ...flowPass,
+    ...(triggerPass.added + triggerPass.problems.length === 0 ? {} : { triggers: triggerPass }), ...(requested ? { youiyoux: requestPass } : {}), ...(stepPass.ran + stepPass.problems.length === 0 ? {} : { steps: stepPass }), ...(replied ? { replies: replyPass } : {}) } };
 
   const summary = () => {
     const lines = [`Considered ${considered}, built ${built}, parked ${parked}, broke ${broke}.`];
@@ -6898,8 +6902,8 @@ async function runWatchLoop(args: {
         base = head.stdout.trim();
       }
       const pass = await flowHousekeeping(store, repo, context.clock, flowIoOf(context, flowPool, flowGit, base), admissionStopped);
-      flowsDid(pass.flows.moved + pass.triggers.added + pass.steps.ran + pass.replies.taken, pass.flows.filed.length,
-        `flow pass — ${pass.triggers.added} card(s) added, ${pass.replies.taken} reply(ies) taken, ${pass.steps.ran} step(s) run, ${pass.flows.moved} moved`);
+      flowsDid(pass.flows.moved + pass.triggers.added + pass.steps.ran + pass.replies.taken, pass.flows.filed.length + pass.youiyoux.filed,
+        `flow pass — ${pass.triggers.added} card(s) added, ${pass.youiyoux.filed} youiyoux request(s) filed, ${pass.replies.taken} reply(ies) taken, ${pass.steps.ran} step(s) run, ${pass.flows.moved} moved`);
     },
   });
 
@@ -7459,8 +7463,6 @@ export function openBrowser(url: string): void {
   }
 }
 
-/** Where `up` last served its console, kept beside the database so `onboard` names the same address. */
-const UP_CONSOLE_FILE = "up-console.json";
 
 function recordUpConsoleUrl(dir: string, url: string, now: Date): void {
   try {
@@ -7469,15 +7471,6 @@ function recordUpConsoleUrl(dir: string, url: string, now: Date): void {
     renameSync(temporary, file);
   } catch {
     // A display fact: a failed write only leaves onboard on the default port.
-  }
-}
-
-export function readUpConsoleUrl(dir: string): string | null {
-  try {
-    const parsed = JSON.parse(readFileSync(join(dir, UP_CONSOLE_FILE), "utf8")) as { url?: unknown };
-    return typeof parsed.url === "string" && /^https?:\/\/[^\s]+$/.test(parsed.url) ? parsed.url.replace(/\/+$/, "") : null;
-  } catch {
-    return null;
   }
 }
 
@@ -7558,6 +7551,8 @@ async function onboardCommand(flags: Map<string, string | true>, context: Contex
       if (!checked.ok) return `off: ${checked.message}`;
       return `off: turn on with toolroll publish setup --repo ${repo} --yes (asks your password), or in Settings → Projects`;
     }),
+    // A project that uses youiyoux has its change requests filed as tasks with no step of its own (youiyoux-intake.ts).
+    youiyoux: seams.youiyoux ?? (async repo => youiyouxOnboardLine(store, repo)),
     starterFlag: text(flags, "starter"),
     // Starter flows belong to a person: the flow's decisions ask them. With no account yet, none can be switched on.
     starters: {

@@ -151,6 +151,7 @@ export const CONSOLE_FORMS = {
   data: formContract("POST /settings/data", ["password"]),
   flowsOn: formContract("POST /settings/flows/on", ["repo", "starter"]),
   integrationsTest: formContract("POST /settings/integrations/test", ["key"]),
+  integrationsYouiyoux: formContract("POST /settings/integrations/youiyoux", ["repo", "on"]),
   monitoring: formContract("POST /settings/monitoring", ["password", "webhook", "folder", "traces", "header-name", "header-value", "rotate"]),
   toolsConnect: formContract("POST /settings/tools/connect", ["repo", "also", "service", "template", "kit", "shown", "password", "access"]),
   toolsChange: formContract("POST /settings/tools/change", ["repo", "shown", "action", "name", "password", "catalog", "transport", "target", "secrets", "import", "secret", "value"]),

@@ -43,7 +43,7 @@ const LIMITED_ACCESS = {
   'flow.trigger.pause': 'resource', 'flow.trigger.resume': 'resource', 'flow.trigger.remove': 'resource',
   'flow.trigger.check': 'resource', 'flow.trigger.press': 'resource', 'flow.trigger.renew': 'resource',
   'flow.trigger.secret': 'resource', 'flow.trigger.setup': 'resource', 'flow.trigger.sender': 'resource', 'flow.trigger.dropped': 'resource', 'flow.trigger.scope': 'resource', 'flow.trigger.share': 'resource', 'flow.trigger.unshare': 'resource',
-  'settings.flows-on': 'collection', 'settings.knowledge-refresh': 'unscoped',
+  'settings.flows-on': 'collection', 'settings.integrations-youiyoux': 'collection', 'settings.knowledge-refresh': 'unscoped',
   'settings.knowledge-change': 'unscoped', 'settings.learning-change': 'unscoped',
   'settings.telegram-retry': 'self', 'settings.chat-approval-confirm': 'self',
   'settings.chat-approval-save': 'self', 'settings.chat-approval-off': 'self',

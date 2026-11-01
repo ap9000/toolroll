@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- **youiyoux change requests become tasks by themselves.** In a project that
+  uses youiyoux, each open change request in `.youi/requests` is filed once as
+  a task with its goal, exclusions, files and requirements, and waits for your
+  approval: no mode, grant or schedule approves it. Toolroll writes the task's
+  status beside the request for youiyoux to show, with links to the task and
+  to what needs you (your console address, or this computer's own console).
+  Settings → Integrations has a youiyoux row per project, with **Turn off**.
+- **Approve youiyoux requests from chat, all at once.** Each pass sends one
+  card to your paired chat listing every new task with every word of its
+  terms, with **Approve all** and each task's own **Approve**, two taps each.
+  Only the exact words shown are approved; a task whose terms changed, or that
+  doesn't fit one message, is named and left for Toolroll. Needs approving
+  from chat turned on.
+- **A task shows the youiyoux request it came from**: the request, page,
+  component and file:line, on its page and its approval.
+- **youiyoux options requests: options back on the Screens canvas.** An
+  options request becomes a task that may write one file, its options. Once
+  the result is ready for review, Toolroll copies that file from the result
+  into the project for youiyoux's hub, only when it is safe and never over a
+  file already there. Picking an option or dismissing them in the hub marks
+  the task complete without merging its branch, with who decided what in its
+  history; a task that needs more stays ready for review and says why.
+- **A youiyoux request's status reads done once its task is complete.**
+
 ## 0.9.84 — 2026-11-01
 
 - **An honest Spend page, in Settings.** See API dollars, plan usage and

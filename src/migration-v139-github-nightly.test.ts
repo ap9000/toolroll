@@ -33,9 +33,9 @@ test.each([138, -138])("v%s: GitHub's nightly tables are added; no saved row cha
 
   expect(updateSafeSchema(138)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(139);
-  expect(SCHEMA_VERSION).toBe(141);
+  expect(SCHEMA_VERSION).toBe(142);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(141);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(142);
   for (const table of TABLES) expect(store.handle.prepare(`SELECT count(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
   // The plane's own nightly debt is untouched and stays apart.
   expect(store.handle.prepare("SELECT count(*) AS n FROM main_check_failure WHERE cleared_at IS NULL").get()?.["n"]).toBe(1);

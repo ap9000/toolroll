@@ -124,6 +124,29 @@ export function loadConsoleUrl(env: Record<string, string | undefined>, dir: str
   return configured === undefined || configured === null || configured === "" ? null : configured.replace(/\/+$/, "");
 }
 
+/** Where `up` last served its console, kept beside the database so `onboard` names the same address (operate.ts). */
+export const UP_CONSOLE_FILE = "up-console.json";
+
+export function readUpConsoleUrl(dir: string): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, UP_CONSOLE_FILE), "utf8")) as { url?: unknown };
+    return typeof parsed.url === "string" && /^https?:\/\/[^\s]+$/.test(parsed.url) ? parsed.url.replace(/\/+$/, "") : null;
+  } catch {
+    return null;
+  }
+}
+
+/** This machine's own console, where `up` last served it: only a plain http address on a loopback name (127.0.0.1,
+ * localhost, ::1), never a host guessed from it; null otherwise. */
+export function localConsoleUrl(dir: string): string | null {
+  const served = readUpConsoleUrl(dir);
+  if (served === null) return null;
+  try {
+    const url = new URL(served);
+    return url.protocol === "http:" && isLoopbackHost(url.hostname) && url.hostname !== "0.0.0.0" && url.hostname !== "[::]" ? served : null;
+  } catch { return null; }
+}
+
 /** A dotted IPv4 that names this machine or no machine: loopback, unspecified. */
 function isLocalIpv4(address: string): boolean {
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(address) || address === "0.0.0.0";
