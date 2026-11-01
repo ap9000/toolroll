@@ -28,7 +28,8 @@ import { codingWorkspaceHtml,codingWorkspaceScript } from '../coding-ui.js';
 import { CodingActionError } from '../coding-workspace.js';
 import { checkResponse, CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
 import { hasForbiddenControls,validateNote } from "../decision.js";
-import { diagnoseTaskDispatch } from "../dispatch.js";
+import { builderReadyFor,diagnoseTaskDispatch,firstRunBuilderRepo } from "../dispatch.js";
+import { withBuilderStep } from "../first-run.js";
 import { evidencePack,evidencePackHtml } from "../evidence-pack.js";
 import { readVerifiedArtifact,readVerifiedReport,writeEvidenceFile } from "../evidence.js";
 import { computeGaps } from "../gaps.js";
@@ -196,7 +197,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           })),
         cancelledBlockers: cancelled,
         gaps: project === null ? [] : computeGaps(store, project, now).filter(gap => gap.unblocks.length > 0).slice(0, 10),
-        wizard: firstRunStepsNow(now),
+        // The builder step speaks for the same project as Chat's (firstRunBuilderRepo), as dispatch decides.
+        wizard: withBuilderStep(firstRunStepsNow(now), builderReadyFor(store, firstRunBuilderRepo(store, project, visible, managedRepos()), now)),
         worker: (() => {
           // The one fact the inbox must never hide (install review): with
           // no worker answering, nothing here will ever build, and every
