@@ -20,6 +20,9 @@
   do it, the setup checklist knows when a builder is connected, model names
   read plainly, and `toolroll up` prints the exact command to read your
   sign-in details.
+- **Settings, rebuilt on one frame.** A clearer layout and one consistent
+  way to confirm sensitive changes: each one shows exactly what it asks for,
+  can't be sent twice, and keeps what you typed if it's refused.
 - **The console answers right away.** Projects are checked in the
   background; a project only becomes visible once its folder is confirmed.
 - **CI** jobs now have time limits.
