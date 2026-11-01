@@ -9,7 +9,7 @@
  *   submit event that asked has finished), so its name=value and every hidden term go along unchanged; Cancel (or
  *   Escape) closes it and posts nothing, and focus returns to the button;
  * - once a kit form posts, it is pending: further submits are dropped and its Save and Confirm are disabled (after the
- *   post has taken their values), until the page is shown again, the post was cancelled, or 15 s pass;
+ *   post has taken their values), until the page is shown again or the post was cancelled — never on a timer;
  * - asks for nothing when the proof was left out (Passwordless) — there is no dialog then — and shows the
  *   identity-provider link when the sign-in swapped the field.
  * Each section's Save bar names what changed. The script never reads or sets a field's value except to check that a
@@ -37,9 +37,9 @@ if(miss){miss.setCustomValidity("Enter your password.");miss.reportValidity();mi
 var by=f.__kitBy&&f.__kitBy.form===f?f.__kitBy:null;f.__kitSent=1;dl.close();
 setTimeout(function(){f.__kitGo=1;try{by?f.requestSubmit(by):f.requestSubmit();}finally{f.__kitGo=0;}},0);}
 function buttons(f){return f.querySelectorAll(".kit-save,[data-kit-confirm]");}
-function release(f){f.__kitPending=0;f.__kitSent=0;clearTimeout(f.__kitTimer);buttons(f).forEach(function(b){b.disabled=false;});}
+function release(f){f.__kitPending=0;f.__kitSent=0;buttons(f).forEach(function(b){b.disabled=false;});}
 function latch(f,e){f.__kitPending=1;setTimeout(function(){if(e.defaultPrevented){release(f);return;}
-buttons(f).forEach(function(b){b.disabled=true;});f.__kitTimer=setTimeout(function(){release(f);},15000);},0);}
+buttons(f).forEach(function(b){b.disabled=true;});},0);}
 addEventListener("pageshow",function(){d.querySelectorAll("form.kit-form").forEach(release);});
 d.addEventListener("submit",function(e){var f=e.target;if(!f||!f.classList||!f.classList.contains("kit-form"))return;prep(f);
 if(f.__kitPending){e.preventDefault();e.stopImmediatePropagation();return;}

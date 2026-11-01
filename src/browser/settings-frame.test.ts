@@ -4,7 +4,7 @@
  * names the session's open project. */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { NO_COUNTS } from "../agent-state-words.js";
 import type { BrowserWorkspace } from "../browser-workspace.js";
 import { currentProjectOf, Navigation } from "./app.js";
@@ -94,24 +94,32 @@ test("kit script: Enter inside the open dialog posts once, after its own submit 
   expect(posts).toEqual([{ submitter: "set" }]);
 });
 
-test("kit script: a posted form is pending, so another submit posts nothing; showing the page again releases it", async () => {
+test("kit script: a posted form stays pending (no timer releases it), so repeats post nothing; showing the page again releases it", async () => {
   const { form, posts } = await kitForm();
-  const save = form.querySelector<HTMLButtonElement>(".kit-save")!;
-  form.requestSubmit = (by?: HTMLElement | null) => { submitWith(form, by ?? null); };
-  submitWith(form, save);
-  form.querySelector<HTMLInputElement>("input[name=password]")!.value = "pw";
-  form.querySelector<HTMLButtonElement>("[data-kit-confirm]")!.click();
-  await tick();
-  expect(posts).toHaveLength(1);
-  expect(save.disabled).toBe(true);
-  // A second Save (or confirm) while the first post is on its way: dropped.
-  const again = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: save });
-  form.dispatchEvent(again);
-  expect(again.defaultPrevented).toBe(true);
-  expect(posts).toHaveLength(1);
-  expect(form.querySelector("dialog")!.open).toBe(false);
-  window.dispatchEvent(new Event("pageshow"));
-  expect(save.disabled).toBe(false);
+  vi.useFakeTimers();
+  try {
+    const save = form.querySelector<HTMLButtonElement>(".kit-save")!;
+    form.requestSubmit = (by?: HTMLElement | null) => { submitWith(form, by ?? null); };
+    submitWith(form, save);
+    form.querySelector<HTMLInputElement>("input[name=password]")!.value = "pw";
+    form.querySelector<HTMLButtonElement>("[data-kit-confirm]")!.click();
+    vi.advanceTimersByTime(10);
+    expect(posts).toHaveLength(1);
+    expect(save.disabled).toBe(true);
+    expect(form.querySelector("dialog")!.open).toBe(false);
+    // Well past 15 s with the first post still on its way: still pending, and a repeat posts nothing.
+    for (const after of [16_000, 60_000]) {
+      vi.advanceTimersByTime(after);
+      expect(save.disabled, `${after}`).toBe(true);
+      const again = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: save });
+      form.dispatchEvent(again);
+      expect(again.defaultPrevented).toBe(true);
+      vi.advanceTimersByTime(10);
+      expect(posts).toHaveLength(1);
+    }
+    window.dispatchEvent(new Event("pageshow"));
+    expect(save.disabled).toBe(false);
+  } finally { vi.useRealTimers(); }
 });
 
 test("kit script: Cancel closes the dialog and posts nothing; an empty password posts nothing", async () => {
