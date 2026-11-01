@@ -179,7 +179,9 @@ describe("over HTTP", () => {
     const tables = store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
       .map(row => String(row["name"])).filter(name => !["action_ledger", "request_budget_usage", "ledger_chain", "ledger_head"].includes(name));
     const snapshot = () => Object.fromEntries(tables.map(table => {
-      const rows = store.handle.prepare(`SELECT * FROM "${table}"`).all().filter(row => table !== "service_cursor" || row["key"] !== "workspace-content:v1");
+      // A session's last visit is saved at most once a minute (session.ts): a slow runner crosses that mid-loop.
+      const rows = store.handle.prepare(`SELECT * FROM "${table}"`).all().filter(row => table !== "service_cursor" || row["key"] !== "workspace-content:v1")
+        .map(row => (table === "web_session" ? { ...row, last_seen: null } : row));
       return [table, createHash("sha256").update(JSON.stringify(rows)).digest("hex")];
     }));
     const before = snapshot();

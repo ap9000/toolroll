@@ -166,7 +166,7 @@ function inPage({ which, opts }) {
   }
   if (which === "sidebar") {
     if (sidebar === null) return null;
-    return [...sidebar.querySelectorAll("a[href], summary, button")].filter(el => !el.closest("[data-live], .so-nav-count")).map(el => `${el.tagName.toLowerCase()} ${(el.getAttribute("href") ?? "").split("?")[0]} ${(el.getAttribute("aria-label") ?? el.textContent ?? "").replace(/\d+/g, "#").replace(/\s+/g, " ").trim()}`);
+    return [...sidebar.querySelectorAll("a[href], summary, button")].filter(el => { const live = el.closest("[data-live], .so-nav-count"); return live === null || !sidebar.contains(live); }).map(el => `${el.tagName.toLowerCase()} ${(el.getAttribute("href") ?? "").split("?")[0]} ${(el.getAttribute("aria-label") ?? el.textContent ?? "").replace(/\d+/g, "#").replace(/\s+/g, " ").trim()}`);
   }
   if (which === "contrast") {
     const parse = value => { const m = value.match(/rgba?\(([^)]+)\)/); if (!m) return null; const [r, g, b, a = "1"] = m[1].split(/[,\s/]+/).filter(Boolean); return [Number(r), Number(g), Number(b), Number(a)]; };
