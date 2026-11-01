@@ -1,7 +1,8 @@
 # Contributing
 
-Standing Orders is small on purpose: Node ≥ 22.13, zero runtime dependencies,
-one SQLite file, and a design document that says no more often than yes.
+Toolroll is small on purpose: Node ≥ 22.13, a short list of pinned runtime
+dependencies, one SQLite file, and a design document that says no more often
+than yes.
 Contributions that fit that shape are very welcome.
 
 ## Getting set up
@@ -42,6 +43,15 @@ screens that restate the digest-bound terms; credentials never appear in
 URLs, the database, or logs; anything an agent's environment can see is
 scrubbed of tokens. If your change touches approval, pairing, grants, or
 spawning, expect review to be slow and specific.
+
+## End-to-end flows check
+
+`npm run e2e:flows` checks flows end to end with nothing stubbed: a throwaway
+instance (the real CLI, console and worker) on a scratch repository, driven
+through a real browser, with real Claude turns for the lead and one real
+build. It needs `claude` and `gh` logged in and Playwright's Chromium, takes
+about seven minutes, and writes `report.md`, screenshots and both logs to
+`output/e2e/`.
 
 ## Writing a provider adapter
 
