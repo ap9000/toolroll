@@ -1070,6 +1070,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
     let repo = effective;
     let admitted: string[] | null = unscopedMode ? null : admissionList() ?? [];
+    // What this filing is decided on: re-checked inside the write below, after every await (project-identity.ts).
+    const decidedOn = identities.generation();
     const rootMode = !unscopedMode && ceiling.roots.length > 0;
     if (rootMode && effective !== "") {
       // Resolved off the console's thread (project-identity.ts), then proved against the ceiling as that identity.
@@ -1101,6 +1103,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const after = (body.get("after") ?? "").trim();
     let chainProblem: string | null = null;
     const made = store.transact(() => {
+      // A project folder's identity changed while this request waited (a root or link now leads elsewhere): what was
+      // proved above may no longer hold, so nothing is filed on it.
+      if (identities.generation() !== decidedOn || (rootMode && repo !== "" && !visible(repo))) return null;
       const filed = fileTaskProposal(
         store,
         {
@@ -1135,6 +1140,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       if (filed.ok && chainProblem === null && who.via === "cookie") applyModeToNewFiling(store, filed.id, who.name, now);
       return filed;
     });
+    if (made === null) return newTaskScreen(ctx, 409, "a project folder changed while this was being filed — check the project and send it again", draft);
     if (!made.ok) {
       return newTaskScreen(ctx, made.reason === "backlog-full" ? 429 : 400, made.message, { title, goal, not: notThis, touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent });
     }

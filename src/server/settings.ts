@@ -149,7 +149,7 @@ import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settings
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
-  const { identities, store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, connectionKnown, lastChecks, checkRelease, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, chatCatalogKnown, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, defaultProject, googleVisits } = runtime;
+  const { identities, store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, connectionKnown, lastChecks, checkRelease, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, chatCatalogKnown, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, googleVisits } = runtime;
 
   // What agent work cost, by month: API dollars, plan usage and unknown cost apart (spend-report.ts). An instance
   // operator's page. Its limits show read-only; they change on Settings → Spend.
@@ -1903,7 +1903,7 @@ ${postForm("/settings/chat-approval/save", html`\
       const existing = loadBotToken({}, options.telegramTokenFile);
       const hasEnv = (envValue(process.env, "TELEGRAM_TOKEN") ?? "") !== "";
       const csrf = who.via === "cookie" ? who.session.csrf : "";
-      return sendScreen(response, 400, settingsPage(chromeFor(who.via === "cookie" ? who.session.project : defaultProject, "settings"), existing, hasEnv, csrf, saved.message, options.configDir === undefined ? null : effectivePrimary(process.env, options.configDir, loadBotToken(process.env, options.telegramTokenFile) !== null), null, null, null, {
+      return sendScreen(response, 400, settingsPage(chromeFor(who.via === "cookie" ? who.session.project : runtime.defaultProject, "settings"), existing, hasEnv, csrf, saved.message, options.configDir === undefined ? null : effectivePrimary(process.env, options.configDir, loadBotToken(process.env, options.telegramTokenFile) !== null), null, null, null, {
         ...store.permissionDefault(),
         canManage: who.role === "approver",
       }));
