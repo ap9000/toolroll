@@ -5,7 +5,7 @@ import { matchRoute, ROUTES } from './route-table.js';
 const COOKIE_ONLY_POSTS = [
   'edge.oauth-consent', 'code.act-other', 'code.answer-send', 'code.continue-send', 'code.recover-send', 'code.resume-send',
   'code.send-send', 'code.ship-send', 'code.start', 'code.stop-send', 'flow.hooks-address', 'flow.linear-key', 'flow.secrets', 'flow.trigger.secret', 'flow.trigger.scope', 'flow.trigger.sender', 'flow.trigger.setup', 'flow.unattended',
-  'spend.budget', 'settings.project-delete', 'settings.project-live-view', 'settings.project-network', 'settings.project-sandbox', 'settings.project-writes', 'settings.project-check-access', 'settings.policy-send', 'settings.approval-send',
+  'spend.budget', 'settings.models-agent', 'settings.models-apply', 'settings.project-delete', 'settings.project-live-view', 'settings.project-network', 'settings.project-sandbox', 'settings.project-writes', 'settings.project-check-access', 'settings.policy-send', 'settings.approval-send',
   'settings.request-limits-send', 'settings.sessions-send', 'settings.sign-in-send', 'settings.updates-send',
   'settings.updates-seen-send', 'settings.updates-cancel-send', 'settings.retention-send',
   'settings.storage-send', 'settings.storage-clean-send', 'settings.storage-discard-send',
@@ -48,7 +48,7 @@ test('cookie-only POST routes match the independent browser-only list exactly', 
  * every step-up row refuses password, API and OAuth bearers. */
 const PASSWORD_CEREMONIES = [
   '/code/start', `/code/${'a'.repeat(32)}/answer`, '/term/start',
-  '/flows/1/triggers/1/secret', '/flows/1/triggers/1/setup', '/flows/1/triggers/1/sender', '/flows/1/triggers/1/scope', '/flows/1/linear-key', '/spend/budget', '/settings/project/delete',
+  '/flows/1/triggers/1/secret', '/flows/1/triggers/1/setup', '/flows/1/triggers/1/sender', '/flows/1/triggers/1/scope', '/flows/1/linear-key', '/spend/budget', '/settings/models/agent', '/settings/models/apply', '/settings/project/delete',
   '/settings/policy', '/settings/approval', '/settings/request-limits', '/settings/sessions', '/settings/sign-in',
   '/settings/updates', '/settings/retention', '/settings/storage', '/settings/storage/clean', '/settings/storage/discard',
   '/settings/pull-requests', '/settings/checks', '/settings/backups', '/settings/data', '/settings/monitoring',

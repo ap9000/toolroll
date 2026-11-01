@@ -65,7 +65,7 @@ describe("the owner's classifiers", () => {
     expect(answer).toEqual({ size: "small", risky: false, reason: "one-line copy change" });
     const call = calls[0]!;
     expect(call.file).toBe("claude");
-    expect(call.args).toEqual(expect.arrayContaining(["-p", "--json-schema", "--model", "haiku", "--tools", ""]));
+    expect(call.args).toEqual(expect.arrayContaining(["-p", "--json-schema", "--model", "claude-haiku-5-5", "--tools", ""]));
     expect(call.options["timeoutMs"]).toBe(5_000);
     expect(call.options["omitEnv"]).toEqual(expect.arrayContaining(["ANTHROPIC_API_KEY"]));
     expect(String(call.options["stdin"])).toContain("THE TASK\nTitle: Say Save");
