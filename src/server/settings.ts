@@ -117,7 +117,9 @@ import { addProjectInstructions,ASSISTANTS,detectPreparation,modelChoices,previe
 import { skillsHtml,skillsScript } from "../skills-ui.js";
 import { checkSlackCredentials,clearSlackCredentials,loadSlackCredentials,saveSlackCredentials,SLACK_MANIFEST,SlackError } from "../slack-api.js";
 import { slackSettingsHtml } from "../slack-settings.js";
-import { spendCsv,spendHtml } from "../spend-ui.js";
+import { spendHtml,spendSettingsHtml } from "../spend-ui.js";
+import { spendReport,spendReportCsv,spendRows } from "../spend-report.js";
+import { limitsHtml,limitsView } from "../limits-ui.js";
 import { budgetStates,monthNamed,spendItems,usd as spendUsd,subagentNames as subagentNamesOf } from "../spend.js";
 import { removeSsoSettings,saveSsoSettings,SSO_CALLBACK,ssoChangeWords } from "../sso-settings.js";
 import { ssoSettingsHtml } from "../sso-ui.js";
@@ -146,33 +148,25 @@ type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
   const { identities, store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, connectionKnown, lastChecks, checkRelease, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, chatCatalogKnown, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, googleVisits } = runtime;
 
-  // v105: what agent work cost, by month, and the monthly budgets. An instance operator's page.
+  // What agent work cost, by month: API dollars, plan usage and unknown cost apart (spend-report.ts). An instance
+  // operator's page. Its limits show read-only; they change on Settings → Spend.
   async function spendPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, now } = ctx;
     const current = monthOf(now);
     const asked = url.searchParams.get("month");
     const month = asked === null ? current : monthNamed(asked);
     if (month === null) return refuse(response, who, 400, "Choose a month like 2026-09.", "/spend");
-    const items = spendItems(store.handle, month.from, month.to);
-    const subagents = store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]);
+    const rows = spendRows(store.handle, month.from, month.to);
     const subagentNames = subagentNamesOf(store.handle);
     if (url.searchParams.get("format") === "csv") {
       response.writeHead(200, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="standing-orders-spend-${month.name}.csv"`, "cache-control": "no-store", "x-content-type-options": "nosniff" });
-      return void response.end(spendCsv(items, subagentNames));
+      return void response.end(spendReportCsv(rows, subagentNames));
     }
     const shift = (by: number) => { const at = new Date(`${month.name}-01T00:00:00.000Z`); at.setUTCMonth(at.getUTCMonth() + by); return at.toISOString().slice(0, 7); };
-    const projects = consoleProjects();
-    const people = store.accountFacts().filter(one => one.revokedAt === null).map(one => one.name);
-    const view = {
-      month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1),
-      items, budgets: budgetStates(store.budgets(), items), subagentNames, csrf: who.via === "cookie" ? who.session.csrf : "",
-      targets: [
-        { value: "installation:*", label: "Everything", group: "Everything" as const },
-        ...projects.map(repo => ({ value: `project:${repo}`, label: projectName(repo), group: "Projects" as const })),
-        ...people.map(name => ({ value: `person:${name}`, label: name, group: "People" as const })),
-        ...subagents.map(one => ({ value: `subagent:${one.id}`, label: `${subagentNames.get(one.id) ?? one.handle} (${projectName(one.repo)})`, group: "Subagents" as const })),
-      ],
-    };
+    // Limits read what the budget gate counts today (spend.ts spendItems), for the current month.
+    const budgets = month.name === current.name ? budgetStates(store.budgets(), spendItems(store.handle, current.from, current.to)) : null;
+    const windows = month.name !== current.name ? html`` : limitsHtml(limitsView(store.providerLimits(), [], { project: projectName, subagent: id => subagentNames.get(id) ?? `Subagent ${id}` }, now));
+    const view = { month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1), report: spendReport(rows), budgets, windows, subagentNames };
     return sendScreen(response, 200, screen("Spend", spendHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }), { chrome: chromeFor(null, "spend") }));
   }
   async function modePage(ctx: HandlerContext): Promise<void> {
@@ -799,7 +793,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function spendBudget(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.spendBudget);
-    const back = sayTo(response, "/spend");
+    const back = sayTo(response, "/settings/spend");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change a budget.");
     const target = /^(installation|project|person|subagent):(.+)$/.exec(body.get("target") ?? "");
     if (target === null) return back("problem", "Choose what the budget is for.");
@@ -2212,6 +2206,7 @@ ${modeWords(terms)
   }
   const registrations = handlersOf("settings", {
     "spend": spendPage,
+    "settings.spend": spendSettingsPage,
     "mode": modePage,
     "control": controlPage("setup"),
     "control.connection": controlPage("connection"),
@@ -2431,6 +2426,30 @@ ${modeWords(terms)
     if (!authenticateCredential(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to approve releases automatically.");
     const changed = setReleaseApproval(store, repo, true, who.name, now);
     return back("said", changed.changed ? "Releases approve themselves once CI and the release check pass." : "Saved.");
+  }
+  // Settings → Spend: the monthly limits editor and the models in use. An instance operator's page; changing a limit
+  // posts to /spend/budget with a step-up.
+  async function spendSettingsPage(ctx: HandlerContext): Promise<void> {
+    const { url, response, now } = ctx;
+    const current = monthOf(now);
+    const subagents = store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]);
+    const subagentNames = subagentNamesOf(store.handle);
+    const projects = consoleProjects();
+    const people = store.accountFacts().filter(one => one.revokedAt === null).map(one => one.name);
+    const models = (["plan", "build", "review"] as const).map(phase => {
+      const agent = resolvePhaseAgent(store, phase, null, {});
+      return { role: phase === "plan" ? "Planner" : phase === "build" ? "Builder" : "Reviewer", model: agent.ok ? `${agent.spec.provider} · ${agent.spec.model ?? "its default model"}` : "Not set" };
+    });
+    const view = {
+      budgets: budgetStates(store.budgets(), spendItems(store.handle, current.from, current.to)), subagentNames, models,
+      targets: [
+        { value: "installation:*", label: "Everything", group: "Everything" as const },
+        ...projects.map(repo => ({ value: `project:${repo}`, label: projectName(repo), group: "Projects" as const })),
+        ...people.map(name => ({ value: `person:${name}`, label: name, group: "People" as const })),
+        ...subagents.map(one => ({ value: `subagent:${one.id}`, label: `${subagentNames.get(one.id) ?? one.handle} (${projectName(one.repo)})`, group: "Subagents" as const })),
+      ],
+    };
+    return sendScreen(response, 200, screen("Spend settings", spendSettingsHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }), { chrome: chromeFor(null, "settings") }));
   }
   return { registrations, modelsView };
 }
