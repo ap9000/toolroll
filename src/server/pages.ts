@@ -8,7 +8,8 @@ import { createHmac,randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { type ServerResponse } from "node:http";
 import { homedir,hostname } from "node:os";
-import { dirname,join,resolve } from "node:path";
+import { basename,dirname,join,resolve } from "node:path";
+import { buildersFor } from "../dispatch.js";
 import { listFolder,localOrigins } from "../folder-look.js";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -59,7 +60,7 @@ import { refuse, regionScript, screen, settingsRows, WORKSPACE_STYLE, workToolRo
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
 import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
-import { browsePage,fleetBody,fleetScript,githubIdentityOf,githubReposPage,homePage,portfolioOverview,projectsPage,systemPage,workbenchRail } from "./render-pages.js";
+import { browsePage,fleetBody,fleetScript,githubIdentityOf,githubReposPage,homePage,portfolioOverview,projectsPage,startBuilderHtml,systemPage,workbenchRail } from "./render-pages.js";
 import { capsPage } from "./render-settings.js";
 import { decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
@@ -1104,6 +1105,22 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return respond(response, 200, "application/json", JSON.stringify(window.ok ? window : { error: window.reason }));
   }
 
+  /** Start a builder (Settings revamp S4): the command, and whether a builder that may build the open project is
+   * checking in, as dispatch decides. Read-only; a project-limited person sees only a project they may see. */
+  async function startBuilderPage(ctx: HandlerContext): Promise<void> {
+    const { response, now, project, url, who } = ctx;
+    // ?task=<id>: that task's own saved project (a builder there, as dispatch decides for it), never the open one; the
+    // session's selection is left alone. Unknown, unplaced or not visible to this person: 404, the same answer.
+    const taskId = url.searchParams.get("task");
+    const ref = taskId === null ? null : store.lookupRef(taskId.slice(0, 200));
+    if (taskId !== null && (ref === null || ref.repo === null || !visible(ref.repo))) return refuse(response, who, 404, "That task is not available.", "/work");
+    const shown = ref !== null ? ref.repo : project !== null && visible(project) ? project : null;
+    const connected = shown === null ? null : buildersFor(store, shown, now, ref?.assignedRunner ?? null).alive.length > 0;
+    return sendScreen(response, 200, screen("Start a builder", startBuilderHtml({
+      heading: "h1", project: shown === null ? null : basename(shown), connected, managed: !restricted(),
+    }), { chrome: chromeFor(project, "none") }));
+  }
+
   const registrations = handlersOf("pages", {
     "projects.browse": projectsBrowse,
     "projects.github": projectsGithub,
@@ -1115,6 +1132,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "ledger": ledgerPage,
     "activity": activityPage,
     "system": systemScreen,
+    "start-builder": startBuilderPage,
     "peek": peekPage,
     "agents": agentsPage,
     "agents.live": agentsLive,

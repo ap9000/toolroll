@@ -222,6 +222,8 @@ get("tasks", "done", "/done", { limited: "collection" });
 get("settings", "mode", "/mode");
 get("people", "people.page", "/people", { limited: "unscoped", ...free });
 get("pages", "system", "/system");
+// Where every "Connect a builder" leads: read-only, open to a project-limited person (the handler shows only a visible project).
+get("pages", "start-builder", "/start-builder", { limited: "unscoped", ...free });
 get("tasks", "tasks", "/tasks", { limited: "collection", ...free }); // a redirect to /work now: never sent to the project opener first
 get("tasks", "queue", "/queue");
 get("pages", "peek", "/peek", free);
