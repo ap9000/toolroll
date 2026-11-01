@@ -5540,6 +5540,26 @@ $ integrations --saved --json → 0
       }
     },
     {
+      "key": "youiyoux",
+      "group": "code",
+      "name": "youiyoux",
+      "usedBy": [],
+      "account": null,
+      "detail": "Starts by itself in a project with a youi.project.json",
+      "checked": true,
+      "checkedAt": null,
+      "lastSuccessAt": null,
+      "lastError": null,
+      "lastErrorAt": null,
+      "state": "not-set-up",
+      "action": {
+        "kind": "setup",
+        "label": "Set up",
+        "href": null,
+        "command": null
+      }
+    },
+    {
       "key": "email",
       "group": "mail",
       "name": "Email",
@@ -5642,7 +5662,7 @@ $ integrations --saved --json → 0
   ],
   "counts": {
     "connected": 3,
-    "not-set-up": 8,
+    "not-set-up": 9,
     "broken": 0
   },
   "secrets": {

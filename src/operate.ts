@@ -55,6 +55,7 @@ import { origin, readMonitoring } from "./monitoring-settings.js";
 import { logEvent } from "./log.js";
 import type { FlowAdvance } from "./flow-engine.js";
 import { FLOW_EVERY_MS, flowHousekeeping, moveCards, moveCardsAfter, type FlowIo } from "./flow-cadence.js";
+import { youiyouxOnboardLine } from "./youiyoux-intake.js";
 import { readHooksBase, scheduleFromWords, type TriggerIo } from "./flow-triggers.js";
 import { sendSubagentSummaries } from "./subagent-admin.js";
 import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
@@ -408,7 +409,7 @@ export type OperateOptions = {
   folderLook?: FolderLookOptions;
 };
 
-export type OnboardSeams = Partial<Pick<OnboardIo, "home" | "env" | "cwd" | "interactive" | "confirm" | "findRepo" | "checkConnection" | "pullRequests">>;
+export type OnboardSeams = Partial<Pick<OnboardIo, "home" | "env" | "cwd" | "interactive" | "confirm" | "findRepo" | "checkConnection" | "pullRequests" | "youiyoux">>;
 
 const STATES: readonly TaskState[] = ["queued", "running", "done", "failed", "cancelled"];
 
@@ -7560,6 +7561,8 @@ async function onboardCommand(flags: Map<string, string | true>, context: Contex
       if (!checked.ok) return `off: ${checked.message}`;
       return `off: turn on with toolroll publish setup --repo ${repo} --yes (asks your password), or in Settings → Projects`;
     }),
+    // A project that uses youiyoux has its change requests filed as tasks with no step of its own (youiyoux-intake.ts).
+    youiyoux: seams.youiyoux ?? (async repo => youiyouxOnboardLine(store, repo)),
     starterFlag: text(flags, "starter"),
     // Starter flows belong to a person: the flow's decisions ask them. With no account yet, none can be switched on.
     starters: {

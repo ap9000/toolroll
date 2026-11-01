@@ -408,6 +408,7 @@ for (const one of ["policy", "approval", "request-limits", "sessions", "sign-in"
   post(one === "sessions" ? "people" : "settings", `settings.${one.replaceAll("/", "-")}-send`, `/settings/${one}`, { ...(["policy", "approval", "request-limits", "sessions", "sign-in", "updates", "updates/seen", "updates/cancel", "retention", "storage", "storage/clean", "storage/discard", "pull-requests", "checks", "backups", "data", "monitoring", "tools/connect", "tools/change"].includes(one) ? { scope: "step-up" as const } : {}), ...SETTINGS_ACT_ROLES[one] });
 }
 post("settings", "settings.flows-on", "/settings/flows/on", { limited: "collection", ...approver("An approver switches starter flows on.", "/settings/flows") });
+post("settings", "settings.integrations-youiyoux", "/settings/integrations/youiyoux", { limited: "collection", ...approver("An approver turns youiyoux requests on or off.", "/settings/integrations") });
 const MODELS = approver("Sign in as an approver to change models.", "/settings/models");
 for (const one of ["check", "watch", "update"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, MODELS);
 // Changing which model a role uses: an instance operator's browser step-up (the handler proves the password, or the

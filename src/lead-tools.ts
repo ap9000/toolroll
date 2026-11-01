@@ -1344,7 +1344,8 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const integrations = list.map(one => ({
         name: one.name, kind: one.group, state: STATE_WORDS[one.state], account: one.account, detail: one.detail, usedBy: one.usedBy,
         lastSuccessAt: one.lastSuccessAt, lastError: one.lastError,
-        next: one.action.kind === "setup" ? "Not set up: open Settings → Integrations to set it up" : one.action.kind === "fix" ? `Fix: ${one.action.words}` : null,
+        next: one.action.kind === "setup" ? "Not set up: open Settings → Integrations to set it up" : one.action.kind === "fix" ? `Fix: ${one.action.words}`
+          : one.action.kind === "switch" ? (one.action.words !== null ? `Fix: ${one.action.words}` : one.action.on ? "Turned off: turn it on in Settings → Integrations" : null) : null,
       }));
       return { ok: true, body: { integrations, settings: "show_control integrations opens Settings → Integrations; never invent a link" } };
     },
