@@ -41,6 +41,9 @@ function request(id = ID, change: Partial<Request> = {}, task: Record<string, un
     thread: [], ...change,
   };
 }
+const OPTIONS_FILE = ".youi/proposals/p-0123456789.json";
+const offer = (change: Record<string, unknown> = {}) => ({ proposal: "p-0123456789", file: OPTIONS_FILE, choices: { tone: { type: "enum", values: ["primary", "secondary"] } }, text: true, ...change });
+const options = (task: Record<string, unknown> = {}) => request(ID, { kind: "options" }, { touches: [OPTIONS_FILE], offer: offer(), ...task });
 const save = (name: string, body: unknown) => writeFileSync(join(requests(), name), typeof body === "string" ? body : JSON.stringify(body));
 const filed = () => store.handle.prepare("SELECT request, task_id, note, status FROM youiyoux_request ORDER BY request").all().map(row => ({ ...row }));
 const taskOf = (request = ID) => String(store.handle.prepare("SELECT task_id FROM youiyoux_request WHERE request = ?").get(request)?.["task_id"]);
@@ -101,10 +104,10 @@ describe("filing", () => {
     save(`${ID}.json`, request());
     save("r-1111111111.json", request("r-1111111111", { target: { route: "/settings", scope: "here", name: "Page", file: "/Users/rosa/src/page.tsx", line: 4 } }));
     expect(pass().filed).toBe(2);
-    expect(originOf(store, taskOf(), () => true)).toEqual({ flow: null, source: null, request: { id: ID, route: "/flows", component: "Button", at: "src/button.tsx:12" } });
+    expect(originOf(store, taskOf(), () => true)).toEqual({ flow: null, source: null, request: { id: ID, kind: "change", route: "/flows", component: "Button", at: "src/button.tsx:12" } });
     expect(originNote(originOf(store, taskOf(), () => true))).toBe(`From youiyoux change request ${ID}: Button on /flows (src/button.tsx:12). Whoever can write the project's folder wrote these words; read them all before you approve.`);
     // A file that isn't a plain path inside the project is left out; the rest stands.
-    expect(originOf(store, taskOf("r-1111111111"), () => true)?.request).toEqual({ id: "r-1111111111", route: "/settings", component: "Page", at: null });
+    expect(originOf(store, taskOf("r-1111111111"), () => true)?.request).toEqual({ id: "r-1111111111", kind: "change", route: "/settings", component: "Page", at: null });
     // Any other task has no such origin.
     const own = fileTaskProposal(store, { title: "Alex's own", repo, goal: "Change one line", acceptance: [{ id: "c1", statement: "it works", how: null, evidence: ["check"] }],
       filedVia: "console", filedBy: { name: "alex", kind: "person" }, planning: "skip" }, NOW);
@@ -134,6 +137,14 @@ describe("filing", () => {
     ["a task with no requirement", `${ID}.json`, request(ID, {}, { acceptance: [] }), true],
     ["a file over 64 KB", `${ID}.json`, JSON.stringify({ ...request(), padding: "x".repeat(REQUEST_BYTES) }), true],
     ["a name that isn't a request's", "r-ZZZZ.json", request(), false],
+    ["an options request with no offer", `${ID}.json`, request(ID, { kind: "options" }, { touches: [OPTIONS_FILE] }), true],
+    ["an options request with no task", `${ID}.json`, (() => { const one = options(); delete one.task; return one; })(), true],
+    ["an options request whose offer is another proposal's", `${ID}.json`, options({ offer: offer({ proposal: "p-9999999999", file: ".youi/proposals/p-9999999999.json" }) }), true],
+    ["an options request whose offer's file is elsewhere", `${ID}.json`, options({ offer: offer({ file: "src/button.tsx" }) }), true],
+    ["an options request whose task may touch more", `${ID}.json`, options({ touches: [OPTIONS_FILE, "src/button.tsx"] }), true],
+    ["an options request whose files aren't known", `${ID}.json`, options({ touchesKnown: false }), true],
+    ["an options request whose offer isn't youiyoux's shape", `${ID}.json`, options({ offer: offer({ choices: { "a b": { type: "enum" } } }) }), true],
+    ["a comment that carries an offer", `${ID}.json`, request(ID, { kind: "comment" }, { offer: offer() }), false],
     ["a status file", `${ID}.task.json`, request(), false],
   ])("%s is never filed", (_what, name, body, counted) => {
     save(name, body);
@@ -184,6 +195,17 @@ describe("filing", () => {
     expect(pass(later(1)).filed).toBe(0);
     expect(store.handle.prepare("SELECT count(*) AS n FROM task_ref").get()?.["n"]).toBe(0);
   });
+});
+
+test("an options request as youiyoux's contract has it is filed, and only its one file may change", () => {
+  save(`${ID}.json`, options());
+  expect(pass()).toMatchObject({ filed: 1, invalid: 0 });
+  expect(store.getScope(taskOf())!.touches).toEqual([OPTIONS_FILE]);
+  expect(store.handle.prepare("SELECT kind, proposal FROM youiyoux_request").get()).toEqual({ kind: "options", proposal: "p-0123456789" });
+  // The proposal is kept when filed: what the request says later never changes it.
+  save(`${ID}.json`, options({ offer: offer({ proposal: "p-9999999999" }) }));
+  pass(later(1));
+  expect(store.handle.prepare("SELECT proposal FROM youiyoux_request").get()?.["proposal"]).toBe("p-0123456789");
 });
 
 describe("touches", () => {

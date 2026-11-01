@@ -48,6 +48,13 @@ test.each([141, -141])("v%s: youiyoux's intake and request tables are added; no 
   expect(() => request("r-2222222222", null, "approved")).toThrow();
   request("r-3333333333", null);
   request("r-4444444444", null);
+  // An options request keeps the one options file it asks for (p-<hex>); a change request has none.
+  const options = (id: string, proposal: string | null, kind = "options") => store!.handle.prepare("INSERT INTO youiyoux_request (repo, request, task_id, filed_at, kind, proposal) VALUES ('/projects/shop', ?, NULL, ?, ?, ?)").run(id, now.toISOString(), kind, proposal);
+  options("r-5555555555", "p-5555555555");
+  expect(() => options("r-6666666666", null)).toThrow();
+  expect(() => options("r-7777777777", "p-7777777777", "change")).toThrow();
+  expect(() => options("r-8888888888", "../p-888888")).toThrow();
+  expect(() => options("r-9999999999", "p-9999999999", "comment")).toThrow();
   store.handle.exec("DELETE FROM youiyoux_request; DELETE FROM youiyoux_intake");
   expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true, through: chain.through, head: chain.head });
   store.close();

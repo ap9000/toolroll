@@ -759,8 +759,9 @@ export const V141_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
  * pass's answer (whether the project uses youiyoux, how many request files couldn't be read, and the problem, if any).
  * `youiyoux_request` is one row per request taken, keyed by project and request id: the task it became (NULL: left
  * out, `note` says why), never filed again, the status last written beside it, with the console address its links
- * named ('' for none), and where the person pointed (route, component, file:line), cleaned, for the task page. New
- * tables only. */
+ * named ('' for none), and where the person pointed (route, component, file:line), cleaned, for the task page. An
+ * options request (`kind`) also keeps the options file its agent writes (`proposal`, p-<its hex>), set when filed and
+ * never read from the request again. New tables only. */
 export const V142_SCHEMA = `
 CREATE TABLE IF NOT EXISTS youiyoux_intake (
   repo        TEXT PRIMARY KEY,
@@ -787,8 +788,11 @@ CREATE TABLE IF NOT EXISTS youiyoux_request (
   route         TEXT,
   component     TEXT,
   source_at     TEXT,
+  kind          TEXT NOT NULL DEFAULT 'change' CHECK (kind IN ('change','options')),
+  proposal      TEXT CHECK (proposal IS NULL OR (length(proposal) = 12 AND proposal GLOB 'p-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]')),
   PRIMARY KEY (repo, request),
-  UNIQUE (task_id)
+  UNIQUE (task_id),
+  CHECK ((kind = 'options') = (proposal IS NOT NULL))
 );
 `;
 
@@ -12060,14 +12064,14 @@ export class Store {
     return row === undefined ? null : { flow: Number(row["flow"]), card: Number(row["card"]), entry: Number(row["card_entry"]), sourceJson: String(row["source_json"]) };
   }
 
-  /** v142: where a task filed from a youiyoux change request came from, as kept when it was filed (youiyoux-intake.ts;
-   * a revision reads its first version's): the request, and where the person pointed. Null for every other task. */
-  youiyouxOriginOf(taskId: string): { request: string; route: string | null; component: string | null; at: string | null } | null {
+  /** v142: where a task filed from a youiyoux change or options request came from, as kept when it was filed
+   * (youiyoux-intake.ts; a revision reads its first version's): the request, its kind, and where the person pointed. Null for every other task. */
+  youiyouxOriginOf(taskId: string): { request: string; kind: "change" | "options"; route: string | null; component: string | null; at: string | null } | null {
     const text = (value: unknown) => typeof value === "string" && value !== "" ? value : null;
     let id: string | null = taskId;
     for (let hop = 0; id !== null && hop < 20; hop++) {
-      const row = this.db.prepare("SELECT request, route, component, source_at FROM youiyoux_request WHERE task_id = ?").get(id);
-      if (row !== undefined) return { request: String(row["request"]), route: text(row["route"]), component: text(row["component"]), at: text(row["source_at"]) };
+      const row = this.db.prepare("SELECT request, kind, route, component, source_at FROM youiyoux_request WHERE task_id = ?").get(id);
+      if (row !== undefined) return { request: String(row["request"]), kind: row["kind"] === "options" ? "options" : "change", route: text(row["route"]), component: text(row["component"]), at: text(row["source_at"]) };
       id = this.lookupRef(id)?.revisionOf ?? null;
     }
     return null;

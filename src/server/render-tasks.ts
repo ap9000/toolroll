@@ -50,7 +50,7 @@ import { reviewHref,taskChatHref,taskHref } from "./http.js";
 import { coordinatorProposalsSection } from "./render-chat.js";
 import { completionReceiptCard, type CompletionReceiptView, criterionMatrixHtml, type EvidenceLinkMap, evidenceWords, homePhaseWords, incidentWords, needsCheck, pullRequestCardHtml, reasonWords, receiptStatusOf, repairChainHtml, reportItemsHtml, reviewRetryPanel, runNoun, runOutcomeBadge, semanticCoverageHtml, type TaskPullRequest, verificationExplanation, verificationRecovered } from "./render-results.js";
 import { type Who } from "./session.js";
-import { linkWords, originNote, requestWords, type TaskOrigin } from "../task-source.js";
+import { linkWords, originNote, requestName, requestWords, type TaskOrigin } from "../task-source.js";
 
 /** What the task and approval views show about a drafted plan's contract
  * (contract handoff, task 1). A problem is a named problem, never a blank. */
@@ -236,7 +236,7 @@ const fragmentString = (fragment: Html | ""): string => fragment === "" ? "" : h
 function originWords(origin: TaskOrigin): string {
   const flow = origin.flow === null ? null : origin.flow === "hidden" ? "from a flow" : origin.flow === "removed" ? "from a flow (removed)" : `from flow “${origin.flow.name}”`;
   const source = origin.source === null ? null : `${origin.source.label} (${origin.source.proved})`;
-  const request = origin.request == null ? null : `from youiyoux change request ${origin.request.id}`;
+  const request = origin.request == null ? null : `from ${requestName(origin.request)}`;
   return [flow, source, request].filter(one => one !== null).join(" · ");
 }
 
@@ -254,7 +254,7 @@ function originParts(origin: TaskOrigin): BrowserTaskFact["parts"] {
   if (origin.request != null) {
     if (parts.length > 0) parts.push(" · ");
     const where = requestWords(origin.request);
-    parts.push(`youiyoux change request ${origin.request.id}${where === "" ? "" : `: ${where}`}`);
+    parts.push(`${requestName(origin.request)}${where === "" ? "" : `: ${where}`}`);
   }
   return parts;
 }

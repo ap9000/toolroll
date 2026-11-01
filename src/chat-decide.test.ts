@@ -559,8 +559,8 @@ describe("decisions finish in the chat app", () => {
 
   describe("a youiyoux pass's card", () => {
     /** One youiyoux change request filed as a task, as the intake files it (youiyoux-intake.ts). */
-    const fileRequest = (id: string, title: string, task: Record<string, unknown> = {}): string => {
-      const read = readYouiyouxRequest({ schema: "youi.request/v1", id, project: "alpha", kind: "change", status: "open", body: title,
+    const fileRequest = (id: string, title: string, task: Record<string, unknown> = {}, kind: "change" | "options" = "change"): string => {
+      const read = readYouiyouxRequest({ schema: "youi.request/v1", id, project: "alpha", kind, status: "open", body: title,
         author: { kind: "person", name: "Rosa" }, createdAt: now.toISOString(), updatedAt: now.toISOString(), target: { route: "/flows", scope: "element", name: "Button" },
         task: { title, goal: `Make ${title.toLowerCase()} on /flows.`, touches: ["src/button.tsx"], touchesKnown: true, not: ["New dependencies"],
           acceptance: [{ statement: `${title} is done`, evidence: ["screenshot"] }], ...task }, thread: [] });
@@ -601,6 +601,26 @@ describe("decisions finish in the chat app", () => {
         expect(proofs(id)).toBe(1);
       }
       expect(script.current(BOB, card.messageId).text).toBe(`${card.text}\n\n✓ Approved "Calmer button", "Wider page". Work starts when a worker is free.`);
+    });
+
+    test("y1b: an options request comes on the same card, every word shown, and approves the same way", async () => {
+      chatApprovalOn();
+      const file = ".youi/proposals/p-0000000007.json";
+      const looks = fileRequest("r-0000000007", "Options for the button", { touches: [file], offer: { proposal: "p-0000000007", file, choices: {}, text: true } }, "options");
+      const calm = fileRequest("r-0000000008", "Calmer button");
+      noteYouiyouxFiled(store, [looks, calm], now);
+      await pass();
+      const card = script.cardWith(BOB, /^Approve all \(2\)$/);
+      expect(card.text.split("\n").slice(0, 8)).toEqual(["2 youiyoux requests wait for you · alpha", "", "1. Options for the button", "Goal:", "From youiyoux request r-0000000007 on /flows.", "",
+        "Make options for the button on /flows.", ""]);
+      expect(card.text).toContain(`Files: ${file}\n`);
+      await tapIn(BOB, card.token(/^Approve 1$/), card.messageId);
+      await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId);
+      expect(store.getScope(looks)).toMatchObject({ approvedBy: "bob", approvalBasis: "chat" });
+      expect(proofs(looks)).toBe(1);
+      expect(store.getScope(calm)!.approvedAt).toBeNull();
+      // Its own card only: a plain plan card never approves it either.
+      expect(planInChat(store, looks, "bob", now, "telegram", dir)).toMatchObject({ ok: false });
     });
 
     test("y2: a task whose terms changed after the card was sent is named and left out, never approved on the old words", async () => {

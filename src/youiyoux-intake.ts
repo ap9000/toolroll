@@ -1,5 +1,5 @@
 /**
- * youiyoux change requests become tasks (docs/guide/getting-started.md, "Change requests from youiyoux").
+ * youiyoux change and options requests become tasks (docs/guide/getting-started.md, "Change requests from youiyoux").
  *
  * youiyoux is a design-system tool: in its hub a person points at a component on a screenshot of their app and asks
  * for a change, and it saves the request as `<project>/.youi/requests/<id>.json` (`youi.request/v1`). A project that
@@ -32,6 +32,12 @@
  * Status words (task-status.ts headline → youiyoux): Queued → queued; Planning, Building and Waiting (work going on
  * by itself) → building; Needs you → needs-you; Ready for review → ready; Complete → done; Failed → failed;
  * Stopped → stopped.
+ *
+ * An options request (`kind: "options"`) asks an agent for two to four options for one component, which youiyoux shows
+ * on its Screens canvas. It is filed the same way, once, waiting for a person, and only as youiyoux's contract has it:
+ * its offer names `p-<its own hex>`, that proposal's file `.youi/proposals/p-<hex>.json`, and the task may touch that
+ * one file (anything else is counted as a file that couldn't be read, and never filed). The proposal it names is kept
+ * when filed; the request is never read for it again.
  */
 
 import { randomBytes } from "node:crypto";
@@ -45,7 +51,8 @@ import { hasDisguisedText } from "./decision.js";
 import { storedTaskStatus } from "./flow-card-task.js";
 import { loadConsoleUrl, localConsoleUrl } from "./webhooks.js";
 import type { Headline } from "./task-status.js";
-import { readYouiyouxRequest, readYouiyouxRequestTask, YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH, type YouiyouxRequest, type YouiyouxRequestTask, type YouiyouxTaskStatus } from "./contracts/youiyoux-request.js";
+import { optionsProblem, proposalIdOf, readYouiyouxRequest, readYouiyouxRequestTask, YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH,
+  type YouiyouxRequest, type YouiyouxRequestTask, type YouiyouxTaskStatus } from "./contracts/youiyoux-request.js";
 
 export { YOUIYOUX_FILED_VIA };
 /** Who files the tasks: an automation, like a flow trigger. */
@@ -119,7 +126,8 @@ function readRequestFile(dir: string, name: string): { ok: true; text: string } 
 
 type Read = { requests: YouiyouxRequest[]; invalid: string[]; more: boolean };
 
-/** The open change requests in the folder not yet taken, and the files that couldn't be read as requests. */
+/** The open change and options requests in the folder not yet taken, and the files that couldn't be read as requests
+ * (an options request that doesn't hold to youiyoux's contract among them). */
 function readRequests(dir: string, taken: ReadonlySet<string>): Read {
   const names = readdirSync(dir).filter(name => REQUEST_FILE.test(name) && !taken.has(name.slice(0, 12))).sort();
   const out: Read = { requests: [], invalid: [], more: names.length > REQUESTS_PER_PASS };
@@ -133,7 +141,10 @@ function readRequests(dir: string, taken: ReadonlySet<string>): Read {
     if (!parsed.ok) { out.invalid.push(`${name}: it isn't a youi.request/v1 request (${parsed.issues[0]?.line ?? "unreadable"})`); continue; }
     if (parsed.value.id !== id) { out.invalid.push(`${name}: its id is ${parsed.value.id}`); continue; }
     // Comments, requests already addressed or closed, and changes with no task are someone else's to act on.
-    if (parsed.value.kind !== "change" || parsed.value.status !== "open" || parsed.value.task === undefined) continue;
+    if (parsed.value.kind === "comment" || parsed.value.status !== "open") continue;
+    const options = optionsProblem(parsed.value);
+    if (options !== null) { out.invalid.push(`${name}: ${options}`); continue; }
+    if (parsed.value.task === undefined) continue;
     out.requests.push(parsed.value);
   }
   return out;
@@ -349,8 +360,10 @@ export function fileYouiyouxRequest(store: Store, repo: string, request: Youiyou
   const task = requestTask(request);
   return store.transact(() => {
     if (store.handle.prepare("SELECT 1 FROM youiyoux_request WHERE repo = ? AND request = ?").get(repo, request.id) !== undefined) return { made: "seen" as const };
+    const kind = request.kind === "options" ? "options" : "change";
+    const proposal = kind === "options" ? proposalIdOf(request.id) : null;
     const leaveOut = (note: string) => {
-      store.handle.prepare("INSERT INTO youiyoux_request (repo, request, task_id, note, filed_at) VALUES (?, ?, NULL, ?, ?)").run(repo, request.id, note, now.toISOString());
+      store.handle.prepare("INSERT INTO youiyoux_request (repo, request, task_id, note, filed_at, kind, proposal) VALUES (?, ?, NULL, ?, ?, ?, ?)").run(repo, request.id, note, now.toISOString(), kind, proposal);
       return { made: "skipped" as const, note };
     };
     const refused = refusalOf(request, task);
@@ -360,9 +373,10 @@ export function fileYouiyouxRequest(store: Store, repo: string, request: Youiyou
       filedVia: YOUIYOUX_FILED_VIA, filedBy: { name: YOUIYOUX_ACTOR, kind: "automation" }, planning: "skip", admittedRepos: [repo],
     }, now);
     if (!filed.ok) return leaveOut(`Toolroll refused it: ${filed.message}`);
-    store.handle.prepare("INSERT INTO youiyoux_request (repo, request, task_id, filed_at, route, component, source_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(repo, request.id, filed.id, now.toISOString(), task.pointed.route, task.pointed.component, task.pointed.at);
-    store.recordAction({ at: now.toISOString(), actor: YOUIYOUX_ACTOR, repo, taskId: filed.id, runId: null, action: "filed from a youiyoux request", outcome: "waits for approval", source: "work", detail: request.id });
+    store.handle.prepare("INSERT INTO youiyoux_request (repo, request, task_id, filed_at, route, component, source_at, kind, proposal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(repo, request.id, filed.id, now.toISOString(), task.pointed.route, task.pointed.component, task.pointed.at, kind, proposal);
+    store.recordAction({ at: now.toISOString(), actor: YOUIYOUX_ACTOR, repo, taskId: filed.id, runId: null, action: "filed from a youiyoux request", outcome: "waits for approval", source: "work",
+      detail: proposal === null ? request.id : `${request.id} (options: ${proposal})` });
     return { made: "filed" as const, taskId: filed.id };
   });
 }
@@ -377,11 +391,18 @@ export function noteYouiyouxFiled(store: Store, taskIds: readonly string[], now:
   const first = store.lookupRef(taskIds[0]!);
   if (first === null) return;
   const titles = taskIds.map(id => store.getTask(id)?.title ?? id);
+  const what = requestKindWord(store, taskIds);
   store.enqueueNotification({
     dedupeKey: `${YOUIYOUX_CARD_KIND}:${first.id}`, kind: YOUIYOUX_CARD_KIND, pushClass: "attention", link: YOUIYOUX_HOME_PATH, source: { taskRef: first.id },
-    subject: taskIds.length === 1 ? "A youiyoux change request waits for your approval" : `${taskIds.length} youiyoux change requests wait for your approval`,
+    subject: taskIds.length === 1 ? `A youiyoux ${what} waits for your approval` : `${taskIds.length} youiyoux ${what}s wait for your approval`,
     body: titles.map(title => `• ${title}`).join("\n"),
   }, now);
+}
+
+/** What a pass's tasks were asked for, in a word: "change request", "options request", or "request" for both. */
+export function requestKindWord(store: Store, taskIds: readonly string[]): string {
+  const kinds = new Set(taskIds.map(id => store.youiyouxOriginOf(id)?.kind ?? "change"));
+  return kinds.size > 1 ? "request" : kinds.has("options") ? "options request" : "change request";
 }
 
 /** The tasks one pass filed beside this one (one project, one moment), in request order; empty for any other task. */

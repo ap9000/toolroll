@@ -38,7 +38,7 @@ import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
 import { phoneText, projectLabel } from "./telegram-status.js";
 import { permissionPlainWords, scopeTermsText, shownTermsDigest } from "./chat-terms.js";
 import { YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH } from "./contracts/youiyoux-request.js";
-import { FILED_PER_PASS, requestPassOf } from "./youiyoux-intake.js";
+import { FILED_PER_PASS, requestKindWord, requestPassOf } from "./youiyoux-intake.js";
 import { discordPlain } from "./reply-shape.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
 
@@ -194,7 +194,7 @@ export function mergeInChat(store: Store, taskId: string, run: number, approver:
  */
 const REQUESTS_DIGEST = "youiyoux:";
 const OPEN_IN_TOOLROLL = "Open in Toolroll";
-const OUTSIDE_TERMS = "A change request is approved from its own youiyoux card, which shows every word, or in Toolroll.";
+const OUTSIDE_TERMS = "A youiyoux request is approved from its own youiyoux card, which shows every word, or in Toolroll.";
 const TOO_LONG = "its full terms don't fit in one chat message";
 /** Room left under each app's limit for the question a tap adds ("Approve 10 tasks?") and the names it leaves out. */
 const ROOM = 400;
@@ -249,7 +249,8 @@ function requestsOffer(store: Store, taskId: string, who: VerifiedApprover, now:
   });
   if (waiting.length === 0) return null;
   const repo = store.lookupRef(waiting[0]!)!.repo!;
-  const head = `${waiting.length === 1 ? "A youiyoux change request waits" : `${waiting.length} youiyoux change requests wait`} for you · ${projectLabel(repo)}`;
+  const what = requestKindWord(store, waiting);
+  const head = `${waiting.length === 1 ? `A youiyoux ${what} waits` : `${waiting.length} youiyoux ${what}s wait`} for you · ${projectLabel(repo)}`;
   const mode = chatApproveMode(store, repo, who.name, now, channel);
   const items: CardItem[] = waiting.map((id, index) => ({ n: index + 1, taskId: id, name: title(store, id), listed: null, why: null }));
   const block = (item: CardItem): string => `${item.n}. ${item.name}\n${scopeTermsText(store.getScope(item.taskId)!)}`;
