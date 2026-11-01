@@ -119,8 +119,10 @@ export const SIGNUP_PASSWORD_MIN = 8;
  * The message sits under the field it is about, announced (role="alert"), with that field aria-invalid, described by
  * it and focused, so it works without script (this page has none). */
 export function signupPage(problem: SignupProblem | string | null, attemptsLeft: number, typedName = ""): Html {
-  const said: SignupProblem | null = typeof problem === "string" ? { field: null, text: problem } : problem;
   const open = attemptsLeft > 0;
+  // Out of tries, the page always says why and what to do, also when it is simply opened again.
+  const said: SignupProblem | null = typeof problem === "string" ? { field: null, text: problem }
+    : problem ?? (open ? null : { field: null, text: "Too many wrong setup codes. Restart Toolroll to get a new code." });
   const field = open ? said?.field ?? null : null;
   const error = (which: SignupProblem["field"]) =>
     field === which && said !== null ? html`<p class="problem signup-problem" id="signup-problem" role="alert">${said.text}</p>` : "";

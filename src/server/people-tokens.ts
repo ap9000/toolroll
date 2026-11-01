@@ -16,7 +16,7 @@ import type { ServerRuntime } from './runtime.js';
 import { personChip,refuse,screen } from "./chrome.js";
 import { redirect,respond,sayTo } from "./http.js";
 /** people handlers, moved without changing their route bodies. */
-import { randomBytes,timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { type FormFieldOf,type FormView } from "../contracts/console-api.js";
 import { listCoordinators } from "../coordinator.js";
@@ -28,6 +28,7 @@ import { credentialProof,hashPassword,proveAccountNow } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
 import { joinDeadPage,joinFormPage,loginPage,SIGNUP_NAME,SIGNUP_PASSWORD_MIN,signupPage } from "./render-people.js";
 import { SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
+import { setupCodeMatches,signupCookie,signupFromHere } from "./signup-gate.js";
 
 /** Clock skew allowed between the provider and this server when reading auth_time — forward only (a provider clock
  * running ahead). auth_time is in whole seconds, so a check made in the visit's own second is floored below startedAt:
@@ -314,6 +315,8 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
   async function signInPage(ctx: EdgeContext): Promise<void> {
     const { url, response } = ctx;
     if (options.setupCode !== undefined && store.listApprovers().length === 0) {
+      // The form's same-site proof (signup-gate.ts): a post without it never reaches the setup code.
+      if (runtime.setupAttemptsLeft > 0) response.setHeader("Set-Cookie", signupCookie(cookieSecure));
       return page(response, 200, signupPage(null, runtime.setupAttemptsLeft));
     }
     return page(response, 200, loginPage(null, loginReturn(url.searchParams.get("return")), ssoOffer()));
@@ -438,15 +441,24 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
       return page(response, 409, loginPage("An account already exists. Sign in."));
     }
     if (runtime.setupAttemptsLeft <= 0) {
-      return page(response, 403, signupPage("Too many wrong setup codes. Restart Toolroll to get a new code.", 0));
+      return page(response, 403, signupPage(null, 0));
+    }
+    // Another site's post (or one without this page's cookie) is refused before it can spend a try.
+    if (!signupFromHere(request, runtime.allowedHost)) {
+      request.resume();
+      response.setHeader("Set-Cookie", signupCookie(cookieSecure));
+      return page(response, 403, signupPage("This form had expired, so it was reloaded. Enter the details again.", runtime.setupAttemptsLeft));
     }
     const body = readForm(await form(request), CONSOLE_FORMS.signup);
     const code = (body.get("code") ?? "").trim();
     const name = (body.get("name") ?? "").trim();
     const password = body.get("password") ?? "";
-    const given = Buffer.from(code.padEnd(64, " "), "utf8");
-    const wanted = Buffer.from(options.setupCode.padEnd(64, " "), "utf8");
-    if (code === "" || !timingSafeEqual(given, wanted)) {
+    // Re-read after the body: concurrent posts all waited above, and only the tries still left may be compared.
+    // From here to the decrement nothing awaits, so check and spend are one step.
+    if (runtime.setupAttemptsLeft <= 0) {
+      return page(response, 403, signupPage(null, 0));
+    }
+    if (!setupCodeMatches(code, options.setupCode)) {
       runtime.setupAttemptsLeft -= 1;
       // What was typed comes back except the code and the password (never echoed); the count rides the code's note.
       return page(response, 403, signupPage(runtime.setupAttemptsLeft > 0
