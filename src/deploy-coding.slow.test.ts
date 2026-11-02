@@ -566,6 +566,39 @@ async function started() {
   return d;
 }
 
+test('a fresh prepare refreshes the put-away reservation before writing anything; a refused or missing reservation prepares nothing', async () => {
+  const d = await deployment({ codingCatalog: false });
+  try {
+    const reserved: unknown[] = [];
+    d.hooks.reserve = proven => { reserved.push(proven); };
+    await d.phases.prepare({ packageSha256: 'staged' });
+    expect(reserved).toEqual([d.current]);
+    expect(d.journal()).toMatchObject({ phase: 'backup-verified' });
+  } finally { d.close(); }
+  const refused = await deployment({ codingCatalog: false });
+  try {
+    refused.hooks.reserve = () => { throw Error('This task is put away. Restore it before deploying.'); };
+    await expect(refused.phases.prepare({ packageSha256: 'staged' })).rejects.toThrow('This task is put away.');
+    expect(existsSync(join(refused.stage, 'release.json'))).toBe(false);
+    expect(existsSync(join(refused.stage, 'deployment.json'))).toBe(false);
+  } finally { refused.close(); }
+});
+
+test('a deployment given no reservation refuses at its first proving phase, after the read-only proof', () => {
+  const root = mkdtempSync(join(tmpdir(), 'toolroll-deploy-noreserve-'));
+  try {
+    const database = join(root, 'orders.db');
+    new DatabaseSync(database).close();
+    let proved = 0;
+    const phases = browserDeployment({
+      database, journalFile: join(root, 'deployment.json'), candidateHead: 'c'.repeat(40), deploymentLock: { assertHeld: () => {} },
+      facts: () => { proved++; return {}; }, requireTrue: (okay: unknown, message: string) => { if (!okay) throw Error(message); },
+    });
+    expect(() => phases.loadPhase('rehearsed')).toThrow("The deployment can't reserve its task against being put away.");
+    expect(proved).toBe(1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('a deployment resumed at started proves read-only, then refreshes its put-away reservation before finishing; a refused reservation finishes nothing', async () => {
   const d = await started();
   try {

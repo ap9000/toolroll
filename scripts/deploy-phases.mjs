@@ -140,15 +140,19 @@ export function browserDeployment({
   const settle = async promise => { const result = await promise; checkpoint(); return result; };
   const readJournal = () => { assertLocked(); return JSON.parse(readFileSync(journalFile, "utf8")); };
   const save = (r, phase) => { assertLocked(); r.phase = phase; r.updatedAt = new Date().toISOString(); noteMilestone(r, phase); oldRt.update.durableJson(journalFile, r); say(`• ${phase}`); };
+  // Every phase that proves the candidate refreshes its reservation against being put away (v145,
+  // docs/plans/task-tidy.md), never inside another handle's transaction. A deployment that can't reserve doesn't go on.
+  const refreshReservation = proven => {
+    requireTrue(typeof reserve === "function", "The deployment can't reserve its task against being put away.");
+    reserve(proven);
+  };
   const loadPhase = phase => {
     checkpoint();
     // The plane's records are re-read before every phase, not only at entry:
     // a revoked approval or a changed command between phases stops the swap.
     const current = (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
     // Proven on a read-only handle; the reservation against being put away is refreshed on its own writable one (v145).
-    // A deployment that can't reserve doesn't go on.
-    requireTrue(typeof reserve === "function", "The deployment can't reserve its task against being put away.");
-    reserve(current);
+    refreshReservation(current);
     const r = readJournal();
     requireTrue(current.completion.digest === r.completion?.digest && current.gateDigest === r.gateDigest, "The completed result or its passing check changed since staging.");
     requireTrue(r.phase === phase && r.candidate === candidateHead && r.database === database, `Journal is at ${r.phase} for ${r.candidate?.slice(0, 7)}, expected ${phase} for ${short}.`);
@@ -311,6 +315,9 @@ export function browserDeployment({
       const schema = db.prepare("SELECT version FROM schema_version").get().version;
       const nextSchema = (await settle(load(nextDist, "store.js"))).SCHEMA_VERSION;
       const f = facts(db);
+      // A fresh preparation proves here, not through loadPhase: refresh the reservation before anything is written
+      // (this handle holds no transaction; the backup's own proofs below run inside one and only read).
+      refreshReservation(f);
       if (!resumed) writeFileSync(join(stageDir, "release.json"), JSON.stringify({ ...f, run: runId, head: candidateHead, at: new Date().toISOString(), ...staged }, null, 1));
       const r = resumed ?? { id: randomUUID(), candidate: candidateHead, database, phase: "preparing", schema, nextSchema, createdAt: new Date().toISOString(), backup: join(stageDir, "orders.backup.db"), priorRuntime: priorDist, nextRuntime: nextDist, builder: runId, completion: f.completion, gateDigest: f.gateDigest, task: f.taskId, repo: f.repo, scopeDigest: f.scopeDigest, ...staged, proofVerdict: f.proofVerdict, manualAcceptance: f.acceptance, publicUrl };
       requireTrue(r.schema === schema && r.nextSchema === nextSchema && r.priorRuntime === priorDist &&
