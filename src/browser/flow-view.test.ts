@@ -13,6 +13,7 @@ const view = (waiting: string, live: string): BrowserFlowView => ({
   startTrigger: null, me: "alex", sortReady: false, emailReady: false, requestSecrets: [], tools: [], scripts: [],
   start: definition.start, stages: definition.stages, selectedCard: null, live, canEdit: false, approvers: [], kinds: [], colors: [],
   unattended: { active: null, canSign: false, problem: "Only an approver can change this.", maxDays: 7, scheduled: false, terms: { head: [], rules: [] }, schedules: [], schedulesDigest: "d0" },
+  browser: null,
   cards: [{ id: 1, title: "Fix checkout rounding", description: null, stage: "build", state: "active", waiting,
     task: { id: "checkout", href: "/t/checkout" }, createdBy: "alex", updatedAt: "2026-10-07T17:00:00Z", canDecide: false,
     outputs: [], history: [], source: null, owner: null, watchers: [], watching: false, mine: false, comments: [], sorted: null, draft: null }],
@@ -146,6 +147,65 @@ test.each([false, true])("runs on its own: the live line with one-click Revoke, 
   await act(async () => line.querySelector<HTMLButtonElement>("[data-flow-unattended-revoke]")!.click());
   expect(posted[1]).toMatchObject({ path: "/flows/1/unattended-off", body: "csrf=fixture" });
   expect(document.querySelector('[data-flow-unattended="on"]')).toBeNull();
+});
+
+test.each([false, true])("browser use: a waiting card opens Allow browser, the panel carries the digest it showed, Turn off is one click (phone=%s)", async phone => {
+  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: phone && query === "(max-width: 767px)", media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  const drawn = flowFromSteps([{ id: "run", title: "Run journeys", kind: "check", script: "journeys", browser: true }], null);
+  const base = view("Run journeys starts a browser, and no one has approved browser use for the Checkout flow, so it didn't run.", "w");
+  const waiting: BrowserFlowView = { ...base, canEdit: true, start: drawn.start, stages: drawn.stages,
+    cards: [{ ...base.cards[0]!, stage: "run", task: null, browserWait: true }],
+    browser: { status: "none", words: "Browser: not allowed — runs will wait", signedBy: null, signedAt: null, zones: [{ zone: "run", title: "Run journeys", script: "journeys", version: 2, digest: "a".repeat(64) }],
+      terms: ["Lets the journeys script (zone run) start Playwright's Chromium headless shell inside the flow's sandbox."], digest: "d".repeat(32), problem: null } };
+  const allowed: BrowserFlowView = { ...waiting, live: "a", cards: [{ ...waiting.cards[0]!, browserWait: undefined } as BrowserFlowView["cards"][number]], browser: { ...waiting.browser!, status: "allowed", words: "Browser: allowed by alex, Nov 1", signedBy: "alex", signedAt: "2026-11-01T12:00:00Z" } };
+  const posted: Array<{ path: string; body: string }> = [];
+  vi.stubGlobal("fetch", vi.fn(async (path: string, init: { body: URLSearchParams }) => {
+    posted.push({ path, body: String(init.body) });
+    return { ok: true, json: async () => path.endsWith("/browser") ? { ok: true, said: "Browser allowed.", view: allowed } : { ok: true, said: "Browser turned off.", view: { ...waiting, live: "b" } } };
+  }));
+  await act(async () => root!.render(createElement(FlowView, { view: waiting, csrf: "fixture" })));
+  expect(document.querySelector('[data-flow-browser="none"]')?.textContent).toContain("Browser: not allowed — runs will wait");
+  const card = [...document.querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent?.startsWith("Fix checkout rounding"))!;
+  await act(async () => card.click());
+  await act(async () => document.querySelector<HTMLButtonElement>("[data-card-allow-browser]")!.click());
+  const panel = document.querySelector("[data-flow-browser-panel]")!;
+  expect(panel.querySelector("[data-flow-browser-zones]")!.textContent).toBe(`Run journeys runs journeys v2${"a".repeat(64)}`);
+  expect(panel.querySelector("[data-flow-browser-terms]")!.textContent).toContain(`Approval digest ${"d".repeat(32)}`);
+  const allow = [...panel.querySelectorAll("button")].find(one => one.textContent === "Allow browser")!;
+  expect(allow.disabled).toBe(true);
+  const password = panel.querySelector<HTMLInputElement>('input[type="password"]')!;
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(password, "correct horse"); password.dispatchEvent(new Event("input", { bubbles: true })); });
+  await act(async () => allow.click());
+  expect(posted[0]!.path).toBe("/flows/1/browser");
+  expect(Object.fromEntries(new URLSearchParams(posted[0]!.body))).toEqual({ csrf: "fixture", digest: "d".repeat(32), password: "correct horse" });
+  const line = document.querySelector('[data-flow-browser="allowed"]')!;
+  expect(line.textContent).toBe("Browser: allowed by alex, Nov 1" + "Turn off");
+  await act(async () => line.querySelector<HTMLButtonElement>("[data-flow-browser-off]")!.click());
+  expect(posted[1]).toMatchObject({ path: "/flows/1/browser-off", body: "csrf=fixture" });
+});
+
+test("browser use: a live update never swaps the terms the password approves", async () => {
+  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: false, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  const drawn = flowFromSteps([{ id: "run", title: "Run journeys", kind: "check", script: "journeys", browser: true }], null);
+  const browser = (version: number, digest: string): NonNullable<BrowserFlowView["browser"]> => ({ status: "none", words: "Browser: not allowed — runs will wait", signedBy: null, signedAt: null,
+    zones: [{ zone: "run", title: "Run journeys", script: "journeys", version, digest: String(version).repeat(64) }], terms: ["Lets the journeys script start Chromium."], digest, problem: null });
+  const first: BrowserFlowView = { ...view("Ready", "one"), canEdit: true, start: drawn.start, stages: drawn.stages, cards: [], browser: browser(1, "a".repeat(32)) };
+  const swapped: BrowserFlowView = { ...first, live: "two", browser: browser(2, "b".repeat(32)) };
+  await act(async () => root!.render(createElement(FlowView, { view: first, csrf: "fixture" })));
+  await act(async () => document.querySelector<HTMLButtonElement>("[data-flow-browser-allow]")!.click());
+  const password = document.querySelector<HTMLInputElement>('[data-flow-browser-panel] input[type="password"]')!;
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(password, "correct horse"); password.dispatchEvent(new Event("input", { bubbles: true })); });
+  const fetcher = vi.fn(async () => ({ ok: true, json: async () => swapped })); vi.stubGlobal("fetch", fetcher);
+  await act(async () => { streams.at(-1)!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ at: swapped.live }) })); });
+  const panel = () => document.querySelector("[data-flow-browser-panel]")!;
+  // Nothing to submit until the new terms are read; the password typed for the old ones is gone.
+  expect(panel().querySelector("[data-flow-browser-moved]")).not.toBeNull();
+  expect([...panel().querySelectorAll("button")].some(one => one.textContent === "Allow browser")).toBe(false);
+  await act(async () => [...panel().querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent === "Read the new terms")!.click());
+  expect(panel().querySelector("[data-flow-browser-terms]")!.textContent).toContain(`Approval digest ${"b".repeat(32)}`);
+  expect(panel().querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe("");
 });
 
 test("a person who can't sign reads why, and a flow without a schedule shows nothing", async () => {

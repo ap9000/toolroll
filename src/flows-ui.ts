@@ -26,6 +26,7 @@ import { callWords, receiptWords } from "./subagent-tools.js";
 import { undoFor } from "./subagent-week.js";
 import { flowCardTaskLine } from "./flow-card-task.js";
 import { unattendedViewOf } from "./flow-unattended.js";
+import { browserViewOf } from "./flow-browser.js";
 import { readFlowSecrets } from "./flow-secrets.js";
 import { html, joinHtml, postForm, type Html } from "./html.js";
 const projectName = (repo: string) => repo.split(/[\\/]/).filter(Boolean).pop() ?? repo;
@@ -124,6 +125,8 @@ const historyText = (event: { fromStage: string | null; toStage: string; outcome
 export function flowView(store: Store, flow: FlowRow, viewer: { name: string; approver: boolean }, selectedCard: number | null, setup: { dir: string | null; repos: readonly string[]; startTrigger?: number | null; sortReady?: boolean; toolHome?: string | undefined; now?: Date } = { dir: null, repos: [] }): BrowserFlowView {
   const definition = flowDefinitionOf(flow);
   const stages = definition?.stages ?? [];
+  const browserNow = browserViewOf(store, flow);
+  const browser = browserNow === null ? null : { ...browserNow, canApprove: viewer.approver && store.accountOf(viewer.name)?.projects === null };
   const title = (id: string) => stages.find(one => one.id === id)?.title ?? id;
   const sortZones = new Set(stages.filter(one => one.kind === "sort").map(one => one.id));
   const decisions = sortZones.size === 0 ? new Map<number, { decisionJson: string }>() : store.flowSortDecisions(flow.id);
@@ -184,10 +187,15 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       // After research: the same numbered items the message carried, each beside its screenshot.
       ...(content.items === undefined ? {} : { items: content.items.map((item, index) => ({ number: index + 1, title: item.title, lines: whyLines(item.why), source: item.source, url: item.url,
         image: item.shot === null || content.shots === null ? null : { src: `/r/${content.shots.run}/evidence/${item.shot}`, caption: itemCaption(index + 1, item) } })) }) });
+    const browserWait = card.state === "active" && stage?.kind === "check" && stage.browser === true && browser !== null && browser.status !== "allowed"
+      && card.waiting !== null && card.waiting.startsWith(`${stage.title} starts a browser`);
     return {
       id: card.id, title: card.title, description: card.description, stage: card.stage, state: card.state,
       waiting: card.state === "active" && card.task !== null && (stage?.kind === "task" || stage?.kind === "report")
-        ? canReadTask ? flowCardTaskLine(store, card.task, taskRepo!, now, secretsFor(taskRepo!)) : "Task unavailable" : card.waiting,
+        ? canReadTask ? flowCardTaskLine(store, card.task, taskRepo!, now, secretsFor(taskRepo!)) : "Task unavailable"
+        // Waiting for browser use: the page offers Allow browser itself, so the command line the CLI shows is left off.
+        : browserWait ? card.waiting!.replace(/ Approve it with: toolroll flows browser \d+ on$/, "") : card.waiting,
+      ...(browserWait ? { browserWait: true as const } : {}),
       task: task === null ? null : { id: task, href: `/t/${encodeURIComponent(task)}`,
         // Its running attempt's composer, for an approver who may read the task (steer-controls.ts).
         ...(() => {
@@ -267,6 +275,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
     live: flowFingerprint(store, flow.id),
     canEdit: viewer.approver,
     unattended: unattendedViewOf(store, flow, viewer, setup.now ?? now),
+    browser,
     approvers: store.listApprovers().map(one => one.name).filter(name => store.accountCanAccess(name, flow.repo)),
     projects: [flow.repo, ...setup.repos.filter(one => one !== flow.repo)].map(path => ({ path, name: projectName(path) })),
     kinds: FLOW_STAGE_KINDS.map(kind => ({ kind, label: FLOW_KIND_WORDS[kind].label, about: FLOW_KIND_WORDS[kind].about })),
@@ -277,7 +286,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
 /** The page the canvas replaces when scripts can't run: each zone and its cards, in order. */
 export function flowFallbackHtml(view: BrowserFlowView): Html {
   const own = view.unattended.active;
-  return html`<section class="flows flow-fallback"><p class="meta">${view.flow.project}</p>${own !== null && html`<p data-flow-unattended>Runs on its own until ${own.untilWords}</p>`}<ol>${view.stages.map(stage => {
+  return html`<section class="flows flow-fallback"><p class="meta">${view.flow.project}</p>${own !== null && html`<p data-flow-unattended>Runs on its own until ${own.untilWords}</p>`}${view.browser !== null && html`<p data-flow-browser="${view.browser.status}">${view.browser.words}</p>`}<ol>${view.stages.map(stage => {
     const cards = view.cards.filter(card => card.stage === stage.id && card.state === "active");
     return html`<li><strong>${stage.title}</strong> · ${FLOW_KIND_WORDS[stage.kind].label}${cards.length > 0 && html`<ul>${cards.map(card => html`<li>${card.title}${card.waiting !== null && ` — ${card.waiting}`}</li>`)}</ul>`}</li>`;
   })}</ol></section>`;

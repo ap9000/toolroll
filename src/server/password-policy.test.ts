@@ -4,7 +4,7 @@ import { matchRoute, ROUTES } from './route-table.js';
 // Independent of both ROUTES and the password list: browser-only actions without passwords remain distinct from step-up ceremonies.
 const COOKIE_ONLY_POSTS = [
   'edge.oauth-consent', 'code.act-other', 'code.answer-send', 'code.continue-send', 'code.recover-send', 'code.resume-send',
-  'code.send-send', 'code.ship-send', 'code.start', 'code.stop-send', 'flow.hooks-address', 'flow.linear-key', 'flow.secrets', 'flow.trigger.secret', 'flow.trigger.scope', 'flow.trigger.sender', 'flow.trigger.setup', 'flow.unattended',
+  'code.send-send', 'code.ship-send', 'code.start', 'code.stop-send', 'flow.hooks-address', 'flow.linear-key', 'flow.secrets', 'flow.trigger.secret', 'flow.trigger.scope', 'flow.trigger.sender', 'flow.trigger.setup', 'flow.unattended', 'flow.browser', 'flow.browser-off',
   'spend.budget', 'settings.models-agent', 'settings.models-apply', 'settings.project-delete', 'settings.project-live-view', 'settings.project-network', 'settings.project-sandbox', 'settings.project-writes', 'settings.project-check-access', 'settings.policy-send', 'settings.approval-send',
   'settings.request-limits-send', 'settings.sessions-send', 'settings.sign-in-send', 'settings.updates-send',
   'settings.updates-seen-send', 'settings.updates-cancel-send', 'settings.retention-send',

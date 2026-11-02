@@ -21,6 +21,7 @@ import { exportFlow,fetchFlowFile,FlowFileError,importFlow,parseFlowFile,planFlo
 import { addFlowTriggerTo, checkFlowTriggerNow, pressFlowButton, removeFlowTrigger, removeLinearKey, setFlowTriggerOn, renewFlowHook, saveHooksBase, saveLinearKey, saveSigningSecret, setUpFlowHook, changeFlowHookSender, setFlowHookScope, shareFlowButton, stopSharingFlowButton, rawTakesDeliveries, rawAdmitsAnyone } from "../flow-triggers.js";
 import { FLOW_IMPORT_SCRIPT,flowFallbackHtml,flowImportHtml,flowsListHtml,flowView } from "../flows-ui.js";
 import { FLOW_TEMPLATES,FlowContractError,validateFlowDefinition,withZoneNames } from "../flows.js";
+import { revokeFlowBrowser, signFlowBrowser } from "../flow-browser.js";
 import { prepareUnattendedCandidates,parseUnattendedAsk,revokeUnattended,signUnattended,untilWords } from "../flow-unattended.js";
 import { keyStatus } from "../keys.js";
 import { kitPageHtml,kitsGalleryHtml } from "../kits-ui.js";
@@ -547,7 +548,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     return { body, now, answer, projects, flow, definition, dir, viewNow, settle };
   }
 
-  type FlowAction = "save" | "cards" | "archive" | "scripts" | "linear-key" | "hooks-address" | "secrets" | "triggers" | "unattended" | "unattended-off";
+  type FlowAction = "save" | "cards" | "archive" | "scripts" | "linear-key" | "hooks-address" | "secrets" | "triggers" | "unattended" | "unattended-off" | "browser" | "browser-off";
   const flowAct = (action: FlowAction) => async (ctx: HandlerContext): Promise<void> => {
     const { who, response } = ctx;
     const change = openFlowChange(ctx);
@@ -597,6 +598,17 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     }
     if (action === "unattended-off") {
       return revokeUnattended(store, flow.id, who.name, now) ? settle("It no longer runs on its own. New cards wait for you.") : answer(409, { ok: false, said: "It wasn't running on its own." });
+    }
+    if (action === "browser") {
+      // A person's own step-up (a lead's or remote run's token never gets here: route table), then signFlowBrowser
+      // re-reads the flow, its zones and scripts in its one write and refuses unless they are the digest the panel showed.
+      const proved = authenticateApprover(who, body.get("password") ?? "", flow.repo);
+      if (!proved.ok) return answer(403, { ok: false, said: "That password isn't right. Nothing was approved." });
+      const signed = signFlowBrowser(store, { flow: flow.id, signer: who.name, proof: proved.method, sawDigest: body.get("digest") ?? "", console: { generation: who.via === "cookie" ? who.session.generation : -1 } }, now);
+      return signed.ok ? settle(`Browser allowed. ${signed.grant.zones.length === 1 ? "Its script" : "Its scripts"} can start Chromium now.`) : answer(409, { ok: false, said: signed.message });
+    }
+    if (action === "browser-off") {
+      return revokeFlowBrowser(store, flow.id, who.name, now) ? settle("Browser turned off. Its browser zones wait until someone allows it again.") : answer(409, { ok: false, said: "Browser use wasn't allowed for this flow." });
     }
     if (action === "save") {
       let saved, drawn: unknown;
@@ -859,6 +871,8 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     "flow.secrets": flowAct("secrets"),
     "flow.unattended": flowAct("unattended"),
     "flow.unattended-off": flowAct("unattended-off"),
+    "flow.browser": flowAct("browser"),
+    "flow.browser-off": flowAct("browser-off"),
     "flow.triggers": flowAct("triggers"),
     "flow.card.move": cardAct("move"),
     "flow.card.decide": cardAct("decide"),

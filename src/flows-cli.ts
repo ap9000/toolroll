@@ -19,7 +19,7 @@ import { STARTER_FLOWS, starterFlowOf, starterOf, startersFor, starterTerms, swi
 import { addFlowTriggerTo, checkFlowTriggerNow, describeTrigger, removeFlowTrigger, setFlowTriggerOn, triggerConfigOf, validateTriggerConfig, type TriggerIo, rawTakesDeliveries } from './flow-triggers.js';
 import { deciderOf, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowDigest, flowFromSteps, flowTerms, stepsFor, type FlowDefinition, type FlowStage } from './flows.js';
 import { prepareUnattendedCandidates, activeUnattendedGrant, parseUnattendedAsk, revokeUnattended, signUnattended, unattendedViewOf, unattendedWords, untilWords, UNATTENDED_MAX_RUNS } from './flow-unattended.js';
-import { browserApprovalDigest, browserTerms, browserTermsOf, revokeFlowBrowser, signFlowBrowser } from './flow-browser.js';
+import { browserApprovalDigest, browserTerms, browserTermsOf, browserViewOf, revokeFlowBrowser, signFlowBrowser } from './flow-browser.js';
 import { MODE_MAX_DAYS } from './modes.js';
 import { verifyApproverByPassword } from './principal.js';
 import { authenticateApprover, proveCredential } from './scope.js';
@@ -514,6 +514,7 @@ function zoneOf(stage: FlowStage, flow: FlowRow) {
     ...(stage.limit === undefined ? {} : { remindAfterMinutes: stage.limit.minutes, thenMoveTo: stage.limit.to }),
     ...(stage.kind === 'approval' ? { decider: deciderOf(stage, flow) } : {}),
     ...(stage.script === null ? {} : { script: stage.script }),
+    ...(stage.browser === true ? { browser: true } : {}),
     ...(stage.merge === undefined ? {} : { merge: stage.merge }),
     ...(stage.subagent === undefined ? {} : { subagent: stage.subagent }),
     ...(stage.options === undefined ? {} : { options: stage.options.map(one => ({ label: one.label, to: one.to })) }),
@@ -539,6 +540,8 @@ function describeFlow(store: Store, flow: FlowRow, now: Date) {
     }),
     cards: store.flowCards(flow.id, true).slice(0, 10).map(card => cardOf(definition, card)),
     unattended: unattendedJson(store, flow, now),
+    // Browser use, only for a flow with a zone that starts one: the same status line the flow page shows.
+    ...(() => { const view = browserViewOf(store, flow); return view === null ? {} : { browser: { status: view.status, words: view.words, signedBy: view.signedBy, signedAt: view.signedAt } }; })(),
   };
 }
 
@@ -557,6 +560,7 @@ function showLines(flow: ReturnType<typeof describeFlow>): string[] {
       ? `Runs on its own: no · turn on: toolroll flows unattended ${flow.id} on --days N`
       : `Runs on its own until ${untilWords(flow.unattended.until)} · revoke: toolroll flows unattended ${flow.id} off`,
     ...(flow.unattended === null ? [] : [`  Covers: ${flow.unattended.covers.join('; ')}`]),
+    ...(flow.browser === undefined ? [] : [`${flow.browser.words} · ${flow.browser.status === 'allowed' ? `turn off: toolroll flows browser ${flow.id} off` : `allow: toolroll flows browser ${flow.id} on`}`]),
     '', 'Zones',
     ...flow.zones.flatMap((zone, index) => [
       `  ${index + 1}. ${zone.title} (${zone.id}) — ${zone.does}${zone.id === flow.start ? ' · start' : ''}`,

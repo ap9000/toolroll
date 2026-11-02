@@ -135,12 +135,19 @@ export function browserTerms(zones: readonly BrowserZone[]): string[] {
  * Re-reads the flow, its zones and scripts in the one transaction that writes; `sawDigest` (required) is the approval
  * (browserApprovalDigest: drawing and scripts) the person read, and anything else is refused. Replaces any live one.
  */
-export function signFlowBrowser(store: Store, input: { flow: number; signer: string; proof: string | null; sawDigest: string }, now: Date): { ok: true; grant: FlowBrowserGrant } | { ok: false; message: string } {
+export function signFlowBrowser(store: Store, input: { flow: number; signer: string; proof: string | null; sawDigest: string;
+  /** The console and chat: the signer's account must still be this generation (the session that proved it) and reach every project. */
+  console?: { generation: number } }, now: Date): { ok: true; grant: FlowBrowserGrant } | { ok: false; message: string } {
   if (!personProof(input.proof)) return { ok: false, message: "Browser use needs a person's own approval: sign in with your password (a lead's or remote run's token can't give it)." };
   return store.transact(() => {
     const flow = store.getFlow(input.flow);
     if (flow === null || flow.state !== "active") return { ok: false as const, message: "No such flow." };
     if (!approverNow(store, input.signer, flow.repo)) return { ok: false as const, message: "Only an approver on this flow's project can approve browser use." };
+    if (input.console !== undefined) {
+      const account = store.accountOf(input.signer);
+      if (account === null || account.generation !== input.console.generation) return { ok: false as const, message: "Your access changed. Sign in again." };
+      if (account.projects !== null) return { ok: false as const, message: "Allowing browser use needs an account with access to every project." };
+    }
     if (definitionOf(flow) === null) return { ok: false as const, message: "This flow's drawing can't be read." };
     const terms = browserTermsOf(store, flow);
     if (terms === null) return { ok: false as const, message: "A zone that starts a browser has no script it can approve: missing, waiting for approval, or one that runs a project file (write the script on the zone instead)." };
@@ -164,4 +171,47 @@ export function revokeFlowBrowser(store: Store, flowId: number, by: string, now:
     if (ended) store.recordAction({ at: now.toISOString(), actor: by, repo: flow?.repo ?? null, taskId: null, runId: null, source: "policy", action: "flow browser use: revoked", outcome: "revoked", detail: `flow #${flowId}` });
     return ended;
   });
+}
+
+/** What the flow page, `flows show` and chat say about browser use: null when no zone says it starts a browser. */
+export type BrowserView = {
+  /** allowed: the approval stands now; ended: there is one, but it no longer stands; none: no one has approved. */
+  status: "allowed" | "ended" | "none";
+  /** The one line every surface shows. */
+  words: string;
+  signedBy: string | null;
+  signedAt: string | null;
+  /** The browser zones as they stand now, each with its title. Empty while one can't be approved (see `problem`). */
+  zones: (BrowserZone & { title: string })[];
+  /** What approving means (browserTerms), and the approval digest the step-up must carry back. */
+  terms: string[];
+  digest: string | null;
+  /** Why it can't be approved as it stands, or null. */
+  problem: string | null;
+};
+
+const dayWords = (at: string) => new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+
+/**
+ * Browser use for one flow, read from the store (no writes: page visits call it). Whether it is allowed is exactly
+ * browserStanding's answer for the flow's browser zones; the rest only says why in plain words.
+ */
+export function browserViewOf(store: Store, flow: FlowRow): BrowserView | null {
+  const definition = definitionOf(flow);
+  const stages = definition?.stages.filter(stage => stage.kind === "check" && stage.browser === true) ?? [];
+  if (definition === null || stages.length === 0) return null;
+  const terms = browserTermsOf(store, flow);
+  const grant = liveBrowserGrant(store, flow.id);
+  const allowed = grant !== null && stages.every(stage => browserStanding(store, flow.id, stage.id).allowed);
+  const zones = (terms?.zones ?? []).map(zone => ({ ...zone, title: definition.stages.find(one => one.id === zone.zone)?.title ?? zone.zone }));
+  const problem = terms === null ? "A zone that starts a browser has no script that can be approved: it's missing, waiting for approval, or runs a project file (write the script on the zone instead)." : null;
+  const why = grant === null ? "" : terms === null || canonicalJson(grant.zones) !== canonicalJson(terms.zones) ? "the script changed"
+    : grant.flowDigest !== terms.flowDigest || grant.revision !== terms.revision ? "the flow changed"
+    : !approverNow(store, grant.signedBy, flow.repo) ? `${grant.signedBy} can no longer approve on this project` : "it no longer matches this flow";
+  return {
+    status: allowed ? "allowed" : grant === null ? "none" : "ended",
+    words: allowed ? `Browser: allowed by ${grant!.signedBy}, ${dayWords(grant!.signedAt)}` : grant === null ? "Browser: not allowed — runs will wait" : `Browser approval ended: ${why}`,
+    signedBy: grant?.signedBy ?? null, signedAt: grant?.signedAt ?? null,
+    zones, terms: terms === null ? [] : browserTerms(terms.zones), digest: terms === null ? null : browserApprovalDigest(terms), problem,
+  };
 }

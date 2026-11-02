@@ -348,6 +348,11 @@ for (const one of ["linear-key", "hooks-address", "secrets"]) post("flows", `flo
 // "Runs on its own": signing raises authority (the owner's password, a step-up); revoking is one click for any approver.
 post("flows", "flow.unattended", `^\\/flows\\/${FLOW}\\/unattended$`, { scope: "step-up", project: "flow", sample: "/flows/1/unattended", ...EDIT_FLOWS });
 post("flows", "flow.unattended-off", `^\\/flows\\/${FLOW}\\/unattended-off$`, { project: "flow", sample: "/flows/1/unattended-off", ...EDIT_FLOWS });
+// Browser use in a flow's script zones (flow-browser.ts): allowing it widens the sandbox, so a person's own step-up from
+// their browser, carrying the approval digest they read; turning it off lowers authority, one click. Browser only: a
+// lead's or remote run's token never reaches either (the CLI says the same).
+post("flows", "flow.browser", `^\\/flows\\/${FLOW}\\/browser$`, { scope: "step-up", project: "flow", sample: "/flows/1/browser", ...EDIT_FLOWS });
+post("flows", "flow.browser-off", `^\\/flows\\/${FLOW}\\/browser-off$`, { callers: ["cookie"], project: "flow", limited: "resource", sample: "/flows/1/browser-off", ...EDIT_FLOWS });
 post("flows", "flow.triggers", `^\\/flows\\/${FLOW}\\/triggers$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers", ...EDIT_FLOWS });
 for (const one of ["move", "decide", "cancel", "comment", "assign", "watch"]) post("flows", `flow.card.${one}`, `^\\/flows\\/${FLOW}\\/cards\\/${FLOW}\\/${one}$`, { project: "flow", limited: "resource", sample: `/flows/1/cards/2/${one}`, ...EDIT_FLOWS });
 post("flows", "flow.card.choose", `^\\/flows\\/${FLOW}\\/cards\\/${FLOW}\\/choose$`, { project: "flow", sample: "/flows/1/cards/2/choose", ...EDIT_FLOWS });

@@ -53,6 +53,7 @@ import { addCardToFlow, advanceFlows, cancelFlowCard, crossProjectProblem, decid
 import { chooseFlowCard, flowPersonOf } from "./flow-send.js";
 import type { FlowCardRow, FlowRow, FlowTriggerRow } from "./store.js";
 import { assignFlowCard, commentOnFlowCard, flowPeople, mentionsIn, watchFlowCard } from "./flow-people.js";
+import { browserViewOf, liveBrowserGrant, revokeFlowBrowser, signFlowBrowser } from "./flow-browser.js";
 import { addFlowTriggerTo, describeTrigger, readLinearKey, removeFlowTrigger, takesDeliveries, triggerConfigOf, validateTriggerConfig } from "./flow-triggers.js";
 import { describeSchedule, parseSchedule } from "./flow-schedule.js";
 import { dirname } from "node:path";
@@ -139,6 +140,10 @@ export const CHAT_ACTIONS = {
   flow_trigger_pause: { label: "Pause trigger", protected: false, password: false },
   flow_trigger_resume: { label: "Turn trigger on", protected: false, password: false },
   flow_trigger_remove: { label: "Remove trigger", protected: false, password: false },
+  // Browser use widens a flow's sandbox (flow-browser.ts): the lead may only propose it; a person allows it with their
+  // own password on the secure screen, never on a chat card or a paired phone's tap. Turning it off lowers authority.
+  flow_browser: { label: "Allow browser", protected: true, password: true },
+  flow_browser_off: { label: "Turn off browser", protected: false, password: false },
   subagent_create: { label: "Add subagent", protected: false, password: false },
   subagent_soul: { label: "Update soul file", protected: false, password: false },
   subagent_state: { label: "Change subagent", protected: false, password: false },
@@ -703,6 +708,27 @@ export function prepareSharedAction(
       if (config.kind === "linear" && readLinearKey(configDirOf(store)) === null) terms.push("It needs a Linear API key, saved on the flow's Triggers panel (never in chat).");
       if (config.kind === "github" || config.kind === "linear") terms.push("Only what happens from now on counts; nothing already there is added.");
       terms.push("Work a card starts still waits for your usual approvals.");
+    } else if (operation === "flow_browser" || operation === "flow_browser_off") {
+      const { flow } = flowTarget!;
+      const view = browserViewOf(store, flow);
+      if (view === null) throw Error(`No zone in ${flow.name} says it starts a browser. Mark its script zone first (edit the flow), then propose this.`);
+      // As on the flow page (route table: instance access), a project-limited account can't allow browser use.
+      if (operation === "flow_browser" && store.accountOf(who.name)?.projects !== null) throw Error("Allowing browser use needs an account with access to every project.");
+      if (operation === "flow_browser_off") {
+        if (liveBrowserGrant(store, flow.id) === null) throw Error(`Browser use isn't allowed for ${flow.name}.`);
+        state = { flow: flow.id, grant: liveBrowserGrant(store, flow.id)!.id };
+        title = `Turn off browser use in ${flow.name}`;
+        terms.push(`${flow.name}'s browser zones stop and wait until a person allows browser use again.`);
+      } else {
+        if (view.status === "allowed") throw Error(`${view.words}.`);
+        if (view.digest === null) throw Error(view.problem ?? "This flow's browser zones can't be approved as they are.");
+        // The approval the person reads and the one their password signs: the digest is re-derived when they confirm.
+        state = { flow: flow.id, revision: flow.revision, digest: view.digest };
+        title = `Allow browser use in ${flow.name}`;
+        terms.push(`Flow: ${flow.name} · project ${project}`,
+          ...view.zones.map(zone => `${zone.title} runs ${zone.script} v${zone.version}\nScript digest ${zone.digest}`),
+          "Each run of these zones starts a headless Chromium.", ...view.terms, `Approval digest ${view.digest}`);
+      }
     } else if (operation === "flow_trigger_pause" || operation === "flow_trigger_resume" || operation === "flow_trigger_remove") {
       const { flow, trigger } = flowTarget!;
       const config = trigger === null ? null : triggerConfigOf(trigger);
@@ -1163,6 +1189,7 @@ export function executeSharedAction(
   }
   // The review nonce was minted against the saved proposal's stamp: it is checked against that, whoever reviews.
   const savedStamp = payload.stamp;
+  let personProved: string | null = null;
   payload = live;
   const config = CHAT_ACTIONS[live.operation],
     req = live.request;
@@ -1194,16 +1221,14 @@ export function executeSharedAction(
     // A scope approval proves its person inside approve() (one transaction with the seal, under the same freshness
     // rule as the task page); here an empty field is only looked at, never spent (an explicit re-check is one-use).
     const emptyApproval = payload.operation === "scope_approve" && options.review.password === "";
+    const proved = config.password && !emptyApproval ? authenticateApprover(store, who.name, options.review.password, payload.repo) : null;
+    // How the person was proved, for an approval that records it (browser use: flow-browser.ts refuses any but a person's).
+    if (proved?.ok === true) personProved = proved.method;
     if (
       config.password &&
       (emptyApproval
         ? !passwordlessSessionFor(store, who.name) && !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null
-        : !authenticateApprover(
-            store,
-            who.name,
-            options.review.password,
-            payload.repo,
-          ).ok)
+        : proved?.ok !== true)
     )
       return refuse(
         "needs-confirm",
@@ -1264,6 +1289,20 @@ export function executeSharedAction(
           },
           now,
         );
+      else if (payload.operation === "flow_browser") {
+        // Only through the secure screen with the person's own password (protected + password above); signFlowBrowser
+        // re-reads the flow, its zones and scripts in this transaction and refuses unless they are what the card showed.
+        const flow = Number(payload.state["flow"]);
+        // signFlowBrowser re-reads the account's generation and reach in its transaction (it may have narrowed since).
+        const signed = signFlowBrowser(store, { flow, signer: actor, proof: personProved, sawDigest: String(payload.state["digest"] ?? ""), console: { generation: who.generation } }, now);
+        if (!signed.ok) throw Error(signed.message);
+        return { ok: true as const, taskId: null, said: "Browser allowed. Its browser zones can start Chromium now.", href: `/flows/${flow}` };
+      }
+      else if (payload.operation === "flow_browser_off") {
+        const flow = Number(payload.state["flow"]);
+        if (!revokeFlowBrowser(store, flow, actor, now)) throw Error("Browser use was already off.");
+        return { ok: true as const, taskId: null, said: "Browser turned off. Its browser zones wait until someone allows it again.", href: `/flows/${flow}` };
+      }
       else if (payload.operation.startsWith("flow_")) {
         const done = runFlowAction(store, payload, actor, who.repos, options.root, now);
         return { ok: true as const, taskId: null, said: done.said, href: done.href };

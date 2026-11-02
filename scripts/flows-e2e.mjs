@@ -40,7 +40,7 @@ const GROUPS = {
   build: { journeys: 4, real: 3, shared: 1, about: "The lead saves a script and draws a flow from plain words, and a card goes all the way through a real build" },
   lead: { journeys: 3, real: 2, shared: 1, about: "The lead draws a sorting flow and a reply-and-approve flow from plain words" },
   steps: { journeys: 4, real: 1, shared: 1, about: "Jev sorts through OpenRouter, a Draft step writes with Claude, and web request, email and tool steps reach outside" },
-  triggers: { journeys: 9, real: 1, shared: 1, about: "A failing script and Insights, then a public form, a webhook, GitHub, a schedule, mentions, and the lead on where flows break" },
+  triggers: { journeys: 10, real: 1, shared: 1, about: "A failing script and Insights, a script that waits for browser use until a person allows it, then a public form, a webhook, GitHub, a schedule, mentions, and the lead on where flows break" },
 };
 /** Not a group: the checks every group has (the first-run setup; the kit adds the browser-error check). */
 const EVERY = "every";
@@ -431,6 +431,49 @@ await journey("triggers", SCRIPTED, "A failing script sends the card back, and I
   if (!/2 problems found/.test(log)) throw new Error(`the run's log doesn't show the output: ${log.slice(0, 300)}`);
   await shot("insights");
   return { note, breaks: breaks.replace(/\s+/g, " ").slice(0, 200) };
+});
+
+await journey("triggers", SCRIPTED, "A script that starts a browser waits until a person allows browser use on the flow page, then runs", ["A failing script sends the card back, and Insights show where and why"], async () => {
+  // The session's form token, from a page that carries it in a form.
+  await page.goto(`${base}/flows/new/blank`);
+  const token = await page.locator('input[name="csrf"]').first().inputValue();
+  // A script saved on the Scripts panel's endpoint, and a zone that says it starts a browser (the editor's "Starts a browser").
+  const savedScript = await page.request.post(`${base}/flows/${checksFlow}/scripts`, { form: { csrf: token, name: "smoke", about: "Opens the app in a browser", body: "echo opened the app", timeoutMinutes: "2", language: "shell" }, headers: { accept: "application/json", origin: base } });
+  if (!savedScript.ok()) throw new Error(`saving the script answered ${savedScript.status()}: ${await savedScript.text()}`);
+  const view = await flowView(checksFlow);
+  const drawing = { version: 1, start: view.start, stages: [...view.stages.filter(one => one.id !== "done"),
+    { id: "smoke", title: "Smoke test", kind: "check", zone: { x: 300, y: 360, w: 260, h: 300, color: "violet" }, instructions: null, planning: null, approver: null, message: null, close: null, script: "smoke", runIn: "folder", browser: true, next: "done", onFail: "inbox" },
+    view.stages.find(one => one.id === "done")] };
+  const saved = await page.request.post(`${base}/flows/${checksFlow}/save`, { form: { csrf: token, name: view.flow.name, revision: String(view.flow.revision), definition: JSON.stringify(drawing) }, headers: { accept: "application/json", origin: base } });
+  if (!saved.ok()) throw new Error(`saving the drawing answered ${saved.status()}: ${await saved.text()}`);
+  await page.goto(`${base}/flows/${checksFlow}`); await page.waitForSelector('[data-zone="smoke"]');
+  if (!/Browser: not allowed — runs will wait/.test(await page.locator('[data-zone="smoke"] [data-flow-browser]').innerText())) throw new Error("the browser zone doesn't say it isn't allowed");
+  // A card moved into it waits, saying why, and offers Allow browser.
+  await page.click('button:has-text("New card")');
+  await page.fill('input[aria-label="Title"]', "Smoke test tonight's build");
+  await page.click('button:has-text("Add card")');
+  const card = await until("the card", async () => (await flowView(checksFlow)).cards.find(one => one.title === "Smoke test tonight's build"));
+  await page.locator(`[data-card="${card.id}"]`).click();
+  await page.selectOption("#flow-move", "smoke");
+  await until("the card to wait for browser use", async () => (await flowView(checksFlow)).cards.find(one => one.id === card.id)?.browserWait === true);
+  await page.reload(); await page.waitForSelector('[data-zone="smoke"]');
+  await page.locator(`[data-card="${card.id}"]`).click();
+  await page.click("[data-card-allow-browser]");
+  const panel = page.locator("[data-flow-browser-panel]");
+  await panel.waitFor();
+  const terms = await panel.innerText();
+  for (const want of ["Smoke test runs smoke v1", "headless Chromium", "Approval digest"]) if (!terms.includes(want)) throw new Error(`the preview doesn't say "${want}": ${terms.slice(0, 400)}`);
+  await shot("browser-preview");
+  const asks = panel.locator('input[type="password"]');
+  if (await asks.count()) await asks.first().fill(alexPassword);
+  await panel.locator('button:has-text("Allow browser")').click();
+  await until("the approval to be recorded", async () => rows(`SELECT signed_by FROM flow_browser_grant WHERE flow = ${checksFlow} AND revoked_at IS NULL`).length === 1);
+  await until("the worker to run the smoke script and move the card on", async () => (await flowView(checksFlow)).cards.find(one => one.id === card.id)?.stage === "done");
+  await page.reload(); await page.waitForSelector('[data-zone="smoke"]');
+  const status = await page.locator('[data-zone="smoke"] [data-flow-browser="allowed"]').innerText();
+  if (!/Browser: allowed by alex/.test(status)) throw new Error(`the zone doesn't say it's allowed: ${status}`);
+  await shot("browser-allowed");
+  return { status };
 });
 
 const trigger = async (flow, fill) => {

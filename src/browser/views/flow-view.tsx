@@ -55,6 +55,9 @@ const TRIGGER_ICONS: Record<string, ReactNode> = {
 type Reveal = { path: string; address: string | null; secret: string | null };
 type Said = { ok: boolean; said: string; view?: BrowserFlowView; reveal?: Reveal };
 
+/** The page was opened to allow browser use (`?browser=1`, the link a waiting card and chat give). */
+const browserAsked = () => { try { return new URLSearchParams(window.location.search).get("browser") === "1"; } catch { return false; } };
+
 async function send(path: string, fields: Record<string, string>, csrf: string): Promise<Said> {
   const body = new URLSearchParams({ csrf, ...fields });
   try {
@@ -133,6 +136,8 @@ type ZoneData = {
   /** Who else has each card open right now. */
   lookers: Record<number, string[]>;
   onResize: (stage: string, box: { x: number; y: number; width: number; height: number }) => void;
+  /** A script zone that starts a browser: its browser status line, drawn by the canvas (null elsewhere). */
+  browserLine: ReactNode;
 };
 
 function ZoneNode({ data, selected }: NodeProps<Node<ZoneData, "zone">>) {
@@ -164,6 +169,7 @@ function ZoneNode({ data, selected }: NodeProps<Node<ZoneData, "zone">>) {
       </div>
       {cards.length > 0 && <span className="rounded-full bg-muted px-1.5 text-[11px] font-semibold text-muted-foreground">{cards.length}</span>}
     </header>
+    {data.browserLine !== null && stage.kind === "check" && stage.browser === true && !editing && <div className="nodrag nopan border-b px-3 py-1.5" data-zone-browser>{data.browserLine}</div>}
     <ul className="nowheel flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
       {cards.map(card => <li key={card.id}>
         <button type="button" draggable={canMove && !editing}
@@ -429,7 +435,7 @@ function ChooseBox({ choose, base, csrf, apply }: { choose: NonNullable<BrowserF
   </div>;
 }
 
-function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard; view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onClose: () => void }) {
+function CardPanel({ card, view, csrf, apply, onClose, onAllowBrowser }: { card: BrowserFlowCard; view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onClose: () => void; onAllowBrowser?: () => void }) {
   const [note, setNote] = useState("");
   const [draftText, setDraftText] = useState(card.draft?.text ?? "");
   useEffect(() => { setDraftText(card.draft?.text ?? ""); }, [card.id, card.draft?.text]);
@@ -459,6 +465,9 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
         : <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} {...(card.source.url.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })}>{card.source.label}</a>}{card.source.proved === undefined ? null : ` (${card.source.proved})`}</p>)}
     {card.description !== null && <p className="whitespace-pre-wrap text-body">{card.description}</p>}
     {card.waiting !== null && card.question == null && card.choose == null && card.state === "active" && <p className="rounded-md bg-muted px-3 py-2 text-body">{card.waiting}{card.deadline != null && <span className="block text-muted-foreground">{deadlineWords(card.deadline)}</span>}</p>}
+    {card.browserWait === true && card.state === "active" && view.canEdit && view.browser?.canApprove !== false && (onAllowBrowser !== undefined
+      ? <Button size="sm" variant="outline" className="self-start phone:min-h-11" onClick={onAllowBrowser} data-card-allow-browser>Allow browser</Button>
+      : <a className="text-body font-medium text-primary underline-offset-4 hover:underline" href={`${view.flow.href}?browser=1`} data-card-allow-browser>Allow browser</a>)}
     {card.question != null && <SubagentQuestion question={card.question} csrf={csrf} apply={apply} />}
     {card.choose != null && <ChooseBox choose={card.choose} base={`${view.flow.href}/cards/${card.id}`} csrf={csrf} apply={apply} />}
     {card.sent != null && <SentBox sent={card.sent} />}
@@ -699,6 +708,8 @@ function CodeSettings({ stage, others, view, csrf, apply, update }: { stage: Bro
         <option value="folder">An empty folder</option><option value="copy">A copy of the project, at the card's work</option>
       </select>
     </Field>
+    <label className="flex items-start gap-2 text-body"><input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={stage.browser === true} onChange={event => update({ browser: event.target.checked ? true : undefined })} data-zone-browser-toggle />
+      <span>Starts a browser<span className="block text-caption text-muted-foreground font-normal">Playwright's Chromium. It runs only once a person allows browser use for this flow.</span></span></label>
     <Answers routes={routes} others={others} set={setRoutes} hint={<>If its last line is “goto: <em>answer</em>”, the card goes where that answer leads.</>} />
     <SecretsBox view={view} csrf={csrf} apply={apply} chosen={stage.secrets ?? []} choose={names => update({ secrets: names })}
       words="Kept on this computer, never shown again. The script gets each one it's given as a variable of the same name." />
@@ -1281,6 +1292,74 @@ function UnattendedPanel({ view, csrf, apply, onClose }: { view: BrowserFlowView
   </div>;
 }
 
+/** Browser use for the flow's script zones, in one line: its status, and Allow browser or Turn off for an approver. */
+function BrowserStatus({ view, csrf, apply, onAllow, className }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onAllow: () => void; className?: string }) {
+  const [busy, setBusy] = useState(false);
+  const browser = view.browser;
+  if (browser == null) return null;
+  return <span className={cn("inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-caption font-normal", className)} data-flow-browser={browser.status}>
+    <span className={cn("break-words", browser.status === "allowed" ? "text-muted-foreground" : "text-foreground")}>{browser.words}</span>
+    {view.canEdit && browser.canApprove !== false && browser.status !== "allowed" && <button type="button" className="min-h-8 rounded px-1 text-caption font-medium text-primary underline-offset-4 hover:underline phone:min-h-11"
+      onClick={onAllow} data-flow-browser-allow>Allow browser</button>}
+    {view.canEdit && browser.status === "allowed" && <button type="button" className="min-h-8 rounded px-1 text-caption text-muted-foreground underline hover:text-foreground disabled:opacity-50 phone:min-h-11" disabled={busy}
+      onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/browser-off`, {}, csrf)); setBusy(false); }} data-flow-browser-off>Turn off</button>}
+  </span>;
+}
+
+/** Allowing browser use: every term the CLI's preview shows, visible before the password; the digest rides back so a
+ * flow or script changed meanwhile is refused, never approved unseen. */
+function BrowserPanel({ view, csrf, apply, onClose }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onClose?: () => void }) {
+  const passwordless = useContext(Passwordless);
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  // The terms the person is reading are frozen when the panel opens: a live update never swaps what the password
+  // approves. When the flow's terms move on, the panel says so and the person reads the new ones before approving.
+  const [browser, setShown] = useState(view.browser);
+  const moved = browser != null && view.browser != null && view.browser.digest !== browser.digest && view.browser.status !== "allowed";
+  return <div className="flex flex-col gap-3" data-flow-browser-panel>
+    {onClose !== undefined && <div className="flex items-center gap-2"><h2 className="flex-1 text-title">Allow browser</h2>
+      <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>}
+    {browser == null ? <p className="text-body text-muted-foreground">No zone in this flow starts a browser.</p>
+      : view.browser?.status === "allowed" ? <p className="text-body" data-flow-browser-panel-allowed>{view.browser.words}.</p>
+      : moved ? <div className="flex flex-col gap-2" data-flow-browser-moved><p className="text-body">This flow or its scripts changed while you were reading.</p>
+          <Button size="sm" variant="outline" className="self-start phone:min-h-11" onClick={() => { setShown(view.browser); setPassword(""); setProblem(null); }}>Read the new terms</Button></div>
+      : !view.canEdit || browser.canApprove === false ? <p className="text-body text-muted-foreground">Only an approver with access to every project can allow browser use.</p>
+      : browser.problem !== null || browser.digest === null ? <p className="text-body text-muted-foreground" data-flow-browser-problem>{browser.problem}</p>
+      : <form className="flex flex-col gap-3" onSubmit={async event => {
+          event.preventDefault(); setBusy(true); setProblem(null);
+          const result = await send(`${view.flow.href}/browser`, { digest: browser.digest!, password }, csrf);
+          setBusy(false);
+          // A refusal is said once, beside the password; only an approval changes the page.
+          if (!result.ok) { setProblem(result.said); return; }
+          apply(result);
+          setPassword(""); onClose?.();
+        }}>
+          <p className="text-body text-muted-foreground">{browser.words}</p>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-body">
+            <dt className="text-muted-foreground">Flow</dt><dd className="min-w-0 break-words">{view.flow.name}</dd>
+            <dt className="text-muted-foreground">Project</dt><dd className="min-w-0 break-words">{view.flow.project}</dd>
+          </dl>
+          <ul className="flex flex-col gap-1.5" data-flow-browser-zones>
+            {browser.zones.map(zone => <li key={zone.zone} className="rounded-md border px-3 py-2 text-body">
+              <span className="font-medium">{zone.title}</span> runs <span className="font-medium">{zone.script}</span> v{zone.version}
+              <span className="block break-all font-mono text-[11.5px] text-muted-foreground">{zone.digest}</span></li>)}
+          </ul>
+          <div className="rounded-md border p-3" data-flow-browser-terms>
+            <p className="text-body font-medium">Your password approves exactly this</p>
+            <ul className="mt-1.5 flex list-disc flex-col gap-1 pl-4 text-caption font-normal">
+              <li className="break-words">Each run of these zones starts a headless Chromium.</li>
+              {browser.terms.map((line, index) => <li key={index} className="break-words">{line}</li>)}
+            </ul>
+            <p className="mt-1.5 break-all text-caption text-muted-foreground font-normal">Approval digest <span className="font-mono">{browser.digest}</span></p>
+          </div>
+          <StepUp view={view} password={password} setPassword={setPassword} />
+          {problem !== null && <p className="text-body text-destructive" role="alert">{problem}</p>}
+          <Button type="submit" className="self-start" disabled={busy || !stepUpReady(view, password, passwordless)}>{busy ? "Allowing…" : "Allow browser"}</Button>
+        </form>}
+  </div>;
+}
+
 function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; focus: number | null; onPress: (id: number) => void; onClose: () => void }) {
   const [reveal, setReveal] = useState<{ kind: string; reveal: Reveal } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1507,8 +1586,9 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
   const [view, setView] = useState(initial);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<{ name: string; start: string; stages: BrowserFlowStage[]; owner: string } | null>(null);
-  const [selected, setSelected] = useState<{ card: number } | { zone: string } | { triggers: number | null } | { press: number } | { scripts: true } | { insights: true } | { unattended: true } | null>(
-    initial.selectedCard !== null ? { card: initial.selectedCard } : initial.startTrigger !== null && initial.triggers.some(one => one.id === initial.startTrigger && one.button !== null) ? { press: initial.startTrigger } : null);
+  const [selected, setSelected] = useState<{ card: number } | { zone: string } | { triggers: number | null } | { press: number } | { scripts: true } | { insights: true } | { unattended: true } | { browser: true } | null>(
+    initial.selectedCard !== null ? { card: initial.selectedCard } : initial.startTrigger !== null && initial.triggers.some(one => one.id === initial.startTrigger && one.button !== null) ? { press: initial.startTrigger }
+      : initial.browser != null && browserAsked() ? { browser: true } : null);
   const [saving, setSaving] = useState(false);
   const [adding, setAdding] = useState(false);
   const [mineOnly, setMineOnly] = useState(() => { try { return window.localStorage.getItem("so-flows-mine") === "1"; } catch { return false; } });
@@ -1549,8 +1629,10 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
       onCard: (id: number) => { setAdding(false); setSelected({ card: id }); }, onDrop: (card: number, to: string) => void move(card, to),
       onResize: (id: string, box: { x: number; y: number; width: number; height: number }) => setDraft(current => current === null ? current : { ...current, stages: current.stages.map(one => one.id === id
         ? { ...one, zone: { ...one.zone, x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) } } : one) }),
+      browserLine: stage.kind === "check" && stage.browser === true && view.browser != null
+        ? <BrowserStatus view={view} csrf={csrf} apply={apply} onAllow={() => { setAdding(false); setSelected({ browser: true }); }} /> : null,
     },
-  })), [stages, view, editing, selected, start, move, mineOnly, lookers]);
+  })), [stages, view, editing, selected, start, move, mineOnly, lookers, csrf, apply]);
   // Triggers sit to the left of the zone they start cards in, stacked when several share one.
   const liveTriggers = useMemo(() => view.triggers.filter(one => one.state !== "removed"), [view.triggers]);
   const triggerNodes: Node<TriggerData, "trigger">[] = useMemo(() => {
@@ -1700,6 +1782,7 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
   const scriptsOpen = selected !== null && "scripts" in selected;
   const insightsOpen = selected !== null && "insights" in selected && !editing;
   const unattendedOpen = selected !== null && "unattended" in selected && !editing;
+  const browserOpen = selected !== null && "browser" in selected && !editing;
   const selectedZone = selected !== null && "zone" in selected ? stages.find(one => one.id === selected.zone) ?? null : null;
   const waitingOnYou = view.cards.filter(card => card.canDecide).length;
 
@@ -1759,7 +1842,7 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
         </ReactFlow>
         {editing && <p className="pointer-events-none absolute bottom-3 left-14 max-w-md rounded-lg bg-foreground/85 px-3 py-1.5 text-caption text-background font-normal">Drag zones to arrange them. Drag from a zone's right dot to say where work goes next, from its bottom dot for where it goes if sent back.</p>}
       </div>
-      {(selectedZone !== null && editing) || selectedCard !== null || (adding && !editing) || triggersOpen || pressing !== null || scriptsOpen || insightsOpen || unattendedOpen ? <aside className="absolute inset-y-0 right-0 z-10 w-[360px] max-w-full overflow-y-auto border-l bg-card p-4 shadow-xl" data-flow-drawer>
+      {(selectedZone !== null && editing) || selectedCard !== null || (adding && !editing) || triggersOpen || pressing !== null || scriptsOpen || insightsOpen || unattendedOpen || browserOpen ? <aside className="absolute inset-y-0 right-0 z-10 w-[360px] max-w-full overflow-y-auto border-l bg-card p-4 shadow-xl" data-flow-drawer>
         {selectedZone !== null && editing
           ? <ZonePanel stage={selectedZone} stages={stages} view={view} csrf={csrf} apply={apply} update={change => updateStage(selectedZone.id, change)}
               remove={() => { setDraft(current => current === null ? current : { ...current, start: current.start === selectedZone.id ? current.stages.find(one => one.id !== selectedZone.id)!.id : current.start,
@@ -1771,12 +1854,14 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
             ? <InsightsPanel view={view} onClose={() => setSelected(null)} />
           : unattendedOpen
             ? <UnattendedPanel view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} />
+          : browserOpen
+            ? <BrowserPanel view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} />
           : pressing !== null
             ? <PressPanel key={pressing.id} trigger={pressing} view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} />
           : triggersOpen
             ? <TriggersPanel view={view} csrf={csrf} apply={apply} focus={selected !== null && "triggers" in selected ? selected.triggers : null} onPress={id => setSelected({ press: id })} onClose={() => setSelected(null)} />
           : selectedCard !== null
-            ? <CardPanel card={selectedCard} view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} />
+            ? <CardPanel card={selectedCard} view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} onAllowBrowser={() => setSelected({ browser: true })} />
             : <NewCard view={view} csrf={csrf} apply={result => { apply(result); if (result.ok) setAdding(false); }} onClose={() => setAdding(false)} />}
       </aside> : null}
     </div>
@@ -1788,6 +1873,7 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
   const [view, setView] = useState(initial);
   const [open, setOpen] = useState<number | null>(initial.selectedCard);
   const [pressing, setPressing] = useState<number | null>(initial.startTrigger);
+  const [browserOpen, setBrowserOpen] = useState(() => initial.browser != null && browserAsked());
   const apply = (result: Said) => { (result.ok ? toast.success : toast.error)(result.said); if (result.view !== undefined) setView(result.view); };
   const others = useLiveFlow(view, setView, { card: open, editing: false });
   const card = open === null ? null : view.cards.find(one => one.id === open) ?? null;
@@ -1809,11 +1895,13 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
     setBusy(false);
   };
   if (button !== null) return <div className="p-4"><PressPanel trigger={button} view={view} csrf={csrf} apply={apply} onClose={() => setPressing(null)} /></div>;
-  if (card !== null) return <div className="p-4"><CardPanel card={card} view={view} csrf={csrf} apply={apply} onClose={() => setOpen(null)} /></div>;
+  if (card !== null) return <div className="p-4"><CardPanel card={card} view={view} csrf={csrf} apply={apply} onClose={() => setOpen(null)} onAllowBrowser={() => { setOpen(null); setBrowserOpen(true); }} /></div>;
+  if (browserOpen) return <div className="p-4"><BrowserPanel view={view} csrf={csrf} apply={apply} onClose={() => setBrowserOpen(false)} /></div>;
   return <div className="flex flex-col gap-3 p-4" data-flow={view.flow.id}>
     <div><h1 className="text-[17px] font-semibold">{view.flow.name}</h1><p className="text-caption text-muted-foreground font-normal">{view.flow.project}{view.canEdit ? <> · <a className="underline" href={view.chatHref}>change it in chat</a>, or edit it on a larger screen</> : null} · <a className="underline" href={`${view.flow.href}/export`} download data-export-flow>Export</a></p>
       {others.length > 0 && <div className="mt-1.5"><AlsoHere others={others} cards={view.cards} /></div>}
-      {view.unattended.active !== null && <div className="mt-1.5"><UnattendedStatus view={view} csrf={csrf} apply={apply} /></div>}</div>
+      {view.unattended.active !== null && <div className="mt-1.5"><UnattendedStatus view={view} csrf={csrf} apply={apply} /></div>}
+      {view.browser != null && <div className="mt-1.5"><BrowserStatus view={view} csrf={csrf} apply={apply} onAllow={() => setBrowserOpen(true)} /></div>}</div>
     {view.unattended.active === null && view.canEdit && view.unattended.scheduled && <details className="rounded-lg border p-3" data-flow-unattended="off">
       <summary className="cursor-pointer text-title-sm">Run on its own</summary><div className="pt-3"><UnattendedPanel view={view} csrf={csrf} apply={apply} /></div></details>}
     {view.canEdit && live.some(one => one.button !== null && one.state === "active") && <div className="flex flex-wrap gap-2">

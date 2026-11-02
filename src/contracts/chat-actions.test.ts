@@ -45,6 +45,8 @@ const REQUESTS: Record<ChatActionOperation, Record<string, unknown>> = {
   flow_trigger_pause: { trigger: 5 },
   flow_trigger_resume: { trigger: 5 },
   flow_trigger_remove: { trigger: 5 },
+  flow_browser: { flow: 3 },
+  flow_browser_off: { flow: 3 },
   subagent_create: { repo: "/work/app", template: "support", name: "Maya" },
   subagent_soul: { subagent: 3, soul: "---\nname: Maya\nrole: support\n---" },
   subagent_state: { subagent: 3, state: "paused" },
