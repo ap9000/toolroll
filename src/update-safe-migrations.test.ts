@@ -44,7 +44,7 @@ describe("update-safe migrations", () => {
     // v126 only adds a table (task sources) and receipt, trigger and card columns, checked the same way.
     // v127 only adds a table (the running console's instance record).
     // v128 adds the personal lead queue (a table) and lead_message.pending (a column whose saved value is declared).
-    expect(SCHEMA_VERSION).toBe(143);
+    expect(SCHEMA_VERSION).toBe(144);
     // v129 adds how a run went: run.agent_turns and a lead request's cache tokens (saved rows NULL) and run_efficiency (a table).
     // v133 only adds a project's sandbox settings (a table) and the fence policy a flow was made under (saved rows NULL).
     // v134 only adds a vote's proof and a flow decision's authority (saved rows NULL), checked the same way.
@@ -58,7 +58,8 @@ describe("update-safe migrations", () => {
     // v141 only adds the eval set tables (campaigns, attempts, dispatches, the month ledger, baseline pins, eval debt).
     // v142 only adds youiyoux's intake and request tables.
     // v143 only adds the nullable diff_comment.image_json (saved notes read NULL: no screenshot).
-    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143]);
+    // v144 only adds flow_browser_grant (a table): saved flows have no approval, so no script zone gets the browser rule.
+    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144]);
     expect(UPDATE_SAFE_MIGRATIONS.every(version => version > 1 && version <= SCHEMA_VERSION)).toBe(true);
   });
 
@@ -183,7 +184,7 @@ console.log(JSON.stringify({ ok: read.ok, message: read.ok ? null : read.message
     copy.close();
     const store = openStore(backup);
     try {
-      expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(143);
+      expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(144);
       expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true, through: seeded.chain.through, head: seeded.chain.head });
       const moved = store.handle.prepare(`SELECT f.name, t.state, t.next_at, json_extract(t.config_json, '$.schedule') AS schedule, json_extract(t.config_json, '$.order.goal') AS goal,
         json_extract(t.config_json, '$.order.costCeilingUsd') AS ceiling, json_extract(t.config_json, '$.order.routine') AS routine, t.last_outcome
@@ -204,6 +205,6 @@ console.log(JSON.stringify({ ok: read.ok, message: read.ok ? null : read.message
     // The release before it no longer reads the migrated file as its own: v116 is newer than it speaks.
     rmSync(file);
     execFileSync("cp", [backup, file]);
-    expect(tsx("read.ts")).toMatchObject({ ok: false, message: expect.stringMatching(/schema v143, written by a newer build/) });
+    expect(tsx("read.ts")).toMatchObject({ ok: false, message: expect.stringMatching(/schema v144, written by a newer build/) });
   }, 120_000);
 });

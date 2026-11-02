@@ -53,6 +53,7 @@ function stepOf(stage: FlowStage, ask: (parameter: FlowFileParameter) => string)
     step["script"] = stage.script;
     if (stage.runIn !== undefined) step["runIn"] = stage.runIn;
     if (stage.secrets !== undefined) step["secrets"] = stage.secrets;
+    if (stage.browser === true) step["browser"] = true;
   }
   if (stage.routes !== undefined) step["routes"] = stage.routes.map(one => ({ answer: one.answer, goesTo: one.to }));
   if (stage.sort !== null) {
@@ -261,7 +262,7 @@ function stageInputOf(step: Record<string, unknown>, index: number, find: (ref: 
     ...(toOwner ? { toOwner: true } : { approver: anyone ? null : decider }),
     message: step["message"], close: step["close"], script: step["script"], runIn: step["runIn"],
     routes: list("routes")?.map((one, n) => ({ answer: one["answer"], to: find(one["goesTo"], `${at}.routes[${n}].goesTo`) })),
-    secrets: step["secrets"],
+    secrets: step["secrets"], browser: step["browser"],
     ...(kind === "sort" ? { sort: { question: step["question"], answers: (list("answers") ?? []).map((one, n) => ({ answer: one["answer"], means: one["means"], to: find(one["goesTo"], `${at}.answers[${n}].goesTo`) })),
       sureAt: typeof sureAt === "number" && sureAt > 1 ? sureAt / 100 : sureAt, notes: list("alsoNote") ?? [] } } : {}),
     ...(kind === "request" ? { request: { method: step["method"], url: step["url"], headers: object("headers") ?? {}, body: step["body"] } } : {}),

@@ -519,7 +519,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/flows.ts#createFlowsHandlers@1>kitAct@21><anonymous>@1": 2,
     // A trigger from anyone from the command line: only the person's own proof, never a machine credential (finding 2).
     "src/flows-cli.ts#<module>": 2,
-    "src/flows-cli.ts#runFlowsCommand@3>widening@15": 1,
+    "src/flows-cli.ts#runFlowsCommand@3>personMethod@15": 1,
     "src/server/flows.ts#createFlowsHandlers@1>subagentAct@24><anonymous>@1": 1,
     "src/server/flows.ts#createFlowsHandlers@1>subagentAct@24><anonymous>@1>changed@3": 1,
     "src/server/guards.ts#<module>": 1,

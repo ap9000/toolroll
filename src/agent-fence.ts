@@ -385,8 +385,9 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
    * SEATBELT_NO_KEYCHAIN). Only fenceFor gives it, to a build's agent. Never a check's (one with sign-ins gets those in
    * its environment, invoke.ts keychainSignIns), never a tool server's (serverGrantsOf). */
   keychain?: true;
-  /** macOS: a project check's launch, whose Chromium may start (sandbox-runtime.ts SEATBELT_CHROMIUM). Only fenceFor
-   * sets it, only for kind "check". */
+  /** macOS: a project check's launch, or a flow script zone's with approved browser use, whose Chromium may start
+   * (sandbox-runtime.ts SEATBELT_CHROMIUM). Only fenceFor sets it: always for kind "check", for kind "flow" only when
+   * its caller proved the approval (flow-browser.ts). */
   browser?: true;
   /** A `sign-ins` check's exact sign-in files, read again inside the home denies (check-access.ts, signInGrants). */
   signIns?: SignInGrants;
@@ -1067,6 +1068,9 @@ export type FenceContext = {
   provider?: string;
   /** Scratch folders (a flow's) that stay denied whole inside the pool, whatever the policy. */
   scratchRoots?: readonly string[];
+  /** A flow's script zone whose browser use a person approved, proved at launch (flow-browser.ts browserStanding):
+   * Chromium's one service, as a check gets it. Read for kind "flow" only; every other kind ignores it. */
+  browser?: true;
 };
 
 /** A launch's sealed sandbox terms (builder.ts launchSandboxOf): its policy version, read denies and mach services. A
@@ -1102,8 +1106,9 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
     ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...made.readOnly, ...written.readOnly])].sort() }),
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
     ...(ctx.machLookup === undefined || ctx.machLookup.length === 0 ? {} : { machLookup: [...ctx.machLookup] }),
-    // A project's checks may drive a browser (Playwright's Chromium); builds, flows and tool servers don't get it.
-    ...(kind === "check" ? { browser: true as const } : {}),
+    // A project's checks may drive a browser (Playwright's Chromium), and so may a flow's script zone whose browser use
+    // a person approved (the caller proves it at launch); builds, tool servers and every other flow launch don't get it.
+    ...(kind === "check" || (kind === "flow" && ctx.browser === true) ? { browser: true as const } : {}),
     // A build's agent signs in from the keychain (Claude Code does); nothing else it launches reaches it.
     ...(kind === "build" ? { keychain: true as const } : {}),
     // Under a write allowlist these are out of reach already; where the launch writes anywhere, they are denied by name.
