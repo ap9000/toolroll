@@ -191,7 +191,7 @@ async function deployment({ codingCatalog = true, wrap = (args: Record<string, a
 
   const log: string[] = [];
   const journals: Record<string, Record<string, any>> = {};
-  const hooks: { stopped?: (pids: number[]) => void; sleep?: (ms?: number) => void; fetch?: () => void; now?: () => number; install?: () => void; installed?: () => void; freeze?: () => void; owned?: () => void; codingBackup?: () => void; facts?: (db: DatabaseSync) => void } = {};
+  const hooks: { stopped?: (pids: number[]) => void; sleep?: (ms?: number) => void; fetch?: () => void; now?: () => number; install?: () => void; installed?: () => void; freeze?: () => void; owned?: () => void; codingBackup?: () => void; facts?: (db: DatabaseSync) => void; reserve?: (proven: unknown) => void } = {};
   const current = { completion: { digest: 'complete', actor: 'lead' }, gateDigest: 'check', taskId: 'task', repo: '/repo', scopeDigest: 'scope' };
   const services = {
     old: { supervisor: fakePid(1), children: [fakePid(2)], commands: [] as string[] },
@@ -222,6 +222,7 @@ async function deployment({ codingCatalog = true, wrap = (args: Record<string, a
     runId: 7, candidateHead: 'c'.repeat(40), publicUrl: null, script: 'scripts/deploy-browser.mjs --phase',
     oldRt: { gate: gateEffects, update: { durableJson }, coding: installed },
     facts: (db: DatabaseSync) => { hooks.facts?.(db); return structuredClone(current); },
+    reserve: (proven: unknown) => { hooks.reserve?.(proven); },
     quiet: () => {},
     service: (dist: string) => {
       if (dist === nextDist && services.running === 'new') return services.new;
@@ -564,6 +565,24 @@ async function started() {
   d.reset();
   return d;
 }
+
+test('a deployment resumed at started proves read-only, then refreshes its put-away reservation before finishing; a refused reservation finishes nothing', async () => {
+  const d = await started();
+  try {
+    const reserved: unknown[] = [];
+    d.hooks.facts = db => { expect(() => db.exec('CREATE TABLE written(x)')).toThrow(/readonly/); };
+    d.hooks.reserve = proven => { reserved.push(proven); };
+    await d.phases.finish();
+    expect(reserved).toEqual([d.current]);
+    expect(d.journal()).toMatchObject({ phase: 'deployed' });
+  } finally { d.close(); }
+  const refused = await started();
+  try {
+    refused.hooks.reserve = () => { throw Error('This task is put away. Restore it before deploying.'); };
+    await expect(refused.phases.finish()).rejects.toThrow('This task is put away.');
+    expect([refused.journal().phase, refused.gateOwned()]).toEqual(['started', true]);
+  } finally { refused.close(); }
+});
 
 test('finish asks the local console for 30 s in all, however long each ask takes', async () => {
   const d = await started();

@@ -124,13 +124,13 @@ export function activeWorkRefusal(work) {
 }
 
 /** The journaled phases of one deployment. The paths, runtimes and records are the command line's; the effects are
- * the plane's records (facts, quiet), the services (service, verifyServiceStopped, spawnSync for launchctl, ps,
+ * the plane's records (facts, quiet; reserve, the put-away reservation each proving phase refreshes), the services (service, verifyServiceStopped, spawnSync for launchctl, ps,
  * pgrep and curl), the staged runtime (proveStaged, load, loadCodingDeploymentRuntime), fetch, sleep, say,
  * requireTrue (which ends the deployment) and pruneStaged. processes() lists every process (deploy-stop.mjs
  * listProcesses). Recovery observes exit but never signals processes from historical journal data. */
 export function browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script, oldRt, deploymentLock, signal,
-  facts, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
+  facts, reserve, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
   processes, now = Date.now,
 }) {
   const short = candidateHead.slice(0, 7);
@@ -145,6 +145,10 @@ export function browserDeployment({
     // The plane's records are re-read before every phase, not only at entry:
     // a revoked approval or a changed command between phases stops the swap.
     const current = (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
+    // Proven on a read-only handle; the reservation against being put away is refreshed on its own writable one (v145).
+    // A deployment that can't reserve doesn't go on.
+    requireTrue(typeof reserve === "function", "The deployment can't reserve its task against being put away.");
+    reserve(current);
     const r = readJournal();
     requireTrue(current.completion.digest === r.completion?.digest && current.gateDigest === r.gateDigest, "The completed result or its passing check changed since staging.");
     requireTrue(r.phase === phase && r.candidate === candidateHead && r.database === database, `Journal is at ${r.phase} for ${r.candidate?.slice(0, 7)}, expected ${phase} for ${short}.`);
