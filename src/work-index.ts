@@ -53,6 +53,8 @@ export type WorkIndexItem = {
   evidence: 'recorded';
   /** The viewer's own lead took it on (lead-voice.ts): "<name> is on it.", by the name they gave it, read now. */
   lead?: string;
+  /** Put away (v145, task-tidy.md): by whom (a person's name, or tidy), why and when. Only the Archived view lists it. */
+  archived?: { by: string; byKind: 'person' | 'tidy'; reason: string; at: string };
 };
 /** `root`: the evidence root, so a result whose checks were Off can read the release check that covers it. */
 export type WorkIndexOptions = { view?: WorkView; limit?: number; cursor?: string | null; project?: string | null; state?: TaskState; leadId?: string; root?: string;
@@ -67,10 +69,12 @@ export type WorkProjectCounts = { repo: string | null; totals: WorkIndexCounts; 
 export const WORK_INDEX_PAGE_LIMIT = 40;
 export const WORK_INDEX_MAX_LIMIT = 100;
 
-const EMPTY: WorkIndexCounts = { all: 0, 'needs-you': 0, running: 0, completed: 0 };
+const EMPTY: WorkIndexCounts = { all: 0, 'needs-you': 0, running: 0, completed: 0, archived: 0 };
 const NO_GROUPS: WorkIndexGroupCounts = { decide: 0, review: 0, unblock: 0, building: 0, rest: 0 };
 const FAMILY_PROBLEM = 'Task history is unavailable or incomplete. This task is shown separately.';
-const VIEWS: readonly WorkView[] = ['all', 'needs-you', 'running', 'completed'];
+const VIEWS: readonly WorkView[] = ['all', 'needs-you', 'running', 'completed', 'archived'];
+/** The family's current version is put away (v145): it waits on nobody and only the Archived view lists it. */
+const ARCHIVED = `EXISTS(SELECT 1 FROM task_archive ta WHERE ta.task_ref=c.ref_id)`;
 type Row = Record<string, unknown>;
 const n = (row: Row, key: string) => Number(row[key] ?? 0);
 const s = (row: Row, key: string) => row[key] == null ? null : String(row[key]);
@@ -140,24 +144,25 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     (SELECT id FROM run WHERE task_ref=a.ref_id AND outcome IS NULL ORDER BY id DESC LIMIT 1) unfinished,
     CASE WHEN a.state='done' THEN (SELECT id FROM run WHERE task_ref=a.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1) END result_id,
     (SELECT h.id FROM hold h WHERE h.task_ref=a.ref_id AND (h.until IS NULL OR h.until>$now) ORDER BY h.held_at,h.id LIMIT 1) hold_id,
-    q.decision_id,${AGENT_ASK} agent_ask,(cu.task_ref IS NOT NULL OR a.ref_id IN (SELECT value FROM json_each($workspaceCustody)))
+    q.decision_id,${AGENT_ASK} agent_ask,EXISTS(SELECT 1 FROM task_archive ta WHERE ta.task_ref=a.ref_id) member_archived,(cu.task_ref IS NOT NULL OR a.ref_id IN (SELECT value FROM json_each($workspaceCustody)))
       AND a.ref_id NOT IN (SELECT value FROM json_each($settledCustody)) custody_unresolved
   FROM admitted a LEFT JOIN lineage l ON l.ref_id=a.ref_id
   LEFT JOIN questions q ON q.task_ref=a.ref_id LEFT JOIN custody cu ON cu.task_ref=a.ref_id
 ), family_heads AS MATERIALIZED (
   SELECT root_ref,COUNT(*) version_count,MAX(updated_at) family_updated,
     CAST(substr(MAX((CASE WHEN ref_id=root_ref THEN '0' ELSE '1' END)||created_at||printf('%020d',ref_id)),-20) AS INTEGER) current_ref,
-    SUM(state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved) active_count,
-    MIN(CASE WHEN state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved THEN ref_id END) first_active,
-    MAX(CASE WHEN state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved THEN ref_id END) last_active,
-    MAX(live_lease IS NOT NULL) family_running,MIN(decision_id) question_id
+    -- A put-away version (v145) is history: it never counts as an earlier active version or brings its question along.
+    SUM(NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved)) active_count,
+    MIN(CASE WHEN NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved) THEN ref_id END) first_active,
+    MAX(CASE WHEN NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved) THEN ref_id END) last_active,
+    MAX(live_lease IS NOT NULL) family_running,MIN(CASE WHEN NOT member_archived THEN decision_id END) question_id
   FROM members GROUP BY root_ref
 ), ordered AS MATERIALIZED (
   SELECT m.*,CASE WHEN m.ref_id=f.current_ref THEN 1 ELSE 2 END version_rank
   FROM members m JOIN family_heads f USING(root_ref)
 ), families AS MATERIALIZED (
   SELECT f.root_ref,f.version_count,f.family_updated,f.family_running,
-    f.active_count-(c.state IN ('queued','running') OR c.live_lease IS NOT NULL OR c.unfinished IS NOT NULL OR c.custody_unresolved) earlier_active,
+    f.active_count-(NOT c.member_archived AND (c.state IN ('queued','running') OR c.live_lease IS NOT NULL OR c.unfinished IS NOT NULL OR c.custody_unresolved)) earlier_active,
     earlier.id earlier_id,COALESCE(c.decision_id,f.question_id) question_id
   FROM family_heads f JOIN members c ON c.ref_id=f.current_ref
   LEFT JOIN admitted earlier ON earlier.ref_id=CASE WHEN f.first_active=f.current_ref THEN f.last_active ELSE f.first_active END
@@ -283,8 +288,9 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
   SELECT c.*,CASE WHEN code IN ('cancelled','complete') THEN 0 ELSE ${LEAD_CLAIM_SQL} END lead_claim FROM classified c
 ), ranked AS MATERIALIZED (
   -- A task the person's lead is on (lead-voice.ts) waits on nobody: it leaves Needs you until the claim ends or lapses.
-  SELECT c.*,code NOT IN ('cancelled','complete','running','updating','retry-scheduled','waiting-dependency','worker-at-capacity','planning-ready','scouting-ready','queued') AND NOT ${CUSTODY_WAITS} AND lead_claim<>1 needs,
-    code NOT IN ('cancelled','complete','running','updating','retry-scheduled','waiting-dependency','worker-at-capacity','planning-ready','scouting-ready','queued') AND NOT ${CUSTODY_WAITS} person_need,
+  SELECT c.*,code NOT IN ('cancelled','complete','running','updating','retry-scheduled','waiting-dependency','worker-at-capacity','planning-ready','scouting-ready','queued') AND NOT ${CUSTODY_WAITS} AND lead_claim<>1 AND NOT ${ARCHIVED} needs,
+    code NOT IN ('cancelled','complete','running','updating','retry-scheduled','waiting-dependency','worker-at-capacity','planning-ready','scouting-ready','queued') AND NOT ${CUSTODY_WAITS} AND NOT ${ARCHIVED} person_need,
+    ${ARCHIVED} archived,
     CASE WHEN code='complete' THEN 3 WHEN code='cancelled' THEN 4 WHEN code='running' THEN 1
       WHEN ${CUSTODY_WAITS} OR code IN ('updating','retry-scheduled','waiting-dependency','worker-at-capacity','planning-ready','scouting-ready','queued') THEN 2 ELSE 0 END rank,
     ${ASK_RANK} ask_rank,
@@ -367,11 +373,13 @@ function parameters(now: Date, access: WorkSummaryAccess, options: WorkIndexOpti
     $leadOf: access.principal === 'operator' && access.viewer != null && access.viewer !== '' ? `lead for ${access.viewer}` : null };
 }
 function counts(row: Row): WorkIndexCounts {
-  return { all: n(row, 'all_count'), 'needs-you': n(row, 'needs_count'), running: n(row, 'running_count'), completed: n(row, 'completed_count') };
+  return { all: n(row, 'all_count'), 'needs-you': n(row, 'needs_count'), running: n(row, 'running_count'), completed: n(row, 'completed_count'), archived: n(row, 'archived_count') };
 }
-const TOTALS = `COUNT(*) all_count,COALESCE(SUM(needs),0) needs_count,COALESCE(SUM(family_running),0) running_count,COALESCE(SUM(code='complete'),0) completed_count`;
-const GROUP_TOTALS = `COALESCE(SUM(rank=0 AND ask_rank=0),0) decide_count,COALESCE(SUM(rank=0 AND ask_rank=1),0) review_count,COALESCE(SUM(rank=0 AND ask_rank=2),0) unblock_count,`
-  + `COALESCE(SUM(rank=1),0) building_count,COALESCE(SUM(rank>1),0) rest_count`;
+// Put-away families (v145) count only as archived.
+const TOTALS = `COALESCE(SUM(archived=0),0) all_count,COALESCE(SUM(needs),0) needs_count,COALESCE(SUM(family_running AND archived=0),0) running_count,`
+  + `COALESCE(SUM(code='complete' AND archived=0),0) completed_count,COALESCE(SUM(archived),0) archived_count`;
+const GROUP_TOTALS = `COALESCE(SUM(rank=0 AND ask_rank=0 AND archived=0),0) decide_count,COALESCE(SUM(rank=0 AND ask_rank=1 AND archived=0),0) review_count,COALESCE(SUM(rank=0 AND ask_rank=2 AND archived=0),0) unblock_count,`
+  + `COALESCE(SUM(rank=1 AND archived=0),0) building_count,COALESCE(SUM(rank>1 AND archived=0),0) rest_count`;
 function groupCounts(row: Row): WorkIndexGroupCounts {
   return { decide: n(row, 'decide_count'), review: n(row, 'review_count'), unblock: n(row, 'unblock_count'), building: n(row, 'building_count'), rest: n(row, 'rest_count') };
 }
@@ -422,18 +430,20 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   const view = VIEWS.includes(options.view ?? 'all') ? options.view ?? 'all' : 'all';
   const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(WORK_INDEX_MAX_LIMIT, Math.floor(options.limit!))) : WORK_INDEX_PAGE_LIMIT;
   const scope = cursorScope(access, options, view), cursor = readCursor(options.cursor, scope);
-  const filter = view === 'needs-you' ? 'needs=1' : view === 'running' ? 'family_running=1' : view === 'completed' ? "code='complete'" : '1';
+  const filter = view === 'archived' ? 'archived=1' : view === 'needs-you' ? 'needs=1' : view === 'running' ? 'family_running=1 AND archived=0' : view === 'completed' ? "code='complete' AND archived=0" : 'archived=0';
   const rows = prepared(store, `${projection}, selected_page AS MATERIALIZED (
-    SELECT * FROM ranked WHERE ${filter} AND ($taskId IS NULL OR root_ref IN (SELECT root_ref FROM members WHERE id=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
+    SELECT * FROM ranked WHERE ($taskId IS NOT NULL OR ${filter}) AND ($taskId IS NULL OR root_ref IN (SELECT root_ref FROM members WHERE id=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
       ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot))))
     ORDER BY ${ORDER},sort_at DESC,root_ref DESC LIMIT $limit
   ), page AS (SELECT p.*,COALESCE(p.result_id,(SELECT id FROM run WHERE task_ref=p.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) page_result_id FROM selected_page p), totals AS (SELECT ${TOTALS},${GROUP_TOTALS} FROM ranked), project_totals AS (
-    SELECT repo,${TOTALS},SUM(state='queued' AND family_running=0) queued,
-      SUM(state='done' AND family_running=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo
+    SELECT repo,${TOTALS},SUM(state='queued' AND family_running=0 AND archived=0) queued,
+      SUM(state='done' AND family_running=0 AND archived=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo
   )
   SELECT 0 record_kind,totals.*,(SELECT json_group_array(json_object('repo',repo,'all_count',all_count,'needs_count',needs_count,
-    'running_count',running_count,'completed_count',completed_count,'queued',queued,'done_recently',done_recently)) FROM project_totals) row_json FROM totals
-  UNION ALL SELECT 1,0,0,0,0,0,0,0,0,0,json_object('root_ref',root_ref,'root_id',root_id,'id',id,'root_title',root_title,'repo',repo,
+    'running_count',running_count,'completed_count',completed_count,'archived_count',archived_count,'queued',queued,'done_recently',done_recently)) FROM project_totals) row_json FROM totals
+  UNION ALL SELECT 1,0,0,0,0,0,0,0,0,0,0,json_object('archived',archived,'archived_by',(SELECT by FROM task_archive WHERE task_ref=page.ref_id),
+    'archived_kind',(SELECT by_kind FROM task_archive WHERE task_ref=page.ref_id),'archived_reason',(SELECT reason FROM task_archive WHERE task_ref=page.ref_id),
+    'archived_at',(SELECT at FROM task_archive WHERE task_ref=page.ref_id),'root_ref',root_ref,'root_id',root_id,'id',id,'root_title',root_title,'repo',repo,
     'state',state,'created_at',created_at,'family_updated',family_updated,'version_count',version_count,'earlier_active',earlier_active,
     'earlier_id',earlier_id,'broken',broken,'live_run',live_run,'result_id',page_result_id,'result_outcome',(SELECT outcome FROM run WHERE id=page_result_id),'attempt_reason',(SELECT substr(reason,1,1000) FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),
     'publication_url',(SELECT pr_url FROM publication WHERE run=page_result_id),
@@ -474,8 +484,8 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
 
 export function workCountsByProject(store: Store, now: Date, access: WorkSummaryAccess): WorkProjectCounts[] {
   const projection = registerValidators(store);
-  return store.handle.prepare(`${projection} SELECT repo,${TOTALS},SUM(state='queued' AND family_running=0) queued,
-    SUM(state='done' AND family_running=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo ORDER BY repo`)
+  return store.handle.prepare(`${projection} SELECT repo,${TOTALS},SUM(state='queued' AND family_running=0 AND archived=0) queued,
+    SUM(state='done' AND family_running=0 AND archived=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo ORDER BY repo`)
     .all({ ...parameters(now, access, {}, custodyReadings(store)), $recent: new Date(now.getTime()-86_400_000).toISOString() })
     .map(row => ({ repo: s(row, 'repo'), totals: counts(row), queued: n(row, 'queued'), doneRecently: n(row, 'done_recently') }));
 }
@@ -505,7 +515,7 @@ export function workStateRows(store: Store, now: Date, access: WorkSummaryAccess
         COALESCE((SELECT created_at FROM decision WHERE id=question_id),''),COALESCE((SELECT asked_at FROM agent_question WHERE id=agent_ask),''),
         COALESCE((SELECT held_at FROM hold WHERE id=hold_id),''),COALESCE((SELECT requested_at FROM run_stop WHERE run=stop_run),'')),''),sort_at) ask_at,
       COALESCE(live_run,(SELECT run FROM decision WHERE id=question_id),(SELECT run FROM agent_question WHERE id=agent_ask)) ask_run,
-      (SELECT json_group_array(m.ref_id) FROM members m WHERE m.root_ref=ranked.root_ref) members FROM ranked`)
+      (SELECT json_group_array(m.ref_id) FROM members m WHERE m.root_ref=ranked.root_ref) members FROM ranked WHERE archived=0`)
     .all(parameters(now, access, {}, custodyReadings(store)))
     .map(row => ({ repo: s(row, 'repo'), rootId: String(row['root_id']), code: String(row['code']), needs: n(row, 'needs') === 1, personNeed: n(row, 'person_need') === 1,
       leadClaim: n(row, 'lead_claim') === 1, liveRun: row['live_run'] == null ? null : n(row, 'live_run'), unfinished: row['unfinished'] == null ? null : n(row, 'unfinished'),
@@ -517,8 +527,8 @@ export function workStateRows(store: Store, now: Date, access: WorkSummaryAccess
  * attempts are aggregated in SQLite, never loaded as an unbounded history. */
 export function workOutcomeRows(store: Store, now: Date, access: WorkSummaryAccess, project: string, since: string, limit: number) {
   return store.handle.prepare(`${registerValidators(store)}, selected AS MATERIALIZED (
-    SELECT * FROM ranked WHERE code='ready-to-check' OR code='history-problem'
-      OR (code='complete' AND checked_at >= $since AND checked_at <= $now)
+    SELECT * FROM ranked WHERE archived=0 AND (code='ready-to-check' OR code='history-problem'
+      OR (code='complete' AND checked_at >= $since AND checked_at <= $now))
     ORDER BY sort_at DESC,root_ref DESC LIMIT $outcomeLimit
   ), amounts AS (
     -- reported-usage.ts runAmountOf, row for row: only evidenced billing on a run whose cost was reported is known;
@@ -732,10 +742,12 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     const asked = s(row, 'agent_ask_text');
     if (asked !== null) detail = `The agent asks: ${asked}`;
   }
-  const views: WorkView[] = ['all'];
-  if (need) views.push('needs-you');
-  if (running) views.push('running');
-  if (code === 'complete') views.push('completed');
+  const archived = n(row, 'archived') === 1 ? { by: String(row['archived_by'] ?? ''), byKind: row['archived_kind'] === 'tidy' ? 'tidy' as const : 'person' as const,
+    reason: String(row['archived_reason'] ?? ''), at: String(row['archived_at'] ?? '') } : null;
+  const views: WorkView[] = archived !== null ? ['archived'] : ['all'];
+  if (archived === null && need) views.push('needs-you');
+  if (archived === null && running) views.push('running');
+  if (archived === null && code === 'complete') views.push('completed');
   return { rootId: String(row['root_id']), activeTaskId: id, title: String(row['root_title']), repo: s(row, 'repo'),
     state: String(row['state']) as TaskState, assignmentState, createdAt: String(row['created_at']), updatedAt: String(row['sort_at']),
     versionCount: n(row, 'version_count'), earlierActiveCount: n(row, 'earlier_active'), familyProblem: n(row, 'broken') ? FAMILY_PROBLEM : null,
@@ -746,5 +758,22 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     ask: need ? ASKS[n(row, 'ask_rank')] ?? 'unblock' : null,
     chip: need ? askChipOf({ headline: shared.headline, need: shared.need?.key ?? null, planChanged, mismatch: verdict === 'refuted' && n(row, 'proof_failed_check') !== 1, ask: ASKS[n(row, 'ask_rank')] ?? 'unblock' }) : null,
     primaryAction, completion: code === 'complete' ? { actor: String(row['checked_actor']), at: String(row['checked_at']), digest: String(row['checked_digest']), ...(landed === null ? {} : { landed }) } : null,
-    evidence: 'recorded', ...(lead === 'on-it' ? { lead: leadOnIt(leadName) } : {}) };
+    evidence: 'recorded', ...(lead === 'on-it' ? { lead: leadOnIt(leadName) } : {}), ...(archived === null ? {} : { archived }) };
+}
+
+/** One row per task family for tidy (docs/plans/task-tidy.md): the Tasks list's own projection, so tidy's "unfinished",
+ * "live" and "complete" are the words the list shows. `members` are every version's task_ref ids. */
+export type WorkTidyRow = { rootId: string; currentId: string; title: string; repo: string | null; state: TaskState; code: string;
+  live: boolean; archived: boolean; broken: boolean; updatedAt: string; members: number[]; memberIds: string[] };
+export function workTidyRows(store: Store, now: Date, access: WorkSummaryAccess): WorkTidyRow[] {
+  const projection = registerValidators(store);
+  return store.handle.prepare(`${projection} SELECT root_id,id,root_title,repo,state,code,archived,broken,family_updated,
+      (family_running OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved OR stop_run IS NOT NULL AND stop_settled IS NULL OR state='running') live,
+      (SELECT json_group_array(m.ref_id) FROM members m WHERE m.root_ref=ranked.root_ref) members,
+      (SELECT json_group_array(m.id) FROM members m WHERE m.root_ref=ranked.root_ref) member_ids FROM ranked`)
+    .all(parameters(now, access, {}, custodyReadings(store)))
+    .map(row => ({ rootId: String(row['root_id']), currentId: String(row['id']), title: String(row['root_title']), repo: s(row, 'repo'),
+      state: String(row['state']) as TaskState, code: String(row['code']), live: n(row, 'live') === 1, archived: n(row, 'archived') === 1, broken: n(row, 'broken') === 1,
+      updatedAt: String(row['family_updated'] ?? ''), members: (JSON.parse(String(row['members'] ?? '[]')) as unknown[]).map(Number),
+      memberIds: (JSON.parse(String(row['member_ids'] ?? '[]')) as unknown[]).map(String) }));
 }

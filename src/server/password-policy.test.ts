@@ -36,6 +36,8 @@ const COOKIE_ONLY_POSTS = [
   'lead.check', 'projects.github-list',
   // Reading a coding checkout (its changes, the shipping preview): the coding page's own POST.
   'code.changes-read', 'code.ship-preview',
+  // Putting tasks away and restoring them (task-tidy.md): a person's act, from a browser.
+  'work.put-away.apply', 'task.act.archive', 'task.act.restore',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {

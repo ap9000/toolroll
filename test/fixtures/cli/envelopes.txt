@@ -2646,7 +2646,7 @@ $ contract --commands --json → 0
         {
           "name": "view",
           "takesValue": true,
-          "meaning": "all|needs-you|running|completed"
+          "meaning": "all|needs-you|running|completed|archived"
         },
         {
           "name": "limit",
@@ -3830,6 +3830,123 @@ $ contract --commands --json → 0
       "agentMayInvoke": false,
       "mutation": "unkeyed",
       "remote": "yes"
+    },
+    {
+      "invocation": "task archive",
+      "synopsis": "put tasks away (a person's act): out of every list, count and nudge, history and approvals kept; nothing claims, approves or dispatches them until restored",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "one or more tasks (any version: the whole family goes)"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why, shown on the task page"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task",
+        "not-an-approver"
+      ],
+      "remote": "step-up"
+    },
+    {
+      "invocation": "task restore",
+      "synopsis": "bring put-away tasks back exactly as they were (a person's act)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "one or more put-away tasks"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task",
+        "not-an-approver"
+      ],
+      "remote": "step-up"
+    },
+    {
+      "invocation": "task tidy",
+      "synopsis": "Put away old tasks: --preview lists what would go and why (read-only), --apply --digest <d> puts away exactly that list (a person's act)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "preview",
+          "takesValue": false,
+          "meaning": "show the list and the digest; changes nothing"
+        },
+        {
+          "name": "apply",
+          "takesValue": false,
+          "meaning": "put away exactly the previewed list (needs --digest)"
+        },
+        {
+          "name": "digest",
+          "takesValue": true,
+          "meaning": "the digest --preview printed"
+        },
+        {
+          "name": "days",
+          "takesValue": true,
+          "meaning": "also finished tasks untouched this many days (1–365, default 14)"
+        },
+        {
+          "name": "except",
+          "takesValue": true,
+          "meaning": "comma-separated tasks from the list to leave out"
+        }
+      ],
+      "notableReasons": [
+        "usage",
+        "not-an-approver",
+        "empty"
+      ],
+      "remote": "step-up"
     },
     {
       "invocation": "run settle",
@@ -5168,7 +5285,8 @@ $ task list --json → 0
     "all": 2,
     "needs-you": 2,
     "running": 0,
-    "completed": 0
+    "completed": 0,
+    "archived": 0
   },
   "nextCursor": null,
   "limit": 40,
@@ -5347,6 +5465,84 @@ $ task hold t-login --reason waiting on design --json → 0
   "id": "t-login",
   "reason": "waiting on design",
   "until": null
+}
+
+$ task tidy --preview --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "task tidy",
+  "preview": true,
+  "days": 14,
+  "digest": "6b05f242946b5a88acfca52a228a3823",
+  "count": 0,
+  "groups": [],
+  "next": null
+}
+
+$ task tidy --apply --json → 2
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "task tidy",
+  "reason": "usage",
+  "message": "`toolroll task tidy --preview [--days N]`, then `toolroll task tidy --apply --digest <d> [--days N] [--except <id,...>]`"
+}
+
+$ task tidy --preview --apply --json → 2
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "task tidy",
+  "reason": "usage",
+  "message": "`toolroll task tidy --preview [--days N]`, then `toolroll task tidy --apply --digest <d> [--days N] [--except <id,...>]`"
+}
+
+$ task archive --json → 2
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "task archive",
+  "reason": "usage",
+  "message": "`toolroll task archive <id...> [--reason <why>] --as <you> --token <t>` — 1 to 100 tasks"
+}
+
+$ task archive t-readme --json → 2
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "task archive",
+  "reason": "usage",
+  "message": "putting a task away takes `--as <you> --token <t>` — it is recorded against your name"
+}
+
+$ task restore t-readme --json → 2
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "task restore",
+  "reason": "usage",
+  "message": "restoring takes `--as <you> --token <t>` — it is recorded against your name"
+}
+
+$ task list --view archived --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "task list",
+  "count": 0,
+  "tasks": [],
+  "totals": {
+    "all": 2,
+    "needs-you": 2,
+    "running": 0,
+    "completed": 0,
+    "archived": 0
+  },
+  "nextCursor": null,
+  "limit": 40,
+  "view": "archived",
+  "evidence": "recorded"
 }
 
 $ task wait --json → 2

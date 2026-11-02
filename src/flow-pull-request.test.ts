@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore, type Store } from "./store.js";
+import { openStore, archiveTaskFamily, type Store } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
@@ -141,6 +141,23 @@ describe("the Pull request zone", () => {
     expect(store.getFlowCard(card)).toMatchObject({ stage: "update-issue", outputs: { "pull-request": "Merged: https://github.com/alex/shop/pull/12" } });
     expect(pullRequestViewOf(store, runId)).toMatchObject({ state: "merged", mergeCommit: "c".repeat(40) });
     expect(store.handle.prepare("SELECT merged_by FROM pull_request_follow").get()).toEqual({ merged_by: "alex (approved in Issues to PRs)" });
+  });
+
+  test("put away (v145) while GitHub is read: the card stays where it is, files no revision and tells no one", async () => {
+    const { card } = approvedCard(issuesToPrs(true), "fix-total");
+    await runFlowSteps(store, REPO, at(3), io(scripted([]).exec));
+    const publisher = scripted([["gh pr list", { stdout: "[]" }], ["gh pr create", { stdout: "https://github.com/alex/shop/pull/12\n" }]]);
+    await publishPass(store, { repo: REPO, exec: publisher.exec, clock: () => at(4), evidenceRoot: dir });
+    await observeChecks(store, { exec: scripted([["gh pr view", prView("FAILURE")]]).exec, clock: () => at(6) });
+    const before = store.getFlowCard(card)!;
+    const notices = store.listNotifications("all").length;
+    const gh = scripted([["gh pr view", prView("FAILURE")], ["gh run view", () => {
+      expect(archiveTaskFamily(store, "fix-total", { by: "alex", byKind: "person", rule: null, reason: "Not needed" }, at(8))).toMatchObject({ ok: true });
+      return { stdout: "unit\tRun npm test\t2026-09-30T09:01:00.0000000Z expected 107 to be 100\n" };
+    }]]);
+    await runFlowSteps(store, REPO, at(8), io(gh.exec));
+    expect(store.getFlowCard(card)).toMatchObject({ stage: "pull-request", task: before.task, entry: before.entry });
+    expect(store.listNotifications("all").length).toBe(notices);
   });
 
   test("c1: without Merge, green moves the card on with the PR's link for the issue comment", async () => {

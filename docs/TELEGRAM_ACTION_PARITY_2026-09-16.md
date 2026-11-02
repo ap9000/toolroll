@@ -62,6 +62,7 @@ configuration and pairing. Slack transport tests also use scripted responses.
 | `ask_owner` | direct | One question with 2-4 options and Something else, drawn as buttons under the reply; the tapped option is sent as the person's next message. | tap is the next message (`telegram-lead.test.ts`, `slack.test.ts`, `discord.test.ts`, `teams.test.ts`) | none |
 | `search_project_memory` | direct | Read during a turn: one search over decisions, references, lessons and the conversations the person may read. | project memory search (`project-memory.test.ts`), same turn path | none |
 | `list_tasks` | direct | Read during a turn. | engine read tools (`lead.test.ts`), same turn path | none |
+| `tidy_preview` | direct | Read during a turn: what Put away old tasks would put away now and why. Only a person puts tasks away, on the console or with the CLI command it names. | tidy rules (`tidy.test.ts`), same turn path | none |
 | `get_task` | direct | Read during a turn; a reply to a result message pins the exact execution. | reply-to-result test | none |
 | `get_agents` | direct | Read during a turn. | agents card test reads it before `propose_agents` | none |
 | `list_decisions` | direct | Read during a turn. | engine read tools (`lead.test.ts`), same turn path | none |

@@ -150,6 +150,8 @@ Tell your person what `next` says and stop. Don't loop on it.
 toolroll status --json                   # running, queued (with reasons), results to review, release check, plan windows
 toolroll ready --json                    # what could dispatch now, and why not
 toolroll task show <id> --json           # one task in full; unknown id: reason unknown-task, exit 3
+toolroll task list --view archived --json # tasks put away, with who and why
+toolroll task tidy --preview --json      # what Put away old tasks would put away, and why (read-only)
 toolroll task review <id> --brief --json # the result packet: conclusion, files, check, findings, screenshots, next actions
 toolroll brief                           # catch-up from the local database, no model call
 ```
@@ -235,6 +237,9 @@ milestones with `lead say "<one line>"`. Details: `toolroll skills get operating
   `task approve` stops at a preview (`reason: unconfirmed`, exit 3). A lead
   approves only under the lead token its person minted, never with their
   password or remembered login.
+- **Putting away is a person's act.** `task archive`, `task restore` and
+  `task tidy --apply` refuse a lead token (`reason: person-only`). Show your
+  person `task tidy --preview` and let them run the `--apply` it prints.
 - **No secrets in argv.** Pass credentials through a 0600 file or an
   environment variable. Never paste a token, password or key into a command,
   chat, commit or issue. Toolroll never asks for one in conversation.

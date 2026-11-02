@@ -124,6 +124,7 @@ export const LEAD_TOOL_INPUTS = {
   search_project_memory: z.strictObject({ query: text("memorySearch").min(2), repo: repoId.optional() }),
   get_models: z.strictObject({}),
   list_tasks: z.strictObject({ repo: repoId.optional(), state: z.enum(LISTED_TASK_STATES).optional(), limit: z.int().min(1).max(50).optional(), search: text("taskSearch").optional() }),
+  tidy_preview: z.strictObject({ days: z.int().min(1).max(365).optional() }),
   get_task: z.strictObject({ task: taskRef }),
   get_agents: z.strictObject({ task: taskRef }),
   list_decisions: z.strictObject({}),
@@ -268,6 +269,7 @@ export const LEAD_TOOL_OUTPUTS = {
   search_project_memory: z.looseObject({ hits: list, notice: str }),
   get_models: z.looseObject({ roles: rows({ role: str }), tools: list, newModels: list, change: str }),
   list_tasks: z.looseObject({ tasks: rows({ repo: str, task: str, execution: str, title: str, state: str, ageHours: z.number(), strikes: int }), truncated: z.boolean() }),
+  tidy_preview: z.looseObject({ count: int, days: int, groups: rows({ label: str }), digest: str, apply: str }),
   get_task: z.looseObject({
     repo: str, task: str, root: str, currentExecution: str, title: str, state: str, deliverable: str, scope: str,
     queue: nullable(z.looseObject({ position: int, of: int, column: str })), holds: list, attempts: int, decisionsOpen: int, dependencies: list,

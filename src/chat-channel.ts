@@ -792,6 +792,7 @@ export const CHAT_ACTION_PARITY: Record<
   ask_owner: { support: "direct", how: "One question with 2-4 options and Something else, drawn as buttons under the reply; the tapped option is sent as the person's next message.", gap: null },
   search_project_memory: { support: "direct", how: "Read during a turn: one search over decisions, references, lessons and the conversations the person may read.", gap: null },
   list_tasks: { support: "direct", how: "Read during a turn.", gap: null },
+  tidy_preview: { support: "direct", how: "Read during a turn: what Put away old tasks would put away now and why. Only a person puts tasks away, on the console or with the CLI command it names.", gap: null },
   get_task: {
     support: "direct",
     how: "Read during a turn; a reply to a result message pins the exact execution.",

@@ -21,7 +21,8 @@ import { newestPullRequestOf,publishingOf,pullRequestBlocker } from '../pull-req
 import { structuredHandoffView,terminalDiffView } from "../result-evidence-readers.js";
 import { resultCheckLevel } from '../result-follow-ups.js';
 import { skillsSnapshotHtml,skillTestFeedbackHtml } from "../skills-ui.js";
-import type { TaskFamily } from "../store.js";
+import type { TaskFamily, TaskArchive } from "../store.js";
+import { archiveOf } from "../store.js";
 import { runActivityOf } from "../task-activity.js";
 import { taskFingerprint } from "../task-live.js";
 import { pullRequestFactOf } from '../task-status.js';
@@ -831,6 +832,10 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const presentedData = { ...data, rootId: family?.root.id ?? taskId, rootTitle: family?.root.title ?? data.task.title,
       ...(family === null || data.assignment != null ? {} : { history: familyHistory(family) }),
       versionLabel: family !== null && family.current.id !== taskId ? `Viewing ${family.versions.findIndex(one => one.id === taskId) === 0 ? "Original" : `Revision ${family.versions.findIndex(one => one.id === taskId)}`} · ${family.current.state === "running" ? "A newer revision is running" : "A newer revision is current"}` : null };
+    // Put away (v145, task-tidy.md): who or what put it away and why, and whether this person can put it away or restore it.
+    const archived = archiveOf(runtime.store, taskId);
+    (presentedData as { archived?: TaskArchive | null }).archived = archived;
+    (presentedData as { canPutAway?: boolean }).canPutAway = who.via === "cookie" && who.role === "approver";
     if (scopeDraft !== undefined) presentedData.scopeDraft = scopeDraft;
     if (cancelDraft !== undefined) presentedData.cancelDraft = cancelDraft;
     if (editPlan) presentedData.editPlan = true;

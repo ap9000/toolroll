@@ -583,6 +583,13 @@ export function TaskView({ view, chat = null, details = true, csrf = "", result 
       {view.version !== null && <p className="rounded-md bg-info-soft px-3 py-2 text-body text-info">
         {view.version.label} · <a href={view.version.current.href} className="font-semibold underline underline-offset-4">{view.version.current.label}</a>
       </p>}
+      {view.archived != null && <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-md bg-raised px-3 py-2" data-archived>
+        <p className="text-body">{view.archived.words} · <time dateTime={view.archived.at} title={fullWhen(view.archived.at, viewerZone())} className="tabular-nums text-muted-foreground">{shortWhen(view.archived.at, new Date(), viewerZone())}</time></p>
+        {view.archived.restore !== null && <PostForm action={view.archived.restore.action}>
+          <input type="hidden" name="return" value={view.archived.restore.returnTo} />
+          <Button type="submit" variant="outline" size="sm">Restore</Button>
+        </PostForm>}
+      </div>}
     </header>
 
     {view.journey != null && view.status === null && <Journey steps={view.journey} />}

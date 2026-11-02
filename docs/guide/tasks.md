@@ -225,6 +225,33 @@ for one Telegram message is not shortened: it links to your Toolroll chat, where
 the pending card waits in full. Optional missing images never prevent marking a
 task Complete or change its recorded checks.
 
+## Put away old tasks
+
+Old work leaves your lists by itself: a routine's newer run puts its older
+unfinished runs away, release tasks for versions already published (or replaced
+by a later attempt) go, and a "Checks failed on main" notice goes once a later
+commit's run of the same check passes. Each says who or what put it away and why.
+Tidy never touches running work, a task you asked someone to look at, a task with
+notes still waiting, or anything you filed yourself.
+
+To put away more by hand, choose **Put away** on a task, or **Put away old tasks**
+on Tasks: it lists exactly what would go and why, grouped, every task ticked; untick
+what you want to keep and confirm with your password. Find put-away tasks under
+**Archived**, where **Restore** brings one back exactly as it was. Their history,
+results and approvals are kept, and nothing runs, approves or nudges you about
+them while they are put away.
+
+```sh
+toolroll task tidy --preview                       # the same list, and the exact command to run next
+toolroll task tidy --apply --digest <d> [--except <id,...>]
+toolroll task archive <id...> [--reason "<why>"]
+toolroll task restore <id...>
+toolroll task list --view archived
+```
+
+Only a person puts tasks away or restores them; the lead can read what tidy would
+put away (`tidy_preview`) but can't do it.
+
 ## Peeking at the agents
 
 ```sh

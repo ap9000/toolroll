@@ -17,7 +17,7 @@ import { REVIEW_TOKENS, resultStatusOf, reviewFactsOf } from "./workspace-ui.js"
 import { replacedWords } from "./task-status.js";
 import { failedAttemptSentence, latestFinishedAttempt } from "./needs-you.js";
 import { buildReviewOf } from "./review-switch.js";
-import { BUILT_IN, parseCapabilityKey, type ChatSnapshot, type ReviewRequestOrigin, type ReviewRetryState, type Store, type TaskState } from "./store.js";
+import { BUILT_IN, refArchived, parseCapabilityKey, type ChatSnapshot, type ReviewRequestOrigin, type ReviewRetryState, type Store, type TaskState } from "./store.js";
 
 export const DEFAULT_MAX_OPEN_DECISIONS = 5;
 
@@ -25,7 +25,8 @@ export type TaskReadinessBlocker =
   | { code: "unknown-task"; message: string }
   | { code: "state"; state: TaskState; message: string }
   | { code: "hold"; ownerKind: string; until: string | null; message: string }
-  | { code: "dependency"; blockerId: string; blockerState: TaskState; message: string };
+  | { code: "dependency"; blockerId: string; blockerState: TaskState; message: string }
+  | { code: "archived"; message: string };
 
 export type DispatchAction =
   | "open-result"
@@ -139,6 +140,8 @@ export function taskReadinessBlocker(store: Store, taskRef: number, now: Date): 
     )
     .get(BUILT_IN, taskRef);
   if (task === undefined) return { code: "unknown-task", message: "no such task" };
+  // A put-away task (v145) never dispatches, whatever its state: restore it first.
+  if (refArchived(store, taskRef)) return { code: "archived", message: "put away" };
   const state = String(task["state"]) as TaskState;
   if (state !== "queued") return { code: "state", state, message: `state is ${state}, not queued` };
 

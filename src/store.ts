@@ -10,6 +10,8 @@ import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
 import { reclaimDatabase } from "./database-reclaim.js";
 import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
+import { refArchived, taskArchived } from "./task-archive.js";
+export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
 import { type ChatBinding, type ChatRoom } from "./chat-core.js";
 import { ChatMessages, TELEGRAM_HOLD_REASONS, TELEGRAM_SKIPPED_ELSEWHERE, TELEGRAM_SKIPPED_OTHER_CHAT, TELEGRAM_SKIPPED_QUIET, TELEGRAM_UNSETTLED } from "./chat-messages.js";
@@ -1151,7 +1153,11 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // (diff_comment.image_json, V143_ADDED_COLUMNS; saved notes read NULL and keep their file/line target).
 // v144 adds, and changes no saved row: a person's approval of browser use in a flow's script zones (flow_browser_grant;
 // flow-browser.ts), the one sandbox rule a project check gets for Chromium; saved flows have none and get nothing.
-export const SCHEMA_VERSION = 144;
+// v145 adds, and changes no saved row (docs/plans/task-tidy.md): put-away tasks (task_archive, one row per archived task
+// version; no row is every saved task: not archived), the completed workflow runs on a watched branch the checks
+// trigger saw (branch_check_run), and the reservations that hold work back from being put away (merge_in_flight,
+// deploy_in_flight, flow_step_task; V145_SCHEMA, new tables only).
+export const SCHEMA_VERSION = 145;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1289,7 +1295,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1438,6 +1444,55 @@ export const V140_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 export const V143_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
   diff_comment: { image_json: { definition: "TEXT", saved: "NULL" } },
 });
+/** v145 (docs/plans/task-tidy.md): `task_archive` is a put-away task version. A row hides it from every list and count
+ * and refuses every door that would dispatch, claim or approve it; restore deletes the row. Its history, results,
+ * approvals and ledger stay exactly as they were. `merge_in_flight` is a direct merge between its last check and GitHub's
+ * answer, owned by its token: a task can't be put away under it (a row older than 15 minutes is a crash, and no
+ * longer counts). `deploy_in_flight` is a deployment whose candidate passed its gate (30 minutes, refreshed by every
+ * phase that proves it again). `flow_step_task` is the tasks a flow step was admitted for, kept whatever the card does
+ * next, so a step still running holds them. `branch_check_run` keeps each completed GitHub workflow run (pushed to
+ * the watched branch of the watched repository) the "checks failed" trigger saw, green or red, so tidy can tell a
+ * failure notice was fixed by a later commit. */
+export const V145_SCHEMA = `
+CREATE TABLE IF NOT EXISTS task_archive (
+  task_ref INTEGER PRIMARY KEY REFERENCES task_ref(id),
+  by       TEXT NOT NULL,
+  by_kind  TEXT NOT NULL CHECK (by_kind IN ('person','tidy')),
+  rule     TEXT,
+  reason   TEXT NOT NULL,
+  at       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS branch_check_run (
+  repo           TEXT NOT NULL,
+  run_id         INTEGER NOT NULL,
+  branch         TEXT NOT NULL,
+  workflow       TEXT NOT NULL,
+  head_sha       TEXT NOT NULL,
+  conclusion     TEXT NOT NULL CHECK (conclusion IN ('success','failure')),
+  run_created_at TEXT NOT NULL,
+  observed_at    TEXT NOT NULL,
+  PRIMARY KEY (repo, run_id)
+);
+CREATE INDEX IF NOT EXISTS branch_check_run_by_workflow ON branch_check_run (repo, branch, workflow, run_created_at);
+CREATE TABLE IF NOT EXISTS merge_in_flight (
+  publication INTEGER PRIMARY KEY REFERENCES publication(id),
+  task_ref    INTEGER NOT NULL REFERENCES task_ref(id),
+  token       TEXT NOT NULL,
+  by          TEXT NOT NULL,
+  at          TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS deploy_in_flight (
+  task_ref INTEGER PRIMARY KEY REFERENCES task_ref(id),
+  run      INTEGER NOT NULL,
+  at       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS flow_step_task (
+  card    INTEGER NOT NULL,
+  entry   INTEGER NOT NULL,
+  task_id TEXT NOT NULL,
+  PRIMARY KEY (card, entry, task_id)
+);
+`;
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -5730,6 +5785,8 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   }
   // v144: approvals of browser use in flows' script zones (a new table only).
   db.exec(FLOW_BROWSER_SCHEMA);
+  // v145: put-away tasks, green checks per branch and the reservations that hold work back (new tables only).
+  db.exec(V145_SCHEMA);
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -7565,6 +7622,7 @@ export class Store {
            FROM task JOIN task_ref ON task_ref.backend = ? AND task_ref.external_id = task.id
           WHERE task.state = 'queued'
             AND (? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)
+            AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)
           ORDER BY task.priority DESC, task.created_at, task_ref.id
           LIMIT 200`,
       )
@@ -7592,7 +7650,8 @@ export class Store {
         `SELECT task.priority AS priority, task.created_at AS created_at, task_ref.id AS ref,
                 task_ref.repo AS repo, task_ref.assigned_runner AS assigned
            FROM task JOIN task_ref ON task_ref.backend = ? AND task_ref.external_id = task.id
-          WHERE task.id = ? AND task.state = 'queued'`,
+          WHERE task.id = ? AND task.state = 'queued'
+            AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)`,
       )
       .get(BUILT_IN, taskId);
     if (me === undefined) return null;
@@ -7605,7 +7664,8 @@ export class Store {
                  OR (task.priority = ? AND task.created_at = ? AND task_ref.id < ?)
                THEN 1 ELSE 0 END) AS ahead
            FROM task JOIN task_ref ON task_ref.backend = ? AND task_ref.external_id = task.id
-          WHERE task.state = 'queued' AND (task_ref.assigned_runner IS ?) AND (task_ref.repo IS ?)`,
+          WHERE task.state = 'queued' AND (task_ref.assigned_runner IS ?) AND (task_ref.repo IS ?)
+            AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)`,
       )
       .get(
         Number(me["priority"]), Number(me["priority"]), String(me["created_at"]),
@@ -7776,6 +7836,8 @@ export class Store {
          JOIN task_ref ON task_ref.backend = ? AND task_ref.external_id = task.id
          WHERE task.state = 'queued'
            ${reservation}
+           -- A put-away task (v145) never dispatches.
+           AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)
            AND NOT EXISTS (
              SELECT 1 FROM hold
              WHERE hold.task_ref = task_ref.id
@@ -8767,6 +8829,8 @@ export class Store {
         // ceremony (scope.ts approve), so a machine — the lead's token, a remote API run — never mints one, whatever
         // road it came by.
         if (basis === undefined && machineActing()) return false;
+        // A PUT-AWAY TASK (v145, task-tidy.md) is never approved, by any road: restore it first.
+        if (taskArchived(this, taskId)) return false;
         // A RELEASE WAITING FOR CI (Codex review round 1, finding 4): filed while its pull request's checks still ran,
         // only the automatic road (which proves CI itself) seals it until the plane read exact-head CI passing.
         if (basis?.kind !== "auto-check" && basis?.kind !== "auto-green" && releaseCiHoldOf(this, taskId) !== null) return false;
@@ -12389,7 +12453,7 @@ export class Store {
     versions.sort((a, b) => a.id === root.id ? -1 : b.id === root.id ? 1 : a.createdAt.localeCompare(b.createdAt) || a.refId - b.refId);
     const current = versions.at(-1)!;
     return { root, current, versions,
-      otherActive: versions.filter(one => one.id !== current.id && (one.state === "queued" || one.state === "running")),
+      otherActive: versions.filter(one => one.id !== current.id && (one.state === "queued" || one.state === "running") && !refArchived(this, one.refId)),
       problem: Number(rows[0]!["broken"]) === 0 ? null : "Task history is unavailable or incomplete. This task is shown separately." };
   }
 
@@ -12401,6 +12465,8 @@ export class Store {
     const order = options.order === "updated" ? "updated_at" : "created_at";
     const rows = this.db.prepare(`${projection.sql}, selected AS MATERIALIZED (
         SELECT * FROM ordered WHERE version_rank = 1
+          -- A put-away family (v145) is out of every list, before the page is cut.
+          AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = ordered.ref_id)
           ${options.states === undefined ? "" : `AND state IN (${options.states.map(() => "?").join(",")})`}
         ORDER BY ${order} DESC, ref_id DESC LIMIT ?
       ) SELECT task.*, members.repo, members.ref_id, members.root_ref, members.broken
@@ -12486,7 +12552,8 @@ export class Store {
         COUNT(CASE WHEN live_families.root_ref IS NOT NULL THEN 1 END) AS running,
         COUNT(CASE WHEN live_families.root_ref IS NULL AND ordered.state = 'queued' THEN 1 END) AS queued,
         COUNT(CASE WHEN live_families.root_ref IS NULL AND ordered.state = 'done' AND ordered.updated_at >= ? THEN 1 END) AS doneRecently
-      FROM ordered LEFT JOIN live_families ON live_families.root_ref = ordered.root_ref WHERE version_rank = 1`)
+      FROM ordered LEFT JOIN live_families ON live_families.root_ref = ordered.root_ref WHERE version_rank = 1
+        AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = ordered.ref_id)`)
       .get(...projection.params, JSON.stringify(liveTasks), new Date(now.getTime() - 24 * 60 * 60_000).toISOString())!;
     return { running: Number(row["running"]), queued: Number(row["queued"]), doneRecently: Number(row["doneRecently"]) };
   }
@@ -13002,13 +13069,15 @@ export class Store {
     expect?: { run: number; scopeDigest: string },
   ):
     | { ok: true; resolvedIncidents: number; rejectedRun: number | null }
-    | { ok: false; reason: "unknown-task" | "not-stalled" | "claimed" | "accepted-result" | "published" | "moved" } {
+    | { ok: false; reason: "unknown-task" | "not-stalled" | "claimed" | "accepted-result" | "published" | "moved" | "archived" } {
     return this.transact(() => {
       const ref = this.db
         .prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?")
         .get(BUILT_IN, taskId);
       if (ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
       const taskRef = Number(ref["id"]);
+      // A put-away task (v145) is restored before it runs again.
+      if (refArchived(this, taskRef)) return { ok: false as const, reason: "archived" as const };
 
       const stamp = now.toISOString();
       if (this.hasLiveClaim(taskRef, now)) return { ok: false as const, reason: "claimed" as const };
@@ -14931,10 +15000,12 @@ export class Store {
       : source !== undefined && "project" in source && source.project !== "" ? "project"
       : source !== undefined && "installation" in source ? "installation" : "unknown";
     const project = scope === "task" ? String(ref!["repo"]) : scope === "project" && source !== undefined && "project" in source ? source.project : null;
+    // A put-away task (v145) nudges nobody: no notification about it is enqueued, whoever produced it. The check is
+    // part of the insert itself, so a put away that commits first always wins.
     const { changes, lastInsertRowid } = this.db
       .prepare(
         `INSERT OR IGNORE INTO notification (dedupe_key, kind, subject, body, created_at, push_class, link, provenance_scope, project, task_ref, task_id, source_run, recipient)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = ?)`,
       )
       .run(
         notification.dedupeKey,
@@ -14945,7 +15016,7 @@ export class Store {
         notification.pushClass ?? null,
         notification.link ?? null,
         scope, project, ref === undefined ? null : taskRef, ref === undefined ? null : String(ref["external_id"]), run?.id ?? null,
-        notification.recipient ?? null,
+        notification.recipient ?? null, ref === undefined ? null : Number(ref["id"]),
       );
     // Whose act made this fact: pings follow it (see pingAllowed).
     const actor = currentActor();
@@ -16670,6 +16741,7 @@ export class Store {
            JOIN task_ref ON task_ref.backend = ? AND task_ref.external_id = task.id
            WHERE (? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)
              AND (? IS NULL OR task.state = ?)
+             AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)
            ORDER BY task.created_at DESC, task.id DESC LIMIT ?
          )
          UNION
@@ -16925,9 +16997,11 @@ export class Store {
     const { changes } = this.db
       .prepare(
         `UPDATE plan_revision SET status = ?, resolved_at = ?, resolved_by = ?
-          WHERE id = ? AND status = 'blocked'`,
+          WHERE id = ? AND status = 'blocked'
+            -- A put-away task's (v145) plan change is never applied; rejecting it still is.
+            AND (? = 'rejected' OR NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = plan_revision.task_ref))`,
       )
-      .run(outcome, now.toISOString(), resolvedBy, id);
+      .run(outcome, now.toISOString(), resolvedBy, id, outcome);
     return Number(changes) > 0;
   }
 
@@ -18473,6 +18547,12 @@ export class Store {
       }
       if (row === undefined || String(row["state"]) !== "claimed" || Number(row["generation"]) !== generation) {
         return { ok: false as const, outcome: "raced" as const, why: "the claim moved" };
+      }
+      // A put-away task (v145) merges nothing: the intent waits for a person, who restores it first.
+      const archivedTask = this.db.prepare("SELECT 1 FROM publication p JOIN task_archive a ON a.task_ref = p.task_ref WHERE p.id = ?").get(Number(row["publication"]));
+      if (archivedTask !== undefined) {
+        this.settleMergeIntent(id, generation, "waiting-human", now, { error: "the task is put away", from: "claimed", bumpGeneration: true });
+        return { ok: false as const, outcome: "waiting-human" as const, why: "the task is put away" };
       }
       const supersede = (why: string): { ok: false; outcome: "superseded"; why: string } => {
         this.settleMergeIntent(id, generation, "superseded", now, { error: why, from: "claimed" });
@@ -20482,10 +20562,11 @@ export class Store {
     const page = Math.max(1, Math.min(Math.floor(limit), 50));
     // Roll-up admission binds BEFORE the LIMIT (Codex roll-up review,
     // finding 2): a repo outside the ceiling must not consume the page.
-    const admission =
+    // A put-away task (v145, task-tidy.md) is left out here, as from every list and count.
+    const admission = (
       admitted === null
         ? "(? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)"
-        : `(task_ref.repo IS NULL${admitted.length === 0 ? "" : ` OR task_ref.repo IN (${admitted.map(() => "?").join(",")})`})`;
+        : `(task_ref.repo IS NULL${admitted.length === 0 ? "" : ` OR task_ref.repo IN (${admitted.map(() => "?").join(",")})`})`) + " AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)";
     const params = admitted === null ? [repo, repo] : admitted;
     return this.db
       .prepare(
@@ -20523,10 +20604,11 @@ export class Store {
     admitted: string[] | null = null,
   ): { taskId: string; title: string; state: TaskState; strikes: number; incidentCount: number; repo: string | null }[] {
     const page = Math.max(1, Math.min(Math.floor(limit), 50));
-    const admission =
+    // A put-away task (v145, task-tidy.md) is left out here, as from every list and count.
+    const admission = (
       admitted === null
         ? "(? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)"
-        : `(task_ref.repo IS NULL${admitted.length === 0 ? "" : ` OR task_ref.repo IN (${admitted.map(() => "?").join(",")})`})`;
+        : `(task_ref.repo IS NULL${admitted.length === 0 ? "" : ` OR task_ref.repo IN (${admitted.map(() => "?").join(",")})`})`) + " AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)";
     const params = admitted === null ? [repo, repo] : admitted;
     return this.db
       .prepare(
@@ -20599,6 +20681,8 @@ export class Store {
          JOIN task_ref AS blocker_ref ON blocker_ref.backend = ? AND blocker_ref.external_id = task_edge.blocker
          WHERE ${admissionOf("dependent_ref")}
            AND ${admissionOf("blocker_ref")}
+           -- Put-away tasks (v145) need no repair card, on either side.
+           AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref IN (dependent_ref.id, blocker_ref.id))
          GROUP BY task_edge.blocker, dependent_ref.repo, blocker_ref.repo
          ORDER BY task_edge.blocker LIMIT ?`,
       )
@@ -20657,6 +20741,7 @@ export class Store {
            WHERE task.state = 'done'
              AND (? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)
              ${admission}
+             AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)
          )
          SELECT completed.*, run.id AS run_id, run.outcome, run.handoff, run.cost_usd, run.provider, run.auth_mode, run.started_at, run.finished_at,
                 publication.state AS pub_state, publication.pr_number, publication.pr_url,
@@ -20805,10 +20890,11 @@ export class Store {
     // finding 11): in the roll-up, rows outside the ceiling must not
     // consume the page and crowd out admitted cards. Serve still filters
     // per-row afterward — this is the bound, that is the law.
-    const admission =
+    // A put-away task (v145, task-tidy.md) is left out here, as from every list and count.
+    const admission = (
       admitted === null
         ? "(? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)"
-        : `(task_ref.repo IS NULL OR task_ref.repo IN (${admitted.map(() => "?").join(",")}))`;
+        : `(task_ref.repo IS NULL OR task_ref.repo IN (${admitted.map(() => "?").join(",")}))`) + " AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)";
     const admissionParams = admitted === null ? [repo, repo] : admitted;
 
     const columns = `
@@ -21029,7 +21115,7 @@ export class Store {
            SUM(CASE WHEN task.state = 'queued' THEN 1 ELSE 0 END) AS queued,
            SUM(CASE WHEN task.state = 'running' THEN 1 ELSE 0 END) AS running
            FROM task JOIN task_ref ON task_ref.backend = 'built-in' AND task_ref.external_id = task.id
-          WHERE task_ref.repo = ?`,
+          WHERE task_ref.repo = ? AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)`,
       )
       .get(repo) as { queued: number | null; running: number | null };
     const since = new Date(now.getTime() - 24 * 60 * 60_000).toISOString();
@@ -21038,7 +21124,8 @@ export class Store {
         `SELECT COUNT(*) AS n FROM run
            JOIN task_ref ON task_ref.id = run.task_ref
           WHERE task_ref.repo = ? AND run.role IN ('builder','scout')
-            AND run.outcome IN ('built','no-change') AND run.finished_at IS NOT NULL AND run.finished_at >= ?`,
+            AND run.outcome IN ('built','no-change') AND run.finished_at IS NOT NULL AND run.finished_at >= ?
+            AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)`,
       )
       .get(repo, since) as { n: number };
     return { waiting: waiting, queued: Number(q.queued ?? 0), running: Number(q.running ?? 0), doneRecently: Number(done.n) };
@@ -21054,10 +21141,11 @@ export class Store {
     // review, finding 11): with repo NULL the old predicate admitted every
     // stored project, ceiling or not. An empty admitted list reduces to
     // unplaced rows only — never IN ().
-    const admission =
+    // A put-away task (v145, task-tidy.md) is left out here, as from every list and count.
+    const admission = (
       admitted === null
         ? "(? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)"
-        : `(task_ref.repo IS NULL${admitted.length === 0 ? "" : ` OR task_ref.repo IN (${admitted.map(() => "?").join(",")})`})`;
+        : `(task_ref.repo IS NULL${admitted.length === 0 ? "" : ` OR task_ref.repo IN (${admitted.map(() => "?").join(",")})`})`) + " AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)";
     const params = (): unknown[] => (admitted === null ? [repo, repo] : [...admitted]);
     const row = this.db
       .prepare(
@@ -21979,8 +22067,9 @@ export class Store {
     now: Date,
   ):
     | { ok: true; stop: RunStop }
-    | { ok: false; reason: "no-stop" | "wrong-task" | "stopping" | "already-resumed" | "superseded" | "busy" | "review"; detail: string } {
+    | { ok: false; reason: "no-stop" | "wrong-task" | "stopping" | "already-resumed" | "superseded" | "busy" | "review" | "archived"; detail: string } {
     return this.transact(() => {
+      if (refArchived(this, args.taskRef)) return { ok: false as const, reason: "archived" as const, detail: "this task is put away — restore it first" };
       const stop = this.stopOf(args.runId);
       const run = this.getRun(args.runId);
       if (stop === null || run === null) return { ok: false as const, reason: "no-stop" as const, detail: `run #${args.runId} was not stopped` };
@@ -25529,5 +25618,114 @@ export function dropFeedbackImage(store: Store, runId: number, commentId: number
       taskId: store.externalIdFor(run.taskRef) ?? null, runId, action: "feedback screenshot removed", outcome: "recorded", source: "work",
       detail: `note ${commentId} kept as note ${id} without screenshot ${image.artifact}: ${problem}` });
     return { ok: true as const, id };
+  });
+}
+
+/** A put-away task version (v145, docs/plans/task-tidy.md). */
+export type TaskArchive = { taskRef: number; taskId: string; by: string; byKind: "person" | "tidy"; rule: string | null; reason: string; at: string };
+/** Who put a task away, and why: a person by name, or tidy by its rule. */
+export type ArchiveBy = { by: string; byKind: "person" | "tidy"; rule: string | null; reason: string };
+export type ArchiveRefusal = "unknown-task" | "live" | "archived" | "not-archived" | "blocked";
+
+/** The put-away record of this task, or null when it is not put away. */
+export function archiveOf(store: Store, taskId: string): TaskArchive | null {
+  const row = store.handle.prepare(`SELECT a.*, r.external_id FROM task_archive a JOIN task_ref r ON r.id = a.task_ref
+    WHERE r.backend = 'built-in' AND r.external_id = ?`).get(taskId);
+  return row === undefined ? null : { taskRef: Number(row["task_ref"]), taskId: String(row["external_id"]), by: String(row["by"]),
+    byKind: row["by_kind"] === "tidy" ? "tidy" : "person", rule: row["rule"] == null ? null : String(row["rule"]), reason: String(row["reason"]), at: String(row["at"]) };
+}
+
+/** Every version of a task's family, by the same proven lineage the task page reads (`taskFamilyOf`: same project, each
+ * revision bound to its parent's own run by its brief). A family whose lineage doesn't prove is just this task. */
+export function taskFamilyRefs(store: Store, taskId: string): { id: number; taskId: string }[] {
+  const family = store.taskFamilyOf(taskId, null, true);
+  return family === null ? [] : family.versions.map(one => ({ id: one.refId, taskId: one.id })).sort((a, b) => a.id - b.id);
+}
+
+/** The first family version with something still going on, or null: running, a live newest claim, an unfinished run,
+ * a process Toolroll hasn't seen exit, a build whose processes were never recorded, a stop still settling, a follow-up
+ * check asked for and not finished, a flow step running for its card, a release in flight (a live release approval
+ * that names it, or a deploy or merge reserved, running or unknown), or a pull request merging (an intent claimed or
+ * firing, or a person's merge between its last check and GitHub's answer). */
+export function liveFamilyAttempt(store: Store, refs: readonly number[], now: Date): string | null {
+  if (refs.length === 0) return null;
+  const row = store.handle.prepare(`SELECT r.external_id FROM task_ref r JOIN task t ON t.id = r.external_id
+    WHERE r.id IN (SELECT value FROM json_each(?)) AND (t.state = 'running'
+      OR EXISTS (SELECT 1 FROM claim c WHERE c.task_ref = r.id AND c.released_at IS NULL AND c.expires_at > ?
+        AND c.lease_generation = (SELECT MAX(n.lease_generation) FROM claim n WHERE n.task_ref = r.id))
+      OR EXISTS (SELECT 1 FROM run x WHERE x.task_ref = r.id AND x.outcome IS NULL)
+      OR EXISTS (SELECT 1 FROM run_process p JOIN run x ON x.id = p.run WHERE x.task_ref = r.id AND p.exited_at IS NULL AND p.container_empty_at IS NULL)
+      OR EXISTS (SELECT 1 FROM run x WHERE x.task_ref = r.id AND x.provider_started_at IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM run_process p WHERE p.run = x.id) AND NOT EXISTS (SELECT 1 FROM run_process_summary s WHERE s.run = x.id))
+      OR EXISTS (SELECT 1 FROM run_stop s WHERE s.task_ref = r.id AND s.resumed_at IS NULL AND s.settled_at IS NULL)
+      OR EXISTS (SELECT 1 FROM action_ledger q JOIN run x ON x.id = q.run_id WHERE x.task_ref = r.id AND q.action = 'checks requested'
+        AND NOT EXISTS (SELECT 1 FROM action_ledger f WHERE f.run_id = q.run_id AND f.action = 'checks finished' AND f.outcome LIKE q.id || ':%'))
+      OR EXISTS (SELECT 1 FROM flow_card c JOIN flow_step_run s ON s.card = c.id
+        WHERE s.state = 'running' AND (c.task = r.external_id OR c.primary_task = r.external_id))
+      OR EXISTS (SELECT 1 FROM flow_step_task t JOIN flow_step_run s ON s.card = t.card AND s.entry = t.entry
+        WHERE s.state = 'running' AND t.task_id = r.external_id)
+      OR EXISTS (SELECT 1 FROM deploy_in_flight d WHERE d.task_ref = r.id AND d.at > ?)
+      OR EXISTS (SELECT 1 FROM release_authority a WHERE a.state IN ('open','deploying','merge-reserved') AND (a.anchor_task = r.external_id OR a.tip_task = r.external_id))
+      OR EXISTS (SELECT 1 FROM release_operation o WHERE o.task_id = r.external_id AND o.state IN ('reserved','running','unknown'))
+      OR EXISTS (SELECT 1 FROM merge_intent i JOIN publication p ON p.id = i.publication WHERE p.task_ref = r.id AND i.state IN ('claimed','firing'))
+      OR EXISTS (SELECT 1 FROM merge_in_flight m WHERE m.task_ref = r.id AND m.at > ?))
+    LIMIT 1`).get(JSON.stringify(refs), now.toISOString(), new Date(now.getTime() - 30 * 60_000).toISOString(), new Date(now.getTime() - 15 * 60_000).toISOString());
+  return row === undefined ? null : String(row["external_id"]);
+}
+
+/** Puts a task away (v145): every version of its family, in one write transaction that re-checks it has no live
+ * attempt, that its versions are exactly `expect` when the caller showed a person a family (a preview), and that
+ * `guard` (the caller's own rule, re-read under the lock) still allows it. Its state, history, results, approvals and
+ * ledger are untouched; its open notifications are resolved; one ledger row records who and why. */
+export function archiveTaskFamily(store: Store, taskId: string, by: ArchiveBy, now: Date,
+  options: { expect?: readonly number[]; guard?: (refs: readonly number[]) => string | null } = {}): { ok: true; refs: number[] } | { ok: false; reason: ArchiveRefusal; message: string } {
+  return store.transact(() => {
+    const family = taskFamilyRefs(store, taskId);
+    if (family.length === 0) return { ok: false as const, reason: "unknown-task" as const, message: `No task ${taskId}.` };
+    const refs = family.map(one => one.id);
+    if (options.expect !== undefined && [...options.expect].sort((a, b) => a - b).join(",") !== refs.join(",")) {
+      return { ok: false as const, reason: "blocked" as const, message: `${taskId}'s versions changed since the list was shown.` };
+    }
+    // Already put away, every version: nothing to do. A family a person revived with a new revision puts away the rest.
+    const remaining = refs.filter(ref => !refArchived(store, ref));
+    if (remaining.length === 0) return { ok: false as const, reason: "archived" as const, message: `${taskId} is already put away.` };
+    const live = liveFamilyAttempt(store, refs, now);
+    if (live !== null) return { ok: false as const, reason: "live" as const, message: `${taskId} still has work going on. Stop it or let it finish, then put it away.` };
+    const blocked = options.guard?.(refs) ?? null;
+    if (blocked !== null) return { ok: false as const, reason: "blocked" as const, message: blocked };
+    const reason = by.reason.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 300) || "Put away";
+    const at = now.toISOString();
+    const insert = store.handle.prepare("INSERT INTO task_archive (task_ref, by, by_kind, rule, reason, at) VALUES (?, ?, ?, ?, ?, ?)");
+    for (const ref of remaining) insert.run(ref, by.by, by.byKind, by.rule, reason, at);
+    store.handle.prepare("UPDATE notification SET resolved_at = ? WHERE resolved_at IS NULL AND task_ref IN (SELECT value FROM json_each(?))")
+      .run(at, JSON.stringify(refs));
+    // The family's flow cards hold while it is put away, so what they queued for people is settled too.
+    store.handle.prepare(`UPDATE notification SET resolved_at = ? WHERE resolved_at IS NULL AND EXISTS (SELECT 1 FROM flow_card c
+        WHERE (c.task IN (SELECT value FROM json_each(?)) OR c.primary_task IN (SELECT value FROM json_each(?)))
+          AND (notification.dedupe_key LIKE 'flow:' || c.id || ':%' OR notification.dedupe_key LIKE 'flow-card:' || c.id || ':%'))`)
+      .run(at, JSON.stringify(family.map(one => one.taskId)), JSON.stringify(family.map(one => one.taskId)));
+    const repo = store.refById(refs[0]!)?.repo ?? null;
+    store.recordAction({ at, actor: by.byKind === "tidy" ? "tidy" : `operator:${by.by}`, repo, taskId, runId: null, action: "task archived",
+      outcome: by.rule ?? "by hand", source: "work", detail: `${reason}${refs.length > 1 ? ` (${refs.length} versions)` : ""}` });
+    return { ok: true as const, refs };
+  });
+}
+
+/** Brings a put-away task back (v145): every version of its family, with a ledger row. Tidy never puts a restored
+ * task away again (tidy.ts reads the `task restored` row). */
+export function restoreTaskFamily(store: Store, taskId: string, by: string, now: Date,
+  guard?: (refs: readonly number[]) => string | null): { ok: true; refs: number[] } | { ok: false; reason: ArchiveRefusal; message: string } {
+  return store.transact(() => {
+    const family = taskFamilyRefs(store, taskId);
+    if (family.length === 0) return { ok: false as const, reason: "unknown-task" as const, message: `No task ${taskId}.` };
+    const refs = family.map(one => one.id).filter(ref => refArchived(store, ref));
+    if (refs.length === 0) return { ok: false as const, reason: "not-archived" as const, message: `${taskId} isn't put away.` };
+    const blocked = guard?.(refs) ?? null;
+    if (blocked !== null) return { ok: false as const, reason: "blocked" as const, message: blocked };
+    store.handle.prepare("DELETE FROM task_archive WHERE task_ref IN (SELECT value FROM json_each(?))").run(JSON.stringify(refs));
+    const at = now.toISOString();
+    store.recordAction({ at, actor: `operator:${by}`, repo: store.refById(refs[0]!)?.repo ?? null, taskId, runId: null, action: "task restored",
+      outcome: "recorded", source: "work", detail: refs.length > 1 ? `${refs.length} versions` : null });
+    return { ok: true as const, refs };
   });
 }

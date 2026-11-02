@@ -13,7 +13,9 @@ type Run = { id: number; taskRef: number; role: string; outcome: string; headRev
 type PersonAnswer = { ok: true; by: string; at: string; method: string } | { ok: false; why: string };
 const PERSON: PersonAnswer = { ok: true, by: "alex", at: "2026-10-24T09:00:00.000Z", method: "password-now" };
 
-function fixture(runs: Run[], receipts: Record<number, object | null>, readiness: { blockers: { key: string; message: string }[] } | null = { blockers: [] }, person: PersonAnswer | null = PERSON) {
+/** What the candidate check wrote to the plane: the deploy reservation, and nothing else. */
+const written: [string, unknown[]][] = [];
+function fixture(runs: Run[], receipts: Record<number, object | null>, readiness: { blockers: { key: string; message: string }[] } | null = { blockers: [] }, person: PersonAnswer | null = PERSON, archived = false, tables = archived) {
   const store = {
     getRun: (id: number) => runs.find(one => one.id === id) ?? null,
     runsFor: (taskRef: number) => runs.filter(one => one.taskRef === taskRef).sort((a, b) => b.id - a.id),
@@ -22,8 +24,8 @@ function fixture(runs: Run[], receipts: Record<number, object | null>, readiness
     liveVerifyCommand: () => ({ command: COMMAND }),
     proofVerdictFor: () => null,
     proofAcceptance: () => null,
-    // A plane with no release tables: no task belongs to a release.
-    handle: { prepare: () => ({ get: () => undefined }) },
+    // A plane with no release tables: no task belongs to a release. `archived`: the plane has put this task away (v145).
+    handle: { prepare: (sql: string) => ({ get: () => (tables && /sqlite_master/.test(sql)) || (archived && /FROM task_archive/.test(sql)) ? { hit: 1 } : undefined, run: (...args: unknown[]) => { written.push([sql, args]); } }) },
   };
   const deps = {
     verificationEvidence: (_store: unknown, _root: string, runId: number) => {
@@ -41,6 +43,17 @@ const regate: Run = { id: 2, taskRef: 7, role: "builder", outcome: "no-change", 
 const passing = { run: 2, head: HEAD, scopeDigest: DIGEST, result: { ran: true, exitCode: 0 }, command: { command: COMMAND } };
 
 describe("deploymentCandidate", () => {
+  test("a put-away task deploys nothing, read from the plane; a plane from before put-away has nothing put away", () => {
+    written.length = 0;
+    expect(() => fixture([built, regate], { 2: passing }, { blockers: [] }, PERSON, true)(2)).toThrow("This task is put away. Restore it before deploying.");
+    expect(written).toEqual([]);
+    expect(fixture([built, regate], { 2: passing })(2)).toMatchObject({ taskId: "t1" });
+    // A plane without the put-away tables (this fixture's) is never written to.
+    expect(written).toEqual([]);
+    // With them, a passing candidate is reserved against being put away while it deploys.
+    expect(fixture([built, regate], { 2: passing }, { blockers: [] }, PERSON, false, true)(2)).toMatchObject({ taskId: "t1" });
+    expect(written.map(([sql, args]) => [/INSERT OR REPLACE INTO deploy_in_flight/.test(sql), args.slice(0, 2)])).toEqual([[true, [7, 2]]]);
+  });
   test("a passing gate cannot cover an invalid screenshot on a row whose check reference is missing", () => {
     const blockers = completionBlockersOf({ report: false, checks: { status: "passed", exitCode: 0, level: "full" }, checkRequired: true,
       matrix: [mixedCheckScreenshot({ path: "", ok: false, problem: "wrong file kind" })], verdict: "short", accepted: false, high: 0 });

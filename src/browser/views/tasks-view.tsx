@@ -5,11 +5,12 @@
  * step is one quiet button. Filtering and paging stay server-side (real
  * URLs), so Back and bookmarks work. Usage folds to one line on a desk and
  * sits below the list on a phone, so the first task is near the top. */
-import { ArrowRight, ChevronDown, ChevronRight, Ellipsis, Inbox, LayoutGrid, Plus, Sparkles, Code2, ListOrdered, Briefcase } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowRight, ChevronDown, ChevronRight, Ellipsis, Inbox, LayoutGrid, Plus, Sparkles, Code2, ListOrdered, Briefcase } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { BrowserLimits, BrowserLimitTile, BrowserTasksView } from "../../browser-workspace.js";
 import { Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, cn } from "../components/ui/index.js";
 import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
+import { PostForm } from "../ui/post-form.js";
 
 const TOOL_ICONS: Record<string, ReactNode> = {
   "/inbox": <Inbox />, "/code": <Code2 />, "/board": <LayoutGrid />, "/board?view=order": <ListOrdered />,
@@ -122,11 +123,26 @@ function TaskRow({ row, grouped = false }: { row: BrowserTasksView["rows"][numbe
     </div>
     <div className="flex items-center gap-3 phone:contents desk:contents">
       <TaskChip row={row} grouped={grouped} />
-      {row.action && <Button asChild variant="outline" size="sm" className="desk:col-start-3 desk:row-start-1 desk:justify-self-end phone:col-start-3 phone:row-start-1 phone:self-start">
-        <a href={row.action.href} data-primary-action>{row.action.label}<ArrowRight /></a>
-      </Button>}
+      {(row.action || row.tidy) && <div className="flex items-center gap-1 desk:col-start-3 desk:row-start-1 desk:justify-self-end phone:col-start-3 phone:row-start-1 phone:self-start">
+        {row.action && <Button asChild variant="outline" size="sm"><a href={row.action.href} data-primary-action>{row.action.label}<ArrowRight /></a></Button>}
+        {row.tidy && <TidyAct tidy={row.tidy} />}
+      </div>}
     </div>
   </li>;
+}
+
+/** Put away (or Restore): one quiet button posting to the task's own route. On a phone beside another action it is
+ * its icon alone, named for screen readers. */
+function TidyAct({ tidy }: { tidy: NonNullable<BrowserTasksView["rows"][number]["tidy"]> }) {
+  const restore = tidy.label === "Restore";
+  return <PostForm action={tidy.action} className="contents" data-tidy-act={restore ? "restore" : "put-away"}>
+    <input type="hidden" name="return" value={tidy.returnTo} />
+    {/* A form's lone submit is full width on a phone (console.css); this one keeps its own width beside the row's action. */}
+    <Button type="submit" variant={restore ? "outline" : "ghost"} size="sm" aria-label={tidy.label} className={cn("w-auto!", !restore && "text-muted-foreground")}>
+      {restore ? <ArchiveRestore aria-hidden="true" /> : <Archive aria-hidden="true" />}
+      <span className={restore ? undefined : "phone:sr-only"}>{tidy.label}</span>
+    </Button>
+  </PostForm>;
 }
 
 /** The rows in the view's groups, in order, each under a small heading with its count; a plain list otherwise.
@@ -215,6 +231,7 @@ export function TasksView({ view }: { view: BrowserTasksView }) {
             {view.tools.map(tool => <DropdownMenuItem key={tool.href} asChild><a href={tool.href}>{TOOL_ICONS[tool.href]}{tool.label}</a></DropdownMenuItem>)}
           </DropdownMenuContent>
         </DropdownMenu>
+        {view.putAway && <Button asChild variant="outline" size="sm"><a href={view.putAway.href} data-put-away-old><Archive aria-hidden="true" /><span className="phone:hidden">{view.putAway.label}</span><span className="sr-only desk:hidden">{view.putAway.label}</span></a></Button>}
         <Button asChild size="sm" className="desk:hidden"><a href={view.newTask.href}><Plus />{view.newTask.label}</a></Button>
       </div>
     </div>
