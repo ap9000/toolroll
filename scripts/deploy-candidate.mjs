@@ -79,20 +79,58 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now, rel
   const blockers = assignment.readiness?.blockers;
   requireFact(Array.isArray(blockers), 'The result\'s readiness could not be read.');
   requireFact(blockers.length === 0, `This result isn't ready to deploy: ${blockers.map(one => one.message).join(' ')}`);
-  // The candidate passed: reserve it against being put away (v145) with the put-away check in one write, held 30 minutes
-  // and refreshed by every phase that proves it again, so a put away during the swap waits for the deployment.
-  if (archiveTable !== undefined) {
-    const reserve = () => {
-      requireFact(store.handle.prepare("SELECT 1 FROM task_archive WHERE task_ref = ?").get(run.taskRef) === undefined, "This task is put away. Restore it before deploying.");
-      store.handle.prepare("INSERT OR REPLACE INTO deploy_in_flight (task_ref, run, at) VALUES (?, ?, ?)").run(run.taskRef, runId, now.toISOString());
-    };
-    if (typeof store.transact === 'function') store.transact(reserve); else reserve();
-  }
-  return { taskId: ref.externalId, repo: ref.repo, scopeDigest: scope.digest, approvedBy: person.by,
+  // The proofs above only read: every phase proves the candidate on a read-only handle. The reservation against being
+  // put away (v145) is its own write, reserveDeployment, which the deployment makes on a writable handle right after.
+  return { taskId: ref.externalId, taskRef: run.taskRef, runId, repo: ref.repo, scopeDigest: scope.digest, approvedBy: person.by,
     completion: assignment.completion, gateDigest: evidence.digest,
     proofVerdict: store.proofVerdictFor(runId)?.verdict ?? null,
     acceptance: store.proofAcceptance(runId), criteria: scope.acceptance.length,
     worktree: run.worktree, gate };
+}
+
+/**
+ * Reserve a proven candidate against being put away (v145, docs/plans/task-tidy.md): the put-away check and the
+ * `deploy_in_flight` upsert in one write transaction, held 30 minutes and refreshed by every phase that proves the
+ * candidate again, so a put away during the swap waits for the deployment. Idempotent (one row per task). Needs a
+ * writable store; deploymentCandidate's proofs never write. A plane from before put-away (no task_archive) has nothing
+ * to reserve against and is skipped; one with task_archive but no deploy_in_flight is refused rather than guessed at.
+ */
+export function reserveDeployment(store, { runId, taskRef, now }) {
+  const requireFact = (value, message) => { if (!value) throw Error(message); };
+  requireFact(Number.isInteger(runId) && Number.isInteger(taskRef) && now instanceof Date && !Number.isNaN(now.getTime()),
+    "The deployment's reservation needs its run, task and time.");
+  const db = store.handle;
+  const table = name => db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
+  if (!table("task_archive")) return { reserved: false };
+  requireFact(table("deploy_in_flight"), "This plane can put tasks away but has no deployment reservations; update Toolroll first.");
+  const reserve = () => {
+    requireFact(store.getRun(runId)?.taskRef === taskRef, `Run ${runId} no longer belongs to the task being deployed.`);
+    requireFact(db.prepare("SELECT 1 AS hit FROM task_archive WHERE task_ref = ?").get(taskRef) === undefined, "This task is put away. Restore it before deploying.");
+    db.prepare("INSERT OR REPLACE INTO deploy_in_flight (task_ref, run, at) VALUES (?, ?, ?)").run(taskRef, runId, now.toISOString());
+  };
+  if (typeof store.transact === 'function') store.transact(reserve);
+  else {
+    db.exec("BEGIN IMMEDIATE");
+    try { reserve(); db.exec("COMMIT"); } catch (error) { db.exec("ROLLBACK"); throw error; }
+  }
+  return { reserved: true };
+}
+
+/**
+ * The deployment's reservation on its own short-lived writable handle (the proofs ran on a read-only one): open, reserve,
+ * close. A handle that can't be opened, or a write that fails, refuses the deployment — the reservation is never skipped.
+ * open() returns a node:sqlite database; storeOf(db) wraps it in the installed runtime's Store.
+ */
+export function reserveOnWritable(open, storeOf, { runId, taskRef, now }) {
+  let db;
+  try { db = open(); }
+  catch (error) { throw Error(`The deployment can't reserve this task against being put away: the plane's database didn't open for writing (${error?.message ?? error}).`); }
+  try { return reserveDeployment(storeOf(db), { runId, taskRef, now }); }
+  catch (error) {
+    if (/^(This task is put away|Run \d+ no longer belongs|This plane can put tasks away)/.test(String(error?.message))) throw error;
+    throw Error(`The deployment can't reserve this task against being put away: ${error?.message ?? error}`);
+  }
+  finally { db.close(); }
 }
 
 /**

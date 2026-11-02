@@ -1,6 +1,17 @@
-import { describe, expect, test } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, describe, expect, test } from "vitest";
 // @ts-expect-error plain ESM script without declarations
-import { deploymentCandidate } from "../scripts/deploy-candidate.mjs";
+import { deploymentCandidate, reserveDeployment, reserveOnWritable } from "../scripts/deploy-candidate.mjs";
+// @ts-expect-error plain ESM script without declarations
+import { openDeploymentDatabase } from "../scripts/deploy-phases.mjs";
+import { provableCandidate } from "../test/deploy-candidate-fixture.js";
+import { assignmentOf } from "./assignment.js";
+import * as installedScope from "./scope.js";
+import { Store } from "./store.js";
+import { verificationEvidence } from "./verification-evidence.js";
 import { mixedCheckScreenshot } from "../test/status-evidence-fixture.js";
 import { completionBlockersOf } from "./task-status.js";
 
@@ -50,9 +61,9 @@ describe("deploymentCandidate", () => {
     expect(fixture([built, regate], { 2: passing })(2)).toMatchObject({ taskId: "t1" });
     // A plane without the put-away tables (this fixture's) is never written to.
     expect(written).toEqual([]);
-    // With them, a passing candidate is reserved against being put away while it deploys.
-    expect(fixture([built, regate], { 2: passing }, { blockers: [] }, PERSON, false, true)(2)).toMatchObject({ taskId: "t1" });
-    expect(written.map(([sql, args]) => [/INSERT OR REPLACE INTO deploy_in_flight/.test(sql), args.slice(0, 2)])).toEqual([[true, [7, 2]]]);
+    // With them, the proofs still only read: the reservation is reserveDeployment's own write on a writable handle.
+    expect(fixture([built, regate], { 2: passing }, { blockers: [] }, PERSON, false, true)(2)).toMatchObject({ taskId: "t1", taskRef: 7, runId: 2 });
+    expect(written).toEqual([]);
   });
   test("a passing gate cannot cover an invalid screenshot on a row whose check reference is missing", () => {
     const blockers = completionBlockersOf({ report: false, checks: { status: "passed", exitCode: 0, level: "full" }, checkRequired: true,
@@ -93,5 +104,94 @@ describe("deploymentCandidate", () => {
     expect(() => fixture([regate], { 2: passing })(2)).toThrow("Run 2 is not a built candidate");
     const elsewhere = { ...built, headRevision: "b".repeat(40) };
     expect(() => fixture([elsewhere, regate], { 2: passing })(2)).toThrow("Run 2 is not a built candidate");
+  });
+});
+
+/**
+ * The deployment as scripts/deploy-browser.mjs runs it, on a real plane database (v145 tables present): every phase
+ * proves the candidate on a READ-ONLY handle (the 0.9.86 deploy died there: the proofs wrote the reservation, SQLITE
+ * readonly), then reserves it on a short-lived writable one.
+ */
+describe("the deployment's reservation against being put away", () => {
+  const roots: string[] = [];
+  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+  const plane = () => {
+    const root = mkdtempSync(join(tmpdir(), "toolroll-deploy-reserve-"));
+    roots.push(root);
+    const database = join(root, "orders.db");
+    const { runId, head, now } = provableCandidate(database);
+    return { database, runId, head, now, evidenceRoot: join(root, "evidence") };
+  };
+  const facts = (p: ReturnType<typeof plane>, db: DatabaseSync) => deploymentCandidate(new Store(db), { runId: p.runId, head: p.head, evidenceRoot: p.evidenceRoot, now: p.now },
+    { assignmentOf, verificationEvidence, installedScope });
+  const rows = (database: string) => { const db = new DatabaseSync(database, { readOnly: true }); try { return db.prepare("SELECT task_ref, run, at FROM deploy_in_flight").all(); } finally { db.close(); } };
+  const putAway = (database: string, taskRef: number) => {
+    const db = new DatabaseSync(database);
+    try { db.prepare("INSERT INTO task_archive (task_ref, by, by_kind, rule, reason, at) VALUES (?, 'alex', 'person', NULL, 'done', ?)").run(taskRef, new Date().toISOString()); } finally { db.close(); }
+  };
+  /** deploy-browser.mjs proveAndReserve: read-only proofs, then the reservation on its own writable handle. */
+  const proveAndReserve = (p: ReturnType<typeof plane>, at: Date) => {
+    const ro = openDeploymentDatabase(p.database, { readOnly: true });
+    let proven;
+    try { proven = facts(p, ro); } finally { ro.close(); }
+    reserveOnWritable(() => openDeploymentDatabase(p.database), (db: DatabaseSync) => new Store(db), { runId: p.runId, taskRef: proven.taskRef, now: at });
+    return proven;
+  };
+
+  test("the proofs run on a read-only handle with the put-away tables present, and write nothing", () => {
+    const p = plane();
+    const ro = new DatabaseSync(p.database, { readOnly: true });
+    try { expect(facts(p, ro)).toMatchObject({ taskId: "deploy-me", runId: p.runId }); } finally { ro.close(); }
+    expect(rows(p.database)).toEqual([]);
+  });
+
+  test("reserveDeployment writes the row, is idempotent (a refresh moves its time), and refuses a put-away task", () => {
+    const p = plane();
+    const ro = new DatabaseSync(p.database, { readOnly: true });
+    let taskRef: number;
+    try { taskRef = facts(p, ro).taskRef; } finally { ro.close(); }
+    const db = new DatabaseSync(p.database);
+    try {
+      const store = new Store(db);
+      expect(reserveDeployment(store, { runId: p.runId, taskRef, now: new Date("2026-11-01T10:00:00.000Z") })).toEqual({ reserved: true });
+      expect(reserveDeployment(store, { runId: p.runId, taskRef, now: new Date("2026-11-01T10:05:00.000Z") })).toEqual({ reserved: true });
+      expect(rows(p.database)).toEqual([{ task_ref: taskRef, run: p.runId, at: "2026-11-01T10:05:00.000Z" }]);
+      // A run of another task can't reserve this one.
+      expect(() => reserveDeployment(store, { runId: p.runId, taskRef: taskRef + 99, now: new Date() })).toThrow("no longer belongs");
+    } finally { db.close(); }
+    putAway(p.database, taskRef);
+    const again = new DatabaseSync(p.database);
+    try {
+      expect(() => reserveDeployment(new Store(again), { runId: p.runId, taskRef, now: new Date("2026-11-01T10:10:00.000Z") })).toThrow("This task is put away. Restore it before deploying.");
+    } finally { again.close(); }
+    // The refused refresh changed nothing.
+    expect(rows(p.database)).toEqual([{ task_ref: taskRef, run: p.runId, at: "2026-11-01T10:05:00.000Z" }]);
+  });
+
+  test("a read-only handle can't reserve: it refuses, never skips", () => {
+    const p = plane();
+    const ro = new DatabaseSync(p.database, { readOnly: true });
+    try {
+      const taskRef = facts(p, ro).taskRef;
+      expect(() => reserveDeployment(new Store(ro), { runId: p.runId, taskRef, now: new Date() })).toThrow(/readonly/);
+    } finally { ro.close(); }
+    expect(() => reserveOnWritable(() => { throw Error("unable to open database file"); }, (db: DatabaseSync) => new Store(db), { runId: p.runId, taskRef: 1, now: new Date() }))
+      .toThrow("The deployment can't reserve this task against being put away: the plane's database didn't open for writing (unable to open database file).");
+    expect(rows(p.database)).toEqual([]);
+  });
+
+  test("a plane from before put-away (no task_archive) has nothing to reserve against", () => {
+    const db = new DatabaseSync(":memory:");
+    try { expect(reserveDeployment({ handle: db, getRun: () => null }, { runId: 1, taskRef: 1, now: new Date() })).toEqual({ reserved: false }); } finally { db.close(); }
+  });
+
+  test("each proving phase (entry, then a resumed finish) proves read-only and refreshes the reservation; a put away stops the next phase", () => {
+    const p = plane();
+    const entry = proveAndReserve(p, new Date("2026-11-01T10:00:00.000Z"));
+    expect(rows(p.database)).toEqual([{ task_ref: entry.taskRef, run: p.runId, at: "2026-11-01T10:00:00.000Z" }]);
+    proveAndReserve(p, new Date("2026-11-01T10:20:00.000Z"));
+    expect(rows(p.database)).toEqual([{ task_ref: entry.taskRef, run: p.runId, at: "2026-11-01T10:20:00.000Z" }]);
+    putAway(p.database, entry.taskRef);
+    expect(() => proveAndReserve(p, new Date("2026-11-01T10:25:00.000Z"))).toThrow("This task is put away. Restore it before deploying.");
   });
 });

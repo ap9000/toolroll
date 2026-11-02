@@ -15,7 +15,7 @@
 // --phase <name> to resume one. Nothing here weakens an approval: the candidate
 // must already be checked and marked complete, or the script stops before touching
 // the service.
-import { deploymentCandidate } from "./deploy-candidate.mjs";
+import { deploymentCandidate, reserveOnWritable } from "./deploy-candidate.mjs";
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -124,12 +124,23 @@ if (phaseWanted !== "recover" && typeof oldRt.nightly?.refreshNightlyForDeploy =
   catch { /* the stored check below decides, exemptions not counted */ }
   finally { db.close(); }
 }
-const early = phaseWanted === "recover" ? null : (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
+const early = phaseWanted === "recover" ? null : proveAndReserve();
 // A stage made before the rename installed the runtime under the older name; resuming it keeps that path.
 const stagedRuntime = stagedRuntimePaths(stageDir, packageName, names);
 const stagedName = stagedRuntime.name, nextDist = stagedRuntime.dist;
 
 // ---- the plane's own records for this candidate -----------------------------
+/** Prove the candidate on a read-only handle, then reserve it against being put away on a short-lived writable one. */
+function proveAndReserve() {
+  const proven = (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
+  reserve(proven);
+  return proven;
+}
+/** The deployment's reservation (v145, docs/plans/task-tidy.md), refreshed by every phase that proves the candidate:
+ * the put-away check and the deploy_in_flight upsert in one write. A database that won't open for writing refuses. */
+function reserve(proven) {
+  reserveOnWritable(() => openDeploymentDatabase(database), db => new oldRt.store.Store(db), { runId, taskRef: proven.taskRef, now: new Date() });
+}
 function facts(db) {
   const store = new oldRt.store.Store(db);
   // `--operation` names the coordinator's reserved deploy (adopted, with its secret, before anything is staged): only
@@ -337,7 +348,7 @@ async function pruneStaged(keep) {
 // The journaled phases and their recovery, run with the real services, runtimes and records.
 const { save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, prepare, swap, finish, recoverJournal } = browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script: fileURLToPath(import.meta.url), oldRt, deploymentLock, signal,
-  facts, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
+  facts, reserve, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
   processes, stopProcesses,
 });
 recover = recoverJournal;
@@ -404,7 +415,7 @@ try {
     requireTrue(flag("stage") && existsSync(journalFile), "--phase recover resumes a failed deployment: pass --stage <dir> of one.");
     process.exit(recoverJournal() ? 0 : 1);
   }
-  const proven = early ?? (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
+  const proven = early ?? proveAndReserve();
   say(`Candidate ${short} — task ${proven.taskId}, run ${runId}, checks passed, marked complete by ${proven.completion.actor}.`);
   // One approval per release (docs/plans/release-once.md): a release's deploy freezes its candidate in the store before
   // anything is staged — `open` → `deploying`, atomically — so a direct run can't skip the freeze.
