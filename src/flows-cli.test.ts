@@ -12,6 +12,8 @@ import { addApprover } from "./scope.js";
 import { runOperate } from "./operate.js";
 import { main } from "./cli.js";
 import { flowFromSteps } from "./flows.js";
+import { browserStanding, liveBrowserGrant } from "./flow-browser.js";
+import { saveScript } from "./flow-scripts.js";
 
 const NOW = new Date("2026-09-30T12:00:00.000Z");
 let dir: string, file: string, repo: string, other: string, alex: string;
@@ -325,4 +327,23 @@ test("a remote run's API token never counts as the person's proof for a trigger 
     expect(await runFlowsCommand(["trigger", "add", String(id), anyone], yes, context(alex))).toBe(0);
     expect(store.flowTriggers(id).map(one => JSON.parse(one.configJson).from)).toEqual(["team", "anyone"]);
   } finally { store.close(); }
+});
+
+test("browser on previews its terms and digest, approves only the digest read with a person's password, and off revokes it", async () => {
+  const flow = look(store => {
+    if (!saveScript(store, repo, { name: "journeys", about: "Runs the journeys.", body: "npm run e2e", timeoutMinutes: 60 }, "alex", NOW).ok) throw new Error("script");
+    return store.createFlow({ repo, name: "Nightly", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "run", title: "Run the journeys", kind: "check", script: "journeys", browser: true }, { id: "done", title: "Done", kind: "done" }], null)) }, NOW);
+  });
+  const preview = await flows(["browser", String(flow), "on", ...as()]);
+  expect(preview.body).toMatchObject({ ok: true, command: "flows browser", applied: false, zones: [{ zone: "run", script: "journeys" }] });
+  expect(preview.body.terms.join("\n")).toContain("the same one macOS service a project check gets");
+  expect(look(store => liveBrowserGrant(store, flow))).toBeNull();
+  expect((await flows(["browser", String(flow), "on", "--yes", ...as()])).body).toMatchObject({ ok: false, reason: "usage" });
+  expect((await flows(["browser", String(flow), "on", "--yes", "--digest", "0".repeat(32), ...as()])).body).toMatchObject({ ok: false, reason: "refused" });
+  expect((await flows(["browser", String(flow), "on", "--yes", "--digest", preview.body.digest, ...as()])).body).toMatchObject({ ok: true, applied: true, browser: { digest: preview.body.digest, signedBy: "alex" } });
+  expect(look(store => browserStanding(store, flow, "run"))).toEqual({ allowed: true });
+  expect(look(store => liveBrowserGrant(store, flow)?.proof)).toBe("password-now");
+  expect((await flows(["browser", String(flow), "off", ...as()])).body).toMatchObject({ ok: true, applied: true, browser: null });
+  expect(look(store => browserStanding(store, flow, "run").allowed)).toBe(false);
+  expect((await flows(["browser", String(flow), "off", ...as()])).body).toMatchObject({ ok: false, reason: "not-on" });
 });

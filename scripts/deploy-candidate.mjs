@@ -17,7 +17,7 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now, rel
     `Run ${runId} is not a built candidate at ${head.slice(0, 7)}.`);
   requireFact(scope && scope.approvedDigest === scope.digest && scope.digest === run.scopeDigest,
     "The run's signed scope is no longer the approved one.");
-  // A put-away task (v144, docs/plans/task-tidy.md) deploys nothing, read from the plane itself: a database from before
+  // A put-away task (v145, docs/plans/task-tidy.md) deploys nothing, read from the plane itself: a database from before
   // put-away has no such table, and nothing in it is put away.
   const archiveTable = store.handle.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_archive'").get();
   requireFact(archiveTable === undefined || store.handle.prepare("SELECT 1 FROM task_archive WHERE task_ref = ?").get(run.taskRef) === undefined,
@@ -79,7 +79,7 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now, rel
   const blockers = assignment.readiness?.blockers;
   requireFact(Array.isArray(blockers), 'The result\'s readiness could not be read.');
   requireFact(blockers.length === 0, `This result isn't ready to deploy: ${blockers.map(one => one.message).join(' ')}`);
-  // The candidate passed: reserve it against being put away (v144) with the put-away check in one write, held 30 minutes
+  // The candidate passed: reserve it against being put away (v145) with the put-away check in one write, held 30 minutes
   // and refreshed by every phase that proves it again, so a put away during the swap waits for the deployment.
   if (archiveTable !== undefined) {
     const reserve = () => {

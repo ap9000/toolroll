@@ -1,6 +1,6 @@
 /**
  * Put away old tasks (docs/plans/task-tidy.md). Tidy finds tasks nobody needs to see any more, says why for each, and
- * puts them away (v144 `task_archive`): old routine runs a newer run replaces, release tasks for versions already
+ * puts them away (v145 `task_archive`): old routine runs a newer run replaces, release tasks for versions already
  * published or replaced, and "Checks failed" notices main has since fixed. A person can also put away finished tasks
  * older than N days from the same preview. Deterministic and explainable: the same records give the same list, every
  * item carries its rule and one plain reason, and the preview's digest binds exactly what a person saw.

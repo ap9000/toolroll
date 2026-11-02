@@ -89,7 +89,7 @@ export function leadSay(store: Store, actor: Actor, text: string, taskId: string
   // The task's own id never reaches a chat: it reads as the task's short title (chat-voice.ts).
   const said = taskId === null ? text.trim() : chatText(text.trim(), [{ id: taskId, title: chatTitle(store, taskId) }]);
   return store.transact(() => {
-    // A put-away task (v144) gets no messages: the lead's words about it would nudge a person about nothing.
+    // A put-away task (v145) gets no messages: the lead's words about it would nudge a person about nothing.
     if (task !== null && refArchived(store, task.refId)) return { ok: false as const, reason: "refused" as const, message: "This task is put away. A person can restore it first." };
     const stamp = now.toISOString();
     const ledger = store.recordAction({ at: stamp, actor: actorLabel(actor), repo: task?.repo ?? null, taskId, runId: null,
@@ -143,7 +143,7 @@ export function leadClaim(store: Store, actor: Actor, taskId: string, now: Date)
   if ("ok" in task) return task;
   const { root } = familyOf(store, taskId);
   const taken = store.transact(() => {
-    // A put-away task (v144) waits on nobody, so the lead takes nothing on there: checked with the claim's own write.
+    // A put-away task (v145) waits on nobody, so the lead takes nothing on there: checked with the claim's own write.
     if (refArchived(store, task.refId)) return false;
     const ledger = store.recordAction({ at: now.toISOString(), actor: actorLabel(actor), repo: task.repo, taskId: root, runId: null,
       action: LEAD_CLAIMED, outcome: "recorded", source: "work" });

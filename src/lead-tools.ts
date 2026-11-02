@@ -1440,7 +1440,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       if (typeof args["search"] === "string" && words.length === 0) return { ok: false, message: "search needs a word that names the work, such as a page, feature or file" };
       // A search reads further back than the newest page, then ranks by how many of the words each task's title and goal hold.
       const listed = ctx.store.taskFamiliesAdmitted(repo === null ? ctx.who.repos : [repo], false, { limit: words.length === 0 ? limit + 1 : SEARCH_FAMILIES, order: words.length === 0 ? "created" : "updated", ...(args["state"] === undefined ? {} : { states: [args["state"] as import("./store.js").TaskState] }) });
-      // A put-away task (v144) is out of every list, the lead's included.
+      // A put-away task (v145) is out of every list, the lead's included.
       const families = (words.length === 0 ? listed : listed
         .map((one, index) => ({ one, index, hits: searchHits(words, [one.root.id, one.root.title, one.current.title, ctx.store.getScope(one.current.id)?.goal ?? "", ctx.store.getScope(one.root.id)?.goal ?? ""]) }))
         .filter(match => match.hits > 0)

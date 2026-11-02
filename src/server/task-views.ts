@@ -832,7 +832,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const presentedData = { ...data, rootId: family?.root.id ?? taskId, rootTitle: family?.root.title ?? data.task.title,
       ...(family === null || data.assignment != null ? {} : { history: familyHistory(family) }),
       versionLabel: family !== null && family.current.id !== taskId ? `Viewing ${family.versions.findIndex(one => one.id === taskId) === 0 ? "Original" : `Revision ${family.versions.findIndex(one => one.id === taskId)}`} · ${family.current.state === "running" ? "A newer revision is running" : "A newer revision is current"}` : null };
-    // Put away (v144, task-tidy.md): who or what put it away and why, and whether this person can put it away or restore it.
+    // Put away (v145, task-tidy.md): who or what put it away and why, and whether this person can put it away or restore it.
     const archived = archiveOf(runtime.store, taskId);
     (presentedData as { archived?: TaskArchive | null }).archived = archived;
     (presentedData as { canPutAway?: boolean }).canPutAway = who.via === "cookie" && who.role === "approver";

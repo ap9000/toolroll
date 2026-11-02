@@ -229,7 +229,7 @@ function acquireLocked(
       if (placedRef !== null && placedRef.coordinatorCid !== null && !store.scopeSealed(placedRef.externalId)) {
         return { ok: false as const, reason: "coordinator-filed" as const };
       }
-      // A PUT-AWAY TASK (v144, task-tidy.md) claims for nobody, on every road: restore it first.
+      // A PUT-AWAY TASK (v145, task-tidy.md) claims for nobody, on every road: restore it first.
       if (refArchived(store, taskRef)) return { ok: false as const, reason: "archived" as const };
       // The reservation gate lives HERE, in the one primitive every
       // acquisition path shares (queue-columns review, finding 1): tick's

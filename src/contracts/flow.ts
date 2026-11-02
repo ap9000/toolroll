@@ -141,7 +141,7 @@ function zoneSchemas(instructions: z.ZodString) {
     z.strictObject({ id, title, kind: z.literal("task"), zone, instructions: text, planning: z.enum(FLOW_PLANNING), approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, repo: words("repo", "flowRepo").min(1).optional(), limit: remind, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("report"), zone, instructions: text, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, limit: remind, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("approval"), zone, instructions: said, planning: nil, approver: words("approver", "flowDecider").min(1).nullable(), toOwner: z.literal(true).optional(), message: message.nullable(), close: nil, script: nil, sort: nil, subagent: zoneId.optional(), limit: move, next, onFail }),
-    z.strictObject({ id, title, kind: z.literal("check"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: scriptName, runIn: z.enum(FLOW_RUN_IN).optional(), routes, secrets: z.array(secretName).min(1).max(SECRETS_MAX).optional(), sort: nil, limit: remind, next, onFail }),
+    z.strictObject({ id, title, kind: z.literal("check"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: scriptName, runIn: z.enum(FLOW_RUN_IN).optional(), routes, secrets: z.array(secretName).min(1).max(SECRETS_MAX).optional(), browser: z.literal(true).optional(), sort: nil, limit: remind, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("pull-request"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, merge: z.enum(FLOW_MERGE_METHODS).optional(), limit: remind, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("update"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: z.boolean(), script: nil, sort: nil, limit: remind, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("notify"), zone, instructions: said, planning: nil, approver: nil, message, close: nil, script: nil, sort: nil, limit: remind, next, onFail }),
@@ -226,6 +226,8 @@ const STEP_FIELDS = {
   runIn: z.enum(FLOW_RUN_IN),
   routes: z.array(flowStepRouteSchema).max(ROUTES_MAX),
   secrets: z.array(secretName).max(SECRETS_MAX),
+  /** check: the script starts a browser (Playwright's Chromium); it runs only once a person approves browser use for the flow (flow-browser.ts). */
+  browser: z.boolean(),
   question: short("flowSortQuestion"),
   answers: z.array(flowStepAnswerSchema).min(SORT_ANSWERS_MIN).max(SORT_ANSWERS_MAX),
   /** A percentage (80) or a fraction (0.8). */
@@ -275,7 +277,7 @@ const STEP_KINDS = {
   task: ["instructions", "planning", "repo", "next", "ifFails", "remindAfter"],
   report: ["instructions", "next", "ifFails", "remindAfter"],
   approval: ["decider", "subagent", "next", "ifFails", "remindAfter", "thenMoveTo"],
-  check: ["script", "runIn", "routes", "secrets", "next", "ifFails", "remindAfter"],
+  check: ["script", "runIn", "routes", "secrets", "browser", "next", "ifFails", "remindAfter"],
   "pull-request": ["merge", "next", "ifFails", "remindAfter"],
   update: ["message", "close", "next", "ifFails", "remindAfter"],
   notify: ["message", "next", "ifFails", "remindAfter"],

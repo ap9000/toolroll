@@ -34,7 +34,7 @@ export function deploymentGate(store: Store, input: { runId: number; evidenceRoo
     (scope?.candidate === head || ((scope?.candidate ?? null) !== null && built.scopeDigest === run.scopeDigest));
   if (run.role !== "builder" || !(run.outcome === "built" || regated)) return refuse(`Run ${input.runId} is not a built candidate at ${head.slice(0, 7)}.`);
   if (scope === null || scope.approvedDigest !== scope.digest || scope.digest !== run.scopeDigest) return refuse("The run's signed scope is no longer the approved one.");
-  // A put-away task (v144, task-tidy.md) deploys nothing: restore it first.
+  // A put-away task (v145, task-tidy.md) deploys nothing: restore it first.
   if (refArchived(store, run.taskRef)) return refuse("This task is put away. Restore it before deploying.");
   // A person may approve during CI, including a release without carry terms. Every deployment road must wait
   // for the plane's exact-head observation, not only the release coordinator's polling loop.

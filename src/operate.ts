@@ -13229,7 +13229,7 @@ function refuseMachineTidy(context: Context, command: string, method?: string): 
   return null;
 }
 
-/** `toolroll task archive <id...> [--reason <text>]`: put tasks away by hand (v144). Each keeps its history, results and
+/** `toolroll task archive <id...> [--reason <text>]`: put tasks away by hand (v145). Each keeps its history, results and
  * approvals; nothing can run, claim or approve it until it is restored. Credentialed, a person's act. */
 async function archiveTasksCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
   const { store, write, json, clock } = context;
@@ -13266,7 +13266,7 @@ async function archiveTasksCommand(positional: readonly string[], flags: Map<str
   return EXIT.refused;
 }
 
-/** `toolroll task restore <id...>`: bring put-away tasks back exactly as they were (v144). Credentialed, a person's act. */
+/** `toolroll task restore <id...>`: bring put-away tasks back exactly as they were (v145). Credentialed, a person's act. */
 async function restoreTasksCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
   const { store, write, json, clock } = context;
   const command = "task restore";

@@ -1,4 +1,4 @@
-/** Put-away checks (v144, docs/plans/task-tidy.md), in a leaf module so every door can ask without loading the store. */
+/** Put-away checks (v145, docs/plans/task-tidy.md), in a leaf module so every door can ask without loading the store. */
 import type { Store } from "./store.js";
 
 /** Whether this task version is put away. Every door that dispatches, claims or approves asks this (fail closed: a

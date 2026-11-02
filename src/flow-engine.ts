@@ -87,7 +87,7 @@ export function advanceFlows(store: Store, repo: string, now: Date, options: { e
 function advanceCard(store: Store, flow: FlowRow, definition: FlowDefinition | null, card: FlowCardRow, now: Date, options: { evidenceRoot?: string }, outcome: FlowAdvance): void {
   if (definition === null) { store.updateFlowCard(card.id, { waiting: "This flow's drawing can't be read. Open the flow and save it again." }, now); return; }
   const stage = definition.stages.find(one => one.id === card.stage);
-  // A put-away task (v144, task-tidy.md) holds its card where it is, whatever the zone: nothing moves on, files, sends
+  // A put-away task (v145, task-tidy.md) holds its card where it is, whatever the zone: nothing moves on, files, sends
   // or notifies until the task is restored.
   if (cardTaskArchived(store, card.id)) {
     const waiting = "Its task is put away. Restore the task to continue.";
@@ -285,7 +285,7 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
   const current = family?.current.id ?? card.task;
   const task = store.getTask(current);
   if (task === null) { store.updateFlowCard(card.id, { waiting: "Its task is gone. Move the card to try again." }, now); return; }
-  // A put-away task (v144, task-tidy.md) holds its card where it is: nothing moves on, files or sends until it's restored.
+  // A put-away task (v145, task-tidy.md) holds its card where it is: nothing moves on, files or sends until it's restored.
   if (taskArchived(store, current) || taskArchived(store, card.task)) {
     const waiting = "Its task is put away. Restore the task to continue.";
     if (card.waiting !== waiting) store.updateFlowCard(card.id, { waiting }, now);

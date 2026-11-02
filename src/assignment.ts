@@ -211,7 +211,7 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
   const attention: string[] = family.problem === null ? [] : [family.problem];
   // Family admission above precedes question bodies. The newest result
   // does not settle an unanswered question on any earlier version.
-  // A put-away earlier version (v144) is history: its question and its queue place never hold the current one up.
+  // A put-away earlier version (v145) is history: its question and its queue place never hold the current one up.
   const questions = [current, ...family.versions.filter(version => version.id !== current.id && !refArchived(store, version.refId))].flatMap(version => {
     const decision = openWorkDecisionOf(store, version.refId, now);
     return decision === null ? [] : [{ taskId: version.id, decision }];

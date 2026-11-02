@@ -19,6 +19,7 @@ import { STARTER_FLOWS, starterFlowOf, starterOf, startersFor, starterTerms, swi
 import { addFlowTriggerTo, checkFlowTriggerNow, describeTrigger, removeFlowTrigger, setFlowTriggerOn, triggerConfigOf, validateTriggerConfig, type TriggerIo, rawTakesDeliveries } from './flow-triggers.js';
 import { deciderOf, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowDigest, flowFromSteps, flowTerms, stepsFor, type FlowDefinition, type FlowStage } from './flows.js';
 import { prepareUnattendedCandidates, activeUnattendedGrant, parseUnattendedAsk, revokeUnattended, signUnattended, unattendedViewOf, unattendedWords, untilWords, UNATTENDED_MAX_RUNS } from './flow-unattended.js';
+import { browserApprovalDigest, browserTerms, browserTermsOf, revokeFlowBrowser, signFlowBrowser } from './flow-browser.js';
 import { MODE_MAX_DAYS } from './modes.js';
 import { verifyApproverByPassword } from './principal.js';
 import { authenticateApprover, proveCredential } from './scope.js';
@@ -74,6 +75,8 @@ export const FLOWS_DESCRIPTORS = [
     { name: 'budget', takesValue: true, meaning: 'optional dollar cap per attempt, like 5 or 2.50' },
     { name: 'runs', takesValue: true, meaning: `optional limit on runs a day (UTC), 1 to ${UNATTENDED_MAX_RUNS}` },
     { name: 'include', takesValue: true, meaning: 'also cover these script or plane-review schedules (trigger ids, like 12,14); plain schedules are covered already' }] },
+  { action: 'browser', synopsis: "let a flow's script zones marked browser: true start Chromium in their sandbox (on: a person approves with their own password, previews until --yes; off: any approver revokes)", mutation: 'identity-idempotent', audience: 'operator', positionals: ['flow', 'on|off'], flags: [...write, yes,
+    { name: 'digest', takesValue: true, meaning: "required with --yes: the approval digest the preview showed; refuses if the flow or its scripts changed since" }] },
   { action: 'archive', synopsis: 'archive a flow: its cards stop moving and its triggers stop; previews until --yes', mutation: 'identity-idempotent', positionals: ['flow'], flags: [...write, yes] },
 ] as const;
 
@@ -170,10 +173,12 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
   const refuse = (project: string | null, reason: string, message: string, code: number = EXIT.refused) => { record(project, 'refused', reason); return fail(reason, message, code); };
   // A trigger from anyone widens what comes in (chat-management.md §0a.3): only the person's own proof counts, never a
   // machine credential standing in for them (a remote run's API token, a lead's token), though both pass the check above.
-  const widening = (project: string): { widening?: 'proved' } => {
+  // The same proof approves browser use in a flow's script zones (flow-browser.ts): the method is recorded with it.
+  const personMethod = (project: string): string | null => {
     const proved = authenticateApprover(store, acting.name, acting.token, project);
-    return proved.ok && personProof(proved.method) ? { widening: 'proved' } : {};
+    return proved.ok && personProof(proved.method) ? proved.method : null;
   };
+  const widening = (project: string): { widening?: 'proved' } => personMethod(project) === null ? {} : { widening: 'proved' };
   const settle = (project: string) => { try { advanceFlows(store, project, context.clock(), { evidenceRoot: context.evidenceRoot }); } catch { /* the next worker pass retries */ } };
   const preview = (project: string | null, title: string, terms: string[], extra: Record<string, unknown>) =>
     ok({ applied: false, repo: project, title, terms, ...extra }, [title, ...terms.map(one => `  ${one.replace(/\n/g, '\n     ')}`), '', 'Nothing has changed. Add --yes to make this change.']);
@@ -335,6 +340,34 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
       `${flow.name} runs on its own until ${untilWords(signed.grant.absoluteExpiry)}. Signed by ${who}:`,
       ...unattendedWords(signed.grant.terms).map(line => `  ${line}`),
       `Revoke: toolroll flows unattended ${flow.id} off`,
+    ]);
+  }
+  if (action === 'browser') {
+    const flow = flowOf(args[0], reachable);
+    if (flow === null) return refuse(null, 'unknown-flow', 'No such flow in your projects. toolroll flows list names them.');
+    const turn = args[1];
+    if (turn !== 'on' && turn !== 'off') return fail('usage', `Use flows browser ${flow.id} on, or flows browser ${flow.id} off.`, EXIT.usage);
+    if (turn === 'off') {
+      // Lowering authority is one step for any approver on the project.
+      if (!revokeFlowBrowser(store, flow.id, who, now)) return refuse(flow.repo, 'not-on', `${flow.name} has no approved browser use. Nothing was changed.`);
+      record(flow.repo, 'accepted', `flow #${flow.id} browser off`);
+      return ok({ applied: true, browser: null }, [`${flow.name}'s scripts can no longer start a browser.`]);
+    }
+    if (flowDefinitionOf(flow) === null) return refuse(flow.repo, 'unreadable', 'This flow\'s drawing can\'t be read. Save it again from the editor.');
+    const terms = browserTermsOf(store, flow);
+    if (terms === null || terms.zones.length === 0) return refuse(flow.repo, 'refused', terms === null ? 'A zone that starts a browser has no script it can approve: missing, waiting for approval, or one that runs a project file (write the script on the zone instead). Nothing was changed.'
+      : `No zone in ${flow.name} says it starts a browser. Mark its script zone with browser: true (flows edit), then approve. Nothing was changed.`);
+    const digest = browserApprovalDigest(terms);
+    if (!flags.has('yes')) return preview(flow.repo, `Approve browser use in the ${flow.name} flow`, [...browserTerms(terms.zones), `Approval digest ${digest}: approve exactly this with --yes --digest ${digest}.`], { flowId: flow.id, digest, zones: terms.zones });
+    // A person's own proof only: a lead's or remote run's token passes the approver check above but never approves this.
+    // The digest the person read is required: approving with --yes alone could approve something they never saw.
+    const given = text('digest');
+    if (given === null) return fail('usage', `Approve exactly what you read: flows browser ${flow.id} on --yes --digest <the digest the preview showed>.`, EXIT.usage);
+    const signed = signFlowBrowser(store, { flow: flow.id, signer: who, proof: personMethod(flow.repo), sawDigest: given }, now);
+    if (!signed.ok) return refuse(flow.repo, 'refused', `${signed.message} Nothing was changed.`);
+    record(flow.repo, 'accepted', `flow #${flow.id} browser on`);
+    return ok({ applied: true, browser: { digest: signed.grant.digest, zones: signed.grant.zones, signedBy: signed.grant.signedBy } }, [
+      `${flow.name} may start a browser. Approved by ${who}:`, ...browserTerms(signed.grant.zones).map(line => `  ${line}`), `Revoke: toolroll flows browser ${flow.id} off`,
     ]);
   }
   if (action === 'archive') {

@@ -26,13 +26,16 @@
  * the step's result: a short summary — each journey that failed twice, its
  * error and what it saw, the real model turns the journeys took — and a last
  * line "goto: pass" or "goto: fail".
+ * Before the suites it starts Playwright's Chromium once (not with --suite): where
+ * it can't start (a flow's script zone without approved browser use, say),
+ * that is the one line of the result and no suite runs.
  * Exit 0 when every journey passed, even on the second try; 1 otherwise.
  */
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { BROWSER_CHECK, exactly, here, retryCleared, retrySet } from "../e2e-kit.mjs";
+import { BROWSER_CHECK, exactly, here, loadPlaywright, retryCleared, retrySet } from "../e2e-kit.mjs";
 import { gateWords, limiter, openGate } from "../provider-gate.mjs";
 
 const args = process.argv.slice(2);
@@ -134,10 +137,25 @@ mkdirSync(out, { recursive: true });
 log(`Real-model journeys: ${SUITES.map(one => one.name).join(", ")}, up to ${cap / 60_000} minutes — ${out}`);
 const summary = [];
 let ok = true;
+/** Why Playwright's Chromium can't start here (once, before any suite), or null when it starts. */
+async function browserProblem() {
+  try {
+    const { chromium } = await loadPlaywright();
+    const started = await chromium.launch({ timeout: 60_000 });
+    await started.close();
+    return null;
+  } catch (error) { return String(error?.message ?? error).split("\n")[0]; }
+}
+let browser = null;
 const built = args.includes("--no-build") ? { code: 0 } : await start("build", "npm", ["run", "build"]);
 if (built.code !== 0) {
   ok = false;
   summary.push(`Toolroll didn't build${built.timedOut ? " in time" : ` (exit ${built.code})`}: ${clip(built.tail.trim().split("\n").slice(-3).join(" | "), 400)}`);
+} else if ((browser = args.includes("--suite") ? null : await browserProblem()) !== null) {
+  // Every suite drives Chromium: one that can't start here is one clear line, not every suite crashing.
+  ok = false;
+  summary.push(`The browser couldn't start, so no journey ran: ${clip(browser, 300)}`,
+    "Run from a Toolroll flow, its script zone needs browser use: mark the zone browser: true, then a person approves it with toolroll flows browser <flow> on.");
 } else {
   const results = await Promise.all(SUITES.map(one => slot(() => suite(one))));
   const turns = SUITES.flatMap(one => [one.name, `${one.name}-retry`]).reduce((sum, folder) => sum + (reportOf(folder)?.modelCalls?.real ?? 0), 0);

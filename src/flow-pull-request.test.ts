@@ -143,7 +143,7 @@ describe("the Pull request zone", () => {
     expect(store.handle.prepare("SELECT merged_by FROM pull_request_follow").get()).toEqual({ merged_by: "alex (approved in Issues to PRs)" });
   });
 
-  test("put away (v144) while GitHub is read: the card stays where it is, files no revision and tells no one", async () => {
+  test("put away (v145) while GitHub is read: the card stays where it is, files no revision and tells no one", async () => {
     const { card } = approvedCard(issuesToPrs(true), "fix-total");
     await runFlowSteps(store, REPO, at(3), io(scripted([]).exec));
     const publisher = scripted([["gh pr list", { stdout: "[]" }], ["gh pr create", { stdout: "https://github.com/alex/shop/pull/12\n" }]]);

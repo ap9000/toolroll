@@ -24,7 +24,7 @@ function fixture(runs: Run[], receipts: Record<number, object | null>, readiness
     liveVerifyCommand: () => ({ command: COMMAND }),
     proofVerdictFor: () => null,
     proofAcceptance: () => null,
-    // A plane with no release tables: no task belongs to a release. `archived`: the plane has put this task away (v144).
+    // A plane with no release tables: no task belongs to a release. `archived`: the plane has put this task away (v145).
     handle: { prepare: (sql: string) => ({ get: () => (tables && /sqlite_master/.test(sql)) || (archived && /FROM task_archive/.test(sql)) ? { hit: 1 } : undefined, run: (...args: unknown[]) => { written.push([sql, args]); } }) },
   };
   const deps = {

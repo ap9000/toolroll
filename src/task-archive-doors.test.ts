@@ -1,5 +1,5 @@
 /**
- * The doors Codex's first implementation review found open for a put-away task (v144, docs/plans/task-tidy.md): the
+ * The doors Codex's first implementation review found open for a put-away task (v145, docs/plans/task-tidy.md): the
  * merge sweep's firing, a flow card held by either of its tasks (any zone, a notify zone included), the lead's words
  * and claim, requeue and resume, lists cut before their limit, and a family a person revived with a new revision.
  * Isolated stores only.

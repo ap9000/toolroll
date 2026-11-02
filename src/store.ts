@@ -110,6 +110,7 @@ import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installL
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
 import { CONSOLE_INSTANCE_SCHEMA } from "./console-instance.js";
 import { endUnattendedGrants, FLOW_UNATTENDED_SCHEMA, grantStandsSql } from "./flow-unattended.js";
+import { FLOW_BROWSER_SCHEMA } from "./flow-browser.js";
 import { RECIPE_SCHEMA } from "./recipes.js";
 import type { LimitReading, LimitWindow } from "./provider-limits.js";
 import { POLICY_SCHEMA, agentRefusal, approvalRefusal, policyParts, readPolicy, underCeiling, sessionCeilingRefusal, type OrgPolicy, type SavedPolicy } from "./policy.js";
@@ -1150,10 +1151,13 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // project's intake choice and last answer, and each request taken, with the task it became.
 // v143 adds, and changes no saved row: optional exact-screenshot context on result feedback
 // (diff_comment.image_json, V143_ADDED_COLUMNS; saved notes read NULL and keep their file/line target).
-// v144 adds, and changes no saved row (docs/plans/task-tidy.md): put-away tasks (task_archive, one row per archived task
-// version; no row is every saved task: not archived) and the completed workflow runs on a watched branch the checks
-// trigger saw (branch_check_run; V144_SCHEMA, new tables only).
-export const SCHEMA_VERSION = 144;
+// v144 adds, and changes no saved row: a person's approval of browser use in a flow's script zones (flow_browser_grant;
+// flow-browser.ts), the one sandbox rule a project check gets for Chromium; saved flows have none and get nothing.
+// v145 adds, and changes no saved row (docs/plans/task-tidy.md): put-away tasks (task_archive, one row per archived task
+// version; no row is every saved task: not archived), the completed workflow runs on a watched branch the checks
+// trigger saw (branch_check_run), and the reservations that hold work back from being put away (merge_in_flight,
+// deploy_in_flight, flow_step_task; V145_SCHEMA, new tables only).
+export const SCHEMA_VERSION = 145;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1291,7 +1295,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1440,7 +1444,7 @@ export const V140_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 export const V143_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
   diff_comment: { image_json: { definition: "TEXT", saved: "NULL" } },
 });
-/** v144 (docs/plans/task-tidy.md): `task_archive` is a put-away task version. A row hides it from every list and count
+/** v145 (docs/plans/task-tidy.md): `task_archive` is a put-away task version. A row hides it from every list and count
  * and refuses every door that would dispatch, claim or approve it; restore deletes the row. Its history, results,
  * approvals and ledger stay exactly as they were. `merge_in_flight` is a direct merge between its last check and GitHub's
  * answer, owned by its token: a task can't be put away under it (a row older than 15 minutes is a crash, and no
@@ -1449,7 +1453,7 @@ export const V143_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
  * next, so a step still running holds them. `branch_check_run` keeps each completed GitHub workflow run (pushed to
  * the watched branch of the watched repository) the "checks failed" trigger saw, green or red, so tidy can tell a
  * failure notice was fixed by a later commit. */
-export const V144_SCHEMA = `
+export const V145_SCHEMA = `
 CREATE TABLE IF NOT EXISTS task_archive (
   task_ref INTEGER PRIMARY KEY REFERENCES task_ref(id),
   by       TEXT NOT NULL,
@@ -5779,8 +5783,10 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   for (const [table, columns] of Object.entries(V143_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
-  // v144: put-away tasks and green checks per branch (new tables only).
-  db.exec(V144_SCHEMA);
+  // v144: approvals of browser use in flows' script zones (a new table only).
+  db.exec(FLOW_BROWSER_SCHEMA);
+  // v145: put-away tasks, green checks per branch and the reservations that hold work back (new tables only).
+  db.exec(V145_SCHEMA);
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -7830,7 +7836,7 @@ export class Store {
          JOIN task_ref ON task_ref.backend = ? AND task_ref.external_id = task.id
          WHERE task.state = 'queued'
            ${reservation}
-           -- A put-away task (v144) never dispatches.
+           -- A put-away task (v145) never dispatches.
            AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)
            AND NOT EXISTS (
              SELECT 1 FROM hold
@@ -8823,7 +8829,7 @@ export class Store {
         // ceremony (scope.ts approve), so a machine — the lead's token, a remote API run — never mints one, whatever
         // road it came by.
         if (basis === undefined && machineActing()) return false;
-        // A PUT-AWAY TASK (v144, task-tidy.md) is never approved, by any road: restore it first.
+        // A PUT-AWAY TASK (v145, task-tidy.md) is never approved, by any road: restore it first.
         if (taskArchived(this, taskId)) return false;
         // A RELEASE WAITING FOR CI (Codex review round 1, finding 4): filed while its pull request's checks still ran,
         // only the automatic road (which proves CI itself) seals it until the plane read exact-head CI passing.
@@ -12459,7 +12465,7 @@ export class Store {
     const order = options.order === "updated" ? "updated_at" : "created_at";
     const rows = this.db.prepare(`${projection.sql}, selected AS MATERIALIZED (
         SELECT * FROM ordered WHERE version_rank = 1
-          -- A put-away family (v144) is out of every list, before the page is cut.
+          -- A put-away family (v145) is out of every list, before the page is cut.
           AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = ordered.ref_id)
           ${options.states === undefined ? "" : `AND state IN (${options.states.map(() => "?").join(",")})`}
         ORDER BY ${order} DESC, ref_id DESC LIMIT ?
@@ -13070,7 +13076,7 @@ export class Store {
         .get(BUILT_IN, taskId);
       if (ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
       const taskRef = Number(ref["id"]);
-      // A put-away task (v144) is restored before it runs again.
+      // A put-away task (v145) is restored before it runs again.
       if (refArchived(this, taskRef)) return { ok: false as const, reason: "archived" as const };
 
       const stamp = now.toISOString();
@@ -14994,7 +15000,7 @@ export class Store {
       : source !== undefined && "project" in source && source.project !== "" ? "project"
       : source !== undefined && "installation" in source ? "installation" : "unknown";
     const project = scope === "task" ? String(ref!["repo"]) : scope === "project" && source !== undefined && "project" in source ? source.project : null;
-    // A put-away task (v144) nudges nobody: no notification about it is enqueued, whoever produced it. The check is
+    // A put-away task (v145) nudges nobody: no notification about it is enqueued, whoever produced it. The check is
     // part of the insert itself, so a put away that commits first always wins.
     const { changes, lastInsertRowid } = this.db
       .prepare(
@@ -16992,7 +16998,7 @@ export class Store {
       .prepare(
         `UPDATE plan_revision SET status = ?, resolved_at = ?, resolved_by = ?
           WHERE id = ? AND status = 'blocked'
-            -- A put-away task's (v144) plan change is never applied; rejecting it still is.
+            -- A put-away task's (v145) plan change is never applied; rejecting it still is.
             AND (? = 'rejected' OR NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = plan_revision.task_ref))`,
       )
       .run(outcome, now.toISOString(), resolvedBy, id, outcome);
@@ -18542,7 +18548,7 @@ export class Store {
       if (row === undefined || String(row["state"]) !== "claimed" || Number(row["generation"]) !== generation) {
         return { ok: false as const, outcome: "raced" as const, why: "the claim moved" };
       }
-      // A put-away task (v144) merges nothing: the intent waits for a person, who restores it first.
+      // A put-away task (v145) merges nothing: the intent waits for a person, who restores it first.
       const archivedTask = this.db.prepare("SELECT 1 FROM publication p JOIN task_archive a ON a.task_ref = p.task_ref WHERE p.id = ?").get(Number(row["publication"]));
       if (archivedTask !== undefined) {
         this.settleMergeIntent(id, generation, "waiting-human", now, { error: "the task is put away", from: "claimed", bumpGeneration: true });
@@ -20556,7 +20562,7 @@ export class Store {
     const page = Math.max(1, Math.min(Math.floor(limit), 50));
     // Roll-up admission binds BEFORE the LIMIT (Codex roll-up review,
     // finding 2): a repo outside the ceiling must not consume the page.
-    // A put-away task (v144, task-tidy.md) is left out here, as from every list and count.
+    // A put-away task (v145, task-tidy.md) is left out here, as from every list and count.
     const admission = (
       admitted === null
         ? "(? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)"
@@ -20598,7 +20604,7 @@ export class Store {
     admitted: string[] | null = null,
   ): { taskId: string; title: string; state: TaskState; strikes: number; incidentCount: number; repo: string | null }[] {
     const page = Math.max(1, Math.min(Math.floor(limit), 50));
-    // A put-away task (v144, task-tidy.md) is left out here, as from every list and count.
+    // A put-away task (v145, task-tidy.md) is left out here, as from every list and count.
     const admission = (
       admitted === null
         ? "(? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)"
@@ -20675,7 +20681,7 @@ export class Store {
          JOIN task_ref AS blocker_ref ON blocker_ref.backend = ? AND blocker_ref.external_id = task_edge.blocker
          WHERE ${admissionOf("dependent_ref")}
            AND ${admissionOf("blocker_ref")}
-           -- Put-away tasks (v144) need no repair card, on either side.
+           -- Put-away tasks (v145) need no repair card, on either side.
            AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref IN (dependent_ref.id, blocker_ref.id))
          GROUP BY task_edge.blocker, dependent_ref.repo, blocker_ref.repo
          ORDER BY task_edge.blocker LIMIT ?`,
@@ -20884,7 +20890,7 @@ export class Store {
     // finding 11): in the roll-up, rows outside the ceiling must not
     // consume the page and crowd out admitted cards. Serve still filters
     // per-row afterward — this is the bound, that is the law.
-    // A put-away task (v144, task-tidy.md) is left out here, as from every list and count.
+    // A put-away task (v145, task-tidy.md) is left out here, as from every list and count.
     const admission = (
       admitted === null
         ? "(? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)"
@@ -21135,7 +21141,7 @@ export class Store {
     // review, finding 11): with repo NULL the old predicate admitted every
     // stored project, ceiling or not. An empty admitted list reduces to
     // unplaced rows only — never IN ().
-    // A put-away task (v144, task-tidy.md) is left out here, as from every list and count.
+    // A put-away task (v145, task-tidy.md) is left out here, as from every list and count.
     const admission = (
       admitted === null
         ? "(? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)"
@@ -25615,7 +25621,7 @@ export function dropFeedbackImage(store: Store, runId: number, commentId: number
   });
 }
 
-/** A put-away task version (v144, docs/plans/task-tidy.md). */
+/** A put-away task version (v145, docs/plans/task-tidy.md). */
 export type TaskArchive = { taskRef: number; taskId: string; by: string; byKind: "person" | "tidy"; rule: string | null; reason: string; at: string };
 /** Who put a task away, and why: a person by name, or tidy by its rule. */
 export type ArchiveBy = { by: string; byKind: "person" | "tidy"; rule: string | null; reason: string };
@@ -25667,7 +25673,7 @@ export function liveFamilyAttempt(store: Store, refs: readonly number[], now: Da
   return row === undefined ? null : String(row["external_id"]);
 }
 
-/** Puts a task away (v144): every version of its family, in one write transaction that re-checks it has no live
+/** Puts a task away (v145): every version of its family, in one write transaction that re-checks it has no live
  * attempt, that its versions are exactly `expect` when the caller showed a person a family (a preview), and that
  * `guard` (the caller's own rule, re-read under the lock) still allows it. Its state, history, results, approvals and
  * ledger are untouched; its open notifications are resolved; one ledger row records who and why. */
@@ -25705,7 +25711,7 @@ export function archiveTaskFamily(store: Store, taskId: string, by: ArchiveBy, n
   });
 }
 
-/** Brings a put-away task back (v144): every version of its family, with a ledger row. Tidy never puts a restored
+/** Brings a put-away task back (v145): every version of its family, with a ledger row. Tidy never puts a restored
  * task away again (tidy.ts reads the `task restored` row). */
 export function restoreTaskFamily(store: Store, taskId: string, by: string, now: Date,
   guard?: (refs: readonly number[]) => string | null): { ok: true; refs: number[] } | { ok: false; reason: ArchiveRefusal; message: string } {

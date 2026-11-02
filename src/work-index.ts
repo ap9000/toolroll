@@ -53,7 +53,7 @@ export type WorkIndexItem = {
   evidence: 'recorded';
   /** The viewer's own lead took it on (lead-voice.ts): "<name> is on it.", by the name they gave it, read now. */
   lead?: string;
-  /** Put away (v144, task-tidy.md): by whom (a person's name, or tidy), why and when. Only the Archived view lists it. */
+  /** Put away (v145, task-tidy.md): by whom (a person's name, or tidy), why and when. Only the Archived view lists it. */
   archived?: { by: string; byKind: 'person' | 'tidy'; reason: string; at: string };
 };
 /** `root`: the evidence root, so a result whose checks were Off can read the release check that covers it. */
@@ -73,7 +73,7 @@ const EMPTY: WorkIndexCounts = { all: 0, 'needs-you': 0, running: 0, completed: 
 const NO_GROUPS: WorkIndexGroupCounts = { decide: 0, review: 0, unblock: 0, building: 0, rest: 0 };
 const FAMILY_PROBLEM = 'Task history is unavailable or incomplete. This task is shown separately.';
 const VIEWS: readonly WorkView[] = ['all', 'needs-you', 'running', 'completed', 'archived'];
-/** The family's current version is put away (v144): it waits on nobody and only the Archived view lists it. */
+/** The family's current version is put away (v145): it waits on nobody and only the Archived view lists it. */
 const ARCHIVED = `EXISTS(SELECT 1 FROM task_archive ta WHERE ta.task_ref=c.ref_id)`;
 type Row = Record<string, unknown>;
 const n = (row: Row, key: string) => Number(row[key] ?? 0);
@@ -151,7 +151,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
 ), family_heads AS MATERIALIZED (
   SELECT root_ref,COUNT(*) version_count,MAX(updated_at) family_updated,
     CAST(substr(MAX((CASE WHEN ref_id=root_ref THEN '0' ELSE '1' END)||created_at||printf('%020d',ref_id)),-20) AS INTEGER) current_ref,
-    -- A put-away version (v144) is history: it never counts as an earlier active version or brings its question along.
+    -- A put-away version (v145) is history: it never counts as an earlier active version or brings its question along.
     SUM(NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved)) active_count,
     MIN(CASE WHEN NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved) THEN ref_id END) first_active,
     MAX(CASE WHEN NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved) THEN ref_id END) last_active,
@@ -375,7 +375,7 @@ function parameters(now: Date, access: WorkSummaryAccess, options: WorkIndexOpti
 function counts(row: Row): WorkIndexCounts {
   return { all: n(row, 'all_count'), 'needs-you': n(row, 'needs_count'), running: n(row, 'running_count'), completed: n(row, 'completed_count'), archived: n(row, 'archived_count') };
 }
-// Put-away families (v144) count only as archived.
+// Put-away families (v145) count only as archived.
 const TOTALS = `COALESCE(SUM(archived=0),0) all_count,COALESCE(SUM(needs),0) needs_count,COALESCE(SUM(family_running AND archived=0),0) running_count,`
   + `COALESCE(SUM(code='complete' AND archived=0),0) completed_count,COALESCE(SUM(archived),0) archived_count`;
 const GROUP_TOTALS = `COALESCE(SUM(rank=0 AND ask_rank=0 AND archived=0),0) decide_count,COALESCE(SUM(rank=0 AND ask_rank=1 AND archived=0),0) review_count,COALESCE(SUM(rank=0 AND ask_rank=2 AND archived=0),0) unblock_count,`

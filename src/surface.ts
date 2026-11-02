@@ -474,6 +474,8 @@ const REMOTE_NO: readonly string[] = [
   "enroll", "revoke",
   // Flow steps that fetch addresses or run checks and scripts here.
   "flows import", "flows trigger check", "flows script save",
+  // Lets a flow script on this machine start Chromium in its sandbox: a person here, with their own password.
+  "flows browser",
   // Reads this machine owner's own Claude and Codex session files (~/.claude, ~/.codex).
   "memory propose",
 ];

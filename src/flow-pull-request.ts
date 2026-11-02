@@ -47,7 +47,7 @@ export function approvedSinceBuild(store: Store, definition: FlowDefinition, car
 export async function pullRequestStep(store: Store, flow: FlowRow, definition: FlowDefinition, stage: FlowStage, card: FlowCardRow, now: Date, io: PullRequestIo): Promise<boolean> {
   const titleOf = (id: string | null) => definition.stages.find(one => one.id === id)?.title ?? "another zone";
   // Every write after GitHub answers re-proves, in its own transaction, that the card's work wasn't put away meanwhile
-  // (v144): a put away that committed first leaves the card where it is, saying nothing to anyone.
+  // (v145): a put away that committed first leaves the card where it is, saying nothing to anyone.
   const unlessHeld = (write: () => boolean): boolean => store.transact(() => cardTaskArchived(store, card.id) ? false : write());
   const waiting = (said: string): boolean => unlessHeld(() => {
     if (card.waiting === said) return false;
@@ -121,7 +121,7 @@ export async function pullRequestStep(store: Store, flow: FlowRow, definition: F
     // Back to a Build zone: a revision of the same work, carrying the failure (fenced as untrusted CI output).
     let revision: string | null = null;
     const target = definition.stages.find(one => one.id === stage.onFail);
-    // No revision of work put away while GitHub answered (v144).
+    // No revision of work put away while GitHub answered (v145).
     if (cardTaskArchived(store, card.id)) return false;
     if (target?.kind === "task" && io.evidenceRoot !== undefined) {
       const runTask = store.externalIdFor(store.getRun(runId)?.taskRef ?? -1);

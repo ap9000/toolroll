@@ -47,6 +47,8 @@ function runtimeOf(language: ScriptLanguage, file: string): { file: string; args
 
 export type CodeRun = {
   script: FlowScriptRow;
+  /** Asked right before every spawn attempt (retries too); false refuses it. A browser zone's approval rides here. */
+  beforeSpawn?: () => boolean;
   /** Where it runs, and the project folder a file script is found in. */
   cwd: string; root: string;
   /** JSON on stdin and in $FLOW_INPUT. */
@@ -101,6 +103,7 @@ export async function runCode(run: CodeRun): Promise<CodeResult> {
     const ran = await run.shell("/bin/sh", ["-c", 'exec "$@" < "$FLOW_INPUT"', "flow-script", runtime.file, ...runtime.args], {
       cwd: run.cwd, timeoutMs: script.timeoutMinutes * 60_000, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST, processGroup: true,
       env: { ...run.env, ...run.secrets, ...(run.launch?.env ?? {}), FLOW_INPUT: inputFile }, ...(run.launch?.fence ?? {}),
+      ...(run.beforeSpawn === undefined ? {} : { beforeSpawn: run.beforeSpawn }),
     });
     const printed = codeOutput(ran.stdout, run.secrets);
     const all = scrubSecrets(ran.stdout.slice(0, 1_000_000), run.secrets);
@@ -167,12 +170,13 @@ export function cardsFromOutput(stdout: string): { key: string; title: string; d
  * of its own for its input, an inline script and its temp files; writes as the project's writes setting allows (its
  * folder, the copy's Git data, its project's caches); the scratch pool denied around its own folder; and its network
  * open, as flows' scripts have always had it (they reach the services their secrets are for; no approval seals a
- * network for them). The fence is required: where this machine can't confine it, it runs only when an instance operator
+ * network for them). `browser` (flow-browser.ts browserStanding, proved by the caller at launch) adds Chromium's one
+ * service, as a project check has it; nothing else asks for it. The fence is required: where this machine can't confine it, it runs only when an instance operator
  * allowed unconfined agents, and otherwise nothing runs and the card says why.
  */
 export type FlowLaunch = { folder: string; env: Record<string, string>; fence?: LaunchFence; dispose(): void };
 
-export function flowLaunch(store: Store, options: { repo: string; folder: string; scratch: string; copy: boolean; available?: () => boolean; policy?: FencePolicy; home?: string }): FlowLaunch | null | { problem: string } {
+export function flowLaunch(store: Store, options: { repo: string; folder: string; scratch: string; copy: boolean; available?: () => boolean; policy?: FencePolicy; home?: string; browser?: true }): FlowLaunch | null | { problem: string } {
   const databaseFile = store.databaseFile();
   if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return null;
   const available = options.available ?? (() => macosFenceAvailable() || linuxFenceAvailable());
@@ -203,7 +207,9 @@ export function flowLaunch(store: Store, options: { repo: string; folder: string
     // The project's read denies apply to flows as to builds (read live: a flow seals no list, and these only narrow).
     const readDeny = store.projectSandbox(options.repo).readDeny.map(one => readDenyPath(one, home));
     const fence = fenceFor("flow", { databaseFile, worktree: options.folder, home, boundary, readDeny, policy: options.policy ?? 1, scratchRoots: [options.scratch], binding, runFolders: runFolders(own), poolRoots, extra: allowed?.deny ?? [],
-      writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, network: { mode: "open" } });
+      writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, network: { mode: "open" },
+      // Chromium's one service, only for a script zone whose browser use a person approved, proved by the caller now.
+      ...(options.browser === true ? { browser: true as const } : {}) });
     return { folder: own, env: { ...env, ...(allowed === null ? {} : buildCacheEnv(cache)) }, fence, dispose };
   } catch {
     dispose();

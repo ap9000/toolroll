@@ -16,13 +16,13 @@ still shows.
 A task keeps its state (`queued`, `running`, `done`, `failed`, `cancelled`). "Archived" is a separate marker, so a put
 away task keeps its history, results, ledger, approvals and scope bytes exactly as they were.
 
-- **New table `task_archive`** (v144, new tables only, update-safe):
+- **New table `task_archive`** (v145, new tables only, update-safe):
   `task_ref INTEGER PRIMARY KEY REFERENCES task_ref(id), by TEXT NOT NULL, by_kind TEXT CHECK (by_kind IN ('person','tidy')), rule TEXT, reason TEXT NOT NULL, at TEXT NOT NULL`.
   A row means archived. Putting a task away writes a row for **every version of its family** by the task page's
   own proven lineage (`taskFamilyOf`: same project, each revision bound to its parent's run by its brief), so no
   version can run. Restore deletes those rows. A revision a person files later is not archived, so new work brings
   the family back; an archived earlier version then never counts as "earlier active" or brings its question along.
-- **New table `branch_check_run`** (v144): each completed GitHub workflow run (success or failure) pushed to the
+- **New table `branch_check_run`** (v145): each completed GitHub workflow run (success or failure) pushed to the
   watched branch of the watched repository (`event=push`, head repository = the watched one), keyed by run id,
   written by the "checks failed" trigger's poll (one more `gh api` read of completed runs, recorded only if the
   trigger still watches the same repo and branch after the answer) and by its signed `workflow_run` webhook. This is
@@ -145,7 +145,7 @@ one read-only tool, `tidy_preview`, which answers what tidy would put away; it c
   refused, wrong password refused, GET preview writes nothing (get-quiet sample), success puts away exactly the
   ticked set.
 - CLI contract rows for `task archive`, `task restore`, `task tidy`; envelope snapshot; lead token refused.
-- Migration v144 test in the existing pattern; `UPDATE_SAFE_MIGRATIONS` gains 144.
+- Migration v145 test in the existing pattern; `UPDATE_SAFE_MIGRATIONS` gains 144.
 - Guards: fake-pid, password-freshness (new `authenticateApprover` pins), ci-workflow, CLI contract.
 - One scripted journey step: Needs you → Put away old tasks → preview → confirm → gone; Archived → Restore.
 
@@ -178,7 +178,7 @@ one read-only tool, `tidy_preview`, which answers what tidy would put away; it c
 
 1. The merge sweep: `fireMergeIntent` holds a put-away task's intent for a person inside its firing CAS; an intent
    claimed or firing counts as work going on.
-2. A person's merge: reserved (`merge_in_flight`, v144) with the put-away check in one write before `gh pr merge`; the
+2. A person's merge: reserved (`merge_in_flight`, v145) with the put-away check in one write before `gh pr merge`; the
    reservation counts as work going on until GitHub answers (a row older than 15 minutes is a crash).
 3. Deploys: `deploymentGate` and `scripts/deploy-candidate.mjs` refuse a put-away task, the latter read from the plane.
    Residual: a deploy already past its gate finishes.

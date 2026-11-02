@@ -163,8 +163,13 @@ Known limits:
   their own.
 - On a Mac, a project's checks may register and look up one macOS service
   name pattern so Playwright's Chromium headless shell can start sandboxed:
-  `org.chromium.Chromium.MachPortRendezvousServer.<pid>` (builds, flows and
-  tool servers can't). Chromium picks that name itself, and the sandbox can't
+  `org.chromium.Chromium.MachPortRendezvousServer.<pid>` (builds and tool
+  servers can't). A flow's "Run a script" zone gets the same rule, and
+  nothing more, only when the zone says it starts a browser and a person
+  approved browser use for the flow with their own password (`toolroll flows
+  browser <flow> on`; a lead's or remote run's token can't); changing the
+  flow or that zone's script ends the approval, and the project's setup and
+  every other flow launch never get it. The same residual applies to it. Chromium picks that name itself, and the sandbox can't
   tie the pid in it to the process asking. So a hostile check can reach
   across launches: register the name for another process's pid, so a
   default-named Chromium started outside its sandbox with that pid (your own

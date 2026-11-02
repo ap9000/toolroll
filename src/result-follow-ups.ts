@@ -149,7 +149,7 @@ function checkTarget(store: Store, runId: number, level: RunLevel): { ok: true; 
   if (run === null || ref === null) return refuse("unknown", "No such result.");
   if (run.finishedAt === null || run.headRevision === null || !/^[a-f0-9]{40}$/.test(run.headRevision)) return refuse("no-commit", "This result has no finished commit to check.");
   if (ref.repo === null) return refuse("unplaced", "This result isn't in a project, so there is no check to run.");
-  // A put-away task (v144) runs no checks: asked for or already waiting, it is refused until restored.
+  // A put-away task (v145) runs no checks: asked for or already waiting, it is refused until restored.
   if (refArchived(store, ref.id)) return refuse("archived", "This task is put away. Restore it first.");
   const chosen = checkCommandFor(store, ref.repo, level);
   if (chosen.command === null) return refuse("no-check", `${ref.repo} has no approved ${level === "quick" ? "quick or full" : "full"} check. Set one in Settings → Projects → Checks.`);

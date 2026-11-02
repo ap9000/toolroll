@@ -140,7 +140,7 @@ export function taskReadinessBlocker(store: Store, taskRef: number, now: Date): 
     )
     .get(BUILT_IN, taskRef);
   if (task === undefined) return { code: "unknown-task", message: "no such task" };
-  // A put-away task (v144) never dispatches, whatever its state: restore it first.
+  // A put-away task (v145) never dispatches, whatever its state: restore it first.
   if (refArchived(store, taskRef)) return { code: "archived", message: "put away" };
   const state = String(task["state"]) as TaskState;
   if (state !== "queued") return { code: "state", state, message: `state is ${state}, not queued` };

@@ -206,7 +206,7 @@ export function eveningDigestText(store: Store, account: string, now: Date, root
   const visible = (row: Notification) => row.project !== null && store.accountCanAccess(account, row.project);
   const title = (taskId: string) => chatTitle(store, taskId);
   const finished = new Map<string, string>(), failed = new Map<string, string>(), waits = new Map<string, string>();
-  // A put-away task (v144) is out of the digest too: nothing about it waits, finished or failed for anyone now.
+  // A put-away task (v145) is out of the digest too: nothing about it waits, finished or failed for anyone now.
   const facts = store.taskFactsSince(recent).filter(visible).filter(row => row.taskId === null || !taskArchived(store, row.taskId));
   for (const row of facts) {
     if (row.createdAt < since || row.taskId === null) continue;

@@ -369,7 +369,7 @@ describe("full checks before merge", () => {
     expect(String(entry["detail"])).toContain("merged without waiting for the full check");
   });
 
-  test("put away (v144): during the merge's GitHub read it refuses the merge; while GitHub merges, it can't be put away", async () => {
+  test("put away (v145): during the merge's GitHub read it refuses the merge; while GitHub merges, it can't be put away", async () => {
     built("tidy-pr", "Add a care guide link", NOW, "quick");
     const run = runs["tidy-pr"]!;
     const who = verifyApproverByPassword(store, "sam", password, [REPO]);

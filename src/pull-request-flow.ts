@@ -304,7 +304,7 @@ export async function followPullRequests(
     if (follow === null || follow.flowCard !== null || follow.mergeCommit !== null || publication.prNumber === null) continue;
     const pr = publication.prNumber;
     const taskId = taskIdOf(store, publication);
-    // A put-away task (v144) gets no automatic revision, merge or ready notice: restoring it resumes following.
+    // A put-away task (v145) gets no automatic revision, merge or ready notice: restoring it resumes following.
     if (refArchived(store, publication.taskRef)) continue;
 
     if (one.remoteState === "MERGED") {
@@ -477,7 +477,7 @@ export async function mergePullRequest(
   if (before.head !== publication.headSha) return fail("moved", "The pull request has commits that weren't part of the completed result, so it won't be merged from here.");
   if (before.checks !== "passing") return fail("checks", before.checks === "failing" ? "Checks are failing, so it can't merge." : before.checks === "running" ? "Checks are still running. Merge once they pass." : "No checks have reported yet. Merge once they pass.");
 
-  // The merge is reserved with the put-away check in one write (v144): a put away that committed first refuses it, and
+  // The merge is reserved with the put-away check in one write (v145): a put away that committed first refuses it, and
   // one that comes after waits for GitHub's answer (the reservation counts as work going on).
   // One merge at a time, each owning its reservation by its token: a second caller is refused, and each releases only its own.
   const token = randomUUID();

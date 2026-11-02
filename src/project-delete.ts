@@ -107,7 +107,7 @@ export function projectRunning(store: Store, repo: string, now: Date): string[] 
   const steps = count("SELECT COUNT(*) AS n FROM flow_step_run WHERE state = 'running' AND card IN (SELECT value FROM json_each(?))", json(d.cards));
   const calls = count("SELECT COUNT(*) AS n FROM subagent_call WHERE state = 'running' AND subagent IN (SELECT value FROM json_each(?))", json(d.subagents));
   const merges = count(`SELECT COUNT(*) AS n FROM merge_intent WHERE state IN ('claimed','firing') AND publication IN (SELECT id FROM publication WHERE task_ref IN (SELECT value FROM json_each(?)))`, json(d.refs))
-    // A person's merge between its last check and GitHub's answer (v144); a row older than 15 minutes is a crash.
+    // A person's merge between its last check and GitHub's answer (v145); a row older than 15 minutes is a crash.
     + count("SELECT COUNT(*) AS n FROM merge_in_flight WHERE at > ? AND task_ref IN (SELECT value FROM json_each(?))", new Date(now.getTime() - 15 * 60_000).toISOString(), json(d.refs));
   const checkouts = count("SELECT COUNT(*) AS n FROM worktree WHERE repo = ? AND runner IS NOT NULL AND released_at IS NULL", repo);
   return [

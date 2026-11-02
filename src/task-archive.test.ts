@@ -1,5 +1,5 @@
 /**
- * A put-away task (v144, docs/plans/task-tidy.md) fails closed at every door: it is not ready, not claimable, not
+ * A put-away task (v145, docs/plans/task-tidy.md) fails closed at every door: it is not ready, not claimable, not
  * approvable and nudges nobody, until a person restores it; it leaves every list and count but its own page; and
  * putting away refuses while work is still going on. Isolated stores only.
  */
