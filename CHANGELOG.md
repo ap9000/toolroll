@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.86 — 2026-11-02
+
+- **Old tasks tidy themselves.** A routine's newer run puts away its older
+  ones, a release task goes once its version ships or a newer attempt
+  replaces it, and a "Checks failed on main" notice goes once main passes
+  again. Running work, tasks you filed, and tasks handed to a person are
+  never touched. Each one says why it was put away.
+- **Put away old tasks, in one step.** Needs you → **Put away old tasks**
+  shows exactly what would go and why, grouped, with a box to untick each
+  one; your password puts away exactly that list. **Put away** works on a
+  single task too. Nothing is deleted: the **Archived** view keeps every
+  task's history and has **Restore**. The same from the terminal:
+  `toolroll task tidy --preview`, then the `--apply --digest` command it
+  prints; `task archive`, `task restore`, `task list --view archived`.
+- **Flows can drive a browser, once you allow it.** A flow step that starts a
+  browser (like the nightly journeys) now runs in its sandbox when a person
+  has allowed it: **Allow browser** on the flow page shows the exact script
+  and asks for your password, or `toolroll flows browser <flow> on`. Changing
+  the script ends the approval. Without it, the step waits with one line
+  saying what to allow, instead of crashing.
+
 ## 0.9.85 — 2026-11-01
 
 - **Point at the exact screenshot.** Choose **Comment** beside a result's
