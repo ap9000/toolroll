@@ -610,6 +610,8 @@ export type BrowserFlowView = {
     status: "allowed" | "ended" | "none"; words: string; signedBy: string | null; signedAt: string | null;
     zones: { zone: string; title: string; script: string; version: number; digest: string }[];
     terms: string[]; digest: string | null; problem: string | null;
+    /** Whether this person may allow it here: an approver whose account reaches every project (as the route requires). */
+    canApprove: boolean;
   } | null;
   approvers: string[];
   /** The projects a Build zone may work in: the flow's own first, then others the viewer can reach. */

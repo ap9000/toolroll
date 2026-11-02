@@ -40,6 +40,8 @@ const LIMITED_ACCESS = {
   'flows.gallery-create': 'resource', 'flows.create': 'resource', 'flows.import': 'resource',
   'flow.archive': 'resource', 'flow.cards': 'resource', 'flow.run': 'resource', 'flow.save': 'resource', 'flow.triggers': 'resource', 'flow.card.assign': 'resource', 'flow.card.cancel': 'resource', 'flow.card.comment': 'resource',
   'flow.card.decide': 'resource', 'flow.card.move': 'resource', 'flow.card.watch': 'resource',
+  // Turning browser use off lowers authority: any approver on the flow's project; allowing it needs instance access.
+  'flow.browser-off': 'resource',
   'flow.trigger.pause': 'resource', 'flow.trigger.resume': 'resource', 'flow.trigger.remove': 'resource',
   'flow.trigger.check': 'resource', 'flow.trigger.press': 'resource', 'flow.trigger.renew': 'resource',
   'flow.trigger.secret': 'resource', 'flow.trigger.setup': 'resource', 'flow.trigger.sender': 'resource', 'flow.trigger.dropped': 'resource', 'flow.trigger.scope': 'resource', 'flow.trigger.share': 'resource', 'flow.trigger.unshare': 'resource',

@@ -135,12 +135,19 @@ export function browserTerms(zones: readonly BrowserZone[]): string[] {
  * Re-reads the flow, its zones and scripts in the one transaction that writes; `sawDigest` (required) is the approval
  * (browserApprovalDigest: drawing and scripts) the person read, and anything else is refused. Replaces any live one.
  */
-export function signFlowBrowser(store: Store, input: { flow: number; signer: string; proof: string | null; sawDigest: string }, now: Date): { ok: true; grant: FlowBrowserGrant } | { ok: false; message: string } {
+export function signFlowBrowser(store: Store, input: { flow: number; signer: string; proof: string | null; sawDigest: string;
+  /** The console and chat: the signer's account must still be this generation (the session that proved it) and reach every project. */
+  console?: { generation: number } }, now: Date): { ok: true; grant: FlowBrowserGrant } | { ok: false; message: string } {
   if (!personProof(input.proof)) return { ok: false, message: "Browser use needs a person's own approval: sign in with your password (a lead's or remote run's token can't give it)." };
   return store.transact(() => {
     const flow = store.getFlow(input.flow);
     if (flow === null || flow.state !== "active") return { ok: false as const, message: "No such flow." };
     if (!approverNow(store, input.signer, flow.repo)) return { ok: false as const, message: "Only an approver on this flow's project can approve browser use." };
+    if (input.console !== undefined) {
+      const account = store.accountOf(input.signer);
+      if (account === null || account.generation !== input.console.generation) return { ok: false as const, message: "Your access changed. Sign in again." };
+      if (account.projects !== null) return { ok: false as const, message: "Allowing browser use needs an account with access to every project." };
+    }
     if (definitionOf(flow) === null) return { ok: false as const, message: "This flow's drawing can't be read." };
     const terms = browserTermsOf(store, flow);
     if (terms === null) return { ok: false as const, message: "A zone that starts a browser has no script it can approve: missing, waiting for approval, or one that runs a project file (write the script on the zone instead)." };

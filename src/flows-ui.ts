@@ -125,7 +125,8 @@ const historyText = (event: { fromStage: string | null; toStage: string; outcome
 export function flowView(store: Store, flow: FlowRow, viewer: { name: string; approver: boolean }, selectedCard: number | null, setup: { dir: string | null; repos: readonly string[]; startTrigger?: number | null; sortReady?: boolean; toolHome?: string | undefined; now?: Date } = { dir: null, repos: [] }): BrowserFlowView {
   const definition = flowDefinitionOf(flow);
   const stages = definition?.stages ?? [];
-  const browser = browserViewOf(store, flow);
+  const browserNow = browserViewOf(store, flow);
+  const browser = browserNow === null ? null : { ...browserNow, canApprove: viewer.approver && store.accountOf(viewer.name)?.projects === null };
   const title = (id: string) => stages.find(one => one.id === id)?.title ?? id;
   const sortZones = new Set(stages.filter(one => one.kind === "sort").map(one => one.id));
   const decisions = sortZones.size === 0 ? new Map<number, { decisionJson: string }>() : store.flowSortDecisions(flow.id);

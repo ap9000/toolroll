@@ -1293,9 +1293,8 @@ export function executeSharedAction(
         // Only through the secure screen with the person's own password (protected + password above); signFlowBrowser
         // re-reads the flow, its zones and scripts in this transaction and refuses unless they are what the card showed.
         const flow = Number(payload.state["flow"]);
-        // Re-read in this transaction: the account's reach may have narrowed since the card was drafted.
-        if (store.accountOf(actor)?.projects !== null) throw Error("Allowing browser use needs an account with access to every project.");
-        const signed = signFlowBrowser(store, { flow, signer: actor, proof: personProved, sawDigest: String(payload.state["digest"] ?? "") }, now);
+        // signFlowBrowser re-reads the account's generation and reach in its transaction (it may have narrowed since).
+        const signed = signFlowBrowser(store, { flow, signer: actor, proof: personProved, sawDigest: String(payload.state["digest"] ?? ""), console: { generation: who.generation } }, now);
         if (!signed.ok) throw Error(signed.message);
         return { ok: true as const, taskId: null, said: "Browser allowed. Its browser zones can start Chromium now.", href: `/flows/${flow}` };
       }

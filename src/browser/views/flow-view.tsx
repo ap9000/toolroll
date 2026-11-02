@@ -465,7 +465,7 @@ function CardPanel({ card, view, csrf, apply, onClose, onAllowBrowser }: { card:
         : <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} {...(card.source.url.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })}>{card.source.label}</a>}{card.source.proved === undefined ? null : ` (${card.source.proved})`}</p>)}
     {card.description !== null && <p className="whitespace-pre-wrap text-body">{card.description}</p>}
     {card.waiting !== null && card.question == null && card.choose == null && card.state === "active" && <p className="rounded-md bg-muted px-3 py-2 text-body">{card.waiting}{card.deadline != null && <span className="block text-muted-foreground">{deadlineWords(card.deadline)}</span>}</p>}
-    {card.browserWait === true && card.state === "active" && view.canEdit && (onAllowBrowser !== undefined
+    {card.browserWait === true && card.state === "active" && view.canEdit && view.browser?.canApprove !== false && (onAllowBrowser !== undefined
       ? <Button size="sm" variant="outline" className="self-start phone:min-h-11" onClick={onAllowBrowser} data-card-allow-browser>Allow browser</Button>
       : <a className="text-body font-medium text-primary underline-offset-4 hover:underline" href={`${view.flow.href}?browser=1`} data-card-allow-browser>Allow browser</a>)}
     {card.question != null && <SubagentQuestion question={card.question} csrf={csrf} apply={apply} />}
@@ -1299,7 +1299,7 @@ function BrowserStatus({ view, csrf, apply, onAllow, className }: { view: Browse
   if (browser == null) return null;
   return <span className={cn("inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-caption font-normal", className)} data-flow-browser={browser.status}>
     <span className={cn("break-words", browser.status === "allowed" ? "text-muted-foreground" : "text-foreground")}>{browser.words}</span>
-    {view.canEdit && browser.status !== "allowed" && <button type="button" className="min-h-8 rounded px-1 text-caption font-medium text-primary underline-offset-4 hover:underline phone:min-h-11"
+    {view.canEdit && browser.canApprove !== false && browser.status !== "allowed" && <button type="button" className="min-h-8 rounded px-1 text-caption font-medium text-primary underline-offset-4 hover:underline phone:min-h-11"
       onClick={onAllow} data-flow-browser-allow>Allow browser</button>}
     {view.canEdit && browser.status === "allowed" && <button type="button" className="min-h-8 rounded px-1 text-caption text-muted-foreground underline hover:text-foreground disabled:opacity-50 phone:min-h-11" disabled={busy}
       onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/browser-off`, {}, csrf)); setBusy(false); }} data-flow-browser-off>Turn off</button>}
@@ -1324,7 +1324,7 @@ function BrowserPanel({ view, csrf, apply, onClose }: { view: BrowserFlowView; c
       : view.browser?.status === "allowed" ? <p className="text-body" data-flow-browser-panel-allowed>{view.browser.words}.</p>
       : moved ? <div className="flex flex-col gap-2" data-flow-browser-moved><p className="text-body">This flow or its scripts changed while you were reading.</p>
           <Button size="sm" variant="outline" className="self-start phone:min-h-11" onClick={() => { setShown(view.browser); setPassword(""); setProblem(null); }}>Read the new terms</Button></div>
-      : !view.canEdit ? <p className="text-body text-muted-foreground">Only an approver on this project can allow browser use.</p>
+      : !view.canEdit || browser.canApprove === false ? <p className="text-body text-muted-foreground">Only an approver with access to every project can allow browser use.</p>
       : browser.problem !== null || browser.digest === null ? <p className="text-body text-muted-foreground" data-flow-browser-problem>{browser.problem}</p>
       : <form className="flex flex-col gap-3" onSubmit={async event => {
           event.preventDefault(); setBusy(true); setProblem(null);

@@ -17,6 +17,7 @@ import { flowFromSteps } from "./flows.js";
 import { saveScript } from "./flow-scripts.js";
 import { T0, workspaceOf } from "../test/serve-kit.js";
 import { flowFingerprint } from "./flow-live.js";
+import { signFlowBrowser } from "./flow-browser.js";
 
 let REPO: string;
 let store: Store, server: Server, base: string, home: string, token: string, flow: number, card: number;
@@ -59,7 +60,7 @@ const post = async (cookie: string, path: string, fields: Record<string, string>
   try { body = JSON.parse(text) as Answer; } catch { /* a refusal page */ }
   return { status: response.status, body };
 };
-type View = { flow: { revision: number }; browser: { status: string; words: string; digest: string | null; terms: string[]; zones: { zone: string; script: string; version: number; digest: string; title: string }[]; problem: string | null } | null; cards: { id: number; waiting: string | null; browserWait?: true }[] };
+type View = { flow: { revision: number }; browser: { canApprove: boolean; status: string; words: string; digest: string | null; terms: string[]; zones: { zone: string; script: string; version: number; digest: string; title: string }[]; problem: string | null } | null; cards: { id: number; waiting: string | null; browserWait?: true }[] };
 const view = async (cookie: string) => (await (await fetch(`${base}/flows/${flow}?format=json`, { headers: { cookie } })).json()) as View;
 const grants = () => Number(store.handle.prepare("SELECT COUNT(*) AS n FROM flow_browser_grant WHERE revoked_at IS NULL").get()!["n"]);
 
@@ -135,4 +136,28 @@ test("a viewer and an API token are refused; reading the page writes nothing", a
   await view(alex);
   await fetch(`${base}/flows/${flow}`, { headers: { cookie: alex } });
   expect([actions(), grants()]).toEqual([ledger, rows]);
+});
+
+test("a project-limited approver may turn browser use off but not allow it, and signing re-reads the account in its write", async () => {
+  const lim = addApprover(store, "lim", T0, { name: "alex", token });
+  if (!lim.ok) throw new Error("lim");
+  expect(store.setAccountProjects("lim", [REPO], "alex", T0)).toEqual({ ok: true });
+  const cookie = await login("lim", lim.token);
+  const { csrf } = workspaceOf(await (await fetch(`${base}/flows/${flow}`, { headers: { cookie } })).text());
+  const shown = await view(cookie);
+  expect(shown.browser).toMatchObject({ status: "none", canApprove: false });
+  expect((await post(cookie, `/flows/${flow}/browser`, { csrf, digest: shown.browser!.digest!, password: lim.token })).status).toBe(403);
+  expect(grants()).toBe(0);
+  // alex allows it; lim turns it off from the page.
+  const digest = shown.browser!.digest!;
+  const signed = signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: digest, console: { generation: store.accountOf("alex")!.generation } }, T0);
+  expect(signed.ok).toBe(true);
+  expect(await post(cookie, `/flows/${flow}/browser-off`, { csrf })).toMatchObject({ status: 200, body: { ok: true } });
+  expect(grants()).toBe(0);
+  // Proved, then narrowed or re-issued before the write: the write refuses (the console's and chat's door).
+  expect(signFlowBrowser(store, { flow, signer: "lim", proof: "password-now", sawDigest: digest, console: { generation: store.accountOf("lim")!.generation } }, T0))
+    .toEqual({ ok: false, message: "Allowing browser use needs an account with access to every project." });
+  expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: digest, console: { generation: store.accountOf("alex")!.generation - 1 } }, T0))
+    .toEqual({ ok: false, message: "Your access changed. Sign in again." });
+  expect(grants()).toBe(0);
 });

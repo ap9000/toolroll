@@ -604,7 +604,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       // re-reads the flow, its zones and scripts in its one write and refuses unless they are the digest the panel showed.
       const proved = authenticateApprover(who, body.get("password") ?? "", flow.repo);
       if (!proved.ok) return answer(403, { ok: false, said: "That password isn't right. Nothing was approved." });
-      const signed = signFlowBrowser(store, { flow: flow.id, signer: who.name, proof: proved.method, sawDigest: body.get("digest") ?? "" }, now);
+      const signed = signFlowBrowser(store, { flow: flow.id, signer: who.name, proof: proved.method, sawDigest: body.get("digest") ?? "", console: { generation: who.via === "cookie" ? who.session.generation : -1 } }, now);
       return signed.ok ? settle(`Browser allowed. ${signed.grant.zones.length === 1 ? "Its script" : "Its scripts"} can start Chromium now.`) : answer(409, { ok: false, said: signed.message });
     }
     if (action === "browser-off") {
