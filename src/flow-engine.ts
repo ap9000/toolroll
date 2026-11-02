@@ -24,6 +24,7 @@ import { DRAFT_CHARS, keptDraft } from "./flow-draft.js";
 import { chooseStep, flowPersonOf, sendStep } from "./flow-send.js";
 import { parseSoul, subagentLabel } from "./subagents.js";
 import type { FlowCardRow, FlowRow, Store, SubagentRow } from "./store.js";
+import { cardTaskArchived, taskArchived } from "./task-archive.js";
 import { withStageHandoff, type StageHandoff } from "./contracts/stage-output.js";
 
 export type FlowAdvance = { moved: number; filed: string[]; problems: string[] };
@@ -86,6 +87,13 @@ export function advanceFlows(store: Store, repo: string, now: Date, options: { e
 function advanceCard(store: Store, flow: FlowRow, definition: FlowDefinition | null, card: FlowCardRow, now: Date, options: { evidenceRoot?: string }, outcome: FlowAdvance): void {
   if (definition === null) { store.updateFlowCard(card.id, { waiting: "This flow's drawing can't be read. Open the flow and save it again." }, now); return; }
   const stage = definition.stages.find(one => one.id === card.stage);
+  // A put-away task (v145, task-tidy.md) holds its card where it is, whatever the zone: nothing moves on, files, sends
+  // or notifies until the task is restored.
+  if (cardTaskArchived(store, card.id)) {
+    const waiting = "Its task is put away. Restore the task to continue.";
+    if (card.waiting !== waiting) store.updateFlowCard(card.id, { waiting }, now);
+    return;
+  }
   if (stage === undefined) {
     // The zone was removed while the card sat in it: back to the start.
     if (store.moveFlowCard(card.id, { to: definition.start, outcome: "moved", actor: "flow", note: null, expectEntry: card.entry }, now)) outcome.moved++;
@@ -277,6 +285,12 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
   const current = family?.current.id ?? card.task;
   const task = store.getTask(current);
   if (task === null) { store.updateFlowCard(card.id, { waiting: "Its task is gone. Move the card to try again." }, now); return; }
+  // A put-away task (v145, task-tidy.md) holds its card where it is: nothing moves on, files or sends until it's restored.
+  if (taskArchived(store, current) || taskArchived(store, card.task)) {
+    const waiting = "Its task is put away. Restore the task to continue.";
+    if (card.waiting !== waiting) store.updateFlowCard(card.id, { waiting }, now);
+    return;
+  }
   if (task.state === "done") {
     // A build whose project checks failed is done but not good: it takes the failure path, like a failed build.
     if (stage.kind === "task") {

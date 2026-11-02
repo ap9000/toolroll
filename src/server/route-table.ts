@@ -209,6 +209,9 @@ get("pages", "projects.page", "/projects", { limited: "unscoped", ...free });
 get("pages", "home", "/", { limited: "collection", ...free });
 get("tasks", "inbox", "/inbox", { limited: "collection", ...free });
 get("tasks", "work", "/work", { limited: "collection", ...free });
+// Put away old tasks (task-tidy.md): the preview reads only; putting away is an approver's step-up in a browser session.
+get("tasks", "work.put-away", "/work/put-away", { limited: "collection", ...free, callers: ["cookie"], ...approver("Only an approver can put tasks away.", "/work") });
+post("tasks", "work.put-away.apply", "/work/put-away", { scope: "step-up", limited: "collection", ...approver("Only an approver can put tasks away.", "/work") });
 get("tasks", "next", "/next", { limited: "collection" });
 get("pages", "morning", "/morning");
 get("pages", "workbench", "/workbench", free);
@@ -482,6 +485,9 @@ post("tasks", "task.act.merge", `^\\/t\\/${TASK}\\/merge$`, { project: "task", l
 post("tasks", "task.act.confirm-stopped", `^\\/t\\/${TASK}\\/confirm-stopped$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/confirm-stopped", ...approver("Only an approver can confirm a build stopped.") });
 post("tasks", "task.act.stop-carrying", `^\\/t\\/${TASK}\\/stop-carrying$`, { project: "task", limited: "resource", sample: "/t/one/stop-carrying", ...approver("Only an approver can stop carrying a release.") });
 post("tasks", "task.act.stop", `^\\/t\\/${TASK}\\/stop$`, { project: "task", limited: "resource", sample: "/t/one/stop" });
+// Putting one task away and bringing it back (task-tidy.md): a person's act, so only a browser session.
+post("tasks", "task.act.archive", `^\\/t\\/${TASK}\\/archive$`, { project: "task", limited: "resource", sample: "/t/one/archive", callers: ["cookie"], ...approver("Only an approver can put a task away.") });
+post("tasks", "task.act.restore", `^\\/t\\/${TASK}\\/restore$`, { project: "task", limited: "resource", sample: "/t/one/restore", callers: ["cookie"], ...approver("Only an approver can restore a task.") });
 post("tasks", "task.act.pause", `^\\/t\\/${TASK}\\/pause$`, { project: "task", limited: "resource", sample: "/t/one/pause" });
 post("tasks", "task.act.resume-arm", `^\\/t\\/${TASK}\\/resume-arm$`, { project: "task", limited: "resource", sample: "/t/one/resume-arm" });
 post("tasks", "task.act.resume", `^\\/t\\/${TASK}\\/resume$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/resume" });

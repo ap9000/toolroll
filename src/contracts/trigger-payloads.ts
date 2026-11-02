@@ -47,6 +47,10 @@ export const githubRunSchema = z.object({
   display_title: text,
   created_at: text,
   html_url: text,
+  /** Read by tidy's CI observations (task-tidy.md): which run, why it ran, and whose repository its commit is in. */
+  id: loose(z.number()),
+  event: text,
+  head_repository: loose(z.object({ full_name: text })),
 }).catch({});
 
 /** `repos/:repo/issues` and `repos/:repo/pulls`: a list (anything else reads as an empty one). */

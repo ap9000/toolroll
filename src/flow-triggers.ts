@@ -52,6 +52,7 @@ import { prepareUnattendedCandidates, grantSignsScriptOf, scriptProvenanceOf, sc
 import { tmpdir } from "node:os";
 import type { FlowCardSource, FlowReceipt, FlowRow, FlowTriggerRow, Store } from "./store.js";
 import { envValue } from "./names.js";
+import { recordBranchCheckRun, unprovenNoticeRuns } from "./tidy.js";
 import { linearLabelNames, readFormSubmission, readGithubEvent, readGithubIssue, readGithubIssueEventList, readGithubIssueList, readGithubRun, readGithubRunList, readInboundMail, readLinearAnswer, readLinearEvent, readLinearIssue, readWebhookPayload } from "./contracts/trigger-payloads.js";
 import { isRecord } from "./is-record.js";
 
@@ -861,6 +862,8 @@ async function checkTrigger(store: Store, trigger: FlowTriggerRow, config: Extra
     store.updateFlowTrigger(trigger.id, { failures, lastAt: now.toISOString(), lastOutcome: fetched.problem, nextAt: new Date(now.getTime() + BACKOFF_MS[Math.min(failures, BACKOFF_MS.length) - 1]!).toISOString() }, now);
     return { ok: false, said: fetched.problem, added: 0 };
   }
+  // Tidy's CI evidence (task-tidy.md): the watched branch's completed runs, green and red, beside the failures it carded.
+  if (config.kind === "github" && config.watch === "checks") await observeBranchRuns(store, trigger, config, io.gh, now);
   const by = config.kind === "github" ? "GitHub" : config.kind === "linear" ? "Linear" : "Email";
   // Known items are left out before the batch is taken (v126): a page of things already received can't keep the unseen
   // ones behind it waiting.
@@ -1103,6 +1106,13 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
       : config.watch === "pulls" && event === "pull_request" && ["opened", "ready_for_review", "labeled", "reopened"].includes(action) ? githubItem(config, body.pull_request, "pull")
       : config.watch === "checks" && event === "workflow_run" && action === "completed" ? githubRunItem(config, body.workflow_run) : null;
     items = found === null ? [] : [found];
+    // A signed workflow run on the watched branch is tidy's CI evidence too (task-tidy.md), green or red: recorded only
+    // inside `written`, which re-proves the trigger is still active with the same config, credential and address.
+    if (config.watch === "checks" && config.branch !== null && event === "workflow_run" && action === "completed") {
+      const branch = config.branch;
+      const recorded = written(() => { recordBranchCheckRun(store, { repo: config.repo, branch }, readGithubRun(body.workflow_run), now); return { status: 200, said: "Recorded." }; });
+      if (recorded.status !== 200) return recorded;
+    }
   } else if (config.kind === "linear") {
     const body = readLinearEvent(payload), sent = Number(body.webhookTimestamp);
     // Signed but stale: as unproven as no signature at all, so it counts toward the address's minute.
@@ -1503,4 +1513,34 @@ export function receiveFlowForm(store: Store, token: string, fields: URLSearchPa
   if (made.made !== "added") return { status: 400, html: formHtml(config.label, html`<p>${made.note?.includes("key or password") ? "That looks like it holds a key or password. Take it out and send again." : "That couldn't be sent."}</p>${again}`) };
   store.updateFlowTrigger(trigger.id, { lastAt: now.toISOString(), lastOutcome: "Someone sent the form." }, now);
   return { status: 200, html: thanks };
+}
+
+/** Tidy's CI evidence (docs/plans/task-tidy.md): the watched branch's recent completed workflow runs, read through the
+ * person's own gh login. Recorded only while the trigger still watches exactly that repository and branch once GitHub
+ * answered; any failure records nothing (tidy then keeps the notices). */
+async function observeBranchRuns(store: Store, trigger: FlowTriggerRow, config: Extract<TriggerConfig, { kind: "github" }>, gh: Runner, now: Date): Promise<void> {
+  if (config.branch === null) return;
+  const branch = config.branch;
+  let result;
+  try {
+    result = await gh("gh", ["api", "-H", "Accept: application/vnd.github+json", `repos/${config.repo}/actions/runs?branch=${encodeURIComponent(branch)}&status=completed&per_page=50`], { timeoutMs: 20_000 });
+  } catch { return; }
+  if (result.code !== 0) return;
+  let body: unknown;
+  try { body = JSON.parse(result.stdout); } catch { return; }
+  const runs = [...readGithubRunList(body).workflow_runs ?? []];
+  // A few older failure cards' own runs, so tidy can tell whether each was a push to this branch (task-tidy.md).
+  for (const id of unprovenNoticeRuns(store, trigger.id, config.repo)) {
+    try {
+      const one = await gh("gh", ["api", "-H", "Accept: application/vnd.github+json", `repos/${config.repo}/actions/runs/${id}`], { timeoutMs: 20_000 });
+      if (one.code === 0) runs.push(readGithubRun(JSON.parse(one.stdout)));
+    } catch { /* read again next time */ }
+  }
+  // Re-proved and recorded in one transaction: a trigger paused or changed meanwhile records nothing.
+  store.transact(() => {
+    const current = store.getFlowTrigger(trigger.id);
+    const still = current === null ? null : triggerConfigOf(current);
+    if (current === null || current.state !== "active" || current.configJson !== trigger.configJson || still === null || still.kind !== "github" || still.watch !== "checks" || still.repo !== config.repo || still.branch !== branch) return;
+    for (const run of runs) recordBranchCheckRun(store, { repo: config.repo, branch }, run, now);
+  });
 }

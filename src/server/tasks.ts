@@ -1,5 +1,6 @@
 import { parseFeedbackImage, sameFeedbackImage } from "../result-review.js";
-import { dropFeedbackImage, releaseAuthorityOfTask, revokeRelease, runLiveCommands } from "../store.js";
+import { archiveTaskFamily, dropFeedbackImage, releaseAuthorityOfTask, restoreTaskFamily, revokeRelease, runLiveCommands } from "../store.js";
+import { applyTidy, approverStandsNow, familyRepoOf, releaseFactsOf, tidyDays, tidyDigest, tidyPreview, TIDY_DEFAULT_DAYS } from "../tidy.js";
 import { steerCapabilityOf } from "../steer-capabilities.js";
 import { canReveal, localCheckoutOf, revealInFinder } from "../checkout-proof.js";
 
@@ -95,7 +96,7 @@ import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
 import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
 import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
-import { type TaskComposerPrefill,boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
+import { putAwayPage,type TaskComposerPrefill,boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
 import { timingFor } from "../latency-timeline.js";
 import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
@@ -290,6 +291,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       multiProject: new Set(work.items.map(task => task.repo ?? "")).size > 1,
       now,
       state,
+      canPutAway: who.via === "cookie" && who.role === "approver",
       // v105: subscription windows and monthly budgets, for whoever runs the installation.
       limits: store.isInstanceOperator(who.name)
         ? limitsView(store.providerLimits(), store.budgets().length === 0 ? [] : store.monthSpendCached(now).budgets, { project: projectName, subagent: id => subagentNamesOf(store.handle).get(id) ?? `Subagent ${id}` }, now)
@@ -3040,7 +3042,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     for (const run of rows) if (runIsLive(run)) live.add(run.id);
     return live;
   }
+  const tidyHandlers = createTidyHandlers(runtime);
   const registrations = handlersOf("tasks", {
+    ...tidyHandlers,
     "code.page": showCode("workspace"),
     "code.session": showCode("session"),
     "code.state": showCode("state"),
@@ -3135,4 +3139,51 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft));
   }
   return { registrations, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, peekGuards, liveRunIds };
+}
+
+/** Put away and Restore one task, and Put away old tasks (docs/plans/task-tidy.md): the preview reads only (GET-quiet);
+ * putting away many is an approver's step-up bound to the digest of exactly what the preview showed. Each write
+ * re-proves the person's standing inside its own transaction. */
+export function createTidyHandlers(runtime: ServerRuntime) {
+  const { store, sendScreen, chromeFor, authenticateApprover, workAccess, bustBadge } = runtime;
+
+  async function showPutAway(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, project } = ctx;
+    const days = tidyDays(url.searchParams.get("days"));
+    if (days === null) return refuse(response, who, 400, "Choose a number of days from 1 to 365.", "/work/put-away");
+    const releases = releaseFactsOf(store);
+    const items = tidyPreview(store, now, { releases, days, access: workAccess() });
+    return sendScreen(response, 200, putAwayPage(chromeFor(project, "work"), { items, days, digest: tidyDigest(items, days), now,
+      problem: url.searchParams.get("problem"), releasesSkipped: releases.problem }));
+  }
+
+  async function applyPutAway(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.tasksPutAway);
+    const days = tidyDays(body.get("days"));
+    const back = (problem: string): void => redirect(response, `/work/put-away?${new URLSearchParams({ ...(days === null || days === TIDY_DEFAULT_DAYS ? {} : { days: String(days) }), problem })}`);
+    if (days === null) return back("Choose a number of days from 1 to 365.");
+    if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("Enter your Toolroll password to put these away.");
+    const done = applyTidy(store, now, { by: who.name, days, digest: body.get("digest") ?? "", only: body.getAll("task"), releases: releaseFactsOf(store), access: workAccess() });
+    if (!done.ok) return back(done.message);
+    bustBadge();
+    return redirect(response, "/work?view=archived");
+  }
+
+  const oneTask = (kind: "archive" | "restore") => async (ctx: HandlerContext): Promise<void> => {
+    const { url, who, response, now, posted } = ctx;
+    const act = matchTaskPath(url.pathname, `/${kind}$`);
+    if (act === null) return refuse(response, who, 404, "There's no page at this address.", "/work");
+    const body = readForm(posted, kind === "archive" ? CONSOLE_FORMS.taskArchive : CONSOLE_FORMS.taskRestore);
+    const standing = (refs: readonly number[]) => approverStandsNow(store, who.name, familyRepoOf(store, refs));
+    const done = kind === "archive"
+      ? archiveTaskFamily(store, act.taskId, { by: who.name, byKind: "person", rule: null, reason: (body.get("reason") ?? "").trim() || "Put away by hand" }, now, { guard: standing })
+      : restoreTaskFamily(store, act.taskId, who.name, now, standing);
+    if (!done.ok) return refuse(response, who, done.reason === "unknown-task" ? 404 : 409, done.message, taskHref(act.taskId));
+    bustBadge();
+    const to = safeReturn(body.get("return"));
+    return redirect(response, to === "/" ? taskHref(act.taskId) : to);
+  };
+
+  return { "work.put-away": showPutAway, "work.put-away.apply": applyPutAway, "task.act.archive": oneTask("archive"), "task.act.restore": oneTask("restore") };
 }

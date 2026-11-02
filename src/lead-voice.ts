@@ -8,7 +8,7 @@
 import { actorLabel, withActor, type Actor } from "./actor.js";
 import { chatControlHref } from "./chat-controls.js";
 import { BATCH_MS, chatText, chatTitle } from "./chat-voice.js";
-import { BUILT_IN, type Notification, type Store } from "./store.js";
+import { BUILT_IN, refArchived, type Notification, type Store } from "./store.js";
 import { leadNameOf } from "./lead-identity.js";
 import { leadLapsed } from "./task-status.js";
 import { phoneText as plain } from "./telegram-status.js";
@@ -89,18 +89,22 @@ export function leadSay(store: Store, actor: Actor, text: string, taskId: string
   // The task's own id never reaches a chat: it reads as the task's short title (chat-voice.ts).
   const said = taskId === null ? text.trim() : chatText(text.trim(), [{ id: taskId, title: chatTitle(store, taskId) }]);
   return store.transact(() => {
+    // A put-away task (v145) gets no messages: the lead's words about it would nudge a person about nothing.
+    if (task !== null && refArchived(store, task.refId)) return { ok: false as const, reason: "refused" as const, message: "This task is put away. A person can restore it first." };
     const stamp = now.toISOString();
     const ledger = store.recordAction({ at: stamp, actor: actorLabel(actor), repo: task?.repo ?? null, taskId, runId: null,
       action: LEAD_SAID, outcome: "recorded", source: "work", detail: text.trim() });
-    const open = store.handle.prepare(`SELECT id, dedupe_key, body FROM notification WHERE kind = ? AND recipient = ? ORDER BY id DESC LIMIT 1`)
+    const open = store.handle.prepare(`SELECT id, dedupe_key, body, task_ref FROM notification WHERE kind = ? AND recipient = ? ORDER BY id DESC LIMIT 1`)
       .get(LEAD_SAY_KIND, actor.account);
     const opened = open === undefined ? null : /^lead-say:(.+):\d+$/.exec(String(open["dedupe_key"]))?.[1] ?? null;
-    const joined = open !== undefined && opened !== null && Date.parse(opened) > now.getTime() - BATCH_MS && Date.parse(opened) <= now.getTime();
+    // A batch is about one task (or none): words about another start a row of their own, so each row keeps its task.
+    const sameTask = open !== undefined && (open["task_ref"] ?? null) === (task === null ? null : task.refId);
+    const joined = sameTask && opened !== null && Date.parse(opened) > now.getTime() - BATCH_MS && Date.parse(opened) <= now.getTime();
     const lines = [...(joined ? String(open!["body"]).split("\n") : []), said].slice(-BATCH_LINES);
     if (joined) store.handle.prepare("UPDATE notification SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL").run(stamp, Number(open!["id"]));
     const key = `lead-say:${joined ? opened : stamp}:${ledger}`;
     store.enqueueNotification({ dedupeKey: key, kind: LEAD_SAY_KIND, subject: leadNameOf(store, actor.account), body: lines.join("\n"),
-      recipient: actor.account, source: { installation: true }, ...(taskId === null ? {} : { link: chatControlHref("task", taskId) }) }, now);
+      recipient: actor.account, source: task === null ? { installation: true } : { taskRef: task.refId }, ...(taskId === null ? {} : { link: chatControlHref("task", taskId) }) }, now);
     const row = store.handle.prepare("SELECT id FROM notification WHERE dedupe_key = ?").get(key);
     return { ok: true as const, joined, notification: row === undefined ? null : Number(row["id"]) };
   });
@@ -138,14 +142,18 @@ export function leadClaim(store: Store, actor: Actor, taskId: string, now: Date)
   const task = admittedTask(store, actor.account, taskId);
   if ("ok" in task) return task;
   const { root } = familyOf(store, taskId);
-  store.transact(() => {
+  const taken = store.transact(() => {
+    // A put-away task (v145) waits on nobody, so the lead takes nothing on there: checked with the claim's own write.
+    if (refArchived(store, task.refId)) return false;
     const ledger = store.recordAction({ at: now.toISOString(), actor: actorLabel(actor), repo: task.repo, taskId: root, runId: null,
       action: LEAD_CLAIMED, outcome: "recorded", source: "work" });
     // The owner's card for this task repaints to "<name> is on it": quiet chat edits its card, and every-update
     // chat edits the attempt's own card (the Failed alert), or follows it up when that message is gone.
     store.enqueueNotification({ dedupeKey: `lead-on-it:${ledger}`, kind: LEAD_ON_IT_KIND, subject: `${leadNameOf(store, actor.account)} is on it`, body: "",
       link: chatControlHref("task", taskId), source: cardSource(store, root) ?? { taskRef: task.refId } }, now);
+    return true;
   });
+  if (!taken) return { ok: false, reason: "refused", message: "This task is put away. A person can restore it first." };
   return { ok: true, root, claim: leadClaimOf(store, taskId, now, actor.account)! };
 }
 

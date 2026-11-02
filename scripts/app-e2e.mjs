@@ -35,7 +35,7 @@ const skipBuild = flag("--skip-build");
  * many of its scripted ones another group runs too (checked at the end of every run). Every journey that isn't
  * real-model is scripted: it tests Toolroll's own behaviour with the model scripted. */
 const GROUPS = {
-  console: { journeys: 15, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, projects and their network, knowledge, skills, tools, models, old routine links" },
+  console: { journeys: 16, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, putting old tasks away, projects and their network, knowledge, skills, tools, models, old routine links" },
   pages: { journeys: 7, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, signing out" },
   task: { journeys: 4, about: "A task from an idea to an accepted result, then sent back twice" },
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
@@ -160,7 +160,7 @@ const w = await world(group === null ? "app" : `app-${group}`, {
     writeFileSync(join(repo, "README.md"), "# Shop\n\nA tiny shop library. `add` lives in src/math.js.\n");
   },
 });
-const { base, page, cli, rows, check, shot, json, signIn, askLead, pendingCard, confirmCard, auth, repo, script } = w;
+const { base, page, cli, rows, sql, check, shot, json, signIn, askLead, pendingCard, confirmCard, auth, repo, script } = w;
 /** A wait on a condition. In a scripted run it looks at least every half second: the scripted model answers at once and
  * the worker wakes on every change, so a look every 3 or 5 seconds only adds its own delay. A real-model run keeps each
  * wait's own pace. */
@@ -495,6 +495,45 @@ await journey("console", SCRIPTED, "The command line answers: the task list, the
   if (!/npm test/.test(verify)) throw new Error(`the project's check: ${verify.slice(0, 200)}`);
   if (!/task/.test(help)) throw new Error("help doesn't mention tasks");
   if (!/^toolroll — /.test(help) || !/toolroll task add/.test(help)) throw new Error(`help doesn't name the toolroll command: ${help.slice(0, 200)}`);
+});
+
+await journey("console", SCRIPTED, "Put away old tasks: Needs you → Put away old tasks shows each one and why → untick one, confirm with your password → it's gone from Needs you; Archived → Restore brings it back", [], async () => {
+  // Two finished tasks from long ago (their age set directly, as time would): the preview offers both, with why.
+  for (const [id, title] of [["tidy-old-copy", "Old onboarding copy"], ["tidy-old-banner", "Old launch banner"]]) {
+    cli(["task", "add", title, "--id", id, "--repo", repo]);
+    sql(`UPDATE task SET state = 'done', updated_at = '2026-01-05T10:00:00.000Z' WHERE id = '${id}'`);
+  }
+  const archivedNow = () => rows("SELECT r.external_id id FROM task_archive a JOIN task_ref r ON r.id = a.task_ref ORDER BY id").map(one => one.id);
+  await page.goto(`${base}/work?view=needs-you`);
+  await page.locator('[data-task="tidy-old-copy"]').first().waitFor({ timeout: 15_000 });
+  await Promise.all([page.waitForNavigation(), page.locator("a[data-put-away-old]").first().click()]);
+  const preview = page.locator("form#put-away");
+  await preview.waitFor({ timeout: 15_000 });
+  const text = await page.locator("body").innerText();
+  if (!/Finished more than 14 days ago/.test(text) || !/Old onboarding copy/.test(text) || !/untouched for more than 14 days/.test(text)) throw new Error(`the preview: ${text.slice(0, 400)}`);
+  if (!/toolroll task tidy --apply --digest [0-9a-f]{32}/.test(text)) throw new Error("the preview doesn't name its CLI twin");
+  await shot("put-away-preview");
+  await preview.locator('input[name="task"][value="tidy-old-banner"]').uncheck();
+  const password = preview.locator('input[name="password"]');
+  if (await password.count() > 0) await password.fill(w.passwords.alex);
+  await Promise.all([page.waitForNavigation(), preview.locator("button.kit-save").click()]);
+  if (!page.url().endsWith("/work?view=archived")) throw new Error(`after putting away: ${page.url()} — ${(await page.locator("body").innerText()).slice(0, 300)}`);
+  if (JSON.stringify(archivedNow()) !== JSON.stringify(["tidy-old-copy"])) throw new Error(`put away: ${JSON.stringify(archivedNow())}`);
+  await page.locator('[data-task="tidy-old-copy"]').first().waitFor({ timeout: 15_000 });
+  if (!/Archived by alex: Finished/.test(await page.locator("body").innerText())) throw new Error("Archived doesn't say who put it away and why");
+  await shot("put-away-archived");
+  await page.goto(`${base}/work?view=needs-you`);
+  if (await page.locator('[data-task="tidy-old-copy"]').count() !== 0) throw new Error("a put-away task is still in Needs you");
+  await page.goto(`${base}/work?view=archived`);
+  await Promise.all([page.waitForNavigation(), page.locator('[data-task="tidy-old-copy"] [data-tidy-act="restore"] button').first().click()]);
+  if (archivedNow().length !== 0) throw new Error(`Restore left: ${JSON.stringify(archivedNow())}`);
+  // The same preview on a phone.
+  const phone = await alexPhone();
+  await phone.goto(`${base}/work/put-away`);
+  await phone.locator("form#put-away").waitFor({ timeout: 15_000 });
+  await settle(phone);
+  await phone.screenshot({ path: join(w.out, "put-away-preview-phone.png") });
+  await putPhoneDown();
 });
 
 // ------------------------------------------------------------------ a task, from an idea to an accepted result

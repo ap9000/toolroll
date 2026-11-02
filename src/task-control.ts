@@ -162,7 +162,7 @@ export type ResumeRequest = {
 
 export type ResumeOutcome =
   | { ok: true; stop: RunStop; taskId: string; gate: DispatchDiagnosis | null }
-  | { ok: false; reason: "no-task" | "no-stop" | "wrong-task" | "stopping" | "already-resumed" | "superseded" | "busy" | "review" | "occupied"; detail: string };
+  | { ok: false; reason: "no-task" | "no-stop" | "wrong-task" | "stopping" | "already-resumed" | "superseded" | "busy" | "review" | "occupied" | "archived"; detail: string };
 
 /**
  * The shared resume door. Refuses in words until the exact stopped attempt

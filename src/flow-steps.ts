@@ -40,6 +40,7 @@ import { cleanFolder, flowLaunch, runCode } from "./flow-code.js";
 import { browserStanding } from "./flow-browser.js";
 import { readProviderKey } from "./keys.js";
 import type { FlowCardRow, FlowRow, FlowScriptRow, FlowStepKind, Store } from "./store.js";
+import { cardTaskArchived } from "./task-archive.js";
 import { replyInChannel } from "./chat-inbox.js";
 import { recordSent, threadOf } from "./flow-replies.js";
 import { ASKED, subagentReady, subagentTurn, type SubagentOutcome } from "./subagent-work.js";
@@ -110,6 +111,8 @@ export async function runFlowSteps(store: Store, repo: string, now: Date, io: St
     if (known === undefined) { const flow = store.getFlow(card.flow)!; known = { flow, definition: flowDefinitionOf(flow) }; flows.set(card.flow, known); }
     const stage = known.definition?.stages.find(one => one.id === card.stage);
     if (stage === undefined) continue;
+    // A card whose task is put away (v145) runs nothing — no step, subagent turn or pull request — until it's restored.
+    if (cardTaskArchived(store, card.id)) continue;
     // v92: a subagent's turn — a zone it handles, or a decision it staffs (a person decides when it's paused or gone).
     if (stage.kind === "subagent" || (stage.kind === "approval" && stage.subagent !== undefined)) {
       await subagentStep(store, known.flow, known.definition!, stage, card, now, io, pass);
@@ -208,11 +211,16 @@ export async function runFlowSteps(store: Store, repo: string, now: Date, io: St
 
 /** Claim this card's visit to its step zone, only while the card is still there on that visit: a pass that read the card
  * before another pass (or a person) moved it never runs the step for a visit that's over. */
-function claimStep(store: Store, card: FlowCardRow, step: { stage: string; kind: FlowStepKind; script: string | null; scriptVersion: number | null }, now: Date): boolean {
+export function claimStep(store: Store, card: FlowCardRow, step: { stage: string; kind: FlowStepKind; script: string | null; scriptVersion: number | null }, now: Date): boolean {
   return store.transact(() => {
     const fresh = store.getFlowCard(card.id);
     if (fresh === null || fresh.state !== "active" || fresh.entry !== card.entry || fresh.stage !== step.stage) return false;
-    return store.claimFlowStep({ card: card.id, entry: card.entry, ...step }, now);
+    // A card whose task is put away (v145) runs no step until the task is restored (both of its tasks, re-read here).
+    if (cardTaskArchived(store, card.id)) return false;
+    if (!store.claimFlowStep({ card: card.id, entry: card.entry, ...step }, now)) return false;
+    // The tasks this step was admitted for stay held while it runs, wherever the card moves meanwhile.
+    for (const task of [fresh.task, fresh.primaryTask]) if (task !== null) store.handle.prepare("INSERT OR IGNORE INTO flow_step_task (card, entry, task_id) VALUES (?, ?, ?)").run(card.id, card.entry, task);
+    return true;
   });
 }
 

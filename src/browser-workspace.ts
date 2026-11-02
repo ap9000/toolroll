@@ -159,11 +159,15 @@ export type BrowserTasksView = {
     chip: AskChip | null;
     group: BrowserTaskGroup;
     action: BrowserLink | null; detail: string | null; problem: string | null; notes: string[];
+    /** Put away, or Restore in Archived (task-tidy.md): a POST to the task's own route; null for a viewer or live work. */
+    tidy?: { action: string; label: 'Put away' | 'Restore'; returnTo: string } | null;
   }[];
   empty: { text: string; action: BrowserLink | null } | null;
   pages: { first: string | null; next: string | null };
   tools: BrowserLink[];
   newTask: BrowserLink;
+  /** Put away old tasks (an approver's): the preview page. */
+  putAway?: BrowserLink | null;
   /** v105: subscription windows and monthly budgets, one tile each (an instance operator's; null when there are none). */
   limits: BrowserLimits | null;
   /** The stored-state filter (Any state, Queued, Running, Done, Failed, Cancelled), each a real link starting on page one. */
@@ -253,6 +257,8 @@ export type BrowserTaskView = {
   id: string; title: string; project: string | null; scout: boolean;
   tabs: (BrowserLink & { active: boolean })[];
   version: { label: string; current: BrowserLink } | null;
+  /** Put away (task-tidy.md): "Archived by tidy: <why>", when, and Restore for an approver. */
+  archived?: { words: string; at: string; restore: { action: string; returnTo: string } | null } | null;
   /** The status card; `statusHtml` stands in when no assignment projection exists. */
   status: AssignmentCard | null;
   statusHtml: string;
