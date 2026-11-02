@@ -352,7 +352,7 @@ export function approvalSheetHtml(input: {
   const revisionDetail = input.revision === null ? "" : detail("Earlier build", joinHtml([
     html`<div class="revision-card" data-revision-feedback>`,
     html`<p><a href="${input.revisionSourceHref}"${input.surface === "chat" ? html` data-revision-source` : ""}>${input.surface === "chat" ? html`Original result: build #${input.revision.sourceRun} →` : html`build #${input.revision.sourceRun}`}</a></p>`,
-    input.revision.comments.length === 0 ? "" : html`<ul>${input.revision.comments.map(one => html`<li>${one.path === null ? "" : html`<span class="mono">${one.path}${one.line === null ? "" : `:${one.line}`}</span> · `}${one.note} <span class="meta">— ${one.author}</span></li>`)}</ul>`,
+    input.revision.comments.length === 0 ? "" : html`<ul>${input.revision.comments.map(one => html`<li>${revisionImageLink(one.image)}${one.path === null ? "" : html`<span class="mono">${one.path}${one.line === null ? "" : `:${one.line}`}</span> · `}${one.note} <span class="meta">— ${one.author}</span></li>`)}</ul>`,
     revisionLineageHtml(input.revision.lineage),
     html`</div>`,
   ]));
@@ -1347,6 +1347,10 @@ export type PlanRevisionLedgerView = { current: RevisionDocView | null; pending:
 
 export type MilestoneProgressView = { id: string; description: string; state: MilestoneState; note: string | null };
 
+function revisionImageLink(image: import("../result-review.js").FeedbackImage | null | undefined): Html {
+  return image == null ? html`` : html`<a href="/r/${image.run}/evidence/${image.artifact}">Screenshot ${image.artifact} · result #${image.run}</a> · `;
+}
+
 /** The revision batch a task's approval screen restates, or the named reason it cannot. */
 export type RevisionView =
   | {
@@ -1354,7 +1358,7 @@ export type RevisionView =
       sourceRun: number;
       /** What kind of brief this is — annotations, a CI repair, a criterion repair. */
       kind: "annotations" | "ci-repair" | "criterion-repair";
-      comments: { path: string | null; line: number | null; note: string; author: string }[];
+      comments: { path: string | null; line: number | null; note: string; author: string; image?: import("../result-review.js").FeedbackImage | null }[];
       /** The lineage and ACTUAL terms (contract handoff task 2), read from
        * the child's own rows — the same projection chat and the approval
        * card restate. */
@@ -2040,7 +2044,7 @@ export function taskBodyParts(data: {
             html`<div class="revision-card" data-revision-feedback>`,
             html`<p><strong>${data.revision.kind === "ci-repair" ? "CI repair" : data.revision.kind === "criterion-repair" ? "Criterion repair" : "Revision feedback"}</strong> <span class="meta">from <a href="/r/${data.revision.sourceRun}">build #${data.revision.sourceRun}</a></span></p>`,
             ...data.revision.comments.map(
-              one => html`<p class="row"><span class="meta">${one.author}</span> ${one.path === null ? "" : html`<span class="mono">${one.path}${one.line === null ? "" : `:${one.line}`}</span> `}${one.note}</p>`,
+              one => html`<p class="row"><span class="meta">${one.author}</span> ${revisionImageLink(one.image)}${one.path === null ? "" : html`<span class="mono">${one.path}${one.line === null ? "" : `:${one.line}`}</span> `}${one.note}</p>`,
             ),
             revisionLineageHtml(data.revision.lineage),
             html`</div>`,
@@ -2680,7 +2684,7 @@ export function taskBodyParts(data: {
     const feedback = data.revision;
     thread.push({ key: "revision", at: task.createdAt, kind: "reply", who: "person", author: feedback.comments[0]?.author ?? "You",
       title: feedback.kind === "ci-repair" ? "Asked for a CI repair" : feedback.kind === "criterion-repair" ? "Asked for a repair" : "Asked for changes",
-      text: feedback.comments.map(one => `${one.path === null ? "" : `${one.path}${one.line === null ? "" : `:${one.line}`} — `}${one.note.trim()}`).filter(one => one !== "").join("\n") || null,
+      text: feedback.comments.map(one => `${one.image ? `Screenshot ${one.image.artifact} · result #${one.image.run} — ` : ""}${one.path === null ? "" : `${one.path}${one.line === null ? "" : `:${one.line}`} — `}${one.note.trim()}`).filter(one => one !== "").join("\n") || null,
       link: { label: `From build #${feedback.sourceRun}`, href: `/r/${feedback.sourceRun}` }, html: "", more: null });
   }
   for (const decision of data.decisions) {

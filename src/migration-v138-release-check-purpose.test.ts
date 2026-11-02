@@ -30,9 +30,9 @@ test.each([137, -137])("v%s: a scope's release check purpose is added; saved sco
 
   expect(updateSafeSchema(137)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(138);
-  expect(SCHEMA_VERSION).toBe(142);
+  expect(SCHEMA_VERSION).toBe(143);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(142);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(143);
   expect(store.handle.prepare("SELECT count(*) AS n FROM pragma_table_info('task_scope') WHERE name = 'release_check_json'").get()?.["n"]).toBe(1);
   expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true, through: chain.through, head: chain.head });
   store.close();

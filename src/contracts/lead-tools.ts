@@ -84,6 +84,7 @@ export const LEAD_TOOL_INPUTS = {
     note: z.string().max(LIMITS.note).nullable().optional(), path: text("diffPath").nullable().optional(),
     line: z.int().min(1).max(1_000_000).nullable().optional(),
     saved_notes: z.array(id).max(100).optional(),
+    image: id.nullable().optional().describe("Screenshot artifact id from get_result_images; attaches the exact verified image to this feedback. null leaves off the screenshot a reply targets."),
   }),
   recap: z.strictObject({ since: text("recapSince").optional() }),
   list_repos: z.strictObject({}),

@@ -223,7 +223,7 @@ export const CONSOLE_FORMS = {
   // A recipe's own answers and editor fields are read by recipes.ts from the whole form (`sent`; item 17).
   recipes: formContract("POST /recipes/prepare, /recipes/preview, /recipes/import, /recipes/launch, /recipes/save", ["repo", "projectRevision", "recipe", "recipeRevision", "document", "purpose", "source", "sourceRevision", "preview", "next"]),
   runNote: formContract("POST /r/<run>/note", ["note"]),
-  diffComment: formContract("POST /r/<run>/comment", ["return", "tab", "intent", "batch", "source", "note", "path", "line", "request"]),
+  diffComment: formContract("POST /r/<run>/comment", ["return", "tab", "intent", "batch", "source", "note", "path", "line", "request", "image", "comment"]),
   editorLinks: formContract("POST /session/editor-links", ["on", "return"]),
   revise: formContract("POST /r/<run>/revise", ["return", "batch", "source"]),
   followUp: formContract("POST /r/<run>/checks|add-tests", ["return", "level"]),

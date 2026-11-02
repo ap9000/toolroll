@@ -87,6 +87,8 @@ export type LeadTurnInput = {
    * visible thread so a task-scoped composer still reads like a normal
    * conversation. */
   context?: string;
+  /** Exact image from the transport record of the message being answered. */
+  replyImage?: import("./result-review.js").FeedbackImage;
   fetcher?: typeof fetch;
   /** Injected by tests; production invokes the isolated local harness. */
   subscriptionRunner?: SubscriptionLeadRunner;
@@ -324,7 +326,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   if (liveSession.endedAt !== null) return refuse("session-ended");
   if (liveThread.closedAt !== null) return refuse("thread-closed");
   if (liveSession.ceilingDigest !== who.ceilingDigest || liveThread.ceilingDigest !== who.ceilingDigest) return refuse("ceiling-changed");
-  const digest = createHash("sha256").update(JSON.stringify([thread.id, message, input.context ?? null])).digest("hex");
+  const digest = createHash("sha256").update(JSON.stringify([thread.id, message, input.context ?? null, ...(input.replyImage === undefined ? [] : [input.replyImage])])).digest("hex");
   const receipt = request === undefined ? null : store.leadRequestReceipt(session.id, request);
   if (receipt !== null) return receipt.digest === digest ? { ok: true, replayed: true, turn: receipt.turn } : refuse("request-changed");
   // The channel's standing, proved before anything is admitted or sent.
@@ -667,7 +669,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       // caller of executeLeadTool): the model learns the road (find_tools, then the next step) and the reply goes on.
       const outcome = !advertisedNames.has(call.name)
         ? { ok: false as const, message: `${call.name} isn't available in this step. Call find_tools with what you want to do; tools it finds can be called from your next step.` }
-        : executeLeadTool({ store, who, now: clock(), draft, selectEvidence, step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, findTools, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }) }, call.name, call.args, view);
+        : executeLeadTool({ store, who, now: clock(), draft, selectEvidence, ...(input.replyImage === undefined ? {} : { replyImage: input.replyImage }), step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, findTools, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }) }, call.name, call.args, view);
       let displayOutcome: LeadToolOutcome = { state: "succeeded" };
       if (!outcome.ok) {
         const reason = leadToolFailureReason(call.name, outcome.message);

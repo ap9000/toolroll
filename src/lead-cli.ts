@@ -1,3 +1,4 @@
+import { parseFeedbackImage } from "./result-review.js";
 import { configureLeadFollow, leadFollowStatus } from './lead-follow.js';
 import { closedQuestionWords } from "./decision.js";
 /**
@@ -141,7 +142,8 @@ export function proposalBlock(store: Store, proposal: LeadProposal, repos: reado
     const snapshot = proposal.payload["snapshot"] as import("./chat-review.js").ReviewSnapshot | undefined;
     const selected = Array.isArray(proposal.payload["notes"]) ? proposal.payload["notes"] as number[] : [];
     const notes = snapshot?.notes.filter(one => selected.includes(one.id)) ?? [];
-    return [line as string, ...notes.map(one => `     ${one.path === null ? "" : `${one.path}${one.line === null ? "" : `:${one.line}`}: `}${one.note}`),
+    const image = parseFeedbackImage(proposal.payload["image"]);
+    return [line as string, ...(image ? [`     Screenshot ${image.artifact} · result #${image.run}`] : []), ...notes.map(one => `     ${one.image ? `Screenshot ${one.image.artifact} · result #${one.image.run}: ` : ""}${one.path === null ? "" : `${one.path}${one.line === null ? "" : `:${one.line}`}: `}${one.note}`),
       proposal.payload["operation"] === "revise" ? "     Creates a revision of the same task; approval is separate." : "     Saves feedback; no work starts."];
   }
   return proposal.kind === "answer" ? [line as string, ...answerContextLines(store, proposal.payload)] : [line as string];

@@ -1878,7 +1878,7 @@ function applyConversation(context: Context, update: Update, effects: Effect[]):
     if (tasks.length === 1) {
       taskId = tasks[0] as string;
       sourceRun = bindings.find(one => one.run !== null)?.run ?? null;
-      context_ = replyContextFor(taskId, sourceRun);
+      context_ = replyContextFor(taskId, sourceRun, bindings.find(one => one.image !== undefined)?.image);
     }
   }
   // No reply target: the task this chat chose to talk about, if any. The

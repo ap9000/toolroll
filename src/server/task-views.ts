@@ -1,3 +1,5 @@
+import { feedbackImageProblem } from "../result-actions.js";
+import { parseFeedbackImage } from "../result-review.js";
 import { releaseViewOf } from "../release-view.js";
 import { releaseCiRunningOf } from "../release-ci-hold.js";
 import { releaseObligationsOf } from "../release-recheck.js";
@@ -265,7 +267,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         sourceTask?: unknown;
         sourceRun?: unknown;
         kind?: unknown;
-        comments?: { path?: unknown; line?: unknown; note?: unknown; author?: unknown }[];
+        comments?: { path?: unknown; line?: unknown; note?: unknown; author?: unknown; image?: unknown }[];
       };
       return {
         sourceTask: String(parsed.sourceTask ?? "?"),
@@ -277,6 +279,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
           line: one.line === null || one.line === undefined ? null : Number(one.line),
           note: String(one.note ?? ""),
           author: String(one.author ?? "?"),
+          image: parseFeedbackImage(one.image) || null,
         })),
       };
     } catch {
@@ -1126,6 +1129,9 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       outsideTouches: files.filter(one => one.outsideTouches).map(one => one.path),
       fileAnchors,
       comments: runtime.store.liveDiffComments(run.id).filter(isRevisionFeedback),
+      // The same check that refuses a saved note's screenshot at revision time decides when it can be removed.
+      unusableImageNotes: runtime.store.liveDiffComments(run.id).filter(one => isRevisionFeedback(one) && one.image != null
+        && feedbackImageProblem(runtime.store, runtime.evidenceRoot, run.id, one.image) !== null).map(one => one.id),
       pastComments: runtime.store.allDiffComments(run.id).filter(one => one.reviewerRun === null && (one.consumedBy !== null || one.supersededBy !== null)),
       reviewerFindings: runtime.store.allDiffComments(run.id).filter(one => one.reviewerRun !== null),
       automaticReview: buildReviewOf(runtime.store, run.id),

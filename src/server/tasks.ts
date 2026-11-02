@@ -1,4 +1,5 @@
-import { releaseAuthorityOfTask, revokeRelease, runLiveCommands } from "../store.js";
+import { parseFeedbackImage, sameFeedbackImage } from "../result-review.js";
+import { dropFeedbackImage, releaseAuthorityOfTask, revokeRelease, runLiveCommands } from "../store.js";
 import { steerCapabilityOf } from "../steer-capabilities.js";
 import { canReveal, localCheckoutOf, revealInFinder } from "../checkout-proof.js";
 
@@ -51,7 +52,7 @@ import { fileTaskProposal } from "../proposal.js";
 import { isProviderId,PROVIDER_IDS,validateSpec,type ProviderId } from "../provider.js";
 import { completeAndOpenPullRequest,mergeAsPerson } from '../pull-request-flow.js';
 import { isQualityMode,type QualityMode } from "../quality.js";
-import { createResultRevision,requestResultChanges } from "../result-actions.js";
+import { createResultRevision,requestResultChanges,feedbackImageProblem } from "../result-actions.js";
 import { structuredHandoffView,terminalDiffView } from "../result-evidence-readers.js";
 import { fileAddTestsTask,requestFollowUpChecks } from '../result-follow-ups.js';
 import {
@@ -1445,15 +1446,35 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const viewParam = returnTo.startsWith("/t/") ? "section" : "tab";
     const back = selectedTab === "summary" ? returnTo
       : `${returnTo.replace(/&section=(?:summary|changes|checks)$/, "")}${returnTo.includes("?") ? "&" : "?"}${viewParam}=${selectedTab}`;
+    if (body.get("intent") === "drop-image") {
+      // A saved note whose screenshot is gone or changed would block every revision that seals it. Its words stay:
+      // the note is superseded by an exact imageless copy, and the original remains in history.
+      // Who: a signed-in browser approver admitted to this run's project (checked above) — the same authority that
+      // seals any saved note into a revision. What: only a screenshot that is unusable right now, re-proved inside
+      // dropFeedbackImage's transaction, and recorded in the ledger under this person.
+      if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Only a signed-in approver can change saved feedback.", back);
+      const comment = Number(body.get("comment") ?? "");
+      if (!Number.isSafeInteger(comment) || comment < 1) return refuse(response, who, 400, "Choose a saved note.", back);
+      const dropped = dropFeedbackImage(store, id, comment, who.name, one => feedbackImageProblem(store, evidenceRoot, id, one), now);
+      if (!dropped.ok && dropped.reason === "not-authorized") return refuse(response, who, 403, "Only a signed-in approver on this project can change saved feedback.", back);
+      if (!dropped.ok) return refuse(response, who, 409, dropped.reason === "image-usable"
+        ? "That screenshot still verifies, so the note keeps it. Reload the result." : "That saved note changed or was already used. Reload the result.", back);
+      return redirect(response, `${back}#request-changes`);
+    }
+    const image = parseFeedbackImage(body.get("image"));
+    if (image === false) return refuse(response, who, 400, "Choose a screenshot from this result again. Your draft is unchanged.", back);
     if (body.get("intent") === "revise") {
       const result = requestResultChanges(store, evidenceRoot, {
         run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
         repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
-        note: body.get("note") ?? "", path: body.get("path") ?? "", line: body.get("line") ?? "", request: body.get("request"),
+        note: body.get("note") ?? "", path: body.get("path") ?? "", line: body.get("line") ?? "", request: body.get("request"), image,
       }, now);
       if (!result.ok) {
         const request = body.get("request") ?? "";
-        const retryBack = /^[a-f0-9]{32}$/.test(request) ? `${back}${back.includes("?") ? "&" : "?"}conflict=${request}#request-changes` : back;
+        // The queue's link can stop resolving when a newer attempt finishes. The exact
+        // run record still hosts this account/run's recoverable feedback draft.
+        const retryBase = image === null ? back : `/r/${id}?record=1`;
+        const retryBack = /^[a-f0-9]{32}$/.test(request) ? `${retryBase}${retryBase.includes("?") ? "&" : "?"}conflict=${request}#request-changes` : retryBase;
         return refuse(response, who, result.status, result.message, retryBack);
       }
       return redirect(response, revisionDestination(result.id, returnTo));
@@ -1487,10 +1508,18 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const request = body.get("request");
     const sourceKey = commentSourceKey(who.name, request);
     const path = rawPath === "" ? null : rawPath;
-    const inserted = store.addDiffComment(
-      { artifactId: terminal.id, runId: id, path, line, note: note.note, author: who.name, ...(sourceKey === undefined ? {} : { sourceKey }) },
-      now,
-    );
+    // Freshness, custody and the insert in one write transaction: a newer attempt finishing in between can't leave a
+    // stale screenshot attached (check and write together).
+    const saved = store.transact((): { problem: string } | { inserted: number | null } => {
+      const imageProblem = feedbackImageProblem(store, evidenceRoot, id, image);
+      if (imageProblem !== null) return { problem: imageProblem };
+      return { inserted: store.addDiffComment(
+        { artifactId: terminal.id, runId: id, path, line, note: note.note, author: who.name, image, ...(sourceKey === undefined ? {} : { sourceKey }) },
+        now,
+      ) };
+    });
+    if ("problem" in saved) return refuse(response, who, 409, saved.problem, `/r/${id}?record=1#request-changes`);
+    const inserted = saved.inserted;
     if (inserted === null && sourceKey !== undefined) {
       // The token was used before (repair 2026-09-14, finding 1). A
       // request identity is IMMUTABLE: it names exactly one note on
@@ -1504,7 +1533,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       if (earlier === null || earlier.run !== id) {
         return refuse(response, who, 409, `this note's request identity was already used on another result (build #${earlier === null ? "?" : earlier.run}) — go back; your words are kept, and the form will carry a new identity`, conflictBack);
       }
-      if (earlier.path !== path || earlier.line !== line || earlier.note !== note.note) {
+      if (earlier.path !== path || earlier.line !== line || earlier.note !== note.note || !sameFeedbackImage(earlier.image, image)) {
         return refuse(response, who, 409, `this request identity already recorded a different note on this result (${earlier.path === null ? "no file" : `${earlier.path}${earlier.line === null ? "" : `:${earlier.line}`}`}: "${oneLineOf(earlier.note, 80)}") — go back; your edited words are kept as a new note, and the form will carry a new identity`, conflictBack);
       }
     }

@@ -209,6 +209,22 @@ an observable baseline, not a quality score or a claim of improved productivity.
   The lead or user marks Complete after inspection. Failed checks stay failed;
   absent optional historical assessments do not block completion.
 
+## Feedback on a screenshot
+
+For visual feedback, choose **Comment** beside a saved screenshot. The same form
+shows the selected thumbnail and caption beside your note before **Request changes**.
+**Save for later** keeps the note for a future batch. The result, chat confirmation,
+and revision retain the exact screenshot; a changed or unavailable image refuses
+submission and keeps the browser draft. Remove the image to submit general feedback.
+If a saved note's screenshot later stops verifying, **Keep note without screenshot**
+keeps its words for the batch; the original note stays in the result's history.
+In chat, `propose_review` accepts an image id from the result. A typed note replying
+to a Telegram screenshot keeps that image unless `image: null` drops it; a newer
+result or a saved-notes-only revision does not attach it. A confirmation card too long
+for one Telegram message is not shortened: it links to your Toolroll chat, where
+the pending card waits in full. Optional missing images never prevent marking a
+task Complete or change its recorded checks.
+
 ## Peeking at the agents
 
 ```sh

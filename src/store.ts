@@ -1,3 +1,5 @@
+import { verifyResultImage } from "./chat-evidence.js";
+import { parseFeedbackImage, type FeedbackImage } from "./result-review.js";
 import { mintSecret } from "./secret-mint.js";
 import { WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 import { checkAccessOf, widerThan, type CheckAccess } from "./check-access.js";
@@ -1144,7 +1146,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // request's billing was known (V141_ADDED_COLUMNS; saved rows NULL: unknown).
 // v142 adds, and changes no saved row: youiyoux change requests as tasks (V142_SCHEMA, new tables only) — each
 // project's intake choice and last answer, and each request taken, with the task it became.
-export const SCHEMA_VERSION = 142;
+// v143 adds, and changes no saved row: optional exact-screenshot context on result feedback
+// (diff_comment.image_json, V143_ADDED_COLUMNS; saved notes read NULL and keep their file/line target).
+export const SCHEMA_VERSION = 143;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1282,7 +1286,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1426,6 +1430,10 @@ export const V140_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
     provider_turns: { definition: "INTEGER CHECK (provider_turns IS NULL OR provider_turns >= 0)", saved: "NULL" },
     reported_cost_usd: { definition: "REAL CHECK (reported_cost_usd IS NULL OR reported_cost_usd >= 0)", saved: "NULL" },
   },
+});
+/** v143: optional screenshot context on result feedback; existing feedback stays unchanged (saved rows read NULL). */
+export const V143_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  diff_comment: { image_json: { definition: "TEXT", saved: "NULL" } },
 });
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
@@ -5713,6 +5721,10 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   }
   // v142: youiyoux change requests as tasks (new tables only).
   db.exec(V142_SCHEMA);
+  // v143: optional exact-screenshot context on result feedback (V143_ADDED_COLUMNS: saved notes read NULL).
+  for (const [table, columns] of Object.entries(V143_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -11282,6 +11294,7 @@ export class Store {
       author: string;
       /** Ingested comments carry their origin id — the idempotency key (M8.17). */
       sourceKey?: string;
+      image?: FeedbackImage | null;
     },
     now: Date,
   ): number | null {
@@ -11289,12 +11302,18 @@ export class Store {
     if (artifact === undefined || artifact.kind !== "terminal-diff") {
       throw new Error(`artifact ${args.artifactId} is not run ${args.runId}'s terminal diff — comments bind to the exact bytes reviewed`);
     }
+    const image = parseFeedbackImage(args.image);
+    if (image === false) throw new Error("Invalid feedback image.");
+    if (image !== null) {
+      const shot = this.artifactForRun(args.runId, image.artifact);
+      if (image.run !== args.runId || shot?.kind !== "screenshot" || shot.sha256 !== image.sha256) throw new Error("The feedback image does not belong to this result.");
+    }
     // The unique index is the real concurrent guard (audit C-9): a race on
     // the same source key lands in DO NOTHING, not in a thrown constraint.
     const inserted = this.db
       .prepare(
-        `INSERT INTO diff_comment (artifact, artifact_sha, run, path, line, note, author, created_at, source_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO diff_comment (artifact, artifact_sha, run, path, line, note, author, created_at, source_key, image_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO NOTHING`,
       )
       .run(
@@ -11307,6 +11326,7 @@ export class Store {
         args.author,
         now.toISOString(),
         args.sourceKey ?? null,
+        image === null ? null : JSON.stringify(image),
       );
     return Number(inserted.changes) === 0 ? null : Number(inserted.lastInsertRowid);
   }
@@ -12204,7 +12224,12 @@ export class Store {
             if (ids.size !== args.commentIds.length || live.length !== ids.size) {
               throw new RevisionRaced("this annotation batch is no longer whole — read the current comments before sealing it");
             }
-            const exactComment = (one: Record<string, unknown>) => ({ id: one["id"], path: one["path"], line: one["line"], note: one["note"], author: one["author"], createdAt: one["createdAt"] });
+            for (const one of live) {
+              if (one.image == null) continue;
+              const image = sourceRef.repo === null ? null : verifyResultImage(this, args.brief.evidenceRoot, [sourceRef.repo], { taskId: args.source.task, ...one.image });
+              if (one.image.run !== sourceRun.id || image === null || !image.ok) return refuse("brief-custody", "A feedback screenshot is unavailable or changed. The notes were not consumed.");
+            }
+            const exactComment = (one: Record<string, unknown>) => ({ id: one["id"], path: one["path"], line: one["line"], note: one["note"], author: one["author"], createdAt: one["createdAt"], image: one["image"] ?? null });
             const expected = live.map(one => exactComment({ ...one }));
             const described = Array.isArray(named.comments) && named.comments.every(one => one !== null && typeof one === "object" && !Array.isArray(one))
               ? named.comments.map(one => exactComment(one as Record<string, unknown>)) : null;
@@ -23966,6 +23991,7 @@ export type DiffComment = {
   id: number;
   artifact: number;
   artifactSha: string;
+  image?: FeedbackImage | null;
   run: number;
   path: string | null;
   line: number | null;
@@ -24515,6 +24541,7 @@ function readDiffComment(row: Record<string, unknown>): DiffComment {
     id: Number(row["id"]),
     artifact: Number(row["artifact"]),
     artifactSha: String(row["artifact_sha"]),
+    image: readFeedbackImage(row["image_json"]),
     run: Number(row["run"]),
     path: row["path"] === null ? null : String(row["path"]),
     line: row["line"] === null ? null : Number(row["line"]),
@@ -25455,4 +25482,47 @@ export function lockStoreMoneyMethods(store: object, prototype: object = Store.p
     const now = builtinGetOwnPropertyDescriptor(store, name);
     if (now === undefined || now.value !== recorded.value || now.writable !== false || now.configurable !== false) throw new Error(`Store.${name} couldn't be locked`);
   }
+}
+
+/** A saved note's screenshot reference (v143), or null; a damaged one refuses rather than reading as none. */
+function readFeedbackImage(value: unknown): FeedbackImage | null {
+  const image = parseFeedbackImage(value);
+  if (image === false) throw new Error("The saved feedback image is damaged.");
+  return image;
+}
+
+/** Takes a saved note's screenshot off without losing the note or its history (v143). Fail closed, in one write
+ * transaction: the note must be live and unconsumed on this run, its screenshot must be genuinely unusable right now
+ * (`unusable` is result-actions.ts feedbackImageProblem, re-read inside the transaction, never the page's say-so), and
+ * the change is recorded in the action ledger under the person who made it. The note is superseded by an exact
+ * imageless copy; the original stays in history. The caller has already proved the person may request changes on
+ * this run (the same authority that seals any saved note into a revision); that standing is re-proved here too. */
+export function dropFeedbackImage(store: Store, runId: number, commentId: number, actor: string,
+  unusable: (image: FeedbackImage) => string | null, now: Date): { ok: true; id: number } | { ok: false; reason: "not-found" | "image-usable" | "not-authorized" } {
+  return store.transact(() => {
+    // The person's standing is re-read under the write lock: a revocation, a downgrade or a lost project committed
+    // after the request was admitted refuses here (check and write together).
+    const run = store.getRun(runId);
+    const repo = run === null ? null : store.refById(run.taskRef)?.repo ?? null;
+    const account = store.accountOf(actor);
+    if (run === null || account === null || account.revokedAt !== null || account.role !== "approver" || !store.accountCanAccess(actor, repo)) {
+      return { ok: false as const, reason: "not-authorized" as const };
+    }
+    const live = store.handle.prepare(`SELECT id, image_json FROM diff_comment WHERE id = ? AND run = ? AND superseded_by IS NULL AND consumed_by IS NULL
+      AND reviewer_run IS NULL AND image_json IS NOT NULL`).get(commentId, runId);
+    if (live === undefined) return { ok: false as const, reason: "not-found" as const };
+    const image = readFeedbackImage(live["image_json"]);
+    if (image === null) return { ok: false as const, reason: "not-found" as const };
+    const problem = unusable(image);
+    if (problem === null) return { ok: false as const, reason: "image-usable" as const };
+    const copy = store.handle.prepare(`INSERT INTO diff_comment (artifact, artifact_sha, run, path, line, note, author, created_at, reviewer_run, severity)
+      SELECT artifact, artifact_sha, run, path, line, note, author, ?, reviewer_run, severity FROM diff_comment WHERE id = ?`).run(now.toISOString(), commentId);
+    const id = Number(copy.lastInsertRowid);
+    const moved = store.handle.prepare("UPDATE diff_comment SET superseded_by = ? WHERE id = ? AND superseded_by IS NULL AND consumed_by IS NULL").run(id, commentId);
+    if (Number(moved.changes) !== 1) throw new Error("The saved note changed while its screenshot was being removed.");
+    store.recordAction({ at: now.toISOString(), actor, repo,
+      taskId: store.externalIdFor(run.taskRef) ?? null, runId, action: "feedback screenshot removed", outcome: "recorded", source: "work",
+      detail: `note ${commentId} kept as note ${id} without screenshot ${image.artifact}: ${problem}` });
+    return { ok: true as const, id };
+  });
 }

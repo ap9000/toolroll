@@ -390,7 +390,7 @@ export type BrowserResultPanel = {
 export type BrowserCheckItem = {
   id: string; statement: string; words: string; note: string | null;
   excerpts: { path: string; cited: boolean; lines: { kind: "addition" | "deletion" | "context"; line: number | null; text: string }[]; more: number }[];
-  shots: { src: string; href: string; caption: string }[];
+  shots: { src: string; href: string; caption: string; image?: import("./result-review.js").FeedbackImage }[];
 };
 /** The result's one decision: what Accept is called, why it isn't plain
  * Accept and finish, and what pressing it does. `base`: the same words before

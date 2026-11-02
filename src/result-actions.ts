@@ -1,3 +1,4 @@
+import { verifyResultImage } from "./chat-evidence.js";
 /** Shared result-to-revision action for the result form and chat.
  * The caller authenticates; this service checks project access and the exact
  * displayed note batch, then uses the existing atomic revision/approval boundary.
@@ -5,7 +6,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Store, DiffComment } from "./store.js";
 import { EVIDENCE_CAPS, readVerifiedArtifact, writeEvidenceFile } from "./evidence.js";
-import { isRevisionFeedback, parseRevisionBatch, revisionSourceOf, commentSourceKey, REQUEST_TOKEN } from "./result-review.js";
+import { parseFeedbackImage, sameFeedbackImage, type FeedbackImage, isRevisionFeedback, parseRevisionBatch, revisionSourceOf, commentSourceKey, REQUEST_TOKEN } from "./result-review.js";
 import { validateNote, hasForbiddenControls } from "./decision.js";
 import { TASK_TEXT_LIMITS, validateTaskText } from "./task-text.js";
 import { modeFilingCoverage } from "./scope.js";
@@ -13,16 +14,32 @@ import { modeFilingCoverage } from "./scope.js";
 export type RevisionResult = { ok: true; id: string } | { ok: false; status: number; message: string };
 type RevisionInput = Parameters<typeof createResultRevision>[2];
 
+/** Re-prove image custody and current result at each write. No file paths supplied by callers. */
+export function feedbackImageProblem(store: Store, root: string, runId: number, image: FeedbackImage | null | undefined): string | null {
+  if (image == null) return null;
+  const parsed = parseFeedbackImage(image);
+  if (!parsed || image.run !== runId) return "Choose a screenshot from this result. Your draft is unchanged.";
+  const run = store.getRun(runId);
+  const task = run === null ? null : store.externalIdFor(run.taskRef);
+  const repo = run === null ? null : store.refById(run.taskRef)?.repo;
+  if (!task || !repo) return "This screenshot is no longer available. Your draft is unchanged.";
+  const family = store.taskFamilyOf(task, [repo], false);
+  const latest = store.runsFor(run!.taskRef).find(one => ["builder", "repair", "scout"].includes(one.role) && one.outcome !== null);
+  if (family?.problem !== null || family.current.id !== task || latest?.id !== runId) return "A newer result is current. Open it before commenting on a screenshot. Your draft is unchanged.";
+  const verified = verifyResultImage(store, root, [repo], { taskId: task, ...image });
+  return verified.ok ? null : "This screenshot is unavailable or changed. Restore it or remove it from your feedback. Your draft is unchanged.";
+}
+
 /** One user action: add the typed change and seal exactly the displayed
  * saved notes. A refusal rolls back the note; a replay returns the same task. */
 export function requestResultChanges(store: Store, evidenceRoot: string, input: RevisionInput & {
-  note: string; path: string; line: string; request: string | null;
+  note: string; path: string; line: string; request: string | null; image?: FeedbackImage | null;
 }, now: Date): RevisionResult {
   try {
     return store.transact(() => store.savepoint((): RevisionResult => {
       const fail = (status: number, message: string): never => { throw new ChangeRequestRefusal(status, message); };
       if (!input.note.trim()) {
-        if (input.path.trim() || input.line.trim()) return fail(400, "Describe the change before attaching a file or line.");
+        if (input.path.trim() || input.line.trim() || input.image != null) return fail(400, "Describe the change before attaching an image, file or line.");
         if (!input.batch) return fail(400, "Describe a change or use a saved note.");
         return createResultRevision(store, evidenceRoot, input, now);
       }
@@ -41,12 +58,16 @@ export function requestResultChanges(store: Store, evidenceRoot: string, input: 
       const artifact = store.artifactsFor(run.id).find(one => one.kind === "terminal-diff");
       if (!artifact || !readVerifiedArtifact(evidenceRoot, artifact).ok) return fail(409, "The saved changes could not be verified. Restore the result before requesting changes.");
       const sourceKey = commentSourceKey(input.actor, input.request)!;
-      let noteId = store.addDiffComment({ artifactId: artifact.id, runId: run.id, path, line, note: valid.note, author: input.actor, sourceKey }, now);
-      if (noteId === null) {
-        const earlier = store.diffCommentBySourceKey(sourceKey);
-        if (!earlier || earlier.run !== run.id || earlier.path !== path || earlier.line !== line || earlier.note !== valid.note) return fail(409, "This submission already saved different feedback. Reopen the result and try again.");
-        noteId = earlier.id;
+      const earlier = store.diffCommentBySourceKey(sourceKey);
+      if (earlier && (earlier.run !== run.id || earlier.path !== path || earlier.line !== line || earlier.note !== valid.note || !sameFeedbackImage(earlier.image, input.image))) return fail(409, "This submission already saved different feedback. Reopen the result and try again.");
+      // An exact consumed replay only returns its existing revision. Every new
+      // use proves the image before insertion, so malformed targets refuse cleanly.
+      if (earlier?.consumedBy == null) {
+        const problem = feedbackImageProblem(store, evidenceRoot, run.id, input.image);
+        if (problem !== null) return fail(409, problem);
       }
+      const noteId = earlier?.id ?? store.addDiffComment({ artifactId: artifact.id, runId: run.id, path, line, note: valid.note, author: input.actor, sourceKey, image: input.image ?? null }, now);
+      if (noteId === null) return fail(409, "This feedback changed while saving. Your draft is unchanged; reopen the result.");
       const result = createResultRevision(store, evidenceRoot, { ...input, batch: [...new Set([...batch, noteId])].sort((a, b) => a - b).join(",") }, now);
       if (!result.ok) return fail(result.status, result.message);
       return result;
@@ -124,6 +145,10 @@ export function createResultRevision(store: Store, evidenceRoot: string, input: 
       return fail(409, "a note in this batch was superseded — reload the result to see the current batch");
     }
     if (batch.some(one => !isRevisionFeedback(one))) return fail(409, "Review observations are not requested changes. Use Request change to add your feedback first.");
+    for (const one of batch) {
+      const problem = feedbackImageProblem(store, evidenceRoot, id, one.image);
+      if (problem !== null) return fail(409, problem);
+    }
     const comments = batch;
     // Keep the subject recognizable, including when revising a revision.
     // Reserve the suffix before truncating, at whole grapheme boundaries.
@@ -162,6 +187,7 @@ export function createResultRevision(store: Store, evidenceRoot: string, input: 
         note: one.note,
         author: one.author,
         createdAt: one.createdAt,
+        ...(one.image == null ? {} : { image: one.image }),
       })),
     };
     const briefBytes = Buffer.from(JSON.stringify(brief, null, 2), "utf8");

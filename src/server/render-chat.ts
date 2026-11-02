@@ -1,3 +1,4 @@
+import { parseFeedbackImage } from "../result-review.js";
 /** The conversation: chat and lead pages, proposal cards and the task chat. */
 import type { TaskOrigin } from "../task-source.js";
 import { assignmentSummaryHtml } from "../assignment-ui.js";
@@ -784,9 +785,9 @@ export function proposalCardParts(view: ProposalCardView, inert: boolean, decisi
     const snapshot = payload["snapshot"] as import("../chat-review.js").ReviewSnapshot | undefined;
     const ids = Array.isArray(payload["notes"]) ? payload["notes"] as number[] : [];
     const selected = snapshot?.notes.filter(one => ids.includes(one.id)) ?? [];
-    const notes = [...selected, ...(text("note") === "" ? [] : [{ note: text("note"), path: text("path") || null, line: typeof payload["line"] === "number" ? payload["line"] : null }])];
+    const notes = [...selected, ...(text("note") === "" ? [] : [{ note: text("note"), path: text("path") || null, line: typeof payload["line"] === "number" ? payload["line"] : null, image: parseFeedbackImage(payload["image"]) || null }])];
     what = html`<h3>${text("taskTitle") || task}</h3><ul class="proposal-review-notes">${
-      notes.map(one => html`<li>${one.path === null ? "" : html`<span class="mono">${one.path}${one.line === null ? "" : html`:${one.line}`}</span> · `}${one.note}</li>`)}</ul>${
+      notes.map(one => html`<li>${one.image == null ? "" : html`<a href="/r/${one.image.run}/evidence/${one.image.artifact}">Screenshot ${one.image.artifact} · result #${one.image.run}</a><br>`}${one.path === null ? "" : html`<span class="mono">${one.path}${one.line === null ? "" : html`:${one.line}`}</span> · `}${one.note}</li>`)}</ul>${
       text("operation") === "revise" ? html`<p class="meta">Updates this task. Your approval settings apply.</p>` : html`<p class="meta">No work starts.</p>`}`;
   } else if (view.kind === "next") {
     what = html`<h3>Move <a href="${taskHref(task)}">${task}</a> to the front</h3>${facts(["current position", html`${String(payload["position"] ?? "?")} of ${String(payload["of"] ?? "?")}`], ["project", mono(repoId)])}`;

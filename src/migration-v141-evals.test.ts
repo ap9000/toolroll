@@ -37,9 +37,9 @@ test.each([140, -140])("v%s: the eval set's tables and how billing was known are
 
   expect(updateSafeSchema(140)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(141);
-  expect(SCHEMA_VERSION).toBe(142);
+  expect(SCHEMA_VERSION).toBe(143);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(142);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(143);
   for (const table of TABLES) expect(store.handle.prepare(`SELECT count(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
   // Saved rows keep what they had; how their billing was known reads NULL (unknown), never a class.
   // A saved run's cost reads as not marked unknown (0), its money unknown all the same through its NULL billing basis.

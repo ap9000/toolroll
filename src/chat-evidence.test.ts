@@ -7,7 +7,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Artifact, type Store } from "./store.js";
@@ -15,8 +15,8 @@ import { addApprover, approve, propose } from "./scope.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { readAcceptanceEvidence } from "./chat-acceptance.js";
 import type { CriterionMatrixRow } from "./proof.js";
-import { readChatResult } from "./chat-review.js";
-import { createResultRevision } from "./result-actions.js";
+import { applyChatReview, readChatResult } from "./chat-review.js";
+import { requestResultChanges, createResultRevision } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
 import { SCREENSHOT_BYTE_CAP } from "./evidence.js";
 import { subscriptionCredentialKey } from "./converse.js";
@@ -83,6 +83,50 @@ describe("shared result image selection", () => {
     }, T0);
   };
   const diff = (run: number, id: string): number => artifact(run, "terminal-diff", "terminal-diff.patch", Buffer.from(`diff --git a/${id} b/${id}\n+x\n`, "utf8"));
+
+  test("image feedback keeps two targets through saved notes, confirmation and one retried revision", () => {
+    const ref = task("alpha", repos.a), run = finished("alpha", ref, "l-alpha");
+    diff(run, "alpha");
+    const first = artifact(run, "screenshot", "one.png", PNG), second = artifact(run, "screenshot", "two.jpg", JPEG);
+    const target = (id: number) => ({ run, artifact: id, sha256: store.getArtifact(id)!.sha256 });
+    const read = readChatResult(store, who([repos.a]), evidenceRoot, "alpha", run);
+    if (!read.ok) throw Error(read.message);
+    expect(applyChatReview(store, who([repos.a]), evidenceRoot, { snapshot: read.snapshot, operation: "note", note: "Give the desktop heading more space.", path: null, line: null, notes: [], image: target(first) }, T0, false).ok).toBe(true);
+    const snapshot = readChatResult(store, who([repos.a]), evidenceRoot, "alpha", run);
+    if (!snapshot.ok) throw Error(snapshot.message);
+    expect(snapshot.snapshot.notes[0]?.image).toEqual(target(first));
+    const input = { run, batch: String(snapshot.snapshot.notes[0]!.id), source: snapshot.snapshot.source, actor: "alex", repos: [repos.a], note: "Keep the phone button on one line.", path: "", line: "", request: "a".repeat(32), image: target(second) };
+    const revised = requestResultChanges(store, evidenceRoot, input, T0);
+    expect(revised.ok).toBe(true);
+    expect(requestResultChanges(store, evidenceRoot, input, T0)).toEqual(revised);
+    expect(requestResultChanges(store, evidenceRoot, { ...input, note: "Different text" }, T0)).toMatchObject({ ok: false, status: 409 });
+    expect(requestResultChanges(store, evidenceRoot, { ...input, image: target(first) }, T0)).toMatchObject({ ok: false, status: 409 });
+    expect(store.revisionsFromRun(run)).toHaveLength(1);
+    if (!revised.ok) throw Error(revised.message);
+    const source = store.revisionSourceOf(store.lookupRef(revised.id)!.id)!;
+    const brief = JSON.parse(readFileSync(join(evidenceRoot, source.briefArtifact.key), "utf8"));
+    expect(brief.comments.map((one: { image: unknown }) => one.image)).toEqual([target(first), target(second)]);
+  });
+
+  test.each(["wrong-run", "digest", "private", "deleted", "stale", "changed-after-proposal"])("image feedback refuses %s without saving or consuming notes", cause => {
+    const ref = task("alpha", repos.a), run = finished("alpha", ref, "l-alpha");
+    diff(run, "alpha");
+    const shot = artifact(run, "screenshot", "one.png", PNG);
+    const image = { run, artifact: shot, sha256: store.getArtifact(shot)!.sha256 };
+    const read = readChatResult(store, who([repos.a]), evidenceRoot, "alpha", run);
+    if (!read.ok) throw Error(read.message);
+    if (cause === "wrong-run") image.run++;
+    if (cause === "digest") image.sha256 = "0".repeat(64);
+    if (cause === "private") { const privateRun = finished("private", task("private", repos.c), "private"); image.artifact = artifact(privateRun, "screenshot", "private.png", PNG); }
+    if (cause === "deleted") unlinkSync(join(evidenceRoot, `${run}/one.png`));
+    if (cause === "stale") finished("alpha", ref, "newer");
+    if (cause === "changed-after-proposal") writeFileSync(join(evidenceRoot, `${run}/one.png`), JPEG);
+    const result = applyChatReview(store, who([repos.a]), evidenceRoot, { snapshot: read.snapshot, operation: "revise", note: "Keep this feedback.", path: null, line: null, notes: [], image }, T0, false);
+    expect(result.ok).toBe(false);
+    expect(requestResultChanges(store, evidenceRoot, { run, batch: "", source: read.snapshot.source, actor: "alex", repos: [repos.a], note: "Keep this feedback.", path: "", line: "", request: "b".repeat(32), image }, T0)).toMatchObject({ ok: false, status: 409 });
+    expect(store.allDiffComments(run)).toEqual([]);
+    expect(store.revisionsFromRun(run)).toEqual([]);
+  });
 
   test("acceptance evidence distinguishes human sign-off from missing files, preserves acceptance, pages criteria and never crosses result or project identity", () => {
     const ref = task("alpha", repos.a);
