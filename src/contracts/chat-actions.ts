@@ -64,6 +64,9 @@ export const chatActionRequestSchemas = {
   flow_trigger_pause: z.strictObject({ trigger: id }),
   flow_trigger_resume: z.strictObject({ trigger: id }),
   flow_trigger_remove: z.strictObject({ trigger: id }),
+  /** Browser use in the flow's script zones (flow-browser.ts): allowing it takes the person's own password in the secure screen. */
+  flow_browser: z.strictObject({ flow: id }),
+  flow_browser_off: z.strictObject({ flow: id }),
   subagent_create: z.strictObject({ repo: words, template: z.unknown().optional(), name: z.unknown().optional(), soul: z.unknown().optional() }),
   subagent_soul: z.strictObject({ subagent: id, soul: words }),
   subagent_state: z.strictObject({ subagent: id, state: z.enum(["active", "paused", "removed"]) }),

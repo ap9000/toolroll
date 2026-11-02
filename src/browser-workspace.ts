@@ -486,6 +486,8 @@ export type BrowserFlowStage = {
   options?: { label: string; to: string }[] | undefined;
   /** A Build zone in another project: its path. */
   repo?: string | undefined;
+  /** v144: a script zone that starts a browser (Playwright's Chromium); it runs only once a person allows browser use for the flow. */
+  browser?: true | undefined;
   next: string | null; onFail: string | null;
 };
 
@@ -495,7 +497,10 @@ export type BrowserFlowSentItem = { number: number; title: string; lines: string
 
 export type BrowserFlowCard = {
   id: number; title: string; description: string | null; stage: string; state: "active" | "done" | "cancelled";
-  waiting: string | null; task: { id: string; href: string;
+  waiting: string | null;
+  /** It waits because browser use isn't allowed for the flow (flow-browser.ts): the card offers Allow browser. */
+  browserWait?: true;
+  task: { id: string; href: string;
     /** Its running attempt's composer (steer-controls.ts), for an approver: what it takes, its controls, its note box. */
     composer?: { controls: BrowserAgentControls; steer: { action: string; run: number } | null } } | null; createdBy: string; updatedAt: string;
   canDecide: boolean; outputs: { stage: string; title: string; text: string }[]; history: { text: string; at: string }[];
@@ -600,6 +605,12 @@ export type BrowserFlowView = {
     /** The schedules a signature could cover: plain ones always, `optional` ones (outside content, said why) only when picked. */
     schedules: { id: number; words: string; optional: string | null }[]; schedulesDigest: string;
   };
+  /** Browser use (flow-browser.ts browserViewOf): null when no zone says it starts a browser. */
+  browser: {
+    status: "allowed" | "ended" | "none"; words: string; signedBy: string | null; signedAt: string | null;
+    zones: { zone: string; title: string; script: string; version: number; digest: string }[];
+    terms: string[]; digest: string | null; problem: string | null;
+  } | null;
   approvers: string[];
   /** The projects a Build zone may work in: the flow's own first, then others the viewer can reach. */
   projects?: { path: string; name: string }[];

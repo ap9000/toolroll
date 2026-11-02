@@ -362,8 +362,9 @@ describe("where freshness may be honoured", () => {
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
       "src/nightly-github.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
+      // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
-      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 9, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 25,
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 10, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 25,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -514,7 +515,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // a trigger from anyone, the kit's GitHub issues, a tool grant and a looser rule; ordinary step-ups, never fresh.
     "src/server/flows.ts#createFlowsHandlers@1>answerSubagentQuestionSend@22": 1,
     "src/server/flows.ts#createFlowsHandlers@1>createFromGallery@25": 1,
-    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 3,
+    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 4,
     // …and a kit's tools, given only with that proof (0.9.73 review, finding 1).
     "src/server/flows.ts#createFlowsHandlers@1>kitAct@21><anonymous>@1": 2,
     // A trigger from anyone from the command line: only the person's own proof, never a machine credential (finding 2).
@@ -640,8 +641,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/browser/team-chat.tsx#TeamChat@7>accept:useCallback(_,_)@7": 1,
     "src/browser/team-chat.tsx#TeamChat@7>send@13": 1,
     "src/browser/team-chat.tsx#restore@2": 1,
-    "src/browser/views/flow-view.tsx#StepUp@44": 1,
-    "src/browser/views/flow-view.tsx#stepUpReady@45": 1,
+    "src/browser/views/flow-view.tsx#StepUp@45": 1,
+    "src/browser/views/flow-view.tsx#stepUpReady@46": 1,
     "src/budget-alerts.ts#budgetAlertPass@1": 2,
     "src/chat-decide.ts#decideOffer@19": 5,
     "src/chat-decide.ts#staleWhy@42": 6,

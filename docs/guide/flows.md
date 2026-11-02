@@ -156,6 +156,16 @@ its browser zones' scripts ends the approval, even back to how it was; the proje
 it. A lead's or remote run's token can mark a zone but can't approve it.
 `toolroll flows browser <flow> off` revokes it (any approver).
 
+On the flow page, the editor's **Starts a browser** box on a script zone marks
+it, and each browser zone says where it stands: **Browser: not allowed — runs
+will wait**, **Browser: allowed by <name>, <date>**, or **Browser approval
+ended: the script changed**. **Allow browser** (on the zone, or on a card that
+waits for it) shows the same terms and digest as the CLI's preview and asks for
+your password; a flow or script changed while you read is refused. **Turn off**
+is one click. In chat the lead can propose allowing it (`allow_browser`) with
+every term on the card, but only you allow it, with your password on the secure
+review screen; `toolroll flows show` says the same status.
+
 ### Webhooks through a reverse proxy
 
 Flow triggers can take webhooks from GitHub, Linear or any service at a

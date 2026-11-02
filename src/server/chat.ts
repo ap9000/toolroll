@@ -405,9 +405,11 @@ export function createChatHandlers(runtime: ServerRuntime) {
       const id=proposalId,saved=store.getLeadProposal(id),savedAction=saved?.kind==='action'?sharedActionPayload(saved.payload):null;
       if(saved&&savedAction&&saved.state!=='pending'&&(sharedConversation!==null||store.getLeadThread(saved.thread)?.approver===principal.name)&&principal.repos.includes(savedAction.repo)&&store.accountCanAccess(principal.name,savedAction.repo)) {
         const task = typeof saved.outcome?.['taskId']==='string' ? saved.outcome['taskId'] : typeof savedAction.request['task']==='string' ? savedAction.request['task'] : null;
-        const destination = task ? taskHref(task) : `/settings/${savedAction.operation.startsWith('skill_')?'skills':'knowledge'}?repo=${encodeURIComponent(savedAction.repo)}`;
+        // A flow action leads back to its flow (a page path of our own making, never the proposal's words).
+        const flowId = savedAction.operation.startsWith('flow_') && Number.isSafeInteger(savedAction.request['flow']) ? Number(savedAction.request['flow']) : null;
+        const destination = task ? taskHref(task) : flowId !== null ? `/flows/${flowId}` : `/settings/${savedAction.operation.startsWith('skill_')?'skills':'knowledge'}?repo=${encodeURIComponent(savedAction.repo)}`;
         const said = typeof saved.outcome?.['said']==='string' ? saved.outcome['said'] : saved.state==='dismissed'?'Action dismissed.':saved.state==='expired'?'This proposal expired. Ask for a fresh proposal.':'This action has no completed outcome yet.';
-        return sendScreen(response,200,screen('Action outcome',html`<h1>${savedAction.title}</h1><p>${said}</p><a class="button-link" href="${destination}">${task?'Open task':'Open project settings'}</a>`,{chrome:chromeFor(savedAction.repo,'chat')}));
+        return sendScreen(response,200,screen('Action outcome',html`<h1>${savedAction.title}</h1><p>${said}</p><a class="button-link" href="${destination}">${task?'Open task':flowId!==null?'Open flow':'Open project settings'}</a>`,{chrome:chromeFor(savedAction.repo,'chat')}));
       }
       const review=mintSharedActionReview(store,principal,id,evidenceRoot,clock()),action=review.payload;
       const terms=action.terms.map(term=>html`<p style="white-space:pre-wrap;overflow-wrap:anywhere">${term}</p>`);

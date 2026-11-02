@@ -13,7 +13,7 @@ import { TEXT_LIMITS } from "../text-limits.js";
 import { toModelSchema } from "./contract.js";
 import { flowStepsSchema, leadTriggerSchema, SCRIPT_LANGUAGES, SCRIPT_NAME } from "./flow.js";
 
-export const PROPOSE_FLOW_OPERATIONS = ["create", "edit", "add_card", "move_card", "approve", "send_back", "choose", "cancel_card", "comment", "assign", "follow", "unfollow", "save_script", "add_trigger", "pause_trigger", "resume_trigger", "remove_trigger", "kit", "starter"] as const;
+export const PROPOSE_FLOW_OPERATIONS = ["create", "edit", "add_card", "move_card", "approve", "send_back", "choose", "cancel_card", "comment", "assign", "follow", "unfollow", "save_script", "add_trigger", "pause_trigger", "resume_trigger", "remove_trigger", "kit", "starter", "allow_browser", "turn_off_browser"] as const;
 
 const id = z.int().min(1);
 const enumOf = (values: readonly string[]) => z.enum(values as [string, ...string[]]);

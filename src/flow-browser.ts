@@ -165,3 +165,46 @@ export function revokeFlowBrowser(store: Store, flowId: number, by: string, now:
     return ended;
   });
 }
+
+/** What the flow page, `flows show` and chat say about browser use: null when no zone says it starts a browser. */
+export type BrowserView = {
+  /** allowed: the approval stands now; ended: there is one, but it no longer stands; none: no one has approved. */
+  status: "allowed" | "ended" | "none";
+  /** The one line every surface shows. */
+  words: string;
+  signedBy: string | null;
+  signedAt: string | null;
+  /** The browser zones as they stand now, each with its title. Empty while one can't be approved (see `problem`). */
+  zones: (BrowserZone & { title: string })[];
+  /** What approving means (browserTerms), and the approval digest the step-up must carry back. */
+  terms: string[];
+  digest: string | null;
+  /** Why it can't be approved as it stands, or null. */
+  problem: string | null;
+};
+
+const dayWords = (at: string) => new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+
+/**
+ * Browser use for one flow, read from the store (no writes: page visits call it). Whether it is allowed is exactly
+ * browserStanding's answer for the flow's browser zones; the rest only says why in plain words.
+ */
+export function browserViewOf(store: Store, flow: FlowRow): BrowserView | null {
+  const definition = definitionOf(flow);
+  const stages = definition?.stages.filter(stage => stage.kind === "check" && stage.browser === true) ?? [];
+  if (definition === null || stages.length === 0) return null;
+  const terms = browserTermsOf(store, flow);
+  const grant = liveBrowserGrant(store, flow.id);
+  const allowed = grant !== null && stages.every(stage => browserStanding(store, flow.id, stage.id).allowed);
+  const zones = (terms?.zones ?? []).map(zone => ({ ...zone, title: definition.stages.find(one => one.id === zone.zone)?.title ?? zone.zone }));
+  const problem = terms === null ? "A zone that starts a browser has no script that can be approved: it's missing, waiting for approval, or runs a project file (write the script on the zone instead)." : null;
+  const why = grant === null ? "" : terms === null || canonicalJson(grant.zones) !== canonicalJson(terms.zones) ? "the script changed"
+    : grant.flowDigest !== terms.flowDigest || grant.revision !== terms.revision ? "the flow changed"
+    : !approverNow(store, grant.signedBy, flow.repo) ? `${grant.signedBy} can no longer approve on this project` : "it no longer matches this flow";
+  return {
+    status: allowed ? "allowed" : grant === null ? "none" : "ended",
+    words: allowed ? `Browser: allowed by ${grant!.signedBy}, ${dayWords(grant!.signedAt)}` : grant === null ? "Browser: not allowed — runs will wait" : `Browser approval ended: ${why}`,
+    signedBy: grant?.signedBy ?? null, signedAt: grant?.signedAt ?? null,
+    zones, terms: terms === null ? [] : browserTerms(terms.zones), digest: terms === null ? null : browserApprovalDigest(terms), problem,
+  };
+}
