@@ -198,3 +198,24 @@ one read-only tool, `tidy_preview`, which answers what tidy would put away; it c
 
 Also from a security review of 7ef4c708: a signed webhook's CI run is recorded only inside the delivery's re-proving
 transaction; the poll re-proves and records in one transaction.
+
+## Implementation review round 2 (Codex on 0d274c47: NO-GO; 9 of 14 closed, 7 findings) — fixed without a third round
+
+1. Overlapping merges: `merge_in_flight` rows carry an owner token; a second merge of the same pull request is refused
+   ("already being merged") and each merge releases only its own row.
+2. Ordinary deploys: a candidate that passes `deploy-candidate.mjs` is reserved (`deploy_in_flight`) with the put-away
+   check in one write, held 30 minutes and refreshed by every phase that proves it again; putting away waits.
+3. Flow work: `claimStep` records the tasks a step was admitted for (`flow_step_task`), so a running step holds them
+   wherever the card moves; the Pull request zone re-proves, in each write's own transaction after GitHub answers,
+   that the card's work wasn't put away (no move, revision or notice otherwise).
+4. Project deletion counts a person's merge in flight as running, and a merge refuses a task whose project is being
+   deleted.
+5. Putting a task away settles what its flow cards queued for people (`flow:` and `flow-card:` notices).
+6. A CI notice counts only once its own failing run (its card's GitHub run link) is on record as a push to the watched
+   repository and branch; the checks poll reads a few such older runs from GitHub each pass. A fork's pull request on
+   a branch called main never qualifies, and neither can it stand as the newer notice.
+7. The CLI's plain `--preview` reads this machine's saved login's projects (as `--as` would) and prints the command
+   with `--as`; with no saved login it says how a limited person previews their own list.
+
+Accepted residuals: a deploy past its 30-minute reservation without another proving phase; chat parts planned before
+a put away commits.

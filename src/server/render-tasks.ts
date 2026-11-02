@@ -2720,7 +2720,8 @@ export function taskBodyParts(data: {
   // The Details panel: the same facts, grouped and said once.
   const lastRunForAgent = liveRun ?? familyRuns.filter(run => run.role !== "reviewer").sort((a, b) => b.id - a.id)[0];
   const work: BrowserTaskFact[] = [];
-  work.push({ label: "Status", parts: [data.assignment != null && assignmentOptions !== null ? assignmentCardOf(data.assignment, assignmentOptions).status.headline : status.label] });
+  // A put-away task's one status is Archived (its banner says by whom and why).
+  work.push({ label: "Status", parts: [data.archived != null ? "Archived" : data.assignment != null && assignmentOptions !== null ? assignmentCardOf(data.assignment, assignmentOptions).status.headline : status.label] });
   if (data.repo !== null) work.push({ label: "Project", parts: [projectName(data.repo)] });
   if (data.base != null) work.push({ label: "Base", parts: [baseStandingWords(data.base)] });
   work.push({ label: "Agent", parts: [lastRunForAgent !== undefined ? `${lastRunForAgent.provider}${lastRunForAgent.model === null ? "" : ` · ${lastRunForAgent.model}`} on ${lastRunForAgent.runner}`

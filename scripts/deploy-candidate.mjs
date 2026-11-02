@@ -79,6 +79,15 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now, rel
   const blockers = assignment.readiness?.blockers;
   requireFact(Array.isArray(blockers), 'The result\'s readiness could not be read.');
   requireFact(blockers.length === 0, `This result isn't ready to deploy: ${blockers.map(one => one.message).join(' ')}`);
+  // The candidate passed: reserve it against being put away (v144) with the put-away check in one write, held 30 minutes
+  // and refreshed by every phase that proves it again, so a put away during the swap waits for the deployment.
+  if (archiveTable !== undefined) {
+    const reserve = () => {
+      requireFact(store.handle.prepare("SELECT 1 FROM task_archive WHERE task_ref = ?").get(run.taskRef) === undefined, "This task is put away. Restore it before deploying.");
+      store.handle.prepare("INSERT OR REPLACE INTO deploy_in_flight (task_ref, run, at) VALUES (?, ?, ?)").run(run.taskRef, runId, now.toISOString());
+    };
+    if (typeof store.transact === 'function') store.transact(reserve); else reserve();
+  }
   return { taskId: ref.externalId, repo: ref.repo, scopeDigest: scope.digest, approvedBy: person.by,
     completion: assignment.completion, gateDigest: evidence.digest,
     proofVerdict: store.proofVerdictFor(runId)?.verdict ?? null,

@@ -662,7 +662,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/flow-send.ts#chooseStep@15": 3,
     "src/flow-send.ts#keep@12": 5,
     "src/flow-send.ts#sendStep@14": 3,
-    "src/flow-steps.ts#claimStep@2>store.transact(_)@1": 5,
+    // The re-read card (`fresh`), never a password: its tasks are recorded for the step it admits (task-tidy.md).
+    "src/flow-steps.ts#claimStep@2>store.transact(_)@1": 7,
     "src/flow-triggers.ts#checkTrigger@51": 3,
     "src/flow-unattended.ts#nodeModuleGraphOf@26": 3,
     "src/flow-unattended.ts#scriptProvenanceOf@27": 2,

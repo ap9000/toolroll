@@ -193,7 +193,7 @@ function routineFirings(store: Store): Map<string, Firing[]> {
   return families;
 }
 
-type Notice = { trigger: number; workflow: string; sha: string; at: string; tasks: string[]; repo: string; branch: string };
+type Notice = { trigger: number; workflow: string; sha: string; at: string; tasks: string[]; repo: string; branch: string; run: number };
 
 /** (c) Every "Checks failed on <branch>: <workflow>" notice a checks trigger made, with its commit, its workflow and the
  * automation-filed tasks it made. */
@@ -213,24 +213,44 @@ function ciNotices(store: Store): Notice[] {
     try { made = JSON.parse(String(row["source_json"] ?? "null")) as { url?: unknown } | null; } catch { made = null; }
     const at = typeof made?.url === "string" ? /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/actions\/runs\/\d+(?:\/|$)/.exec(made.url) : null;
     if (at === null || at[1]!.toLowerCase() !== config["repo"].toLowerCase()) continue;
+    const runId = Number(/\/actions\/runs\/(\d+)/.exec(String(made!.url))![1]);
     const branch = config["branch"], prefix = `Checks failed on ${branch}: `, title = String(row["title"] ?? "");
     const sha = String(row["key"]).slice("checks:".length);
     if (!title.startsWith(prefix) || !/^[0-9a-f]{40}$/.test(sha)) continue;
     const card = { createdBy: row["created_by"] == null ? null : String(row["created_by"]), createdKind: row["created_kind"] == null ? null : String(row["created_kind"]) };
     const tasks = [...new Set([row["task"], row["primary_task"]].filter((one): one is string => typeof one === "string" && one !== ""))]
       .filter(task => automationFiled(store, task, Number(row["flow"]), card, null));
-    notices.push({ trigger: Number(row["trigger"]), workflow: title.slice(prefix.length), sha, at: String(row["at"]), tasks, repo: config["repo"], branch });
+    notices.push({ trigger: Number(row["trigger"]), workflow: title.slice(prefix.length), sha, at: String(row["at"]), tasks, repo: config["repo"], branch, run: runId });
   }
   return notices;
 }
 
-type Observation = { workflow: string; sha: string; conclusion: "success" | "failure"; createdAt: string };
+type Observation = { runId: number; workflow: string; sha: string; conclusion: "success" | "failure"; createdAt: string };
 
 /** Every completed run the checks trigger saw on this repository's branch, oldest first. */
 function observationsOf(store: Store, repo: string, branch: string): Observation[] {
-  return store.handle.prepare(`SELECT workflow, head_sha, conclusion, run_created_at FROM branch_check_run
+  return store.handle.prepare(`SELECT run_id, workflow, head_sha, conclusion, run_created_at FROM branch_check_run
     WHERE lower(repo) = lower(?) AND branch = ? ORDER BY run_created_at, run_id`).all(repo, branch)
-    .map(row => ({ workflow: String(row["workflow"]), sha: String(row["head_sha"]), conclusion: row["conclusion"] === "success" ? "success" as const : "failure" as const, createdAt: String(row["run_created_at"]) }));
+    .map(row => ({ runId: Number(row["run_id"]), workflow: String(row["workflow"]), sha: String(row["head_sha"]), conclusion: row["conclusion"] === "success" ? "success" as const : "failure" as const, createdAt: String(row["run_created_at"]) }));
+}
+
+/** The failing runs older "Checks failed" cards of this trigger name (their own GitHub run links) that aren't on record
+ * yet, newest first, at most `limit`: the checks trigger reads each from GitHub so tidy can tell where it ran. */
+export function unprovenNoticeRuns(store: Store, trigger: number, repo: string, limit = 5): number[] {
+  const rows = store.handle.prepare(`SELECT c.source_json FROM flow_trigger_event e JOIN flow_card c ON c.id = e.card
+    WHERE e.trigger = ? AND e.key LIKE 'checks:%' ORDER BY e.at DESC, e.rowid DESC`).all(trigger);
+  const runs: number[] = [];
+  for (const row of rows) {
+    let url: unknown;
+    try { url = (JSON.parse(String(row["source_json"] ?? "null")) as { url?: unknown } | null)?.url; } catch { url = null; }
+    const found = typeof url === "string" ? /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/actions\/runs\/(\d+)(?:\/|$)/.exec(url) : null;
+    if (found === null || found[1]!.toLowerCase() !== repo.toLowerCase()) continue;
+    const id = Number(found[2]);
+    if (!Number.isSafeInteger(id) || store.handle.prepare("SELECT 1 FROM branch_check_run WHERE lower(repo) = lower(?) AND run_id = ?").get(repo, id) !== undefined) continue;
+    runs.push(id);
+    if (runs.length >= limit) break;
+  }
+  return runs;
 }
 
 /** A completed workflow run on the watched branch, as the checks trigger read it from GitHub (its poll through the
@@ -302,13 +322,19 @@ export function tidyPreview(store: Store, now: Date, input: { releases: ReleaseF
 
   // (c) Resolved CI notices: every workflow that failed on its commit was fixed by a later commit's green run, or a
   // newer notice carries that workflow's failure while the branch stays red.
-  const notices = ciNotices(store);
-  const ciMade = new Set(notices.flatMap(one => one.tasks));
+  // A notice counts only once its own failing run is on record as a push to the watched repository and branch (the
+  // checks trigger reads it): a pull request from a fork whose branch is also called main never does.
   const seen = new Map<string, Observation[]>();
-  for (const notice of notices) {
+  const observedFor = (notice: Notice) => {
     const key = `${notice.repo.toLowerCase()}\u0000${notice.branch}`;
     const observed = seen.get(key) ?? observationsOf(store, notice.repo, notice.branch);
     seen.set(key, observed);
+    return observed;
+  };
+  const notices = ciNotices(store).filter(notice => observedFor(notice).some(one => one.runId === notice.run && one.conclusion === "failure" && one.sha === notice.sha));
+  const ciMade = new Set(notices.flatMap(one => one.tasks));
+  for (const notice of notices) {
+    const observed = observedFor(notice);
     // What failed on its commit: the workflow it names, and any other the trigger saw fail on that commit.
     const failed = new Map<string, string>([[notice.workflow, notice.at]]);
     for (const one of observed) if (one.sha === notice.sha && one.conclusion === "failure") failed.set(one.workflow, failed.has(one.workflow) && failed.get(one.workflow)! < one.createdAt ? failed.get(one.workflow)! : one.createdAt);

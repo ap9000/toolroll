@@ -52,7 +52,7 @@ import { prepareUnattendedCandidates, grantSignsScriptOf, scriptProvenanceOf, sc
 import { tmpdir } from "node:os";
 import type { FlowCardSource, FlowReceipt, FlowRow, FlowTriggerRow, Store } from "./store.js";
 import { envValue } from "./names.js";
-import { recordBranchCheckRun } from "./tidy.js";
+import { recordBranchCheckRun, unprovenNoticeRuns } from "./tidy.js";
 import { linearLabelNames, readFormSubmission, readGithubEvent, readGithubIssue, readGithubIssueEventList, readGithubIssueList, readGithubRun, readGithubRunList, readInboundMail, readLinearAnswer, readLinearEvent, readLinearIssue, readWebhookPayload } from "./contracts/trigger-payloads.js";
 import { isRecord } from "./is-record.js";
 
@@ -1528,7 +1528,14 @@ async function observeBranchRuns(store: Store, trigger: FlowTriggerRow, config: 
   if (result.code !== 0) return;
   let body: unknown;
   try { body = JSON.parse(result.stdout); } catch { return; }
-  const runs = readGithubRunList(body).workflow_runs ?? [];
+  const runs = [...readGithubRunList(body).workflow_runs ?? []];
+  // A few older failure cards' own runs, so tidy can tell whether each was a push to this branch (task-tidy.md).
+  for (const id of unprovenNoticeRuns(store, trigger.id, config.repo)) {
+    try {
+      const one = await gh("gh", ["api", "-H", "Accept: application/vnd.github+json", `repos/${config.repo}/actions/runs/${id}`], { timeoutMs: 20_000 });
+      if (one.code === 0) runs.push(readGithubRun(JSON.parse(one.stdout)));
+    } catch { /* read again next time */ }
+  }
   // Re-proved and recorded in one transaction: a trigger paused or changed meanwhile records nothing.
   store.transact(() => {
     const current = store.getFlowTrigger(trigger.id);

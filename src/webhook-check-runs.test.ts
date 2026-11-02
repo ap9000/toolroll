@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { flowFromSteps } from "./flows.js";
 import { addFlowTriggerTo, receiveFlowHook } from "./flow-triggers.js";
-import { tidyPreview } from "./tidy.js";
+import { recordBranchCheckRun, tidyPreview } from "./tidy.js";
 import { fire } from "../test/tidy-fixture.js";
 
 const T0 = new Date("2026-11-01T12:00:00.000Z");
@@ -40,11 +40,16 @@ const recorded = () => store.handle.prepare("SELECT COUNT(*) n FROM branch_check
 const notice = (trigger: number) => fire(store, { flow, trigger }, { key: `checks:${FAILED}`, task: "checks-failed-on-main-ci", title: "Checks failed on main: CI",
   at: new Date("2026-10-30T10:00:00.000Z"), onTime: false, filedBy: { name: "GitHub", kind: "automation" }, repo: "/test/shop", sourceUrl: "https://github.com/acme/shop/actions/runs/1" });
 
+/** The notice's own failing run, on record as a push to main (the checks trigger reads it). */
+const failedRun = () => recordBranchCheckRun(store, { repo: "acme/shop", branch: "main" }, { id: 1, name: "CI", head_sha: FAILED, head_branch: "main", conclusion: "failure",
+  created_at: "2026-10-30T09:00:00.000Z", event: "push", head_repository: { full_name: "acme/shop" } }, T0);
+
 test("a signed green push run on the watched branch is recorded, and resolves the older notice", () => {
   const hook = checksHook();
   notice(hook.id);
+  expect(failedRun()).toBe(true);
   expect(deliver(hook).status).toBeLessThan(300);
-  expect(recorded()).toBe(1);
+  expect(recorded()).toBe(2);
   expect(tidyPreview(store, T0, { releases: { facts: [], problem: null }, days: null }).map(one => one.taskId)).toEqual(["checks-failed-on-main-ci"]);
 });
 
@@ -56,9 +61,10 @@ test.each([
 ])("a trigger %s between admission and the write records nothing, and nothing is put away", (_name, changed) => {
   const hook = checksHook();
   notice(hook.id);
+  failedRun();
   const real = store.getFlowTrigger.bind(store);
   vi.spyOn(store, "getFlowTrigger").mockImplementation(id => { const row = real(id); return row === null ? null : { ...row, ...changed } as typeof row; });
   expect(deliver(hook).status).toBe(409);
-  expect(recorded()).toBe(0);
+  expect(recorded()).toBe(1);
   expect(tidyPreview(store, T0, { releases: { facts: [], problem: null }, days: null })).toEqual([]);
 });

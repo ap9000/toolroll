@@ -383,10 +383,12 @@ describe("full checks before merge", () => {
     // The full check the pull request asked for runs first: an unfinished check is work going on, which put away refuses.
     for (const one of followUpChecksOf(store, run, NOW)) await runFollowUpCheck(store, root, one.request, { now: () => NOW });
     const by = { by: "sam", byKind: "person" as const, rule: null, reason: "Done with it" };
-    let merged = false, putAwayDuringMerge: unknown = null, archiveOnRead = true;
-    const exec = async (_file: string, args: readonly string[]) => {
+    let merged = false, putAwayDuringMerge: unknown = null, archiveOnRead = true, secondMerge: unknown = null;
+    const exec = async (_file: string, args: readonly string[]): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean; notFound: boolean }> => {
       if (args[1] === "merge") {
         putAwayDuringMerge = archiveTaskFamily(store, "tidy-pr", by, NOW);
+        // A second merge of the same pull request while this one waits on GitHub is refused, and takes nothing over.
+        secondMerge = await mergePullRequest(store, { runId: run, by: "sam", exec, clock: () => NOW, anyway: true });
         merged = true;
         return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
       }
@@ -399,6 +401,7 @@ describe("full checks before merge", () => {
     expect(restoreTaskFamily(store, "tidy-pr", "sam", NOW)).toMatchObject({ ok: true });
     expect(await mergePullRequest(store, { runId: run, by: "sam", exec, clock: () => NOW, anyway: true })).toMatchObject({ ok: true });
     expect(putAwayDuringMerge).toMatchObject({ ok: false, reason: "live" });
+    expect(secondMerge).toMatchObject({ ok: false, reason: "merging" });
     expect(store.handle.prepare("SELECT COUNT(*) n FROM merge_in_flight").get()!["n"]).toBe(0);
   });
 

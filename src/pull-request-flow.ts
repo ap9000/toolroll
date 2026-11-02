@@ -15,7 +15,7 @@
  * the race; the branch is deleted; the merge commit and who merged are recorded in the ledger.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { run as execRun } from "./exec.js";
 import { bodyHashOf, publicationBody, publicationGrantOf, type ObservedPullRequest, type PublishExec } from "./publish.js";
 import { failingChecks, summarizeChecks } from "./pulls.js";
@@ -479,19 +479,25 @@ export async function mergePullRequest(
 
   // The merge is reserved with the put-away check in one write (v144): a put away that committed first refuses it, and
   // one that comes after waits for GitHub's answer (the reservation counts as work going on).
-  const reserved = store.transact(() => {
-    if (refArchived(store, publication.taskRef)) return false;
-    store.handle.prepare("INSERT OR REPLACE INTO merge_in_flight (publication, task_ref, by, at) VALUES (?, ?, ?, ?)").run(publication.id, publication.taskRef, input.by, clock().toISOString());
-    return true;
+  // One merge at a time, each owning its reservation by its token: a second caller is refused, and each releases only its own.
+  const token = randomUUID();
+  const reserved = store.transact((): "ok" | "archived" | "merging" | "deleting" => {
+    if (refArchived(store, publication.taskRef)) return "archived";
+    if (store.handle.prepare("SELECT 1 FROM hold WHERE task_ref = ? AND owner_id LIKE 'project-delete:%' AND (until IS NULL OR until > ?)").get(publication.taskRef, clock().toISOString()) !== undefined) return "deleting";
+    if (store.handle.prepare("SELECT 1 FROM merge_in_flight WHERE publication = ? AND at > ?").get(publication.id, new Date(clock().getTime() - 15 * 60_000).toISOString()) !== undefined) return "merging";
+    store.handle.prepare("INSERT OR REPLACE INTO merge_in_flight (publication, task_ref, token, by, at) VALUES (?, ?, ?, ?, ?)").run(publication.id, publication.taskRef, token, input.by, clock().toISOString());
+    return "ok";
   });
-  if (!reserved) return refuse("archived", "This task is put away. Restore it before merging.");
+  if (reserved === "archived") return refuse("archived", "This task is put away. Restore it before merging.");
+  if (reserved === "deleting") return refuse("deleting", "This task's project is being deleted, so nothing merges.");
+  if (reserved === "merging") return refuse("merging", "This pull request is already being merged. Wait for that to finish.");
   let merged: Awaited<ReturnType<typeof exec>>, after: Awaited<ReturnType<typeof view>>;
   try {
     merged = await exec("gh", ["pr", "merge", pr, "--repo", publication.githubRepo, `--${method}`, "--match-head-commit", publication.headSha, "--delete-branch"],
       { timeoutMs: EXEC_TIMEOUT_MS, env: { GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" } });
     after = await view();
   } finally {
-    store.handle.prepare("DELETE FROM merge_in_flight WHERE publication = ?").run(publication.id);
+    store.handle.prepare("DELETE FROM merge_in_flight WHERE publication = ? AND token = ?").run(publication.id, token);
   }
   if (after?.state === "MERGED") { record(after.commit, input.by); return { ok: true, commit: after.commit }; }
   if (merged.code === 4) return fail("gh-signed-out", "The GitHub CLI isn't signed in on this computer. Run gh auth login, then merge again.");

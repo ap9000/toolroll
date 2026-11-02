@@ -21,6 +21,7 @@ import { adoptPublishedPullRequest } from "./publish.js";
 import { failingCheckOf, mergePullRequest, owePullRequest, pullRequestBlocker, pullRequestFollowOf } from "./pull-request-flow.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
+import { cardTaskArchived } from "./task-archive.js";
 import type { FlowCardRow, FlowRow, Store } from "./store.js";
 
 export type PullRequestIo = { gh: Runner; evidenceRoot?: string };
@@ -45,17 +46,21 @@ export function approvedSinceBuild(store: Store, definition: FlowDefinition, car
 /** One pass of a Pull request zone for one card. Returns whether it changed anything. */
 export async function pullRequestStep(store: Store, flow: FlowRow, definition: FlowDefinition, stage: FlowStage, card: FlowCardRow, now: Date, io: PullRequestIo): Promise<boolean> {
   const titleOf = (id: string | null) => definition.stages.find(one => one.id === id)?.title ?? "another zone";
-  const waiting = (said: string): boolean => {
+  // Every write after GitHub answers re-proves, in its own transaction, that the card's work wasn't put away meanwhile
+  // (v144): a put away that committed first leaves the card where it is, saying nothing to anyone.
+  const unlessHeld = (write: () => boolean): boolean => store.transact(() => cardTaskArchived(store, card.id) ? false : write());
+  const waiting = (said: string): boolean => unlessHeld(() => {
     if (card.waiting === said) return false;
     store.updateFlowCard(card.id, { waiting: said }, now);
     return true;
-  };
-  const passed = (said: string, output: string): boolean => {
+  });
+  const passed = (said: string, output: string): boolean => unlessHeld(() => {
     store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: output }, waiting: null }, now);
     if (stage.next === null) return waiting(`${said} Move the card on when you're ready.`);
     return store.moveFlowCard(card.id, { to: stage.next, outcome: "ok", actor: "flow", historyNote: said, expectEntry: card.entry }, now);
-  };
-  const failed = (said: string, revision: string | null = null): boolean => {
+  });
+  const failed = (said: string, revision: string | null = null): boolean => unlessHeld(() => failedNow(said, revision));
+  const failedNow = (said: string, revision: string | null = null): boolean => {
     store.updateFlowCard(card.id, { outputs: { ...card.outputs, [stage.id]: said } }, now);
     if (stage.onFail === null) {
       if (!waiting(`${said} Fix it, then move the card to try again.`)) return false;
@@ -68,12 +73,12 @@ export async function pullRequestStep(store: Store, flow: FlowRow, definition: F
 
   // Publishing that can't proceed is not the build's fault: rebuilding wouldn't change it, so the card waits here,
   // saying what to do, and the people on it hear once. It carries on by itself once the cause is fixed.
-  const stuck = (said: string): boolean => {
+  const stuck = (said: string): boolean => unlessHeld(() => {
     if (!waiting(said)) return false;
     const people = card.owner === null ? cardFollowers(store, card) : [card.owner];
     notifyPeople(store, card, people, null, { key: `pr-stuck:${card.entry}`, subject: `${stage.title} is waiting on you for “${card.title}”`, attention: true, body: said }, now);
     return true;
-  };
+  });
 
   // With no failure path, a card that didn't pass waits for a person to move it (a move is a fresh visit).
   if (stage.onFail === null && card.waiting !== null && card.waiting.endsWith(" Fix it, then move the card to try again.")) return false;
@@ -116,6 +121,8 @@ export async function pullRequestStep(store: Store, flow: FlowRow, definition: F
     // Back to a Build zone: a revision of the same work, carrying the failure (fenced as untrusted CI output).
     let revision: string | null = null;
     const target = definition.stages.find(one => one.id === stage.onFail);
+    // No revision of work put away while GitHub answered (v144).
+    if (cardTaskArchived(store, card.id)) return false;
     if (target?.kind === "task" && io.evidenceRoot !== undefined) {
       const runTask = store.externalIdFor(store.getRun(runId)?.taskRef ?? -1);
       const revised = runTask === null ? null : requestResultChanges(store, io.evidenceRoot, {

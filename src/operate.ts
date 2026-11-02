@@ -13310,7 +13310,9 @@ async function tidyTasksCommand(positional: readonly string[], flags: Map<string
   const releases = releaseFactsFor(context.databaseFile);
   // One scope for the preview and the apply: `--as <you>` previews exactly your projects (no password: it reads), and
   // the apply reads the same person's projects, so an unchanged list keeps its digest.
-  const previewAs = text(flags, "as");
+  // Whose lists: `--as <you>`, else this machine's saved login (`toolroll up`), else everything (an unrestricted
+  // person's list; a person limited to some projects previews with --as).
+  const previewAs = text(flags, "as") ?? readLoginFile(join(dirname(context.databaseFile), UP_LOGIN_FILE))?.name;
   const daysArg = `${days === TIDY_DEFAULT_DAYS ? "" : ` --days ${days}`}${previewAs === undefined ? "" : ` --as ${previewAs}`}`;
   // `--as` only ever narrows: the named person's projects within the caller's own lens, never beyond it.
   const lens = context.principal?.lens ?? null;
@@ -13327,7 +13329,8 @@ async function tidyTasksCommand(positional: readonly string[], flags: Map<string
       : [`Put away old tasks: ${items.length} task${items.length === 1 ? "" : "s"}.`,
         ...groups.flatMap(group => ["", `${group.label} (${group.items.length})`, ...group.items.map(one => `  ${one.taskId}  ${one.reason}${one.members.length > 1 ? ` (${one.members.length} versions)` : ""}`)]),
         ...(releases.problem === null ? [] : ["", `Release tasks were left out: ${releases.problem}.`]),
-        "", `To put these away, run: ${next}`, "Leave some out with --except <id,...>."]);
+        "", `To put these away, run: ${next}`, "Leave some out with --except <id,...>.",
+        ...(previewAs === undefined ? ["Limited to some projects? Preview with --as <you> so the list is yours."] : [])]);
   }
   const machine = refuseMachineTidy(context, command);
   if (machine !== null) return machine;

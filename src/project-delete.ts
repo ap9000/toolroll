@@ -106,7 +106,9 @@ export function projectRunning(store: Store, repo: string, now: Date): string[] 
   const chats = count("SELECT COUNT(*) AS n FROM mate_turn WHERE state IN ('queued','running') AND id IN (SELECT value FROM json_each(?))", json(d.turns));
   const steps = count("SELECT COUNT(*) AS n FROM flow_step_run WHERE state = 'running' AND card IN (SELECT value FROM json_each(?))", json(d.cards));
   const calls = count("SELECT COUNT(*) AS n FROM subagent_call WHERE state = 'running' AND subagent IN (SELECT value FROM json_each(?))", json(d.subagents));
-  const merges = count(`SELECT COUNT(*) AS n FROM merge_intent WHERE state IN ('claimed','firing') AND publication IN (SELECT id FROM publication WHERE task_ref IN (SELECT value FROM json_each(?)))`, json(d.refs));
+  const merges = count(`SELECT COUNT(*) AS n FROM merge_intent WHERE state IN ('claimed','firing') AND publication IN (SELECT id FROM publication WHERE task_ref IN (SELECT value FROM json_each(?)))`, json(d.refs))
+    // A person's merge between its last check and GitHub's answer (v144); a row older than 15 minutes is a crash.
+    + count("SELECT COUNT(*) AS n FROM merge_in_flight WHERE at > ? AND task_ref IN (SELECT value FROM json_each(?))", new Date(now.getTime() - 15 * 60_000).toISOString(), json(d.refs));
   const checkouts = count("SELECT COUNT(*) AS n FROM worktree WHERE repo = ? AND runner IS NOT NULL AND released_at IS NULL", repo);
   return [
     ...(building > 0 ? [`${plural(building, "task")} ${building === 1 ? "is" : "are"} being built`] : []),
@@ -276,6 +278,7 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("merge_blocker", `${IN("publication")} OR ${IN("task_id")}`, publications, K);
   del("merge_intent", IN("publication"), publications);
   del("merge_in_flight", IN("publication"), publications);
+  del("deploy_in_flight", IN("task_ref"), T);
   del("publication", IN("id"), publications);
   del("artifact", IN("id"), A);
 
@@ -301,7 +304,7 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("flow_trigger", IN("flow"), F);
   del("flow_unattended_run", `grant_id IN (SELECT id FROM flow_unattended_grant WHERE ${IN("flow")})`, F);
   del("flow_unattended_grant", IN("flow"), F);
-  for (const table of ["flow_card_watcher", "flow_comment", "flow_event", "flow_mail", "flow_step_run"]) del(table, IN("card"), C);
+  for (const table of ["flow_card_watcher", "flow_comment", "flow_event", "flow_mail", "flow_step_run", "flow_step_task"]) del(table, IN("card"), C);
   del("subagent_question", IN("id"), questions);
   del("subagent_call", `${IN("subagent")} OR ${IN("card")}`, M, C);
   for (const table of ["subagent_event", "subagent_memory", "subagent_turn"]) del(table, `${IN("subagent")} OR ${IN("card")}`, M, C);

@@ -1443,7 +1443,10 @@ export const V143_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 /** v144 (docs/plans/task-tidy.md): `task_archive` is a put-away task version. A row hides it from every list and count
  * and refuses every door that would dispatch, claim or approve it; restore deletes the row. Its history, results,
  * approvals and ledger stay exactly as they were. `merge_in_flight` is a direct merge between its last check and GitHub's
- * answer: a task can't be put away under it (a row older than 15 minutes is a crash, and no longer counts). `branch_check_run` keeps each completed GitHub workflow run (pushed to
+ * answer, owned by its token: a task can't be put away under it (a row older than 15 minutes is a crash, and no
+ * longer counts). `deploy_in_flight` is a deployment whose candidate passed its gate (30 minutes, refreshed by every
+ * phase that proves it again). `flow_step_task` is the tasks a flow step was admitted for, kept whatever the card does
+ * next, so a step still running holds them. `branch_check_run` keeps each completed GitHub workflow run (pushed to
  * the watched branch of the watched repository) the "checks failed" trigger saw, green or red, so tidy can tell a
  * failure notice was fixed by a later commit. */
 export const V144_SCHEMA = `
@@ -1470,8 +1473,20 @@ CREATE INDEX IF NOT EXISTS branch_check_run_by_workflow ON branch_check_run (rep
 CREATE TABLE IF NOT EXISTS merge_in_flight (
   publication INTEGER PRIMARY KEY REFERENCES publication(id),
   task_ref    INTEGER NOT NULL REFERENCES task_ref(id),
+  token       TEXT NOT NULL,
   by          TEXT NOT NULL,
   at          TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS deploy_in_flight (
+  task_ref INTEGER PRIMARY KEY REFERENCES task_ref(id),
+  run      INTEGER NOT NULL,
+  at       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS flow_step_task (
+  card    INTEGER NOT NULL,
+  entry   INTEGER NOT NULL,
+  task_id TEXT NOT NULL,
+  PRIMARY KEY (card, entry, task_id)
 );
 `;
 /**
@@ -25639,13 +25654,16 @@ export function liveFamilyAttempt(store: Store, refs: readonly number[], now: Da
       OR EXISTS (SELECT 1 FROM run_stop s WHERE s.task_ref = r.id AND s.resumed_at IS NULL AND s.settled_at IS NULL)
       OR EXISTS (SELECT 1 FROM action_ledger q JOIN run x ON x.id = q.run_id WHERE x.task_ref = r.id AND q.action = 'checks requested'
         AND NOT EXISTS (SELECT 1 FROM action_ledger f WHERE f.run_id = q.run_id AND f.action = 'checks finished' AND f.outcome LIKE q.id || ':%'))
-      OR EXISTS (SELECT 1 FROM flow_card c JOIN flow_step_run s ON s.card = c.id AND s.entry = c.entry
-        WHERE c.state = 'active' AND s.state = 'running' AND (c.task = r.external_id OR c.primary_task = r.external_id))
+      OR EXISTS (SELECT 1 FROM flow_card c JOIN flow_step_run s ON s.card = c.id
+        WHERE s.state = 'running' AND (c.task = r.external_id OR c.primary_task = r.external_id))
+      OR EXISTS (SELECT 1 FROM flow_step_task t JOIN flow_step_run s ON s.card = t.card AND s.entry = t.entry
+        WHERE s.state = 'running' AND t.task_id = r.external_id)
+      OR EXISTS (SELECT 1 FROM deploy_in_flight d WHERE d.task_ref = r.id AND d.at > ?)
       OR EXISTS (SELECT 1 FROM release_authority a WHERE a.state IN ('open','deploying','merge-reserved') AND (a.anchor_task = r.external_id OR a.tip_task = r.external_id))
       OR EXISTS (SELECT 1 FROM release_operation o WHERE o.task_id = r.external_id AND o.state IN ('reserved','running','unknown'))
       OR EXISTS (SELECT 1 FROM merge_intent i JOIN publication p ON p.id = i.publication WHERE p.task_ref = r.id AND i.state IN ('claimed','firing'))
       OR EXISTS (SELECT 1 FROM merge_in_flight m WHERE m.task_ref = r.id AND m.at > ?))
-    LIMIT 1`).get(JSON.stringify(refs), now.toISOString(), new Date(now.getTime() - 15 * 60_000).toISOString());
+    LIMIT 1`).get(JSON.stringify(refs), now.toISOString(), new Date(now.getTime() - 30 * 60_000).toISOString(), new Date(now.getTime() - 15 * 60_000).toISOString());
   return row === undefined ? null : String(row["external_id"]);
 }
 
@@ -25675,6 +25693,11 @@ export function archiveTaskFamily(store: Store, taskId: string, by: ArchiveBy, n
     for (const ref of remaining) insert.run(ref, by.by, by.byKind, by.rule, reason, at);
     store.handle.prepare("UPDATE notification SET resolved_at = ? WHERE resolved_at IS NULL AND task_ref IN (SELECT value FROM json_each(?))")
       .run(at, JSON.stringify(refs));
+    // The family's flow cards hold while it is put away, so what they queued for people is settled too.
+    store.handle.prepare(`UPDATE notification SET resolved_at = ? WHERE resolved_at IS NULL AND EXISTS (SELECT 1 FROM flow_card c
+        WHERE (c.task IN (SELECT value FROM json_each(?)) OR c.primary_task IN (SELECT value FROM json_each(?)))
+          AND (notification.dedupe_key LIKE 'flow:' || c.id || ':%' OR notification.dedupe_key LIKE 'flow-card:' || c.id || ':%'))`)
+      .run(at, JSON.stringify(family.map(one => one.taskId)), JSON.stringify(family.map(one => one.taskId)));
     const repo = store.refById(refs[0]!)?.repo ?? null;
     store.recordAction({ at, actor: by.byKind === "tidy" ? "tidy" : `operator:${by.by}`, repo, taskId, runId: null, action: "task archived",
       outcome: by.rule ?? "by hand", source: "work", detail: `${reason}${refs.length > 1 ? ` (${refs.length} versions)` : ""}` });

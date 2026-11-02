@@ -19,6 +19,8 @@ import { leadClaim, leadSay } from "./lead-voice.js";
 import { presented } from "../test/route-fixture.js";
 import { fire, seedFlow } from "../test/tidy-fixture.js";
 import { tidyPreview } from "./tidy.js";
+import { claimStep } from "./flow-steps.js";
+import { projectRunning } from "./project-delete.js";
 
 const T0 = new Date("2026-11-01T10:00:00.000Z");
 const REPO = resolve("/repo/main");
@@ -74,6 +76,27 @@ describe("merging", () => {
     expect(store.fireMergeIntent(intent, 1, { repo: REPO, headSha: "a".repeat(40), liveGrantTermsHash: "g", graceMs: 0 }, T0)).toEqual({ ok: false, outcome: "waiting-human", why: "the task is put away" });
     expect(store.handle.prepare("SELECT state FROM merge_intent").get()!["state"]).toBe("waiting-human");
   });
+
+  test("a person's merge in flight holds the task, and stops its project being deleted under it", () => {
+    const ref = seed("direct-merge");
+    const run = finishedRun(ref);
+    store.handle.prepare("INSERT INTO publication (run, task_ref, github_repo, remote, base, head, head_sha, body_hash, draft, state, created_at, updated_at) VALUES (?, ?, 'o/r', 'origin', 'main', 'b', ?, 'h', 0, 'opened', ?, ?)")
+      .run(run, ref, "a".repeat(40), T0.toISOString(), T0.toISOString());
+    const publication = Number(store.handle.prepare("SELECT id FROM publication WHERE run = ?").get(run)!["id"]);
+    store.handle.prepare("INSERT INTO merge_in_flight (publication, task_ref, token, by, at) VALUES (?, ?, 't', 'alex', ?)").run(publication, ref, T0.toISOString());
+    expect(projectRunning(store, REPO, T0)).toContain("a merge is in progress");
+    expect(archiveTaskFamily(store, "direct-merge", BY, T0)).toMatchObject({ ok: false, reason: "live" });
+    // A reservation left by a crash stops counting after 15 minutes.
+    const later = new Date(T0.getTime() + 16 * 60_000);
+    expect(projectRunning(store, REPO, later)).not.toContain("a merge is in progress");
+  });
+
+  test("a deployment that passed its gate holds the task for 30 minutes", () => {
+    const ref = seed("deploying");
+    store.handle.prepare("INSERT INTO deploy_in_flight (task_ref, run, at) VALUES (?, 1, ?)").run(ref, T0.toISOString());
+    expect(archiveTaskFamily(store, "deploying", BY, T0)).toMatchObject({ ok: false, reason: "live" });
+    expect(archiveTaskFamily(store, "deploying", BY, new Date(T0.getTime() + 31 * 60_000))).toMatchObject({ ok: true });
+  });
 });
 
 describe("flow cards", () => {
@@ -90,6 +113,23 @@ describe("flow cards", () => {
     restoreTaskFamily(store, "card-build", "alex", T0);
     advanceFlows(store, REPO, T0);
     expect(store.handle.prepare("SELECT COUNT(*) n FROM notification WHERE kind = 'flow-message'").get()!["n"]).toBe(1);
+    // What a card queued for people before its work was put away is settled with it.
+    archiveTaskFamily(store, "card-build", BY, T0);
+    expect(store.handle.prepare("SELECT resolved_at FROM notification WHERE kind = 'flow-message'").get()!["resolved_at"]).toBe(T0.toISOString());
+  });
+
+  test("a step admitted for a card holds its task while it runs, even after the card moves on", () => {
+    seed("step-task");
+    const flow = store.createFlow({ repo: REPO, name: "Draft", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Draft it", kind: "draft" }, { title: "Send", kind: "notify" }], null)) }, T0);
+    const stages = JSON.parse(store.getFlow(flow)!.definitionJson).stages as { id: string }[];
+    const card = store.addFlowCard({ flow, title: "Reply to Ana", description: null, stage: stages[0]!.id, by: "alex", byKind: "person" }, T0);
+    store.updateFlowCard(card, { task: "step-task" }, T0);
+    expect(claimStep(store, store.getFlowCard(card)!, { stage: stages[0]!.id, kind: "draft", script: null, scriptVersion: null }, T0)).toBe(true);
+    store.moveFlowCard(card, { to: stages[1]!.id, outcome: "moved", actor: "alex" }, T0);
+    store.updateFlowCard(card, { task: null }, T0);
+    expect(archiveTaskFamily(store, "step-task", BY, T0)).toMatchObject({ ok: false, reason: "live" });
+    store.handle.prepare("UPDATE flow_step_run SET state = 'passed'").run();
+    expect(archiveTaskFamily(store, "step-task", BY, T0)).toMatchObject({ ok: true });
   });
 });
 

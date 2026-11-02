@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { openStore, archiveOf, archiveTaskFamily, restoreTaskFamily, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { withActor } from "./actor.js";
-import { accessOf, applyTidy, readReleaseFacts, recordBranchCheckRun, runTidy, tidyDigest, tidyPreview, withinLens, type ReleaseFacts } from "./tidy.js";
+import { accessOf, unprovenNoticeRuns, applyTidy, readReleaseFacts, recordBranchCheckRun, runTidy, tidyDigest, tidyPreview, withinLens, type ReleaseFacts } from "./tidy.js";
 import { fire, personTask, releaseTaskId, seedFlow, writeJournal, REPO } from "../test/tidy-fixture.js";
 
 const NOW = new Date("2026-11-01T18:00:00.000Z");
@@ -136,9 +136,12 @@ describe("(b) old releases", () => {
 describe("(c) resolved CI notices", () => {
   const sha = (c: string) => c.repeat(40);
   const checks = () => seedFlow(store, "Fix failing CI", { kind: "github", repo: "acme/shop", watch: "checks", label: null, branch: "main", from: "team", delivery: "poll", zone: "fix" }, day(1));
-  const notice = (flow: { flow: number; trigger: number }, task: string, commit: string, workflow: string, at: Date, repo = "acme/shop") =>
+  /** A "Checks failed" notice, and (unless `proven` is false) its own failing run on record as a push to main. */
+  const notice = (flow: { flow: number; trigger: number }, task: string, commit: string, workflow: string, at: Date, proven = true) => {
     fire(store, flow, { key: `checks:${commit}`, task, title: `Checks failed on main: ${workflow}`, at, onTime: false, filedBy: { name: "GitHub", kind: "automation" },
-      sourceUrl: `https://github.com/${repo}/actions/runs/${commit.charCodeAt(0)}` });
+      sourceUrl: `https://github.com/acme/shop/actions/runs/${commit.charCodeAt(0)}` });
+    if (proven) expect(run(commit.charCodeAt(0), workflow, commit, "failure", new Date(at.getTime() - 60_000))).toBe(true);
+  };
   const run = (id: number, workflow: string, commit: string, conclusion: "success" | "failure", created: Date, extra: Record<string, unknown> = {}) =>
     recordBranchCheckRun(store, { repo: "acme/shop", branch: "main" }, { id, name: workflow, head_sha: commit, head_branch: "main", conclusion, created_at: created.toISOString(), event: "push", head_repository: { full_name: "acme/shop" }, ...extra }, NOW);
 
@@ -167,6 +170,16 @@ describe("(c) resolved CI notices", () => {
       .run(JSON.stringify({ kind: "github", repo: "acme/other", watch: "checks", label: null, branch: "main", from: "team", delivery: "poll", zone: "fix" }), flow.trigger);
     recordBranchCheckRun(store, { repo: "acme/other", branch: "main" }, { id: 40, name: "CI", head_sha: sha("4"), head_branch: "main", conclusion: "success", created_at: day(24).toISOString(), event: "push", head_repository: { full_name: "acme/other" } }, NOW);
     expect(tidyPreview(store, NOW, { releases: NONE, days: null })).toEqual([]);
+  });
+
+  test("a notice whose own failing run isn't a recorded push to main (a fork's pull request on a branch called main) is never resolved", () => {
+    const flow = checks();
+    notice(flow, "ci-fork", sha("2"), "CI", day(22), false);
+    expect(run(50, "CI", sha("2"), "failure", day(22), { event: "pull_request", head_repository: { full_name: "mallory/shop" } })).toBe(false);
+    run(51, "CI", sha("4"), "success", day(24));
+    expect(tidyPreview(store, NOW, { releases: NONE, days: null })).toEqual([]);
+    // The checks trigger reads such a card's own run from GitHub, a few a pass, newest first.
+    expect(unprovenNoticeRuns(store, flow.trigger, "acme/shop")).toEqual([50]);
   });
 
   test("a notice whose card has no GitHub run link of its own is never resolved", () => {

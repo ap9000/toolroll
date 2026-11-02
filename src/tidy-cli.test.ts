@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, archiveOf } from "./store.js";
 import { addApprover } from "./scope.js";
-import { runOperate } from "./operate.js";
+import { runOperate, writeLoginFileDurably } from "./operate.js";
 import { fire, seedFlow } from "../test/tidy-fixture.js";
 
 const NOW = new Date("2026-11-01T18:00:00.000Z");
@@ -85,6 +85,9 @@ describe("one scope for the preview and the apply", () => {
     expect(everyone["count"]).toBe(4);
     expect(mine).toMatchObject({ count: 3, next: `toolroll task tidy --apply --digest ${String(mine["digest"])} --as sam` });
     expect(json((await run(["tidy", "--apply", "--digest", String(everyone["digest"]), "--json", "--as", "sam", "--token", sam.token])).out)).toMatchObject({ ok: false, reason: "changed" });
+    // With this machine's saved login being sam's, a plain preview is already sam's list, and its command says so.
+    writeLoginFileDurably(join(dir, "up-login.txt"), "sam", sam.token);
+    expect(json((await run(["tidy", "--preview", "--json"])).out)).toMatchObject({ digest: mine["digest"], next: mine["next"] });
     expect(json((await run(["tidy", "--apply", "--digest", String(mine["digest"]), "--json", "--as", "sam", "--token", sam.token])).out)).toMatchObject({ ok: true });
     expect(archivedIds()).toEqual(["site-oct-28", "site-oct-29", "site-oct-30"]);
   });
