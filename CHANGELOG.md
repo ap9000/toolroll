@@ -1,7 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.9.85 — 2026-11-01
 
+- **Point at the exact screenshot.** Choose **Comment** beside a result's
+  screenshot and your note, the chat confirmation and the revision all carry
+  that exact image. In chat, reply to a screenshot and the note keeps it. A
+  screenshot that later stops verifying never blocks you: keep the note
+  without it, and the original stays in history.
+- **Projects → Activity.** See the project's Ready backlog and the last 60
+  days of finished work: revisions, recorded spend and how much of it is
+  known, who completed what, and check outcomes. The lead can read the same
+  report (`get_project_activity`), and so can `toolroll project activity
+  --json`. Unknown costs stay unknown.
 - **youiyoux change requests become tasks by themselves.** In a project that
   uses youiyoux, each open change request in `.youi/requests` is filed once as
   a task with its goal, exclusions, files and requirements, and waits for your
@@ -25,6 +35,12 @@
   the task complete without merging its branch, with who decided what in its
   history; a task that needs more stays ready for review and says why.
 - **A youiyoux request's status reads done once its task is complete.**
+- **Security updates.** The mail, Slack and Discord libraries and their
+  dependencies are updated, closing five of seven known vulnerabilities. The
+  remaining one sits inside the sandbox library, has no fix yet, and is in a
+  part Toolroll never runs.
+- **A short README**, with guides for the rest and a page written for
+  agents (`docs/agents.md`, `llms.txt`).
 
 ## 0.9.84 — 2026-11-01
 
