@@ -444,6 +444,7 @@ export function listTasksFor(
          FROM task_ref JOIN task ON task.id = task_ref.external_id AND task_ref.backend = 'built-in'
         WHERE task_ref.repo IN (${sql})
           AND (? IS NULL OR task.state = ?)
+          AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)
           AND task_ref.id > ?
         ORDER BY task_ref.id LIMIT ?`,
     )

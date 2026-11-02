@@ -8,7 +8,7 @@
 import { actorLabel, withActor, type Actor } from "./actor.js";
 import { chatControlHref } from "./chat-controls.js";
 import { BATCH_MS, chatText, chatTitle } from "./chat-voice.js";
-import { BUILT_IN, type Notification, type Store } from "./store.js";
+import { BUILT_IN, refArchived, type Notification, type Store } from "./store.js";
 import { leadNameOf } from "./lead-identity.js";
 import { leadLapsed } from "./task-status.js";
 import { phoneText as plain } from "./telegram-status.js";
@@ -137,6 +137,8 @@ export function leadClaim(store: Store, actor: Actor, taskId: string, now: Date)
   if (!actor.lead) return { ok: false, reason: "refused", message: "Only the lead takes a task on as the lead: pass its lead token." };
   const task = admittedTask(store, actor.account, taskId);
   if ("ok" in task) return task;
+  // A put-away task (v144) waits on nobody, so the lead takes nothing on there: a person restores it first.
+  if (refArchived(store, task.refId)) return { ok: false, reason: "refused", message: "This task is put away. A person can restore it first." };
   const { root } = familyOf(store, taskId);
   store.transact(() => {
     const ledger = store.recordAction({ at: now.toISOString(), actor: actorLabel(actor), repo: task.repo, taskId: root, runId: null,

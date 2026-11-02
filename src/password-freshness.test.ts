@@ -361,10 +361,10 @@ describe("where freshness may be honoured", () => {
     // person proves each inside its own transaction.
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
-      "src/nightly-github.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
+      "src/nightly-github.ts": 1, "src/operate.ts": 61, "src/pull-request-flow.ts": 1,
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 9, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 25,
-      "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
+      "src/server/tasks.ts": 7, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
     const chatRuns = files.find(one => one.path === "src/server/chat.ts")!.text.match(/freshFacts\.run\([^,]*,/g) ?? [];
@@ -450,6 +450,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/nightly-github.ts#provePerson@11": 1,
     "src/operate.ts#<module>": 1,
     "src/operate.ts#acceptTaskProof@99": 1,
+    // task archive / restore / tidy --apply: an ordinary credentialed operator act (task-tidy.md), a person's only.
+    "src/operate.ts#archiveTasksCommand@201": 1,
+    "src/operate.ts#restoreTasksCommand@202": 1,
+    "src/operate.ts#tidyTasksCommand@203": 1,
     "src/operate.ts#authenticateApprover@126": 1,
     "src/operate.ts#bridgeCommand@69": 1,
     "src/operate.ts#budgetCommand@154": 1,
@@ -562,6 +566,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createTasksHandlers@2>codeAct@25><anonymous>@1": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskConfirmStopped@30": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@43": 3,
+    // Put away old tasks (task-tidy.md): the bulk put-away's step-up, and the runtime it reads it from.
+    "src/server/tasks.ts#createTidyHandlers@3": 2,
+    "src/server/tasks.ts#createTidyHandlers@3>applyPutAway@2": 1,
     // Live terminals: starting one is a step-up (a fresh password every time; never a remembered one).
     "src/server/terminals.ts#createTerminalHandlers@2>start@10": 1,
     "src/task-outcome-cli.ts#<module>": 2,

@@ -41,7 +41,8 @@ import { CHAT_TASK_ACTIONS, chatTaskRun, chatTaskStamp, isChatTaskAction } from 
  * projects after scrubbing; full paths and arbitrary text remain redacted.
  */
 import { Buffer } from "node:buffer";
-import { LEAD_ASK_OTHER, type FlowCardRow, type FlowRow, type Store, type LeadProposalKind, type LeadTurnEvidence } from "./store.js";
+import { LEAD_ASK_OTHER, refArchived, type FlowCardRow, type FlowRow, type Store, type LeadProposalKind, type LeadTurnEvidence } from "./store.js";
+import { releaseFactsOf, tidyDigest, tidyGroups, tidyPreview, TIDY_DEFAULT_DAYS } from "./tidy.js";
 import type { VerifiedApprover } from "./principal.js";
 import type { LeadToolSchema } from "./converse.js";
 import { hasDisguisedText, hasForbiddenControls } from "./decision.js";
@@ -1439,11 +1440,12 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       if (typeof args["search"] === "string" && words.length === 0) return { ok: false, message: "search needs a word that names the work, such as a page, feature or file" };
       // A search reads further back than the newest page, then ranks by how many of the words each task's title and goal hold.
       const listed = ctx.store.taskFamiliesAdmitted(repo === null ? ctx.who.repos : [repo], false, { limit: words.length === 0 ? limit + 1 : SEARCH_FAMILIES, order: words.length === 0 ? "created" : "updated", ...(args["state"] === undefined ? {} : { states: [args["state"] as import("./store.js").TaskState] }) });
-      const families = words.length === 0 ? listed : listed
+      // A put-away task (v144) is out of every list, the lead's included.
+      const families = (words.length === 0 ? listed : listed
         .map((one, index) => ({ one, index, hits: searchHits(words, [one.root.id, one.root.title, one.current.title, ctx.store.getScope(one.current.id)?.goal ?? "", ctx.store.getScope(one.root.id)?.goal ?? ""]) }))
         .filter(match => match.hits > 0)
         .sort((a, b) => b.hits - a.hits || a.index - b.index)
-        .map(match => match.one);
+        .map(match => match.one)).filter(one => !refArchived(ctx.store, one.current.refId));
       const tasks = families.slice(0, limit).map(one => ({
         repo: `r${ctx.who.repos.indexOf(one.current.repo!) + 1}`, task: one.root.id, execution: one.current.id,
         title: one.root.title, state: one.current.state, historyProblem: one.problem, otherActive: one.otherActive.map(version => version.id),
@@ -1451,6 +1453,17 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
         strikes: ctx.store.lookupRef(one.current.id)?.strikes ?? 0, dispatch: diagnoseTaskDispatch(ctx.store, one.current.id, ctx.now),
       }));
       return { ok: true, body: { tasks, truncated: families.length > limit } };
+    },
+  },
+  tidy_preview: {
+    description: "Read-only: what Put away old tasks would put away now and why, grouped (old releases, old routine runs, resolved CI notices, finished more than `days` days ago, default 14). Only a person puts tasks away; you can't.",
+    handle: (ctx, args) => {
+      const days = typeof args["days"] === "number" ? args["days"] : TIDY_DEFAULT_DAYS;
+      const items = tidyPreview(ctx.store, ctx.now, { releases: releaseFactsOf(ctx.store), days, access: { principal: "operator", repos: ctx.who.repos, includeUnplaced: false } });
+      const digest = tidyDigest(items, days);
+      return { ok: true, body: { count: items.length, days, digest,
+        groups: tidyGroups(items, days).map(group => ({ label: group.label, tasks: group.items.map(one => ({ task: one.taskId, title: one.title, why: one.reason })) })),
+        apply: items.length === 0 ? "Nothing to put away." : `A person puts these away: Tasks → Put away old tasks, or \`toolroll task tidy --apply --digest ${digest}${days === TIDY_DEFAULT_DAYS ? "" : ` --days ${days}`}\`.` } };
     },
   },
   get_task: {

@@ -169,6 +169,14 @@ describe("the CLI's --json bytes", () => {
       await operate(["task", "show", "t-readme", "--json"]);
       await operate(["task", "show", "no-such-task", "--json"]);
       await operate(["task", "hold", "t-login", "--reason", "waiting on design", "--json"]);
+      // Put away old tasks (task-tidy.md): the read-only preview, its usage refusals, and person-only acts without a person.
+      await operate(["task", "tidy", "--preview", "--json"]);
+      await operate(["task", "tidy", "--apply", "--json"]);
+      await operate(["task", "tidy", "--preview", "--apply", "--json"]);
+      await operate(["task", "archive", "--json"]);
+      await operate(["task", "archive", "t-readme", "--json"]);
+      await operate(["task", "restore", "t-readme", "--json"]);
+      await operate(["task", "list", "--view", "archived", "--json"]);
       await operate(["task", "wait", "--json"]);
       await operate(["status", "--json"]);
       await operate(["status", "--bogus", "--json"]);

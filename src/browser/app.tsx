@@ -68,7 +68,7 @@ function scopeOf(workspace: BrowserWorkspace): DraftScope | null {
 
 function canRefreshWorkspace(): boolean { return !document.hidden && navigator.onLine !== false; }
 
-const FULL_WIDTH_PAGES = new Set(["/work", "/agents", "/board", "/queue", "/workbench", "/code"]);
+const FULL_WIDTH_PAGES = new Set(["/work", "/work/put-away", "/agents", "/board", "/queue", "/workbench", "/code"]);
 
 export function useWorkspace(initial: BrowserWorkspace) {
   const [workspace, setWorkspace] = useState(initial);

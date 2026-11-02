@@ -24,6 +24,7 @@ import { DRAFT_CHARS, keptDraft } from "./flow-draft.js";
 import { chooseStep, flowPersonOf, sendStep } from "./flow-send.js";
 import { parseSoul, subagentLabel } from "./subagents.js";
 import type { FlowCardRow, FlowRow, Store, SubagentRow } from "./store.js";
+import { taskArchived } from "./task-archive.js";
 import { withStageHandoff, type StageHandoff } from "./contracts/stage-output.js";
 
 export type FlowAdvance = { moved: number; filed: string[]; problems: string[] };
@@ -277,6 +278,12 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
   const current = family?.current.id ?? card.task;
   const task = store.getTask(current);
   if (task === null) { store.updateFlowCard(card.id, { waiting: "Its task is gone. Move the card to try again." }, now); return; }
+  // A put-away task (v144, task-tidy.md) holds its card where it is: nothing moves on, files or sends until it's restored.
+  if (taskArchived(store, current) || taskArchived(store, card.task)) {
+    const waiting = "Its task is put away. Restore the task to continue.";
+    if (card.waiting !== waiting) store.updateFlowCard(card.id, { waiting }, now);
+    return;
+  }
   if (task.state === "done") {
     // A build whose project checks failed is done but not good: it takes the failure path, like a failed build.
     if (stage.kind === "task") {

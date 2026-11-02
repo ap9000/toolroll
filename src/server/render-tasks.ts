@@ -1,4 +1,6 @@
 /** Task pages: approval, agents, plans, controls, decisions and the task body. */
+import { archivedWords } from "../tidy.js";
+import { whenUtc } from "../when-html.js";
 import { networkWords } from "../egress.js";
 import type { ReleaseView } from "../release-view.js";
 import { releaseAsksAgainWords, releaseTermsSentence } from "../scope.js";
@@ -872,6 +874,7 @@ const whenText = (iso: string): string => new Intl.DateTimeFormat("en-US", { hou
 export function approveRefusalWords(reason: string): string {
   if (reason === "requester" || reason === "person-required") return gateWords({ verdict: "refuse", reason });
   if (reason === "machine-proof") return "not approved: only a person can approve this. Approve it on the task page or from your paired chat";
+  if (reason === "archived") return "not approved: this task is put away. Restore it first";
   if (reason === "unrouted") return "not approved: this scope predates agent routing and its old approval no longer stands — edit and re-file the scope so it is routed under today’s agents, then approve it";
   if (reason === "profile-unresolved") return "not approved: the scope cannot name an exact agent for every role — fix the agent setup and re-file it";
   if (reason === "password-now") return "not approved: this needs your password typed now — protected work, raised permissions, or a plan an agent wrote can't use a remembered one";
@@ -1426,6 +1429,9 @@ export function taskBodyParts(data: {
   /** Markup the caller rendered (the version history). */
   history?: Html;
   versionLabel?: string | null;
+  /** Put away (v144): by whom and why; and whether the viewer can put it away or restore it (an approver's browser). */
+  archived?: { by: string; byKind: "person" | "tidy"; reason: string; at: string } | null;
+  canPutAway?: boolean;
   status?: DisplayStatus;
   task: Task;
   /** Shared read-side lifecycle answer; the atomic claim still re-proves it. */
@@ -2557,8 +2563,11 @@ export function taskBodyParts(data: {
     // The title is bare; the receipt or shared task status leads once.
     html`<div class="task-title-row"><h1 class="task-main-title">${data.rootTitle ?? task.title}</h1>${data.csrf === "" ? "" : taskViewSwitch(data.rootId ?? task.id, "overview")}</div>`,
     data.versionLabel == null ? "" : html`<p class="meta">${data.versionLabel} · <a href="${taskHref(data.rootId ?? task.id)}">Current work</a></p>`,
+    data.archived == null ? "" : html`<div class="task-archived" data-archived><p>${archivedWords(data.archived)} · ${whenUtc(data.archived.at)}</p>${data.canPutAway === true && data.csrf !== ""
+      ? postForm(`${taskHref(task.id)}/restore`, html`<button type="submit" class="secondary">Restore</button>`, { hidden: { return: taskHref(task.id) }, attrs: { class: "inline" } }) : ""}</div>`,
     (data.history ?? ""),
-    statusHtml,
+    // A put-away task's banner is its status: no Needs you card, no act, no approval form (each would be refused).
+    data.archived == null ? statusHtml : "",
     controlHtml,
     previousResult === null ? "" : html`<details class="task-previous-result"><summary>${previousResult.title}</summary>${previousResult.html}</details>`,
     progressCard,
@@ -2567,7 +2576,7 @@ export function taskBodyParts(data: {
     mirrorCard,
     problemHtml,
     needsScopeCard,
-    approvalHtml,
+    data.archived == null ? approvalHtml : "",
     html`<details class="task-status-details" id="task-diagnostics"${optionsOpen ? html` open` : ""}><summary>Task options</summary>${optionsHtml}</details>`,
     // Evidence-first (M5.5): what needs you, then what happened — decisions
     // and incidents above the attempt ledger and spend, the mechanics
@@ -2815,6 +2824,7 @@ export function taskBodyParts(data: {
     { group: "share", label: "Copy link", kind: "copy" },
     ...(facts.some(one => one.label === "Audit") ? [{ group: "share" as const, label: "Evidence pack", kind: "link" as const, href: `${taskHref(rootOf)}/evidence` }] : []),
     ...(data.repo !== null && data.scope !== null ? [{ group: "share" as const, label: "Reuse as recipe", kind: "link" as const, href: `/recipes/from-task?task=${encodeURIComponent(task.id)}` }] : []),
+    ...(data.canPutAway === true && data.csrf !== "" && data.archived == null && !building ? [{ group: "work" as const, label: "Put away", kind: "post" as const, action: `${taskHref(task.id)}/archive`, fields: { return: taskHref(task.id) } }] : []),
     ...(cancelForm !== "" ? [{ group: "danger" as const, label: "Cancel task", kind: "goto" as const, tab: "plan" as const, target: "cancel-task" }] : []),
   ];
   const view: BrowserTaskView = {
@@ -2828,10 +2838,12 @@ export function taskBodyParts(data: {
       { label: "Ask", href: taskChatHref(data.rootId ?? task.id), active: false },
     ],
     version: data.versionLabel == null ? null : { label: data.versionLabel, current: { label: "Current work", href: taskHref(data.rootId ?? task.id) } },
-    status: statusCard === null ? null : inPlaceChecks(failedCard ? { ...statusCard, action: null, status: { ...statusCard.status, sentence: data.failure?.line ?? statusCard.status.sentence } }
+    archived: data.archived == null ? null : { words: archivedWords(data.archived), at: data.archived.at,
+      restore: data.canPutAway === true && data.csrf !== "" ? { action: `${taskHref(task.id)}/restore`, returnTo: taskHref(task.id) } : null },
+    status: statusCard === null || data.archived != null ? null : inPlaceChecks(failedCard ? { ...statusCard, action: null, status: { ...statusCard.status, sentence: data.failure?.line ?? statusCard.status.sentence } }
       : progress !== null || record !== null ? { ...statusCard, action: statusCard.action?.href === record?.href ? null : statusCard.action, status: { ...statusCard.status, sentence: progress?.line ?? statusCard.status.sentence } }
       : statusCard.action !== null && rebuild === null && bareSelfLink(statusCard.action.href) ? { ...statusCard, action: null } : statusCard),
-    statusHtml: htmlString(statusHtml),
+    statusHtml: data.archived != null ? "" : htmlString(statusHtml),
     failure: failedCard && data.failure != null ? { line: data.failure.line, evidence: data.failure.evidence, suggestion: data.failure.suggestion, link: data.failure.link } : null,
     retry,
     runChecks,
@@ -2844,7 +2856,7 @@ export function taskBodyParts(data: {
     ...(data.csrf !== "" && (data.steerRecent?.length ?? 0) > 0 ? { steerRecent: data.steerRecent } : {}),
     record,
     earlier,
-    approval: fragmentString(approvalHtml),
+    approval: data.archived != null ? "" : fragmentString(approvalHtml),
     approvalPlacement: approvalLeads ? "lead" : "plan",
     more,
     confirmStopped: data.csrf !== "" && data.assignment?.primaryAction?.code === "confirm-stopped" && data.assignment.primaryAction.target.runId !== null

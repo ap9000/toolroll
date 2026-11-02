@@ -44,6 +44,7 @@ import {
   type Mutation,
   type Run,
   type TaskState,
+  refArchived,
 } from "./store.js";
 import type { ParsedDecision, Problem } from "./decision.js";
 import { digestOf } from "./scope.js";
@@ -104,6 +105,7 @@ export type AcquireResult =
   /** A coordinator filed this and no password ceremony has sealed its
    * scope yet — nothing claims, plans, or runs it until one does. */
   | { ok: false; reason: "coordinator-filed" }
+  | { ok: false; reason: "archived" }
   | { ok: false; reason: "watch-custody" }
   /** The runner reported draining (v137 lifecycle): its stop has begun, so it takes no new work. */
   | { ok: false; reason: "draining"; until: string };
@@ -227,6 +229,8 @@ function acquireLocked(
       if (placedRef !== null && placedRef.coordinatorCid !== null && !store.scopeSealed(placedRef.externalId)) {
         return { ok: false as const, reason: "coordinator-filed" as const };
       }
+      // A PUT-AWAY TASK (v144, task-tidy.md) claims for nobody, on every road: restore it first.
+      if (refArchived(store, taskRef)) return { ok: false as const, reason: "archived" as const };
       // The reservation gate lives HERE, in the one primitive every
       // acquisition path shares (queue-columns review, finding 1): tick's
       // acquireIfReady and the raw CLI claim both

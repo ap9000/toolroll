@@ -39,6 +39,7 @@ import { readFlowSecrets, sendingReady, runRequest, sendEmail, toolWaiting, useT
 import { cleanFolder, flowLaunch, runCode } from "./flow-code.js";
 import { readProviderKey } from "./keys.js";
 import type { FlowCardRow, FlowRow, FlowScriptRow, FlowStepKind, Store } from "./store.js";
+import { taskArchived } from "./task-archive.js";
 import { replyInChannel } from "./chat-inbox.js";
 import { recordSent, threadOf } from "./flow-replies.js";
 import { ASKED, subagentReady, subagentTurn, type SubagentOutcome } from "./subagent-work.js";
@@ -204,6 +205,9 @@ function claimStep(store: Store, card: FlowCardRow, step: { stage: string; kind:
   return store.transact(() => {
     const fresh = store.getFlowCard(card.id);
     if (fresh === null || fresh.state !== "active" || fresh.entry !== card.entry || fresh.stage !== step.stage) return false;
+    // A card whose task is put away (v144) runs no step until the task is restored (its task re-read here).
+    const held = store.handle.prepare("SELECT task FROM flow_card WHERE id = ?").get(card.id)?.["task"];
+    if (typeof held === "string" && taskArchived(store, held)) return false;
     return store.claimFlowStep({ card: card.id, entry: card.entry, ...step }, now);
   });
 }

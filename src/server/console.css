@@ -2742,3 +2742,32 @@ html.so-swap::view-transition-old(*):only-child { animation: so-card-out 160ms e
 
 .result-feedback-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 .result-feedback-actions button { min-height: 44px; white-space: nowrap; }
+
+/* Put away old tasks (docs/plans/task-tidy.md): grouped checklist on the kit's column. */
+.put-away { max-width: var(--so-settings-width, 760px); }
+.put-away h1 { margin: 0 0 4px; }
+.put-away-days { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 16px; }
+.put-away-days label { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; }
+.put-away-days input[type=number] { width: 5rem; margin: 0; }
+.put-away-days button { width: auto; }
+.put-away-group { margin: 0 0 20px; padding: 0; border: 0; }
+.put-away-group legend { display: flex; align-items: center; gap: 8px; padding: 0; margin: 0 0 6px; font-weight: 600; font-size: 15px; }
+.put-away-group legend .count { font-family: var(--so-mono, ui-monospace, monospace); font-size: 11px; font-weight: 500; color: var(--so-muted); }
+.put-away-group ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--so-line); }
+.put-away-group li { border-bottom: 1px solid var(--so-line); }
+.put-away-item { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: start; margin: 0; padding: 10px 2px; cursor: pointer; }
+.put-away-item input { margin: 3px 0 0; width: auto; min-height: 0; align-self: start; }
+.put-away-title { font-size: 13.5px; font-weight: 500; overflow-wrap: anywhere; }
+.put-away-why { grid-column: 2; font-size: 12.5px; color: var(--so-muted); }
+.put-away-id { grid-column: 2; font-family: var(--so-mono, ui-monospace, monospace); font-size: 11.5px; color: var(--so-muted); overflow-wrap: anywhere; }
+.put-away-cli { margin: 12px 0 0; font-size: 13px; color: var(--so-muted); overflow-wrap: anywhere; }
+.put-away-cli code { font-size: 12px; }
+.task-archived { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; background: var(--so-raised); }
+.task-archived p { margin: 0; font-size: 13.5px; }
+.task-archived form { margin: 0; }
+.task-archived button { width: auto; }
+.work-row-status form.inline { margin: 0; }
+@media (max-width: 900px) {
+  .put-away-item { min-height: 44px; }
+  .put-away-days button, .task-archived button, .work-row-status form.inline button { min-height: 44px; }
+}

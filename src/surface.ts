@@ -186,7 +186,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
     notableReasons: ["no-result"] },
   { invocation: "task list", synopsis: "a page of saved task status", audience: "agent", agentMayInvoke: true, mutation: "none",
     flags: [jsonFlag, dbFlag, { name: "state", takesValue: true, meaning: "queued|running|done|failed|cancelled" },
-      { name: "view", takesValue: true, meaning: "all|needs-you|running|completed" },
+      { name: "view", takesValue: true, meaning: "all|needs-you|running|completed|archived" },
       { name: "limit", takesValue: true, meaning: "page size, 1–100; default 40" },
       { name: "cursor", takesValue: true, meaning: "nextCursor from the previous response" },
       { name: "repo", takesValue: true, meaning: "filter to one project" }] },
@@ -314,6 +314,18 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("task route", "which configured agents plan, build and repair this task; phase and size changes require renewed approval"),
   operator("task reopen", "resume external work its tracker closed and has been SEEN open again"),
   operator("task stop", "stop ONE exact live attempt (--run <id>): durable before any process is signalled, answers 'stopping' until its own processes are established gone; work, branch, and evidence preserved; no strike, no retry"),
+  { ...operator("task archive", "put tasks away (a person's act): out of every list, count and nudge, history and approvals kept; nothing claims, approves or dispatches them until restored"),
+    positionals: [{ name: "id", required: true, meaning: "one or more tasks (any version: the whole family goes)" }],
+    flags: [jsonFlag, dbFlag, { name: "reason", takesValue: true, meaning: "why, shown on the task page" }], notableReasons: ["unknown-task", "not-an-approver"] },
+  { ...operator("task restore", "bring put-away tasks back exactly as they were (a person's act)"),
+    positionals: [{ name: "id", required: true, meaning: "one or more put-away tasks" }], flags: [jsonFlag, dbFlag], notableReasons: ["unknown-task", "not-an-approver"] },
+  { ...operator("task tidy", "Put away old tasks: --preview lists what would go and why (read-only), --apply --digest <d> puts away exactly that list (a person's act)"),
+    flags: [jsonFlag, dbFlag, { name: "preview", takesValue: false, meaning: "show the list and the digest; changes nothing" },
+      { name: "apply", takesValue: false, meaning: "put away exactly the previewed list (needs --digest)" },
+      { name: "digest", takesValue: true, meaning: "the digest --preview printed" },
+      { name: "days", takesValue: true, meaning: "also finished tasks untouched this many days (1–365, default 14)" },
+      { name: "except", takesValue: true, meaning: "comma-separated tasks from the list to leave out" }],
+    notableReasons: ["usage", "not-an-approver", "empty"] },
   operator("run settle", "last resort for a finished run whose process witness can't be proven either way: records your --why in the ledger; refuses while any of the run's processes is alive"),
   operator("task resume", "resume the exact stopped attempt (--run <id>): refuses until it is quiescent, lifts only that stop's hold, approves nothing — the next pass re-proves the scope and inherits the draft with fresh proof"),
 
@@ -466,7 +478,9 @@ const REMOTE_NO: readonly string[] = [
   "memory propose",
 ];
 const REMOTE_STEP_UP: readonly string[] = [
-  "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle", "knowledge apply", "memory apply",
+  "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle",
+  // Putting tasks away and restoring them: a person's act, in the console or on the server's machine.
+  "task archive", "task restore", "task tidy", "knowledge apply", "memory apply",
   "flows card approve", "flows card send-back", "flows script approve", "flows unattended",
   "approver list", "approver add", "people list", "people invite", "people projects", "people revoke",
   // A person's own API tokens: a password step-up on the server's machine, or the console. Never with a token.

@@ -10,7 +10,7 @@ import { telegramProgressCard, type ProgressEntity } from "./telegram-progress.j
 import { assignmentStatusFacts, headlineEmoji, taskStatusOf, type Headline } from "./task-status.js";
 import { asksToFinish, batchLine, chatText, chatTitle, factLinkLabel, mentions, READY_ACTIONS, type FinishedFact } from "./chat-voice.js";
 import { phoneText, projectLabel, type PhoneTaskLink } from "./telegram-status.js";
-import { isLifecycleNotification, type ChatBatch, type Notification, type Run, type Store } from "./store.js";
+import { isLifecycleNotification, taskArchived, type ChatBatch, type Notification, type Run, type Store } from "./store.js";
 import { leadSubjectOf } from "./lead-voice.js";
 import { decideFallbackLink, decideTargetOf, type DecideTarget } from "./chat-decide.js";
 import { YOUIYOUX_CARD_KIND } from "./contracts/youiyoux-request.js";
@@ -206,7 +206,8 @@ export function eveningDigestText(store: Store, account: string, now: Date, root
   const visible = (row: Notification) => row.project !== null && store.accountCanAccess(account, row.project);
   const title = (taskId: string) => chatTitle(store, taskId);
   const finished = new Map<string, string>(), failed = new Map<string, string>(), waits = new Map<string, string>();
-  const facts = store.taskFactsSince(recent).filter(visible);
+  // A put-away task (v144) is out of the digest too: nothing about it waits, finished or failed for anyone now.
+  const facts = store.taskFactsSince(recent).filter(visible).filter(row => row.taskId === null || !taskArchived(store, row.taskId));
   for (const row of facts) {
     if (row.createdAt < since || row.taskId === null) continue;
     if (isLifecycleNotification(row) && row.kind === "run-finished") finished.set(row.taskId, title(row.taskId));

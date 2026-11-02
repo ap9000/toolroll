@@ -26,7 +26,7 @@ import { authenticateApprover, personProof } from "./scope.js";
 import { BRANCH_PREFIX, headWithin } from "./names.js";
 import type { VerifiedApprover } from "./principal.js";
 import type { Publication, Store } from "./store.js";
-import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, releaseTaskRef } from "./store.js";
+import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, refArchived, releaseTaskRef } from "./store.js";
 import { belongsToRelease } from "./release-authority.js";
 import { autoReleaseSealed } from "./release-auto.js";
 import { fullCheckGate, requestFollowUpChecks } from "./result-follow-ups.js";
@@ -304,6 +304,8 @@ export async function followPullRequests(
     if (follow === null || follow.flowCard !== null || follow.mergeCommit !== null || publication.prNumber === null) continue;
     const pr = publication.prNumber;
     const taskId = taskIdOf(store, publication);
+    // A put-away task (v144) gets no automatic revision, merge or ready notice: restoring it resumes following.
+    if (refArchived(store, publication.taskRef)) continue;
 
     if (one.remoteState === "MERGED") {
       updateFollow(store, publication.id, { merge_commit: one.mergeCommit ?? "", merged_by: "GitHub", merged_at: clock().toISOString() }, clock());
@@ -418,6 +420,7 @@ export async function mergePullRequest(
   // The nightly check of main (release-once.md, part 3) is a check only: it never merges.
   const mergedRun = store.getRun(input.runId);
   const mergedTask = mergedRun === null ? null : store.refById(mergedRun.taskRef)?.externalId ?? null;
+  if (mergedRun !== null && refArchived(store, mergedRun.taskRef)) return refuse("archived", "This task is put away. Restore it before merging.");
   if (mergedTask !== null && store.handle.prepare("SELECT 1 AS hit FROM nightly_check WHERE task = ?").get(mergedTask) !== undefined) return refuse("check-only", "The nightly check of main is only a check; it never merges.");
   // A release's task merges only through `toolroll release` (release-once.md), which proves the live release, reserves
   // the merge at its lease's epoch and checks the exact pull request: never here, by hand or automatically.

@@ -28,6 +28,8 @@ import { idleStorageSweep, sweepSchedule, sweepScheduleWords } from "./storage-s
 import { lastSweep, saveSweep, sweepDetails, sweepWords as storageSweepWords, type SweepPart, type SweepRecord } from "./storage-sweep.js";
 import { removeShared, sharedDepsRoot, sharedUse, unusedShared, type SharedUse } from "./shared-deps.js";
 import { cleanLandedBacklog, gitOf, landedBacklog, reconcileLanded, BACKLOG_DAYS, type LandedPlan, type LandedStep } from "./landed-cleanup.js";
+import { applyTidy, approverStandsNow, familyRepoOf, releaseFactsFor, runTidy, tidyDays, tidyDigest, tidyGroups, tidyPreview, TIDY_DEFAULT_DAYS, TIDY_PASS_LIMIT, type TidyItem } from "./tidy.js";
+import { personProof } from "./person-proof.js";
 import { RemoteMains } from "./remote-main.js";
 import { checkoutPlan, cleanCheckouts, discardCheckout, finishedCheckouts, slimKeptCheckouts, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
 import { closeOutCheckouts, closeOutRuns, stoppedWords } from "./run-closeout.js";
@@ -111,7 +113,7 @@ import { homedir, hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import {
-  openStore, openStoreNoMigrate, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
+  openStore, openStoreNoMigrate, archiveTaskFamily, restoreTaskFamily, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -422,7 +424,11 @@ export const OPERATE_HELP = `toolroll — operating the queue
                                         the lead passes it as --token, or TOOLROLL_LEAD_TOKEN, and its work pings nobody
   toolroll task ask <id> --person <name> --why "<text>"
                                         hand a task to a person: it pings them, and it is theirs
-  toolroll task list [--view <v>] [--limit <n>] [--cursor <c>]   paginated saved task status
+  toolroll task list [--view <v>] [--limit <n>] [--cursor <c>]   paginated saved task status (--view archived: put away)
+  toolroll task archive <id...> [--reason <why>]   put tasks away: out of every list, history kept (a person's act)
+  toolroll task restore <id...>      bring put-away tasks back exactly as they were
+  toolroll task tidy --preview [--days N]   what Put away old tasks would put away, and why (read-only)
+  toolroll task tidy --apply --digest <d> [--except <id,...>]   put away exactly that list
   toolroll task show <id>
   toolroll task wait <id> [--timeout <seconds>]
                                         wait for this attempt to finish or need a person
@@ -822,7 +828,7 @@ export const TASK_ACTIONS = [
   "add", "list", "show", "wait", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign",
   "reopen", "scope", "approve", "hold", "unhold", "require", "requeue", "regate", "plan",
   "review", "accept", "repair", "route", "stop", "resume", "complete", "revise", "merge", "ask",
-  "checks", "add-tests",
+  "checks", "add-tests", "archive", "restore", "tidy",
 ] as const;
 export const PUBLISH_ACTIONS = ["setup", "grant", "revoke", "status", "unblock", "rearm", "merge", "refire"] as const;
 export const CONFIG_ACTIONS = ["show", "set", "clear"] as const;
@@ -868,6 +874,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "starter",
   // flows: templates, steps, scripts and cards.
   "template", "steps", "about", "language", "timeout-minutes", "body", "description", "zone", "option",
+  // task tidy --apply: the previewed tasks to leave out.
+  "except",
   "token-env", "after", "repair-max-attempts", "consumer", "batch", "feedback", "source", "view", "cursor", "why", "supersedes", "decision", "sessions", "timeout",
   // pings follow responsibility: replacements.
   "replaced-by", "replaces",
@@ -918,6 +926,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "password-stdin",
   // task steer: pause the running Claude build, then send the note.
   "now",
+  // task tidy: look first (--preview), then put away exactly what was shown (--apply --digest).
+  "preview", "apply",
 ]);
 
 /** `project network` reads --remove <hosts> and --local any|none as values, where every other verb's --remove and
@@ -1811,6 +1821,7 @@ function claimCommand(
     if (result.reason === "coordinator-filed") return fail(write, json, "claim", "coordinator-filed", "a coordinator filed this — nothing runs until the operator signs its scope", EXIT.refused);
     if (result.reason === "sweep-limit") return fail(write, json, "claim", "sweep-limit", `its sweep already has ${result.limit} running at once — it starts when one finishes`, EXIT.refused, { sweep: result.sweep, limit: result.limit });
     if (result.reason === "watch-custody") return fail(write, json, "claim", "watch-custody", "This worker no longer holds the project; restart the watch", EXIT.refused);
+    if (result.reason === "archived") return fail(write, json, "claim", "archived", `${id} is put away — restore it with \`toolroll task restore ${id}\` first`, EXIT.refused);
     if (result.reason === "draining") return fail(write, json, "claim", "draining", `Toolroll is restarting (draining): ${runner} takes no new work until it is back (by ${result.until})`, EXIT.refused, { until: result.until });
     return fail(write, json, "claim", result.reason, `held by ${result.by} until ${result.until}`, EXIT.refused, { holder: result.by, until: result.until });
   }
@@ -3879,6 +3890,11 @@ async function reconcileCommand(
   try { landed = await reconcileLanded(store, worktrees, gitOf(context.gitRunner), remotes, repo, context.evidenceRoot, clock); } catch { /* the next pass tries again */ } finally { remotes.close(); }
   const landedGone = landed.steps.filter(one => one.outcome === "removed");
 
+  // Tidy (task-tidy.md): old routine runs a newer run replaces, release tasks already published or replaced, and CI
+  // notices main has fixed are put away, at most a bounded number a pass, each with its reason in the ledger.
+  let tidied: TidyItem[] = [];
+  try { tidied = runTidy(store, clock(), releaseFactsFor(context.databaseFile), TIDY_PASS_LIMIT, { principal: "operator", repos: [repo], includeUnplaced: false }); } catch { /* the next pass tries again */ }
+
   // Checkout cleanup (Settings → Storage): finished work's clean checkouts go as the setting says (by default when
   // the task is complete or cancelled); their branches stay. Each removal is in the ledger.
   // Completing or cancelling a task stops anything still running from its checkout first.
@@ -3918,6 +3934,7 @@ async function reconcileCommand(
     slimmed.slimmed.length === 0 &&
     landed.completed.length === 0 &&
     landedGone.length === 0 &&
+    tidied.length === 0 &&
     liveSwept.removed.length === 0;
 
   return succeed(
@@ -3934,6 +3951,7 @@ async function reconcileCommand(
       processesStopped: [...closedRuns.map(one => ({ run: one.runId, pids: one.done.stopped.map(row => row.pid) })), ...closedCheckouts.map(one => ({ checkout: one.path, pids: one.done.stopped.map(row => row.pid) }))],
       checkoutsSlimmed: slimmed.slimmed.map(one => one.path),
       landed: { completed: landed.completed, steps: landed.steps },
+      tidied: tidied.map(one => ({ id: one.taskId, rule: one.rule, reason: one.reason })),
       liveViewsSwept: liveSwept.removed.length,
       retention: retention === null ? null : { counts: retention.counts, freedBytes: retention.freed },
       storageSweep: storageSwept,
@@ -3953,6 +3971,7 @@ async function reconcileCommand(
             ...closedRuns.map(one => `Run #${one.runId} ended; stopped ${stoppedWords(one.done)}.`),
             ...closedCheckouts.map(one => `${one.path}: its task finished; stopped ${stoppedWords(one.done)}.`),
             ...(landed.completed.length === 0 ? [] : [`Marked ${landed.completed.length} landed result(s) complete: ${landed.completed.join(", ")}.`]),
+            ...(tidied.length === 0 ? [] : [`Put away ${tidied.length} old task(s): ${tidied.map(one => one.taskId).join(", ")}.`]),
             ...(landedGone.length === 0 ? [] : [`Removed landed work: ${landedGone.filter(one => one.kind === "checkout").length} checkout(s), ${landedGone.filter(one => one.kind === "branch").length} local branch(es).`]),
             ...(slimmed.slimmed.length === 0 ? [] : [`Dropped dependencies and build output from ${slimmed.slimmed.length} kept checkout(s), about ${bytesWords(slimmed.slimmed.reduce((sum, one) => sum + one.bytes, 0))}.`]),
             ...(liveSwept.removed.length === 0 ? [] : [`Cleared ${liveSwept.removed.length} finished live view(s).`]),
@@ -9094,6 +9113,12 @@ function taskAction(
       return addTestsTask(rest, flags, context);
     case "list":
       return listTasks(flags, context);
+    case "archive":
+      return archiveTasksCommand(rest, flags, context);
+    case "restore":
+      return restoreTasksCommand(rest, flags, context);
+    case "tidy":
+      return tidyTasksCommand(rest, flags, context);
     case "show":
       return showTask(rest, context);
     case "wait":
@@ -9539,9 +9564,9 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
   const rawLimit = text(flags, 'limit');
   const limit = rawLimit === undefined ? 40 : Number(rawLimit);
   if (wanted !== undefined && !STATES.includes(wanted as TaskState)) return fail(write, json, 'task list', 'usage', `--state takes one of ${STATES.join(', ')}`, EXIT.usage);
-  if (rawView !== undefined && !['all', 'needs-you', 'running', 'completed'].includes(rawView) ||
+  if (rawView !== undefined && !['all', 'needs-you', 'running', 'completed', 'archived'].includes(rawView) ||
       !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-    return fail(write, json, 'task list', 'usage', '--view takes all, needs-you, running or completed; --limit takes 1–100', EXIT.usage);
+    return fail(write, json, 'task list', 'usage', '--view takes all, needs-you, running, completed or archived; --limit takes 1–100', EXIT.usage);
   }
   // A remote person limited to some projects (remoteLensOf) pages and counts only theirs.
   const lens = context.principal?.lens ?? null;
@@ -9565,7 +9590,8 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
     }
     if (tasks.length === 0) write(wanted === undefined ? 'The task list is empty.' : `Nothing is ${wanted}.`);
     const width = Math.max(0, ...tasks.map(task => task.id.length));
-    for (const task of tasks) write(`  ${task.id.padEnd(width)}  ${task.status.label.padEnd(16)}  ${task.title}`);
+    for (const task of tasks) write(task.archived === undefined ? `  ${task.id.padEnd(width)}  ${task.status.label.padEnd(16)}  ${task.title}`
+      : `  ${task.id.padEnd(width)}  ${'Archived'.padEnd(16)}  ${task.title} — by ${task.archived.byKind === 'tidy' ? 'tidy' : task.archived.by}: ${task.archived.reason}`);
     if (page.nextCursor !== null) write(`Next page: --cursor ${page.nextCursor}`);
     return EXIT.ok;
   };
@@ -10737,6 +10763,7 @@ function describeApproveFailure(reason: string, id: string): string {
   if (reason === "person-required") return `${id} is protected work: a person has to approve it, not an operating mode, a schedule or a subagent`;
   // Approval policy, phase 1: the lead's token (or a remote API token) proves a credential, not a person.
   if (reason === "machine-proof") return "only a person can approve this — approve it on the task page or from your paired chat";
+  if (reason === "archived") return `${id} is put away — restore it with \`toolroll task restore ${id}\` first`;
   if (reason === "second-approver") return `your approval of ${id} is recorded; it is protected work, so a second person needs to approve it (toolroll task approve ${id} as them)`;
   if (reason === "no-approvers") {
     return "nobody can approve anything yet — `toolroll approver add <you>` mints the credential that lets a person say yes";
@@ -13190,4 +13217,133 @@ export function consoleIdentitiesInBackground(identities: ProjectIdentities, pat
 export function writeModelRow(store: Store, proved: { actor: string; generation: number; method: string }, scope: string, knownProject: (repo: string) => boolean, slot: Slot | null, to: ModelChange["to"], now: Date, extra: readonly ExtraWrite[] = []): ApplyResult {
   return applyModelChoices(store, { scope, change: slot === null ? [] : [{ slot, to }], expected: null, strict: false, knownProject, extra },
     { ...proved, live: () => true }, now);
+}
+
+/** Putting away and restoring are a person's acts (docs/plans/task-tidy.md): never the lead's token, never a remote
+ * API token, never a machine proof. Null when a person is acting. */
+function refuseMachineTidy(context: Context, command: string, method?: string): number | null {
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || (method !== undefined && !personProof(method))) {
+    return fail(context.write, context.json, command, "person-only", "Only a person puts tasks away or restores them. Use the console or your own login.", EXIT.refused);
+  }
+  return null;
+}
+
+/** `toolroll task archive <id...> [--reason <text>]`: put tasks away by hand (v144). Each keeps its history, results and
+ * approvals; nothing can run, claim or approve it until it is restored. Credentialed, a person's act. */
+async function archiveTasksCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const command = "task archive";
+  const ids = [...new Set(positional)];
+  if (ids.length === 0 || ids.length > 100) return fail(write, json, command, "usage", "`toolroll task archive <id...> [--reason <why>] --as <you> --token <t>` — 1 to 100 tasks", EXIT.usage);
+  const machine = refuseMachineTidy(context, command);
+  if (machine !== null) return machine;
+  const demo = refuseDemo(context, command);
+  if (demo !== null) return demo;
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, command, verified, "putting a task away takes `--as <you> --token <t>` — it is recorded against your name", ids[0]);
+  const personal = refuseMachineTidy(context, command, verified.method);
+  if (personal !== null) return personal;
+  const reason = text(flags, "reason") ?? "Put away by hand";
+  const archived: { id: string; versions: number }[] = [], refused: { id: string; reason: string; message: string }[] = [];
+  for (const id of ids) {
+    const ref = store.lookupRef(id);
+    if (ref === null || store.getTask(id) === null || !store.accountCanAccess(acting.name, ref.repo)) { refused.push({ id, reason: "unknown-task", message: `No task ${id}.` }); continue; }
+    const done = archiveTaskFamily(store, id, { by: acting.name, byKind: "person", rule: null, reason }, clock(), { guard: refs => approverStandsNow(store, acting.name, familyRepoOf(store, refs)) });
+    if (done.ok) archived.push({ id, versions: done.refs.length }); else refused.push({ id, reason: done.reason, message: done.message });
+  }
+  const lines = () => [
+    ...archived.map(one => `Put away ${one.id}${one.versions > 1 ? ` (${one.versions} versions)` : ""}.`),
+    ...refused.map(one => `Not put away: ${one.message}`),
+    ...(archived.length === 0 ? [] : [`Restore with \`toolroll task restore ${archived.map(one => one.id).join(" ")}\`.`]),
+  ];
+  if (refused.length === 0) return succeed(write, json, command, { archived, refused }, lines);
+  if (json) return fail(write, json, command, refused[0]!.reason, refused[0]!.message, EXIT.refused, { archived, refused });
+  write(lines().join("\n"));
+  return EXIT.refused;
+}
+
+/** `toolroll task restore <id...>`: bring put-away tasks back exactly as they were (v144). Credentialed, a person's act. */
+async function restoreTasksCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const command = "task restore";
+  const ids = [...new Set(positional)];
+  if (ids.length === 0 || ids.length > 100) return fail(write, json, command, "usage", "`toolroll task restore <id...> --as <you> --token <t>` — 1 to 100 tasks", EXIT.usage);
+  const machine = refuseMachineTidy(context, command);
+  if (machine !== null) return machine;
+  const demo = refuseDemo(context, command);
+  if (demo !== null) return demo;
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, command, verified, "restoring takes `--as <you> --token <t>` — it is recorded against your name", ids[0]);
+  const personal = refuseMachineTidy(context, command, verified.method);
+  if (personal !== null) return personal;
+  const restored: string[] = [], refused: { id: string; reason: string; message: string }[] = [];
+  for (const id of ids) {
+    const ref = store.lookupRef(id);
+    if (ref === null || store.getTask(id) === null || !store.accountCanAccess(acting.name, ref.repo)) { refused.push({ id, reason: "unknown-task", message: `No task ${id}.` }); continue; }
+    const done = restoreTaskFamily(store, id, acting.name, clock(), refs => approverStandsNow(store, acting.name, familyRepoOf(store, refs)));
+    if (done.ok) restored.push(id); else refused.push({ id, reason: done.reason, message: done.message });
+  }
+  const lines = () => [...restored.map(id => `Restored ${id}.`), ...refused.map(one => `Not restored: ${one.message}`)];
+  if (refused.length === 0) return succeed(write, json, command, { restored, refused }, lines);
+  if (json) return fail(write, json, command, refused[0]!.reason, refused[0]!.message, EXIT.refused, { restored, refused });
+  write(lines().join("\n"));
+  return EXIT.refused;
+}
+
+/** `toolroll task tidy --preview [--days N]` (read-only, no credential) and `toolroll task tidy --apply --digest <d>
+ * [--days N] [--except <id,...>]` (credentialed, a person's act): the console's Put away old tasks, word for word,
+ * with the same preview and digest. Apply puts away exactly what the preview with that digest showed. */
+async function tidyTasksCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const command = "task tidy";
+  const preview = flag(flags, "preview"), apply = flag(flags, "apply");
+  const days = tidyDays(text(flags, "days"));
+  const digest = text(flags, "digest");
+  const except = (text(flags, "except") ?? "").split(",").map(one => one.trim()).filter(one => one !== "");
+  const usage = "`toolroll task tidy --preview [--days N]`, then `toolroll task tidy --apply --digest <d> [--days N] [--except <id,...>]`";
+  if (positional.length > 0 || preview === apply || days === null || (preview && (digest !== undefined || except.length > 0)) || (apply && digest === undefined)) return fail(write, json, command, "usage", usage, EXIT.usage);
+  const daysArg = days === TIDY_DEFAULT_DAYS ? "" : ` --days ${days}`;
+  const releases = releaseFactsFor(context.databaseFile);
+  const lens = context.principal?.lens ?? null;
+  const access = { principal: "operator" as const, repos: lens, includeUnplaced: lens === null };
+  if (preview) {
+    const items = tidyPreview(store, clock(), { releases, days, access });
+    const shown = tidyDigest(items, days);
+    const groups = tidyGroups(items, days);
+    const next = `toolroll task tidy --apply --digest ${shown}${daysArg}`;
+    return succeed(write, json, command, { preview: true, days, digest: shown, count: items.length, groups, next: items.length === 0 ? null : next,
+      ...(releases.problem === null ? {} : { releasesSkipped: releases.problem }) }, () => items.length === 0
+      ? ["Nothing to put away."]
+      : [`Put away old tasks: ${items.length} task${items.length === 1 ? "" : "s"}.`,
+        ...groups.flatMap(group => ["", `${group.label} (${group.items.length})`, ...group.items.map(one => `  ${one.taskId}  ${one.reason}${one.members.length > 1 ? ` (${one.members.length} versions)` : ""}`)]),
+        ...(releases.problem === null ? [] : ["", `Release tasks were left out: ${releases.problem}.`]),
+        "", `To put these away, run: ${next}`, "Leave some out with --except <id,...>."]);
+  }
+  const machine = refuseMachineTidy(context, command);
+  if (machine !== null) return machine;
+  const demo = refuseDemo(context, command);
+  if (demo !== null) return demo;
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, command, verified, "putting tasks away takes `--as <you> --token <t>` — it is recorded against your name", undefined);
+  const personal = refuseMachineTidy(context, command, verified.method);
+  if (personal !== null) return personal;
+  // The person's own view of the lists: only projects they can see.
+  const mine = { principal: "operator" as const, repos: store.knownRepos().filter(repo => store.accountCanAccess(acting.name, repo)), includeUnplaced: store.accountCanAccess(acting.name, null) };
+  const shownItems = tidyPreview(store, clock(), { releases, days, access: mine });
+  const only = except.length === 0 ? null : shownItems.map(one => one.taskId).filter(id => !except.includes(id));
+  if (except.some(id => !shownItems.some(one => one.taskId === id))) return fail(write, json, command, "outside", "--except names a task that isn't in the list. Check it again with --preview.", EXIT.refused);
+  const done = applyTidy(store, clock(), { by: acting.name, days, digest: digest!, only, releases, access: mine });
+  if (!done.ok) {
+    const again = `toolroll task tidy --apply --digest ${done.digest}${daysArg}`;
+    return fail(write, json, command, done.reason, done.reason === "changed" ? `${done.message} Look again with \`toolroll task tidy --preview${daysArg}\`.` : done.message, EXIT.refused,
+      { digest: done.digest, count: done.items.length, ...(done.reason === "changed" ? { next: done.items.length === 0 ? null : again } : {}) });
+  }
+  return succeed(write, json, command, { archived: done.archived.map(one => ({ id: one.taskId, rule: one.rule, reason: one.reason })), skipped: done.skipped }, () => [
+    `Put away ${done.archived.length} task${done.archived.length === 1 ? "" : "s"}.`,
+    ...done.skipped.map(one => `Not put away: ${one.message}`),
+    "Find them with `toolroll task list --view archived`; bring one back with `toolroll task restore <id>`.",
+  ]);
 }

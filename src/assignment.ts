@@ -6,7 +6,7 @@ import { currentActor, withActor } from "./actor.js";
 import { replacedWords } from "./task-status.js";
 import { COMPLETER_ACTOR, COMPLETION_ACTION, COMPLETION_BY_MACHINE, COMPLETION_BY_PERSON, familyChangedFiles, landedReasonOf, personCompletionOwed } from "./result-completion.js";
 import { homedir } from "node:os";
-import { readSchemaVersion, stopFactOf, type Store, type ProofVerdictRow, type ProofAcceptanceRow, type Artifact } from "./store.js";
+import { readSchemaVersion, refArchived, stopFactOf, type Store, type ProofVerdictRow, type ProofAcceptanceRow, type Artifact } from "./store.js";
 import { approvalOf, liveReleaseOf, machineActing } from "./scope.js";
 import { openWorkDecisionOf, taskWorkSummaryOf, workDecisionAction, type WorkAction, type WorkSummaryAccess } from "./work-summary.js";
 import { evidenceRoot, readVerifiedArtifact, readVerifiedReport, verifyArtifact } from "./evidence.js";
@@ -211,14 +211,15 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
   const attention: string[] = family.problem === null ? [] : [family.problem];
   // Family admission above precedes question bodies. The newest result
   // does not settle an unanswered question on any earlier version.
-  const questions = [current, ...family.versions.filter(version => version.id !== current.id)].flatMap(version => {
+  // A put-away earlier version (v144) is history: its question and its queue place never hold the current one up.
+  const questions = [current, ...family.versions.filter(version => version.id !== current.id && !refArchived(store, version.refId))].flatMap(version => {
     const decision = openWorkDecisionOf(store, version.refId, now);
     return decision === null ? [] : [{ taskId: version.id, decision }];
   });
   // A finished task label cannot hide a lease or an unfinished process record.
   const busy = (version: typeof current): boolean => version.state === "running" || store.currentLiveLease(version.refId, now) !== null ||
     store.runsFor(version.refId).some(run => run.outcome === null || store.stopQuiescenceProblem(run.id) !== null);
-  const earlierActive = family.versions.filter(version => version.id !== current.id && (version.state === "queued" || busy(version)));
+  const earlierActive = family.versions.filter(version => version.id !== current.id && ((version.state === "queued" && !refArchived(store, version.refId)) || busy(version)));
   // Of those, how many have work under way (the rest only wait in the queue).
   const earlierRunning = earlierActive.filter(busy).length;
   const unfinished = store.runsFor(current.refId).find(run => run.outcome === null) ?? null;

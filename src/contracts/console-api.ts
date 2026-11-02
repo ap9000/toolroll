@@ -228,6 +228,9 @@ export const CONSOLE_FORMS = {
   revise: formContract("POST /r/<run>/revise", ["return", "batch", "source"]),
   followUp: formContract("POST /r/<run>/checks|add-tests", ["return", "level"]),
   resolveIncident: formContract("POST /i/<id>/resolve", ["return"]),
+  taskArchive: formContract("POST /t/<task>/archive", ["reason", "return"]),
+  taskRestore: formContract("POST /t/<task>/restore", ["return"]),
+  tasksPutAway: formContract("POST /work/put-away", ["digest", "days", "task", "password"]),
 
   // A task's verbs (/t/<task>/<verb>), one body each.
   taskSteer: formContract("POST /t/<task>/steer", ["note", "return", "run", "key", "after", "request"]),

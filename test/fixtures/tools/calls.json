@@ -76,6 +76,7 @@
     "search_project_memory": [{ "query": "release day" }, { "query": "footer", "repo": "r1" }],
     "get_models": [{}],
     "list_tasks": [{}, { "repo": "r1", "state": "running", "limit": 50 }, { "search": "footer link" }],
+    "tidy_preview": [{}, { "days": 30 }],
     "get_task": [{ "task": "t-42" }],
     "get_agents": [{ "task": "t-42" }],
     "list_decisions": [{}],
