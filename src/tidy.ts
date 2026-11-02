@@ -431,3 +431,10 @@ export function accessOf(store: Store, name: string): WorkSummaryAccess {
   return account.projects === null ? { principal: "operator", repos: null, includeUnplaced: true }
     : { principal: "operator", repos: [...account.projects], includeUnplaced: store.accountCanAccess(name, null) };
 }
+
+/** Narrows `access` to the caller's own lens (a remote person's project limit): never wider. No lens: unchanged. */
+export function withinLens(access: WorkSummaryAccess, lens: readonly string[] | null): WorkSummaryAccess {
+  if (lens === null || access.principal !== "operator") return access;
+  const repos = access.repos === null ? [...lens] : access.repos.filter(repo => lens.includes(repo));
+  return { ...access, repos, includeUnplaced: false };
+}

@@ -28,7 +28,7 @@ import { idleStorageSweep, sweepSchedule, sweepScheduleWords } from "./storage-s
 import { lastSweep, saveSweep, sweepDetails, sweepWords as storageSweepWords, type SweepPart, type SweepRecord } from "./storage-sweep.js";
 import { removeShared, sharedDepsRoot, sharedUse, unusedShared, type SharedUse } from "./shared-deps.js";
 import { cleanLandedBacklog, gitOf, landedBacklog, reconcileLanded, BACKLOG_DAYS, type LandedPlan, type LandedStep } from "./landed-cleanup.js";
-import { accessOf, applyTidy, approverStandsNow, familyRepoOf, releaseFactsFor, runTidy, tidyDays, tidyDigest, tidyGroups, tidyPreview, TIDY_DEFAULT_DAYS, TIDY_PASS_LIMIT, type TidyItem } from "./tidy.js";
+import { accessOf, applyTidy, approverStandsNow, withinLens, familyRepoOf, releaseFactsFor, runTidy, tidyDays, tidyDigest, tidyGroups, tidyPreview, TIDY_DEFAULT_DAYS, TIDY_PASS_LIMIT, type TidyItem } from "./tidy.js";
 import { personProof } from "./person-proof.js";
 import { RemoteMains } from "./remote-main.js";
 import { checkoutPlan, cleanCheckouts, discardCheckout, finishedCheckouts, slimKeptCheckouts, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
@@ -13312,8 +13312,10 @@ async function tidyTasksCommand(positional: readonly string[], flags: Map<string
   // the apply reads the same person's projects, so an unchanged list keeps its digest.
   const previewAs = text(flags, "as");
   const daysArg = `${days === TIDY_DEFAULT_DAYS ? "" : ` --days ${days}`}${previewAs === undefined ? "" : ` --as ${previewAs}`}`;
+  // `--as` only ever narrows: the named person's projects within the caller's own lens, never beyond it.
   const lens = context.principal?.lens ?? null;
-  const access = previewAs !== undefined ? accessOf(store, previewAs) : { principal: "operator" as const, repos: lens, includeUnplaced: lens === null };
+  const own = { principal: "operator" as const, repos: lens, includeUnplaced: lens === null };
+  const access = previewAs !== undefined ? withinLens(accessOf(store, previewAs), lens) : own;
   if (preview) {
     const items = tidyPreview(store, clock(), { releases, days, access });
     const shown = tidyDigest(items, days);
@@ -13336,8 +13338,9 @@ async function tidyTasksCommand(positional: readonly string[], flags: Map<string
   if (acting === null || !verified?.ok) return refuseApprover(context, command, verified, "putting tasks away takes `--as <you> --token <t>` — it is recorded against your name", undefined);
   const personal = refuseMachineTidy(context, command, verified.method);
   if (personal !== null) return personal;
-  // The person's own view of the lists: only projects they can see (the same scope `--preview --as` read).
-  const mine = accessOf(store, acting.name);
+  // The person's own view of the lists, from the verified credential (never a flag), within the caller's lens: the
+  // same scope `--preview --as <them>` read.
+  const mine = withinLens(accessOf(store, acting.name), lens);
   const shownItems = tidyPreview(store, clock(), { releases, days, access: mine });
   const only = except.length === 0 ? null : shownItems.map(one => one.taskId).filter(id => !except.includes(id));
   if (except.some(id => !shownItems.some(one => one.taskId === id))) return fail(write, json, command, "outside", "--except names a task that isn't in the list. Check it again with --preview.", EXIT.refused);

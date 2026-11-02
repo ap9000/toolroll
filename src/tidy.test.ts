@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { openStore, archiveOf, archiveTaskFamily, restoreTaskFamily, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { withActor } from "./actor.js";
-import { applyTidy, readReleaseFacts, recordBranchCheckRun, runTidy, tidyDigest, tidyPreview, type ReleaseFacts } from "./tidy.js";
+import { accessOf, applyTidy, readReleaseFacts, recordBranchCheckRun, runTidy, tidyDigest, tidyPreview, withinLens, type ReleaseFacts } from "./tidy.js";
 import { fire, personTask, releaseTaskId, seedFlow, writeJournal, REPO } from "../test/tidy-fixture.js";
 
 const NOW = new Date("2026-11-01T18:00:00.000Z");
@@ -288,5 +288,27 @@ describe("tidy on its own", () => {
     fire(store, flow, { key: "slot:2026-10-30T16:00:00.000Z", task: "here-new", at: day(30) });
     expect(runTidy(store, NOW, NONE, 25, { principal: "operator", repos: ["/repo/elsewhere"], includeUnplaced: false })).toEqual([]);
     expect(runTidy(store, NOW, NONE, 25, { principal: "operator", repos: [REPO], includeUnplaced: false }).map(one => one.taskId)).toEqual(["here"]);
+  });
+});
+
+describe("whose lists a preview reads", () => {
+  test("--as only narrows: a wider account seen through a caller's lens is never wider than the lens", () => {
+    addApprover(store, "alex", NOW);
+    const wide = accessOf(store, "alex");
+    expect(wide).toEqual({ principal: "operator", repos: null, includeUnplaced: true });
+    expect(withinLens(wide, ["/repo/a"])).toEqual({ principal: "operator", repos: ["/repo/a"], includeUnplaced: false });
+    expect(withinLens({ principal: "operator", repos: ["/repo/a", "/repo/b"], includeUnplaced: true }, ["/repo/b"])).toMatchObject({ repos: ["/repo/b"], includeUnplaced: false });
+    expect(withinLens(wide, null)).toBe(wide);
+    expect(accessOf(store, "nobody")).toEqual({ principal: "operator", repos: [], includeUnplaced: false });
+  });
+
+  test("a scoped caller previewing as a wider account sees only its own project's tasks", () => {
+    const here = siteCheck();
+    for (const d of [29, 30]) fire(store, here, { key: `slot:2026-10-${d}T16:00:00.000Z`, task: `site-${d}`, at: day(d) });
+    const there = seedFlow(store, "Other", { kind: "schedule", schedule: "daily:09:00@UTC", title: "Other", description: null, zone: null }, day(1), "/repo/other");
+    for (const d of [29, 30]) fire(store, there, { key: `slot:2026-10-${d}T16:00:00.000Z`, task: `other-${d}`, at: day(d), repo: "/repo/other" });
+    addApprover(store, "alex", NOW);
+    expect(ids(tidyPreview(store, NOW, { releases: NONE, days: null, access: accessOf(store, "alex") }))).toEqual(["other-29", "site-29"]);
+    expect(ids(tidyPreview(store, NOW, { releases: NONE, days: null, access: withinLens(accessOf(store, "alex"), [REPO]) }))).toEqual(["site-29"]);
   });
 });
