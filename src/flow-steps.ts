@@ -37,6 +37,7 @@ import { claudeDraftRunner, DRAFT_CHARS, DRAFT_TIMEOUT, draftPrompt, wholeDraft,
 import { overruns, passOn, TEXT_LIMITS, writeWithin } from "./text-limits.js";
 import { readFlowSecrets, sendingReady, runRequest, sendEmail, toolWaiting, useTool, type MailSender, type ToolCaller } from "./flow-actions.js";
 import { cleanFolder, flowLaunch, runCode } from "./flow-code.js";
+import { browserStanding } from "./flow-browser.js";
 import { readProviderKey } from "./keys.js";
 import type { FlowCardRow, FlowRow, FlowScriptRow, FlowStepKind, Store } from "./store.js";
 import { replyInChannel } from "./chat-inbox.js";
@@ -172,6 +173,13 @@ export async function runFlowSteps(store: Store, repo: string, now: Date, io: St
     if (missing.length > 0) {
       const waiting = `${stage.script} needs the secret${missing.length === 1 ? "" : "s"} ${missing.join(", ")}. Save ${missing.length === 1 ? "it" : "them"} on the zone.`;
       if (card.waiting !== waiting) store.updateFlowCard(card.id, { waiting }, now);
+      continue;
+    }
+    // A script that starts a browser waits, saying so, until a person approves browser use for the flow (flow-browser.ts),
+    // rather than run and crash inside the sandbox; it runs on its own once approved.
+    const browser = stage.kind === "check" && stage.browser === true ? (script === null || known.definition === null ? { allowed: false as const, said: "This zone's script can't be read." } : browserStanding(store, known.flow.id, stage.id, { definition: known.definition, script })) : null;
+    if (browser !== null && !browser.allowed) {
+      if (card.waiting !== browser.said) store.updateFlowCard(card.id, { waiting: browser.said }, now);
       continue;
     }
     if (!claimStep(store, card, { stage: stage.id, kind: stage.kind as FlowStepKind, script: script?.name ?? null, scriptVersion: script?.version ?? null }, now)) continue;
@@ -373,15 +381,29 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
     const added = await io.git("git", ["-C", flow.repo, "worktree", "add", "--detach", path, commit ?? io.base], { timeoutMs: 120_000 });
     if (added.code !== 0) return { state: "retry", said: `Couldn't make a copy of${where}: ${added.stderr.trim().split("\n")[0]?.slice(0, 160) ?? "git refused"}.` };
   }
-  const launch = flowLaunch(store, { repo: flow.repo, folder: path, scratch: io.scratch, copy, policy: store.flowFencePolicy(flow.id), ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }), ...(io.home === undefined ? {} : { home: io.home }) });
+  // Browser use, proved at the moment of launch: a zone that says it starts a browser runs only with a person's standing
+  // approval (flow-browser.ts); then its script, and only its script, gets Chromium's one service.
+  const wantsBrowser = stage.browser === true;
+  // Read once: the drawing and the script this launch runs are the very objects the browser decision is about.
+  const running = flowDefinitionOf(flow);
+  const standing = !wantsBrowser ? null : running === null || running.stages.find(one => one.id === stage.id) === undefined || JSON.stringify(running.stages.find(one => one.id === stage.id)) !== JSON.stringify(stage)
+    ? { allowed: false as const, said: "This zone changed while it was starting, so it didn't run." } : browserStanding(store, flow.id, stage.id, { definition: running, script });
+  if (standing !== null && !standing.allowed) {
+    if (copy) await io.git("git", ["-C", flow.repo, "worktree", "remove", "--force", path], { timeoutMs: 60_000 }).catch(() => undefined);
+    rmSync(path, { recursive: true, force: true });
+    return { state: "failed", said: standing.said };
+  }
+  const launch = flowLaunch(store, { repo: flow.repo, folder: path, scratch: io.scratch, copy, policy: store.flowFencePolicy(flow.id), ...(standing?.allowed === true ? { browser: true as const } : {}), ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }), ...(io.home === undefined ? {} : { home: io.home }) });
   try {
     if (launch !== null && "problem" in launch) return { state: "failed", said: launch.problem };
+    // The project's setup never gets the browser rule: only the zone's script asked for it.
+    const setupFence = launch?.fence === undefined ? undefined : { ...launch.fence, fenceGrants: withoutBrowser(launch.fence.fenceGrants) };
     let log = "";
     const setup = copy ? store.liveWorktreeSetup(flow.repo) : null;
     if (setup !== null) {
       const shell = approvedCommandShell(setup.command);
       const prepared = await io.shell(shell.file, shell.args, { cwd: path, timeoutMs: setup.timeoutMs, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST, processGroup: true,
-        ...(launch === null ? {} : { env: launch.env, ...(launch.fence ?? {}) }) });
+        ...(launch === null ? {} : { env: launch.env, ...(setupFence ?? {}) }) });
       log += `$ ${setup.command}\n${prepared.stdout}${prepared.stderr}\n`;
       if (prepared.code !== 0) return { state: "failed", said: `The project's setup failed before ${script.name} ran (exit ${prepared.code}).\n${tail(`${prepared.stdout}\n${prepared.stderr}`)}`, log, exitCode: prepared.code };
     }
@@ -395,7 +417,14 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
       answers: (stage.routes ?? []).map(one => one.answer),
     };
     const env = { FLOW_NAME: flow.name, FLOW_CARD_ID: String(card.id), FLOW_CARD_TITLE: card.title, FLOW_COMMIT: commit ?? "", FLOW_SCRIPT: script.name, FLOW_PROJECT: flow.repo };
-    const ran = await runCode({ script, cwd: path, root: copy ? path : flow.repo, input, env, secrets, scratch: io.scratch, shell: io.shell, launch });
+    // Checked again right before the script: the flow or its script may have changed while the setup ran.
+    if (wantsBrowser) {
+      const still = running === null ? { allowed: false as const, said: "This flow's drawing can't be read." } : browserStanding(store, flow.id, stage.id, { definition: running, script });
+      if (!still.allowed) return { state: "failed", said: still.said, log };
+    }
+    // And at every spawn attempt (a retry after a failed spawn too): revoked or changed meanwhile, nothing starts.
+    const stillApproved = !wantsBrowser || running === null ? undefined : () => browserStanding(store, flow.id, stage.id, { definition: running, script }).allowed;
+    const ran = await runCode({ script, cwd: path, root: copy ? path : flow.repo, input, env, secrets, scratch: io.scratch, shell: io.shell, launch, ...(stillApproved === undefined ? {} : { beforeSpawn: stillApproved }) });
     log += ran.log;
     const output = ran.output === "" ? undefined : ran.output;
     // Where it ran goes at the end of the first line: "run-tests failed (exit 1) on main."
@@ -410,6 +439,12 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
     if (copy) await io.git("git", ["-C", flow.repo, "worktree", "remove", "--force", path], { timeoutMs: 60_000 }).catch(() => undefined);
     rmSync(path, { recursive: true, force: true });
   }
+}
+
+/** A fence's grants without Chromium's service (a flow's setup, beside a script zone that has it). */
+function withoutBrowser<T extends { browser?: true }>(grants: T): T {
+  const { browser: _scriptOnly, ...rest } = grants;
+  return rest as T;
 }
 
 /** An update: a comment on the issue the card came from, and closing it if the zone says so. */

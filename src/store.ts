@@ -108,6 +108,7 @@ import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installL
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
 import { CONSOLE_INSTANCE_SCHEMA } from "./console-instance.js";
 import { endUnattendedGrants, FLOW_UNATTENDED_SCHEMA, grantStandsSql } from "./flow-unattended.js";
+import { FLOW_BROWSER_SCHEMA } from "./flow-browser.js";
 import { RECIPE_SCHEMA } from "./recipes.js";
 import type { LimitReading, LimitWindow } from "./provider-limits.js";
 import { POLICY_SCHEMA, agentRefusal, approvalRefusal, policyParts, readPolicy, underCeiling, sessionCeilingRefusal, type OrgPolicy, type SavedPolicy } from "./policy.js";
@@ -1148,7 +1149,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // project's intake choice and last answer, and each request taken, with the task it became.
 // v143 adds, and changes no saved row: optional exact-screenshot context on result feedback
 // (diff_comment.image_json, V143_ADDED_COLUMNS; saved notes read NULL and keep their file/line target).
-export const SCHEMA_VERSION = 143;
+// v144 adds, and changes no saved row: a person's approval of browser use in a flow's script zones (flow_browser_grant;
+// flow-browser.ts), the one sandbox rule a project check gets for Chromium; saved flows have none and get nothing.
+export const SCHEMA_VERSION = 144;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1286,7 +1289,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -5725,6 +5728,8 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   for (const [table, columns] of Object.entries(V143_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
+  // v144: approvals of browser use in flows' script zones (a new table only).
+  db.exec(FLOW_BROWSER_SCHEMA);
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");

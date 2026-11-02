@@ -1972,6 +1972,58 @@ $ contract --commands --json → 0
       "remote": "step-up"
     },
     {
+      "invocation": "flows browser",
+      "synopsis": "let a flow's script zones marked browser: true start Chromium in their sandbox (on: a person approves with their own password, previews until --yes; off: any approver revokes)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        },
+        {
+          "name": "yes",
+          "takesValue": false,
+          "meaning": "make the previewed change"
+        },
+        {
+          "name": "digest",
+          "takesValue": true,
+          "meaning": "required with --yes: the approval digest the preview showed; refuses if the flow or its scripts changed since"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        },
+        {
+          "name": "on|off",
+          "required": true,
+          "meaning": "on signs the grant, off revokes it"
+        }
+      ],
+      "remote": "no"
+    },
+    {
       "invocation": "flows archive",
       "synopsis": "archive a flow: its cards stop moving and its triggers stop; previews until --yes",
       "audience": "agent",

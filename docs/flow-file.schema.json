@@ -483,6 +483,9 @@
                   "pattern": "^[A-Z][A-Z0-9_]{0,39}$"
                 }
               },
+              "browser": {
+                "type": "boolean"
+              },
               "next": {
                 "type": "string",
                 "maxLength": 60

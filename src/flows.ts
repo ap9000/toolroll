@@ -231,7 +231,9 @@ function canonicalStage(input: unknown, index: number): unknown {
     close: kind === "update" ? stage["close"] !== false : null,
     script: kind === "check" ? said(stage["script"]) : null,
     // Left out, a script runs where every script ran before v90: in a copy of the card's work.
-    ...(kind === "check" ? { ...(runIn === undefined ? {} : { runIn }), ...(routes === undefined ? {} : { routes }), ...(secrets === undefined ? {} : { secrets }) } : {}),
+    ...(kind === "check" ? { ...(runIn === undefined ? {} : { runIn }), ...(routes === undefined ? {} : { routes }), ...(secrets === undefined ? {} : { secrets }),
+      // v144: a script that starts a browser says so; false or none is a script that doesn't (and keeps its digest).
+      ...(!given(stage["browser"]) || stage["browser"] === false ? {} : { browser: stage["browser"] }) } : {}),
     sort: kind === "sort" ? canonicalSort(stage["sort"]) : null,
     ...(kind === "request" ? { request: { method, url: said(request["url"]), headers: Object.fromEntries(Object.entries(isRecord(request["headers"]) ? request["headers"] : {}).flatMap(([name, value]) => { const one = said(value); return one === null ? [] : [[name, one]]; })), body: method === "GET" || method === "DELETE" ? null : said(request["body"]) } } : {}),
     ...(kind === "email" ? { email: { to: said(email["to"]), subject: said(email["subject"]), body: said(email["body"]) } } : {}),
@@ -695,6 +697,7 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
         ...(step.runIn !== undefined ? { runIn: step.runIn } : old?.runIn === undefined ? {} : { runIn: old.runIn }),
         ...(step.routes !== undefined ? routesOf(step.routes) : old?.routes === undefined ? {} : { routes: old.routes }),
         ...(step.secrets !== undefined ? step.secrets.length === 0 ? {} : { secrets: step.secrets } : old?.secrets === undefined ? {} : { secrets: old.secrets }),
+        ...((step.browser ?? old?.browser) === true ? { browser: true as const } : {}),
       } : {}),
       sort: kind === "sort" ? sortFromStep(step, old?.sort ?? null, find) : null,
       ...(kind === "request" ? { request: { method: step.method ?? old?.request?.method ?? "POST", url: step.url ?? old?.request?.url ?? "", headers: step.headers ?? old?.request?.headers ?? {}, body: step.body ?? old?.request?.body ?? null } } : {}),
@@ -859,7 +862,7 @@ export function flowTerms(definition: FlowDefinition, previous: FlowDefinition |
         `Checks pass → ${stage.merge === undefined ? to(stage.next) : `merges it (${stage.merge}) and deletes its branch, only when a person approved it${approval === undefined ? "" : ` at ${approval.title}`} since it was built. Then → ${to(stage.next)}`}`,
         `Checks fail → ${stage.onFail === null ? "waits there, naming the failing check." : `${to(stage.onFail)} The failing check is named on the card.`}`);
     }
-    else if (stage.kind === "check") lines.push(`Runs the project's script “${stage.script}” with no AI.`, `Passes → ${to(stage.next)}${stage.onFail === null ? " Fails → waits there." : ` Fails → ${to(stage.onFail)}`}`);
+    else if (stage.kind === "check") lines.push(`Runs the project's script “${stage.script}” with no AI.`, ...(stage.browser === true ? ["Starts a browser (Playwright's Chromium): it runs only once a person approves browser use for this flow."] : []), `Passes → ${to(stage.next)}${stage.onFail === null ? " Fails → waits there." : ` Fails → ${to(stage.onFail)}`}`);
     else if (stage.kind === "wait" && stage.wait !== undefined) lines.push(stage.wait.for === "hours" ? `Waits until it's between ${stage.wait.from} and ${stage.wait.to}${stage.wait.timeZone === undefined ? "" : ` (${stage.wait.timeZone})`}; cards that arrive then go straight on. Then → ${to(stage.next)}`
       : stage.wait.for === "time" ? `Waits ${durationWords(stage.wait.minutes)}. Then → ${to(stage.next)}`
       : `Waits up to ${durationWords(stage.wait.minutes)} for a reply to the card's email, from someone it was sent to. Reply → ${to(stage.next)} No reply → ${stage.onFail === null ? "stays there for a person." : to(stage.onFail)}`);
