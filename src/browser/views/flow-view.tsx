@@ -1313,12 +1313,17 @@ function BrowserPanel({ view, csrf, apply, onClose }: { view: BrowserFlowView; c
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const browser = view.browser;
+  // The terms the person is reading are frozen when the panel opens: a live update never swaps what the password
+  // approves. When the flow's terms move on, the panel says so and the person reads the new ones before approving.
+  const [browser, setShown] = useState(view.browser);
+  const moved = browser != null && view.browser != null && view.browser.digest !== browser.digest && view.browser.status !== "allowed";
   return <div className="flex flex-col gap-3" data-flow-browser-panel>
     {onClose !== undefined && <div className="flex items-center gap-2"><h2 className="flex-1 text-title">Allow browser</h2>
       <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>}
     {browser == null ? <p className="text-body text-muted-foreground">No zone in this flow starts a browser.</p>
-      : browser.status === "allowed" ? <p className="text-body" data-flow-browser-panel-allowed>{browser.words}.</p>
+      : view.browser?.status === "allowed" ? <p className="text-body" data-flow-browser-panel-allowed>{view.browser.words}.</p>
+      : moved ? <div className="flex flex-col gap-2" data-flow-browser-moved><p className="text-body">This flow or its scripts changed while you were reading.</p>
+          <Button size="sm" variant="outline" className="self-start phone:min-h-11" onClick={() => { setShown(view.browser); setPassword(""); setProblem(null); }}>Read the new terms</Button></div>
       : !view.canEdit ? <p className="text-body text-muted-foreground">Only an approver on this project can allow browser use.</p>
       : browser.problem !== null || browser.digest === null ? <p className="text-body text-muted-foreground" data-flow-browser-problem>{browser.problem}</p>
       : <form className="flex flex-col gap-3" onSubmit={async event => {

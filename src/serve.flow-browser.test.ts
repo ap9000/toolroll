@@ -16,6 +16,7 @@ import { createDecisionServer } from "./serve.js";
 import { flowFromSteps } from "./flows.js";
 import { saveScript } from "./flow-scripts.js";
 import { T0, workspaceOf } from "../test/serve-kit.js";
+import { flowFingerprint } from "./flow-live.js";
 
 let REPO: string;
 let store: Store, server: Server, base: string, home: string, token: string, flow: number, card: number;
@@ -79,7 +80,10 @@ test("the page says each status; allowing takes the step-up and the digest shown
   expect((await post(cookie, `/flows/${flow}/browser`, { digest, password: token })).status).toBe(403);
   expect(grants()).toBe(0);
 
+  const before_ = flowFingerprint(store, flow);
   const allowed = await post(cookie, `/flows/${flow}/browser`, { csrf, digest, password: token });
+  // Open pages are nudged: the approval is part of what the live stream watches.
+  expect(flowFingerprint(store, flow)).not.toBe(before_);
   expect(allowed).toMatchObject({ status: 200, body: { ok: true, view: { browser: { status: "allowed", words: "Browser: allowed by alex, Aug 11" } } } });
   expect(store.handle.prepare("SELECT signed_by, proof, digest FROM flow_browser_grant WHERE revoked_at IS NULL").get()).toEqual({ signed_by: "alex", proof: "password-now", digest });
   expect(await (await fetch(`${base}/flows/${flow}`, { headers: { cookie } })).text()).toContain("Browser: allowed by alex, Aug 11");
@@ -88,7 +92,9 @@ test("the page says each status; allowing takes the step-up and the digest shown
   save("node journeys.mjs --all");
   expect((await view(cookie)).browser).toMatchObject({ status: "ended", words: "Browser approval ended: the script changed" });
 
+  const ended = flowFingerprint(store, flow);
   const off = await post(cookie, `/flows/${flow}/browser-off`, { csrf });
+  expect(flowFingerprint(store, flow)).not.toBe(ended);
   expect(off).toMatchObject({ status: 200, body: { ok: true, view: { browser: { status: "none" } } } });
   expect(grants()).toBe(0);
   expect(await post(cookie, `/flows/${flow}/browser-off`, { csrf })).toMatchObject({ status: 409, body: { ok: false } });

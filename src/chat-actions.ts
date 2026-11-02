@@ -712,6 +712,8 @@ export function prepareSharedAction(
       const { flow } = flowTarget!;
       const view = browserViewOf(store, flow);
       if (view === null) throw Error(`No zone in ${flow.name} says it starts a browser. Mark its script zone first (edit the flow), then propose this.`);
+      // As on the flow page (route table: instance access), a project-limited account can't allow browser use.
+      if (operation === "flow_browser" && store.accountOf(who.name)?.projects !== null) throw Error("Allowing browser use needs an account with access to every project.");
       if (operation === "flow_browser_off") {
         if (liveBrowserGrant(store, flow.id) === null) throw Error(`Browser use isn't allowed for ${flow.name}.`);
         state = { flow: flow.id, grant: liveBrowserGrant(store, flow.id)!.id };
@@ -1291,6 +1293,8 @@ export function executeSharedAction(
         // Only through the secure screen with the person's own password (protected + password above); signFlowBrowser
         // re-reads the flow, its zones and scripts in this transaction and refuses unless they are what the card showed.
         const flow = Number(payload.state["flow"]);
+        // Re-read in this transaction: the account's reach may have narrowed since the card was drafted.
+        if (store.accountOf(actor)?.projects !== null) throw Error("Allowing browser use needs an account with access to every project.");
         const signed = signFlowBrowser(store, { flow, signer: actor, proof: personProved, sawDigest: String(payload.state["digest"] ?? "") }, now);
         if (!signed.ok) throw Error(signed.message);
         return { ok: true as const, taskId: null, said: "Browser allowed. Its browser zones can start Chromium now.", href: `/flows/${flow}` };

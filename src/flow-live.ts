@@ -16,6 +16,7 @@
  * can't keep one open falls back to reading every few seconds. With nothing
  * written, an open flow costs no reads; a 30-second check heals a miss.
  */
+import { browserViewOf } from "./flow-browser.js";
 import { createHash } from "node:crypto";
 import { createLiveRooms, type LiveRoomOptions, type LiveRooms, type LiveViewer } from "./live-bus.js";
 import type { Statement, Store } from "./store.js";
@@ -97,7 +98,13 @@ export function flowFingerprint(store: Store, flow: number, now = new Date()): s
   // including a build in another project. The page read admits the viewer;
   // this stream only carries a hash. No evidence files or logs are read.
   const row = fingerprintStatement(store).get({ $flow: flow, $now: now.toISOString() });
-  return row === undefined ? null : createHash("sha256").update(Object.values(row).map(String).join("|")).digest("hex").slice(0, 16);
+  if (row === undefined) return null;
+  // Browser use (flow-browser.ts): an approval, a revocation, a changed covered script or a signer who lost standing
+  // changes what the page says, so it is part of what open pages are nudged on.
+  const saved = store.getFlow(flow);
+  const browser = saved === null ? null : browserViewOf(store, saved);
+  const browserKey = browser === null ? "" : `${browser.status}:${browser.digest ?? ""}:${browser.signedAt ?? ""}:${browser.problem === null ? "" : "x"}`;
+  return createHash("sha256").update([...Object.values(row).map(String), browserKey].join("|")).digest("hex").slice(0, 16);
 }
 
 export type FlowRooms = LiveRooms<number, FlowViewer>;

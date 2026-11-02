@@ -339,4 +339,21 @@ describe("the lead builds and runs a flow", () => {
     expect(confirm(off)).toMatchObject({ ok: true });
     expect(live()).toEqual([]);
   });
+
+  test("browser use: a project-limited account can't allow it from chat, as on the flow page", () => {
+    const saved = saveScript(store, repo, { name: "journeys", about: "Runs the journeys", body: "node journeys.mjs", timeoutMinutes: 2 }, "operator", now);
+    if (!saved.ok) throw Error(saved.message);
+    const flow = store.createFlow({ repo, name: "Nightly", by: "operator", definitionJson: JSON.stringify(flowFromSteps([{ id: "run", title: "Run journeys", kind: "check", script: "journeys", browser: true }], null)) }, now);
+    // An approver limited to this one project, with their own lead conversation.
+    const lim = addApprover(store, "lim", now, { name: "operator", token: password });
+    if (!lim.ok) throw Error("lim");
+    expect(store.setAccountProjects("lim", [repo], "operator", now)).toEqual({ ok: true });
+    const verified = verifyApproverStanding(store, "lim", store.accountOf("lim")!.generation, [repo]);
+    if (!verified.ok) throw Error("identity");
+    who = verified.who;
+    session = store.mintLeadSession({ approver: who.name, approverGeneration: who.generation, credentialKey: "flows", ceilingMicrousd: 10_000_000, ceilingDigest: who.ceilingDigest, termsDigest: "fixture" }, now);
+    thread = store.openLeadThread(who.name, who.ceilingDigest, now).thread.id;
+    expect(lead("propose_flow", { operation: "allow_browser", flow })).toMatchObject({ ok: false, message: expect.stringContaining("access to every project") });
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM flow_browser_grant").get()!["n"]).toBe(0);
+  });
 });
