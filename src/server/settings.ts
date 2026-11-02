@@ -91,7 +91,7 @@ import { monitoringChange,readMonitoring,saveMonitoring } from "../monitoring-se
 import { monitoringHtml,signingSecretHtml } from "../monitoring-ui.js";
 import { openRouterPickerScript } from "../openrouter-models.js";
 import { policyHtml } from "../policy-ui.js";
-import { checkPolicy,parseList,policyParts } from "../policy.js";
+import { checkPolicy,chosenProviders,parseList,policyParts } from "../policy.js";
 import { parseProjectConcurrency,saveProjectConcurrency } from "../project-concurrency.js";
 import { MAX_NETWORK_HOSTS, normalizeHost } from "../egress.js";
 import { isWritesMode } from "../writes-mode.js";
@@ -908,7 +908,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const back = sayTo(response, "/settings/policy");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "That password didn't match. Nothing changed.");
     const chosen = body.getAll("provider");
-    const checked = checkPolicy({ providers: chosen.length === 4 ? null : chosen, models: parseList(body.get("models")), tools: parseList(body.get("tools")), ceiling: body.get("ceiling") ?? "" });
+    const checked = checkPolicy({ providers: chosenProviders(chosen), models: parseList(body.get("models")), tools: parseList(body.get("tools")), ceiling: body.get("ceiling") ?? "" });
     if (!checked.ok) return back("problem", `${checked.problem} Nothing changed.`);
     const before = policyParts(store.orgPolicy());
     const after = policyParts(store.setOrgPolicy(checked.policy, who.name, now));

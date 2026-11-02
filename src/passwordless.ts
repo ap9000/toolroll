@@ -32,4 +32,4 @@ export function setPasswordless(store: Store, on: boolean, by: string, now: Date
   return { changed: true };
 }
 
-export const PASSWORDLESS_TRADE = "Anyone holding a signed-in browser — an unlocked laptop, a phone, a stolen session — can then do everything you can without a second check. Signing in, session limits (12 hours idle, 7 days), signing out and ending sessions remain your protection. Creating or widening a way in (passwords, sign-in methods, API tokens, connected apps, people, workers, chat pairing, webhook secrets) still asks for your password.";
+export const PASSWORDLESS_TRADE = "Anyone holding a signed-in browser — an unlocked laptop, a phone, a stolen session — can then do everything you can without a second check. Signing in, session limits (12 hours idle, 7 days), signing out and ending sessions remain your protection. Creating or widening a way in (passwords, sign-in methods, API tokens, connected apps, people, workers, chat pairing, webhook secrets), or widening what a project's builds and checks reach (its network, where builds write, its home folder and its check access), still asks for your password.";

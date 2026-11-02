@@ -69,6 +69,10 @@ export type ProjectSettingsView = {
     signInsUnavailable?: string | null };
 };
 
+/** The password field of a credential act (docs/plans/passwordless.md): these widen what builds and checks reach, so
+ * their handlers take a password typed now even with Passwordless on, and the field always shows (never reauth()). */
+const credentialPassword = (): Html => html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`;
+
 /** Where builds may write, said plainly; an approver changes it with their password. */
 function writesHtml(view: ProjectSettingsView): Html | "" {
   const writes = view.writes;
@@ -82,7 +86,7 @@ function writesHtml(view: ProjectSettingsView): Html | "" {
     ${option("workspace", "Only their workspace (recommended)", "The checkout and its Git data, the project's own package caches, the build's temp folder, and what its agent needs to keep its session.")}
     ${option("anywhere", "Anywhere outside Toolroll's fenced folders", "For a project whose tools must write elsewhere in your home folder or the shared temp folder. Credentials, Toolroll's own folders and other projects stay fenced.")}
     <p class="meta">Tasks scoped from now on use this; tasks already approved keep what they were approved with.</p>
-    ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}
+    ${credentialPassword()}
     <button type="submit">Save</button>`, { hidden: { repo: view.repo } });
   return html`<section class="build-access writes-setting" id="writes" aria-labelledby="writes-title"><h2 id="writes-title">Where builds write</h2>${said}<details><summary>Change</summary>${form}</details></section>`;
 }
@@ -108,7 +112,7 @@ function sandboxHtml(view: ProjectSandboxView): Html | "" {
       <label>macOS services builds may also use<textarea name="mach" rows="2">${machLookup.join("\n")}</textarea></label>
     </details>
     <p class="meta">Tasks scoped from now on use this; tasks already approved keep what they were approved with.</p>
-    ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}
+    ${credentialPassword()}
     <button type="submit">Save</button>`, { hidden: { repo: view.repo } });
   return html`<section class="build-access sandbox-setting" id="sandbox" aria-labelledby="sandbox-title">${head}<details><summary>Change</summary>${form}</details></section>`;
 }
@@ -150,7 +154,7 @@ function checkAccessHtml(view: ProjectSettingsView): Html | "" {
     ${unavailable !== null ? option("sign-ins", unavailable, null) : option("sign-ins", `Also reads the files your Claude, Codex and GitHub sign-ins are kept in, on this project's network (${open ? "any host" : network === null || network.hosts.length === 0 ? "registries only" : `registries and ${network.hosts.length} ${network.hosts.length === 1 ? "host" : "hosts"}`}).`, CHECK_ACCESS_WARNINGS["sign-ins"])}
     ${option("unsandboxed", "For projects whose checks create sandboxes themselves, such as Toolroll's own.", CHECK_ACCESS_WARNINGS.unsandboxed)}
     ${open && unavailable === null ? html`<label class="check"><input type="checkbox" name="confirm-open" value="yes"> The network is open: with sign-ins, checks could send them to any host</label>` : ""}
-    ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}
+    ${credentialPassword()}
     <button type="submit" class="primary">Save</button>
     <p class="meta">${access.canWiden ? "" : "Only an instance operator can widen this. "}Flow script steps always run sandboxed. Tasks already approved keep their level.</p>`, { hidden: { repo: view.repo } });
   return html`<section class="build-access check-access-setting" id="check-access" aria-labelledby="check-access-title">${head}<details class="change"><summary>Change</summary>${form}</details></section>`;
@@ -174,7 +178,7 @@ function networkHtml(view: ProjectSettingsView): Html | "" {
     <label>Other hosts builds may reach<textarea name="hosts" rows="3" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="api.stripe.com&#10;*.example.com">${setting.hosts.join("\n")}</textarea></label>
     <label class="check"><input type="checkbox" name="mode" value="open"${setting.mode === "open" ? html` checked` : ""}> Open: builds may reach any host</label>
     <p class="meta">Tasks scoped from now on use this; tasks already approved keep the network they were approved with.</p>
-    ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}
+    ${credentialPassword()}
     <button type="submit">Save</button>`, { hidden: { repo: view.repo } });
   return html`<section class="build-access network-setting" id="network" aria-labelledby="network-title"><h2 id="network-title">Network</h2>${reach}${local}<details><summary>Change</summary>${form}</details></section>`;
 }

@@ -18,7 +18,7 @@ import { EXIT, runOperate } from "./operate.js";
 import { register } from "./runner.js";
 import { run as exec } from "./exec.js";
 import type { Runner } from "./builder.js";
-import { agentRefusal, checkPolicy, levelOfProfile, modelMatches, OPEN_POLICY, parseList, policyProvider, toolRefusal, underCeiling, type OrgPolicy } from "./policy.js";
+import { agentRefusal, checkPolicy, chosenProviders, levelOfProfile, modelMatches, OPEN_POLICY, parseList, POLICY_PROVIDERS, policyProvider, toolRefusal, underCeiling, type OrgPolicy } from "./policy.js";
 import { subagentReady } from "./subagent-work.js";
 import { makeCall, offeredTools } from "./subagent-tools.js";
 import { toolLaunchFor, validateToolSpec } from "./project-tools.js";
@@ -85,6 +85,22 @@ describe("the rules", () => {
     expect(checkPolicy({ providers: [], models: null, tools: null, ceiling: "safe" })).toMatchObject({ ok: false, problem: "Allow at least one provider, or allow any." });
     expect(checkPolicy({ providers: null, models: ["bad model!"], tools: null, ceiling: "safe" })).toMatchObject({ ok: false });
     expect(checkPolicy({ providers: null, models: null, tools: null, ceiling: "root" })).toMatchObject({ ok: false, problem: "Choose a permission ceiling: safe, standard or escalated." });
+    // The refusal names every provider the policy knows, in plain words.
+    expect(checkPolicy({ providers: ["mistral"], models: null, tools: null, ceiling: "safe" })).toMatchObject({ ok: false,
+      problem: "mistral isn't a provider here. Choose from Claude, Codex, Gemini, OpenRouter, OpenCode, Cursor, Cline, Qwen Code and Goose." });
+  });
+
+  test("the form's ticks: every known provider is any; fewer is that list; an unknown one is left for the check to refuse", () => {
+    expect(chosenProviders(["claude", "codex", "gemini", "openrouter"])).toEqual(["claude", "codex", "gemini", "openrouter"]);
+    expect(chosenProviders([...POLICY_PROVIDERS])).toBeNull();
+    // Repeats and variants count once; order doesn't matter.
+    expect(chosenProviders([...POLICY_PROVIDERS].reverse().concat("claude-subscription"))).toBeNull();
+    expect(chosenProviders(POLICY_PROVIDERS.slice(1))).toEqual(POLICY_PROVIDERS.slice(1));
+    // All of them plus an unknown one: never "any", and the check refuses it.
+    const withUnknown = chosenProviders([...POLICY_PROVIDERS, "mistral"]);
+    expect(withUnknown).not.toBeNull();
+    expect(checkPolicy({ providers: withUnknown, models: null, tools: null, ceiling: "safe" })).toMatchObject({ ok: false, problem: expect.stringContaining("mistral isn't a provider here") });
+    expect(chosenProviders([])).toEqual([]);
   });
 });
 
@@ -289,7 +305,16 @@ describe("the page and the command line", () => {
       const saved = await post([...wanted, ["password", alex.token]]);
       expect(decodeURIComponent(saved.headers.get("location") ?? "")).toContain("said=Policy saved.");
       expect(store.orgPolicy()).toMatchObject({ providers: ["claude", "codex"], models: ["claude-sonnet-*", "gpt-6-astra"], tools: null, ceiling: "standard", updatedBy: "alex" });
-      // All four providers ticked is "any"; an unknown ceiling changes nothing.
+      // Four of the nine ticked is those four (never "any"); all of them is "any"; an unknown one is refused.
+      const ticked = (providers: readonly string[]) => providers.map((one): [string, string] => ["provider", one]);
+      await post([...ticked(["claude", "codex", "gemini", "openrouter"]), ["ceiling", "standard"], ["password", alex.token]]);
+      expect(store.orgPolicy().providers).toEqual(["claude", "codex", "gemini", "openrouter"]);
+      await post([...ticked(POLICY_PROVIDERS), ["ceiling", "standard"], ["password", alex.token]]);
+      expect(store.orgPolicy().providers).toBeNull();
+      expect(decodeURIComponent((await post([...ticked(["claude", "mistral"]), ["ceiling", "standard"], ["password", alex.token]])).headers.get("location") ?? "")).toContain("problem=mistral isn't a provider here");
+      expect(store.orgPolicy().providers).toBeNull();
+      await post([...wanted, ["password", alex.token]]);
+      // An unknown ceiling changes nothing.
       expect(decodeURIComponent((await post([["provider", "claude"], ["ceiling", "root"], ["password", alex.token]])).headers.get("location") ?? "")).toContain("problem=Choose a permission ceiling");
       // Someone who works within their projects doesn't open it, nor change it.
       const samCookie = await signIn("sam", sam.token);
