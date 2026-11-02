@@ -1106,9 +1106,12 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
       : config.watch === "pulls" && event === "pull_request" && ["opened", "ready_for_review", "labeled", "reopened"].includes(action) ? githubItem(config, body.pull_request, "pull")
       : config.watch === "checks" && event === "workflow_run" && action === "completed" ? githubRunItem(config, body.workflow_run) : null;
     items = found === null ? [] : [found];
-    // A signed workflow run on the watched branch is tidy's CI evidence too (task-tidy.md), green or red.
+    // A signed workflow run on the watched branch is tidy's CI evidence too (task-tidy.md), green or red: recorded only
+    // inside `written`, which re-proves the trigger is still active with the same config, credential and address.
     if (config.watch === "checks" && config.branch !== null && event === "workflow_run" && action === "completed") {
-      recordBranchCheckRun(store, { repo: config.repo, branch: config.branch }, readGithubRun(body.workflow_run), now);
+      const branch = config.branch;
+      const recorded = written(() => { recordBranchCheckRun(store, { repo: config.repo, branch }, readGithubRun(body.workflow_run), now); return { status: 200, said: "Recorded." }; });
+      if (recorded.status !== 200) return recorded;
     }
   } else if (config.kind === "linear") {
     const body = readLinearEvent(payload), sent = Number(body.webhookTimestamp);
@@ -1525,8 +1528,12 @@ async function observeBranchRuns(store: Store, trigger: FlowTriggerRow, config: 
   if (result.code !== 0) return;
   let body: unknown;
   try { body = JSON.parse(result.stdout); } catch { return; }
-  const current = store.getFlowTrigger(trigger.id);
-  const still = current === null ? null : triggerConfigOf(current);
-  if (current === null || current.state !== "active" || still === null || still.kind !== "github" || still.watch !== "checks" || still.repo !== config.repo || still.branch !== branch) return;
-  for (const run of readGithubRunList(body).workflow_runs ?? []) recordBranchCheckRun(store, { repo: config.repo, branch }, run, now);
+  const runs = readGithubRunList(body).workflow_runs ?? [];
+  // Re-proved and recorded in one transaction: a trigger paused or changed meanwhile records nothing.
+  store.transact(() => {
+    const current = store.getFlowTrigger(trigger.id);
+    const still = current === null ? null : triggerConfigOf(current);
+    if (current === null || current.state !== "active" || current.configJson !== trigger.configJson || still === null || still.kind !== "github" || still.watch !== "checks" || still.repo !== config.repo || still.branch !== branch) return;
+    for (const run of runs) recordBranchCheckRun(store, { repo: config.repo, branch }, run, now);
+  });
 }
