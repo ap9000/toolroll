@@ -2006,7 +2006,7 @@ $ contract --commands --json → 0
         {
           "name": "digest",
           "takesValue": true,
-          "meaning": "the flow's digest the preview showed: refuses if the flow changed since"
+          "meaning": "the approval digest the preview showed: refuses if the flow or its scripts changed since"
         }
       ],
       "positionals": [

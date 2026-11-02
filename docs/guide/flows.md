@@ -147,11 +147,12 @@ A "Run a script" zone runs in the agents' sandbox, where Chromium can't start
 unless the zone is allowed to. To let one start Playwright's Chromium (end to
 end tests, say), mark the zone `"browser": true` in its steps (`toolroll
 flows edit`), then approve it with your own password: `toolroll flows browser
-<flow> on` shows what it allows and its digest, and `--yes --digest <digest>`
-approves exactly that. The zone then gets the same one macOS service a
+<flow> on` shows what it allows and an approval digest covering the flow and
+its scripts, and `--yes --digest <digest>` approves exactly that. The script
+must be written on the zone (one that runs a project file can't be approved). The zone then gets the same one macOS service a
 project check gets for Chromium, and nothing else. Until it's approved, a card
-there waits with a line saying so, and nothing runs. Changing the flow or the
-zone's script ends the approval; the project's setup and other zones never get
+there waits with a line saying so, and nothing runs. Changing the flow or any of
+its browser zones' scripts ends the approval, even back to how it was; the project's setup and other zones never get
 it. A lead's or remote run's token can mark a zone but can't approve it.
 `toolroll flows browser <flow> off` revokes it (any approver).
 

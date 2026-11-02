@@ -177,7 +177,7 @@ export async function runFlowSteps(store: Store, repo: string, now: Date, io: St
     }
     // A script that starts a browser waits, saying so, until a person approves browser use for the flow (flow-browser.ts),
     // rather than run and crash inside the sandbox; it runs on its own once approved.
-    const browser = stage.kind === "check" && stage.browser === true ? browserStanding(store, known.flow.id, stage.id) : null;
+    const browser = stage.kind === "check" && stage.browser === true ? (script === null || known.definition === null ? { allowed: false as const, said: "This zone's script can't be read." } : browserStanding(store, known.flow.id, stage.id, { definition: known.definition, script })) : null;
     if (browser !== null && !browser.allowed) {
       if (card.waiting !== browser.said) store.updateFlowCard(card.id, { waiting: browser.said }, now);
       continue;
@@ -384,7 +384,10 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
   // Browser use, proved at the moment of launch: a zone that says it starts a browser runs only with a person's standing
   // approval (flow-browser.ts); then its script, and only its script, gets Chromium's one service.
   const wantsBrowser = stage.browser === true;
-  const standing = wantsBrowser ? browserStanding(store, flow.id, stage.id) : null;
+  // Read once: the drawing and the script this launch runs are the very objects the browser decision is about.
+  const running = flowDefinitionOf(flow);
+  const standing = !wantsBrowser ? null : running === null || running.stages.find(one => one.id === stage.id) === undefined || JSON.stringify(running.stages.find(one => one.id === stage.id)) !== JSON.stringify(stage)
+    ? { allowed: false as const, said: "This zone changed while it was starting, so it didn't run." } : browserStanding(store, flow.id, stage.id, { definition: running, script });
   if (standing !== null && !standing.allowed) {
     if (copy) await io.git("git", ["-C", flow.repo, "worktree", "remove", "--force", path], { timeoutMs: 60_000 }).catch(() => undefined);
     rmSync(path, { recursive: true, force: true });
@@ -416,7 +419,7 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
     const env = { FLOW_NAME: flow.name, FLOW_CARD_ID: String(card.id), FLOW_CARD_TITLE: card.title, FLOW_COMMIT: commit ?? "", FLOW_SCRIPT: script.name, FLOW_PROJECT: flow.repo };
     // Checked again right before the script: the flow or its script may have changed while the setup ran.
     if (wantsBrowser) {
-      const still = browserStanding(store, flow.id, stage.id);
+      const still = running === null ? { allowed: false as const, said: "This flow's drawing can't be read." } : browserStanding(store, flow.id, stage.id, { definition: running, script });
       if (!still.allowed) return { state: "failed", said: still.said, log };
     }
     const ran = await runCode({ script, cwd: path, root: copy ? path : flow.repo, input, env, secrets, scratch: io.scratch, shell: io.shell, launch });

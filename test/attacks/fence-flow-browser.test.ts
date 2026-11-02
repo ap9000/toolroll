@@ -18,7 +18,7 @@ import { pathToFileURL } from "node:url";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { fenceFor, runFolders, serverGrantsOf, srtTermsOf, taskBoundary, trustedWorktreeBinding, type FenceKind } from "../../src/agent-fence.js";
 import { run as exec } from "../../src/exec.js";
-import { browserStanding, revokeFlowBrowser, signFlowBrowser } from "../../src/flow-browser.js";
+import { browserApprovalDigest, browserStanding, browserTermsOf, revokeFlowBrowser, signFlowBrowser } from "../../src/flow-browser.js";
 import { saveScript } from "../../src/flow-scripts.js";
 import { runFlowSteps, type StepIo } from "../../src/flow-steps.js";
 import { flowFromSteps, flowTerms, validateFlowDefinition } from "../../src/flows.js";
@@ -109,7 +109,7 @@ describe("attack: Chromium from a flow's script zone", () => {
     expect(browserStanding(store, flow, "run").allowed).toBe(false);
     // The digest the person read must still be the flow's.
     expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: "0".repeat(32) }, T0)).toMatchObject({ ok: false });
-    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, T0)).toMatchObject({ ok: true, grant: { zones: [{ zone: "run", script: "journeys" }] } });
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, T0)).toMatchObject({ ok: true, grant: { zones: [{ zone: "run", script: "journeys", version: 1 }] } });
     expect(browserStanding(store, flow, "run")).toEqual({ allowed: true });
     // A zone that doesn't say it starts a browser never gets it, approved flow or not.
     expect(browserStanding(store, flow, "other").allowed).toBe(false);
@@ -141,6 +141,69 @@ describe("attack: Chromium from a flow's script zone", () => {
     expect(browserStanding(store, flow, "run").allowed).toBe(false);
     store.handle.prepare("UPDATE flow_browser_grant SET zones_json = 'not json' WHERE flow = ?").run(flow);
     expect(browserStanding(store, flow, "run").allowed).toBe(false);
+  });
+
+  test("bound to what runs: the drawing and script object the launch holds, every covered script, versions not just contents, and a live approver", () => {
+    save("journeys", "echo ran");
+    save("helper", "echo helper");
+    const flow = flowOf([{ id: "run", script: "journeys", browser: true }, { id: "second", script: "helper", browser: true }]);
+    const drawing = () => validateFlowDefinition(JSON.parse(store.getFlow(flow)!.definitionJson), { stored: true });
+    const approvedRun = { definition: drawing(), script: store.flowScript(repo, "journeys")! };
+    // The digest read before a script was swapped doesn't approve the swap.
+    const before = browserApprovalDigest(browserTermsOf(store, store.getFlow(flow)!)!);
+    save("journeys", "echo swapped");
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: before }, T0)).toMatchObject({ ok: false });
+    save("journeys", "echo ran");
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, T0).ok).toBe(true);
+    const current = { definition: drawing(), script: store.flowScript(repo, "journeys")! };
+    expect(browserStanding(store, flow, "run", current)).toEqual({ allowed: true });
+    // A script object read before the approval (same text, an older version) is not what was approved.
+    expect(browserStanding(store, flow, "run", approvedRun).allowed).toBe(false);
+    // The launch holds a script the approval didn't cover (another script's object): no.
+    expect(browserStanding(store, flow, "run", { definition: current.definition, script: store.flowScript(repo, "helper")! }).allowed).toBe(false);
+    // A drawing the launch read that isn't the stored one: no.
+    const other = flowFromSteps([{ title: "Inbox", kind: "inbox" }, { id: "run", title: "Run run", kind: "check", script: "journeys", runIn: "copy", browser: true }], current.definition);
+    expect(browserStanding(store, flow, "run", { definition: other, script: current.script }).allowed).toBe(false);
+    // Changing another covered zone's script ends it for every zone; restoring the text doesn't bring it back.
+    save("helper", "echo changed");
+    expect(browserStanding(store, flow, "run", current).allowed).toBe(false);
+    save("helper", "echo helper");
+    expect(browserStanding(store, flow, "run", current).allowed).toBe(false);
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, at(1)).ok).toBe(true);
+    const fresh = { definition: drawing(), script: store.flowScript(repo, "journeys")! };
+    expect(browserStanding(store, flow, "run", fresh).allowed).toBe(true);
+    // A signer who is no longer an approver: no.
+    store.handle.prepare("UPDATE approver SET role = 'viewer' WHERE name = 'alex'").run();
+    expect(browserStanding(store, flow, "run", fresh).allowed).toBe(false);
+  });
+
+  test("a script that runs a project file can't be approved: an approval seals the script's own text", () => {
+    const saved = saveScript(store, repo, { name: "journeys", about: "Runs the journeys", body: "", file: "scripts/e2e.mjs", language: "node", timeoutMinutes: 2 }, "alex", T0);
+    if (!saved.ok) throw new Error(saved.message);
+    const flow = flowOf([{ id: "run", script: "journeys", browser: true }]);
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, T0)).toMatchObject({ ok: false, message: expect.stringContaining("project file") });
+    expect(browserStanding(store, flow, "run").allowed).toBe(false);
+  });
+
+  test("the step loop's cached drawing: a zone swapped and approved while an earlier card ran never runs the old script with the browser", async () => {
+    const ran = join(root, "evil-ran.txt");
+    save("evil", `echo evil > ${JSON.stringify(ran)}`);
+    save("safe", "echo safe");
+    save("slow", "sleep 1");
+    const flow = flowOf([{ id: "first", script: "slow" }, { id: "run", script: "evil", browser: true }]);
+    card(flow, "first");
+    const second = card(flow, "run");
+    // While the first card runs, the browser zone is pointed at the safe script and approved.
+    const swap = (async () => {
+      await new Promise(done => setTimeout(done, 200));
+      const row = store.getFlow(flow)!;
+      const next = flowFromSteps([{ title: "Inbox", kind: "inbox" }, { id: "first", title: "Run first", kind: "check", script: "slow", runIn: "folder" }, { id: "run", title: "Run run", kind: "check", script: "safe", runIn: "folder", browser: true }], JSON.parse(row.definitionJson));
+      store.saveFlow(flow, { name: row.name, definitionJson: JSON.stringify(next), sawRevision: row.revision, by: "alex" }, at(1));
+      expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, at(1)).ok).toBe(true);
+    })();
+    await Promise.all([runFlowSteps(store, repo, at(1), stepIo()), swap]);
+    expect(existsSync(ran)).toBe(false);
+    expect(outcome(second).output).not.toContain("evil");
   });
 
   test("preflight: an unapproved browser zone waits with the plain line and its script never runs", async () => {

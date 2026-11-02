@@ -19,7 +19,7 @@ import { STARTER_FLOWS, starterFlowOf, starterOf, startersFor, starterTerms, swi
 import { addFlowTriggerTo, checkFlowTriggerNow, describeTrigger, removeFlowTrigger, setFlowTriggerOn, triggerConfigOf, validateTriggerConfig, type TriggerIo, rawTakesDeliveries } from './flow-triggers.js';
 import { deciderOf, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowDigest, flowFromSteps, flowTerms, stepsFor, type FlowDefinition, type FlowStage } from './flows.js';
 import { prepareUnattendedCandidates, activeUnattendedGrant, parseUnattendedAsk, revokeUnattended, signUnattended, unattendedViewOf, unattendedWords, untilWords, UNATTENDED_MAX_RUNS } from './flow-unattended.js';
-import { browserTerms, browserZonesOf, revokeFlowBrowser, signFlowBrowser } from './flow-browser.js';
+import { browserApprovalDigest, browserTerms, browserTermsOf, revokeFlowBrowser, signFlowBrowser } from './flow-browser.js';
 import { MODE_MAX_DAYS } from './modes.js';
 import { verifyApproverByPassword } from './principal.js';
 import { authenticateApprover, proveCredential } from './scope.js';
@@ -76,7 +76,7 @@ export const FLOWS_DESCRIPTORS = [
     { name: 'runs', takesValue: true, meaning: `optional limit on runs a day (UTC), 1 to ${UNATTENDED_MAX_RUNS}` },
     { name: 'include', takesValue: true, meaning: 'also cover these script or plane-review schedules (trigger ids, like 12,14); plain schedules are covered already' }] },
   { action: 'browser', synopsis: "let a flow's script zones marked browser: true start Chromium in their sandbox (on: a person approves with their own password, previews until --yes; off: any approver revokes)", mutation: 'identity-idempotent', audience: 'operator', positionals: ['flow', 'on|off'], flags: [...write, yes,
-    { name: 'digest', takesValue: true, meaning: "the flow's digest the preview showed: refuses if the flow changed since" }] },
+    { name: 'digest', takesValue: true, meaning: "the approval digest the preview showed: refuses if the flow or its scripts changed since" }] },
   { action: 'archive', synopsis: 'archive a flow: its cards stop moving and its triggers stop; previews until --yes', mutation: 'identity-idempotent', positionals: ['flow'], flags: [...write, yes] },
 ] as const;
 
@@ -353,13 +353,12 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
       record(flow.repo, 'accepted', `flow #${flow.id} browser off`);
       return ok({ applied: true, browser: null }, [`${flow.name}'s scripts can no longer start a browser.`]);
     }
-    const drawing = flowDefinitionOf(flow);
-    if (drawing === null) return refuse(flow.repo, 'unreadable', 'This flow\'s drawing can\'t be read. Save it again from the editor.');
-    const zones = browserZonesOf(store, flow, drawing);
-    if (zones === null || zones.length === 0) return refuse(flow.repo, 'refused', zones === null ? 'A zone that starts a browser has no script that can run yet (missing, or waiting for approval). Nothing was changed.'
+    if (flowDefinitionOf(flow) === null) return refuse(flow.repo, 'unreadable', 'This flow\'s drawing can\'t be read. Save it again from the editor.');
+    const terms = browserTermsOf(store, flow);
+    if (terms === null || terms.zones.length === 0) return refuse(flow.repo, 'refused', terms === null ? 'A zone that starts a browser has no script it can approve: missing, waiting for approval, or one that runs a project file (write the script on the zone instead). Nothing was changed.'
       : `No zone in ${flow.name} says it starts a browser. Mark its script zone with browser: true (flows edit), then approve. Nothing was changed.`);
-    const digest = flowDigest(drawing);
-    if (!flags.has('yes')) return preview(flow.repo, `Approve browser use in the ${flow.name} flow`, [...browserTerms(zones), `Flow digest ${digest}: pass --digest ${digest} with --yes to approve exactly this.`], { flowId: flow.id, digest, zones });
+    const digest = browserApprovalDigest(terms);
+    if (!flags.has('yes')) return preview(flow.repo, `Approve browser use in the ${flow.name} flow`, [...browserTerms(terms.zones), `Approval digest ${digest}: pass --digest ${digest} with --yes to approve exactly this.`], { flowId: flow.id, digest, zones: terms.zones });
     // A person's own proof only: a lead's or remote run's token passes the approver check above but never approves this.
     const given = text('digest');
     const signed = signFlowBrowser(store, { flow: flow.id, signer: who, proof: personMethod(flow.repo), ...(given === null ? {} : { sawDigest: given }) }, now);
