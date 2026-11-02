@@ -76,7 +76,7 @@ export const FLOWS_DESCRIPTORS = [
     { name: 'runs', takesValue: true, meaning: `optional limit on runs a day (UTC), 1 to ${UNATTENDED_MAX_RUNS}` },
     { name: 'include', takesValue: true, meaning: 'also cover these script or plane-review schedules (trigger ids, like 12,14); plain schedules are covered already' }] },
   { action: 'browser', synopsis: "let a flow's script zones marked browser: true start Chromium in their sandbox (on: a person approves with their own password, previews until --yes; off: any approver revokes)", mutation: 'identity-idempotent', audience: 'operator', positionals: ['flow', 'on|off'], flags: [...write, yes,
-    { name: 'digest', takesValue: true, meaning: "the approval digest the preview showed: refuses if the flow or its scripts changed since" }] },
+    { name: 'digest', takesValue: true, meaning: "required with --yes: the approval digest the preview showed; refuses if the flow or its scripts changed since" }] },
   { action: 'archive', synopsis: 'archive a flow: its cards stop moving and its triggers stop; previews until --yes', mutation: 'identity-idempotent', positionals: ['flow'], flags: [...write, yes] },
 ] as const;
 
@@ -358,10 +358,12 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     if (terms === null || terms.zones.length === 0) return refuse(flow.repo, 'refused', terms === null ? 'A zone that starts a browser has no script it can approve: missing, waiting for approval, or one that runs a project file (write the script on the zone instead). Nothing was changed.'
       : `No zone in ${flow.name} says it starts a browser. Mark its script zone with browser: true (flows edit), then approve. Nothing was changed.`);
     const digest = browserApprovalDigest(terms);
-    if (!flags.has('yes')) return preview(flow.repo, `Approve browser use in the ${flow.name} flow`, [...browserTerms(terms.zones), `Approval digest ${digest}: pass --digest ${digest} with --yes to approve exactly this.`], { flowId: flow.id, digest, zones: terms.zones });
+    if (!flags.has('yes')) return preview(flow.repo, `Approve browser use in the ${flow.name} flow`, [...browserTerms(terms.zones), `Approval digest ${digest}: approve exactly this with --yes --digest ${digest}.`], { flowId: flow.id, digest, zones: terms.zones });
     // A person's own proof only: a lead's or remote run's token passes the approver check above but never approves this.
+    // The digest the person read is required: approving with --yes alone could approve something they never saw.
     const given = text('digest');
-    const signed = signFlowBrowser(store, { flow: flow.id, signer: who, proof: personMethod(flow.repo), ...(given === null ? {} : { sawDigest: given }) }, now);
+    if (given === null) return fail('usage', `Approve exactly what you read: flows browser ${flow.id} on --yes --digest <the digest the preview showed>.`, EXIT.usage);
+    const signed = signFlowBrowser(store, { flow: flow.id, signer: who, proof: personMethod(flow.repo), sawDigest: given }, now);
     if (!signed.ok) return refuse(flow.repo, 'refused', `${signed.message} Nothing was changed.`);
     record(flow.repo, 'accepted', `flow #${flow.id} browser on`);
     return ok({ applied: true, browser: { digest: signed.grant.digest, zones: signed.grant.zones, signedBy: signed.grant.signedBy } }, [

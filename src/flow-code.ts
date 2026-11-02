@@ -47,6 +47,8 @@ function runtimeOf(language: ScriptLanguage, file: string): { file: string; args
 
 export type CodeRun = {
   script: FlowScriptRow;
+  /** Asked right before every spawn attempt (retries too); false refuses it. A browser zone's approval rides here. */
+  beforeSpawn?: () => boolean;
   /** Where it runs, and the project folder a file script is found in. */
   cwd: string; root: string;
   /** JSON on stdin and in $FLOW_INPUT. */
@@ -101,6 +103,7 @@ export async function runCode(run: CodeRun): Promise<CodeResult> {
     const ran = await run.shell("/bin/sh", ["-c", 'exec "$@" < "$FLOW_INPUT"', "flow-script", runtime.file, ...runtime.args], {
       cwd: run.cwd, timeoutMs: script.timeoutMinutes * 60_000, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST, processGroup: true,
       env: { ...run.env, ...run.secrets, ...(run.launch?.env ?? {}), FLOW_INPUT: inputFile }, ...(run.launch?.fence ?? {}),
+      ...(run.beforeSpawn === undefined ? {} : { beforeSpawn: run.beforeSpawn }),
     });
     const printed = codeOutput(ran.stdout, run.secrets);
     const all = scrubSecrets(ran.stdout.slice(0, 1_000_000), run.secrets);

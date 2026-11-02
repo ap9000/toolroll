@@ -422,7 +422,9 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
       const still = running === null ? { allowed: false as const, said: "This flow's drawing can't be read." } : browserStanding(store, flow.id, stage.id, { definition: running, script });
       if (!still.allowed) return { state: "failed", said: still.said, log };
     }
-    const ran = await runCode({ script, cwd: path, root: copy ? path : flow.repo, input, env, secrets, scratch: io.scratch, shell: io.shell, launch });
+    // And at every spawn attempt (a retry after a failed spawn too): revoked or changed meanwhile, nothing starts.
+    const stillApproved = !wantsBrowser || running === null ? undefined : () => browserStanding(store, flow.id, stage.id, { definition: running, script }).allowed;
+    const ran = await runCode({ script, cwd: path, root: copy ? path : flow.repo, input, env, secrets, scratch: io.scratch, shell: io.shell, launch, ...(stillApproved === undefined ? {} : { beforeSpawn: stillApproved }) });
     log += ran.log;
     const output = ran.output === "" ? undefined : ran.output;
     // Where it ran goes at the end of the first line: "run-tests failed (exit 1) on main."

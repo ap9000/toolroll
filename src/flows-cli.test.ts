@@ -338,6 +338,7 @@ test("browser on previews its terms and digest, approves only the digest read wi
   expect(preview.body).toMatchObject({ ok: true, command: "flows browser", applied: false, zones: [{ zone: "run", script: "journeys" }] });
   expect(preview.body.terms.join("\n")).toContain("the same one macOS service a project check gets");
   expect(look(store => liveBrowserGrant(store, flow))).toBeNull();
+  expect((await flows(["browser", String(flow), "on", "--yes", ...as()])).body).toMatchObject({ ok: false, reason: "usage" });
   expect((await flows(["browser", String(flow), "on", "--yes", "--digest", "0".repeat(32), ...as()])).body).toMatchObject({ ok: false, reason: "refused" });
   expect((await flows(["browser", String(flow), "on", "--yes", "--digest", preview.body.digest, ...as()])).body).toMatchObject({ ok: true, applied: true, browser: { digest: preview.body.digest, signedBy: "alex" } });
   expect(look(store => browserStanding(store, flow, "run"))).toEqual({ allowed: true });

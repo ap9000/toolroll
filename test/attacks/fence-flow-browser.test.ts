@@ -51,6 +51,8 @@ const save = (name: string, body: string) => { const saved = saveScript(store, r
 /** A flow with one script zone per entry: `browser` says it starts one. */
 const flowOf = (zones: { id: string; script: string; browser?: boolean; runIn?: "folder" | "copy" }[]) => store.createFlow({ repo, name: "Journeys",
   definitionJson: JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }, ...zones.map(one => ({ id: one.id, title: `Run ${one.id}`, kind: "check" as const, script: one.script, runIn: one.runIn ?? "folder", ...(one.browser === undefined ? {} : { browser: one.browser }) }))], null)), by: "alex" }, T0);
+/** The approval digest of the flow as it stands now (what a preview would show). */
+const digestNow = (flow: number) => { const terms = browserTermsOf(store, store.getFlow(flow)!); return terms === null ? "none" : browserApprovalDigest(terms); };
 const card = (flow: number, stage: string) => store.addFlowCard({ flow, title: "Nightly", description: null, stage, by: "alex", byKind: "person" }, T0);
 const outcome = (id: number) => { const one = store.getFlowCard(id)!; return { stage: one.stage, output: one.outputs[Object.keys(one.outputs)[0] ?? ""] ?? "", waiting: one.waiting, note: one.note }; };
 
@@ -104,19 +106,19 @@ describe("attack: Chromium from a flow's script zone", () => {
     expect(browserStanding(store, flow, "run")).toMatchObject({ allowed: false, said: expect.stringContaining(`toolroll flows browser ${flow} on`) });
     // A machine credential standing in for a person never approves it, nor a missing or unknown proof.
     for (const proof of ["lead-token", "remote-token", null, "bogus"]) {
-      expect(signFlowBrowser(store, { flow, signer: "alex", proof }, T0), String(proof)).toMatchObject({ ok: false });
+      expect(signFlowBrowser(store, { flow, signer: "alex", proof, sawDigest: digestNow(flow) }, T0), String(proof)).toMatchObject({ ok: false });
     }
     expect(browserStanding(store, flow, "run").allowed).toBe(false);
     // The digest the person read must still be the flow's.
     expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: "0".repeat(32) }, T0)).toMatchObject({ ok: false });
-    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, T0)).toMatchObject({ ok: true, grant: { zones: [{ zone: "run", script: "journeys", version: 1 }] } });
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: digestNow(flow) }, T0)).toMatchObject({ ok: true, grant: { zones: [{ zone: "run", script: "journeys", version: 1 }] } });
     expect(browserStanding(store, flow, "run")).toEqual({ allowed: true });
     // A zone that doesn't say it starts a browser never gets it, approved flow or not.
     expect(browserStanding(store, flow, "other").allowed).toBe(false);
     // A new version of the zone's script ends it.
     save("journeys", "echo changed");
     expect(browserStanding(store, flow, "run")).toMatchObject({ allowed: false, said: expect.stringContaining("earlier version") });
-    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "session" }, at(1)).ok).toBe(true);
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "session", sawDigest: digestNow(flow) }, at(1)).ok).toBe(true);
     expect(browserStanding(store, flow, "run").allowed).toBe(true);
     // Changing the drawing ends it (here: marking a second zone).
     const row = store.getFlow(flow)!;
@@ -124,7 +126,7 @@ describe("attack: Chromium from a flow's script zone", () => {
     expect(store.saveFlow(flow, { name: row.name, definitionJson: JSON.stringify(next), sawRevision: row.revision, by: "alex" }, at(2))).toBe(true);
     expect(browserStanding(store, flow, "run").allowed).toBe(false);
     expect(browserStanding(store, flow, "other").allowed).toBe(false);
-    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, at(3)).ok).toBe(true);
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: digestNow(flow) }, at(3)).ok).toBe(true);
     expect(browserStanding(store, flow, "other").allowed).toBe(true);
     expect(revokeFlowBrowser(store, flow, "alex", at(4))).toBe(true);
     expect(browserStanding(store, flow, "run").allowed).toBe(false);
@@ -134,7 +136,7 @@ describe("attack: Chromium from a flow's script zone", () => {
   test("a grant row tampered to another flow's digest or a machine proof doesn't stand", () => {
     save("journeys", "echo ran");
     const flow = flowOf([{ id: "run", script: "journeys", browser: true }]);
-    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, T0).ok).toBe(true);
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: digestNow(flow) }, T0).ok).toBe(true);
     store.handle.prepare("UPDATE flow_browser_grant SET proof = 'lead-token' WHERE flow = ?").run(flow);
     expect(browserStanding(store, flow, "run").allowed).toBe(false);
     store.handle.prepare("UPDATE flow_browser_grant SET proof = 'password-now', digest = ? WHERE flow = ?").run("f".repeat(32), flow);
@@ -154,7 +156,7 @@ describe("attack: Chromium from a flow's script zone", () => {
     save("journeys", "echo swapped");
     expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: before }, T0)).toMatchObject({ ok: false });
     save("journeys", "echo ran");
-    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, T0).ok).toBe(true);
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: digestNow(flow) }, T0).ok).toBe(true);
     const current = { definition: drawing(), script: store.flowScript(repo, "journeys")! };
     expect(browserStanding(store, flow, "run", current)).toEqual({ allowed: true });
     // A script object read before the approval (same text, an older version) is not what was approved.
@@ -169,7 +171,7 @@ describe("attack: Chromium from a flow's script zone", () => {
     expect(browserStanding(store, flow, "run", current).allowed).toBe(false);
     save("helper", "echo helper");
     expect(browserStanding(store, flow, "run", current).allowed).toBe(false);
-    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, at(1)).ok).toBe(true);
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: digestNow(flow) }, at(1)).ok).toBe(true);
     const fresh = { definition: drawing(), script: store.flowScript(repo, "journeys")! };
     expect(browserStanding(store, flow, "run", fresh).allowed).toBe(true);
     // A signer who is no longer an approver: no.
@@ -181,7 +183,7 @@ describe("attack: Chromium from a flow's script zone", () => {
     const saved = saveScript(store, repo, { name: "journeys", about: "Runs the journeys", body: "", file: "scripts/e2e.mjs", language: "node", timeoutMinutes: 2 }, "alex", T0);
     if (!saved.ok) throw new Error(saved.message);
     const flow = flowOf([{ id: "run", script: "journeys", browser: true }]);
-    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, T0)).toMatchObject({ ok: false, message: expect.stringContaining("project file") });
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: digestNow(flow) }, T0)).toMatchObject({ ok: false, message: expect.stringContaining("project file") });
     expect(browserStanding(store, flow, "run").allowed).toBe(false);
   });
 
@@ -199,7 +201,7 @@ describe("attack: Chromium from a flow's script zone", () => {
       const row = store.getFlow(flow)!;
       const next = flowFromSteps([{ title: "Inbox", kind: "inbox" }, { id: "first", title: "Run first", kind: "check", script: "slow", runIn: "folder" }, { id: "run", title: "Run run", kind: "check", script: "safe", runIn: "folder", browser: true }], JSON.parse(row.definitionJson));
       store.saveFlow(flow, { name: row.name, definitionJson: JSON.stringify(next), sawRevision: row.revision, by: "alex" }, at(1));
-      expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, at(1)).ok).toBe(true);
+      expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: digestNow(flow) }, at(1)).ok).toBe(true);
     })();
     await Promise.all([runFlowSteps(store, repo, at(1), stepIo()), swap]);
     expect(existsSync(ran)).toBe(false);
@@ -239,7 +241,7 @@ for spec in sys.argv[1:]:
     save("journeys", `sed "s/^/setup-/" setup-mach.txt\n${line}`);
     save("plain", line);
     const flow = flowOf([{ id: "run", script: "journeys", browser: true, runIn: "copy" }, { id: "other", script: "plain" }]);
-    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, T0).ok).toBe(true);
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: digestNow(flow) }, T0).ok).toBe(true);
     const approved = card(flow, "run"), unmarked = card(flow, "other");
     await runFlowSteps(store, repo, at(1), stepIo());
     const results = (text: string, prefix = "") => Object.fromEntries(text.split("\n").filter(one => one.startsWith(prefix) && one.includes("=")).map(one => [one.slice(prefix.length, one.lastIndexOf("=")), Number(one.slice(one.lastIndexOf("=") + 1))]));
@@ -280,11 +282,34 @@ catch (e) { console.log("browser:failed " + String(e.message).split("\\n")[0]); 
     save("journeys", launch);
     save("plain", launch);
     const flow = flowOf([{ id: "run", script: "journeys", browser: true }, { id: "other", script: "plain" }]);
-    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now" }, T0).ok).toBe(true);
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: digestNow(flow) }, T0).ok).toBe(true);
     const approved = card(flow, "run"), unmarked = card(flow, "other");
     await runFlowSteps(store, repo, at(1), stepIo());
     const said = (id: number) => `${outcome(id).output}\n${outcome(id).note ?? ""}`;
     expect(said(approved)).toContain("browser:ok");
     expect(said(unmarked)).toContain("browser:failed");
   }, 120_000);
+});
+
+describe("attack: browser approval at the moment of each spawn", () => {
+  test("a spawn retried after the approval was revoked is refused (beforeSpawn), with the browser rule never used", async () => {
+    save("journeys", "echo ran");
+    const flow = flowOf([{ id: "run", script: "journeys", browser: true }]);
+    expect(signFlowBrowser(store, { flow, signer: "alex", proof: "password-now", sawDigest: digestNow(flow) }, T0).ok).toBe(true);
+    const id = card(flow, "run");
+    store.setUnfencedAgentsAllowed(true, "alex", T0);
+    const asked: boolean[] = [];
+    // The shell stands in for exec's retry: the first attempt fails to spawn, the approval is revoked, then it retries.
+    const shell: StepIo["shell"] = async (_file, _args, options) => {
+      if ((options as { beforeSpawn?: () => boolean }).beforeSpawn === undefined) return { code: 0, stdout: "setup", stderr: "", timedOut: false } as never;
+      const before = (options as { beforeSpawn: () => boolean }).beforeSpawn;
+      asked.push(before());
+      revokeFlowBrowser(store, flow, "alex", at(2));
+      asked.push(before());
+      return { code: 1, stdout: "", stderr: "the attempt stopped before this process could spawn", timedOut: false } as never;
+    };
+    await runFlowSteps(store, repo, at(1), { ...stepIo(), shell, fenceAvailable: () => false });
+    expect(asked).toEqual([true, false]);
+    expect(outcome(id).output).not.toContain("ran");
+  });
 });

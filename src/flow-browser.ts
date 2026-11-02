@@ -132,10 +132,10 @@ export function browserTerms(zones: readonly BrowserZone[]): string[] {
 /**
  * Approve browser use for the flow as it stands. `proof` is the signer's credential method, proved by the caller just
  * now; only a person's counts (a lead's or remote run's token is refused), from an approver who reaches the project.
- * Re-reads the flow, its zones and scripts in the one transaction that writes, and `sawDigest`, when given, is the
- * approval (browserApprovalDigest: drawing and scripts) the person read. Replaces any live one.
+ * Re-reads the flow, its zones and scripts in the one transaction that writes; `sawDigest` (required) is the approval
+ * (browserApprovalDigest: drawing and scripts) the person read, and anything else is refused. Replaces any live one.
  */
-export function signFlowBrowser(store: Store, input: { flow: number; signer: string; proof: string | null; sawDigest?: string }, now: Date): { ok: true; grant: FlowBrowserGrant } | { ok: false; message: string } {
+export function signFlowBrowser(store: Store, input: { flow: number; signer: string; proof: string | null; sawDigest: string }, now: Date): { ok: true; grant: FlowBrowserGrant } | { ok: false; message: string } {
   if (!personProof(input.proof)) return { ok: false, message: "Browser use needs a person's own approval: sign in with your password (a lead's or remote run's token can't give it)." };
   return store.transact(() => {
     const flow = store.getFlow(input.flow);
@@ -146,7 +146,7 @@ export function signFlowBrowser(store: Store, input: { flow: number; signer: str
     if (terms === null) return { ok: false as const, message: "A zone that starts a browser has no script it can approve: missing, waiting for approval, or one that runs a project file (write the script on the zone instead)." };
     if (terms.zones.length === 0) return { ok: false as const, message: `No zone in ${flow.name} says it starts a browser. Mark the script zone first (browser: true), then approve.` };
     const digest = browserApprovalDigest(terms);
-    if (input.sawDigest !== undefined && input.sawDigest !== digest) return { ok: false as const, message: "This flow or its scripts changed while you were reading. Read the terms again." };
+    if (input.sawDigest !== digest) return { ok: false as const, message: "This flow or its scripts changed while you were reading. Read the terms again." };
     store.handle.prepare("UPDATE flow_browser_grant SET revoked_at = ?, revoked_by = ? WHERE flow = ? AND revoked_at IS NULL").run(now.toISOString(), input.signer, flow.id);
     const id = Number(store.handle.prepare("INSERT INTO flow_browser_grant (flow, repo, flow_revision, flow_digest, digest, zones_json, signed_by, signed_at, proof) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(flow.id, flow.repo, terms.revision, terms.flowDigest, digest, JSON.stringify(terms.zones), input.signer, now.toISOString(), input.proof!).lastInsertRowid);
