@@ -20,6 +20,9 @@
   and asks for your password, or `toolroll flows browser <flow> on`. Changing
   the script ends the approval. Without it, the step waits with one line
   saying what to allow, instead of crashing.
+- **Deploys no longer stop halfway.** A deploy now proves the release
+  read-only and writes its "deploying" marker separately, so it finishes
+  instead of stopping with "attempt to write a readonly database".
 
 ## 0.9.85 — 2026-11-01
 
