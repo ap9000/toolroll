@@ -246,7 +246,7 @@ export function checkPolicy(input: { providers: readonly string[] | null; models
   let providers: PolicyProvider[] | null = null;
   if (input.providers !== null) {
     const unknown = input.providers.filter(one => policyProvider(one.toLowerCase()) === null);
-    if (unknown.length > 0) return { ok: false, problem: `${unknown.join(", ")} isn't a provider here. Choose from Claude, Codex, Gemini and OpenRouter.` };
+    if (unknown.length > 0) return { ok: false, problem: `${unknown.join(", ")} isn't a provider here. Choose from ${providerChoices()}.` };
     providers = POLICY_PROVIDERS.filter(one => input.providers!.some(given => policyProvider(given.toLowerCase()) === one));
     if (providers.length === 0) return { ok: false, problem: "Allow at least one provider, or allow any." };
   }
@@ -263,4 +263,18 @@ export function checkPolicy(input: { providers: readonly string[] | null; models
   const tools = clean(input.tools, "tools", 100);
   if (tools !== null && !Array.isArray(tools)) return { ok: false, problem: tools.problem };
   return { ok: true, policy: { providers, models, tools, ceiling: input.ceiling as PermissionLevel } };
+}
+
+/** Every provider the policy knows, in plain names: "Claude, Codex, … and Goose". */
+function providerChoices(): string {
+  const names = POLICY_PROVIDERS.map(one => PROVIDER_NAMES[one]);
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]!}`;
+}
+
+/** The providers ticked on the policy form: every provider the policy knows ticked (and nothing unknown) means "any"
+ * (null), so a provider added later is allowed too; anything else is the list as ticked, for checkPolicy to check. */
+export function chosenProviders(chosen: readonly string[]): string[] | null {
+  const known = new Set(chosen.map(one => policyProvider(one.toLowerCase())));
+  if (known.has(null)) return [...chosen];
+  return POLICY_PROVIDERS.every(one => known.has(one)) ? null : [...chosen];
 }
