@@ -23,6 +23,7 @@ import { releaseCoverageOf } from "./release-coverage.js";
 import { workIndexPage, workIndexTask } from "./work-index.js";
 import { verifyApproverByPassword } from "./principal.js";
 import { completeAndOpenPullRequest, mergePullRequest, pullRequestViewOf, savePublishing } from "./pull-request-flow.js";
+import { archiveTaskFamily, restoreTaskFamily } from "./store.js";
 import { runOperate, EXIT } from "./operate.js";
 import { applyChatTaskAction, chatTaskStamp } from "./chat-task-actions.js";
 import { LEAD_TOOLS } from "./lead-tools.js";
@@ -366,6 +367,39 @@ describe("full checks before merge", () => {
     expect(merged).toBe(true);
     const entry = store.handle.prepare("SELECT detail FROM action_ledger WHERE run_id = ? AND action = 'pull request merged'").get(run)!;
     expect(String(entry["detail"])).toContain("merged without waiting for the full check");
+  });
+
+  test("put away (v144): during the merge's GitHub read it refuses the merge; while GitHub merges, it can't be put away", async () => {
+    built("tidy-pr", "Add a care guide link", NOW, "quick");
+    const run = runs["tidy-pr"]!;
+    const who = verifyApproverByPassword(store, "sam", password, [REPO]);
+    if (!who.ok) throw new Error("who");
+    const assignment = assignmentOf(store, "tidy-pr", NOW, { principal: "operator", repos: [REPO] }, root)!;
+    const opened = completeAndOpenPullRequest(store, { taskId: "tidy-pr", digest: assignment.receipt!.digest, runId: run, who: who.who, root }, NOW);
+    if (!opened.ok) throw new Error(opened.message);
+    store.markPublicationPushed(opened.publication.id, NOW);
+    store.markPublicationOpened(opened.publication.id, 9, "https://github.com/sam-shop/storefront/pull/9", NOW);
+    store.recordPublicationCheckState(opened.publication.id, "passing", NOW);
+    // The full check the pull request asked for runs first: an unfinished check is work going on, which put away refuses.
+    for (const one of followUpChecksOf(store, run, NOW)) await runFollowUpCheck(store, root, one.request, { now: () => NOW });
+    const by = { by: "sam", byKind: "person" as const, rule: null, reason: "Done with it" };
+    let merged = false, putAwayDuringMerge: unknown = null, archiveOnRead = true;
+    const exec = async (_file: string, args: readonly string[]) => {
+      if (args[1] === "merge") {
+        putAwayDuringMerge = archiveTaskFamily(store, "tidy-pr", by, NOW);
+        merged = true;
+        return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
+      }
+      // The first read: a person puts the task away while GitHub answers.
+      if (archiveOnRead) { archiveOnRead = false; expect(archiveTaskFamily(store, "tidy-pr", by, NOW)).toMatchObject({ ok: true }); }
+      return { code: 0, stdout: JSON.stringify({ state: merged ? "MERGED" : "OPEN", isDraft: false, headRefOid: HEAD, statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }], mergeCommit: merged ? { oid: "9".repeat(40) } : null }), stderr: "", timedOut: false, notFound: false };
+    };
+    expect(await mergePullRequest(store, { runId: run, by: "sam", exec, clock: () => NOW, anyway: true })).toMatchObject({ ok: false, reason: "archived" });
+    expect(merged).toBe(false);
+    expect(restoreTaskFamily(store, "tidy-pr", "sam", NOW)).toMatchObject({ ok: true });
+    expect(await mergePullRequest(store, { runId: run, by: "sam", exec, clock: () => NOW, anyway: true })).toMatchObject({ ok: true });
+    expect(putAwayDuringMerge).toMatchObject({ ok: false, reason: "live" });
+    expect(store.handle.prepare("SELECT COUNT(*) n FROM merge_in_flight").get()!["n"]).toBe(0);
   });
 
   test("once the full check passes on the commit, nothing waits", async () => {

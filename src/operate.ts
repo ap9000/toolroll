@@ -28,7 +28,7 @@ import { idleStorageSweep, sweepSchedule, sweepScheduleWords } from "./storage-s
 import { lastSweep, saveSweep, sweepDetails, sweepWords as storageSweepWords, type SweepPart, type SweepRecord } from "./storage-sweep.js";
 import { removeShared, sharedDepsRoot, sharedUse, unusedShared, type SharedUse } from "./shared-deps.js";
 import { cleanLandedBacklog, gitOf, landedBacklog, reconcileLanded, BACKLOG_DAYS, type LandedPlan, type LandedStep } from "./landed-cleanup.js";
-import { applyTidy, approverStandsNow, familyRepoOf, releaseFactsFor, runTidy, tidyDays, tidyDigest, tidyGroups, tidyPreview, TIDY_DEFAULT_DAYS, TIDY_PASS_LIMIT, type TidyItem } from "./tidy.js";
+import { accessOf, applyTidy, approverStandsNow, familyRepoOf, releaseFactsFor, runTidy, tidyDays, tidyDigest, tidyGroups, tidyPreview, TIDY_DEFAULT_DAYS, TIDY_PASS_LIMIT, type TidyItem } from "./tidy.js";
 import { personProof } from "./person-proof.js";
 import { RemoteMains } from "./remote-main.js";
 import { checkoutPlan, cleanCheckouts, discardCheckout, finishedCheckouts, slimKeptCheckouts, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
@@ -4541,6 +4541,7 @@ async function requeueTask(
       published: `${id}'s last result is published; revise it through its pull request`,
       // Only an Approve & build again asks for an exact build; the CLI never does.
       moved: `${id} changed since its page was read; read it again`,
+      archived: `${id} is put away — restore it with \`toolroll task restore ${id}\` first`,
     };
     return fail(write, json, "task requeue", result.reason, why[result.reason], EXIT.refused);
   }
@@ -13240,7 +13241,9 @@ async function archiveTasksCommand(positional: readonly string[], flags: Map<str
   const demo = refuseDemo(context, command);
   if (demo !== null) return demo;
   const acting = await askCredentials(flags, context);
-  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  // The password is proved against a project the person can see (the first task's); each task's own project is
+  // re-proved inside its put-away transaction.
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token, firstVisibleRepo(store, acting.name, ids));
   if (acting === null || !verified?.ok) return refuseApprover(context, command, verified, "putting a task away takes `--as <you> --token <t>` — it is recorded against your name", ids[0]);
   const personal = refuseMachineTidy(context, command, verified.method);
   if (personal !== null) return personal;
@@ -13274,7 +13277,7 @@ async function restoreTasksCommand(positional: readonly string[], flags: Map<str
   const demo = refuseDemo(context, command);
   if (demo !== null) return demo;
   const acting = await askCredentials(flags, context);
-  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token, firstVisibleRepo(store, acting.name, ids));
   if (acting === null || !verified?.ok) return refuseApprover(context, command, verified, "restoring takes `--as <you> --token <t>` — it is recorded against your name", ids[0]);
   const personal = refuseMachineTidy(context, command, verified.method);
   if (personal !== null) return personal;
@@ -13304,10 +13307,13 @@ async function tidyTasksCommand(positional: readonly string[], flags: Map<string
   const except = (text(flags, "except") ?? "").split(",").map(one => one.trim()).filter(one => one !== "");
   const usage = "`toolroll task tidy --preview [--days N]`, then `toolroll task tidy --apply --digest <d> [--days N] [--except <id,...>]`";
   if (positional.length > 0 || preview === apply || days === null || (preview && (digest !== undefined || except.length > 0)) || (apply && digest === undefined)) return fail(write, json, command, "usage", usage, EXIT.usage);
-  const daysArg = days === TIDY_DEFAULT_DAYS ? "" : ` --days ${days}`;
   const releases = releaseFactsFor(context.databaseFile);
+  // One scope for the preview and the apply: `--as <you>` previews exactly your projects (no password: it reads), and
+  // the apply reads the same person's projects, so an unchanged list keeps its digest.
+  const previewAs = text(flags, "as");
+  const daysArg = `${days === TIDY_DEFAULT_DAYS ? "" : ` --days ${days}`}${previewAs === undefined ? "" : ` --as ${previewAs}`}`;
   const lens = context.principal?.lens ?? null;
-  const access = { principal: "operator" as const, repos: lens, includeUnplaced: lens === null };
+  const access = previewAs !== undefined ? accessOf(store, previewAs) : { principal: "operator" as const, repos: lens, includeUnplaced: lens === null };
   if (preview) {
     const items = tidyPreview(store, clock(), { releases, days, access });
     const shown = tidyDigest(items, days);
@@ -13326,12 +13332,12 @@ async function tidyTasksCommand(positional: readonly string[], flags: Map<string
   const demo = refuseDemo(context, command);
   if (demo !== null) return demo;
   const acting = await askCredentials(flags, context);
-  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token, firstVisibleRepo(store, acting.name, []));
   if (acting === null || !verified?.ok) return refuseApprover(context, command, verified, "putting tasks away takes `--as <you> --token <t>` — it is recorded against your name", undefined);
   const personal = refuseMachineTidy(context, command, verified.method);
   if (personal !== null) return personal;
-  // The person's own view of the lists: only projects they can see.
-  const mine = { principal: "operator" as const, repos: store.knownRepos().filter(repo => store.accountCanAccess(acting.name, repo)), includeUnplaced: store.accountCanAccess(acting.name, null) };
+  // The person's own view of the lists: only projects they can see (the same scope `--preview --as` read).
+  const mine = accessOf(store, acting.name);
   const shownItems = tidyPreview(store, clock(), { releases, days, access: mine });
   const only = except.length === 0 ? null : shownItems.map(one => one.taskId).filter(id => !except.includes(id));
   if (except.some(id => !shownItems.some(one => one.taskId === id))) return fail(write, json, command, "outside", "--except names a task that isn't in the list. Check it again with --preview.", EXIT.refused);
@@ -13346,4 +13352,11 @@ async function tidyTasksCommand(positional: readonly string[], flags: Map<string
     ...done.skipped.map(one => `Not put away: ${one.message}`),
     "Find them with `toolroll task list --view archived`; bring one back with `toolroll task restore <id>`.",
   ]);
+}
+
+/** The project a put-away or restore proves the person's password against: the first named task's, when they can see
+ * it; otherwise the first project they can see at all (null when none: an unrestricted person, or none to prove). */
+function firstVisibleRepo(store: Store, name: string, ids: readonly string[]): string | null {
+  for (const id of ids) { const repo = store.lookupRef(id)?.repo ?? null; if (repo !== null && store.accountCanAccess(name, repo)) return repo; }
+  return store.accountCanAccess(name, null) ? null : store.knownRepos().find(repo => store.accountCanAccess(name, repo)) ?? null;
 }

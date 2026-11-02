@@ -477,9 +477,22 @@ export async function mergePullRequest(
   if (before.head !== publication.headSha) return fail("moved", "The pull request has commits that weren't part of the completed result, so it won't be merged from here.");
   if (before.checks !== "passing") return fail("checks", before.checks === "failing" ? "Checks are failing, so it can't merge." : before.checks === "running" ? "Checks are still running. Merge once they pass." : "No checks have reported yet. Merge once they pass.");
 
-  const merged = await exec("gh", ["pr", "merge", pr, "--repo", publication.githubRepo, `--${method}`, "--match-head-commit", publication.headSha, "--delete-branch"],
-    { timeoutMs: EXEC_TIMEOUT_MS, env: { GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" } });
-  const after = await view();
+  // The merge is reserved with the put-away check in one write (v144): a put away that committed first refuses it, and
+  // one that comes after waits for GitHub's answer (the reservation counts as work going on).
+  const reserved = store.transact(() => {
+    if (refArchived(store, publication.taskRef)) return false;
+    store.handle.prepare("INSERT OR REPLACE INTO merge_in_flight (publication, task_ref, by, at) VALUES (?, ?, ?, ?)").run(publication.id, publication.taskRef, input.by, clock().toISOString());
+    return true;
+  });
+  if (!reserved) return refuse("archived", "This task is put away. Restore it before merging.");
+  let merged: Awaited<ReturnType<typeof exec>>, after: Awaited<ReturnType<typeof view>>;
+  try {
+    merged = await exec("gh", ["pr", "merge", pr, "--repo", publication.githubRepo, `--${method}`, "--match-head-commit", publication.headSha, "--delete-branch"],
+      { timeoutMs: EXEC_TIMEOUT_MS, env: { GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" } });
+    after = await view();
+  } finally {
+    store.handle.prepare("DELETE FROM merge_in_flight WHERE publication = ?").run(publication.id);
+  }
   if (after?.state === "MERGED") { record(after.commit, input.by); return { ok: true, commit: after.commit }; }
   if (merged.code === 4) return fail("gh-signed-out", "The GitHub CLI isn't signed in on this computer. Run gh auth login, then merge again.");
   return fail("refused", `GitHub didn't merge it: ${plain(firstLine(merged.stderr) || "no reason given", 200)}`);

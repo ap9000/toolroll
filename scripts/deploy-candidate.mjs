@@ -17,6 +17,11 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now, rel
     `Run ${runId} is not a built candidate at ${head.slice(0, 7)}.`);
   requireFact(scope && scope.approvedDigest === scope.digest && scope.digest === run.scopeDigest,
     "The run's signed scope is no longer the approved one.");
+  // A put-away task (v144, docs/plans/task-tidy.md) deploys nothing, read from the plane itself: a database from before
+  // put-away has no such table, and nothing in it is put away.
+  const archiveTable = store.handle.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_archive'").get();
+  requireFact(archiveTable === undefined || store.handle.prepare("SELECT 1 FROM task_archive WHERE task_ref = ?").get(run.taskRef) === undefined,
+    "This task is put away. Restore it before deploying.");
   // The same gate as the installed deploy-gate.ts, read from the plane even when its runtime predates this rule.
   // A person's approval during CI must not let a direct deployment bypass the coordinator's wait.
   const ci = store.handle.prepare("SELECT action FROM action_ledger WHERE task_id = ? AND action IN (?, ?) ORDER BY id DESC LIMIT 1")

@@ -17,7 +17,7 @@ test.each([143, -143])("v%s tasks survive the put-away tables, none of them put 
     first.createTask({ id: "site-oct-30", title: "Is the site current? — Oct 30" }, now);
     first.close();
     const old = new DatabaseSync(file);
-    old.exec("DROP TABLE task_archive; DROP TABLE branch_check_run;");
+    old.exec("DROP TABLE task_archive; DROP TABLE branch_check_run; DROP TABLE merge_in_flight;");
     old.prepare("UPDATE schema_version SET version = ?").run(version);
     const before = historySnapshot(old);
     old.close();

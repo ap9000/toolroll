@@ -136,8 +136,9 @@ describe("(b) old releases", () => {
 describe("(c) resolved CI notices", () => {
   const sha = (c: string) => c.repeat(40);
   const checks = () => seedFlow(store, "Fix failing CI", { kind: "github", repo: "acme/shop", watch: "checks", label: null, branch: "main", from: "team", delivery: "poll", zone: "fix" }, day(1));
-  const notice = (flow: { flow: number; trigger: number }, task: string, commit: string, workflow: string, at: Date) =>
-    fire(store, flow, { key: `checks:${commit}`, task, title: `Checks failed on main: ${workflow}`, at, onTime: false, filedBy: { name: "GitHub", kind: "automation" } });
+  const notice = (flow: { flow: number; trigger: number }, task: string, commit: string, workflow: string, at: Date, repo = "acme/shop") =>
+    fire(store, flow, { key: `checks:${commit}`, task, title: `Checks failed on main: ${workflow}`, at, onTime: false, filedBy: { name: "GitHub", kind: "automation" },
+      sourceUrl: `https://github.com/${repo}/actions/runs/${commit.charCodeAt(0)}` });
   const run = (id: number, workflow: string, commit: string, conclusion: "success" | "failure", created: Date, extra: Record<string, unknown> = {}) =>
     recordBranchCheckRun(store, { repo: "acme/shop", branch: "main" }, { id, name: workflow, head_sha: commit, head_branch: "main", conclusion, created_at: created.toISOString(), event: "push", head_repository: { full_name: "acme/shop" }, ...extra }, NOW);
 
@@ -157,6 +158,22 @@ describe("(c) resolved CI notices", () => {
     expect(tidyPreview(store, NOW, { releases: NONE, days: null })).toEqual([]);
     expect(run(11, "CI", sha("4"), "success", day(24))).toBe(true);
     expect(tidyPreview(store, NOW, { releases: NONE, days: null }).map(one => one.reason)).toEqual(["“CI” passed on main at 4444444."]);
+  });
+
+  test("a notice keeps the repository it was made for: a trigger re-pointed later never lends its new repository's runs", () => {
+    const flow = checks();
+    notice(flow, "ci-2", sha("2"), "CI", day(22));
+    store.handle.prepare("UPDATE flow_trigger SET config_json = ? WHERE id = ?")
+      .run(JSON.stringify({ kind: "github", repo: "acme/other", watch: "checks", label: null, branch: "main", from: "team", delivery: "poll", zone: "fix" }), flow.trigger);
+    recordBranchCheckRun(store, { repo: "acme/other", branch: "main" }, { id: 40, name: "CI", head_sha: sha("4"), head_branch: "main", conclusion: "success", created_at: day(24).toISOString(), event: "push", head_repository: { full_name: "acme/other" } }, NOW);
+    expect(tidyPreview(store, NOW, { releases: NONE, days: null })).toEqual([]);
+  });
+
+  test("a notice whose card has no GitHub run link of its own is never resolved", () => {
+    const flow = checks();
+    fire(store, flow, { key: `checks:${sha("2")}`, task: "ci-unproven", title: "Checks failed on main: CI", at: day(22), onTime: false, filedBy: { name: "GitHub", kind: "automation" } });
+    run(50, "CI", sha("4"), "success", day(24));
+    expect(tidyPreview(store, NOW, { releases: NONE, days: null })).toEqual([]);
   });
 
   test("a notice whose commit failed two workflows needs both settled", () => {

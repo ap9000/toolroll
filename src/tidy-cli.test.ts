@@ -54,7 +54,7 @@ describe("task tidy", () => {
   test("--apply puts away exactly the previewed list, leaving out --except; a stale digest is refused with the fresh one", async () => {
     const digest = String(json((await run(["tidy", "--preview", "--json"])).out)["digest"]);
     const stale = json((await run(["tidy", "--apply", "--digest", "0".repeat(32), "--json", ...as, token])).out);
-    expect(stale).toMatchObject({ ok: false, reason: "changed", digest, next: `toolroll task tidy --apply --digest ${digest}` });
+    expect(stale).toMatchObject({ ok: false, reason: "changed", digest, next: `toolroll task tidy --apply --digest ${digest} --as alex` });
     expect((await run(["tidy", "--apply", "--digest", digest, "--except", "site-oct-31", "--json", ...as, token])).out).toContain('"reason": "outside"');
     const done = await run(["tidy", "--apply", "--digest", digest, "--except", "site-oct-29", "--json", ...as, token]);
     expect(done.code).toBe(0);
@@ -68,6 +68,25 @@ describe("task tidy", () => {
     expect((await run(["tidy", "--apply"])).code).toBe(2);
     expect((await run(["tidy", "--preview", "--days", "0"])).code).toBe(2);
     expect((await run(["tidy", "--apply", "--digest", "x", "--json"])).code).toBe(2);
+  });
+});
+
+describe("one scope for the preview and the apply", () => {
+  test("--preview --as <you> reads your projects, and its digest is the one your apply checks", async () => {
+    const store = openStore(db);
+    const other = seedFlow(store, "Other check", { kind: "schedule", schedule: "daily:09:00@UTC", title: "Other", description: null, zone: null }, day(1), "/repo/other");
+    for (const d of [29, 30]) fire(store, other, { key: `slot:2026-10-${d}T16:00:00.000Z`, task: `other-oct-${d}`, at: day(d), repo: "/repo/other" });
+    const sam = addApprover(store, "sam", day(1), { name: "alex", token });
+    if (!sam.ok) throw new Error("sam");
+    expect(store.setAccountProjects("sam", ["/repo/shop"], "alex", day(1))).toMatchObject({ ok: true });
+    store.close();
+    const everyone = json((await run(["tidy", "--preview", "--json"])).out);
+    const mine = json((await run(["tidy", "--preview", "--as", "sam", "--json"])).out);
+    expect(everyone["count"]).toBe(4);
+    expect(mine).toMatchObject({ count: 3, next: `toolroll task tidy --apply --digest ${String(mine["digest"])} --as sam` });
+    expect(json((await run(["tidy", "--apply", "--digest", String(everyone["digest"]), "--json", "--as", "sam", "--token", sam.token])).out)).toMatchObject({ ok: false, reason: "changed" });
+    expect(json((await run(["tidy", "--apply", "--digest", String(mine["digest"]), "--json", "--as", "sam", "--token", sam.token])).out)).toMatchObject({ ok: true });
+    expect(archivedIds()).toEqual(["site-oct-28", "site-oct-29", "site-oct-30"]);
   });
 });
 

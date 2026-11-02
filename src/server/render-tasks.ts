@@ -2821,10 +2821,10 @@ export function taskBodyParts(data: {
     ...(sectionIds.has("waits-for") ? [{ group: "work" as const, label: "Dependencies", kind: "goto" as const, tab: "plan" as const, target: "waits-for" }] : []),
     ...(sectionIds.has("holds") ? [{ group: "work" as const, label: "Holds", kind: "goto" as const, tab: "plan" as const, target: "holds" }] : []),
     ...(data.csrf !== "" ? [{ group: "work" as const, label: "Task options", kind: "goto" as const, tab: "plan" as const, target: "task-diagnostics" }] : []),
+    ...(data.canPutAway === true && data.csrf !== "" && data.archived == null && !building ? [{ group: "work" as const, label: "Put away", kind: "post" as const, action: `${taskHref(task.id)}/archive`, fields: { return: taskHref(task.id) } }] : []),
     { group: "share", label: "Copy link", kind: "copy" },
     ...(facts.some(one => one.label === "Audit") ? [{ group: "share" as const, label: "Evidence pack", kind: "link" as const, href: `${taskHref(rootOf)}/evidence` }] : []),
     ...(data.repo !== null && data.scope !== null ? [{ group: "share" as const, label: "Reuse as recipe", kind: "link" as const, href: `/recipes/from-task?task=${encodeURIComponent(task.id)}` }] : []),
-    ...(data.canPutAway === true && data.csrf !== "" && data.archived == null && !building ? [{ group: "work" as const, label: "Put away", kind: "post" as const, action: `${taskHref(task.id)}/archive`, fields: { return: taskHref(task.id) } }] : []),
     ...(cancelForm !== "" ? [{ group: "danger" as const, label: "Cancel task", kind: "goto" as const, tab: "plan" as const, target: "cancel-task" }] : []),
   ];
   const view: BrowserTaskView = {

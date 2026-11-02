@@ -173,3 +173,28 @@ one read-only tool, `tidy_preview`, which answers what tidy would put away; it c
    planned before the commit.
 14. Project delete clears `task_archive`; ceremony tests cover ceilings, Passwordless, duplicate fields, empty
    selection and rollback.
+
+## Implementation review round 1 (Codex on 29760184 + 7ef4c708: NO-GO, 12 findings) — fixed
+
+1. The merge sweep: `fireMergeIntent` holds a put-away task's intent for a person inside its firing CAS; an intent
+   claimed or firing counts as work going on.
+2. A person's merge: reserved (`merge_in_flight`, v144) with the put-away check in one write before `gh pr merge`; the
+   reservation counts as work going on until GitHub answers (a row older than 15 minutes is a crash).
+3. Deploys: `deploymentGate` and `scripts/deploy-candidate.mjs` refuse a put-away task, the latter read from the plane.
+   Residual: a deploy already past its gate finishes.
+4. Flow cards: held in every zone (notify included) when either the card's current or first build task is put away,
+   checked at card admission, at each step pass and inside `claimStep`.
+5. Tidy takes a family only when every version is its producer's (a person's revision keeps it), and never one holding
+   anything the newest firing touched.
+6. CI notices keep the repository their card recorded (GitHub's run link) and the branch their title named; a trigger
+   re-pointed later lends nothing; a card without that link is never resolved.
+7. The lead's words about a task carry the task (one batch per task), are refused for a put-away task, and are
+   resolved with it.
+8. Notifications: the put-away check is part of the insert. The lead's claim checks inside its own write.
+9. Requeue, resume and applying a plan change refuse a put-away task inside their writes.
+10. Families, task lists, chat and palette lists and counts leave put-away tasks out before their limit.
+11. Putting away a family a person revived puts away its remaining versions.
+12. The CLI preview takes `--as <you>` and the apply reads the same person's projects; the printed command carries it.
+
+Also from a security review of 7ef4c708: a signed webhook's CI run is recorded only inside the delivery's re-proving
+transaction; the poll re-proves and records in one transaction.

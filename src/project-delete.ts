@@ -275,6 +275,7 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("skill_test", `${IN("task_ref")} OR ${IN("source_run")}`, T, R);
   del("merge_blocker", `${IN("publication")} OR ${IN("task_id")}`, publications, K);
   del("merge_intent", IN("publication"), publications);
+  del("merge_in_flight", IN("publication"), publications);
   del("publication", IN("id"), publications);
   del("artifact", IN("id"), A);
 

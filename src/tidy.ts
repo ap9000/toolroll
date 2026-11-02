@@ -198,7 +198,7 @@ type Notice = { trigger: number; workflow: string; sha: string; at: string; task
 /** (c) Every "Checks failed on <branch>: <workflow>" notice a checks trigger made, with its commit, its workflow and the
  * automation-filed tasks it made. */
 function ciNotices(store: Store): Notice[] {
-  const rows = store.handle.prepare(`SELECT e.trigger, e.key, e.at, c.title, c.task, c.primary_task, c.created_by, c.created_kind, t.config_json, t.flow
+  const rows = store.handle.prepare(`SELECT e.trigger, e.key, e.at, c.title, c.task, c.primary_task, c.created_by, c.created_kind, c.source_json, t.config_json, t.flow
     FROM flow_trigger_event e JOIN flow_trigger t ON t.id = e.trigger JOIN flow_card c ON c.id = e.card
     WHERE t.kind = 'github' AND e.key LIKE 'checks:%' AND (e.state IS NULL OR e.state = 'accepted') ORDER BY e.trigger, e.at, e.rowid`).all();
   const notices: Notice[] = [];
@@ -207,6 +207,12 @@ function ciNotices(store: Store): Notice[] {
     let config: Record<string, unknown>;
     try { config = JSON.parse(String(row["config_json"])) as Record<string, unknown>; } catch { continue; }
     if (config["watch"] !== "checks" || typeof config["repo"] !== "string" || typeof config["branch"] !== "string") continue;
+    // Where the failure was, as the card recorded it when it was made (GitHub's own run link, never rewritten), not
+    // where the trigger points now: a trigger re-pointed later never lends its new repository's runs to old notices.
+    let made: { url?: unknown } | null = null;
+    try { made = JSON.parse(String(row["source_json"] ?? "null")) as { url?: unknown } | null; } catch { made = null; }
+    const at = typeof made?.url === "string" ? /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/actions\/runs\/\d+(?:\/|$)/.exec(made.url) : null;
+    if (at === null || at[1]!.toLowerCase() !== config["repo"].toLowerCase()) continue;
     const branch = config["branch"], prefix = `Checks failed on ${branch}: `, title = String(row["title"] ?? "");
     const sha = String(row["key"]).slice("checks:".length);
     if (!title.startsWith(prefix) || !/^[0-9a-f]{40}$/.test(sha)) continue;
@@ -250,8 +256,15 @@ export function tidyPreview(store: Store, now: Date, input: { releases: ReleaseF
   for (const row of rows) for (const id of row.memberIds) byId.set(id, row);
   const ex = exclusionsOf(store);
   const taken = new Map<string, TidyItem>();
-  const offer = (row: WorkTidyRow | undefined, rule: TidyRule, reason: string) => {
+  // Every task each schedule's newest firing touched, whoever filed it: no family holding one is ever put away.
+  const firings = routineFirings(store);
+  const keepAll = new Set([...firings.values()].flatMap(list => list.at(-1)!.all));
+  // `proven`: for a rule's own producer, every version of the family must be one it can prove it made (a person's
+  // later revision of a scheduled run keeps the whole family out); null for a person's own choice (finished tasks).
+  const offer = (row: WorkTidyRow | undefined, rule: TidyRule, reason: string, proven: ReadonlySet<string> | null) => {
     if (row === undefined || taken.has(row.rootId) || excluded(row, ex, auto)) return;
+    if (proven !== null && !row.memberIds.every(id => proven.has(id))) return;
+    if (rule !== "release" && row.memberIds.some(id => keepAll.has(id))) return;
     taken.set(row.rootId, { rule, taskId: row.currentId, title: row.title, repo: row.repo, reason, updatedAt: row.updatedAt, members: [...row.members].sort((a, b) => a - b) });
   };
 
@@ -263,6 +276,7 @@ export function tidyPreview(store: Store, now: Date, input: { releases: ReleaseF
     for (const one of facts) if (one.published && (latestOf.get(one.product) === undefined || compareVersions(one.version, latestOf.get(one.product)!) > 0)) latestOf.set(one.product, one.version);
     const byTask = new Map<string, ReleaseFact[]>();
     for (const fact of input.releases.facts) byTask.set(fact.taskId, [...(byTask.get(fact.taskId) ?? []), fact]);
+    const journalNamed = new Set(byTask.keys());
     for (const [taskId, named] of byTask) {
       // Every journal naming it must check out, for one package and one version.
       if (named.some(one => !facts.includes(one)) || new Set(named.map(one => `${one.product}\u0000${one.version}`)).size !== 1) continue;
@@ -273,23 +287,23 @@ export function tidyPreview(store: Store, now: Date, input: { releases: ReleaseF
       const reason = named.some(one => one.published) ? `Release ${version} is published.`
         : current.length === 0 ? `A newer attempt of release ${version} replaced it.`
         : latest !== null && compareVersions(version, latest) < 0 ? `Release ${latest} is already published.` : null;
-      if (reason !== null) offer(byId.get(taskId), "release", reason);
+      if (reason !== null) offer(byId.get(taskId), "release", reason, journalNamed);
     }
   }
 
   // (a) Old routine runs: everything but each schedule's newest firing.
-  for (const firings of routineFirings(store).values()) {
-    const newest = firings.at(-1)!;
-    // Everything the newest firing touched stays, whoever filed it.
-    const keep = new Set(newest.all);
-    for (const firing of firings.slice(0, -1)) {
-      for (const task of firing.tasks) if (!keep.has(task)) offer(byId.get(task), "routine", `A newer run, “${newest.title}”, replaces it.`);
+  const routineMade = new Set([...firings.values()].flatMap(list => list.flatMap(one => one.tasks)));
+  for (const list of firings.values()) {
+    const newest = list.at(-1)!;
+    for (const firing of list.slice(0, -1)) {
+      for (const task of firing.tasks) offer(byId.get(task), "routine", `A newer run, “${newest.title}”, replaces it.`, routineMade);
     }
   }
 
   // (c) Resolved CI notices: every workflow that failed on its commit was fixed by a later commit's green run, or a
   // newer notice carries that workflow's failure while the branch stays red.
   const notices = ciNotices(store);
+  const ciMade = new Set(notices.flatMap(one => one.tasks));
   const seen = new Map<string, Observation[]>();
   for (const notice of notices) {
     const key = `${notice.repo.toLowerCase()}\u0000${notice.branch}`;
@@ -303,14 +317,15 @@ export function tidyPreview(store: Store, now: Date, input: { releases: ReleaseF
     for (const [workflow, since] of failed) {
       const pass = observed.find(one => one.workflow === workflow && one.conclusion === "success" && one.sha !== notice.sha && one.createdAt > since);
       if (pass !== undefined) { words.push(`“${workflow}” passed on ${notice.branch} at ${pass.sha.slice(0, 7)}`); continue; }
-      const newer = notices.find(other => other !== notice && other.trigger === notice.trigger && other.at > notice.at && other.sha !== notice.sha
+      const newer = notices.find(other => other !== notice && other.trigger === notice.trigger && other.repo.toLowerCase() === notice.repo.toLowerCase() && other.branch === notice.branch
+        && other.at > notice.at && other.sha !== notice.sha
         && (other.workflow === workflow || observed.some(one => one.sha === other.sha && one.workflow === workflow && one.conclusion === "failure")));
       if (newer !== undefined) { words.push(`a newer “${workflow}” failure on ${notice.branch} replaces it`); continue; }
       settled = false;
     }
     if (!settled) continue;
     const reason = `${words.join("; ")}.`.replace(/^./, first => first.toUpperCase());
-    for (const task of notice.tasks) offer(byId.get(task), "ci", reason);
+    for (const task of notice.tasks) offer(byId.get(task), "ci", reason, ciMade);
   }
 
   // Finished more than N days ago (a person's preview only): done, failed or stopped, untouched since.
@@ -318,7 +333,7 @@ export function tidyPreview(store: Store, now: Date, input: { releases: ReleaseF
     const before = new Date(now.getTime() - input.days * 86_400_000).toISOString();
     for (const row of rows) {
       if ((row.state === "done" || row.state === "failed" || row.state === "cancelled") && row.updatedAt !== "" && row.updatedAt < before) {
-        offer(row, "finished", `Finished ${row.updatedAt.slice(0, 10)}, untouched for more than ${input.days} days.`);
+        offer(row, "finished", `Finished ${row.updatedAt.slice(0, 10)}, untouched for more than ${input.days} days.`, null);
       }
     }
   }
@@ -406,4 +421,13 @@ export function archivedWords(archived: { by: string; byKind: "person" | "tidy";
 export function releaseFactsOf(store: Store): ReleaseFacts {
   const file = store.databaseFile();
   return file === null ? { facts: [], problem: "this database has no state folder" } : releaseFactsFor(file);
+}
+
+/** The lists one person sees, for tidy: every project for an unrestricted account, otherwise exactly theirs. The CLI's
+ * preview (`--as <name>`) and its apply read the same scope, so the same records give the same digest. */
+export function accessOf(store: Store, name: string): WorkSummaryAccess {
+  const account = store.accountOf(name);
+  if (account === null || account.revokedAt !== null) return { principal: "operator", repos: [], includeUnplaced: false };
+  return account.projects === null ? { principal: "operator", repos: null, includeUnplaced: true }
+    : { principal: "operator", repos: [...account.projects], includeUnplaced: store.accountCanAccess(name, null) };
 }

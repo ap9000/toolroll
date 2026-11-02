@@ -1071,7 +1071,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     // tabs keep the project filter, rows keep their ids and task links.
     expect(data.view?.kind).toBe('tasks');
     const tasksView = data.view as import('./browser-workspace.js').BrowserTasksView;
-    expect(tasksView.tabs.map(tab => new URL(tab.href, base).searchParams.get('project'))).toEqual([repoDir, repoDir, repoDir, repoDir]);
+    expect(tasksView.tabs.map(tab => new URL(tab.href, base).searchParams.get('project'))).toEqual([repoDir, repoDir, repoDir, repoDir, repoDir]);
     expect(tasksView.tabs.find(tab => tab.active)?.label).toBe('All');
     expect(tasksView.rows.map(row => row.id).sort()).toEqual(['a', 'b']);
     expect(tasksView.rows.every(row => row.href.startsWith('/t/'))).toBe(true);

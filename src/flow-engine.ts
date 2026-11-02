@@ -24,7 +24,7 @@ import { DRAFT_CHARS, keptDraft } from "./flow-draft.js";
 import { chooseStep, flowPersonOf, sendStep } from "./flow-send.js";
 import { parseSoul, subagentLabel } from "./subagents.js";
 import type { FlowCardRow, FlowRow, Store, SubagentRow } from "./store.js";
-import { taskArchived } from "./task-archive.js";
+import { cardTaskArchived, taskArchived } from "./task-archive.js";
 import { withStageHandoff, type StageHandoff } from "./contracts/stage-output.js";
 
 export type FlowAdvance = { moved: number; filed: string[]; problems: string[] };
@@ -87,6 +87,13 @@ export function advanceFlows(store: Store, repo: string, now: Date, options: { e
 function advanceCard(store: Store, flow: FlowRow, definition: FlowDefinition | null, card: FlowCardRow, now: Date, options: { evidenceRoot?: string }, outcome: FlowAdvance): void {
   if (definition === null) { store.updateFlowCard(card.id, { waiting: "This flow's drawing can't be read. Open the flow and save it again." }, now); return; }
   const stage = definition.stages.find(one => one.id === card.stage);
+  // A put-away task (v144, task-tidy.md) holds its card where it is, whatever the zone: nothing moves on, files, sends
+  // or notifies until the task is restored.
+  if (cardTaskArchived(store, card.id)) {
+    const waiting = "Its task is put away. Restore the task to continue.";
+    if (card.waiting !== waiting) store.updateFlowCard(card.id, { waiting }, now);
+    return;
+  }
   if (stage === undefined) {
     // The zone was removed while the card sat in it: back to the start.
     if (store.moveFlowCard(card.id, { to: definition.start, outcome: "moved", actor: "flow", note: null, expectEntry: card.entry }, now)) outcome.moved++;

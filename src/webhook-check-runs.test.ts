@@ -38,7 +38,7 @@ const deliver = (hook: { token: string; secret: string }) => {
 const recorded = () => store.handle.prepare("SELECT COUNT(*) n FROM branch_check_run").get()?.["n"];
 /** An older CI failure notice from this very trigger, which the green run would resolve. */
 const notice = (trigger: number) => fire(store, { flow, trigger }, { key: `checks:${FAILED}`, task: "checks-failed-on-main-ci", title: "Checks failed on main: CI",
-  at: new Date("2026-10-30T10:00:00.000Z"), onTime: false, filedBy: { name: "GitHub", kind: "automation" }, repo: "/test/shop" });
+  at: new Date("2026-10-30T10:00:00.000Z"), onTime: false, filedBy: { name: "GitHub", kind: "automation" }, repo: "/test/shop", sourceUrl: "https://github.com/acme/shop/actions/runs/1" });
 
 test("a signed green push run on the watched branch is recorded, and resolves the older notice", () => {
   const hook = checksHook();

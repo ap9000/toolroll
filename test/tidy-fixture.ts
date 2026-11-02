@@ -18,7 +18,9 @@ export function seedFlow(store: Store, name: string, config: Record<string, unkn
 }
 
 export type Firing = { key: string; task: string; title?: string; at: Date; onTime?: boolean; cardKind?: "person" | "automation" | null; filedBy?: { name: string; kind: "person" | "automation" };
-  filedVia?: string | null; state?: "accepted" | "skipped"; eventTask?: boolean; repo?: string };
+  filedVia?: string | null; state?: "accepted" | "skipped"; eventTask?: boolean; repo?: string;
+  /** The card's own source link, as a GitHub checks card records it (`https://github.com/<repo>/actions/runs/<id>`). */
+  sourceUrl?: string };
 
 /** One firing of a trigger: the task the engine filed, its card and the event, as flow-triggers.ts and flow-engine.ts write them. */
 export function fire(store: Store, at: { flow: number; trigger: number }, firing: Firing): void {
@@ -29,8 +31,9 @@ export function fire(store: Store, at: { flow: number; trigger: number }, firing
   const ref = store.refFor("built-in", firing.task, "ours").id;
   store.placeTask(ref, firing.repo ?? REPO);
   if (firing.filedVia !== null) store.stampFiledVia(ref, firing.filedVia ?? `flow:${at.flow}`);
-  const card = Number(store.handle.prepare(`INSERT INTO flow_card (flow, title, stage, state, task, primary_task, created_by, created_at, updated_at, created_kind)
-    VALUES (?, ?, 'work', 'active', ?, ?, ?, ?, ?, ?)`).run(at.flow, firing.title ?? firing.task, firing.task, firing.task, createdBy, stamp, stamp, cardKind).lastInsertRowid);
+  const source = firing.sourceUrl === undefined ? null : JSON.stringify({ kind: "github", label: "Failed check on main", url: firing.sourceUrl });
+  const card = Number(store.handle.prepare(`INSERT INTO flow_card (flow, title, stage, state, task, primary_task, created_by, created_at, updated_at, created_kind, source_json)
+    VALUES (?, ?, 'work', 'active', ?, ?, ?, ?, ?, ?, ?)`).run(at.flow, firing.title ?? firing.task, firing.task, firing.task, createdBy, stamp, stamp, cardKind, source).lastInsertRowid);
   store.handle.prepare(`INSERT INTO flow_trigger_event (trigger, key, card, at, task, on_time, state, accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(at.trigger, firing.key, card, stamp, firing.eventTask === true ? firing.task : null, firing.onTime === false ? 0 : 1, firing.state ?? "accepted", stamp);
 }
