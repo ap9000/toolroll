@@ -3064,12 +3064,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "code.changes-read": showCode("changes", true),
     "code.ship-preview": showCode("ship", true),
     "code.other": showCode("unknown"),
+    // Retired into Tasks and the task page (src/design/KIT.md): each old address still answers, as a redirect.
     "inbox": showInbox,
     "work": showWork,
     "next": showNext,
     "board": showBoard,
     "review": showReview,
-    "done": showDone,
+    "done": async ctx => { const to = retiredTasksAddress("done", ctx.url); return to === null ? showDone(ctx) : redirect(ctx.response, to); },
     "tasks": showTasks,
     "queue": showQueue,
     "tasks.new": showNewTask,
@@ -3197,4 +3198,21 @@ export function createTidyHandlers(runtime: ServerRuntime) {
   };
 
   return { "work.put-away": showPutAway, "work.put-away.apply": applyPutAway, "task.act.archive": oneTask("archive"), "task.act.restore": oneTask("restore") };
+}
+
+/**
+ * Where a retired Tasks address goes now (wave A, src/design/KIT.md): Done is Finished. `board` names where the old
+ * Board's state view goes once it is retired (Tasks' Board view; its Order view and its live fragment stay). Null: this
+ * address still answers itself.
+ */
+export function retiredTasksAddress(route: "board" | "done", url: URL): string | null {
+  // (The Board keeps its own page for now: Tasks' Board view is where the app links; see the wave A report.)
+  const project = url.searchParams.get("project");
+  const keep = project === null || url.searchParams.getAll("project").length !== 1 ? "" : `project=${encodeURIComponent(project)}&`;
+  switch (route) {
+    case "done": return `/work?${keep}view=completed`;
+    case "board":
+      if (url.searchParams.get("view") === "order" || url.searchParams.get("fragment") === "1") return null;
+      return url.searchParams.get("scope") === "all" ? "/work?all=1&layout=board" : `/work?${keep}layout=board`;
+  }
 }

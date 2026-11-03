@@ -209,7 +209,10 @@
 /* List pages: the desk top bar (48px). */
 .k-tb { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-height: 48px; padding: 8px 24px; border-bottom: 1px solid var(--so-line); position: sticky; top: 0; z-index: 6; background: var(--so-paper); }
 .k-tb h1 { margin: 0; font: 600 15px/1.3 var(--so-font-sans); letter-spacing: -0.01em; }
-.k-tb-ctx { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--so-muted); font-size: 12.5px; }
+.k-tb-ctx { color: var(--so-muted); font-size: 12.5px; }
+/* Filters beside a list's title (src/design/KIT.md "List tools"): the tracks sit in its context, 8px apart. */
+.k-tb-ctx > .k-seg { vertical-align: middle; }
+.k-tb-ctx > .k-seg + .k-seg { margin-left: 8px; }
 /* Phone header: menu or back · title · one trailing action. Hidden at a desk. */
 .k-ph { display: none; }
 /* Reading pages: one 760px column, a back link and the doc header. */
@@ -519,7 +522,8 @@
 
 /* ---------- Reduced motion changes presentation only ---------- */
 @media (prefers-reduced-motion: reduce) {
-  .k-btn, .k-send, .k-composer, .k-composer-plus, .k-composer-chip, .k-trk, .k-trk::after, .k-tabs > *, .k-slots, .k-crow-bar, .k-steps-fill { transition: none; }
+  .k-btn, .k-send, .k-composer, .k-composer-plus, .k-composer-chip, .k-trk, .k-trk::after, .k-tabs > *, .k-slots, .k-crow-bar { transition: none; }
+  .k-steps-fill { transition: none; }
   .k-grow-in, .k-msg-in, .k-swap-in, .k-scrim, .k-btn.swap .k-face, .k-check-draw path, .k-composer .k-i { animation: none !important; }
   .k-check-draw path { stroke-dashoffset: 0; }
   .k-spin { animation: none; border-right-color: currentColor; opacity: .5; }

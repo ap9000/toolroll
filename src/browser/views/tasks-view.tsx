@@ -117,6 +117,9 @@ export function TasksView({ view }: { view: BrowserTasksView }) {
         items={statusChoices.map(one => [one.key, `${one.label} (${one.count})`] as const)} />}
       <KLinkSeg icons label="View" current={view.layout} items={layouts} />
     </div>
+    {/* The stored-state filter (from an older link or the CLI's --state): said once, with the way back. */}
+    {view.states !== undefined && !view.states[0]?.active && <p className="k-foot" data-state-filter>
+      Only {(view.states.find(one => one.active)?.label ?? "").toLowerCase()} tasks · <a href={view.states[0]!.href}>Show every state</a></p>}
     <p className="k-sr" data-needs-you-count>{view.needsYou} {view.needsYou === 1 ? "needs" : "need"} you {view.scope ?? ""}</p>
     {view.layout === "board" ? <TaskBoard view={view} match={match} /> : empty ?? <TaskList view={view} rows={rows} />}
     {view.layout === "list" && view.archived && !view.archived.active && <p className="k-foot"><a href={view.archived.href}>Archived tasks · {view.archived.count}</a></p>}

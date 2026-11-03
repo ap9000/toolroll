@@ -26,7 +26,6 @@ import { runCostWords,spendLine,tally } from "../summary.js";
 import { type WorkIndexGroup,type WorkIndexItem,type WorkIndexPage } from "../work-index.js";
 import { HEADLINES, type Headline } from "../task-status.js";
 import { chipOfHeadline, type ChipTone } from "../design/kit.js";
-import { btn as kitBtn, chip as kitChip, count as kitCount, empty as kitEmpty, iconSegLinks as kitIconSegLinks, pageHeader as kitPageHeader, parts as kitParts, row as kitRow, segLinks as kitSegLinks } from "./kit.js";
 import { WORK_VIEWS,type WorkFacts,type WorkStatus,type WorkView } from "../workspace-ui.js";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -943,7 +942,7 @@ export function workPage(
   const filtered = (data.state ?? null) !== null;
   const projectOf = (row: WorkIndexItem): string | null => data.multiProject || row.repo === null ? (row.repo === null ? 'Unplaced' : projectName(row.repo)) : null;
   // The status filters, as addresses, each with its count; Archived sits at the foot of Finished, not in the track.
-  const tabs = WORK_VIEWS.filter(one => one.key !== 'archived').map(one => ({ key: one.key, label: one.label, href: href(one.key, undefined, null), count: data.work.totals[one.key], active: one.key === data.view }));
+  const tabs = WORK_VIEWS.filter(one => one.key !== 'archived').map(one => ({ key: one.key, label: one.label, href: href(one.key), count: data.work.totals[one.key], active: one.key === data.view }));
   // The project filter: All and each project in view, when there is more than one.
   const known = chrome.projects ?? [];
   const lens = data.lens === undefined ? chrome.project : data.lens;
@@ -1001,7 +1000,7 @@ export function workPage(
         .map(key => ({ key, label: TASK_GROUP_LABEL[key], count: data.work.groups[key] })).filter(one => one.count > 0),
     rows,
     board,
-    archived: data.view === 'completed' || data.view === 'archived' ? { label: 'Archived', href: href('archived', undefined, null), count: data.work.totals.archived, active: data.view === 'archived' } : null,
+    archived: data.view === 'completed' || data.view === 'archived' ? { label: 'Archived', href: href('archived'), count: data.work.totals.archived, active: data.view === 'archived' } : null,
     empty: emptyNow,
     pages: { first: data.previous ? href(data.view) : null, next: data.work.nextCursor === null ? null : href(data.view, data.work.nextCursor) },
     tools: toolLinks.map(([path, label]) => ({ label: label!, href: path! })),
@@ -1011,20 +1010,39 @@ export function workPage(
     states: [{ label: 'Any state', href: href(data.view, undefined, null), active: (data.state ?? null) === null },
       ...TASK_STATES.map(one => ({ label: one.charAt(0).toUpperCase() + one.slice(1), href: href(data.view, undefined, one), active: data.state === one }))],
   };
-  // The page without the workspace (and the first paint): the same top bar and rows from the server kit.
-  const countOf = (tab: typeof tabs[number]): Html => kitCount(tab.count, { ink: tab.key === 'needs-you' });
-  const header = kitPageHeader('Tasks', { right: kitParts(
-    projects === null ? html`` : kitSegLinks('Project', projects.find(one => one.active)?.key ?? '', projects.map(one => ({ key: one.key, label: one.label, href: one.href }))),
-    kitSegLinks('Status', data.view, tabs.map(one => ({ key: one.key, label: one.label, href: one.href, count: countOf(one) }))),
-    kitIconSegLinks('View', layout, [{ key: 'list', label: 'List', href: view.layouts.list, icon: 'list' }, { key: 'board', label: 'Board', href: view.layouts.board, icon: 'board' }]),
-    kitBtn('New task', { variant: 'primary', sm: true, lead: 'plus', href: view.newTask.href })) });
-  const fallbackRow = (row: BrowserTasksView['rows'][number]): Html => kitRow({ href: row.href, chip: kitChip(row.word.word, row.word.tone), title: row.title, desc: row.detail ?? '',
-    meta: html`${row.project === null ? '' : html`<span>${row.project}</span>`}<span class="k-num">${row.age}</span>`, wait: row.ask !== null,
-    ...(row.action === null ? {} : { action: kitBtn(row.action.label, { sm: true, href: row.action.href }) }) });
-  const list = rows.length === 0 ? kitEmpty({ title: emptyNow?.text ?? current.empty, ...(emptyNow?.action ? { action: kitBtn(emptyNow.action.label, { sm: true, href: emptyNow.action.href }) } : {}) })
-    : joinHtml(rows.map(fallbackRow));
-  const pages = !data.previous && data.work.nextCursor === null ? null : html`<p class="k-foot">${data.previous ? html`<a href="${href(data.view)}">First page</a> ` : null}${data.work.nextCursor === null ? null : html`<a rel="next" href="${href(data.view, data.work.nextCursor)}">Next page</a>`}</p>`;
-  return screen('work', html`<div data-kit-page>${header}${list}${pages}</div>`, { chrome, workspace: { view } });
+  // The page without the workspace (and its first paint) keeps the older rows the server tests read; the workspace
+  // replaces it with the kit view above.
+  const legacyTabs = html`<nav class="work-views" aria-label="Task views">${WORK_VIEWS.map(one =>
+    html`<a href="${href(one.key)}"${one.key === data.view ? html` class="active" aria-current="page"` : null}>${one.label}<span class="count">${data.work.totals[one.key]}</span></a>`
+  )}</nav>`;
+  const rowHtml = (row: WorkIndexItem): Html => {
+    if (row.archived !== undefined) {
+      const act = tidyAct(row);
+      const project = data.multiProject || row.repo === null ? html`<span class="project-label">${row.repo === null ? 'Unplaced' : projectName(row.repo)}</span>` : null;
+      return html`<article class="work-row" data-task="${row.rootId}" data-work-status="archived" data-work-views="archived"><div class="work-row-main"><a class="work-title" href="${taskHref(row.rootId)}">${row.title}</a><p class="work-meta">${project}<span>${relativeAge(row.archived.at, data.now)}</span><span class="mono">${row.rootId}</span></p><p class="work-detail" data-archived-by>${archivedWords(row.archived)}</p></div><div class="work-row-status">${act === null ? null : postForm(act.action, html`<button type="submit" class="secondary">${act.label}</button>`, { hidden: { return: returnTo }, attrs: { class: 'inline', 'data-tidy-act': 'restore' } })}</div></article>`;
+    }
+    const target = row.primaryAction?.target;
+    const actionHref = row.primaryAction?.code === 'open-result' && target?.runId != null
+      ? `/review?result=${encodeURIComponent(target.taskId)}&run=${target.runId}`
+      : browserWorkActionHref(row);
+    const action = actionHref === null || row.primaryAction === null ? null : html`<a class="work-action" data-primary-action href="${actionHref}">${row.primaryAction.label} →</a>`;
+    const project = data.multiProject || row.repo === null ? html`<span class="project-label">${row.repo === null ? 'Unplaced' : projectName(row.repo)}</span>` : null;
+    const act = tidyAct(row);
+    const putAway = act === null ? null : postForm(act.action, html`<button type="submit" class="quiet">${act.label}</button>`, { hidden: { return: returnTo }, attrs: { class: 'inline', 'data-tidy-act': 'put-away' } });
+    return html`<article class="work-row" data-task="${row.rootId}" data-work-status="${row.status.token}" data-work-views="${row.status.views.join(' ')}"><div class="work-row-main"><a class="work-title" href="${taskHref(row.rootId)}">${row.title}</a><p class="work-meta">${project}<span>${relativeAge(row.updatedAt, data.now)}</span><span class="mono">${row.rootId}</span></p></div><div class="work-row-status">${statusLineHtml(row.status)}${action}${putAway}${row.familyProblem === null ? null : html`<p class="problem">${row.familyProblem}</p>`}${row.status.views.includes('needs-you') && !['write-scope', 'approve-scope'].includes(row.primaryAction?.code ?? '') && row.status.detail !== row.status.label && row.status.detail !== row.familyProblem ? html`<p class="work-detail">${row.status.detail}</p>` : null}${workDiagnosticsHtml(row.status.diagnostics)}</div></article>`;
+  };
+  // The state filter, as real links (the old task list's), so a page without the React view can still change it.
+  const stateLinks = html`<nav class="work-states" aria-label="Task state"><span class="meta">State:</span> ${joinHtml([html`<a href="${href(data.view, undefined, null)}"${filtered ? null : html` aria-current="page"`}>Any</a>`,
+    ...TASK_STATES.map(one => html`<a href="${href(data.view, undefined, one)}"${data.state === one ? html` aria-current="page"` : null}>${one}</a>`)], html` · `)}</nav>`;
+  const list = data.work.items.length === 0 && filtered && !data.previous
+    ? html`<div class="work-empty" data-work-empty="${data.view}"><p>No tasks are ${data.state} in this view.</p><a href="${href(data.view, undefined, null)}">Show every state →</a></div>`
+    : data.work.items.length === 0
+    ? html`<div class="work-empty" data-work-empty="${data.view}"><p>${data.previous ? 'There are no more tasks on this page.' : current.empty}</p>${data.view === 'all' && !data.previous ? html`<p><a class="button-link" href="${chrome.chat === true ? '/chat' : '/tasks/new'}">${chrome.chat === true ? 'Start in chat' : 'Add a task'}</a></p>` : html`<a href="${href('all')}">See all tasks →</a>`}</div>`
+    : html`<div class="work-list">${data.work.items.map(rowHtml)}</div>`;
+  const pages = !data.previous && data.work.nextCursor === null ? null : html`<nav class="row work-pagination" aria-label="Task pages">${data.previous ? html`<a class="button-link" href="${href(data.view)}">First page</a>` : null}${data.work.nextCursor === null ? null : html`<a class="button-link" rel="next" href="${href(data.view, data.work.nextCursor)}">Next page</a>`}</nav>`;
+  const tools = html`<details class="work-tools"><summary>Work tools${CHEVRON_ICON}</summary><nav class="work-tools-menu">${[['/inbox', 'Inbox'], ['/work?layout=board', 'Board'], ['/board?view=order', 'Order'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']]), ['/ledger', 'Action ledger']]
+      .map(([path, label]) => html`<a href="${path}">${label}</a>`)}</nav></details>`;
+  return screen('work', html`<div class="work-head"><h1>Tasks</h1>${putAwayLink === null ? null : html`<a class="button-link" href="${putAwayLink.href}" data-put-away-old>${putAwayLink.label}</a>`}${tools}</div>${limitsHtml(data.limits ?? null)}${legacyTabs}${stateLinks}${list}${pages}`, { chrome, workspace: { view } });
 }
 
 export function browsePage(chrome: Chrome, data: {
