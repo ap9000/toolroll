@@ -19,6 +19,7 @@ import { ACCEPT_NEEDS_REASON, acceptWithChecksOf, requirementsWordsOf, resultAct
 import { toneOf } from "./tone.js";
 import { ConfirmStoppedForm, HEADLINE_DOT, RebuildForm, StatusDetails, StatusHeadline, statusWhyLines } from "./status-summary.js";
 import { Html, RetryForm, threadWhen, whenTitle } from "./task-view.js";
+import { KButton, KInput, KLinkButton } from "../kit/index.js";
 
 type Selected = NonNullable<BrowserResultView["selected"]>;
 
@@ -274,10 +275,10 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
             {complete.returnTo !== undefined && <input type="hidden" name="return" value={complete.returnTo} />}
           </> : accept !== null && <input type="hidden" name="return" value={accept.returnTo} />}
           {reason !== null && <>
-            <label htmlFor="accept-reason" className="text-body font-medium" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
-            <Input id="accept-reason" type="text" name="note" maxLength={500} required placeholder={reason} className="h-11 w-full" />
+            <label htmlFor="accept-reason" className="k-label" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
+            <KInput id="accept-reason" type="text" name="note" maxLength={500} required placeholder={reason} />
           </>}
-          <Button type="submit" variant={variant} className={wide} {...mark} data-accept-result><Check className="phone:hidden" />{decision.label}</Button>
+          <KButton type="submit" variant={ink ? "primary" : "outline"} label={decision.label} {...mark} data-accept-result="" />
         </PostForm>;
       }
       case "accept-anyway": {
@@ -287,25 +288,25 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
         return <PostForm key={kind} action={anyway.action} className="flex w-full max-w-sm flex-col items-start gap-2 phone:max-w-none" data-accept-with-reason data-accept-anyway>
           <input type="hidden" name="run" value={String(anyway.run)} />
           <input type="hidden" name="return" value={anyway.returnTo} />
-          <label htmlFor="accept-reason" className="text-body font-medium" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
-          <Input id="accept-reason" type="text" name="note" maxLength={500} required placeholder="Why is this safe to accept?" className="h-11 w-full" />
-          <Button type="submit" variant="outline" className={wide} {...mark} data-accept-result><Check className="phone:hidden" />Accept anyway</Button>
+          <label htmlFor="accept-reason" className="k-label" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
+          <KInput id="accept-reason" type="text" name="note" maxLength={500} required placeholder="Why is this safe to accept?" />
+          <KButton type="submit" variant="outline" label="Accept anyway" {...mark} data-accept-result="" />
         </PostForm>;
       }
       case "next-check":
         return firstUnanswered === null ? null
-          : <Button key={kind} type="button" variant={variant} className={wide} {...mark} onClick={() => goToCheck(firstUnanswered)}>Go to your check</Button>;
+          : <KButton key={kind} variant={ink ? "primary" : "outline"} label="Go to your check" {...mark} onClick={() => goToCheck(firstUnanswered)} />;
       case "checks-running":
-        return <Button key={kind} type="button" variant={variant} disabled aria-disabled="true" className={wide} {...mark}>Checks running</Button>;
+        return <KButton key={kind} variant="outline" label="Checks running" disabled aria-disabled="true" {...mark} />;
       case "run-checks":
         if (selected.runChecks === null) return null;
         return <PostForm key={kind} action={selected.runChecks.action} className="phone:w-full">
           <input type="hidden" name="level" value={selected.runChecks.level} />
           <input type="hidden" name="return" value={selected.runChecks.returnTo} />
-          <Button type="submit" variant={variant} className={wide} {...mark}>Run checks</Button>
+          <KButton type="submit" variant={ink ? "primary" : "outline"} label="Run checks" {...mark} />
         </PostForm>;
       case "request-changes":
-        return <Button key={kind} asChild variant={variant} className={wide}><a href="#request-changes" {...mark}>Request changes</a></Button>;
+        return <KLinkButton key={kind} variant={ink ? "primary" : "outline"} label="Request changes" href="#request-changes" {...mark} />;
       case "rebuild":
         return need?.rebuild == null ? null : <RebuildForm key={kind} action={need.rebuild.action} csrf={csrf} label={need.label} className="min-h-11" />;
       case "confirm-stopped":
@@ -321,8 +322,9 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
   const tucked = acts.primary !== null ? acts.secondary : null;
   const hasMore = tucked !== null || line !== null || next !== null || effect !== null;
   const rest = more ? "" : "phone:hidden";
-  return <Card data-result-decision={acts.primary ?? "none"} aria-label="Decision" data-dock={more ? "open" : "compact"}
-    className={cn("gap-2 phone:gap-2", shown.length > 0 && "phone:sticky phone:bottom-[-20px] phone:z-10 phone:-mx-4 phone:rounded-none phone:border-x-0 phone:px-4 phone:py-3 phone:pb-[max(12px,var(--safe-bottom))] phone:shadow-[0_-4px_16px_rgb(0_0_0/.08)]")}>
+  // The decision is the result's approval box (src/design/KIT.md slots): waiting on you while Accept is its act.
+  return <section data-result-decision={acts.primary ?? "none"} aria-label="Decision" data-dock={more ? "open" : "compact"}
+    className={cn("k-slots so-result-decision", acts.primary === "accept" && "wait")}>
     {line !== null && <p className={cn("flex max-w-[75ch] gap-2 text-body", rest)} data-decision-why {...(acts.line === null ? {} : { "data-cant-accept": "" })}>
       <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />{line}</p>}
     {selected.failure != null && selected.failure.retry === null && <p className="max-w-[75ch] text-body" data-failure-suggestion>
@@ -333,11 +335,10 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
     {shown.length > 0 && <div className={cn("flex flex-wrap items-center gap-2 phone:flex-nowrap phone:items-stretch", reason !== null && "flex-col items-start gap-3 phone:flex-row phone:items-stretch phone:gap-2", more && "phone:flex-wrap")} data-result-acts>
       <div className="contents phone:flex phone:min-w-0 phone:flex-1 phone:flex-col">{acts.primary !== null ? act(acts.primary, true) : acts.secondary !== null && act(acts.secondary, false)}</div>
       {tucked !== null && <div className={cn("contents phone:order-last phone:basis-full phone:flex-col", more ? "phone:flex" : "phone:hidden")}>{act(tucked, false)}</div>}
-      {hasMore && <Button type="button" variant="outline" className="hidden min-h-11 shrink-0 phone:inline-flex" aria-expanded={more} aria-label={more ? "Fewer options" : "More options"}
-        data-dock-more onClick={() => setMore(open => !open)}>{more ? "Less" : "More"}<ChevronDown className={cn("transition-transform motion-reduce:transition-none", more && "rotate-180")} /></Button>}
+      {hasMore && <KButton variant="ghost" className="k-phone-only" aria-expanded={more} label={more ? "Less" : "More"} data-dock-more="" onClick={() => setMore(open => !open)} />}
     </div>}
-    {effect !== null && <p className={cn("max-w-[75ch] text-body text-muted-foreground", rest)} data-decision-effect>{effect}</p>}
-  </Card>;
+    {effect !== null && <p className={cn("k-slot-terms", rest)} data-decision-effect>{effect}</p>}
+  </section>;
 }
 
 /** Summary / Changes / Checks. The tab links keep the page script's
@@ -345,23 +346,22 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
 function Panel({ panel, children }: { panel: BrowserResultPanel; children?: ReactNode }) {
   return <div id="result" {...panel.attributes} className="flex scroll-mt-4 flex-col gap-4">
     {panel.history !== "" && <Html html={panel.history} />}
-    <Card className="gap-0 overflow-hidden p-0 phone:p-0">
-      <nav role="tablist" aria-label="Result views" className="flex gap-1 overflow-x-auto border-b border-border px-3 phone:px-2">
-        {panel.tabs.map(tab => <a key={tab.key} role="tab" href={tab.href} data-result-tab={tab.key} aria-selected={tab.active ? "true" : "false"} {...(tab.active ? {} : { tabIndex: -1 })}
-          className="-mb-px inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-3 py-3 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground aria-selected:border-primary aria-selected:text-foreground phone:min-h-11">
-          {tab.label}{tab.count !== "" && <span className="rounded-full bg-muted px-1.5 text-xs font-medium tabular-nums">{tab.count}</span>}
+    <div className="so-result-panel">
+      <nav role="tablist" aria-label="Result views" className="k-tabs">
+        {panel.tabs.map(tab => <a key={tab.key} role="tab" href={tab.href} data-result-tab={tab.key} aria-selected={tab.active ? "true" : "false"} {...(tab.active ? {} : { tabIndex: -1 })}>
+          {tab.label}{tab.count !== "" && <span className="k-count">{tab.count}</span>}
         </a>)}
       </nav>
-      {panel.views.map(one => <div key={one.key} role="tabpanel" data-result-view={one.key} hidden={!panel.tabs.some(tab => tab.key === one.key && tab.active)} className="px-5 py-4 phone:px-4">
+      {panel.views.map(one => <div key={one.key} role="tabpanel" data-result-view={one.key} hidden={!panel.tabs.some(tab => tab.key === one.key && tab.active)} className="so-result-body">
         <Html html={one.html} className="so-result-view" />
       </div>)}
-    </Card>
+    </div>
     {children}
     {/* With nothing saved yet, the form waits hidden until Request changes
         (or a line note) opens it; the page script opens it in place. */}
-    {panel.request !== null && <Card id="request-changes" className={cn("result-request scroll-mt-4 gap-3", panel.requestQuiet && "hidden has-[details[open]]:flex")}>
+    {panel.request !== null && <section id="request-changes" aria-label="Request changes" className={cn("result-request so-result-request-box", panel.requestQuiet && "is-quiet")}>
       <Html html={panel.request} className="so-result-request" />
-    </Card>}
+    </section>}
   </div>;
 }
 

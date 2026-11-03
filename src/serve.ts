@@ -1029,6 +1029,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
       project = wanted;
     }
+    // All projects, asked for by name on Tasks (its project filter): the rolled-up list, admission-bound as ever.
+    if (route.id === 'work' && url.searchParams.get('all') === '1' && !url.searchParams.has('project') && url.searchParams.getAll('all').length === 1) project = null;
     // Every page's Tasks count covers this one project view, whatever project the page itself shows.
     const facts = requestContext.getStore();
     if (facts !== undefined) facts.lens = project;
@@ -1556,6 +1558,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         ...(s.chrome.demo ? { demo: { text: DEMO_BANNER, short: DEMO_BANNER_SHORT } } : {}),
         pageHtml: extras.pageHtml === undefined ? (conversation === null ? pageHtml : null) : extras.pageHtml === null ? null : htmlString(extras.pageHtml),
         navigation: [...browserNavigationOf(currentPath, s.chrome.project, needsYou, tasksProject, s.chrome.inboxLabel), { label: 'Workspace tools', href: '/menu', active: path.pathname === '/menu' }],
+        // The one Needs-you count (tasks only), with the scope it covers: the Tasks list's own count for this project
+        // view (or every project), so the rail, the phone header and Home all read the same number.
+        needsYou: { count: needsYou, saturated: s.chrome.inboxSaturated === true, scope: tasksProject ?? null,
+          label: s.chrome.inboxLabel ?? `${needsYou} ${needsYou === 1 ? 'needs' : 'need'} you`,
+          href: tasksProject === null ? '/work?view=needs-you' : `/work?project=${encodeURIComponent(tasksProject)}&view=needs-you` },
         chats,
         ...(s.refreshSeconds === undefined ? {} : { refreshSeconds: Math.max(5, Math.floor(s.refreshSeconds)) }),
         ...(s.chrome.signIn === undefined ? {} : { signIn: s.chrome.signIn }),

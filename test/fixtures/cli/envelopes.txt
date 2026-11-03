@@ -2592,6 +2592,37 @@ $ contract --commands --json → 0
       "remote": "yes"
     },
     {
+      "invocation": "task ship",
+      "synopsis": "the task's pull request checks as last observed for its head: each check's state and how long it took",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "positionals": [
+        {
+          "name": "task",
+          "required": true,
+          "meaning": "any version of the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task",
+        "no-pull-request"
+      ],
+      "remote": "yes"
+    },
+    {
       "invocation": "task add-tests",
       "synopsis": "file a small task to write tests for the task's latest change; it waits for approval like any task",
       "audience": "agent",
@@ -5285,6 +5316,7 @@ $ task list --json → 0
     "all": 2,
     "needs-you": 2,
     "running": 0,
+    "queued": 0,
     "completed": 0,
     "archived": 0
   },
@@ -5536,6 +5568,7 @@ $ task list --view archived --json → 0
     "all": 2,
     "needs-you": 2,
     "running": 0,
+    "queued": 0,
     "completed": 0,
     "archived": 0
   },

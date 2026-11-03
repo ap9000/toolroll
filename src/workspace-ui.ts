@@ -29,18 +29,19 @@ import { html, postForm, type Html } from "./html.js";
 
 /** The Work destination's views — shortcuts over the same rows, never a
  * persisted state. All is the default. */
-export type WorkView = "all" | "needs-you" | "running" | "completed" | "archived";
+export type WorkView = "all" | "needs-you" | "running" | "queued" | "completed" | "archived";
 
 export const WORK_VIEWS: readonly { key: WorkView; label: string; hint: string; empty: string }[] = [
   { key: "all", label: "All", hint: "Every task in view, most urgent first.", empty: "Nothing is in progress. Describe work in chat or add a task, and it appears here." },
   { key: "needs-you", label: "Needs you", hint: "Tasks waiting on an answer, approval, or your inspection.", empty: "Nothing needs you right now. Queued and running work continues on its own." },
-  { key: "running", label: "Building", hint: "Attempts a builder owns right now.", empty: "Nothing is building right now. Approved tasks start when a builder with capacity is connected." },
-  { key: "completed", label: "Complete", hint: "Tasks the lead or user has marked complete. Recorded check results remain available.", empty: "No tasks have been marked complete in this view." },
+  { key: "running", label: "Running", hint: "Attempts a builder owns right now.", empty: "Nothing is running right now. Approved tasks start when a builder with capacity is connected." },
+  { key: "queued", label: "Queued", hint: "Tasks that start on their own: waiting for a builder, a dependency or a retry.", empty: "Nothing is queued." },
+  { key: "completed", label: "Finished", hint: "Tasks the lead or user has marked complete. Recorded check results remain available.", empty: "Nothing has finished in this view yet." },
   { key: "archived", label: "Archived", hint: "Tasks put away by you or by tidy. Their history and results are kept.", empty: "Nothing is put away." },
 ];
 
 export function parseWorkView(raw: string | null): WorkView {
-  return raw === "needs-you" || raw === "running" || raw === "completed" || raw === "archived" ? raw : "all";
+  return raw === "needs-you" || raw === "running" || raw === "queued" || raw === "completed" || raw === "archived" ? raw : "all";
 }
 
 /** The finished result's recorded facts, as `taskViewData`, dispatch, and
@@ -618,6 +619,7 @@ function workStatusWordsOf(facts: WorkFacts, resultDisplay?: DisplayStatus): Wor
   const views: WorkView[] = ["all"];
   if (needs) views.push("needs-you");
   if (running) views.push("running");
+  if (!needs && !running && facts.state === "queued") views.push("queued");
   if (facts.state === "done") views.push("completed");
 
   const dispatchWords = (tone: StatusTone, rank: number, action: NextAction | null): WorkStatus => ({
@@ -677,7 +679,7 @@ function workStatusWordsOf(facts: WorkFacts, resultDisplay?: DisplayStatus): Wor
 
 /** The counts each view tab wears — from the same rows the page lists. */
 export function workCounts(rows: readonly { views: readonly WorkView[] }[]): Record<WorkView, number> {
-  const counts: Record<WorkView, number> = { all: 0, "needs-you": 0, running: 0, completed: 0, archived: 0 };
+  const counts: Record<WorkView, number> = { all: 0, "needs-you": 0, running: 0, queued: 0, completed: 0, archived: 0 };
   for (const row of rows) for (const view of row.views) counts[view] += 1;
   return counts;
 }
