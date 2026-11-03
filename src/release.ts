@@ -251,6 +251,9 @@ export type AutoReleaseAdapter = {
 export type ReleaseAdapters = {
   /** One approval per release (release-once.md); absent on a plane that can't carry. */
   release?: ReleaseAuthorityAdapter;
+  /** Where each step's start, end and outcome are recorded (store.ts release_step, v146) for the Release view and
+   * `toolroll release status`. Best effort: a failure here never stops or changes the release. */
+  progress?: (entry: { taskId: string; tag: string; version: string; pr: number | null; step: ReleaseStep; state: "running" | "done" | "failed" | "waiting"; at: Date; detail?: string | null }) => void;
   now(): Date;
   sleep(ms: number): Promise<void>;
   say(line: string): void;
@@ -504,7 +507,13 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
   let supersededTask: string | null = null;
 
   const save = () => { journal!.updatedAt = adapters.now().toISOString(); writeJournal(file, journal!); };
-  const advance = (next: ReleaseStep) => { journal!.step = next; journal!.stopped = null; save(); };
+  /** Tell the progress record about a step (v146). Never throws and never waits: the release goes on whatever it says. */
+  const mark = (at: ReleaseStep, state: "running" | "done" | "failed" | "waiting", detail: string | null = null) => {
+    const j = journal;
+    if (j === null || adapters.progress === undefined || at === "done") return;
+    try { adapters.progress({ taskId: j.task.id, tag: j.tag, version: j.packageVersion, pr: j.pr, step: at, state, at: adapters.now(), detail }); } catch { /* best effort */ }
+  };
+  const advance = (next: ReleaseStep) => { const was = journal!.step; journal!.step = next; journal!.stopped = null; save(); if (was !== next) mark(was, "done"); };
   const intend = (at: ReleaseStep) => { journal!.intents[at] = adapters.now().toISOString(); save(); };
   const recoverDeploy = async () => {
     const j = journal!;
@@ -532,9 +541,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         unreachable = networkWords(error);
         answer = null;
       }
-      if (answer !== null) return answer;
+      if (answer !== null) { if (said && journal !== null) mark(journal.step, "running"); return answer; }
       if (adapters.now().getTime() >= deadline) throw new Stop("timeout", `Still waiting for ${what} after ${limits[at]} minutes${unreachable === null ? "" : ` (GitHub last didn't answer: ${unreachable})`}.`);
-      if (!said) { say(`  waiting for ${what} (up to ${limits[at]} min)`); said = true; }
+      if (!said) { say(`  waiting for ${what} (up to ${limits[at]} min)`); said = true; if (journal !== null) mark(journal.step, "waiting", `waiting for ${what}`); }
       await adapters.sleep(pollMs);
     }
   };
@@ -781,6 +790,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     /** identity(), on a plane that keeps release authority; a legacy plane keeps the old rules. */
     const watch = async (action: ReleaseAction) => { if (rel !== undefined) await identity(action, true); };
     const restart = async (head: string) => {
+      // The step this commit was at ends here: the release goes on with the new commit (and, filed again, a new task).
+      mark(j.step, "failed", `${j.branch} moved to ${head.slice(0, 7)}`);
       const tree = await adapters.repo.tree(head);
       if (rel !== undefined && j.authority && epoch !== null) {
         say(`  ${j.branch} moved to ${head.slice(0, 7)}: checking whether the approval carries`);
@@ -894,6 +905,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     while (j.step !== "done" && homebrewLeft === null) {
       step = j.step;
       say(`• ${j.step}`);
+      mark(j.step, "running");
       try {
       switch (j.step) {
         case "gate": {
@@ -1275,7 +1287,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           const progress = await homebrewPass(finishingHomebrew);
           j.homebrew = { pr: j.homebrew?.pr ?? null, head: j.homebrew?.head ?? null, merged: progress.state === "current" && j.homebrew?.head != null ? true : j.homebrew?.merged ?? false, state: progress.state, why: progress.why };
           save();
-          if (progress.state === "pending" || progress.state === "failed") { homebrewLeft = { state: progress.state, why: progress.why }; break; }
+          if (progress.state === "pending" || progress.state === "failed") { homebrewLeft = { state: progress.state, why: progress.why }; mark("homebrew", progress.state === "failed" ? "failed" : "waiting", progress.why); break; }
           advance("done");
           break;
         }
@@ -1297,6 +1309,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     if (journal !== null) {
       journal.stopped = { step: journal.step, reason: stop.reason, message: stop.message, at: adapters.now().toISOString() };
       try { save(); } catch { /* the stop is still reported */ }
+      mark(journal.step, "failed", stop.message);
     }
     return { ok: false, reason: stop.reason, message: stop.message, step: journal?.step ?? step, journal, file, resume };
   }

@@ -17,7 +17,8 @@ import { RELEASE_LIMITS, runRelease, type ReleaseAdapters, type ReleaseOutcome }
 import { processes, releaseAdapters } from "./release-adapters.js";
 import { journals, releaseGate, type GateReleaseWorld } from "./release-gate.js";
 import { rescueDeployment, type RescueWorld } from "./deploy-rescue.js";
-import { databasePath, openStore, revokeRelease, type Database } from "./store.js";
+import { databasePath, elapsedSeconds, latestReleaseStepTask, openStore, releaseProgressFor, revokeRelease, type Database } from "./store.js";
+import { dur } from "./design/kit.js";
 import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit, setUnsandboxedCarry } from "./release-carry.js";
 import { authenticateApprover, machineActing, personProof, proveCredential } from "./scope.js";
 import { allowAutoPublish, setReleaseApproval } from "./release-auto.js";
@@ -36,6 +37,9 @@ export const RELEASE_HELP = `toolroll release <branch> — release Toolroll itse
   publication; Homebrew waits for its checks to register and all pass before merging.
 
   Run the same command to resume after a stop. Interrupted deployments recover their saved stage before retrying.
+
+toolroll release status [<task>] — the steps of a release (the newest one recorded, or the release task named): each
+  step's state and how long it took, and where it stopped
 
 toolroll release --release-gate <id> [--yes] — lift the update pause a deployment left before its swap
 
@@ -189,6 +193,11 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
     if (positional[0] !== "nightly" || positional.length !== 1) return refuse("usage", "--github, --lane-alias and --lane-retire go with `toolroll release nightly`.", 2);
     if ([bare.has("--github"), laneAlias !== undefined, laneRetire !== undefined].filter(Boolean).length !== 1 || scheduleFlag !== undefined || bare.has("--start")) return refuse("usage", "Use one of --github, --lane-alias or --lane-retire, without --schedule or --start.", 2);
     return runGithubNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, alias: laneAlias, retire: laneRetire }, write, json, deps);
+  }
+  // `release status [<task>]`: the steps recorded for a release (a branch named "status" can't be released by name).
+  if (positional[0] === "status" && positional.length <= 2) {
+    if (args.some(arg => VALUE_FLAGS.has(arg.split("=")[0]!) || ["--new", "--no-carry", "--start"].includes(arg))) return refuse("usage", "`toolroll release status [<task>]` takes only --json.", 2);
+    return runStatusCommand(positional[1], write, json, deps);
   }
   if (positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: bare.has("--start") }, write, json, deps);
   if (["carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok"].includes(positional[0] ?? "") && positional.length === 2) {
@@ -453,5 +462,28 @@ async function runGithubNightlyCommand(flags: { repo: string | undefined; as: st
     const made = optInGithubNightly(store, { repo: flags.repo, as: flags.as, token: flags.token }, now);
     return made.ok ? answer(true, { github: made.slug, lanes: made.lanes }, `GitHub's nightly for ${made.slug} now holds this project's deploys, release merges and tags while a lane fails (${made.lanes} lanes).`, 0)
       : answer(false, { reason: "refused", message: made.message }, made.message, 1);
+  } finally { store.close(); }
+}
+
+/** `toolroll release status [<task>]` (read-only): the release's recorded steps (store.ts release_step, v146). */
+async function runStatusCommand(task: string | undefined, write: (line: string) => void, json: boolean, deps: ReleaseCliDeps): Promise<number> {
+  const command = "release status";
+  const refuse = (reason: string, message: string, code: number) => { write(json ? checkedEnvelopeJson({ ok: false, command, reason, message }) : message); return code; };
+  const database = deps.database ?? databasePath(process.env, homedir());
+  if (!existsSync(database)) return refuse("no-plane", "This machine has no Toolroll database.", 1);
+  const store = openStore(database);
+  try {
+    const now = (deps.now ?? (() => new Date()))();
+    const taskId = task ?? latestReleaseStepTask(store);
+    if (taskId === null) return refuse("no-release", "No release has recorded its steps yet.", 1);
+    const progress = releaseProgressFor(store, taskId);
+    if (progress === null) return refuse("no-release", `No release steps are recorded for ${taskId}.`, 1);
+    const steps = progress.steps.map(one => ({ ...one, seconds: elapsedSeconds(one.startedAt, one.endedAt, now) }));
+    if (json) { write(checkedEnvelopeJson({ ok: true, command, task: taskId, release: { ...progress, steps } })); return 0; }
+    const word = { running: "running", waiting: "waiting", done: "done", failed: "failed" } as const;
+    write(`Release ${progress.version} (${progress.tag})${progress.pr === null ? "" : ` · pull request #${progress.pr}`} · task ${taskId}`);
+    for (const one of steps) write(`  ${one.step.padEnd(9)} ${word[one.state].padEnd(8)} ${one.seconds === null ? "–" : dur(one.seconds)}${one.detail === null ? "" : `  ${one.detail}`}`);
+    if (progress.stopped !== null) write(`Stopped at ${progress.stopped.step}: ${progress.stopped.message}`);
+    return 0;
   } finally { store.close(); }
 }
