@@ -50,7 +50,7 @@ function Question({ row }: { row: BrowserHomeRow }) {
     <h2 className="so-open-t">{question.text}</h2>
     {question.recap && <p className="so-open-x">{question.recap}</p>}
     <KRadios name={`answer-${question.id}`} legend="Choose one" current={choice} onChange={setChoice}
-      items={question.options.map(one => ({ value: one.id, label: one.label, text: one.consequence, ...(one.recommended ? { aside: <KChip word="Recommended" dot={false} /> } : {}) }))} />
+      items={question.options.map(one => ({ value: one.id, label: one.label, text: one.consequence, ...(one.recommended ? { tag: <KChip word="Recommended" dot={false} /> } : {}) }))} />
     <div className="k-acts">
       <KButton variant="primary" label={done ? "Answered" : "Answer"} busy={busy ? "Sending…" : false} onClick={() => { void answer(); }} aria-disabled={done ? true : undefined} />
       <KLinkButton variant="ghost" label="Open the question" href={`/d/${question.id}`} />

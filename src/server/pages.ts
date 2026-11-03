@@ -232,7 +232,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   // plain 302 — never the shared 303 helper, which belongs to POST landings.
   async function morningAlias(ctx: HandlerContext): Promise<void> {
     const { response } = ctx;
-    response.writeHead(302, { ...SAFETY, Location: "/activity" });
+    response.writeHead(302, { ...SAFETY, Location: "/" });
     response.end();
     return;
   }
@@ -366,36 +366,15 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       latest: operator && latest !== null ? latest : null, csrf: operator ? who.session.csrf : null, today: now.toISOString().slice(0, 10) };
     const rows = store.actionLedger({ ...query, ...(before === null ? {} : { before: Number(before) }), limit: 51 });
     if (url.searchParams.get("format") === "json") return respond(response, 200, "application/json; charset=utf-8", JSON.stringify(checkResponse("ledgerPage", { chain: { ok: report.ok, entries: report.entries, through: report.through, head: report.head, problem: report.problem }, entries: rows.slice(0, 50), nextBefore: rows.length > 50 ? rows[49]!.id : null })));
-    return sendScreen(response, 200, screen("Action ledger", ledgerBody(rows, projects, url.searchParams, chainView), { chrome: chromeFor(chosen === "" ? null : chosen, "ledger", undefined, chosen === "" ? "all" : "project") }));
+    return sendScreen(response, 200, screen("Audit log", ledgerBody(rows, projects, url.searchParams, chainView), { chrome: chromeFor(chosen === "" ? null : chosen, "ledger", undefined, chosen === "" ? "all" : "project") }));
   }
 
+  // The activity summary lives on Home now (UI revamp wave B); the old address keeps answering, as a GET alias.
   async function activityPage(ctx: HandlerContext): Promise<void> {
-    const { who, response, now, project } = ctx;
-    const since = new Date(now.getTime() - 24 * 60 * 60_000).toISOString();
-    return sendScreen(
-      response,
-      200,
-      homePage(chromeFor(project, "runs"), {
-        csrf: who.via === "cookie" ? who.session.csrf : "",
-        taskCount: store.listTasksScoped(project, undefined, 1, null).length,
-        repo: project,
-        summary: tally(store.runsSinceScoped(since, project)),
-        decisions: store.listDecisionsScoped(project),
-        incidents: store.openIncidents(project),
-        stranded: store.strandedTasks(project),
-        gaps: project === null ? null : computeGaps(store, project, now),
-        // Rows that want a person, plus task updates the live pairing failed to send (never quiet progress).
-        outboxPending: store.pendingForAttention().length,
-        settings: options.telegramTokenFile !== undefined,
-        building: store.liveClaims(project, now),
-        runners: store.listRunners(),
-        worktrees: store
-          .listWorktrees()
-          .filter(one => project === null || one.repo === project || identities.hot(one.repo) === identities.hot(project)),
-        episode: project === null ? null : store.latestWatchEpisode(project),
-        now,
-      }),
-    );
+    const { response } = ctx;
+    response.writeHead(302, { ...SAFETY, Location: "/" });
+    response.end();
+    return;
   }
 
   async function systemScreen(ctx: HandlerContext): Promise<void> {

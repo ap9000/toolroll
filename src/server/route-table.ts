@@ -214,15 +214,15 @@ get("tasks", "work", "/work", { limited: "collection", ...free });
 get("tasks", "work.put-away", "/work/put-away", { limited: "collection", ...free, callers: ["cookie"], ...approver("Only an approver can put tasks away.", "/work") });
 post("tasks", "work.put-away.apply", "/work/put-away", { scope: "step-up", limited: "collection", ...approver("Only an approver can put tasks away.", "/work") });
 get("tasks", "next", "/next", { limited: "collection" });
-get("pages", "morning", "/morning");
+get("pages", "morning", "/morning", { limited: "collection", ...free }); // a redirect to / now
 get("pages", "workbench", "/workbench", free);
 get("tasks", "board", "/board", { limited: "collection" });
 get("tasks", "review", "/review", { limited: "collection" });
 get("settings", "spend", "/spend", { ...free, ...anyOperator("An instance operator sees spend.", "/") });
 get("settings", "settings.spend", "/settings/spend", { ...free, ...anyOperator("An instance operator sets spending limits.", "/settings") });
 get("pages", "ledger", "/ledger", { limited: "unscoped", ...free });
-get("pages", "activity", "/activity");
-get("tasks", "done", "/done", { limited: "collection" });
+get("pages", "activity", "/activity", { limited: "collection", ...free }); // a redirect to / now (Home has the summary)
+get("tasks", "done", "/done", { limited: "collection", ...free }); // a redirect to the Tasks list's Finished view now
 get("settings", "mode", "/mode");
 get("people", "people.page", "/people", { limited: "unscoped", ...free });
 get("pages", "system", "/system");
@@ -241,7 +241,7 @@ get("tasks", "tasks.new", "/tasks/new", { limited: "collection", ...free });
 get("tasks", "task.page", `^\\/t\\/${TASK}$`, { project: "task", limited: "resource", ...free, sample: "/t/one" });
 get("tasks", "task.evidence", `^\\/t\\/${TASK}\\/evidence$`, { project: "task", limited: "resource", ...free, sample: "/t/one/evidence" });
 get("pages", "ledger.export", "/ledger/export", { limited: "unscoped", ...free });
-get("tasks", "runs", "/runs", { limited: "collection" });
+get("tasks", "runs", "/runs", { limited: "collection", ...free }); // a redirect to /agents now
 get("pages", "menu", "/menu", { limited: "collection", ...free });
 get("tasks", "run.page", `^\\/r\\/${ID}$`, { project: "run", limited: "resource", ...free, sample: "/r/1" });
 get("tasks", "run.evidence", `^\\/r\\/${ID}\\/evidence\\/${ID}$`, { project: "run", limited: "resource", ...free, sample: "/r/1/evidence/2" });

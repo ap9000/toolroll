@@ -635,36 +635,6 @@ export function boardBody(
   ], "\n");
 }
 
-/** Completed work: one row per done task, its final run and PR attached. */
-export function donePage(
-  chrome: Chrome,
-  rows: ReturnType<Store["listCompletedWorkScoped"]>,
-  ciRed: (pr: number) => boolean,
-): Screen {
-  const list =
-    rows.length === 0
-      ? html`<p class="meta">No finished tasks yet.</p>`
-      : joinHtml(rows.map(row => {
-          const pr =
-            row.prNumber === null
-              ? row.publicationState === null
-                ? null
-                : html` <span class="badge">${sentenceCase(row.publicationState)}</span>`
-              : html` <a href="${row.prUrl ?? "#"}" class="badge badge-open">PR #${row.prNumber}</a>${ciRed(row.prNumber) ? html` <span class="badge badge-failed">CI failing</span>` : null}`;
-          const needsVerification =
-            (row.proofVerdict === "short" || row.proofVerdict === "refuted") && !row.proofAccepted
-              ? html` <span class="badge badge-failed">${row.proofVerdict === "refuted" ? "conflicting evidence" : "missing evidence"}</span>`
-              : null;
-          return html`<div class="card"><p><a href="${taskHref(row.taskId)}"><strong>${row.title}</strong></a>${row.outcome === "no-change" ? html` <span class="badge">No change needed</span>` : null}${pr}${needsVerification}${criterionMatrixSummary(row.proofMatrix)}</p>${row.handoff === null ? null : html`<p class="meta">${row.handoff.length > 200 ? row.handoff.slice(0, 200) + "…" : row.handoff}</p>`}<p class="meta mono">${row.taskId} · ${whenTime(row.completedAt)}${row.ranMinutes === null ? null : html` · ran ${row.ranMinutes}m`}${row.provider === null ? null : html` · ${runCostWords({ authMode: row.authMode, costUsd: row.costUsd, tokensIn: null, tokensOut: null })}`} · <a href="${reviewHref(row.taskId)}">review →</a></p></div>`;
-        }), "\n");
-  return screen("done", joinHtml([
-    html`<h1>Done</h1>`,
-    buildsViews("done"),
-    html`<p class="hint">completed work in order of completion — each with its final build, the agent's conclusion, usage, and its pull request; <a href="/review">review</a> opens the same saved work and its checks</p>`,
-    list,
-  ], "\n"), { chrome });
-}
-
 export function homePage(chrome: Chrome, data: {
   csrf: string;
   taskCount: number;

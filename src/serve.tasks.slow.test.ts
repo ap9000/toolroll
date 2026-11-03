@@ -1514,7 +1514,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
 
     const runPage = await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text();
     expect(runPage).toContain("subscription · $2.75 API-price equivalent (not an API charge)");
-    expect(runPage).toContain(">usage</span>");
+    expect(runPage).toContain("<dt>Spend</dt>");
   });
 
   test("hold is 'Hold the next attempt'; while an attempt runs, retry says when it becomes available instead of offering a deferred button", async () => {

@@ -338,7 +338,7 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
       // capability on, session off: no links, an offer to turn them on
       const before = await (await fetch(url(`/r/${runId}`), { headers: { cookie } })).text();
       expect(before).not.toContain("vscode://");
-      expect(before).toContain("open files in VS Code from this device");
+      expect(before).toContain("Open files in VS Code from this device");
       // session yes: tame paths link (worktree space encoded), traversal never does
       await activate(cookie);
       const after = await (await fetch(url(`/r/${runId}`), { headers: { cookie } })).text();

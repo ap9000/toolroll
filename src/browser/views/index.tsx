@@ -13,6 +13,7 @@ import { FlowView } from "./flow-view.js";
 import { AgentsView } from "./agents-view.js";
 import { HomeView } from "./home-view.js";
 import { SearchView } from "./search-view.js";
+import "../history.css";
 
 export { TaskDetails, type ThreadChat } from "./task-view.js";
 

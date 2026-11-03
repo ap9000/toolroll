@@ -670,8 +670,6 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/flow-unattended.ts#scriptProvenanceOf@27": 2,
     "src/landed-cleanup.ts#reconcileLanded@33": 4,
     "src/landed-cleanup.ts#removeCheckout@31>wanted@2": 4,
-    "src/ledger-view.ts#ledgerBody@2": 7,
-    "src/ledger-view.ts#ledgerBody@2>shown.map(_)@4": 1,
     "src/mcp-oauth.ts#<module>": 1,
     "src/mcp-oauth.ts#createOAuthHttp@9>consentHtml@14": 1,
     "src/model-catalog.ts#recordCatalog@8>store.transact(_)@1": 2,

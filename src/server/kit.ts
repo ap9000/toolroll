@@ -114,8 +114,8 @@ export function formRow(label: string, hint: string | null, control: Html, varia
   return html`<div class="${cls("k-frow", variant)}"><div class="k-frow-l"><span class="k-frow-t">${label}</span>${hint ? html`<span class="k-frow-h">${hint}</span>` : ""}</div><div class="k-frow-c">${control}</div></div>`;
 }
 /** Radio cards: one choice from a few, each with a bold label and one muted line. */
-export function radios(options: { name: string; legend: string; current: string; items: ReadonlyArray<{ value: string; label: string; text?: string }> }): Html {
-  return html`<fieldset class="k-radios"><legend class="k-sr">${options.legend}</legend>${options.items.map(item => html`<label class="k-opt"><input type="radio" name="${options.name}" value="${item.value}"${item.value === options.current ? html` checked` : ""}><span><b>${item.label}</b>${item.text ? html`<span>${item.text}</span>` : ""}</span></label>`)}</fieldset>`;
+export function radios(options: { name: string; legend: string; current: string; items: ReadonlyArray<{ value: string; label: string; text?: string; tag?: Html }> }): Html {
+  return html`<fieldset class="k-radios"><legend class="k-sr">${options.legend}</legend>${options.items.map(item => html`<label class="k-opt"><input type="radio" name="${options.name}" value="${item.value}"${item.value === options.current ? html` checked` : ""}><span><b>${item.label}</b>${item.text ? html`<span>${item.text}</span>` : ""}</span>${item.tag ?? ""}</label>`)}</fieldset>`;
 }
 
 // ---- blocks -----------------------------------------------------------------------------------------------------
@@ -168,10 +168,11 @@ export const doc = (...parts: HtmlValue[]): Html => html`<div class="k-doc">${pa
 // ---- approval ---------------------------------------------------------------------------------------------------
 
 /** The four fixed slots: status (chip + heading) · supporting text · actions · terms, plus the error slot. The same
- * slots in every state (waiting, approved, automatic, refused), so nothing moves. */
-export function slots(options: { wait?: boolean; status: Html; text: HtmlValue; acts: HtmlValue; terms: HtmlValue; err?: HtmlValue; attrs?: Attrs }): Html {
+ * slots in every state (waiting, approved, automatic, refused), so nothing moves. `body`: the choice the act takes
+ * (radio cards, a note), between the text and the actions. */
+export function slots(options: { wait?: boolean; status: Html; text: HtmlValue; body?: HtmlValue; acts: HtmlValue; terms: HtmlValue; err?: HtmlValue; attrs?: Attrs }): Html {
   return html`<section class="${cls("k-slots", options.wait && "wait")}"${attributes(options.attrs ?? {})}><div class="k-slot-status">${options.status}</div>\
-<p class="k-slot-text">${options.text}</p><div class="k-slot-acts k-acts">${options.acts}</div><p class="k-slot-terms">${options.terms}</p>\
+<p class="k-slot-text">${options.text}</p>${options.body === undefined ? "" : html`<div class="k-slot-body">${options.body}</div>`}<div class="k-slot-acts k-acts">${options.acts}</div><p class="k-slot-terms">${options.terms}</p>\
 <div class="k-slot-err">${options.err ? notice(options.err) : ""}</div></section>`;
 }
 

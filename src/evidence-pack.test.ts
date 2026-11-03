@@ -129,13 +129,13 @@ test("the printable page shows the same facts, with no script, and the task page
   const html = await page(alex, `/t/${id}/evidence`);
   expect(html).toContain(`data-evidence-pack="${id}"`);
   expect(html).toContain('data-evidence-chain="ok"');
-  expect(html).toContain("<dt>Approval rules</dt><dd>requester can&#39;t approve<ul");
+  expect(html).toContain("<dt>Approval rules</dt><dd>Requester can&#39;t approve<details");
   expect(html).toContain("alex: no rules → requester can&#39;t approve");
   expect(html).toMatch(/Approved<\/dt><dd>sam · /);
   expect(html).toContain("infra/keys/current.pem");
   expect(html).toContain("$0.4200");
   expect(html).toContain(`href="/t/${id}/evidence?format=json" download`);
-  expect(/<article class="evidence-pack"[\s\S]*<\/article>/.exec(html)![0]).not.toMatch(/<script/i);
+  expect(/data-evidence-pack="[^"]*"[\s\S]*?Record digest/.exec(html)![0]).not.toMatch(/<script/i);
   expect(await page(alex, `/t/${id}`)).toContain(`/t/${id}/evidence`);
   // A broken chain says so, on the page and in the JSON.
   store.handle.exec("DROP TRIGGER action_ledger_no_update");

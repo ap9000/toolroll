@@ -31,6 +31,7 @@ import { createHash,randomBytes } from "node:crypto";
 import { buildsViews,type Chrome,oneLineOf,projectChip,safePrUrl,screen,type Screen,sentenceCase,strokeIcon,when,whenTime } from "./chrome.js";
 import { chatResultHref,reviewHref,taskChatHref,taskHref } from "./http.js";
 import { attributes, type Html, html, htmlString, joinHtml, postForm, reauth } from "../html.js";
+import { chip, facts } from "./kit.js";
 import { publicationFactsOf,statusActionHref,statusLineHtml } from "./render-tasks.js";
 
 export const RUNS_PAGE = 50;
@@ -1125,37 +1126,6 @@ export function runOutcomeBadge(run: Run, live: boolean): Html {
 export const runNoun = (run: Pick<Run, "role">): string =>
   run.role === "planner" ? "plan" : run.role === "reviewer" ? "review" : run.role === "scout" ? "report" : "build";
 
-
-export function runsPage(
-  chrome: Chrome,
-  rows: (Run & { taskId: string })[],
-  liveIds: ReadonlySet<number>,
-  nextCursor: number | null,
-  verdicts: Map<number, { verdict: ProofVerdict; matrix?: CriterionMatrixRow[] }> = new Map(),
-  accepted: ReadonlySet<number> = new Set(),
-): Screen {
-  const list =
-    rows.length === 0
-      ? html`<p class="meta">No builds yet \u2014 they appear once an approved task is dispatched.</p>`
-      : joinHtml(rows
-          .map(run => {
-            const verdict = verdicts.get(run.id)?.verdict ?? null;
-            const needsVerification =
-              (verdict === "short" || verdict === "refuted") && !accepted.has(run.id)
-                ? html` <span class="badge badge-failed">${verdict === "refuted" ? "conflicting evidence" : "missing evidence"}</span>`
-                : "";
-            return html`<p class="row"><a href="/r/${run.id}" class="mono">#${run.id}</a> <a href="${taskHref(run.taskId)}" class="mono">${run.taskId}</a> ${[
-              runOutcomeBadge(run, liveIds.has(run.id)),
-              run.qualityMode === "strict" ? html` <span class="badge">Strict review</span>` : "",
-              needsVerification,
-              criterionMatrixSummary(verdicts.get(run.id)?.matrix ?? []),
-              run.provider === "claude" ? "" : html` <span class="meta mono">${run.provider}</span>`,
-              html`<span class="right meta mono">${whenTime(run.startedAt)}${run.providerStartedAt === null && run.tokensIn === null && run.tokensOut === null && run.costUsd === null ? "" : ` \u00b7 ${runCostWords(run, liveIds.has(run.id))}`}</span></p>`,
-            ]}`;
-          }), "\n");
-  const older = nextCursor === null ? "" : html`<p><a href="/runs?before=${nextCursor}">older →</a></p>`;
-  return screen("builds", joinHtml([html`<h1>Builds <a class="badge" href="/peek">Peek at the live ones \u2192</a></h1>`, buildsViews("builds"), html`<p class="hint">one build = one attempt by an agent to complete a task, on its own branch</p>`, list, older], "\n"), { chrome });
-}
 
 /** The evidence bundle (Priority 2): the closed machine-authored verdict,
  * the agent's proof (or why it cannot be shown), the plane's own re-run
@@ -2570,232 +2540,52 @@ export function runAgentWords(route: RouteStamp | null | undefined): string | nu
   return `${route.provider}${route.model === null ? "" : ` · ${route.model}`} as the ${role} — ${how}`;
 }
 
-export function runFactsRows(run: Run, taskId: string, live: boolean, route: RouteStamp | null = null): Html {
-  const facts: [string, string | null, boolean?][] = [
-    ["task", taskId, true],
-    ["role", run.role],
-    ["agent", runAgentWords(route)],
-    ["quality", qualityModeTitle(run.qualityMode ?? "default")],
-    ["outcome", live ? "running" : (run.outcome ?? "never finished")],
-    ["phase", live && run.phase !== null ? phaseWords(run.phase) : null],
-    ["reason", run.reason === null ? null : isInternalErrorReason(run.reason) ? "stopped with an internal error (below)" : reasonWords(run.reason)],
-    ["runner", run.runner, true],
-    ["branch", run.branch, true],
-    ["model", run.model, true],
-    ["starting point", run.baseRevision === null ? null : `${run.baseRevision.slice(0, 12)}…`, true],
-    ["ended at", run.headRevision === null ? null : `${run.headRevision.slice(0, 12)}…`, true],
-    ["started", when(run.startedAt), true],
-    ["finished", when(run.finishedAt), true],
-    ["provider started", when(run.providerStartedAt), true],
-    ["tokens in", run.tokensIn === null ? null : run.tokensIn.toLocaleString(), true],
-    ["tokens out", run.tokensOut === null ? null : run.tokensOut.toLocaleString(), true],
-    // Auth is part of the economic fact: Claude's subscription harness
-    // reports an API-price equivalent, not a separate API-key charge.
-    [
-      "usage",
-      run.providerStartedAt === null && run.tokensIn === null && run.tokensOut === null && run.costUsd === null ? null : runCostWords(run, live),
-      run.costUsd !== null && run.authMode !== "subscription",
-    ],
-  ];
-  const elapsed =
-    live && run.startedAt !== null
-      ? html`<p class="row"><span class="meta" style="min-width:8.5rem">elapsed</span> <time class="mono" data-elapsed-since="${run.startedAt}"></time></p>`
-      : "";
-  return html`${joinHtml(
-    facts
-      .filter((fact): fact is [string, string, boolean?] => fact[1] !== null && fact[1] !== "")
-      .map(
-        ([label, value, mono]) =>
-          html`<p class="row"><span class="meta" style="min-width:8.5rem">${label}</span> <span${mono === true ? html` class="mono"` : ""}>${value}</span></p>`,
-      ), "\n")}${elapsed}${
-    // Machine output (a stack trace, a path, "Error:" text) reads as an internal error everywhere else; its detail is here, as recorded.
-    run.reason !== null && isInternalErrorReason(run.reason)
-      ? html`<p class="row"><span class="meta" style="min-width:8.5rem">recorded error</span></p><pre class="mono" id="run-reason-detail" style="white-space:pre-wrap;overflow-wrap:anywhere">${run.reason}</pre>`
-      : ""}`;
+/** A run's outcome in the kit's tones: built or no change finished, failed or refused failed, anything else neutral. */
+export function runOutcomeChip(run: Pick<Run, "outcome" | "reason" | "role">, live: boolean): Html {
+  if (live) return chip("Running", "live");
+  if (run.role === "planner" && run.reason === "plan-drafted") return chip("Planned", "done");
+  if (run.reason === "interrupted") return chip("Interrupted");
+  const word = sentenceCase(run.outcome ?? "never finished");
+  return chip(word, run.outcome === "built" || run.outcome === "no-change" ? "done" : run.outcome === "failed" || run.outcome === "refused" ? "failed" : "");
 }
 
-export function runPage(
-  chrome: Chrome,
-  run: Run,
-  taskId: string,
-  artifacts: Artifact[],
-  terminal: TerminalDiffView | null = null,
-  notes: { id: number; author: string; note: string; createdAt: string }[] = [],
-  csrf = "",
-  comments: DiffComment[] = [],
-  ciRepair: { pr: number } | null = null,
-  liveScript?: string,
-  peekable = false,
-  running = false,
-  editor: { worktree: string } | null = null,
-  editorToggle: { on: boolean } | null = null,
-  noted = false,
-  structuredHandoff: StructuredHandoffView | null = null,
-  proofBundle: ProofBundleView | null = null,
-  route: RouteStamp | null = null,
-  publicationRow: Publication | null = null,
-  review: ReviewFacts | null = null,
-  result: { detail: ResultDetail; tab: ResultTab; user: string; requestToken: string } | null = null,
-  sourceDigest: string | null = null,
-): Screen {
-  const rows = runFactsRows(run, taskId, running, route);
-  // The live peek region (A2): the poller fills it only on a serve that
-  // asserted its runner. Without the assertion the section still appears
-  // for a running build and says honestly why it is empty \u2014 a page that
-  // silently lacked the region while the task screen promised a live view
-  // read as broken (round-4, A1).
-  const peek = !running
-    ? ""
-    : peekable
-      ? html`<h2>What is changing right now</h2><div id="run-peek"><p class="meta">Watching\u2026 the first look lands within 15 seconds</p></div><p class="meta" id="run-peek-stamp"></p>`
-      : html`<h2>What is changing right now</h2><p class="meta">The live file view is off \u2014 start serve with ${"--runner <name>"} naming this machine's worker, and it appears here</p>`;
-  // The live transcript (arc 1): the agent's own words, streamed to a file
-  // beside the run and polled as raw text. Honesty stated on the surface:
-  // this is display only, and the machine running the agent could alter it.
-  const transcript = !running
-    ? ""
-    : !peekable
-      ? html`<h2>What the agent is saying</h2><p class="meta">The live transcript is off \u2014 start serve with ${"--runner <name>"} naming this machine's worker, and it appears here</p>`
-      : run.provider !== "claude"
-        ? html`<h2>What the agent is saying</h2><p class="meta">The live transcript needs the claude harness for now \u2014 this build runs on ${run.provider}</p>`
-        : html`<h2>What the agent is saying</h2><p class="meta">Display only \u2014 this is not evidence, and the machine running the agent could alter it</p><pre id="live-transcript" class="mono" style="max-height:24rem;overflow:auto;white-space:pre-wrap"></pre><p class="meta" id="live-transcript-state"></p>`;
-  const resultSummary = structuredHandoff?.conclusion ?? run.handoff;
-  const resultList = (label: string, items: string[]): Html | string =>
-    items.length === 0
-      ? ""
-      : html`<div class="result-section"><strong>${label}</strong><ul>${items.map(one => html`<li>${one}</li>`)}</ul></div>`;
-  const handoff =
-    resultSummary === null
-      ? ""
-      : html`<section class="card result-card"><h2>Result</h2><p class="recap">${resultSummary}</p>${
-        structuredHandoff === null
-          ? ""
-          : [resultList("completed", structuredHandoff.changes),
-            resultList("checks reported by the agent", structuredHandoff.verification),
-            resultList("follow-up", structuredHandoff.followUps)]}</section>`;
-  const evidence =
-    artifacts.length === 0
-      ? ""
-      : html`<details class="evidence-files"><summary>Saved files <span class="meta">(${artifacts.length})</span></summary><ul>${
-        artifacts
-          .map(
-            artifact =>
-              html`<li><a href="/r/${run.id}/evidence/${artifact.id}">${evidenceWords(artifact.kind)}</a> <span class="meta" title="${artifact.bytesStored} bytes stored${artifact.truncated ? ` of ${artifact.bytesOriginal}` : ""}">${artifact.truncated ? `${humanBytes(artifact.bytesStored)} of ${humanBytes(artifact.bytesOriginal)} · partial` : humanBytes(artifact.bytesStored)}</span></li>`,
-          )}</ul></details>`;
-  // Review comments on the immutable terminal diff (M6.8): listed, added,
-  // and sealed into ONE unapproved revision task. The seal is deliberately
-  // plain — the ceremony lives on the revision task's approval screen,
-  // which restates the batch; this button only creates the unapproved task.
-  const hasTerminalDiff = terminal !== null && terminal.patch !== null && !("problem" in (terminal.patch as object));
-  const commentPathWords = (path: string, line: number | null): Html => {
-    const shown = `${path}${line === null ? "" : `:${line}`}`;
-    const href = editor === null ? null : editorFileHref(editor.worktree, path, line);
-    return href === null
-      ? html`<span class="mono">${shown}</span> `
-      : html`<a class="mono" href="${href}">${shown}</a> `;
-  };
-  const commentRows = comments
-    .map(
-      one =>
-        html`<div class="diff-comment"><span class="diff-comment-pin" aria-hidden="true"></span><p>${one.path === null ? "" : commentPathWords(one.path, one.line)}${one.note}</p><span class="meta">${one.author} · ${whenTime(one.createdAt)}</span></div>`,
-    );
-  const commentForm =
-    csrf === "" || !hasTerminalDiff
-      ? null
-      : postForm(`/r/${run.id}/comment`, html`<div class="diff-comment-target"><label>File<input type="text" name="path" placeholder="select a line above" aria-label="file" class="mono"></label><label>Line<input type="text" name="line" placeholder="—" aria-label="line" inputmode="numeric"></label></div><label>Change requested<textarea name="note" rows="2" maxlength="${LIMITS.note}" placeholder="Explain what should change and why" aria-label="review comment" aria-describedby="comment-note-limit"${noted ? " autofocus" : ""}></textarea></label><span class="meta diff-comment-limit" id="comment-note-limit">up to ${LIMITS.note} characters</span><button type="submit">Add annotation</button>`,
-        { attrs: { class: "card diff-comment-form", id: "comment-form" } });
-  // The device-side half of the editor-link activation (arc 6, finding 1):
-  // rendered only when the server capability exists and this run belongs
-  // to this machine's runner — the person at the browser flips it.
-  const editorToggleForm =
-    editorToggle === null || csrf === ""
-      ? ""
-      : postForm("/session/editor-links", html`<button type="submit">${editorToggle.on ? "stop opening files in VS Code from this device" : "open files in VS Code from this device"}</button><span class="meta"> — only useful when this browser runs on the machine that holds the worktrees</span>`,
-        { attrs: { class: "row" }, returnTo: `/r/${run.id}`, hidden: { on: editorToggle.on ? "0" : "1" } });
-  const reviseForm =
-    csrf === "" || comments.length === 0
-      ? ""
-      : postForm(`/r/${run.id}/revise`, html`${revisionSealFields(comments, sourceDigest)}<div><strong>${comments.length} annotation${comments.length === 1 ? "" : "s"} ready</strong><span class="meta">Creates one revision carrying this exact batch. You review its scope before anything builds.</span></div><button type="submit">Create revision from annotations</button>`,
-        { attrs: { class: "card revision-from-comments" } });
-  // CI repair, suggestion-first (M8.18): the observed red episode earns a
-  // button; the button drafts ONE unapproved task; a person approves it.
-  const repairCard =
-    ciRepair === null || csrf === ""
-      ? ""
-      : html`<div class="card"><p><strong>CI is failing on PR #${ciRepair.pr}</strong> <span class="meta">observed by the episode watcher</span></p>${
-        postForm(`/r/${run.id}/draft-repair`, html`<button type="submit">Draft a repair task</button><span class="meta"> — one unapproved task; you approve its scope before anything builds</span>`)}</div>`;
+/** How long a finished run ran, in whole minutes (seconds under one). */
+function ranWords(run: Pick<Run, "startedAt" | "finishedAt">): string | null {
+  if (run.startedAt === null || run.finishedAt === null) return null;
+  const ms = Date.parse(run.finishedAt) - Date.parse(run.startedAt);
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  return ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))} s` : ms < 3_600_000 ? `${Math.round(ms / 60_000)} min` : `${Math.floor(ms / 3_600_000)} h ${Math.round((ms % 3_600_000) / 60_000)} min`;
+}
 
-  const reviewCard = html`${
-    commentRows.length === 0 && commentForm === null ? "" : html`<h2 id="review">Review and revise</h2><p class="meta">Annotate the diff above. When the batch is ready, create one scoped revision task from it.</p>${
-      commentRows.length === 0 ? "" : html`<div class="diff-comments">${joinHtml(commentRows, "\n")}</div>`}${commentForm}${reviseForm}${editorToggleForm}`}${repairCard}`;
-
-  const noteRows = joinHtml(
-    notes.map(
-      one =>
-        html`<p class="row"><span class="meta">${one.author} · ${whenTime(one.createdAt)}</span> ${one.note}</p>`,
-    ), "\n");
-  const noteForm =
-    csrf === ""
-      ? null
-      : postForm(`/r/${run.id}/note`, html`<input type="text" name="note" placeholder="a note for whoever reads this run next" aria-label="run note" style="width:100%;max-width:28rem"><button type="submit">Add note</button>`, { attrs: { class: "row" } });
-  const notesCard = notes.length === 0 && noteForm === null ? "" : html`<h2>Operator notes</h2>${noteRows}${noteForm}`;
-
-  // Outcome first (UI polish 2026-09-13): a finished build leads with its
-  // result, proof, and diff; the machine facts fold under "Build details".
-  // A live build keeps the facts open — they are what a watcher polls.
-  const facts =
-    running
-      ? html`<div id="run-facts">${rows}</div><p class="meta" id="run-facts-stamp"></p>`
-      : html`<details class="run-facts-details"><summary>Run record<span class="meta">${[run.runner, run.provider, run.outcome ?? "never finished"].join(" · ")}</span></summary><div id="run-facts">${rows}</div></details>`;
-  // A finished result (package 3) is the ONE shared panel — Summary /
-  // Changes / Checks with Request changes beside it — the same markup the
-  // review cockpit and the chat's result view render. Every other run
-  // (live, failed, interrupted) keeps its record-by-record page.
-  const resultPanel =
-    result === null
-      ? null
-      : resultPanelHtml(result.detail, {
-          place: "run",
-          tab: result.tab,
-          csrf,
-          user: result.user,
-          noted,
-          requestToken: result.requestToken,
-          hrefFor: one => (one === "summary" ? `/r/${run.id}` : `/r/${run.id}?tab=${one}`),
-          returnTo: `/r/${run.id}?record=1`,
-          back: null,
-        });
-  return screen(`build #${run.id}`, joinHtml([
-    html`<h1>Build #${run.id} <span class="meta"><a href="${taskHref(taskId)}">${taskId}</a></span></h1>`,
-    running ? facts : "",
-    transcript,
-    peek,
-    ...(resultPanel === null
-      ? [
-          handoff,
-          evidenceBundleCard(proofBundle, run, publicationFactsOf(publicationRow), review),
-          terminal === null ? "" : terminalDiffCard(terminal, run.id, editor, commentForm !== null),
-          reviewCard,
-        ]
-      : [resultPanel, editorToggleForm]),
-    running ? "" : facts,
-    evidence,
-    notesCard,
-  ], "\n"), {
-    chrome,
-    // One composed functional script (arc 4 contract): the pollers when the
-    // run is live, the result panel's tabs/draft script or the legacy
-    // comment prefill when a form exists. Neither fetches — they earn
-    // neither connect-src nor the noscript refresh.
-    ...(liveScript === undefined && commentForm === null && resultPanel === null
-      ? {}
-      : {
-          functional: {
-            script: (liveScript ?? "") + (resultPanel !== null ? RESULT_REVIEW_SCRIPT : commentForm === null ? "" : prefillScript()),
-            fetches: liveScript !== undefined,
-          },
-        }),
-  });
+/** A run's facts as the kit's facts list: how it ended, who ran it where, when, what it cost and where it ended. The
+ * live poll (`?fragment=facts`) swaps the same list in place. (The page's header names the run and its task.) */
+export function runFactsRows(run: Run, _taskId: string, live: boolean, route: RouteStamp | null = null): Html {
+  const mono = (value: string): Html => html`<span class="k-mono">${value}</span>`;
+  const rows: [string, Html | string | null][] = [
+    ["Outcome", runOutcomeChip(run, live)],
+    ["Step", live && run.phase !== null ? phaseWords(run.phase) : null],
+    ["Reason", run.reason === null ? null : isInternalErrorReason(run.reason) ? "stopped with an internal error (below)" : reasonWords(run.reason)],
+    ["Agent", runAgentWords(route) ?? `${run.provider}${run.model === null ? "" : ` · ${run.model}`}`],
+    ["Quality", qualityModeTitle(run.qualityMode ?? "default")],
+    ["Computer", run.runner === null ? null : mono(run.runner)],
+    ["Branch", run.branch === null ? null : mono(run.branch)],
+    ["Started", run.startedAt === null ? null : whenTime(run.startedAt)],
+    ["Agent started", run.providerStartedAt === null ? null : whenTime(run.providerStartedAt)],
+    ["Finished", run.finishedAt === null ? null : whenTime(run.finishedAt)],
+    live && run.startedAt !== null ? ["Elapsed", html`<time class="k-num" data-elapsed-since="${run.startedAt}"></time>`] : ["Ran", ranWords(run)],
+    ["Starting point", run.baseRevision === null ? null : mono(run.baseRevision.slice(0, 12))],
+    ["Commit", run.headRevision === null ? null : mono(run.headRevision.slice(0, 12))],
+    ["Tokens", run.tokensIn === null && run.tokensOut === null ? null : html`<span class="k-num">${(run.tokensIn ?? 0).toLocaleString()} in · ${(run.tokensOut ?? 0).toLocaleString()} out</span>`],
+    // Auth is part of the economic fact: Claude's subscription harness reports an API-price equivalent, not a separate
+    // API-key charge.
+    ["Spend", run.providerStartedAt === null && run.tokensIn === null && run.tokensOut === null && run.costUsd === null ? null : runCostWords(run, live)],
+  ];
+  const shown = rows.filter((row): row is [string, Html | string] => row[1] !== null && row[1] !== "");
+  return html`${facts(shown)}${
+    // Machine output (a stack trace, a path, "Error:" text) reads as an internal error everywhere else; its detail is here, as recorded.
+    run.reason !== null && isInternalErrorReason(run.reason)
+      ? html`<p class="k-note">Recorded error</p><pre class="k-mono h-pre" id="run-reason-detail">${run.reason}</pre>`
+      : ""}`;
 }
 
 /**
@@ -2843,10 +2633,10 @@ export function reviewEvidenceScript(): string {
  * finding 15). */
 export function runFactsFragment(run: Run, taskId: string, live: boolean, route: RouteStamp | null = null): Html {
   if (run.outcome !== null) {
-    return html`<p class="meta" data-region-stop>finished — <a href="/r/${run.id}">reload for the final record</a></p>`;
+    return html`<p class="k-note" data-region-stop>It finished. <a class="k-link" href="/r/${run.id}">Reload for the final record</a></p>`;
   }
   if (!live) {
-    return html`<p class="meta" data-region-stop>this build stopped without finishing — <a href="/r/${run.id}">reload for the record</a></p>`;
+    return html`<p class="k-note" data-region-stop>It stopped without finishing. <a class="k-link" href="/r/${run.id}">Reload for the record</a></p>`;
   }
   return runFactsRows(run, taskId, live, route);
 }

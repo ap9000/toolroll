@@ -15,7 +15,7 @@ const methodOf = (route: RouteDeclaration): string => route.method === "POST" ? 
 // a deny row must not disappear from the HTTP refusal matrix by silently becoming unscoped/collection/resource.
 const LIMITED_ACCESS = {
   'code.page': 'self', 'projects.page': 'unscoped',
-  'home': 'collection', 'inbox': 'collection', 'work': 'collection', 'next': 'collection',
+  'home': 'collection', 'search': 'collection', 'morning': 'collection', 'activity': 'collection', 'inbox': 'collection', 'work': 'collection', 'next': 'collection',
   'work.put-away': 'collection', 'work.put-away.apply': 'collection', 'task.act.archive': 'resource', 'task.act.restore': 'resource',
   'board': 'collection', 'review': 'collection', 'ledger': 'unscoped', 'done': 'collection',
   'people.page': 'unscoped', 'tasks': 'collection', 'tasks.new': 'collection',

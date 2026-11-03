@@ -815,7 +815,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const resultPage = await page(cookie, `/r/${alphaRun}`);
     expect(resultPage).toContain("alpha result");
     const runPage = await page(cookie, `/r/${alphaRun}?record=1`);
-    expect(runPage).toContain(`build #${alphaRun}`);
+    expect(runPage).toContain(`Build #${alphaRun}`);
     expect(runPage).toContain("t-alpha");
     // Selected-result links keep working through the same door, and the
     // Work roll-up lists both projects with their labels.
