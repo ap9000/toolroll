@@ -156,6 +156,15 @@ const path = (d: string): IconShape => ["path", { d }];
 const circle = (cx: number, cy: number, r: number): IconShape => ["circle", { cx, cy, r }];
 /** The icons the kit draws (lucide shapes). */
 export const KIT_ICONS = {
+  // The app shell's destinations (the rail and the phone menu) and its New task pen.
+  home: [path("m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"), path("M9 22V12h6v10")],
+  tasks: [path("m3 17 2 2 4-4"), path("m3 7 2 2 4-4"), path("M13 6h8"), path("M13 12h8"), path("M13 18h8")],
+  flows: [["rect", { x: 3, y: 3, width: 8, height: 8, rx: 2 }], path("M7 11v4a2 2 0 0 0 2 2h4"), ["rect", { x: 13, y: 13, width: 8, height: 8, rx: 2 }]],
+  agents: [path("M12 8V4H8"), ["rect", { x: 4, y: 8, width: 16, height: 12, rx: 2 }], path("M2 14h2"), path("M20 14h2"), path("M15 13v2"), path("M9 13v2")],
+  projects: [path("M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z")],
+  settings: [path("M21 4h-7"), path("M10 4H3"), path("M21 12h-9"), path("M8 12H3"), path("M21 20h-5"), path("M12 20H3"), path("M14 2v4"), path("M8 10v4"), path("M16 18v4")],
+  pen: [path("M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z")],
+  arrow: [path("M5 12h14"), path("m12 5 7 7-7 7")],
   plus: [path("M12 5v14"), path("M5 12h14")],
   send: [path("M12 19V5"), path("m5 12 7-7 7 7")],
   stop: [["rect", { x: 6, y: 6, width: 12, height: 12, rx: 2 }]],

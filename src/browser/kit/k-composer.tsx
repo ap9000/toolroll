@@ -1,6 +1,6 @@
 /** The message box: auto-grow, + menu, project chip, send and Stop. Rules: src/design/KIT.md; same markup as src/server/kit.ts. */
 import { useEffect, useLayoutEffect, useRef } from "react";
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode, Ref } from "react";
 import { composerSync, composerWorking, installKitBehavior, isPhone, openMenu } from "./behavior.js";
 import { cn } from "./utils.js";
 import { KIcon } from "./k-icon.js";
@@ -10,12 +10,21 @@ import { KIcon } from "./k-icon.js";
  * scrolls, one bottom row inside (+ menu, project chip, small controls, the round send ↔ Stop). `gate` marks the
  * send aria-disabled while empty (a message box); a form's send stays pressable so an empty press can say what's
  * missing. A refused send keeps the words; show the reason with `error`.
+ *
+ * Inside a form (`submit`): the send is the form's submit button and Enter submits the form, so the form's own
+ * onSubmit is the one send path. `onKeyDown` runs first (a menu of its own may take the key: preventDefault), and
+ * `enterSends` decides whether a plain Enter sends here (default: not on a phone). `sendDisabled` keeps the send
+ * aria-disabled while the box has words (a send still on its way, a lost connection).
  */
-export function KComposer({ id, label, placeholder, value, onChange, onSend, onStop, working = false, rows = 1, maxRows = 8, project, onProject, attach, mentions, before, note, error, disabled, line, gate = true, sendLabel = "Send", stopLabel = "Stop" }: {
+export function KComposer({ id, label, placeholder, value, onChange, onSend, onStop, working = false, rows = 1, maxRows = 8, project, onProject, attach, mentions, before, note, error, disabled, line, gate = true, sendLabel = "Send", stopLabel = "Stop",
+  submit = false, sendDisabled = false, textareaId, name, maxLength, textareaRef, onKeyDown, enterSends, combobox = null }: {
   id: string; label: string; placeholder?: string; value: string; onChange: (value: string) => void; onSend: () => void; onStop?: () => void; working?: boolean;
   rows?: number; maxRows?: number; project?: { current: string; items: readonly string[] }; onProject?: (name: string) => void;
   attach?: (file: File) => void; mentions?: ReadonlyArray<{ label: string; text: string }>; before?: ReactNode; note?: ReactNode; error?: string | null;
   disabled?: boolean; line?: boolean; gate?: boolean; sendLabel?: string; stopLabel?: string;
+  submit?: boolean; sendDisabled?: boolean; textareaId?: string; name?: string; maxLength?: number; textareaRef?: Ref<HTMLTextAreaElement>;
+  onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void; enterSends?: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
+  combobox?: { expanded: boolean; controls: string } | null;
 }) {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const file = useRef<HTMLInputElement>(null);
@@ -43,13 +52,27 @@ export function KComposer({ id, label, placeholder, value, onChange, onSend, onS
     } }] : []),
     ...(project ? [{ label: "Choose project", act: () => { const node = chip.current; if (node) chooseProject(node); } }] : []),
   ];
-  const send = () => { if (gate && empty) return; onSend(); };
+  const send = () => {
+    if ((gate && empty) || sendDisabled) return;
+    if (submit) textarea.current?.form?.requestSubmit(); else onSend();
+  };
+  const textId = textareaId ?? `${id}-text`;
+  const setTextarea = (node: HTMLTextAreaElement | null) => {
+    textarea.current = node;
+    if (typeof textareaRef === "function") textareaRef(node);
+    else if (textareaRef) (textareaRef as { current: HTMLTextAreaElement | null }).current = node;
+  };
   return <div className={cn("k-composer", line && "line", disabled && "off", !empty && "has-text", working && "working")} data-k-composer={id}>
-    <label className="k-sr" htmlFor={`${id}-text`}>{label}</label>
+    <label className="k-sr" htmlFor={textId}>{label}</label>
     <div className="k-composer-files" data-k-files={id} />
-    <textarea ref={textarea} className="k-composer-ta" id={`${id}-text`} rows={rows} data-min={rows} data-max={maxRows} placeholder={placeholder} value={value} disabled={disabled}
+    <textarea ref={setTextarea} className="k-composer-ta" id={textId} name={name} maxLength={maxLength} rows={rows} data-min={rows} data-max={maxRows} placeholder={placeholder} value={value} disabled={disabled}
+      role={combobox ? "combobox" : undefined} aria-expanded={combobox ? combobox.expanded : undefined} aria-controls={combobox ? combobox.controls : undefined}
       aria-invalid={error ? true : undefined} aria-describedby={`${id}-err`} onChange={event => onChange(event.target.value)}
-      onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !isPhone()) { event.preventDefault(); send(); } }} />
+      onKeyDown={event => {
+        onKeyDown?.(event);
+        if (event.defaultPrevented) return;
+        if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && (enterSends ? enterSends(event) : !isPhone())) { event.preventDefault(); send(); }
+      }} />
     <div className="k-composer-bar">
       {plusItems.length > 0 && <button type="button" className="k-composer-plus" aria-haspopup="dialog" aria-label="Add to your message" disabled={disabled}
         onClick={event => openMenu(event.currentTarget, "Add to your message", plusItems)}><KIcon name="plus" /></button>}
@@ -59,7 +82,8 @@ export function KComposer({ id, label, placeholder, value, onChange, onSend, onS
       {before}
       <span className="k-grow" />
       <span className="k-send-slot">
-        <button type="button" className="k-send" aria-label={sendLabel} title={sendLabel} data-gate={gate ? "1" : undefined} aria-disabled={gate && empty ? true : undefined} disabled={disabled} onClick={send}><KIcon name="send" /></button>
+        <button type={submit ? "submit" : "button"} className="k-send" aria-label={sendLabel} title={sendLabel} data-gate={gate || sendDisabled ? "1" : undefined} aria-disabled={(gate && empty) || sendDisabled ? true : undefined} disabled={disabled}
+          onClick={submit ? event => { if ((gate && empty) || sendDisabled) event.preventDefault(); } : send}><KIcon name="send" /></button>
         {onStop && <button type="button" className="k-send k-stop" aria-label={stopLabel} title={stopLabel} onClick={onStop}><KIcon name="stop" /></button>}
       </span>
     </div>

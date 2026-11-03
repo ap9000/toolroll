@@ -2426,9 +2426,9 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   // The thread shows it in parts: where (file, line, run), the quoted line, and the words.
   const steered = [`${path}:${line}`, `run #${built}`, "Keep this, but name the edge case in a comment."];
   await until("the comment in the chat as the next message", async () => {
-    const texts = await on.locator('[data-workspace-chat] .ui-message--user[data-message-id] [data-steer-comment]').allInnerTexts();
+    const texts = await on.locator('[data-workspace-chat] .lc-you[data-message-id] [data-steer-comment]').allInnerTexts();
     return (await on.locator("[data-workspace-chat] [data-message-id]").count()) > before && texts.some(text => steered.every(part => text.includes(part)));
-  }, { timeoutMs: 30_000, everyMs: 500, seen: async () => (await on.locator('[data-workspace-chat] .ui-message--user[data-message-id]').allInnerTexts()).slice(-2).join(" | ").slice(0, 400) });
+  }, { timeoutMs: 30_000, everyMs: 500, seen: async () => (await on.locator('[data-workspace-chat] .lc-you[data-message-id]').allInnerTexts()).slice(-2).join(" | ").slice(0, 400) });
   const sentRows = freshRows(install.db, "SELECT id, text FROM lead_message WHERE role = 'operator' ORDER BY id DESC LIMIT 5");
   const comment = sentRows.find(one => String(one.text).startsWith(`On ${JSON.stringify(path)}:${line}`) && String(one.text).includes(`(run #${built})`));
   if (comment === undefined) throw new Error(`the lead wasn't sent the file, line and run: ${sentRows.map(one => String(one.text)).join(" | ").slice(0, 400)}`);
@@ -2449,8 +2449,8 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   if (w.scripted) await waitFor(on.locator(answered.map(id => `[data-workspace-chat] [data-message-id="${id}"] pre.chat-code`).join(", ")).first(), "the lead's reply with its code block", { timeoutMs: 30_000 });
   // What the lead does with the comment waits on you: a scripted lead drafts a card to confirm; a real one drafts a card
   // (a follow-up task, or changes to the result) or asks you first, as buttons under its reply.
-  const waitsOnYou = w.scripted ? '[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you'
-    : '[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you, [data-workspace-chat] .so-owner-ask .so-owner-ask-options button';
+  const waitsOnYou = w.scripted ? '[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] :is(.so-needs-you, .k-chip.needs)'
+    : '[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] :is(.so-needs-you, .k-chip.needs), [data-workspace-chat] .so-owner-ask .so-owner-ask-options button';
   await waitFor(on.locator(waitsOnYou).first(), w.scripted ? "the card waiting on you" : "the card or question waiting on you", { timeoutMs: 30_000, seen: async () => {
     const turn = freshRows(install.db, `SELECT turn FROM lead_message WHERE id = ${comment.id}`)[0]?.turn;
     const drafted = freshRows(install.db, `SELECT kind, state FROM lead_proposal WHERE turn = ${turn ?? 0}`);

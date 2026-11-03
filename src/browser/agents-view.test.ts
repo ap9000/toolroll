@@ -5,7 +5,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { BrowserAgentDetail, BrowserAgentRow, BrowserAgentsView } from "../browser-workspace.js";
+import type { BrowserAgentDetail, BrowserAgentRow, BrowserAgentsView, BrowserComputer } from "../browser-workspace.js";
+import { FormToken, Passwordless } from "./ui/index.js";
 import { WORKSPACE_NUDGE } from "./live-task.js";
 import { AgentsView } from "./views/agents-view.js";
 
@@ -61,14 +62,20 @@ const render = (view: BrowserAgentsView) => act(() => { root = createRoot(host);
 describe("the Agents board", () => {
   test("groups in order, each row with its task, project, line, elapsed time and diff", () => {
     render(board(null));
-    expect([...host.querySelectorAll("[data-agent-group-section]")].map(one => one.getAttribute("data-agent-group-section"))).toEqual(["needs-you", "working", "done"]);
+    // Needs you, Working, then what finished in the window (24 hours unless the address says otherwise).
+    expect([...host.querySelectorAll("[data-agent-group-section]")].map(one => one.getAttribute("data-agent-group-section"))).toEqual(["needs-you", "working", "finished"]);
     const working = host.querySelector('[data-agent-row="8"]')!;
     expect(working.textContent).toContain("Task 8");
-    expect(working.textContent).toContain("shop-web · Claude · Running 12 min");
+    expect(working.querySelector("[data-agent-line]")?.textContent).toBe("Edited files · 1 min ago · Claude");
+    expect(working.textContent).toContain("shop-web");
+    expect(working.querySelector("[data-agent-time]")?.textContent).toBe("Running 12 min");
     expect(working.querySelector("[data-agent-diff]")?.textContent).toBe("3 files changed");
-    // Said once: the Working heading needs no Working chip; a Question or No changes chip says more.
-    expect(working.querySelector("[data-agent-state]")).toBeNull();
+    // Kit chips: a running build is Building (blue); inside Needs you the chip names the ask (Question).
+    expect(working.querySelector("[data-agent-state]")?.textContent).toBe("Building");
     expect(host.querySelector('[data-agent-row="7"] [data-agent-state]')?.textContent).toBe("Question");
+    expect(host.querySelector('[data-agent-row="7"] .k-row.wait')).not.toBeNull();
+    // One action each: Answer, Watch, Open record.
+    expect([7, 8, 9].map(run => host.querySelector(`[data-agent-row="${run}"] .k-row-a`)?.textContent)).toEqual(["Answer", "Watch", "Open record"]);
     // A finished row labels how long it ran and when it finished; a diff nobody could measure shows nothing at all.
     expect(host.querySelector('[data-agent-row="9"] [data-agent-time]')?.textContent).toBe("Ran 1 h · finished 30 min ago");
     expect(host.querySelector('[data-agent-row="9"] [data-agent-diff]')).toBeNull();
@@ -83,7 +90,9 @@ describe("the Agents board", () => {
     expect(reply.querySelector<HTMLInputElement>('input[name="question"]')?.value).toBe("3");
     expect(reply.querySelector("textarea")?.getAttribute("name")).toBe("answer");
     expect(host.querySelector('[data-agent-question="keep-button"]')?.textContent).toContain("Keep the old button?");
-    expect(host.querySelector('[aria-current="page"]')?.closest("[data-agent-row]")?.getAttribute("data-agent-row")).toBe("7");
+    // One agent is a reading page of its own: back to Agents, no list beside it.
+    expect(host.querySelector('a.k-backlink')?.getAttribute("href")).toBe("/agents");
+    expect(host.querySelector("[data-agent-row]")).toBeNull();
     act(() => root?.render(createElement(AgentsView, { view: board(detail({ question: null })) })));
     const steer = host.querySelector<HTMLFormElement>('[data-agent-composer="steer"]')!;
     expect(steer.getAttribute("action")).toBe("/t/t-7/steer");
@@ -104,7 +113,11 @@ describe("the Agents board", () => {
     expect(host.querySelector("[data-agent-capability]")?.textContent).toBe("Notes reach the agent right away.");
     const pause = host.querySelector<HTMLFormElement>("[data-agent-pause]")!;
     expect([...pause.querySelectorAll<HTMLInputElement>('input[type="hidden"]')].map(one => [one.name, one.value])).toEqual(expect.arrayContaining([["run", "7"], ["request", "web-a"], ["return", "agents"]]));
-    expect(host.querySelector<HTMLFormElement>('[data-agent-stop="7"]')?.getAttribute("action")).toBe("/t/t-7/stop");
+    // Stop asks first: its form is in the confirm popover.
+    expect(document.querySelector('[data-agent-stop="7"]')).toBeNull();
+    act(() => { host.querySelector<HTMLButtonElement>('[data-agent-stop-open="7"]')!.click(); });
+    expect(document.querySelector<HTMLFormElement>('[data-agent-stop="7"]')?.getAttribute("action")).toBe("/t/t-7/stop");
+    act(() => { document.querySelector<HTMLButtonElement>('.k-pop [data-k-close]')!.click(); });
     expect(host.querySelector('[data-agent-composer="steer"]')).not.toBeNull();
     // Paused: Resume instead of Pause.
     act(() => root?.render(createElement(AgentsView, { view: board(detail({ question: null, controls: { send: "live", words: "Notes reach the agent right away.",
@@ -116,7 +129,7 @@ describe("the Agents board", () => {
       words: "It's repairing its handoff and reads no notes now. Stop this attempt to change its course.", pause: null, stop: { action: "/t/t-7/stop", run: 7, label: "Stop this attempt" } } })) })));
     expect(host.querySelector("[data-agent-composer]")).toBeNull();
     expect(host.querySelector("[data-agent-unsent]")).toBeNull();
-    expect(host.querySelector('[data-agent-stop="7"]')?.textContent).toBe("Stop this attempt");
+    expect(host.querySelector('[data-agent-stop-open="7"]')?.textContent).toBe("Stop this attempt");
     // A viewer gets no controls.
     act(() => root?.render(createElement(AgentsView, { view: board(detail({ canAct: false, controls: { send: "mailbox", words: "x", pause: null, stop: { action: "/t/t-7/stop", run: 7, label: "Stop" } } })) })));
     expect(host.querySelector("[data-agent-controls]")).toBeNull();
@@ -353,4 +366,96 @@ test("past the kept limit, every row keeps its own identity: no duplicates as ol
   }
   expect(conversation.items).toHaveLength(KEEP_ITEMS);
   expect(new Set(conversation.items.map(item => item.key)).size).toBe(KEEP_ITEMS);
+});
+
+describe("Agents on the kit (UI revamp wave B): the window, the computers, register and retire", () => {
+  const computer = (extra: Partial<BrowserComputer> = {}): BrowserComputer => ({
+    name: "night-shift-1", host: "mac-mini", state: "building", capacity: 2, retired: false,
+    building: [{ taskId: "t-8", title: "Task 8", href: "/t/t-8", project: "shop-web" }], hidden: 0,
+    heardAt: ago(0.1), registeredAt: ago(60 * 24), projects: ["shop-web"], note: null,
+    reserved: [{ id: "t-20", title: "Reserved task", href: "/t/t-20", project: "shop-web", taken: false }], ...extra,
+  });
+  const listView = (extra: Partial<BrowserAgentsView> = {}): BrowserAgentsView => ({ ...board(null), ...extra });
+  const renderIn = (view: BrowserAgentsView, passwordless = false) => act(() => {
+    root = createRoot(host);
+    root.render(createElement(Passwordless.Provider, { value: passwordless }, createElement(FormToken.Provider, { value: "csrf-1" }, createElement(AgentsView, { view }))));
+  });
+
+  test("Finished shows what ended inside the window; the window is a choice the address keeps", () => {
+    history.replaceState(null, "", "/agents");
+    // Run 9 ended 45 minutes ago: inside 2 hours and 24 hours, outside 30 minutes.
+    renderIn(listView({ window: "30m", groups: [{ key: "done", label: "Done", rows: [row(9, { group: "done", label: "Done", startedAt: ago(90), endedAt: ago(45) })] }] }));
+    expect(host.querySelector('[data-agent-group-section="finished"] [data-agent-row="9"]')).toBeNull();
+    expect(host.textContent).toContain("Nothing finished in the last 30 minutes.");
+    const twoHours = [...host.querySelectorAll<HTMLButtonElement>(".k-seg button")].find(one => one.textContent === "2 h")!;
+    act(() => { twoHours.click(); });
+    expect(host.querySelector('[data-agent-group-section="finished"] [data-agent-row="9"]')).not.toBeNull();
+    expect(location.search).toBe("?window=2h");
+    history.replaceState(null, "", "/");
+  });
+
+  test("a project-limited person sees their agents only: no computers, no model per phase", () => {
+    renderIn(listView());
+    expect(host.querySelector("[data-computers]")).toBeNull();
+    expect(host.querySelector("[data-agent-phases]")).toBeNull();
+  });
+
+  test("computers are rows with resource chips (never amber), Details opens a drawer, an offline one says how to bring it back", () => {
+    renderIn(listView({ computers: { list: [computer(), computer({ name: "studio-linux", host: "linux-box", state: "offline", building: [], reserved: [], heardAt: ago(180) })], manage: true, queueRevision: 4, shared: 0 },
+      phases: [{ phase: "build", model: "Claude Sonnet", problem: null, source: "Set for the whole installation by alex", noDollars: false }], system: null }));
+    const rows = [...host.querySelectorAll("[data-computer]")];
+    expect(rows.map(one => one.querySelector(".k-chip")?.textContent)).toEqual(["Building", "Offline"]);
+    expect(host.querySelectorAll("[data-computers] .k-chip.needs, [data-computers] .k-chip.ask")).toHaveLength(0);
+    expect(host.querySelector('[data-computer-offline="studio-linux"]')?.textContent).toContain("toolroll up");
+    expect(host.querySelector('[data-phase="build"]')?.textContent).toContain("Claude Sonnet");
+    act(() => { rows[0]!.querySelector<HTMLButtonElement>(".k-row-a button")!.click(); });
+    const panel = document.querySelector('[data-computer-panel="night-shift-1"]')!;
+    expect(panel.textContent).toContain("Task 8");
+    // Reserved work moves with the queue's own handler, from the fleet (no project revision).
+    const move = panel.querySelector<HTMLFormElement>('form[action="/queue/move"]')!;
+    expect([...move.querySelectorAll<HTMLInputElement>('input[type="hidden"]')].map(one => [one.name, one.value])).toEqual(expect.arrayContaining([["queueRevision", "4"], ["task", "t-20"], ["csrf", "csrf-1"]]));
+    expect(move.querySelector("input[name=projectRevision]")).toBeNull();
+    expect(panel.querySelector('form[action="/queue/note"] input[name="from"]')?.getAttribute("value")).toBe("fleet");
+  });
+
+  test("retire is step-up: the password, or one click with Passwordless, posting to the retire handler", async () => {
+    const fetched: Array<{ url: string; body: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init: RequestInit) => { fetched.push({ url: input, body: String(init.body) }); return { type: "basic", status: 403 } as Response; }));
+    const view = listView({ computers: { list: [computer()], manage: true, queueRevision: 1, shared: 0 }, phases: [], system: null });
+    renderIn(view, true);
+    act(() => { host.querySelector<HTMLButtonElement>("[data-computer] .k-row-a button")!.click(); });
+    const retire = [...document.querySelectorAll<HTMLButtonElement>("[data-computer-retire] button")].find(one => one.textContent === "Retire computer")!;
+    expect(retire.getAttribute("aria-haspopup")).toBeNull();
+    await act(async () => { retire.click(); await Promise.resolve(); });
+    expect(fetched[0]?.url).toBe("/fleet/runner/retire");
+    expect(new URLSearchParams(fetched[0]!.body).get("name")).toBe("night-shift-1");
+    expect(new URLSearchParams(fetched[0]!.body).get("token")).toBe("");
+    // The refusal is said in place; nothing changed.
+    expect(document.querySelector("[data-computer-retire] .k-notice")?.textContent).toContain("Nothing changed");
+  });
+
+  test("register is a new way in: always the password typed now, even with Passwordless; a bad name is refused next to its field first", () => {
+    renderIn(listView({ computers: { list: [], manage: true, queueRevision: 1, shared: 0 }, phases: [], system: null }), true);
+    expect(host.querySelector("[data-computer-none]")?.textContent).toContain("toolroll up");
+    act(() => { [...host.querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent?.includes("Add a computer"))!.click(); });
+    const form = host.querySelector("[data-computer-register]")!;
+    expect(form.textContent).toContain("so it still asks for your password");
+    const register = () => [...form.querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent === "Register computer")!;
+    act(() => { register().click(); });
+    expect(form.querySelector(".k-err")?.textContent).toBe("Name the computer first.");
+    expect(document.querySelector(".k-pop")).toBeNull();
+    const name = form.querySelector<HTMLInputElement>("input.k-input")!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "builder-2"); name.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(register().getAttribute("aria-haspopup")).toBe("dialog");
+    act(() => { register().click(); });
+    expect(document.querySelector('.k-pop input[name="token"][type="password"]')).not.toBeNull();
+    expect(document.querySelector(".k-pop .k-pop-terms")?.textContent).toBe("Register builder-2: up to 1 at a time.");
+  });
+
+  test("a viewer watches: the agent page says why they can't send a note, and offers no controls", () => {
+    renderIn({ ...board(detail({ question: null, canAct: false, controls: { send: "live", words: "x", pause: null, stop: { action: "/t/t-7/stop", run: 7, label: "Stop" } } })) });
+    expect(host.querySelector("[data-agent-composer]")).toBeNull();
+    expect(host.querySelector("[data-agent-stop-open]")).toBeNull();
+    expect(host.querySelector(".agents-steer")?.textContent).toContain("Your sign-in can watch this agent");
+  });
 });

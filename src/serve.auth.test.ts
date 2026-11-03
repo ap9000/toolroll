@@ -136,8 +136,10 @@ describe("the web decision view", () => {
     const screen = await (await fetch(url(`/d/${decisionId}`), { headers: { cookie } })).text();
     expect(screen).toContain("Fail open or fail closed?");
     expect(screen).toContain("Fail open");
-    expect(screen).toContain("recommended");
-    expect(screen).toContain("irreversible, tap to arm");
+    expect(screen).toContain(">Recommended<");
+    // The irreversible option says so on its card, and answering it asks for a tick the server checks again.
+    expect(screen).toContain("Can&#39;t be undone");
+    expect(screen).toContain('name="confirm" value="yes"');
     expect(screen).toContain(`/d/${decisionId}/evidence/${artifactId}`);
 
     // Answerable: one POST, and the machine heard it.
@@ -306,10 +308,15 @@ describe("the web decision view", () => {
     const unconfirmed = await fetch(url(`/d/${decisionId}/answer`), {
       method: "POST",
       headers: { authorization: `Bearer alex:${approverToken}` },
-      body: new URLSearchParams({ choice: "drop" }),
+      body: new URLSearchParams({ choice: "drop", note: "gone for good" }),
     });
     expect(unconfirmed.status).toBe(400);
     expect(store.getDecision(decisionId)?.state).toBe("open");
+    // The refusal sits in the question's own box with nothing changed, and the answer being made stays in it.
+    const refused = await unconfirmed.text();
+    expect(refused).toContain("“Drop the table” can&#39;t be undone: tick the box to confirm it. Nothing changed.");
+    expect(refused).toMatch(/value="drop" checked/);
+    expect(refused).toContain(">gone for good</textarea>");
 
     const confirmed = await fetch(url(`/d/${decisionId}/answer`), {
       method: "POST",

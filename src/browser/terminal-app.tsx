@@ -1,15 +1,20 @@
 /**
- * Live mode (docs/plans/live-terminal.md): this person's terminals, one real terminal at a time, streamed over a
- * WebSocket. Its own small page and bundle, so the workspace never carries xterm.
+ * Terminals (docs/plans/live-terminal.md; on the kit since UI revamp wave B): this operator's terminals, one real
+ * terminal at a time, streamed over a WebSocket. Its own small page and bundle, so the workspace never carries xterm;
+ * it reaches back to Agents (/agents/terminals leads here). Starting one is step-up: the password unless Passwordless.
  */
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
+import "../design/tokens.css";
+import "../design/kit.css";
 import "./terminal.css";
+import { termsOf } from "../design/kit.js";
+import { installKitBehavior, KActs, KApprove, KButton, KChip, KEmpty, KField, KIcon, KLinkButton, KNote, KOverlay, KRadios, KSelect } from "./kit/index.js";
 
 type Program = "claude" | "codex" | "shell";
 type Session = { id: string; repo: string; project: string; program: Program; branch: string; startedAt: string; endedAt: string | null; exit: { code: number | null; signal: number | null } | null };
@@ -17,17 +22,21 @@ type State = { available: boolean; problem: string | null; sessions: Session[]; 
 type Link = "connecting" | "live" | "ended" | "behind" | "signed-out" | "gone" | "offline" | "busy";
 
 const PROGRAM_WORDS: Record<Program, string> = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
+const PROGRAM_TEXT: Record<Program, string> = { claude: "An agent you drive by hand", codex: "An agent you drive by hand", shell: "A plain terminal" };
 const LINK_WORDS: Record<Link, string> = {
   connecting: "Connecting…", live: "Live", ended: "Ended", behind: "Catching up…",
-  "signed-out": "Signed out — sign in again to keep typing", gone: "This terminal is gone", offline: "Reconnecting…",
-  busy: "Not reading input — what you type waits",
+  "signed-out": "Signed out. Sign in again to keep typing", gone: "This terminal is gone", offline: "Reconnecting…",
+  busy: "Not reading input. What you type waits",
 };
 
 const boot = document.getElementById("so-term-boot");
 const CSRF = boot?.dataset["csrf"] ?? "";
-const INITIAL = boot?.dataset["session"] ?? null;
+// The page names a terminal to open (/term/<id>), or nothing (an empty attribute).
+const INITIAL = boot?.dataset["session"] || null;
 /** Passwordless (docs/plans/passwordless.md): starting a terminal takes no password; the server proves the session. */
 const PASSWORDLESS = boot?.dataset["passwordless"] === "1";
+const FACTS = { passwordless: PASSWORDLESS, remembered: false };
+const isPhone = () => window.matchMedia("(max-width: 760px)").matches;
 
 async function readState(): Promise<State | null> {
   const response = await fetch("/term/state", { headers: { accept: "application/json" }, credentials: "same-origin" });
@@ -36,12 +45,23 @@ async function readState(): Promise<State | null> {
 }
 
 async function post(path: string, fields: Record<string, string>): Promise<{ ok: boolean; id?: string; error?: string }> {
-  const response = await fetch(path, { method: "POST", headers: { accept: "application/json" }, credentials: "same-origin", body: new URLSearchParams({ csrf: CSRF, ...fields }) });
-  try { return await response.json() as { ok: boolean; id?: string; error?: string }; } catch { return { ok: false, error: "The console didn't answer. Try again." }; }
+  try {
+    const response = await fetch(path, { method: "POST", headers: { accept: "application/json" }, credentials: "same-origin", body: new URLSearchParams({ csrf: CSRF, ...fields }) });
+    return await response.json() as { ok: boolean; id?: string; error?: string };
+  } catch { return { ok: false, error: "The console didn't answer. Nothing changed; try again." }; }
 }
 
-function Glyph({ program }: { program: Program }) {
-  return <span className={`term-glyph term-glyph--${program}`} aria-hidden>{program === "claude" ? "C" : program === "codex" ? "X" : "$"}</span>;
+/** The terminal's colours, from the design tokens of the theme in use (light or dark). */
+function themeOf(): ITheme {
+  const read = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const ink = read("--so-ink"), paper = read("--so-code-bg") || read("--so-paper"), muted = read("--so-muted");
+  return {
+    background: paper, foreground: ink, cursor: ink, cursorAccent: paper, selectionBackground: read("--so-selection") || read("--so-soft"),
+    black: ink, brightBlack: muted, white: muted, brightWhite: ink,
+    blue: read("--so-info"), brightBlue: read("--so-info"), green: read("--so-success"), brightGreen: read("--so-success"),
+    red: read("--so-danger"), brightRed: read("--so-danger"), yellow: read("--so-warning"), brightYellow: read("--so-warning"),
+    cyan: read("--so-info"), brightCyan: read("--so-info"), magenta: read("--so-accent-text"), brightMagenta: read("--so-accent-text"),
+  };
 }
 
 /** One live terminal: xterm on a WebSocket, refitted to its box and to the phone's keyboard. */
@@ -49,13 +69,13 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const term = new Terminal({
-      fontFamily: '"Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: window.matchMedia("(max-width: 720px)").matches ? 12 : 13,
-      cursorBlink: true, allowProposedApi: true, scrollback: 5000, macOptionIsMeta: true,
-      theme: { background: "#0C0E12", foreground: "#E6E8EC", cursor: "#E6E8EC", selectionBackground: "#2A3140",
-        black: "#14171D", brightBlack: "#5B6372", blue: "#5B9DFF", brightBlue: "#8AB8FF", green: "#3FB97F", brightGreen: "#6BD9A2",
-        red: "#F06464", brightRed: "#FF8F8F", yellow: "#F5A524", brightYellow: "#FFC266", cyan: "#4FC4CF", brightCyan: "#7FDDE5",
-        magenta: "#B78CF2", brightMagenta: "#D0B3FF", white: "#C9CED6", brightWhite: "#FFFFFF" },
+      fontFamily: '"Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: isPhone() ? 12 : 13,
+      cursorBlink: true, allowProposedApi: true, scrollback: 5000, macOptionIsMeta: true, theme: themeOf(),
     });
+    // The theme follows the system's light or dark, as the rest of the page does.
+    const scheme = window.matchMedia("(prefers-color-scheme: dark)");
+    const retheme = () => { term.options.theme = themeOf(); };
+    scheme.addEventListener("change", retheme);
     const fit = new FitAddon();
     term.loadAddon(fit);
     // Emoji and wide characters measured as current terminals measure them (Unicode 11 widths).
@@ -117,6 +137,7 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
       stopped = true;
       window.clearTimeout(timer);
       window.clearTimeout(busyTimer);
+      scheme.removeEventListener("change", retheme);
       observer.disconnect();
       viewport?.removeEventListener("resize", refit);
       typed.dispose();
@@ -130,64 +151,77 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
 /** The keys a phone keyboard lacks and these programs need. Ctrl is sticky for the next key typed here. */
 function KeyBar({ sendRef }: { sendRef: { current: ((data: string) => void) | null } }) {
   const [ctrl, setCtrl] = useState(false);
+  // Pointer-down, not click: the terminal keeps the keyboard focus (and the phone keeps its keyboard up).
   const key = (label: string, data: string) =>
-    <button type="button" className="term-key" onPointerDown={event => { event.preventDefault(); sendRef.current?.(data); }}>{label}</button>;
+    <KButton key={label} sm className="term-key" label={label} onPointerDown={event => { event.preventDefault(); sendRef.current?.(data); }} />;
   const control = (letter: string) => { sendRef.current?.(String.fromCharCode(letter.toUpperCase().charCodeAt(0) - 64)); setCtrl(false); };
   return <div className="term-keys" role="toolbar" aria-label="Terminal keys">
-    {key("esc", "\x1b")}
-    {key("tab", "\t")}
-    <button type="button" className={`term-key${ctrl ? " term-key--on" : ""}`} aria-pressed={ctrl} onPointerDown={event => { event.preventDefault(); setCtrl(on => !on); }}>ctrl</button>
+    {key("Esc", "\x1b")}
+    {key("Tab", "\t")}
+    <KButton sm className="term-key" label="Ctrl" aria-pressed={ctrl} onPointerDown={event => { event.preventDefault(); setCtrl(on => !on); }} />
     {ctrl
-      ? <>{["c", "d", "r", "l", "z"].map(letter => <button key={letter} type="button" className="term-key" onPointerDown={event => { event.preventDefault(); control(letter); }}>^{letter.toUpperCase()}</button>)}</>
+      ? <>{["c", "d", "r", "l", "z"].map(letter => <KButton key={letter} sm className="term-key" label={`^${letter.toUpperCase()}`} onPointerDown={event => { event.preventDefault(); control(letter); }} />)}</>
       : <>{key("↑", "\x1b[A")}{key("↓", "\x1b[B")}{key("←", "\x1b[D")}{key("→", "\x1b[C")}{key("/", "/")}{key("⏎", "\r")}</>}
   </div>;
 }
 
+/** New terminal: a project and a program, then Start (step-up: the password unless Passwordless). */
 function NewSession({ state, onStarted, onCancel }: { state: State; onStarted: (id: string) => void; onCancel: (() => void) | null }) {
   const [repo, setRepo] = useState(state.projects[0]?.path ?? "");
   const [program, setProgram] = useState<Program>(state.programs[0] ?? "claude");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    setBusy(true); setError(null);
-    const answer = await post("/term/start", { repo, program, password });
-    setBusy(false); setPassword("");
-    if (answer.ok && answer.id !== undefined) onStarted(answer.id);
-    else setError(answer.error ?? "The terminal didn't start.");
+  if (state.projects.length === 0) return <div className="term-form"><KEmpty title="No projects yet." text="Add a project in the console first, then start a terminal in it." action={<KLinkButton sm href="/projects" label="Open Projects" />} /></div>;
+  const project = state.projects.find(one => one.path === repo)?.name ?? "";
+  // The approval covers exactly what was shown: the project and program as they stand when Start is pressed.
+  const start = async (password: string | null): Promise<string | null> => {
+    const answer = await post("/term/start", { repo, program, password: password ?? "" });
+    if (answer.ok && answer.id !== undefined) { onStarted(answer.id); return null; }
+    return answer.error ?? "The terminal didn't start. Nothing changed.";
   };
-  if (state.projects.length === 0) return <div className="term-new"><h2>No projects yet</h2><p>Add a project in the console first, then start a terminal in it.</p><a className="term-button" href="/projects">Projects</a></div>;
-  return <form className="term-new" onSubmit={event => { void submit(event); }}>
-    <h2>New terminal</h2>
-    <p className="term-muted">Runs in a fresh worktree on its own branch. Your default branch is never touched.</p>
-    <label className="term-field"><span>Project</span>
-      <select value={repo} onChange={event => setRepo(event.target.value)}>{state.projects.map(one => <option key={one.path} value={one.path}>{one.name}</option>)}</select>
-    </label>
-    <fieldset className="term-programs"><legend>Program</legend>
-      {state.programs.map(one => <label key={one} className={`term-program${program === one ? " term-program--on" : ""}`}>
-        <input type="radio" name="program" value={one} checked={program === one} onChange={() => setProgram(one)} /><Glyph program={one} /> {PROGRAM_WORDS[one]}
-      </label>)}
-    </fieldset>
-    {PASSWORDLESS
-      ? <p className="term-muted">A terminal can do anything you can on this computer.</p>
-      : <div className="term-ceremony">
-        <p>A terminal can do anything you can on this computer. Confirm with your Toolroll password.</p>
-        <label className="term-field"><span>Password</span><input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required /></label>
-      </div>}
-    {error !== null ? <p className="term-error" role="alert">{error}</p> : null}
-    <div className="term-actions">
-      {onCancel !== null ? <button type="button" className="term-button term-button--quiet" onClick={onCancel}>Cancel</button> : null}
-      <button type="submit" className="term-button" disabled={busy || (!PASSWORDLESS && password === "") || repo === ""}>{busy ? "Starting…" : "Start"}</button>
+  return <section className="term-form" aria-labelledby="term-new-title" data-term-new>
+    <h2 id="term-new-title" className="k-sr">New terminal</h2>
+    <KField label="Project">{ids => <KSelect id={ids.id} wide value={repo} onChange={event => setRepo(event.target.value)} items={state.projects.map(one => [one.path, one.name] as const)} />}</KField>
+    <div className="k-field term-radios"><span className="k-label">Program</span>
+      <KRadios name="program" legend="Program" current={program} onChange={value => setProgram(value as Program)} items={state.programs.map(one => ({ value: one, label: PROGRAM_WORDS[one], text: PROGRAM_TEXT[one] }))} />
     </div>
-  </form>;
+    <p className="term-terms">{PROGRAM_WORDS[program]} · {project} · a fresh worktree on its own branch</p>
+    <KActs>
+      <KApprove kind="step-up" facts={FACTS} label="Start terminal" terms={`${PROGRAM_WORDS[program]} in ${project}, a fresh worktree on its own branch.`} onApprove={start} />
+      {onCancel !== null && <KButton variant="ghost" label="Cancel" onClick={onCancel} />}
+    </KActs>
+    <KNote>{`${termsOf("step-up", FACTS)} A terminal can do anything you can on this computer. Your default branch is never touched.`}</KNote>
+  </section>;
+}
+
+/** Close (a live terminal) or Remove (an ended one), each asked first in a popover; the outcome shows in place. */
+function EndControl({ session, onDone }: { session: Session; onDone: () => Promise<void> }) {
+  const [trigger, setTrigger] = useState<HTMLElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const live = session.endedAt === null;
+  const verb = live ? "close" : "remove";
+  const act = async () => {
+    setBusy(true); setRefusal(null);
+    const answer = await post(`/term/${session.id}/${verb}`, {});
+    setBusy(false);
+    if (!answer.ok) { setRefusal(answer.error ?? "That didn't work. Nothing changed."); return; }
+    setTrigger(null);
+    await onDone();
+  };
+  return <>
+    <KButton variant="ghost" sm label={live ? "Close" : "Remove"} aria-haspopup="dialog" onClick={event => setTrigger(event.currentTarget)} data-term-end={verb} />
+    {trigger !== null && <KOverlay kind="popover" title={live ? "Close this terminal?" : "Remove this terminal?"} trigger={trigger} onClose={() => { setTrigger(null); setRefusal(null); }}>
+      <p className="k-pop-terms">{live ? "Everything running in it stops. Its branch stays." : "Its worktree is removed. Its branch stays."}</p>
+      {refusal !== null && <p className="k-notice" role="alert"><KIcon name="alert" small /><span>{refusal}</span></p>}
+      <KActs><KButton variant="danger" label={live ? "Close terminal" : "Remove terminal"} busy={busy ? (live ? "Closing…" : "Removing…") : false} onClick={() => { void act(); }} /><KButton variant="ghost" label="Cancel" data-k-close="" /></KActs>
+    </KOverlay>}
+  </>;
 }
 
 function App() {
   const [state, setState] = useState<State | null>(null);
   const [selected, setSelected] = useState<string | null>(INITIAL);
   const [creating, setCreating] = useState(false);
-  const [drawer, setDrawer] = useState(false);
+  const [listing, setListing] = useState(INITIAL === null);
   const [link, setLink] = useState<Link>("connecting");
   const sendRef = useRef<((data: string) => void) | null>(null);
   const refresh = useCallback(async () => { const next = await readState(); if (next !== null) setState(next); }, []);
@@ -203,56 +237,57 @@ function App() {
   }, [selected]);
   useEffect(() => { if (link === "ended") void refresh(); }, [link, refresh]);
 
-  if (state === null) return <div className="term-app term-app--loading">Loading…</div>;
+  if (state === null) return <div className="term-app term-app--loading"><p className="k-note">Loading…</p></div>;
   const current = state.sessions.find(one => one.id === selected) ?? null;
-  const choose = (id: string) => { setSelected(id); setCreating(false); setDrawer(false); };
-  const act = async (verb: "close" | "remove") => {
-    if (current === null) return;
-    const answer = await post(`/term/${current.id}/${verb}`, {});
-    if (!answer.ok && answer.error) window.alert(answer.error);
-    await refresh();
-  };
+  const running = state.sessions.filter(one => one.endedAt === null).length;
+  const choose = (id: string) => { setSelected(id); setCreating(false); setListing(false); };
+  const newOne = () => { setCreating(true); setListing(false); };
+  // On a phone, one thing at a time: the list, a terminal, or the new-terminal form.
+  const phonePane = creating || (!listing && current !== null);
 
-  const list: ReactNode = <nav className="term-list" aria-label="Terminals">
-    <div className="term-list-head">
-      <a href="/" className="term-back" aria-label="Back to the console">←</a>
-      <h1>Live</h1>
-      <button type="button" className="term-button term-button--small" onClick={() => { setCreating(true); setDrawer(false); }}>+ New</button>
-    </div>
-    {state.sessions.length === 0 ? <p className="term-muted term-list-empty">No terminals yet.</p> : null}
-    {state.sessions.map(one => <button key={one.id} type="button" className={`term-item${one.id === selected && !creating ? " term-item--on" : ""}`} onClick={() => choose(one.id)}>
-      <Glyph program={one.program} />
-      <span className="term-item-text"><span className="term-item-title">{one.project}</span><span className="term-item-meta">{PROGRAM_WORDS[one.program]} · {one.branch}</span></span>
-      <span className={`term-dot${one.endedAt === null ? " term-dot--live" : ""}`} aria-label={one.endedAt === null ? "running" : "ended"} />
-    </button>)}
+  const list = <nav className="term-list" aria-label="Terminals">
+    {state.sessions.length === 0 ? <p className="term-none">No terminals yet.</p> : null}
+    {state.sessions.map(one => <a key={one.id} href={`/term/${one.id}`} className="term-item" aria-current={one.id === selected && !creating ? "true" : undefined}
+      onClick={event => { event.preventDefault(); choose(one.id); }}>
+      <span className="term-item-t">{PROGRAM_WORDS[one.program]} · {one.project}</span>
+      <span className="term-item-m">{one.endedAt === null ? <KChip word="Live" tone="live" /> : <KChip word="Ended" />}<span className="k-mono">{one.branch}</span></span>
+    </a>)}
   </nav>;
 
-  return <div className={`term-app${drawer ? " term-app--drawer" : ""}`}>
-    <aside className="term-side">{list}</aside>
-    <button type="button" className="term-scrim" aria-label="Close the list" onClick={() => setDrawer(false)} />
-    <main className="term-main">
-      <header className="term-bar">
-        <button type="button" className="term-menu" aria-label="Terminals" onClick={() => setDrawer(true)}>☰</button>
-        {current !== null && !creating
-          ? <>
-            <span className="term-bar-title"><Glyph program={current.program} /> {current.project}<span className="term-bar-branch">{current.branch}</span></span>
-            <span className={`term-link term-link--${link}`}>{LINK_WORDS[link]}</span>
-            {current.endedAt === null
-              ? <button type="button" className="term-button term-button--quiet term-button--small" onClick={() => { if (window.confirm("Close this terminal? Everything running in it stops.")) void act("close"); }}>Close</button>
-              : <button type="button" className="term-button term-button--quiet term-button--small" onClick={() => { if (window.confirm("Remove this terminal and its worktree? Its branch stays.")) void act("remove"); }}>Remove</button>}
-          </>
-          : <span className="term-bar-title">{state.available ? "New terminal" : "Live"}</span>}
-      </header>
-      {!state.available
-        ? <div className="term-new"><h2>Terminals aren't available</h2><p>{state.problem ?? "This install can't run terminals."}</p></div>
-        : creating || current === null
-          ? <NewSession state={state} onCancel={current === null ? null : () => setCreating(false)} onStarted={id => { setCreating(false); setSelected(id); void refresh(); }} />
-          : <>
-            <TerminalPane key={current.id} session={current} onLink={setLink} keys={send => { sendRef.current = send; }} />
-            <KeyBar sendRef={sendRef} />
-          </>}
-    </main>
+  const header = <header className="term-tb">
+    {phonePane
+      ? <KButton className="k-phone-only" variant="ghost" iconOnly="back" label="All terminals" onClick={() => { setCreating(false); setListing(true); }} />
+      : <a className="k-btn k-btn-ghost k-btn-icon k-phone-only" href="/agents" aria-label="Agents" title="Agents"><KIcon name="back" /></a>}
+    <a className="term-back k-desk-only" href="/agents"><KIcon name="back" small />Agents</a>
+    <h1>Terminals</h1>
+    <span className="term-ctx">{running} running · up to 8</span>
+    <span className="k-grow" />
+    {state.available && !creating && <KButton variant="primary" sm lead="plus" label="New terminal" onClick={newOne} />}
+  </header>;
+
+  let pane;
+  if (!state.available) pane = <div className="term-form"><KEmpty title="Terminals aren't available." text={state.problem ?? "This install can't run terminals."} /></div>;
+  else if (creating || current === null) pane = <NewSession state={state} onCancel={current === null && state.sessions.length === 0 ? null : () => setCreating(false)} onStarted={id => { setCreating(false); setSelected(id); setListing(false); void refresh(); }} />;
+  else pane = <section className="term-pane" aria-label={`${PROGRAM_WORDS[current.program]} terminal`}>
+    <header className="term-ph">
+      <div><b>{PROGRAM_WORDS[current.program]} · {current.project}</b>
+        <span className="term-ph-m"><span className="k-mono">{current.branch}</span> · started {new Date(current.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div>
+      <span className={`term-link term-link--${link}`} role="status">{LINK_WORDS[link]}</span>
+      <EndControl key={current.id} session={current} onDone={refresh} />
+    </header>
+    <TerminalPane key={current.id} session={current} onLink={setLink} keys={send => { sendRef.current = send; }} />
+    {current.endedAt === null ? <KeyBar sendRef={sendRef} /> : <KNote>Ended. Its branch stays; Remove takes it off this list.</KNote>}
+  </section>;
+
+  return <div className={`term-app${phonePane ? " term-app--pane" : ""}`} data-kit-page>
+    {header}
+    <div className="term-grid">
+      <aside className="term-side">{list}</aside>
+      <main className="term-main">{pane}</main>
+    </div>
   </div>;
 }
 
+// The kit's delegated behaviour (Close buttons, Escape, the keyboard on a phone), as the workspace installs it.
+installKitBehavior();
 createRoot(document.getElementById("so-term")!).render(<App />);

@@ -1,0 +1,98 @@
+/* Agents (UI revamp wave B): what the kit leaves to the page. Tokens and the kit's spacing only; every class starts
+ * with agents- so nothing here reaches another page. Rules: src/design/KIT.md.
+ *
+ * Page rules sit under #agents-view (the view's root): the workspace's scoped preflight (src/browser/tailwind.css)
+ * resets every element without a k- class at a higher specificity than one class, so a bare .agents- rule would
+ * lose. Drawers and popovers are portalled to the body, outside that preflight, so their rules stay bare. */
+
+/* ---------- the list ---------- */
+#agents-view { min-width: 0; padding-bottom: 96px; }
+#agents-view .agents-pad { padding: var(--so-space-lg) var(--so-space-2xl) 0; max-width: 808px; }
+#agents-view .agents-none, #agents-view .agents-line { margin: 0; padding: 10px var(--so-space-2xl); font-size: 12.5px; color: var(--so-muted); }
+#agents-view .agents-sec { margin-top: var(--so-space-lg); }
+#agents-view .k-slot-status h2 { color: var(--so-ink); }
+/* A long project name gives way before the row's own line does. */
+#agents-view .k-row-m > span:first-child { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.agents-chip { display: inline-flex; }
+.agents-copy { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--so-space-sm); }
+.agents-copy .k-btn { min-width: 0; }
+
+/* Add a computer: inline under the computers. */
+#agents-view .agents-reg { display: grid; gap: 14px; max-width: 520px; margin: var(--so-space-md) var(--so-space-2xl) 0; padding: var(--so-space-xs) 0 var(--so-space-sm); }
+#agents-view .agents-terms { justify-self: start; margin: 0; padding: var(--so-space-sm) 10px; border-radius: 7px; background: var(--so-raised); font-size: 12.5px; color: var(--so-ink); }
+
+/* A computer's details, in its drawer (outside the view). */
+.agents-cpanel { display: grid; gap: 22px; }
+.agents-cpanel .k-sec { display: grid; gap: var(--so-space-sm); margin: 0; }
+.agents-fact-line { display: block; }
+.agents-list { display: grid; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--so-line); }
+.agents-list > li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--so-space-sm) var(--so-space-md); min-height: 40px; padding: 6px 0; border-bottom: 1px solid var(--so-line); font-size: 13px; }
+.agents-list-t { min-width: 0; overflow-wrap: anywhere; }
+.agents-list a, .agents-cpanel .k-facts a { color: var(--so-ink); text-decoration: underline; text-decoration-color: var(--so-field-line); text-underline-offset: 3px; }
+.agents-move { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+
+/* Model per phase and the installation's other parts: one line each until opened. */
+#agents-view .agents-models { display: grid; padding: 0 var(--so-space-2xl); }
+#agents-view .agents-models > .k-disclose { padding: var(--so-space-md) 0; border-bottom: 1px solid var(--so-line); }
+#agents-view .agents-models > .k-disclose > summary { font-weight: 600; text-decoration: none; }
+#agents-view .agents-phases { display: grid; gap: 10px; margin-top: 10px; font-size: 13px; }
+#agents-view .agents-phase { display: grid; grid-template-columns: 72px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); gap: var(--so-space-lg); align-items: baseline; padding: var(--so-space-sm) 0; border-bottom: 1px solid var(--so-line); }
+#agents-view .agents-phase b { font-weight: 500; }
+#agents-view .agents-phases .agents-list { margin: 0; }
+
+/* ---------- one agent ---------- */
+#agents-view .agents-task { margin: 0; font-size: 13px; color: var(--so-muted); }
+#agents-view .agents-task b { font-weight: 500; color: var(--so-ink); }
+#agents-view .agents-tabs { display: grid; gap: var(--so-space-md); min-width: 0; }
+#agents-view .agents-steer { display: grid; gap: 10px; margin: 0; }
+#agents-view .agents-steer > h3 { margin: 0; font: 600 13px/1.3 var(--so-font-sans); color: var(--so-ink); }
+#agents-view .agents-unsent { margin: 0; padding: 10px var(--so-space-md); border: 1px solid var(--so-line); border-radius: var(--so-radius-card); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#agents-view .agents-changes-wrap, #agents-view .agents-changes { display: grid; gap: var(--so-space-lg); min-width: 0; }
+#agents-view .agents-files { display: grid; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--so-line); }
+#agents-view .agents-files > li { display: flex; gap: var(--so-space-md); min-width: 0; padding: var(--so-space-sm) 0; border-bottom: 1px solid var(--so-line); font-size: 12.5px; }
+#agents-view .agents-files .k-mono { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#agents-view .agents-add { color: var(--so-done-ink); }
+#agents-view .agents-del { color: var(--so-fail-ink); }
+#agents-view .agents-checkout { display: grid; gap: var(--so-space-sm); justify-items: start; }
+#agents-view .agents-checkout > h3 { margin: 0; font: 600 13px/1.3 var(--so-font-sans); color: var(--so-ink); }
+
+/* The conversation: quiet timed rows (when · who · what), tool lines in mono, the output a row opens. */
+#agents-view .agents-conv { display: grid; gap: var(--so-space-sm); min-width: 0; }
+#agents-view .agents-conv-h { display: flex; justify-content: flex-end; }
+#agents-view .agents-conv-empty { margin: 0; padding: var(--so-space-xl) 0; font-size: 13px; color: var(--so-muted); }
+#agents-view .agents-tx { max-height: 60vh; overflow-y: auto; overscroll-behavior: contain; min-width: 0; }
+#agents-view .agents-lines { display: grid; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--so-line); }
+#agents-view .agents-l { display: grid; grid-template-columns: 44px 72px minmax(0, 1fr); gap: var(--so-space-md); align-items: baseline; padding: var(--so-space-sm) 0; border-bottom: 1px solid var(--so-line); font-size: 13px; line-height: 1.5; }
+#agents-view .agents-lt, #agents-view .agents-lw { font-size: 12px; color: var(--so-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#agents-view .agents-l-say .agents-lw, #agents-view .agents-l-you .agents-lw { color: var(--so-ink); font-weight: 500; }
+#agents-view .agents-lx { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+#agents-view .agents-l-mark .agents-lx, #agents-view .agents-l-tool .agents-lx { color: var(--so-muted); }
+#agents-view .agents-l-tool .k-mono { color: var(--so-ink); overflow-wrap: anywhere; }
+#agents-view .agents-l-you .agents-lx { display: grid; gap: 2px; }
+#agents-view .agents-note-s { font-size: 12px; color: var(--so-muted); }
+#agents-view .agents-step { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+#agents-view .agents-step-t { flex: 1; min-width: 0; }
+#agents-view .agents-step-s { display: inline-flex; align-items: center; gap: var(--so-space-xs); flex: none; font-size: 12px; color: var(--so-muted); }
+#agents-view .agents-step-ok { color: var(--so-done-ink); }
+#agents-view .agents-step-failed { color: var(--so-fail-ink); }
+#agents-view .agents-step-running { color: var(--so-live-ink); }
+#agents-view .agents-step-more { display: block; margin-left: -10px; }
+#agents-view .agents-out { max-height: 288px; overflow: auto; margin: 6px 0 0; padding: var(--so-space-sm) 10px; border: 1px solid var(--so-line); border-radius: var(--so-radius-md); background: var(--so-code-bg); color: var(--so-ink); font: 12px/1.5 var(--so-font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+#agents-view .agents-term { display: grid; gap: 2px; margin: 0; padding: 10px var(--so-space-md); list-style: none; border: 1px solid var(--so-line); border-radius: var(--so-radius-card); background: var(--so-code-bg); color: var(--so-ink); font: 12px/1.45 var(--so-font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+#agents-view .agents-t-note { color: var(--so-live-ink); }
+#agents-view .agents-t-out { display: block; padding-left: var(--so-space-md); }
+
+/* ---------- the Live grid ---------- */
+#agents-view .agents-live { padding: var(--so-space-lg) var(--so-space-2xl); }
+
+@media (max-width: 760px) {
+  #agents-view .agents-pad { padding: var(--so-phone-card) var(--so-phone-gutter) 0; }
+  #agents-view .agents-none, #agents-view .agents-line { padding: 10px var(--so-phone-gutter); }
+  #agents-view .agents-reg { margin: var(--so-phone-card) var(--so-phone-gutter) 0; }
+  #agents-view .agents-models { padding: 0 var(--so-phone-gutter); }
+  #agents-view .agents-phase { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  #agents-view .agents-live { padding: var(--so-phone-card) var(--so-phone-gutter); }
+  #agents-view .agents-l { grid-template-columns: 40px minmax(0, 1fr); gap: 2px 10px; }
+  #agents-view .agents-l .agents-lx { grid-column: 2; }
+  .agents-move { width: 100%; }
+}

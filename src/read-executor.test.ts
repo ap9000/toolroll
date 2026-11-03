@@ -213,6 +213,6 @@ test("chrome completed before another worker job is revalidated at render after 
     const workspace = JSON.parse(result.body);
     const current = projectSummaryOf(store, now, { ...access, repos: [project], viewer: "alex" }, "alex", [{ path: project, name: "Read project" }], join(dir, "evidence"));
     expect(workspace.projectStates).toEqual(current);
-    expect(workspace.navigation.find((one: { label: string }) => one.label === "Tasks").count).toBe(workCountsByProject(store, now, { ...access, repos: [project], viewer: "alex" }).filter(one => one.repo === project).reduce((n, one) => n + one.totals["needs-you"], 0));
+    expect(workspace.navigation.find((one: { label: string }) => one.label === "Home").count).toBe(workCountsByProject(store, now, { ...access, repos: [project], viewer: "alex" }).filter(one => one.repo === project).reduce((n, one) => n + one.totals["needs-you"], 0));
   } finally { release?.(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });

@@ -53,28 +53,51 @@ export function useLiveReply(chat: BrowserWorkspace["conversation"], watching: b
   return watching ? live : null;
 }
 
-export function LiveReplyBubble({ live, leadName }: { live: LiveReply | null; leadName: string }) {
+/** The lead's mark: three bars (the lead chat's avatar beside its name). */
+export function ChatMark() {
+  return <span className="lc-mark" aria-hidden="true"><i /><i /><i /></span>;
+}
+
+/** The reply being written. `look="lead"` (the lead chat): the lead's own style — mark and name, plain text, and a
+ * three-dot "Thinking…" (still under reduced motion) while nothing is written yet; the bubble look stays for the task
+ * thread. */
+export function LiveReplyBubble({ live, leadName, look = "bubble" }: { live: LiveReply | null; leadName: string; look?: "bubble" | "lead" }) {
   const steps = live?.steps ?? [];
   const active = !live?.done && !live?.disconnected;
   const tools = steps.flatMap(step => step.tools);
   const text = [...steps].reverse().find(step => step.text.trim() !== "")?.text ?? "";
   const writing = active && steps.length > 0 && steps.at(-1)!.text.trim() !== "";
+  const toolList = tools.length > 0 && <ul className="so-live-steps" aria-label="Tool steps">
+    {tools.map(tool => {
+      const state = tool.state === "running" && !active ? "unknown" : tool.state;
+      const status = state === "succeeded" ? "Done" : state === "failed" ? "Failed" : state === "running" ? "Running" : "Outcome not reported";
+      return <li key={tool.id} data-state={state} data-done={state === "succeeded" ? "true" : "false"}>
+        <div><span>{tool.label}</span><span className="so-tool-status"> · {status}</span>
+          {tool.state === "failed" && <p className="so-tool-reason">{tool.reason}</p>}
+        </div>
+      </li>;
+    })}
+  </ul>;
+  const working = active && (writing || !tools.some(tool => tool.state === "running"));
+  if (look === "lead") {
+    // Writing shows its caret; before a word arrives (or between tools) the lead is thinking.
+    const thinking = working && !writing, nothingYet = tools.length === 0 && text === "";
+    const dots = <span className="so-working lc-thinking" role="status"><span className="lc-dots" aria-hidden="true"><i /><i /><i /></span>Thinking…</span>;
+    return <article className="lc-msg lc-lead lc-live so-live-reply" data-live-reply aria-label={`${leadName} is replying`}>
+      <header className="lc-who"><ChatMark /><b>{leadName}</b>{thinking && nothingYet && dots}</header>
+      {!nothingYet && <div className="lc-body">
+        {toolList}
+        {text !== "" && <p className="so-live-text">{text}{writing && <span className="so-live-caret" aria-hidden="true" />}</p>}
+        {thinking && dots}
+      </div>}
+    </article>;
+  }
   return <Message from="assistant" className="so-live-reply" data-live-reply>
     <div className="so-message-label">{leadName}</div>
     <MessageContent>
-      {tools.length > 0 && <ul className="so-live-steps" aria-label="Tool steps">
-        {tools.map(tool => {
-          const state = tool.state === "running" && !active ? "unknown" : tool.state;
-          const status = state === "succeeded" ? "Done" : state === "failed" ? "Failed" : state === "running" ? "Running" : "Outcome not reported";
-          return <li key={tool.id} data-state={state} data-done={state === "succeeded" ? "true" : "false"}>
-            <div><span>{tool.label}</span><span className="so-tool-status"> · {status}</span>
-              {tool.state === "failed" && <p className="so-tool-reason">{tool.reason}</p>}
-            </div>
-          </li>;
-        })}
-      </ul>}
+      {toolList}
       {text !== "" && <p className="so-live-text">{text}{writing && <span className="so-live-caret" aria-hidden="true" />}</p>}
-      {active && (writing || !tools.some(tool => tool.state === "running")) && <div className="so-working" role="status"><span className="so-live-dot" />{writing ? "Writing…" : "Thinking…"}</div>}
+      {working && <div className="so-working" role="status"><span className="so-live-dot" />{writing ? "Writing…" : "Thinking…"}</div>}
     </MessageContent>
   </Message>;
 }

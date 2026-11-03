@@ -1,7 +1,8 @@
 import type { LedgerEntry } from "./action-ledger.js";
 import { projectName } from "./project.js";
 import { exactWhenHtml } from "./when-html.js";
-import { html, postForm, styleElement, type Html } from "./html.js";
+import { html, postForm, type Html } from "./html.js";
+import { acts, btn, disclose, empty, infoLine, note, notice, pageHeader, select } from "./server/kit.js";
 
 
 /** The ledger's kinds of event, as the filter names them. */
@@ -20,50 +21,52 @@ export type LedgerChainView = {
 };
 function chainHtml(chain: LedgerChainView): Html {
   const status = chain.ok
-    ? html`<p class="ledger-chain ok" data-ledger-chain="ok"><strong>Chain verified</strong> · ${chain.entries} entries through #${chain.through ?? 0} · head <code>${chain.head.slice(0, 16)}…</code>${chain.checkedAt === null ? "" : ` · checked in full ${chain.checkedAt.slice(11, 16)} UTC`}</p>`
-    : html`<p class="ledger-chain problem" role="alert" data-ledger-chain="broken"><strong>Chain broken</strong> · ${chain.problem?.what ?? "the chain doesn't verify"}</p>`;
-  const latest = chain.latest === null ? "" : html`<p class="meta ledger-checkpoint">Latest checkpoint (${chain.latest.at.slice(0, 16).replace("T", " ")} UTC), copy it somewhere outside this machine: <code class="ledger-checkpoint-value">${chain.latest.through}:${chain.latest.hash}</code></p>`;
-  const make = chain.csrf === null ? "" : postForm("/ledger/checkpoint", html`<button type="submit">Make a checkpoint</button>`, { attrs: { class: "ledger-checkpoint-form" } });
+    ? infoLine(html`<span data-ledger-chain="ok">Chain verified · ${chain.entries} entries through #${chain.through ?? 0} · head <span class="k-mono">${chain.head.slice(0, 16)}…</span>${chain.checkedAt === null ? "" : ` · checked in full ${chain.checkedAt.slice(11, 16)} UTC`}</span>`)
+    : notice(html`<span data-ledger-chain="broken">Chain broken: ${chain.problem?.what ?? "the chain doesn't verify"}</span>`);
+  const latest = chain.latest === null ? "" : note(html`Latest checkpoint (${chain.latest.at.slice(0, 16).replace("T", " ")} UTC). Copy it somewhere outside this machine: <span class="k-mono h-select">${chain.latest.through}:${chain.latest.hash}</span>`);
+  const make = chain.csrf === null ? "" : postForm("/ledger/checkpoint", btn("Make a checkpoint", { sm: true, type: "submit", attrs: { "data-k-busy": "Making…" } }), { attrs: { class: "h-inline" } });
   const start = new Date(Date.parse(`${chain.today}T00:00:00Z`) - 29 * 86_400_000).toISOString().slice(0, 10);
-  const exportForm = html`<details class="ledger-filter-panel"><summary>Audit export</summary><form method="get" action="/ledger/export" class="ledger-filters ledger-export" aria-label="Audit export"><label>From<input type="date" name="from" value="${start}" required></label><label>To<input type="date" name="to" value="${chain.today}" required></label><button type="submit">Download</button></form><p class="meta">Every entry in the range with its seal, and an evidence pack for each task it names. JSON.</p></details>`;
-  return html`<section class="ledger-chain-panel" aria-label="Ledger integrity">${status}${latest}${make}${exportForm}</section>`;
+  const exportForm = disclose("Audit export", html`<form method="get" action="/ledger/export" class="h-filters h-export" aria-label="Audit export">\
+<div class="k-field"><label class="k-label" for="ledger-from">From</label><input class="k-input" id="ledger-from" type="date" name="from" value="${start}" required></div>\
+<div class="k-field"><label class="k-label" for="ledger-to">To</label><input class="k-input" id="ledger-to" type="date" name="to" value="${chain.today}" required></div>\
+<div class="k-acts">${btn("Download", { sm: true, type: "submit" })}</div></form>${note("Every entry in the range with its seal, and a full record for each task it names. JSON.")}`);
+  return html`<section class="h-chain" aria-label="Audit log integrity">${status}${latest}${make}${exportForm}</section>`;
 }
 
-const LEDGER_CSS = `
-.ledger-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.ledger-heading h1{margin:0}.ledger-caption{margin:8px 0 12px}
-.ledger-filter-panel{margin-bottom:12px}.ledger-filter-panel summary{font-size:13px;padding:6px 0;cursor:pointer}.ledger-filters{display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) auto auto;gap:8px;align-items:end;margin:0 0 12px}.ledger-filters label{display:grid;gap:3px;min-width:0;font-size:12px}.ledger-filters input,.ledger-filters select{width:100%;min-width:0;box-sizing:border-box;margin:0;padding:6px 8px;font-size:13px}.ledger-filters button{padding:7px 12px}.ledger-filters>a{padding:8px 0;font-size:13px}
-.ledger-detail{display:block;color:var(--muted-foreground);font-size:12px}.ledger-list{border:1px solid var(--border);border-radius:8px;overflow:hidden}.ledger-event{display:grid;grid-template-columns:140px minmax(90px,1fr) minmax(160px,2fr) minmax(100px,1fr) minmax(100px,1fr);gap:8px;align-items:baseline;padding:7px 10px;border-bottom:1px solid var(--border);font-size:13px;line-height:1.4;overflow-wrap:anywhere}.ledger-event:last-child{border-bottom:0}.ledger-event .actor{color:inherit;font-weight:600;text-decoration:none}.ledger-time,.ledger-place,.ledger-result small{font-size:11px;color:var(--muted-foreground)}.ledger-time time{font-variant-numeric:tabular-nums}.ledger-place a{display:block}.ledger-result small{display:block}.ledger-labels{font-size:11px;color:var(--muted-foreground);font-weight:600}.ledger-empty{padding:12px}
-@media(max-width:1000px){.ledger-filters{grid-template-columns:repeat(3,minmax(0,1fr)) auto}.ledger-event{grid-template-columns:122px minmax(80px,1fr) minmax(130px,2fr) minmax(85px,1fr)}.ledger-place{grid-column:2/4}.ledger-result{grid-column:4;grid-row:1/3}.ledger-labels{display:none}}
-@media(max-width:600px){.ledger-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-event{grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;padding:8px 10px}.ledger-actor{grid-column:1;grid-row:1}.ledger-action{grid-column:1;grid-row:2}.ledger-result{grid-column:2;grid-row:1/3;text-align:right}.ledger-time{grid-column:1;grid-row:3}.ledger-place{grid-column:2;grid-row:3;text-align:right}.ledger-place a{display:inline}.ledger-heading>a{font-size:13px}}
-.ledger-chain-panel{margin:0 0 12px}.ledger-chain{margin:0 0 4px;font-size:13px}.ledger-chain.ok strong{color:var(--success)}.ledger-checkpoint code{overflow-wrap:anywhere;user-select:all}.ledger-checkpoint-form{margin:6px 0 0}.ledger-export{grid-template-columns:repeat(2,minmax(0,180px)) auto;margin-bottom:4px}
-`;
-
+/** The audit log (`/ledger`): what people and tokens did, newest first, as quiet timed rows, with the filters, the CSV
+ * and the sealed export. A kit list page: the top bar, then rows between hairlines. */
 export function ledgerBody(rows: LedgerEntry[], projects: readonly string[], params: URLSearchParams, chain?: LedgerChainView): Html {
-  const selected = (key: string, value: string) => params.get(key) === value ? html` selected` : "";
   const more = rows.length > 50;
   const shown = rows.slice(0, 50);
-  const fresh = new URLSearchParams();
+  const kept = new URLSearchParams();
   for (const key of ["project", "actor", "source", "outcome", "task"]) {
-    const value = params.get(key); if (value) fresh.set(key, value);
+    const value = params.get(key); if (value) kept.set(key, value);
   }
-  const next = new URLSearchParams(fresh);
+  const next = new URLSearchParams(kept);
   if (shown.length) next.set("before", String(shown.at(-1)!.id));
-  const csv = new URLSearchParams(fresh); csv.set("format", "csv");
-  return html`${styleElement(LEDGER_CSS)}<div class="ledger-heading"><h1>Action ledger</h1><a href="/ledger?${csv.toString()}" download>Export CSV</a></div>${chain === undefined ? "" : chainHtml(chain)}
-<p class="meta ledger-caption">${shown.length} actions on this page · CSV includes all matching actions · Times in UTC</p>
-<details class="ledger-filter-panel"><summary>Filters · ${fresh.size === 0 ? "all actions" : `${fresh.size} active`}</summary>
-<form method="get" action="/ledger" class="ledger-filters" aria-label="Filter action ledger">
-<label>Project<select name="project"><option value="">All accessible projects</option>${projects.map(repo => html`<option value="${repo}"${selected("project", repo)}>${projectName(repo)}</option>`)}</select></label>
-<label>Person or worker<input type="text" name="actor" value="${params.get("actor") ?? ""}" placeholder="Any actor"></label>
-<label>Events<select name="source"><option value="">All events</option>${EVENT_KINDS.map(([value, label]) => html`<option value="${value}"${selected("source", value)}>${label}</option>`)}</select></label>
-<label>Outcome<input type="text" name="outcome" value="${params.get("outcome") ?? ""}" placeholder="Any outcome"></label>
-<label>Task<input type="text" name="task" value="${params.get("task") ?? ""}" placeholder="Any task"></label>
-<button type="submit">Filter</button><a href="/ledger">Clear</a></form></details>
-<div class="ledger-list" aria-label="Action history"><div class="ledger-event ledger-labels" aria-hidden="true"><span>Time</span><span>Actor</span><span>Action</span><span>Project / work</span><span>Outcome / event</span></div>${shown.length === 0 ? html`<p class="ledger-empty">No actions match these filters yet.</p>` : shown.map(row => {
-    const subject = row.runId !== null ? html`<a href="/r/${row.runId}">Run #${row.runId}</a>` : row.taskId !== null ? html`<a href="/t/${encodeURIComponent(row.taskId)}">${row.taskId}</a>` : "";
-    const byActor = new URLSearchParams(fresh); byActor.set("actor", row.actor);
-    return html`<article class="ledger-event" data-ledger-id="${row.id}"><div class="ledger-time">${exactWhenHtml(row.at)}</div><div class="ledger-actor"><a class="actor" href="/ledger?${byActor.toString()}" title="Filter by this actor">${row.actor}</a></div><div class="ledger-action">${row.action}${row.detail === null ? "" : html`<small class="ledger-detail">${row.detail}</small>`}</div><div class="ledger-place">${row.repo === null ? "Instance" : projectName(row.repo)} ${subject}</div><div class="ledger-result">${row.outcome}<small>${row.source}</small></div></article>`;
-  })}</div>
-<p class="row"><a href="/ledger?${fresh.toString()}">Newest actions</a>${more ? html`<a rel="next" href="/ledger?${next.toString()}">Older actions</a>` : ""}</p>
-<p class="meta">Accepted requests record acceptance; worker events record results. History starts from this upgrade. Review evidence is on each task or run.</p>`;
+  const csv = new URLSearchParams(kept); csv.set("format", "csv");
+  const text = (id: string, label: string, name: string, placeholder: string): Html =>
+    html`<div class="k-field"><label class="k-label" for="${id}">${label}</label><input class="k-input" id="${id}" type="text" name="${name}" value="${params.get(name) ?? ""}" placeholder="${placeholder}"></div>`;
+  const filters = disclose(`Filters · ${kept.size === 0 ? "all actions" : `${kept.size} active`}`, html`<form method="get" action="/ledger" class="h-filters" aria-label="Filter the audit log">\
+<div class="k-field"><label class="k-label" for="ledger-project">Project</label>${select({ id: "ledger-project", name: "project", wide: true, current: params.get("project") ?? "", items: [["", "All your projects"], ...projects.map(repo => [repo, projectName(repo)] as const)] })}</div>\
+${text("ledger-actor", "Person or worker", "actor", "Anyone")}\
+<div class="k-field"><label class="k-label" for="ledger-source">Events</label>${select({ id: "ledger-source", name: "source", wide: true, current: params.get("source") ?? "", items: [["", "All events"], ...EVENT_KINDS] })}</div>\
+${text("ledger-outcome", "Outcome", "outcome", "Any outcome")}${text("ledger-task", "Task", "task", "Any task")}\
+<div class="k-acts">${btn("Filter", { sm: true, type: "submit" })}${btn("Clear", { sm: true, variant: "ghost", href: "/ledger" })}</div></form>`, kept.size > 0);
+  const list = shown.length === 0
+    ? empty({ title: kept.size === 0 ? "Nothing yet." : "No actions match these filters.", text: kept.size === 0 ? "Approvals, invites, tokens and sign-ins appear here." : "Clear the filters to see every action." })
+    : html`<div class="h-audit-list" aria-label="Action history">${shown.map(row => {
+      const subject = row.runId !== null ? html`<a class="k-link" href="/r/${row.runId}">Run #${row.runId}</a>` : row.taskId !== null ? html`<a class="k-link k-mono" href="/t/${encodeURIComponent(row.taskId)}">${row.taskId}</a>` : "";
+      const byActor = new URLSearchParams(kept); byActor.set("actor", row.actor);
+      return html`<article class="h-audit" data-ledger-id="${row.id}"><span class="h-audit-time k-num">${exactWhenHtml(row.at)}</span>\
+<span class="h-audit-what"><a class="h-actor" href="/ledger?${byActor.toString()}" title="Only this actor's actions">${row.actor}</a> ${row.action}${row.detail === null ? "" : html`<span class="h-audit-detail">${row.detail}</span>`}</span>\
+<span class="h-audit-place">${row.repo === null ? "Instance" : projectName(row.repo)} ${subject}</span><span class="h-audit-out">${row.outcome} · ${row.source}</span></article>`;
+    })}</div>`;
+  const paging = kept.has("before") || params.has("before") || more
+    ? acts(params.has("before") ? btn("Newest actions", { sm: true, variant: "ghost", href: `/ledger?${kept.toString()}` }) : "", more ? btn("Older actions", { sm: true, variant: "ghost", href: `/ledger?${next.toString()}`, attrs: { rel: "next" } }) : "")
+    : "";
+  return html`<div class="h-page h-ledger" data-kit-page>${pageHeader("Audit log", {
+    ctx: "What people and tokens did, newest first. Times in UTC.",
+    right: btn("Export CSV", { sm: true, variant: "ghost", href: `/ledger?${csv.toString()}`, attrs: { download: true } }),
+  })}<div class="h-tools-row">${chain === undefined ? "" : chainHtml(chain)}${filters}</div>${list}<div class="h-foot-row">${paging}${note("Accepted requests record acceptance; worker events record results. History starts from the upgrade that added it. Review evidence is on each task or run. The CSV holds every matching action.")}</div></div>`;
 }

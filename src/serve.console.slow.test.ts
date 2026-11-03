@@ -7,6 +7,7 @@ import { projectIdentities } from "./project-identity.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { createServer as createNetServer } from "node:net";
 import type { FolderLookRunner } from "./folder-look.js";
+import type { BrowserAgentsView } from "./browser-workspace.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -632,11 +633,14 @@ describe("the operations console", () => {
     const cookie = await login();
 
     // Live inside the workspace: it reads itself every 10 s (forms being edited are kept), never a whole-page reload.
-    const system = await (await fetch(url("/system"), { headers: { cookie } })).text();
+    // The computers and workspaces (what /system showed) are on Agents, which reads itself every 10 s while one builds.
+    const system = await (await fetch(url("/agents"), { headers: { cookie } })).text();
     expect(workspaceOf(system).refreshSeconds).toBe(10);
     expect(system).not.toContain('http-equiv="refresh"');
-    expect(system).toContain("1/2 building");
-    expect(system).toContain("standing-orders-t-live-abc123");
+    const shown = workspaceOf(system).view as BrowserAgentsView;
+    expect(shown.computers!.list.find(one => one.name === "builder-1")).toMatchObject({ state: "building", capacity: 2 });
+    expect(shown.computers!.list.find(one => one.name === "builder-1")!.building).toHaveLength(1);
+    expect(shown.system!.workspaces.map(one => one.name)).toContain("standing-orders-t-live-abc123");
     // The inbox never auto-refreshes: it can hold typed input.
     const inbox = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
     expect(workspaceOf(inbox).refreshSeconds).toBeUndefined();
@@ -1010,11 +1014,12 @@ describe("the operations console", () => {
     store.finishRun(run, { outcome: "built", reason: "clean", now: T0 });
     const cookie = await login();
 
-    const list = await (await fetch(url("/runs"), { headers: { cookie } })).text();
-    expect(list).toContain(`/r/${run}`);
-
-    expect((await fetch(url("/runs?before=abc"), { headers: { cookie } })).status).toBe(400);
-    expect((await fetch(url("/runs?before=9007199254740993"), { headers: { cookie } })).status).toBe(400);
+    // Build history lives on Agents now; the old list's address forwards there, whatever it carried.
+    for (const path of ["/runs", "/runs?before=abc"]) {
+      const moved = await fetch(url(path), { headers: { cookie }, redirect: "manual" });
+      expect(moved.status, path).toBe(302);
+      expect(moved.headers.get("location"), path).toBe("/agents");
+    }
 
     const screen = await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text();
     expect(screen).toContain("$0.42");
@@ -1989,11 +1994,13 @@ describe("the board — the pipeline as lanes, live in place", () => {
     expect(again.status).toBe(409);
   });
 
-  test("the old morning route forwards to activity, which speaks of windows, not nights", async () => {
+  test("the old morning and activity routes forward to Home, which has the summary now", async () => {
     const cookie = await login();
-    const moved = await fetch(url("/morning"), { headers: { cookie }, redirect: "manual" });
-    expect(moved.status).toBe(302);
-    expect(moved.headers.get("location")).toBe("/activity");
+    for (const path of ["/morning", "/activity"]) {
+      const moved = await fetch(url(path), { headers: { cookie }, redirect: "manual" });
+      expect(moved.status, path).toBe(302);
+      expect(moved.headers.get("location"), path).toBe("/");
+    }
   });
 });
 
@@ -2173,14 +2180,15 @@ describe("the agents card — configuration, readable at a glance", () => {
         redirect: "manual",
       });
       const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0] as string;
-      const html = await (await fetch(`${base}/system`, { headers: { cookie } })).text();
-      // Plain sentences, provenance in words, the honest cost note — and
-      // no form anywhere near it: changing routing is the terminal's act.
-      expect(html).toContain("chosen for this project by alex");
-      expect(html).toContain("set for the whole installation by alex");
-      expect(html).toContain("gpt-5-codex");
-      expect(html).toContain("no dollar costs");
-      expect(html).toContain("the default — nothing configured"); // repair, untouched
+      // Model per phase lives on Agents now (/system is a 302 to it): plain sentences, provenance in words, the honest
+      // cost note, and nothing that changes routing (that is Settings → Agents and models, or the terminal's act).
+      const html = await (await fetch(`${base}/agents`, { headers: { cookie } })).text();
+      const phases = (workspaceOf(html).view as BrowserAgentsView).phases!;
+      const of = (phase: string) => phases.find(one => one.phase === phase)!;
+      expect(of("plan")).toMatchObject({ source: "Chosen for this project by alex", noDollars: false });
+      expect(of("build")).toMatchObject({ source: "Set for the whole installation by alex", noDollars: true });
+      expect(of("build").model).toContain("gpt-5-codex");
+      expect(of("repair").source).toBe("The default: nothing chosen"); // repair, untouched
       expect(html).not.toMatch(/<form[^>]*config/);
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
@@ -2613,7 +2621,6 @@ describe("the fleet — runner lanes as the agents × projects surface", () => {
     return (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
   };
 
-  const csrf = (html: string): string => (/name="csrf" value="([^"]+)"/.exec(html)?.[1] ?? "");
 
   beforeEach(async () => {
     store = openStore(":memory:");
@@ -2666,24 +2673,23 @@ describe("the fleet — runner lanes as the agents × projects surface", () => {
     store.moveTask({ taskId: "t-queued", toRunner: "builder-2", beforeTaskId: null }, new Date());
 
     const cookie = await login();
-    const html = await (await fetch(url("/fleet"), { headers: { cookie } })).text();
-    expect(html).toContain("builder-1");
-    expect(html).toContain("builder-2");
-    expect(html).toContain("being built");             // the live claim
-    expect(html).toContain("reserved work");           // the queued reservation
-    // The register/retire ceremonies are the only forms here.
-    expect(html).toContain('action="/fleet/runner/register"');
-    expect(html).toContain('action="/fleet/runner/retire"');
-    // Its fragment is the lanes alone, behind the same auth.
-    const fragment = await (await fetch(url("/fleet?fragment=1"), { headers: { cookie } })).text();
-    expect(fragment).not.toContain("<html");
-    expect(fragment).not.toContain("<script");
+    // Fleet became the computers on Agents (UI revamp wave B): /fleet is a GET alias to them.
+    const alias = await fetch(url("/fleet"), { headers: { cookie }, redirect: "manual" });
+    expect(alias.status).toBe(302);
+    expect(alias.headers.get("location")).toBe("/agents#computers");
+    const view = workspaceOf(await (await fetch(url("/agents"), { headers: { cookie } })).text()).view as BrowserAgentsView;
+    const computers = view.computers!;
+    expect(computers.manage).toBe(true);
+    const one = computers.list.find(runner => runner.name === "builder-1")!;
+    const two = computers.list.find(runner => runner.name === "builder-2")!;
+    expect(one).toMatchObject({ state: "building", capacity: 2, building: [{ taskId: "t-live", title: "being built" }] });   // the live claim
+    expect(two.reserved.map(task => task.title)).toEqual(["reserved work"]);                                                  // the queued reservation
+    expect(computers.queueRevision).toBe(store.queueRevision());
   });
 
   test("registering a worker takes a password and shows its token once; the token is never re-rendered", async () => {
     const cookie = await login();
-    const page = await (await fetch(url("/fleet"), { headers: { cookie } })).text();
-    const token = csrf(page);
+    const token = workspaceOf(await (await fetch(url("/agents"), { headers: { cookie } })).text()).csrf;
 
     // No password: refused, nothing minted.
     const noPassword = await fetch(url("/fleet/runner/register"), {
@@ -2711,8 +2717,10 @@ describe("the fleet — runner lanes as the agents × projects surface", () => {
     const runner = store.getRunner("builder-9");
     expect(runner).not.toBeNull();
     expect(runner?.runner.capacity).toBe(2);
+    // The token page is a kit reading page back to the computers on Agents.
+    expect(shown).toContain('href="/agents#computers"');
     // Only a hash is kept — the raw token is not in the database's runner row.
-    const later = await (await fetch(url("/fleet"), { headers: { cookie } })).text();
+    const later = await (await fetch(url("/agents"), { headers: { cookie } })).text();
     expect(later).not.toContain("builder-9 is registered");
   });
 
@@ -2722,8 +2730,7 @@ describe("the fleet — runner lanes as the agents × projects surface", () => {
       "hash",
     );
     const cookie = await login();
-    const page = await (await fetch(url("/fleet"), { headers: { cookie } })).text();
-    const token = csrf(page);
+    const token = workspaceOf(await (await fetch(url("/agents"), { headers: { cookie } })).text()).csrf;
 
     const unknown = await fetch(url("/fleet/runner/retire"), {
       method: "POST", headers: { cookie },
@@ -2738,13 +2745,17 @@ describe("the fleet — runner lanes as the agents × projects surface", () => {
       redirect: "manual",
     });
     expect(retired.status).toBe(303);
+    expect(retired.headers.get("location")).toBe("/agents?retired=builder-1#computers");
     expect(store.getRunner("builder-1")?.runner.retiredAt).not.toBeNull();
+    // Agents says so in fixed words, naming only a computer the store knows as retired.
+    const said = async (path: string) => (workspaceOf(await (await fetch(url(path), { headers: { cookie } })).text()).view as BrowserAgentsView).computerSaid;
+    expect(await said("/agents?retired=builder-1")).toMatchObject({ tone: "info", text: expect.stringContaining("builder-1 is retired") });
+    expect(await said(`/agents?retired=${encodeURIComponent("<b>nobody</b>")}`)).toBeNull();
   });
 
   test("dragging across projects: the fleet's move skips the open-project gate, the ceiling still walls reads", async () => {
     const cookie = await login();
-    const page = await (await fetch(url("/fleet"), { headers: { cookie } })).text();
-    const token = csrf(page);
+    const token = workspaceOf(await (await fetch(url("/agents"), { headers: { cookie } })).text()).csrf;
     store.saveRunner(
       { name: "builder-1", host: "here", capacity: 1, repos: [], agents: [], registeredAt: T0.toISOString(), heartbeatAt: T0.toISOString(), retiredAt: null },
       "hash",
@@ -2876,8 +2887,8 @@ describe("the workbench (attended A1) and the live substrate", () => {
     expect(open).toContain("data-elapsed-since=");
     store.finishRun(1, { outcome: "built", committed: true, now: new Date() });
     const closed = await (await fetch(url("/r/1?fragment=facts"), { headers: { cookie } })).text();
-    expect(closed).toContain("finished");
-    expect(closed).toContain("reload for the final record");
+    expect(closed).toContain("It finished.");
+    expect(closed).toContain("Reload for the final record");
     expect(closed).not.toContain("<form");
   });
 });
@@ -2970,8 +2981,7 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
   test("a live run says running in plain words; an orphaned run stays never finished and gets no poller", async () => {
     const cookie = await login();
     const alive = await (await fetch(url(`/r/${liveRun}`), { headers: { cookie } })).text();
-    expect(alive).toContain("badge-running");
-    expect(alive).toContain(">running<");
+    expect(alive).toContain('<span class="k-chip live">Running</span>');
     expect(alive).toContain("agent working");
     expect(alive).toContain('id="run-facts-stamp"');
 
@@ -2979,20 +2989,20 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
     // poller stamp. (The page's side list still shows OTHER runs' badges,
     // so the fragment is the honest place to assert absence.)
     const orphan = await (await fetch(url(`/r/${orphanRun}`), { headers: { cookie } })).text();
-    expect(orphan).toContain("never finished");
+    expect(orphan).toContain(">Never finished<");
     // The chrome layer's script text mentions the attribute name, so the
     // markup form (with =) is the honest absence assertion.
     expect(orphan).not.toContain('data-elapsed-since="');
     expect(orphan).not.toContain('id="run-facts-stamp"');
     expect(orphan).not.toContain("?fragment=facts");
     const orphanFacts = await (await fetch(url(`/r/${orphanRun}?fragment=facts`), { headers: { cookie } })).text();
-    expect(orphanFacts).not.toContain("badge-running");
+    expect(orphanFacts).not.toContain('<span class="k-chip live">Running</span>');
   });
 
   test("the facts fragment stops the poller for finished AND orphaned runs, and answers live otherwise", async () => {
     const cookie = await login();
     const alive = await (await fetch(url(`/r/${liveRun}?fragment=facts`), { headers: { cookie } })).text();
-    expect(alive).toContain(">running<");
+    expect(alive).toContain('<span class="k-chip live">Running</span>');
     expect(alive).not.toContain("data-region-stop");
 
     const orphan = await (await fetch(url(`/r/${orphanRun}?fragment=facts`), { headers: { cookie } })).text();
@@ -3001,7 +3011,7 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
 
     store.finishRun(liveRun, { outcome: "built", committed: true, now: new Date() });
     const finished = await (await fetch(url(`/r/${liveRun}?fragment=facts`), { headers: { cookie } })).text();
-    expect(finished).toContain("reload for the final record");
+    expect(finished).toContain("Reload for the final record");
     expect(finished).toContain("data-region-stop");
   });
 

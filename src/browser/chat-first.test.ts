@@ -51,21 +51,14 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-test("the Chat landing is the conversation: Home and the Crew live in the Work panel, a short empty state, and a desk opens ready to type", async () => {
+test("the Chat page is the conversation alone: Home lives at /, nothing sits beside the thread, and a desk opens ready to type", async () => {
   await mount(workspace());
   const chat = document.querySelector("[data-workspace-chat]")!;
   expect(chat.querySelector("[data-home]")).toBeNull();
   expect(chat.querySelector("[data-brief]")).toBeNull();
-  const work = document.querySelector("[data-workspace-detail]")!;
-  expect(work.querySelector("[data-home]")).not.toBeNull();
-  // Every link Home had is still there.
-  expect([...work.querySelectorAll("[data-home] a")].map(one => one.getAttribute("href"))).toEqual(expect.arrayContaining(["/t/t-1", "/work?view=running", "/work?view=needs-you", "/work?view=completed", "/work"]));
-  // The Crew is one tab away (a phone's Work sheet too).
-  const crewTab = [...work.querySelectorAll('[role="tab"]')].find(one => one.textContent === "Crew") as HTMLButtonElement;
-  expect(work.querySelector("[data-workspace-crew]")!.closest("[hidden]")).not.toBeNull();
-  await act(async () => crewTab.click());
-  expect(work.querySelector("[data-workspace-crew]")!.closest("[hidden]")).toBeNull();
-  expect(work.querySelector('[data-workspace-task="t-1"] a')!.getAttribute("href")).toBe("/t/t-1");
+  // No Work or Crew sheet beside the chat (UI revamp wave B): what needs you is Home's, and the rail links it.
+  expect(document.querySelector("[data-workspace-detail]")).toBeNull();
+  expect(document.querySelector("[data-home]")).toBeNull();
   expect(document.activeElement?.id).toBe("lead-message");
 });
 

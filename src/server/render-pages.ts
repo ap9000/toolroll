@@ -254,9 +254,8 @@ export function inboxPage(chrome: Chrome, data: {
   });
 }
 
-/** System: the machinery — workers, background service, workspaces. */
 /** Start a builder: the one command, as text to select (/start-builder, where every "Connect a builder" leads, and
- * /system#builder). `project`: the open project's name, when the viewer may see it; `connected`: whether a builder
+ * the Agents page). `project`: the open project's name, when the viewer may see it; `connected`: whether a builder
  * that may build there is checking in (null: say nothing); `managed`: whether this person can start one themselves
  * (registering a builder takes an instance operator), else who to ask. */
 export function startBuilderHtml(data: { heading: "h1" | "h2"; project: string | null; connected: boolean | null; managed: boolean }): Html {
@@ -270,96 +269,6 @@ export function startBuilderHtml(data: { heading: "h1" | "h2"; project: string |
       ? html`<p class="meta">Keep it running. Approved tasks start on their own. The console alone (<code>toolroll serve</code>) doesn't build.</p>`
       : html`<p class="meta">Starting a builder takes someone who manages this Toolroll. Ask them to run it there; your tasks start on their own once it connects.</p>`
   }</div></section>`;
-}
-
-export function systemPage(chrome: Chrome, data: {
-  agents: {
-    phase: "plan" | "build" | "repair" | "review";
-    provider?: string;
-    model?: string | null;
-    source?: "pinned" | "flag" | "project" | "installation" | "default";
-    problem?: string;
-    setBy: string | null;
-  }[];
-  building: { taskId: string; runner: string; claimedAt: string; expiresAt: string; model: string | null }[];
-  runners: Runner[];
-  worktrees: WorktreeRow[];
-  episode: { id: number; startedAt: string; endedAt: string | null; ticks: number; built: number; broke: number } | null;
-  outboxPending: number;
-  externalWork?: { remoteRepo: string; blocked: string | null; openEpisode: string | null }[];
-  now: Date;
-}): Screen {
-  const nowMs = data.now.getTime();
-  const runnerCards = data.runners
-    .filter(one => one.retiredAt === null)
-    .map(one => {
-      const age = nowMs - new Date(one.heartbeatAt).getTime();
-      const dot = age < 5 * 60_000 ? "dot-ok" : age < 60 * 60_000 ? "dot-warn" : "dot-off";
-      const said = age < 5 * 60_000 ? "alive" : age < 60 * 60_000 ? `quiet ${Math.round(age / 60_000)}m` : "not heard from";
-      const busy = data.building.filter(claim => claim.runner === one.name).length;
-      return html`<div class="stat-card"><span class="k"><span class="dot ${dot}"></span>${one.name}</span><span class="v">builder · ${said} · ${busy}/${one.capacity} building</span></div>`;
-    });
-  const worktreeCards = data.worktrees.map(tree => {
-    const leased = tree.leasedAt !== null && tree.releasedAt === null;
-    const dot = leased ? "dot-ok" : tree.verified ? "dot-off" : "dot-warn";
-    const state = leased ? "building" : tree.verified ? "free" : "needs review";
-    const name = tree.path.split("/").pop() ?? tree.path;
-    return html`<div class="stat-card"><span class="k"><span class="dot ${dot}${leased ? " pulse" : ""}"></span><span class="mono">${name}</span></span><span class="v">workspace · ${tree.branch} · ${state}</span></div>`;
-  });
-  const watchCard =
-    data.episode === null
-      ? null
-      : html`<div class="stat-card"><span class="k"><span class="dot ${data.episode.endedAt === null ? "dot-ok pulse" : "dot-off"}"></span>Toolroll</span><span class="v">${
-          data.episode.endedAt === null
-            ? html`running since ${whenTime(data.episode.startedAt)}`
-            : html`last run: ${data.episode.built} built, ${data.episode.broke} broke · ended ${whenTime(data.episode.endedAt)}`
-        }</span></div>`;
-  const cards = [...runnerCards, watchCard, ...worktreeCards].filter((one): one is Html => one !== null);
-  const PHASE_SAID: Record<string, string> = {
-    plan: "planning sessions ask questions and draft the plan you approve",
-    build: "builds do the work, unattended, inside the approved scope",
-    repair: "repair turns mend a malformed handoff in the same session",
-  };
-  const agentLines = joinHtml(data.agents
-    .map(one => {
-      if (one.problem !== undefined) {
-        return html`<p class="row"><span class="mono">${one.phase}</span> <span class="badge badge-failed">Misconfigured</span> <span class="meta">${one.problem}</span></p>`;
-      }
-      const who =
-        one.source === "project"
-          ? html`chosen for this project${one.setBy === null ? null : html` by ${one.setBy}`}`
-          : one.source === "installation"
-            ? html`set for the whole installation${one.setBy === null ? null : html` by ${one.setBy}`}`
-            : html`the default — nothing configured`;
-      const dollars = one.provider === "claude" ? null : html` · <span title="this provider reports tokens, not dollars — its runs land as unmeasured spend">no dollar costs</span>`;
-      return html`<p class="row"><span class="mono">${one.phase}</span> <strong>${one.provider === null || one.provider === undefined ? "" : agentModelName(one.provider, one.model ?? null)}</strong>${one.model === null || one.model === undefined ? html` <span class="meta">(its default model)</span>` : null}<span class="right meta">${who}${dollars}</span></p><p class="meta" style="margin-top:0">${PHASE_SAID[one.phase] ?? ""}</p>`;
-    }), "\n");
-  const agentsCard =
-    html`<h2>Agents</h2><p class="meta">Which AI provider runs each phase. An instance operator changes them in <a href="/settings/models">Settings → Models</a> with their password, or with <code>toolroll config</code>.</p><div class="card">${agentLines}<p class="meta">Repair always stays on the provider that built — only its model can differ. A schedule's task filed under an approval moved from a routine is pinned to the agents approved then.</p></div>`;
-
-  return screen("system", joinHtml([
-    html`<h1>System</h1>`,
-    html`<p class="hint">builders execute tasks in isolated temporary copies of each project</p>`,
-    agentsCard,
-    cards.length === 0 ? null : html`<div class="cards">${cards}</div>`,
-    startBuilderHtml({ heading: "h2", project: null, connected: data.runners.some(one => one.retiredAt === null && runnerAlive(one, data.now)) ? null : false, managed: true }),
-    data.outboxPending > 0 ? html`<p class="meta">Notifications: ${data.outboxPending} pending delivery</p>` : null,
-    (data.externalWork ?? []).length === 0
-      ? null
-      : html`<h2>External work</h2>${joinHtml(
-          (data.externalWork ?? []).map(
-            one =>
-              html`<p class="row"><span class="mono">${one.remoteRepo}</span> ${
-                one.blocked !== null
-                  ? html`<span class="badge badge-failed">Dispatch blocked</span> <span class="meta">the tracker connection needs repair — \`toolroll sync\` says why</span>`
-                  : one.openEpisode !== null
-                    ? html`<span class="badge badge-failed">Sync failing</span> <span class="meta">${one.openEpisode}</span>`
-                    : html`<span class="meta">syncing normally</span>`
-              }</p>`,
-          ),
-          "\n",
-        )}`,
-  ], "\n"), { chrome, refreshSeconds: data.building.length > 0 ? 10 : 60 });
 }
 
 /**
@@ -628,36 +537,6 @@ export function boardBody(
     html`<details class="lane lane-done"${data.done.length === 0 ? null : html` open`}><summary><h2>${laneChip("done", html`<a href="/done">Done recently</a>`)}</h2></summary><p class="hint">The most recent. The full list is under Done.</p>${doneCards}</details>`,
     html`</div>`,
   ], "\n");
-}
-
-/** Completed work: one row per done task, its final run and PR attached. */
-export function donePage(
-  chrome: Chrome,
-  rows: ReturnType<Store["listCompletedWorkScoped"]>,
-  ciRed: (pr: number) => boolean,
-): Screen {
-  const list =
-    rows.length === 0
-      ? html`<p class="meta">No finished tasks yet.</p>`
-      : joinHtml(rows.map(row => {
-          const pr =
-            row.prNumber === null
-              ? row.publicationState === null
-                ? null
-                : html` <span class="badge">${sentenceCase(row.publicationState)}</span>`
-              : html` <a href="${row.prUrl ?? "#"}" class="badge badge-open">PR #${row.prNumber}</a>${ciRed(row.prNumber) ? html` <span class="badge badge-failed">CI failing</span>` : null}`;
-          const needsVerification =
-            (row.proofVerdict === "short" || row.proofVerdict === "refuted") && !row.proofAccepted
-              ? html` <span class="badge badge-failed">${row.proofVerdict === "refuted" ? "conflicting evidence" : "missing evidence"}</span>`
-              : null;
-          return html`<div class="card"><p><a href="${taskHref(row.taskId)}"><strong>${row.title}</strong></a>${row.outcome === "no-change" ? html` <span class="badge">No change needed</span>` : null}${pr}${needsVerification}${criterionMatrixSummary(row.proofMatrix)}</p>${row.handoff === null ? null : html`<p class="meta">${row.handoff.length > 200 ? row.handoff.slice(0, 200) + "…" : row.handoff}</p>`}<p class="meta mono">${row.taskId} · ${whenTime(row.completedAt)}${row.ranMinutes === null ? null : html` · ran ${row.ranMinutes}m`}${row.provider === null ? null : html` · ${runCostWords({ authMode: row.authMode, costUsd: row.costUsd, tokensIn: null, tokensOut: null })}`} · <a href="${reviewHref(row.taskId)}">review →</a></p></div>`;
-        }), "\n");
-  return screen("done", joinHtml([
-    html`<h1>Done</h1>`,
-    buildsViews("done"),
-    html`<p class="hint">completed work in order of completion — each with its final build, the agent's conclusion, usage, and its pull request; <a href="/review">review</a> opens the same saved work and its checks</p>`,
-    list,
-  ], "\n"), { chrome });
 }
 
 export function homePage(chrome: Chrome, data: {
@@ -1285,105 +1164,6 @@ export function queueBody(
     workers.map(worker => column(worker.name + (worker.retired ? " (retired)" : ""), worker.name, noteForm(worker), columnOf(worker.name), "nothing queued — this worker will take from the shared queue")),
     "\n",
   )}</div>`;
-}
-
-/**
- * The fleet screen — one lane per runner, and the work in front of it.
- * Building claims pin to the top of their worker's lane (live — never
- * draggable); queued reservations sit below it (draggable to another
- * worker, re-reserving them). Every card wears its project chip, which is
- * the whole point: which agent is on which project is the page's answer.
- * Form-free like the board, except the per-worker note, so the lane stack
- * can re-render itself while somebody watches.
- */
-export function fleetBody(
-  queued: ReturnType<Store["fleetQueue"]>,
-  building: ReturnType<Store["liveClaims"]>,
-  runners: Runner[],
-  queueRevision: number,
-  visibleRepo: (repo: string | null) => boolean,
-): Html {
-  const chip = (repo: string | null): Html | null =>
-    repo === null ? null : html` <span class="badge">${projectName(repo)}</span>`;
-  const queuedCardOf = (one: ReturnType<Store["fleetQueue"]>[number]): Html =>
-    html`<div class="lane-card queue-card" data-task="${one.id}" data-taken="${one.taken ? "1" : "0"}"><p class="row">${one.taken ? null : GRIP_HANDLE}<a href="${taskHref(one.id)}">${one.title}</a></p><p class="row meta"><span class="mono">${one.id}</span>${chip(one.repo)}${one.approved ? null : html` <span class="badge">Unapproved scope</span>`}${one.blockers > 0 ? html` <span class="badge">Waits for ${one.blockers}</span>` : null}${one.taken ? html` <span class="badge">Being taken</span>` : null}</p></div>`;
-  const lanes = runners.map(runner => {
-    const own = queued.filter(one => one.assignedRunner === runner.name && visibleRepo(one.repo));
-    const live = building.filter(one => one.runner === runner.name);
-    const retired = runner.retiredAt !== null;
-    const head =
-      retired
-        ? html`<p class="meta">This worker is retired — drag these elsewhere, or register the name again</p>`
-        : html`${postForm(
-            "/queue/note",
-            html`<input type="text" name="note" class="runner-note" value="${runner.queueNote ?? ""}" data-initial="${runner.queueNote ?? ""}" placeholder="what this worker is working through" aria-label="column note" maxlength="200">`,
-            { attrs: { class: "row" }, hidden: { from: "fleet", runner: runner.name } },
-          )}<p class="meta">${runnerAlive(runner, new Date()) ? "alive" : "quiet"} · ${live.length}/${runner.capacity} building</p>`;
-    const buildingCards = joinHtml(live.map(
-      claim =>
-        html`<div class="lane-card" data-taken="1"><p class="row"><span class="dot dot-ok pulse"></span> ${claim.taskId}</p><p class="row meta">building${chip(claim.repo ?? null)}${claim.model === null ? null : html` · ${modelName(null, claim.model)}`} · ${Math.max(1, Math.round((Date.now() - new Date(claim.claimedAt).getTime()) / 60_000))}m</p></div>`,
-    ), "\n");
-    const queuedCards = joinHtml(own.map(queuedCardOf), "\n");
-    const empty =
-      live.length === 0 && own.length === 0
-        ? html`<p class="meta lane-empty">${retired ? "nothing left" : "idle — will take from the shared queue"}</p>`
-        : null;
-    return html`<section class="lane queue-column${live.length > 0 ? " lane-live" : ""}" data-column="${runner.name}"><h2>${runner.name}${retired ? " (retired)" : ""}</h2>${head}${buildingCards}${queuedCards}${empty}</section>`;
-  });
-  // The shared queue: anything reserved for nobody.
-  const shared = queued.filter(one => one.assignedRunner === null && visibleRepo(one.repo));
-  const sharedCards = joinHtml(shared.map(queuedCardOf), "\n");
-  const sharedLane =
-    html`<section class="lane queue-column" data-column="anyone"><h2>Shared queue</h2><p class="meta">Any free worker takes from here, top first</p>${sharedCards}${shared.length === 0 ? html`<p class="meta lane-empty">nothing waiting — every task is reserved or running</p>` : null}</section>`;
-  return html`<div class="lanes" data-queue-revision="${queueRevision}">${sharedLane}${joinHtml(lanes, "\n")}</div>`;
-}
-
-/** Identical drag mechanics to the queue — the pointer events land on the worker's column. */
-export function fleetScript(): string {
-  return (
-    `(function(){var region=document.getElementById("fleet-region");if(!region)return;` +
-    `var stamp=document.getElementById("fleet-region-stamp");var dragging=null;` +
-    `function dirty(){if(region.contains(document.activeElement)&&document.activeElement!==document.body)return true;` +
-    `var inputs=region.querySelectorAll("input[type=text]");for(var i=0;i<inputs.length;i++){` +
-    `if(inputs[i].value!==(inputs[i].getAttribute("data-initial")||""))return true;}` +
-    `return false;}` +
-    `function paused(){return dragging!==null||dirty();}` +
-    `var wait=12000;var last=Date.now();var busy=false;` +
-    `function tell(){if(!stamp)return;if(paused()){stamp.textContent="paused while you edit";return;}` +
-    `stamp.textContent="updated "+Math.round((Date.now()-last)/1000)+"s ago";}setInterval(tell,1000);` +
-    `function cycle(){if(document.hidden||busy||paused()){setTimeout(cycle,wait);return;}busy=true;` +
-    `fetch("/fleet?fragment=1",{redirect:"manual",cache:"no-store"})` +
-    `.then(function(r){if(r.type==="opaqueredirect"||r.status===401||r.status===403){location.href="/login";return null;}` +
-    `return r.ok?r.text():null;})` +
-    `.then(function(t){if(t&&!paused()){region.innerHTML=t;last=Date.now();}})` +
-    `.catch(function(){})` +
-    `.then(function(){busy=false;tell();setTimeout(cycle,wait);});}setTimeout(cycle,wait);` +
-    `region.addEventListener("pointerdown",function(e){var handle=e.target.closest(".queue-handle");if(!handle)return;` +
-    `var card=handle.closest(".queue-card");if(!card||card.getAttribute("data-taken")==="1")return;` +
-    `e.preventDefault();dragging={task:card.getAttribute("data-task"),card:card};card.style.opacity="0.5";});` +
-    `region.addEventListener("pointermove",function(e){if(!dragging)return;e.preventDefault();` +
-    `var over=document.elementFromPoint(e.clientX,e.clientY);if(!over)return;` +
-    `var target=over.closest(".queue-card");var lane=over.closest(".queue-column");` +
-    `region.querySelectorAll(".queue-card,.queue-column").forEach(function(n){n.style.outline="";});` +
-    `if(target&&target!==dragging.card){target.style.outline="2px solid currentColor";}` +
-    `else if(lane){lane.style.outline="2px dashed currentColor";}});` +
-    `region.addEventListener("pointerup",function(e){if(!dragging)return;var drag=dragging;dragging=null;` +
-    `drag.card.style.opacity="";region.querySelectorAll(".queue-card,.queue-column").forEach(function(n){n.style.outline="";});` +
-    `var over=document.elementFromPoint(e.clientX,e.clientY);if(!over){tell();return;}` +
-    `var target=over.closest(".queue-card");var lane=over.closest(".queue-column");if(!lane){tell();return;}` +
-    `var column=lane.getAttribute("data-column");var before=target&&target!==drag.card?target.getAttribute("data-task"):"";` +
-    `if(target&&target.getAttribute("data-taken")==="1"){before="";}` +
-    `var wrap=region.querySelector("[data-queue-revision]");` +
-    `var fields={respond:"fragment",csrf:(region.querySelector("input[name=csrf]")||{value:""}).value,` +
-    `queueRevision:wrap?wrap.getAttribute("data-queue-revision"):"",task:drag.task,column:column,before:before};` +
-    `var post=new URLSearchParams();Object.keys(fields).forEach(function(k){post.append(k,fields[k]);});` +
-    `fetch("/queue/move",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:post.toString(),redirect:"manual"})` +
-    `.then(function(r){return r.ok?fetch("/fleet?fragment=1",{cache:"no-store"}).then(function(f){return f.ok?f.text():null;}):null;})` +
-    `.then(function(t){if(t&&!paused()){region.innerHTML=t;last=Date.now();}else if(t===null){location.href="/fleet";}})` +
-    `.catch(function(){})` +
-    `.then(function(){tell();});});` +
-    `})();`
-  );
 }
 
 /** The /queue page's one nonce'd script: delegated pointer-event drag (it
