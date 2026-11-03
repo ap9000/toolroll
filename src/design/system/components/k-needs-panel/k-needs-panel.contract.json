@@ -1,0 +1,45 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-needs-panel",
+  "name": "KNeedsPanel",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "Waits that aren't tasks (a spend limit, a failed backup), on their own page: one amber outline, a count, one action each. Never part of the global Needs-you count.",
+  "source": {
+    "file": "k-needs-panel.tsx",
+    "export": "KNeedsPanel",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "items": {
+      "type": "string",
+      "required": true,
+      "description": "A structured value: see the component's TypeScript type."
+    },
+    "label": {
+      "type": "string"
+    }
+  },
+  "tokens": {
+    "border": "youi:toolroll/token/color.wait"
+  },
+  "a11y": {
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": []
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

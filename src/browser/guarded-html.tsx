@@ -18,9 +18,13 @@ export function notifyWorkspaceRendered() {
   });
 }
 
+/** An approval form: the console's ceremony (approve-form) or the revamp kit's (k-approve, server/kit.ts approveForm). */
+const APPROVAL_FORM = "form.approve-form, form.k-approve";
+const APPROVAL_SUBMITS = ["form.approve-form", "form.k-approve"].flatMap(form => [`${form} button[type="submit"]`, `${form} input[type="submit"]`]).join(", ");
+
 export function regionIsEditing(region: HTMLElement): boolean {
   return region.contains(document.activeElement) && document.activeElement?.matches("input, textarea, select, [contenteditable=true]") === true
-    || region.querySelector("form.approve-form, details[open] form") !== null;
+    || region.querySelector(`${APPROVAL_FORM}, details[open] form`) !== null;
 }
 
 /** Native forms own their exact nonces and feedback. React never recreates a
@@ -46,11 +50,11 @@ export function GuardedHtml({ html, immutable = false, className = "" }: { html:
     if (installed.current !== null && (dirty.current || regionIsEditing(node))) {
       const approval = node.querySelector<HTMLElement>("[data-approval]");
       const next = new DOMParser().parseFromString(html, "text/html").querySelector<HTMLElement>("[data-approval]");
-      const changed = !!node.querySelector("form.approve-form") && approval?.dataset.approval !== next?.dataset.approval;
+      const changed = !!node.querySelector(APPROVAL_FORM) && approval?.dataset.approval !== next?.dataset.approval;
       if (changed) {
         setStaleApproval(true);
-        node.querySelectorAll<HTMLButtonElement>('form.approve-form button[type="submit"], form.approve-form input[type="submit"]').forEach(button => { button.disabled = true; });
-      } else if (!node.querySelector("form.approve-form")) setDeferred(true);
+        node.querySelectorAll<HTMLButtonElement>(APPROVAL_SUBMITS).forEach(button => { button.disabled = true; });
+      } else if (!node.querySelector(APPROVAL_FORM)) setDeferred(true);
       return;
     }
     const first = installed.current === null;

@@ -1,0 +1,47 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-empty",
+  "name": "KEmpty",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "The one empty state: a sentence and one action.",
+  "source": {
+    "file": "k-empty.tsx",
+    "export": "KEmpty",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "title": {
+      "type": "string",
+      "required": true
+    },
+    "text": {
+      "type": "string"
+    },
+    "action": {
+      "type": "node"
+    }
+  },
+  "tokens": {},
+  "a11y": {
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "Inside a reading column, a settings page, a drawer or a tab it lines up with the text."
+    ],
+    "dont": []
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

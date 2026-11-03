@@ -1,0 +1,80 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-chip",
+  "name": "KChip",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "Status chips: the five words (Needs you, Running, Queued, Finished, Failed), one tone each; a specific ask keeps its group's tone.",
+  "source": {
+    "file": "k-chip.tsx",
+    "export": "KChip",
+    "also": [
+      "KStatus",
+      "KHeadlineChip"
+    ]
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "word": {
+      "type": "string",
+      "description": "The status word.",
+      "required": true
+    },
+    "tone": {
+      "type": "enum",
+      "values": [
+        "",
+        "needs",
+        "ask",
+        "live",
+        "done",
+        "failed"
+      ],
+      "default": "",
+      "description": "needs = waits on this person (amber); ask = a specific ask inside a Needs-you group; live = happening now; done = finished or passed; failed = broke; \"\" = neutral."
+    },
+    "dot": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "tokens": {
+    "bg.needs": "youi:toolroll/token/color.wait-soft",
+    "dot.needs": "youi:toolroll/token/color.wait",
+    "bg.live": "youi:toolroll/token/color.info-soft",
+    "bg.done": "youi:toolroll/token/color.success-soft",
+    "bg.failed": "youi:toolroll/token/color.danger-soft",
+    "text": "youi:toolroll/token/typography.badge"
+  },
+  "a11y": {
+    "notes": [
+      "The words carry the state; the dot never stands alone."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "Use KStatus for the five words and KHeadlineChip for a task headline (task-status.ts).",
+      "Resource states (Idle, Building, Offline) are neutral, live and failed: never amber."
+    ],
+    "dont": [
+      "Never use amber for warnings, quota or emphasis.",
+      "Never stack several chips on one row."
+    ]
+  },
+  "examples": [
+    {
+      "title": "Waiting",
+      "code": "<KStatus status=\"needs\" />"
+    }
+  ],
+  "aliases": [],
+  "owners": []
+}

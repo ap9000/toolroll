@@ -1,0 +1,65 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-icon",
+  "name": "KIcon",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "One 24×24 stroke icon from the kit set, drawn in currentColor.",
+  "source": {
+    "file": "k-icon.tsx",
+    "export": "KIcon",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "name": {
+      "type": "enum",
+      "values": [
+        "plus",
+        "send",
+        "stop",
+        "x",
+        "back",
+        "menu",
+        "search",
+        "chevron",
+        "check",
+        "alert",
+        "more",
+        "file"
+      ],
+      "default": "plus"
+    },
+    "small": {
+      "type": "boolean",
+      "default": false,
+      "description": "14px instead of 16px."
+    }
+  },
+  "tokens": {},
+  "a11y": {
+    "role": "img",
+    "notes": [
+      "Decorative: aria-hidden. Name the control that holds it instead."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "Use for the kit's own glyphs only."
+    ],
+    "dont": [
+      "Never colour an icon to carry state."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

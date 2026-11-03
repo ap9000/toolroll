@@ -1,0 +1,33 @@
+{
+  "schema": "youi.lock/v1",
+  "system": "toolroll",
+  "systemVersion": "1.0.0",
+  "sourceCommit": "572266ace6dd48d77c061327a67707e4adeb1685",
+  "syncedAt": "2026-11-03T06:31:27.083Z",
+  "files": {
+    ".agents/skills/youiyoux/SKILL.md": {
+      "kind": "generated",
+      "sha256": "638b2ef89ef3be7c2bcd21b648ada18ad3fe8f59e29afd557186011e2931301a"
+    },
+    "src/design/SYSTEM.md": {
+      "kind": "generated",
+      "sha256": "4a5239952f0648a9090cc00d67304b8ca84dad63f58f3676b1b7c99d7b9fd01d"
+    },
+    "src/design/theme.css": {
+      "kind": "generated",
+      "sha256": "ce2babbe2bccceca7321582cd47047aba3bf1d6419c6f969cc21b87832c30f61"
+    },
+    "src/design/tokens.css": {
+      "kind": "generated",
+      "sha256": "d329d3dea025e8d33643abbf36041d8fabb718ebdaee3d0a401abaa4ca7ba023"
+    },
+    "youi-rules/color.no-raw-color.yml": {
+      "kind": "generated",
+      "sha256": "5351346aada9869bd62c1e76e1684920856a0a53da2a5db91ddc4cdb3ff68ab4"
+    },
+    "youi-rules/components.no-native-controls.yml": {
+      "kind": "generated",
+      "sha256": "d0befb54f51c891db6276784ee1eef1898b0756844b54f2c21a009e3d053ebd2"
+    }
+  }
+}

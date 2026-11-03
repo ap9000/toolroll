@@ -1,0 +1,50 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-count",
+  "name": "KCount",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "A count pill in tabular figures; ink only for a Needs-you count, muted at zero.",
+  "source": {
+    "file": "k-count.tsx",
+    "export": "KCount",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "n": {
+      "type": "number",
+      "required": true
+    },
+    "ink": {
+      "type": "boolean",
+      "default": false,
+      "description": "Only for a Needs-you count."
+    }
+  },
+  "tokens": {
+    "bg.ink": "youi:toolroll/token/color.ink"
+  },
+  "a11y": {
+    "notes": [
+      "Say what the count counts in the surrounding words; never aria-label a span."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": [
+      "Never use mono or colour for an ordinary count."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

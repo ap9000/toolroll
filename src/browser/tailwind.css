@@ -19,17 +19,19 @@
 @custom-variant desk (@media (min-width: 761px));
 
 /* A scoped preflight: only rebuilt views start from a clean slate. Server
- * fragments a view embeds (.so-native-region) keep their own styles. */
-[data-view] :not(.so-native-region *), [data-view] :not(.so-native-region *)::before, [data-view] :not(.so-native-region *)::after { box-sizing: border-box; border: 0 solid var(--so-line); }
-[data-view] :is(h1, h2, h3, h4, p, ul, ol, dl, dd, figure, blockquote, fieldset, legend, form, label, pre, table):not(.so-native-region *) { margin: 0; padding: 0; font: inherit; color: inherit; letter-spacing: inherit; }
-[data-view] :is(ul, ol):not(.so-native-region *) { list-style: none; }
-[data-view] a:not(.so-native-region *) { color: inherit; text-decoration: inherit; }
-[data-view] :is(button, input, select, textarea):not(.so-native-region *) { font: inherit; color: inherit; background: transparent; margin: 0; padding: 0; min-height: 0; border-radius: 0; box-shadow: none; transform: none; }
-[data-view] button:not(.so-native-region *):hover { transform: none; }
-[data-view] :is(button, [role="button"]):not(.so-native-region *) { cursor: pointer; }
-[data-view] :disabled:not(.so-native-region *) { cursor: not-allowed; }
-[data-view] table:not(.so-native-region *) { border-collapse: collapse; }
-[data-view] :is(details, summary):not(.so-native-region *) { margin: 0; padding: 0; min-height: 0; font-size: inherit; background: transparent; box-shadow: none; border-radius: 0; }
+ * fragments a view embeds (.so-native-region) keep their own styles, and so
+ * does every revamp kit element (a k- class, src/design/kit.css): the kit sets
+ * its own box. The :where() keeps the old specificity. */
+[data-view] :not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"])), [data-view] :not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"]))::before, [data-view] :not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"]))::after { box-sizing: border-box; border: 0 solid var(--so-line); }
+[data-view] :is(h1, h2, h3, h4, p, ul, ol, dl, dd, figure, blockquote, fieldset, legend, form, label, pre, table):not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"])) { margin: 0; padding: 0; font: inherit; color: inherit; letter-spacing: inherit; }
+[data-view] :is(ul, ol):not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"])) { list-style: none; }
+[data-view] a:not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"])) { color: inherit; text-decoration: inherit; }
+[data-view] :is(button, input, select, textarea):not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"])) { font: inherit; color: inherit; background: transparent; margin: 0; padding: 0; min-height: 0; border-radius: 0; box-shadow: none; transform: none; }
+[data-view] button:not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"])):hover { transform: none; }
+[data-view] :is(button, [role="button"]):not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"])) { cursor: pointer; }
+[data-view] :disabled:not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"])) { cursor: not-allowed; }
+[data-view] table:not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"])) { border-collapse: collapse; }
+[data-view] :is(details, summary):not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"])) { margin: 0; padding: 0; min-height: 0; font-size: inherit; background: transparent; box-shadow: none; border-radius: 0; }
 [data-view] { font-family: var(--font-sans); color: var(--so-ink); }
 
 /* "Needs you" text on the amber wash: the warning token alone reads 4.21:1 on

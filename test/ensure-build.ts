@@ -21,8 +21,8 @@ export function buildIsStale(root: string): boolean {
     const output = join(root, "dist", name.replace(/\.ts$/, ".js"));
     return !existsSync(output) || statSync(join(root, "src", name)).mtimeMs > statSync(output).mtimeMs;
   })) return true;
-  // The console's stylesheet ships beside the server module that reads it, and so does Signal's generated token sheet.
-  for (const sheet of [join("server", "console.css"), join("design", "tokens.css")]) {
+  // The console's stylesheet ships beside the server module that reads it, and so do Signal's generated token sheet and the revamp kit's sheet.
+  for (const sheet of [join("server", "console.css"), join("design", "tokens.css"), join("design", "kit.css")]) {
     const built = join(root, "dist", sheet);
     if (!existsSync(built) || statSync(join(root, "src", sheet)).mtimeMs > statSync(built).mtimeMs) return true;
   }

@@ -1,0 +1,29 @@
+schema: youi.rule/v1
+id: youi:toolroll/rule/components.no-native-controls
+title: Use the kit's controls, not native elements
+severity: warn
+statement: Outside src/browser/kit, render KButton, KInput and KTextarea (or KComposer for a message box) instead of styling <button>, <input> and <textarea> by hand.
+rationale: Hand-styled controls skip the kit's focus ring, 44px phone targets, busy face, disabled state and theme, and they are invisible to the usage map.
+agent: Use <KButton>, <KInput>, <KTextarea> and <KComposer> from src/browser/kit; never style a native <button> yourself.
+check:
+  engine: youi
+  id: native-element
+  options:
+    elements:
+      button: youi:toolroll/component/k-button
+      input: youi:toolroll/component/k-field
+      textarea: youi:toolroll/component/k-field
+    allowInputTypes:
+      - hidden
+      - checkbox
+      - radio
+      - file
+      - range
+      - color
+files:
+  - "**/*.tsx"
+examples:
+  bad:
+    - <button className="rounded-md bg-black px-3 text-white">Save</button>
+  good:
+    - <KButton variant="primary" label="Save" />

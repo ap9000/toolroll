@@ -1,0 +1,61 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-radios",
+  "name": "KRadios",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "Radio cards: one choice from a few, each with a bold label and one muted line.",
+  "source": {
+    "file": "k-radios.tsx",
+    "export": "KRadios",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "name": {
+      "type": "string",
+      "required": true
+    },
+    "legend": {
+      "type": "string",
+      "required": true
+    },
+    "current": {
+      "type": "string",
+      "required": true
+    },
+    "items": {
+      "type": "string",
+      "required": true,
+      "description": "A structured value: see the component's TypeScript type."
+    },
+    "onChange": {
+      "type": "function",
+      "required": true
+    }
+  },
+  "tokens": {
+    "border": "youi:toolroll/token/color.field-line",
+    "checked": "youi:toolroll/token/color.ink"
+  },
+  "a11y": {
+    "role": "radiogroup",
+    "minTouchTarget": 44,
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": []
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

@@ -1,0 +1,27 @@
+{
+  "schema": "youi.config/v1",
+  "name": "Toolroll",
+  "systems": [
+    {
+      "id": "toolroll",
+      "name": "Toolroll",
+      "version": "1.0.0",
+      "description": "Toolroll's design system: Signal 1.0.0's tokens (toolroll-design 9e35768) plus the revamp kit's, and the revamp kit's components. One app, server HTML and React alike; rules in src/design/KIT.md.",
+      "tokens": "src/design/system/tokens/toolroll.resolver.json",
+      "themeModifier": {
+        "name": "theme",
+        "light": "light",
+        "dark": "dark"
+      },
+      "components": "src/design/system/components",
+      "implementations": "src/browser/kit",
+      "support": [
+        "behavior.ts",
+        "utils.ts",
+        "index.ts"
+      ],
+      "rules": "src/design/system/rules",
+      "design": "src/design/KIT.md"
+    }
+  ]
+}

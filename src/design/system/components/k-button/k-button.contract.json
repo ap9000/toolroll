@@ -1,0 +1,132 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-button",
+  "name": "KButton",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "Every act a person can take. Ink primary for the screen's one act; outline and ghost for the rest; danger for an irreversible act.",
+  "source": {
+    "file": "k-button.tsx",
+    "export": "KButton",
+    "also": [
+      "KLinkButton"
+    ]
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "variant": {
+      "type": "enum",
+      "values": [
+        "primary",
+        "outline",
+        "ghost",
+        "danger"
+      ],
+      "default": "outline",
+      "description": "primary = the screen's one act (ink); outline = row actions and secondary choices; ghost = toolbars and quiet acts; danger = an irreversible act (vermilion words, never filled)."
+    },
+    "sm": {
+      "type": "boolean",
+      "default": false,
+      "description": "28px in a toolbar or row; every size is 44px on a phone."
+    },
+    "iconOnly": {
+      "type": "enum",
+      "values": [
+        "plus",
+        "send",
+        "stop",
+        "x",
+        "back",
+        "menu",
+        "search",
+        "chevron",
+        "check",
+        "alert",
+        "more",
+        "file"
+      ],
+      "default": "plus",
+      "description": "Icon-only: the label becomes aria-label and title."
+    },
+    "lead": {
+      "type": "enum",
+      "values": [
+        "plus",
+        "send",
+        "stop",
+        "x",
+        "back",
+        "menu",
+        "search",
+        "chevron",
+        "check",
+        "alert",
+        "more",
+        "file"
+      ],
+      "default": "plus",
+      "description": "An icon before the label."
+    },
+    "label": {
+      "type": "string",
+      "description": "The words on the button (sentence case, a verb).",
+      "required": true
+    },
+    "docked": {
+      "type": "boolean",
+      "default": false,
+      "description": "The screen's one primary that the phone dock also carries: hidden in its card on a phone."
+    },
+    "busy": {
+      "type": "string",
+      "description": "The busy face (\"Starting…\") while the act runs."
+    },
+    "onClick": {
+      "type": "function"
+    }
+  },
+  "tokens": {
+    "bg.primary": "youi:toolroll/token/color.accent",
+    "fg.primary": "youi:toolroll/token/color.on-accent",
+    "border.outline": "youi:toolroll/token/color.field-line",
+    "fg.danger": "youi:toolroll/token/color.danger",
+    "radius": "youi:toolroll/token/radius.md",
+    "text": "youi:toolroll/token/typography.label"
+  },
+  "a11y": {
+    "role": "button",
+    "minTouchTarget": 44,
+    "notes": [
+      "Icon-only buttons are named by label (aria-label and title).",
+      "Focus is a 2px ink outline; never removed.",
+      "An act shows its busy face until the outcome is known; a refusal restores it and says why in place."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "One primary per screen; on a phone it lives in the dock.",
+      "Row actions are outline sm, 108px minimum, in the same column on every row."
+    ],
+    "dont": [
+      "Never make navigation the primary act.",
+      "Never fill a button red."
+    ]
+  },
+  "examples": [
+    {
+      "title": "Approve",
+      "code": "<KButton variant=\"primary\" label=\"Approve and start\" />"
+    }
+  ],
+  "aliases": [],
+  "owners": []
+}

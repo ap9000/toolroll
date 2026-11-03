@@ -1,0 +1,64 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-field",
+  "name": "KField",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "A field: label, the control, one hint line, and the error tied to the control (aria-invalid, aria-describedby). Errors appear next to the control, never as a banner.",
+  "source": {
+    "file": "k-field.tsx",
+    "export": "KField",
+    "also": [
+      "KInput",
+      "KTextarea"
+    ]
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "label": {
+      "type": "string",
+      "required": true
+    },
+    "hint": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string",
+      "description": "The refusal, next to the control."
+    },
+    "children": {
+      "type": "function",
+      "description": "Renders the control with the ids it is given.",
+      "required": true
+    }
+  },
+  "tokens": {
+    "border": "youi:toolroll/token/color.field-line",
+    "invalid": "youi:toolroll/token/color.danger",
+    "ring": "youi:toolroll/token/color.ring"
+  },
+  "a11y": {
+    "minTouchTarget": 44,
+    "notes": [
+      "16px text and 44px height on a phone.",
+      "The label stays visible while typing; never a placeholder instead of a label."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": [
+      "Never show a form error as a banner."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

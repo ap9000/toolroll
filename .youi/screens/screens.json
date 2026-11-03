@@ -1,0 +1,305 @@
+{
+  "schema": "youiyoux.screens/v1",
+  "project": "toolroll",
+  "source": "Toolroll console, synthetic demo-seed fixture (the revamp arc's fixture servers), dev browser bundle",
+  "capturedAt": "2026-11-02T17:22:41.752Z",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "screens": [
+    {
+      "route": "/chat",
+      "path": "/chat"
+    },
+    {
+      "route": "/work",
+      "path": "/work"
+    },
+    {
+      "route": "/t/[id] running",
+      "path": "/t/harden-webhook-retries"
+    },
+    {
+      "route": "/t/[id] decision",
+      "path": "/t/choose-retry-policy"
+    },
+    {
+      "route": "/t/[id] done",
+      "path": "/t/fix-payout-rounding"
+    },
+    {
+      "route": "/t/[id] failed",
+      "path": "/t/retire-legacy-flag"
+    },
+    {
+      "route": "/flows/[id]",
+      "path": "/flows/2"
+    },
+    {
+      "route": "/flows/[id] needs you",
+      "path": "/flows/3"
+    },
+    {
+      "route": "/flows",
+      "path": "/flows"
+    },
+    {
+      "route": "/agents",
+      "path": "/agents"
+    },
+    {
+      "route": "/inbox",
+      "path": "/inbox"
+    },
+    {
+      "route": "/board",
+      "path": "/board"
+    },
+    {
+      "route": "/next",
+      "path": "/next"
+    },
+    {
+      "route": "/review",
+      "path": "/review"
+    },
+    {
+      "route": "/projects",
+      "path": "/projects"
+    },
+    {
+      "route": "/activity",
+      "path": "/activity"
+    },
+    {
+      "route": "/done",
+      "path": "/done"
+    },
+    {
+      "route": "/runs",
+      "path": "/runs"
+    },
+    {
+      "route": "/r/[id]",
+      "path": "/r/1"
+    },
+    {
+      "route": "/t/[id]/evidence",
+      "path": "/t/fix-payout-rounding/evidence"
+    },
+    {
+      "route": "/d/[id]",
+      "path": "/d/1"
+    },
+    {
+      "route": "/tasks/new",
+      "path": "/tasks/new"
+    },
+    {
+      "route": "/flows/new",
+      "path": "/flows/new"
+    },
+    {
+      "route": "/flows/new/[template]",
+      "path": "/flows/new/email-replies"
+    },
+    {
+      "route": "/recipes",
+      "path": "/recipes"
+    },
+    {
+      "route": "/kits",
+      "path": "/kits"
+    },
+    {
+      "route": "/spend",
+      "path": "/spend"
+    },
+    {
+      "route": "/ledger",
+      "path": "/ledger"
+    },
+    {
+      "route": "/workbench",
+      "path": "/workbench"
+    },
+    {
+      "route": "/menu",
+      "path": "/menu"
+    },
+    {
+      "route": "/mode",
+      "path": "/mode"
+    },
+    {
+      "route": "/system",
+      "path": "/system"
+    },
+    {
+      "route": "/caps",
+      "path": "/caps"
+    },
+    {
+      "route": "/fleet",
+      "path": "/fleet"
+    },
+    {
+      "route": "/people",
+      "path": "/people"
+    },
+    {
+      "route": "/code",
+      "path": "/code"
+    },
+    {
+      "route": "/work/put-away",
+      "path": "/work/put-away"
+    },
+    {
+      "route": "/settings",
+      "path": "/settings"
+    },
+    {
+      "route": "/settings/models",
+      "path": "/settings/models"
+    },
+    {
+      "route": "/settings/tools",
+      "path": "/settings/tools"
+    },
+    {
+      "route": "/settings/project",
+      "path": "/settings/project"
+    },
+    {
+      "route": "/settings/approval",
+      "path": "/settings/approval"
+    },
+    {
+      "route": "/settings/lead",
+      "path": "/settings/lead"
+    },
+    {
+      "route": "/settings/lead/subagents",
+      "path": "/settings/lead/subagents"
+    },
+    {
+      "route": "/settings/knowledge",
+      "path": "/settings/knowledge"
+    },
+    {
+      "route": "/settings/learning",
+      "path": "/settings/learning"
+    },
+    {
+      "route": "/settings/skills",
+      "path": "/settings/skills"
+    },
+    {
+      "route": "/settings/flows",
+      "path": "/settings/flows"
+    },
+    {
+      "route": "/settings/policy",
+      "path": "/settings/policy"
+    },
+    {
+      "route": "/settings/sessions",
+      "path": "/settings/sessions"
+    },
+    {
+      "route": "/settings/integrations",
+      "path": "/settings/integrations"
+    },
+    {
+      "route": "/settings/monitoring",
+      "path": "/settings/monitoring"
+    },
+    {
+      "route": "/settings/updates",
+      "path": "/settings/updates"
+    },
+    {
+      "route": "/settings/retention",
+      "path": "/settings/retention"
+    },
+    {
+      "route": "/settings/storage",
+      "path": "/settings/storage"
+    },
+    {
+      "route": "/settings/backups",
+      "path": "/settings/backups"
+    },
+    {
+      "route": "/settings/data",
+      "path": "/settings/data"
+    },
+    {
+      "route": "/settings/sign-in",
+      "path": "/settings/sign-in"
+    },
+    {
+      "route": "/settings/passwordless",
+      "path": "/settings/passwordless"
+    },
+    {
+      "route": "/settings/spend",
+      "path": "/settings/spend"
+    },
+    {
+      "route": "/settings/teams",
+      "path": "/settings/teams"
+    },
+    {
+      "route": "/settings/discord",
+      "path": "/settings/discord"
+    },
+    {
+      "route": "/settings/slack",
+      "path": "/settings/slack"
+    },
+    {
+      "route": "/settings/telegram",
+      "path": "/settings/telegram"
+    },
+    {
+      "route": "/settings/pull-requests",
+      "path": "/settings/pull-requests"
+    },
+    {
+      "route": "/settings/checks",
+      "path": "/settings/checks"
+    },
+    {
+      "route": "/projects/browse",
+      "path": "/projects/browse"
+    },
+    {
+      "route": "/projects/github",
+      "path": "/projects/github"
+    },
+    {
+      "route": "/control",
+      "path": "/control"
+    },
+    {
+      "route": "/control/connection",
+      "path": "/control/connection"
+    },
+    {
+      "route": "/start-builder",
+      "path": "/start-builder"
+    },
+    {
+      "route": "/404",
+      "path": "/t/does-not-exist"
+    },
+    {
+      "route": "/term",
+      "path": "/term"
+    }
+  ],
+  "base": "http://127.0.0.1:65108"
+}

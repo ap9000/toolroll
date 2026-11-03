@@ -1,0 +1,52 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-notice",
+  "name": "KNotice",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "A refusal in place (role=alert: what went wrong and what didn't change), a neutral system line, or a muted supporting note. There are no toasts.",
+  "source": {
+    "file": "k-notice.tsx",
+    "export": "KNotice",
+    "also": [
+      "KInfoLine",
+      "KNote"
+    ]
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "children": {
+      "type": "node",
+      "required": true
+    }
+  },
+  "tokens": {
+    "fg": "youi:toolroll/token/color.danger",
+    "info.bg": "youi:toolroll/token/color.raised"
+  },
+  "a11y": {
+    "role": "alert",
+    "notes": [
+      "A refusal is announced once and sits where it happened."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "Say what didn't change (\"Nothing changed.\")."
+    ],
+    "dont": [
+      "Never use a toast."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

@@ -1,0 +1,73 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-approve",
+  "name": "KApprove",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "The approve control: a password popover only when the rules say so, one click otherwise, nothing when a rule approves automatically.",
+  "source": {
+    "file": "k-approve.tsx",
+    "export": "KApprove",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "kind": {
+      "type": "enum",
+      "values": [
+        "none",
+        "standard",
+        "step-up",
+        "way-in"
+      ],
+      "default": "standard",
+      "description": "none = one click; standard = password unless Passwordless or a password typed here in the last 15 minutes; step-up = password unless Passwordless; way-in (invites, tokens, sign-in methods, widening access) = always the password typed now."
+    },
+    "facts": {
+      "type": "string",
+      "required": true,
+      "description": "passwordless, remembered, automatic: as the server read them for this page."
+    },
+    "label": {
+      "type": "string",
+      "required": true
+    },
+    "terms": {
+      "type": "node",
+      "description": "The terms from the snapshot you will submit, never live fields.",
+      "required": true
+    },
+    "onApprove": {
+      "type": "function",
+      "required": true
+    }
+  },
+  "tokens": {},
+  "a11y": {
+    "role": "button",
+    "minTouchTarget": 44,
+    "notes": [
+      "The password field has a visible label.",
+      "The server proves the person, freshness and scope again when the act arrives."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "One pending act per form; a second press does nothing until the first settles."
+    ],
+    "dont": [
+      "Never ask for a password in chat."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

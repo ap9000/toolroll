@@ -1,0 +1,151 @@
+{
+  "schema": "youi.project/v1",
+  "id": "toolroll",
+  "system": "toolroll",
+  "source": {
+    "path": "."
+  },
+  "tsconfig": "tsconfig.browser.json",
+  "include": [
+    "src/browser/**/*.{ts,tsx,css}",
+    "src/server/**/*.css",
+    "src/design/*.css"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.d.ts"
+  ],
+  "componentsDir": "src/browser/kit",
+  "tokenSources": [
+    "src/server/console.css",
+    "src/design/kit.css"
+  ],
+  "routes": {
+    "strategy": "map",
+    "shell": [
+      "src/browser/app.tsx"
+    ],
+    "map": [
+      {
+        "file": "src/browser/views/tasks-view.tsx",
+        "routes": [
+          "/work"
+        ],
+        "evidence": "DESIGN.md Layout: \"Tasks at /work\""
+      },
+      {
+        "file": "src/browser/views/task-view.tsx",
+        "routes": [
+          "/work (task detail)"
+        ],
+        "evidence": "DESIGN.md Layout, Detail variant: \"a task opened beside the list\""
+      },
+      {
+        "file": "src/browser/views/result-view.tsx",
+        "routes": [
+          "/review"
+        ],
+        "evidence": "DESIGN.md Result page: \"/review?result=<task>&run=<id>\"; serve.ts handles path === \"/review\""
+      },
+      {
+        "file": "src/browser/views/projects-view.tsx",
+        "routes": [
+          "/projects"
+        ],
+        "evidence": "src/first-run.ts links \"Add a project\" to /projects"
+      },
+      {
+        "file": "src/browser/views/settings-view.tsx",
+        "routes": [
+          "/settings"
+        ],
+        "evidence": "DESIGN.md Layout: Settings home; 56 server links to /settings"
+      },
+      {
+        "file": "src/browser/views/flow-view.tsx",
+        "routes": [
+          "/flows"
+        ],
+        "evidence": "DESIGN.md Layout, Single variant: \"code and flows\"; server links to /flows"
+      },
+      {
+        "file": "src/browser/views/home-view.tsx",
+        "routes": [
+          "/chat"
+        ],
+        "evidence": "DESIGN.md: \"Home ... sits in the right sheet\" of the Chat landing (/chat)"
+      },
+      {
+        "file": "src/browser/team-chat.tsx",
+        "routes": [
+          "/chat"
+        ],
+        "evidence": "team-chat.tsx links to \"/chat\"; DESIGN.md: \"The Chat landing (/chat)\""
+      }
+    ]
+  },
+  "outputs": {
+    "dir": "src/design",
+    "cssVarPrefix": "so",
+    "dark": [
+      {
+        "media": "(prefers-color-scheme: dark)",
+        "selector": ":root:not([data-theme=\"light\"])"
+      },
+      {
+        "selector": ":root[data-theme=\"dark\"]"
+      }
+    ],
+    "targets": [
+      "css-vars",
+      "tailwind-v4"
+    ],
+    "tailwind": {
+      "includeAll": true,
+      "map": {
+        "color-background": "color.ground",
+        "color-foreground": "color.ink",
+        "color-card": "color.paper",
+        "color-card-foreground": "color.ink",
+        "color-popover": "color.paper",
+        "color-popover-foreground": "color.ink",
+        "color-primary": "color.accent",
+        "color-primary-foreground": "color.on-accent",
+        "color-secondary": "color.raised",
+        "color-secondary-foreground": "color.ink",
+        "color-muted": "color.raised",
+        "color-muted-foreground": "color.muted",
+        "color-accent": "color.soft",
+        "color-accent-foreground": "color.ink",
+        "color-destructive": "color.danger",
+        "color-destructive-soft": "color.danger-soft",
+        "color-border": "color.line",
+        "color-input": "color.input-line",
+        "color-ring": "color.signal",
+        "color-sidebar": "color.sidebar",
+        "color-success": "color.success",
+        "color-success-soft": "color.success-soft",
+        "color-warning": "color.warning",
+        "color-warning-soft": "color.warning-soft",
+        "color-info": "color.info",
+        "color-info-soft": "color.info-soft",
+        "color-attention": "color.attention",
+        "color-attention-soft": "color.attention-soft",
+        "color-on-attention": "color.on-attention",
+        "color-neutral-soft": "color.neutral-soft",
+        "color-neutral-ink": "color.neutral-ink",
+        "radius-sm": "radius.sm",
+        "radius-md": "radius.md",
+        "radius-lg": "radius.sheet",
+        "radius-xl": "16px"
+      }
+    }
+  },
+  "agents": {
+    "agentsMd": "AGENTS.md",
+    "designMd": "src/design/SYSTEM.md",
+    "skillDir": ".agents/skills/youiyoux",
+    "claudeSkillLink": false
+  }
+}

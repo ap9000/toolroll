@@ -1,0 +1,16 @@
+schema: youi.rule/v1
+id: youi:toolroll/rule/components.one-primary
+title: One ink primary per screen
+severity: warn
+statement: KButton variant="primary" is the screen's one act. Every other action is outline or ghost, and navigation is never the primary.
+rationale: Ink means "this is the act"; two of them make neither one the act. On a phone the primary lives in the dock, so a second one has nowhere to go.
+agent: Use variant="primary" for at most one KButton per screen; make the rest outline or ghost. Links are KLinkButton outline or ghost.
+check:
+  engine: advisory
+files:
+  - "**/*.tsx"
+examples:
+  bad:
+    - <KButton variant="primary" label="Approve" /><KButton variant="primary" label="Request changes" />
+  good:
+    - <KButton variant="primary" label="Approve" /><KButton variant="outline" label="Request changes" />

@@ -1,0 +1,1175 @@
+{
+  "schema": "youi.baseline/v1",
+  "project": "toolroll",
+  "recordedAt": "2026-11-03T06:25:17.164Z",
+  "identity": {
+    "tool": "youi-scanner/0.1.0",
+    "system": {
+      "id": "toolroll",
+      "version": "1.0.0"
+    },
+    "definitions": "d8656572f9c1",
+    "design": {
+      "commit": "572266ace6dd48d77c061327a67707e4adeb1685",
+      "dirty": true
+    },
+    "project": {
+      "commit": "572266ace6dd48d77c061327a67707e4adeb1685",
+      "dirty": true
+    }
+  },
+  "totals": {
+    "errors": 75,
+    "warnings": 119
+  },
+  "entries": [
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/app.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 6,
+      "lines": [
+        388,
+        389,
+        625,
+        715,
+        1079,
+        1080
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/app.tsx",
+      "text": "<textarea>",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        912
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/app.tsx",
+      "text": "text-[11.5px]",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        597
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/components/ui/badge.tsx",
+      "text": "text-[11.5px]",
+      "severity": "warn",
+      "count": 2,
+      "lines": [
+        23,
+        24
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/components/ui/button.tsx",
+      "text": "bg-[var(--so-signal-hover)]",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        14
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/components/ui/button.tsx",
+      "text": "shadow-[var(--so-pill-shadow)]",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        16
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/components/ui/button.tsx",
+      "text": "text-[13px]",
+      "severity": "warn",
+      "count": 2,
+      "lines": [
+        9,
+        23
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/components/ui/form-controls.tsx",
+      "text": "<input>",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        11
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/components/ui/form-controls.tsx",
+      "text": "<textarea>",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        14
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/components/ui/form-controls.tsx",
+      "text": "text-[13px]",
+      "severity": "warn",
+      "count": 2,
+      "lines": [
+        11,
+        14
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/components/ui/tabs.tsx",
+      "text": "text-[13px]",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        11
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/line-steer.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        154
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/line-steer.tsx",
+      "text": "<textarea>",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        151
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/team-chat.tsx",
+      "text": "text-[13px]",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        159
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#0C0E12",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        54
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#14171D",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        55
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#2A3140",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        54
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#3FB97F",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        55
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#4FC4CF",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        56
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#5B6372",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        55
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#5B9DFF",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        55
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#6BD9A2",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        55
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#7FDDE5",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        56
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#8AB8FF",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        55
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#B78CF2",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        57
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#C9CED6",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        57
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#D0B3FF",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        57
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#E6E8EC",
+      "severity": "error",
+      "count": 2,
+      "lines": [
+        54,
+        54
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#F06464",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        56
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#F5A524",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        56
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#FF8F8F",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        56
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#FFC266",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        56
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "#FFFFFF",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        57
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 11,
+      "lines": [
+        134,
+        139,
+        141,
+        180,
+        181,
+        220,
+        223,
+        232,
+        235,
+        241,
+        242
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/terminal-app.tsx",
+      "text": "<input>",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        176
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal.css",
+      "text": "--t-amber: #F5A524",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        4
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal.css",
+      "text": "--t-blue: #5B9DFF",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        4
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal.css",
+      "text": "--t-green: #3FB97F",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        4
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal.css",
+      "text": "--t-ground: #0C0E12",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        3
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal.css",
+      "text": "--t-inset: #1B1F27",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        3
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal.css",
+      "text": "--t-line: #262B35",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        3
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal.css",
+      "text": "--t-muted: #8A93A3",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        4
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal.css",
+      "text": "--t-red: #F06464",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        4
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal.css",
+      "text": "--t-surface: #14171D",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        3
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal.css",
+      "text": "--t-text: #E6E8EC",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        4
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal.css",
+      "text": "background: rgb(0 0 0 / .5)",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        89
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/terminal.css",
+      "text": "color: #E8956B",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        42
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/views/agent-conversation.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 2,
+      "lines": [
+        207,
+        334
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/views/agents-live-view.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 4,
+      "lines": [
+        190,
+        224,
+        259,
+        339
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/agents-live-view.tsx",
+      "text": "text-[11.5px]",
+      "severity": "warn",
+      "count": 6,
+      "lines": [
+        190,
+        221,
+        224,
+        347,
+        395,
+        399
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/agents-live-view.tsx",
+      "text": "text-[11px]",
+      "severity": "warn",
+      "count": 4,
+      "lines": [
+        263,
+        300,
+        343,
+        383
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/agents-live-view.tsx",
+      "text": "text-[12px]",
+      "severity": "warn",
+      "count": 12,
+      "lines": [
+        179,
+        187,
+        211,
+        221,
+        266,
+        308,
+        346,
+        360,
+        391,
+        591,
+        592,
+        612
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/agents-live-view.tsx",
+      "text": "text-[13px]",
+      "severity": "warn",
+      "count": 11,
+      "lines": [
+        208,
+        265,
+        306,
+        313,
+        345,
+        389,
+        402,
+        403,
+        417,
+        594,
+        595
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/agents-live-view.tsx",
+      "text": "text-[15px]",
+      "severity": "warn",
+      "count": 2,
+      "lines": [
+        257,
+        338
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/agents-live-view.tsx",
+      "text": "text-[18px]",
+      "severity": "warn",
+      "count": 2,
+      "lines": [
+        299,
+        382
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/views/agents-view.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        223
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/agents-view.tsx",
+      "text": "rounded-[5px]",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        333
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/agents-view.tsx",
+      "text": "text-[11px]",
+      "severity": "warn",
+      "count": 2,
+      "lines": [
+        314,
+        333
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/agents-view.tsx",
+      "text": "text-[12px]",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        307
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/agents-view.tsx",
+      "text": "text-[13px]",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        319
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/agents-view.tsx",
+      "text": "text-[14px]",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        305
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/flow-view.tsx",
+      "text": "#059669",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        31
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/flow-view.tsx",
+      "text": "#3b82f6",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        31
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/flow-view.tsx",
+      "text": "#64748b",
+      "severity": "error",
+      "count": 2,
+      "lines": [
+        31,
+        1913
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/flow-view.tsx",
+      "text": "#8b5cf6",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        31
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/flow-view.tsx",
+      "text": "#d97706",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        31
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/flow-view.tsx",
+      "text": "#e11d48",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        31
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/flow-view.tsx",
+      "text": "hsl(${hue} 45% 45%)",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        28
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/views/flow-view.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 10,
+      "lines": [
+        175,
+        215,
+        349,
+        860,
+        1235,
+        1302,
+        1304,
+        1574,
+        1803,
+        1914
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/flow-view.tsx",
+      "text": "text-[11.5px]",
+      "severity": "warn",
+      "count": 2,
+      "lines": [
+        1346,
+        1578
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/flow-view.tsx",
+      "text": "text-[11px]",
+      "severity": "warn",
+      "count": 11,
+      "lines": [
+        27,
+        44,
+        168,
+        170,
+        187,
+        188,
+        192,
+        196,
+        197,
+        209,
+        217
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/views/home-view.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        114
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/views/projects-view.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 3,
+      "lines": [
+        64,
+        84,
+        90
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/settings-view.tsx",
+      "text": "#000",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        87
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/settings-view.tsx",
+      "text": "#00f",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        128
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/settings-view.tsx",
+      "text": "#0f0",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        128
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/settings-view.tsx",
+      "text": "#0ff",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        128
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/settings-view.tsx",
+      "text": "#f00",
+      "severity": "error",
+      "count": 2,
+      "lines": [
+        128,
+        128
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/settings-view.tsx",
+      "text": "#f0f",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        128
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/settings-view.tsx",
+      "text": "#ff0",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        128
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/settings-view.tsx",
+      "text": "#fff",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        87
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/settings-view.tsx",
+      "text": "hsl(${hsv.h} 100% 50%)",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        87
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/views/settings-view.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 4,
+      "lines": [
+        51,
+        148,
+        274,
+        461
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/views/status-summary.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        53
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/views/task-view.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        526
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/views/tasks-view.tsx",
+      "text": "#000",
+      "severity": "error",
+      "count": 3,
+      "lines": [
+        199,
+        199,
+        199
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/components.no-native-controls",
+      "file": "src/browser/views/tasks-view.tsx",
+      "text": "<button>",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        172
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
+      "file": "src/browser/views/tasks-view.tsx",
+      "text": "text-[12px]",
+      "severity": "warn",
+      "count": 1,
+      "lines": [
+        91
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/workspace.css",
+      "text": "box-shadow: rgb(0 0 0 / .04)",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        160
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/browser/workspace.css",
+      "text": "box-shadow: rgb(0 0 0 / .12)",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        886
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "background: #15803d",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        1565
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "background: #2f9e5f",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        1107
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "background: #ab6400",
+      "severity": "error",
+      "count": 2,
+      "lines": [
+        1004,
+        1566
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "background: #c8453d",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        1108
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "background: #c98a1b",
+      "severity": "error",
+      "count": 2,
+      "lines": [
+        1102,
+        1109
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "background: rgb(0 0 0 / .18)",
+      "severity": "error",
+      "count": 2,
+      "lines": [
+        2226,
+        2248
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "border-color: #c98a1b",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        1102
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "box-shadow: rgb(0 0 0 / .1)",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        985
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "box-shadow: rgb(0 0 0 / .35)",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        2650
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "box-shadow: rgb(0 0 0 / .8)",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        2054
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "box-shadow: rgb(0 0 0 / .9)",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        2079
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "box-shadow: rgb(255 255 255 / .07)",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        2079
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "box-shadow: rgb(255 255 255 / .5)",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        847
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "box-shadow: rgb(255 255 255 / .65)",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        2205
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "box-shadow: rgba(0,0,0,.04)",
+      "severity": "error",
+      "count": 2,
+      "lines": [
+        934,
+        934
+      ]
+    },
+    {
+      "rule": "youi:toolroll/rule/color.no-raw-color",
+      "file": "src/server/console.css",
+      "text": "color: #ab6400",
+      "severity": "error",
+      "count": 1,
+      "lines": [
+        144
+      ]
+    }
+  ]
+}

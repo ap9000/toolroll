@@ -93,7 +93,8 @@ const pr = (paths: string[], branch = "toolroll/some-change"): Event => ({ kind:
 const AREA = ["linux native containment · delegated cgroup v2", "linux fence · sandbox-runtime", "Windows Job Object containment", "git 2.41 · debian trixie", "git 2.47 · debian trixie"];
 const SCOPE = "area lanes · scope";
 const REPEAT = "Windows Job Object containment · c2 repeat";
-/** Checks a pull request also runs that never fail it and that no release waits for (youiyoux.yml). */
+/** Checks a pull request also runs that no release waits for (youiyoux.yml: it fails a pull request that adds UI
+ * drift, but a release never waits for it). */
 const ADVISORY = ["youiyoux · UI drift"];
 const runsOf = (job: Job) => (job.steps ?? []).map(step => step.run ?? "");
 
@@ -161,12 +162,13 @@ describe("the CI workflows", () => {
     expect(names(pr(["src/containment.ts"])).filter(name => !all.includes(name) && !skippedShards.includes(name))).toEqual([REPEAT]);
   });
 
-  test("the youiyoux UI notes are advisory: never a required check, and never strict, so they cannot fail a pull request", () => {
+  test("the youiyoux UI check fails a pull request that adds drift (strict, pinned) but is never a required check a release waits for", () => {
     expect(ADVISORY.filter(name => (REQUIRED_PR_CHECKS as readonly string[]).includes(name))).toEqual([]);
     const ui = workflow("youiyoux.yml").jobs["ui"]!;
     expect(ui.if).toBeUndefined();
-    const notes = runsOf(ui).filter(run => /\bcheck --diff\b/.test(run));
-    expect(notes.map(run => /--strict\b/.test(run))).toEqual([false]);
+    const checks = runsOf(ui).filter(run => /\bcheck --diff\b/.test(run));
+    expect(checks.map(run => /--strict\b/.test(run))).toEqual([true]);
+    expect(checks.every(run => /\byouiyoux@\d+\.\d+\.\d+\b/.test(run))).toBe(true);
   });
 
   test("test-matrix: a documentation-only pull request skips the area lanes and nothing else; anything more runs them", () => {

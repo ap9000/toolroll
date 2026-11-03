@@ -25,3 +25,10 @@ output/
 
 # Check evidence (screenshots, journey output) lives in the run's evidence, never the branch
 /evidence/
+
+# youiyoux's local state (captures, requests, usage maps, inventories). The list of screens youiyoux photographs
+# stays tracked, so each revamp wave is compared on the same routes.
+/.youi/*
+!/.youi/screens/
+/.youi/screens/*
+!/.youi/screens/screens.json

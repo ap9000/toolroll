@@ -1,0 +1,57 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-switch",
+  "name": "KSwitch",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "An on/off setting: KSwitch acts at once and says its state in words; KSwitchInput is a checkbox with role=switch for a form.",
+  "source": {
+    "file": "k-switch.tsx",
+    "export": "KSwitch",
+    "also": [
+      "KSwitchInput"
+    ]
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "label": {
+      "type": "string",
+      "required": true
+    },
+    "on": {
+      "type": "boolean",
+      "default": false
+    },
+    "onChange": {
+      "type": "function"
+    },
+    "words": {
+      "type": "string",
+      "description": "The words for on and off; default On / Off."
+    }
+  },
+  "tokens": {
+    "on": "youi:toolroll/token/color.ink",
+    "off": "youi:toolroll/token/color.field-line"
+  },
+  "a11y": {
+    "role": "switch",
+    "minTouchTarget": 44,
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": []
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}
