@@ -309,8 +309,9 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     const script = store.flowScript(project, name.trim().toLowerCase());
     if (script === null) return refuse(project, 'unknown-script', `There's no script called ${name} in ${projectName(project)}.`);
     if (script.held === null) return ok({ applied: false, repo: project, said: `${script.name} already runs.` }, [`${script.name} already runs.`]);
-    store.approveFlowScript(project, script.name);
-    record(project, 'accepted', `script ${script.name} approved`);
+    // Bound to the version just read: a script swapped under the same name meanwhile is refused, never approved unseen.
+    if (store.approveFlowScript(project, script.name, { version: script.version, digest: script.digest }) !== 'approved') return refuse(project, 'changed', `${script.name} changed while this ran. Read it again (toolroll flows show), then approve it. Nothing was approved.`);
+    record(project, 'accepted', `script ${script.name} v${script.version} approved`);
     settle(project);
     return ok({ applied: true, repo: project, said: `Approved ${script.name}. Zones that run it go on.` }, [`Approved ${script.name}. Zones that run it go on.`]);
   }

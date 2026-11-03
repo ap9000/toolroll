@@ -598,7 +598,9 @@ export type BrowserFlowView = {
   tools: { name: string; about: string; functions: string[]; ready: boolean }[];
   /** The project's scripts: reusable steps a "Run a script" zone runs with no AI. */
   /** v90: each script's language, and the project file it runs instead of a body. */
-  scripts: { name: string; about: string; body: string; timeoutMinutes: number; version: number; savedBy: string; savedAt: string; usedHere: string[]; language: "shell" | "python" | "node"; file: string | null;
+  scripts: { name: string; about: string; body: string; timeoutMinutes: number; version: number;
+    /** The content digest the panel showed: an approval of a held script carries it back. */
+    digest: string; savedBy: string; savedAt: string; usedHere: string[]; language: "shell" | "python" | "node"; file: string | null;
     /** It came with an imported flow and waits for a person's approval before it runs. */
     held: boolean }[];
   start: string;

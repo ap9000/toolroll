@@ -278,6 +278,31 @@ test("phone: Expand gives the canvas the screen as a modal surface; Escape from 
   expect(document.querySelector("[inert]")).toBeNull();
 });
 
+test("phone: a card opened from the expanded canvas, closed again, leaves the canvas modal; Escape still comes back", async () => {
+  installKitBehavior();
+  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: query === "(max-width: 760px)", media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(createElement(FlowView, { view: view("Ready", "x"), csrf: "fixture" })));
+  await act(async () => [...document.querySelectorAll<HTMLButtonElement>(".fl-viewsw button")].find(one => one.textContent === "Canvas")!.click());
+  await act(async () => document.querySelector<HTMLButtonElement>("[data-flow-expand]")!.click());
+  const surface = () => document.querySelector<HTMLElement>(".fl-canvas.expanded")!;
+  const card = surface().querySelector<HTMLElement>('[data-card="1"]')!;
+  await act(async () => card.click());
+  expect(document.querySelector("[data-flow-card-panel]")).not.toBeNull();
+  // Close the card's drawer: the canvas is the modal surface again, with focus back on the card.
+  await act(async () => document.querySelector<HTMLButtonElement>(".k-drawer [data-k-close]")!.click());
+  expect(document.querySelector("[data-flow-card-panel]")).toBeNull();
+  expect(surface().getAttribute("aria-modal")).toBe("true");
+  expect(document.querySelector<HTMLElement>(".fl-head")!.closest("[inert]") ?? document.querySelector(".fl-page > [inert], .fl-body > [inert], .fl-stage > [inert]")).not.toBeNull();
+  expect(document.activeElement).toBe(surface().querySelector('[data-card="1"]'));
+  const zoomIn = surface().querySelector<HTMLButtonElement>('[aria-label="Zoom in (+)"]')!;
+  zoomIn.focus();
+  await act(async () => { zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  expect(document.querySelector(".fl-canvas.expanded")).toBeNull();
+  expect(document.querySelector("[inert]")).toBeNull();
+  expect(document.activeElement).toBe(document.querySelector("[data-flow-expand]"));
+});
+
 test("a person who can't sign reads why, and a flow without a schedule shows nothing", async () => {
   vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: false, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
   const host = document.createElement("div"); document.body.append(host); root = createRoot(host);

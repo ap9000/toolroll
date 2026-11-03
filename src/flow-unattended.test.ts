@@ -209,6 +209,16 @@ describe("a scheduled card", () => {
     }
   });
 
+  test("a drawing that isn't well formed fails closed: saving any script in its project ends the grant", async () => {
+    for (const stored of ["{}", '{"stages":null}', '{"stages":[null]}', "[]", "not json"]) {
+      const { flow } = scheduledFlow();
+      expect((await sign(flow)).ok).toBe(true);
+      store.handle.prepare("UPDATE flow SET definition_json = ? WHERE id = ?").run(stored, flow);
+      expect(saveScript(store, repo, { name: "unrelated", about: "Unrelated", body: `echo ${flow}`, timeoutMinutes: 1 }, "sam", at(HOUR))).toMatchObject({ ok: true });
+      expect(store.handle.prepare("SELECT revoke_reason FROM flow_unattended_grant WHERE flow = ?").get(flow)).toEqual({ revoke_reason: "script changed" });
+    }
+  });
+
   test("the daily run cap admits that many a UTC day, then cards wait", async () => {
     const { flow, trigger } = scheduledFlow();
     await sign(flow, { dailyRunCap: 1 });

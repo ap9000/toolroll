@@ -19543,10 +19543,17 @@ export class Store {
     });
   }
 
-  /** A person approves a held script (one an imported flow brought): from now on it runs. False when it wasn't held. */
-  approveFlowScript(repo: string, name: string): boolean {
-    const { changes } = this.db.prepare("UPDATE flow_script SET held = NULL WHERE repo = ? AND name = ? AND state = 'active' AND held IS NOT NULL").run(repo, name);
-    return Number(changes) === 1;
+  /** A person approves a held script (one an imported flow brought): from now on it runs. The approval covers exactly
+   * the version and content the person read (`seen`): the check and the release of the hold are one statement in one
+   * transaction, so a script removed and brought back under the same name is never approved unseen. */
+  approveFlowScript(repo: string, name: string, seen: { version: number; digest: string }): "approved" | "changed" | "not-held" {
+    return this.transact(() => {
+      const current = this.flowScript(repo, name);
+      if (current === null || current.held === null) return "not-held" as const;
+      if (current.version !== seen.version || current.digest !== seen.digest) return "changed" as const;
+      const { changes } = this.db.prepare("UPDATE flow_script SET held = NULL WHERE id = ? AND version = ? AND digest = ? AND state = 'active' AND held IS NOT NULL").run(current.id, seen.version, seen.digest);
+      return Number(changes) === 1 ? "approved" as const : "changed" as const;
+    });
   }
 
   removeFlowScript(repo: string, name: string, by = "flow", now = new Date()): boolean {

@@ -590,7 +590,14 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     }
     if (action === "scripts") {
       // The project's script library, reached from any of its flows.
-      if (body.get("approve") === "yes") return store.approveFlowScript(flow.repo, body.get("name") ?? "") ? settle("Approved. Zones that run it go on.") : answer(404, { ok: false, said: "That script isn't waiting for approval." });
+      if (body.get("approve") === "yes") {
+        // The approval covers the version and content the panel showed (its version and digest ride back).
+        const version = Number(body.get("version")), digest = body.get("digest") ?? "";
+        const approved = Number.isSafeInteger(version) && version > 0 && digest !== "" ? store.approveFlowScript(flow.repo, body.get("name") ?? "", { version, digest }) : "changed";
+        return approved === "approved" ? settle("Approved. Zones that run it go on.")
+          : approved === "changed" ? answer(409, { ok: false, said: "This script changed since you read it. Read the new script, then approve it. Nothing was approved." })
+          : answer(404, { ok: false, said: "That script isn't waiting for approval." });
+      }
       if (body.get("remove") === "yes") return store.removeFlowScript(flow.repo, body.get("name") ?? "", who.name, now) ? settle("Script removed. Zones that ran it wait until it's back.") : answer(404, { ok: false, said: "There's no script by that name." });
       const saved = saveScript(store, flow.repo, { name: body.get("name"), about: body.get("about"), body: body.get("body"), timeoutMinutes: body.get("timeoutMinutes"), language: body.get("language"), file: body.get("file") }, who.name, now);
       if (saved.ok) await prepareUnattendedCandidates(store, flow.id);

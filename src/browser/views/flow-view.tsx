@@ -1490,7 +1490,7 @@ function ScriptsPanel({ view, csrf, apply }: { view: BrowserFlowView; csrf: stri
       {script.file === null && <details className="mt-2"><summary className="cursor-pointer text-caption text-muted-foreground font-normal">Show the script</summary><pre className="mt-2 max-h-56 overflow-auto rounded-md bg-muted p-2 font-mono text-mono">{script.body}</pre></details>}
       {script.held && <p className="mt-2 text-[12.5px]" data-script-held>It came with an imported flow, so it doesn't run until you approve it. Read it first.</p>}
       {view.canEdit && <div className="mt-2 flex gap-1.5">
-        {script.held && <Button size="sm" disabled={busy} onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/scripts`, { approve: "yes", name: script.name }, csrf)); setBusy(false); }} data-approve-script>Approve</Button>}
+        {script.held && <Button size="sm" disabled={busy} onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/scripts`, { approve: "yes", name: script.name, version: String(script.version), digest: script.digest }, csrf)); setBusy(false); }} data-approve-script>Approve</Button>}
         <Button size="sm" variant="outline" onClick={() => { setRunsFile(script.file !== null); setDraft({ name: script.name, about: script.about, body: script.body, timeoutMinutes: String(script.timeoutMinutes), language: script.language, file: script.file ?? "" }); }}>Edit</Button>
         <Button size="sm" variant="ghost" className="text-destructive" disabled={busy} onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/scripts`, { remove: "yes", name: script.name }, csrf)); setBusy(false); }}>Remove</Button>
       </div>}
@@ -1656,6 +1656,8 @@ type CanvasProps = {
   onTriggers: (id: number, from: HTMLElement | null) => void; onPress: (id: number, from: HTMLElement | null) => void;
   onZone: (id: string | null) => void; setDraft: (change: (current: Draft | null) => Draft | null) => void;
   onExpand?: (from: HTMLElement) => void; onCollapse?: () => void; name: string;
+  /** A drawer is open over the page (a card, triggers…): the expanded canvas steps back under it until it closes. */
+  covered?: boolean;
 };
 
 /**
@@ -1816,16 +1818,29 @@ function FlowCanvas(props: CanvasProps) {
   // from anywhere in it comes back, and Done takes focus. Coming back puts focus on Expand again (the page does that).
   const collapseRef = useRef(props.onCollapse);
   collapseRef.current = props.onCollapse;
+  // A drawer opened from it (a card) takes over the modal; when that drawer closes the canvas is the modal surface again,
+  // with focus where the drawer left it (the card that opened it).
+  const covered = props.covered === true;
+  const registered = useRef(false);
   useLayoutEffect(() => {
     const node = box.current;
-    if (!expanded || node === null) return;
+    if (!expanded || covered || node === null) return;
     let settled = false;
     const restore = () => { node.hidden = false; node.removeAttribute("role"); node.removeAttribute("aria-modal"); node.removeAttribute("tabindex"); };
-    const close = openOverlay(node, null, { dim: false, onClose: how => { settled = true; restore(); if (how !== "close") collapseRef.current?.(); } });
+    const before = document.activeElement;
+    const close = openOverlay(node, null, { dim: false, onClose: how => {
+      settled = true; restore();
+      // Escape, the scrim, or the surface removed: come back. Replaced by another overlay ("close" from the kit): the
+      // covered prop takes it from here, and re-registers it when that one closes.
+      if (how !== "close") collapseRef.current?.();
+    } });
     node.setAttribute("aria-label", `${props.name}, full screen`);
-    node.querySelector<HTMLElement>("[data-flow-collapse]")?.focus();
+    if (registered.current && before instanceof HTMLElement && node.contains(before)) before.focus({ preventScroll: true });
+    else node.querySelector<HTMLElement>("[data-flow-collapse]")?.focus();
+    registered.current = true;
     return () => { if (!settled) close(); restore(); node.removeAttribute("aria-label"); };
-  }, [expanded, props.name]);
+  }, [expanded, covered, props.name]);
+  useEffect(() => { if (!expanded) registered.current = false; }, [expanded]);
   // Expanding or coming back changes the canvas's width: keep the zoom and the height you were at, centred again.
   const wasExpanded = useRef(expanded);
   useEffect(() => {
@@ -1860,7 +1875,7 @@ function FlowCanvas(props: CanvasProps) {
     event.preventDefault();
   };
 
-  return <div ref={box} className={cn("fl-canvas", vertical && "column", expanded && "expanded", editing && "editing")} data-flow-canvas>
+  return <div ref={box} className={cn("fl-canvas", vertical && "column", expanded && "expanded", expanded && covered && "covered", editing && "editing")} data-flow-canvas>
     {expanded && <div className="fl-xbar"><b>{props.name}</b><span className="k-note">Drag to move · pinch to zoom</span><span className="k-grow" />
       <KButton variant="primary" label="Done" data-flow-collapse onClick={() => props.onCollapse?.()} /></div>}
     <div className="fl-vp" tabIndex={0} role="group" aria-roledescription="canvas" onKeyDown={keys}
@@ -2089,7 +2104,7 @@ export function FlowView({ view: initial, csrf }: { view: BrowserFlowView; csrf:
 
   const canvas = <FlowCanvas view={view} stages={stages} start={start} owner={draft?.owner ?? view.flow.owner} editing={editing} vertical={phone} expanded={expanded}
     mineOnly={mineOnly} selectedCard={openCard} lookers={lookers} onCard={onCard} onDrop={(card, to) => void move(card, to)} onTriggers={onTriggers} onPress={onPress}
-    onZone={setZone} setDraft={setDraftFn} name={view.flow.name} onExpand={from => { expandFrom.current = from; setExpanded(true); }} onCollapse={collapse} />;
+    onZone={setZone} setDraft={setDraftFn} name={view.flow.name} covered={overlay !== null} onExpand={from => { expandFrom.current = from; setExpanded(true); }} onCollapse={collapse} />;
   const hasOthers = view.cards.some(card => card.state === "active" && !card.mine);
   const steps = <>
     {phone && <div className="fl-viewsw"><KSeg label="Layout" current={layout} onChange={key => { setLayout(key as "list" | "canvas"); setExpanded(false); }} items={[{ key: "list", label: "List" }, { key: "canvas", label: "Canvas" }]} /></div>}

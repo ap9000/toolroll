@@ -743,12 +743,15 @@ function unattendedEndedOf(store: Store, flowId: number, now: Date): { why: stri
   return why === undefined || Date.parse(String(row["absolute_expiry"])) <= now.getTime() ? null : { why, at: String(row["revoked_at"]) };
 }
 
-/** Whether one of the flow's "Run a script" steps runs this script (an unreadable drawing counts, to be safe). */
+/** Whether one of the flow's "Run a script" steps runs this script. A drawing that isn't readable and well formed counts,
+ * to be safe. */
 function flowStepRunsScript(store: Store, flowId: number, name: string): boolean {
   const flow = store.getFlow(flowId);
   if (flow === null) return false;
-  try {
-    const drawn = JSON.parse(flow.definitionJson) as { stages?: { kind?: unknown; script?: unknown }[] };
-    return (drawn.stages ?? []).some(stage => stage.kind === "check" && stage.script === name);
-  } catch { return true; }
+  let drawn: unknown;
+  try { drawn = JSON.parse(flow.definitionJson); } catch { return true; }
+  // Anything but a well-formed drawing (an object whose stages are a list of objects) fails closed: the grant ends.
+  const stages = drawn !== null && typeof drawn === "object" && !Array.isArray(drawn) ? (drawn as { stages?: unknown }).stages : undefined;
+  if (!Array.isArray(stages) || !stages.every(stage => stage !== null && typeof stage === "object" && !Array.isArray(stage))) return true;
+  return (stages as { kind?: unknown; script?: unknown }[]).some(stage => stage.kind === "check" && stage.script === name);
 }
