@@ -285,7 +285,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-native-region :where(.card, .pane) { box-shadow: none; border-radius: var(--so-radius); }
 .so-native-region .card { background: var(--so-paper); color: var(--so-ink); }
 .so-workspace .so-native-region .button-link { color: var(--primary-foreground); }
-.so-native-region :where(input, textarea, select) { color: var(--so-ink); background: var(--so-paper); border-color: var(--input); }
+.so-native-region :where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="submit"], [type="button"], [type="hidden"]), textarea, select) { color: var(--so-ink); background-color: var(--so-field); border-color: transparent; }
 .so-native-region :where(input, textarea)::placeholder { color: var(--so-muted); }
 .so-page-content .chat-workspace, .so-page-content .chat-workspace.projects-hidden { display: block; grid-template-columns: minmax(0, 1fr); }
 .so-page-content :where(#chat-project-panel, .chat-project-toggle, .chat-head h1) { display: none; }
@@ -466,7 +466,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-team-audience li > span:nth-child(2) { color: var(--so-muted); font-size: 12px; }
 .so-team-form { display: grid; gap: 14px; margin: var(--so-space-lg) 0 var(--so-space-2xl); }
 .so-team-form > label { display: grid; gap: 6px; font-size: 13px; font-weight: 550; }
-.so-team-form select { min-width: 0; width: 100%; min-height: 44px; border: 1px solid var(--so-line); border-radius: var(--so-radius-md); background: var(--so-paper); color: var(--so-ink); padding: var(--so-space-sm); }
+.so-team-form select { min-width: 0; width: 100%; min-height: 44px; border: 1px solid transparent; border-radius: var(--so-radius-sheet); background-color: var(--so-field); color: var(--so-ink); padding: var(--so-space-sm) 2.1rem var(--so-space-sm) var(--so-space-md); }
 .so-team-projects { border: 0; padding: 0; margin: 0; min-width: 0; }
 .so-team-projects legend { font-weight: 550; font-size: 13px; margin-bottom: 6px; }
 .so-team-projects label { display: flex; align-items: center; gap: 9px; min-height: 44px; overflow-wrap: anywhere; }
@@ -484,7 +484,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-team-room-list a { padding: var(--so-space-md) 0; border-bottom: 1px solid var(--so-line); display: flex; justify-content: space-between; gap: var(--so-space-lg); min-height: 44px; overflow-wrap: anywhere; }
 .so-team-room-list a span { color: var(--so-muted); font-size: 12px; }
 .so-team-composer { flex: 0 0 auto; padding: 14px 24px max(16px, var(--safe-bottom)); border-top: 1px solid var(--so-line); background: var(--so-paper); }
-.so-team-composer textarea { resize: vertical; min-height: 80px; max-height: 220px; }
+.so-team-composer textarea { resize: none; field-sizing: content; min-height: 80px; max-height: 220px; }
 .so-team-compose-actions { display: flex; justify-content: flex-end; gap: var(--so-space-sm); padding-top: var(--so-space-sm); }
 .so-team-settings { margin-top: var(--so-space-2xl); }
 .so-team-settings > summary { min-height: 44px; padding: var(--so-space-md) 0; }
@@ -497,7 +497,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-team-chat textarea, .so-team-chat input, .so-team-chat select { font-size: 16px; }
 }
 .so-team-lead-select { max-width: 40%; min-width: 0; }
-.so-team-lead-select select { max-width: 100%; min-height: 44px; border: 1px solid var(--so-line); border-radius: var(--so-radius-md); background: var(--so-paper); color: var(--so-ink); padding: var(--so-space-sm); }
+.so-team-lead-select select { max-width: 100%; min-height: 44px; border: 1px solid transparent; border-radius: var(--so-radius-sheet); background-color: var(--so-field); color: var(--so-ink); padding: var(--so-space-sm) 2.1rem var(--so-space-sm) var(--so-space-md); }
 .so-team-consent { margin-bottom: 14px; font-size: 12px; }
 .so-team-consent p { margin: 0 0 var(--so-space-sm); }
 .so-team-proposals { margin-bottom: var(--so-space-xl); overflow-wrap: anywhere; }
@@ -947,3 +947,7 @@ details.result-request-open > summary::marker { content: ""; }
 /* A kit page with a phone dock keeps its last row clear of it. */
 /* Room above the phone dock: a kit view's root, or a server page known as kit by its phone header (app.tsx isKitPage). */
 @media (max-width: 760px) { .so-workspace--kit :is([data-kit-page], [data-workspace-native]:not(:has([data-kit-page]))):has(.k-dock) { padding-bottom: 76px; } }
+
+/* The task conversation's message box: the kit composer's filled object (KIT.md "Composer"); focus turns its edge
+   ink-grey, never a ring on the textarea. */
+.so-task-composer-box:focus-within { border-color: color-mix(in srgb, var(--so-ink) 50%, var(--so-composer)) !important; }

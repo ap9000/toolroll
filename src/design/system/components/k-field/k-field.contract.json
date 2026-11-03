@@ -4,7 +4,7 @@
   "name": "KField",
   "version": "1.0.0",
   "status": "stable",
-  "summary": "A field: label, the control, one hint line, and the error tied to the control (aria-invalid, aria-describedby). Errors appear next to the control, never as a banner.",
+  "summary": "A field in the one field family: dim label above, one filled surface (no outline, 12px radius, textareas auto-grow), hint and error below, tied to the control.",
   "source": {
     "file": "k-field.tsx",
     "export": "KField",
@@ -35,7 +35,7 @@
     }
   },
   "tokens": {
-    "border": "youi:toolroll/token/color.field-line",
+    "surface": "youi:toolroll/token/color.field",
     "invalid": "youi:toolroll/token/color.danger",
     "ring": "youi:toolroll/token/color.ring"
   },
@@ -43,7 +43,8 @@
     "minTouchTarget": 44,
     "notes": [
       "16px text and 44px height on a phone.",
-      "The label stays visible while typing; never a placeholder instead of a label."
+      "The label stays visible while typing; never a placeholder instead of a label.",
+      "No outline at rest: the visible label names the field; focus draws the 2px ink ring (3:1 or better); a transparent border keeps the edge in forced colours."
     ]
   },
   "rules": [

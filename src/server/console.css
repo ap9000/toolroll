@@ -265,16 +265,26 @@
   .project-card .project-name:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: .375rem; }
 
   label { display: block; font-size: 0.8125rem; font-weight: 500; margin: .75rem 0 0; color: var(--foreground); }
-  :where(input[type=text], input[type=password], input[type=number], input[type=url], input[type=email], input[type=search], input[type=time], textarea, select) {
-    width: 100%; margin: .35rem 0 0; padding: .45rem .7rem;
-    color: var(--foreground); background: var(--card); min-height: 2.125rem;
-    border: 1px solid var(--input); border-radius: calc(var(--radius) - 3px);
-    transition: border-color .15s, box-shadow .15s;
+  /* The kit's field family (src/design/KIT.md "Fields"): one filled surface, no outline, 12px radius; the label above
+     names the field and focus draws the ink ring. A transparent border keeps the edge in forced colours. Textareas
+     grow with their words (no resize grip); selects draw the kit's chevron. */
+  :where(input[type=text], input[type=password], input[type=number], input[type=url], input[type=email], input[type=search], input[type=time], input:not([type]), textarea, select) {
+    width: 100%; margin: .35rem 0 0; padding: .5rem .75rem;
+    color: var(--foreground); background-color: var(--so-field); min-height: 2.25rem;
+    border: 1px solid transparent; border-radius: var(--so-radius-sheet); box-shadow: none;
+    transition: background-color .12s;
   }
+  :where(textarea) { resize: none; field-sizing: content; min-height: 4.75rem; max-height: 22rem; overflow-y: auto; line-height: 1.5; }
+  :where(select:not([multiple])) {
+    appearance: none; -webkit-appearance: none; padding-right: 2.1rem; cursor: pointer;
+    background-image: linear-gradient(45deg, transparent 50%, var(--so-muted) 50%), linear-gradient(135deg, var(--so-muted) 50%, transparent 50%);
+    background-position: calc(100% - 17px) 52%, calc(100% - 12px) 52%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+  }
+  :where(input, textarea, select)::placeholder { color: var(--muted-foreground); opacity: 1; }
   /* The box above is in :where() so a surface's own rules (the workspace's 44px phone targets) win; the type keeps
      its old weight, so the phone's 16px rule still loses to it as before. */
   input[type=text], input[type=password], input[type=number], input[type=url], input[type=email], input[type=search], input[type=time], textarea, select { font: 400 0.875rem/1.4 var(--font-sans); }
-  @media (hover: hover) and (pointer: fine) { input:hover, textarea:hover, select:hover { border-color: var(--muted-foreground); } }
+  @media (hover: hover) and (pointer: fine) { :where(input[type=text], input[type=password], input[type=number], input[type=url], input[type=email], input[type=search], input[type=time], input:not([type]), textarea, select):hover { background-color: color-mix(in srgb, var(--so-field) 94%, var(--so-ink)); } }
   input[type=number] { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   input[type=radio], input[type=checkbox] { accent-color: var(--ring); }
   .permission-field { border: 0; padding: 0; margin: 1rem 0 0; min-width: 0; }
@@ -312,7 +322,8 @@
     min-height: 8.5rem; max-height: 18rem; margin: 0; padding: .9rem 1rem; resize: vertical;
     border: 0; background: transparent; box-shadow: none; font-size: 1.05rem; line-height: 1.55;
   }
-  .task-prompt textarea:focus-visible { border: 0; box-shadow: none; }
+  .task-prompt textarea:focus-visible { border: 0; box-shadow: none; outline: none; }
+  .task-composer:focus-within { outline: 2px solid var(--so-ring); outline-offset: 2px; }
   @media (hover: hover) and (pointer: fine) { .task-prompt textarea:hover { border: 0; box-shadow: none; } }
   .task-repo { margin: .25rem .45rem .7rem; }
   .task-composer-footer { display: flex; align-items: center; gap: .5rem; padding: .25rem; }
@@ -361,7 +372,7 @@
   }
   input[type=password] { font-family: var(--font-mono); }
   input:focus-visible, textarea:focus-visible, select:focus-visible {
-    outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 25%, transparent);
+    outline: 2px solid var(--so-ring); outline-offset: 1px; box-shadow: none;
   }
   button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 
@@ -2198,7 +2209,8 @@
     width: 100%; min-height: 3.5rem; max-height: 13rem; margin: 0; padding: .75rem .85rem;
     resize: vertical; border: 0; background: transparent; box-shadow: none; font-size: 1rem;
   }
-  .composer textarea:focus-visible { border: 0; box-shadow: none; }
+  .composer textarea:focus-visible { border: 0; box-shadow: none; outline: none; }
+  .composer:focus-within { outline: 2px solid var(--so-ring); outline-offset: 2px; }
   @media (hover: hover) and (pointer: fine) { .composer textarea:hover { border: 0; box-shadow: none; } }
   .composer button {
     flex: 0 0 2.75rem; width: 2.75rem; min-height: 2.75rem; padding: 0; border-radius: 999px;

@@ -132,10 +132,15 @@ a.lc-card-row:focus-visible { outline: 2px solid var(--so-ring); outline-offset:
 .lc .lc-slash li[aria-selected="true"] { background: var(--so-soft); }
 .lc-slash-name { font: 500 12.5px/1.3 var(--so-font-mono); color: var(--so-ink); }
 .lc-slash-hint { font-size: 13px; color: var(--so-muted); }
-.lc .lc-settings { margin: var(--so-space-sm) var(--so-space-xs) 0; padding: 0; border: 0; border-radius: 0; background: none; font-size: 12px; color: var(--so-muted); }
 /* The kit composer shows focus on its box, never on the textarea (the workspace's general focus ring would). */
 .lc .k-composer-ta:focus-visible { outline: none; }
-.lc .lc-settings > summary { width: fit-content; padding: 2px 0; font-size: 12px; cursor: pointer; }
+/* Conversation settings: the + menu opens them in a kit popover (a sheet on a phone), outside .lc. */
+.lc-settings { display: grid; gap: var(--so-space-sm); max-width: 420px; font-size: 13px; color: var(--so-ink); }
+.lc-settings details { margin: 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; }
+.lc-settings details + details { border-top: 1px solid var(--so-line); padding-top: var(--so-space-sm); }
+.lc-settings summary { display: flex; align-items: center; justify-content: flex-start; gap: var(--so-space-sm); min-height: 32px; padding: 0; border: 0; background: none; cursor: pointer; font-weight: 500; text-align: left; }
+.lc-settings summary .meta { margin-left: auto; }
+.lc-settings .meta { color: var(--so-muted); font-size: 12.5px; }
 
 /* ---- the Ask panel beside a page ---- */
 .lc.lc-docked .lc-thread { padding: 18px 18px var(--so-space-3xl); gap: var(--so-space-xl); }
@@ -171,8 +176,7 @@ a.lc-card-row:focus-visible { outline: 2px solid var(--so-ring); outline-offset:
   .lc .k-btn.lc-jump { width: 44px; height: 44px; margin-left: -22px; }
   .lc .so-composer-area { padding: var(--so-phone-row) var(--so-phone-gutter) max(var(--so-phone-card), var(--safe-bottom, 0px)); }
   html[data-mobile-keyboard] .lc .so-composer-area { padding-top: 6px; padding-bottom: var(--so-phone-row); }
-  html[data-mobile-keyboard] .lc .lc-settings { display: none; }
-  .lc .lc-settings > summary { min-height: 44px; display: flex; align-items: center; }
+  .lc-settings summary { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

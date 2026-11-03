@@ -12,7 +12,7 @@ import { GuardedHtml } from "./guarded-html.js";
 import { ActionCards, CHAT_COMMANDS } from "./chat-cards.js";
 import { FirstRequest, FirstRun, withSuggestion } from "./first-run.js";
 import { ChatMark, LiveReplyBubble, useLiveReply } from "./live-reply.js";
-import { KButton, KComposer, KLinkButton, KPageHeader } from "./kit/index.js";
+import { KButton, KComposer, KLinkButton, KOverlay, KPageHeader } from "./kit/index.js";
 import { fullWhen, shortWhen, viewerZone } from "../when-html.js";
 import type { useWorkspace } from "./app.js";
 
@@ -188,6 +188,7 @@ export function LeadChat({ controller, docked = null }: { controller: Controller
     box.current?.focus({ preventScroll: true });
   }, []);
   useEffect(() => { if (!busy) setStopping("idle"); }, [busy]);
+  const [settingsFrom, setSettingsFrom] = useState<HTMLElement | null>(null);
   const submit = async (event: FormEvent) => {
     setRefused(false);
     if ((await controller.send(event)) === "refused") setRefused(true);
@@ -278,15 +279,20 @@ export function LeadChat({ controller, docked = null }: { controller: Controller
           onChange={value => { setCommandsClosed(false); edit(value); }} onSend={() => form.current?.requestSubmit()} submit
           sendDisabled={sendBlocked} sendLabel={busy ? "Queue message" : "Send message"}
           working={busy && draft.text.trim() === ""} onStop={() => { void stop(); }} stopLabel={stopping === "busy" ? "Stopping…" : "Stop the lead"}
-          {...(!dock && projectName !== null && chat.project ? { project: { current: projectName, items: workspace.projects.map(one => one.name) }, onProject: (name: string) => {
+          {...(!dock && !chat.taskId ? { project: { current: projectName ?? ALL_PROJECTS, sub: leadName, items: [ALL_PROJECTS, ...workspace.projects.map(one => one.name)] }, onProject: (name: string) => {
+            if (name === ALL_PROJECTS) { if (chat.project) window.location.assign("/chat"); return; }
             const chosen = workspace.projects.find(one => one.name === name);
             if (chosen && chosen.path !== chat.project) window.location.assign(`/chat?project=${encodeURIComponent(chosen.path)}`);
           } } : {})}
+          {...(!dock && workspace.controlsHtml ? { menu: [{ label: "Conversation settings", act: () => setSettingsFrom(document.querySelector<HTMLElement>('[data-k-composer="lead-chat"] .k-composer-plus')) }] } : {})}
           combobox={commandMatches.length > 0 ? { expanded: true, controls: commandList } : null}
           onKeyDown={onKeyDown} enterSends={event => returnSends() || event.metaKey || event.ctrlKey}
           note={warning} error={refused && notice ? notice : null} />
       </PostForm>
-      {!dock && workspace.controlsHtml && <details className="lc-settings so-conversation-settings"><summary>Conversation settings</summary><GuardedHtml html={workspace.controlsHtml} immutable /></details>}
+      {/* The conversation's settings (crew updates, details, End the conversation) open from the composer's + menu,
+          so the box stays one object; the page without script still draws them under its form. */}
+      {!dock && workspace.controlsHtml && settingsFrom && <KOverlay kind="popover" title="Conversation settings" trigger={settingsFrom} onClose={() => setSettingsFrom(null)}>
+        <GuardedHtml html={workspace.controlsHtml} immutable className="lc-settings" /></KOverlay>}
     </div>
   </div>;
 }
@@ -294,6 +300,8 @@ export function LeadChat({ controller, docked = null }: { controller: Controller
 /** A phone's on-screen keyboard has no Shift + Enter, so on a phone (a touch screen of the phone layout's width, or
  * whenever mobile-viewport.ts sees its keyboard up) Return writes a new line and Send sends; Cmd/Ctrl + Enter sends
  * anywhere. A desk or a wide tablet, whose keyboards have Shift, sends on Enter. */
+/** The composer chip's choice for the conversation across every project (/chat). */
+const ALL_PROJECTS = "All projects";
 const PHONE_TYPING = "(hover: none) and (pointer: coarse) and (max-width: 900px)";
 export function returnSends(): boolean {
   return !document.documentElement.hasAttribute("data-mobile-keyboard") && !matchMedia(PHONE_TYPING).matches;

@@ -87,26 +87,32 @@
 .k-tabs > [aria-selected="true"], .k-tabs > [aria-current] { color: var(--so-ink); border-bottom-color: var(--so-ink); }
 .k-tabs .k-count { margin-left: 2px; }
 
-/* ---------- Fields ---------- */
+/* ---------- Fields: one family (KIT.md "Fields") ----------
+   Every text field, select and secondary text box is one filled surface (--so-field), no outline, radius 12px; the
+   label above names it, the hint and the error sit below it, focus draws the 2px ink ring. A transparent 1px border
+   keeps the box's edge in forced colours. Textareas grow with their words (field-sizing), no resize grip. */
 .k-field { display: grid; gap: 6px; margin: 0; min-width: 0; }
-.k-label { display: block; margin: 0; font: var(--so-typography-caption); color: var(--so-ink); }
+.k-label { display: block; margin: 0; font: 500 12.5px/1.35 var(--so-font-sans); color: var(--so-muted); }
 .k-hint { margin: 0; font-size: 12px; color: var(--so-muted); line-height: 1.45; }
-.k-input.k-input, .k-textarea.k-textarea { box-sizing: border-box; width: 100%; margin: 0; border: 1px solid var(--so-field-line); border-radius: 8px; background: var(--so-paper); color: var(--so-ink); font: 400 13px/1.4 var(--so-font-sans); box-shadow: none; }
-.k-input.k-input { height: 32px; min-height: 0; padding: 0 10px; }
-.k-textarea.k-textarea { min-height: 72px; padding: 8px 10px; resize: vertical; max-width: 640px; }
-.k-input:focus-visible, .k-textarea:focus-visible { outline: 2px solid var(--so-ring); outline-offset: 1px; box-shadow: none; }
+.k-input.k-input, .k-textarea.k-textarea, .k-sel.k-sel { box-sizing: border-box; width: 100%; margin: 0; border: 1px solid transparent; border-radius: 12px; background: var(--so-field); color: var(--so-ink); font: 400 13.5px/1.4 var(--so-font-sans); box-shadow: none; transition: background-color var(--m-quick) var(--m-ease); }
+.k-input.k-input { height: 36px; min-height: 0; padding: 0 12px; }
+.k-textarea.k-textarea { min-height: 76px; max-height: 360px; padding: 10px 12px; resize: none; field-sizing: content; overflow-y: auto; max-width: 640px; line-height: 1.5; }
+.k-input::placeholder, .k-textarea::placeholder { color: var(--so-muted); opacity: 1; }
+.k-input:focus-visible, .k-textarea:focus-visible, .k-sel:focus-visible { outline: 2px solid var(--so-ring); outline-offset: 1px; box-shadow: none; }
 .k-input[aria-invalid="true"], .k-textarea[aria-invalid="true"], .k-sel[aria-invalid="true"] { border-color: var(--so-danger); }
+.k-input:disabled, .k-textarea:disabled, .k-sel:disabled { color: var(--so-muted); cursor: default; }
 .k-err { display: block; margin: 0; font-size: 12px; color: var(--so-fail-ink); line-height: 1.45; }
 .k-err:empty { display: none; }
-/* A native select with the chevron: 32px (sm 28px in a toolbar). */
+/* A native select in the same family, with the chevron: 36px (sm 28px in a toolbar). */
 .k-selw { position: relative; display: inline-block; min-width: 0; max-width: 100%; }
-.k-selw::after { content: ""; position: absolute; right: 12px; top: 50%; margin-top: -5px; width: 6px; height: 6px; border: solid var(--so-muted); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); pointer-events: none; }
-.k-sel.k-sel { appearance: none; -webkit-appearance: none; box-sizing: border-box; width: 100%; height: 32px; min-height: 0; margin: 0; padding: 0 30px 0 10px; border: 1px solid var(--so-field-line); border-radius: 8px; background: var(--so-paper); color: var(--so-ink); font: 400 13px/1 var(--so-font-sans); text-overflow: ellipsis; cursor: pointer; box-shadow: none; }
-.k-sel:focus-visible { outline: 2px solid var(--so-ring); outline-offset: 1px; }
-.k-sel:disabled { color: var(--so-muted); cursor: default; }
-.k-selw.sm .k-sel { height: 28px; font: 500 12.5px/1 var(--so-font-sans); padding: 0 26px 0 9px; }
-.k-selw.sm::after { right: 10px; }
+.k-selw::after { content: ""; position: absolute; right: 13px; top: 50%; margin-top: -5px; width: 6px; height: 6px; border: solid var(--so-muted); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); pointer-events: none; }
+.k-sel.k-sel { appearance: none; -webkit-appearance: none; height: 36px; min-height: 0; padding: 0 32px 0 12px; line-height: 1; text-overflow: ellipsis; cursor: pointer; }
+.k-selw.sm .k-sel { height: 28px; border-radius: 999px; font: 500 12.5px/1 var(--so-font-sans); padding: 0 26px 0 11px; }
+.k-selw.sm::after { right: 11px; }
 .k-selw.wide { display: block; width: 100%; }
+/* A select drawn as a pill chip (a composer's project): filled, no box, works without script. */
+.k-selw-chip::after { right: 12px; }
+.k-selw-chip .k-sel.k-sel { height: 36px; border-radius: 999px; padding: 0 30px 0 14px; background: var(--so-composer-control); font: 500 13.5px/1 var(--so-font-sans); }
 /* Switch: a button[role=switch] that says its state, or a checkbox[role=switch] for a form. */
 .k-switch { position: relative; display: inline-flex; align-items: center; gap: 8px; min-height: 28px; margin: 0; padding: 0; border: 0; background: transparent; font: 500 12.5px/1 var(--so-font-sans); color: var(--so-muted); cursor: pointer; box-shadow: none; }
 .k-trk { position: relative; width: 32px; height: 18px; border-radius: 9px; border: 1px solid var(--so-field-line); background: var(--so-paper); transition: background-color var(--m-quick) var(--m-ease), border-color var(--m-quick) var(--m-ease); flex: none; box-sizing: border-box; }
@@ -314,25 +320,45 @@
 .k-swap-in { animation: k-swap var(--m-base) var(--m-ease) both; }
 @keyframes k-swap { from { opacity: 0; transform: translateY(4px); } }
 
-/* ---------- Composer: one soft rounded box; the textarea grows 1 → 8 lines; one bottom row inside ---------- */
-.k-composer { --c-r: 22px; box-sizing: border-box; border: 1px solid var(--so-field-line); border-radius: var(--c-r); background: var(--so-paper); display: grid; padding: 4px 6px 6px; outline: 3px solid transparent; outline-offset: 0; transition: border-color var(--m-quick) var(--m-ease), outline-color var(--m-quick) var(--m-ease); }
-.k-composer:focus-within { border-color: var(--so-ink); outline-color: color-mix(in srgb, var(--so-ink) 10%, transparent); }
-.k-composer.off { border-color: var(--so-line); background: var(--so-raised); }
-.k-composer-ta.k-composer-ta { box-sizing: border-box; width: 100%; min-height: 40px; margin: 0; padding: 10px 10px 6px; border: 0; border-radius: 0; outline: none; resize: none; background: transparent; box-shadow: none; color: var(--so-ink); font: var(--so-typography-body-reading); line-height: 1.5; overflow-y: hidden; scrollbar-width: thin; }
-.k-composer-ta::placeholder { color: var(--so-muted); }
+/* ---------- Composer: one filled rounded object (KIT.md "Composer"); the textarea grows 1 → 8 lines; one bottom row
+   of filled circles and pills inside; its note and refusal sit under it, outside the box ---------- */
+.k-composer-field { display: grid; gap: 6px; min-width: 0; }
+.k-composer { --c-r: 28px; box-sizing: border-box; border: 1px solid transparent; border-radius: var(--c-r); background: var(--so-composer); display: grid; padding: 8px 10px 10px; transition: border-color var(--m-quick) var(--m-ease), background-color var(--m-quick) var(--m-ease); }
+/* Focus: the edge turns ink-grey (3:1 or better on the page in both themes); the textarea draws no ring of its own. */
+.k-composer:focus-within { border-color: color-mix(in srgb, var(--so-ink) 50%, var(--so-composer)); }
+.k-composer.off { background: var(--so-raised); color: var(--so-muted); }
+.k-composer-ta.k-composer-ta { box-sizing: border-box; width: 100%; min-height: 44px; margin: 0; padding: 10px 10px 8px; border: 0; border-radius: 0; outline: none; resize: none; background: transparent; box-shadow: none; color: var(--so-ink); font: 400 17px/1.5 var(--so-font-sans); letter-spacing: -0.005em; overflow-y: hidden; scrollbar-width: thin; }
+.k-composer-ta::placeholder { color: var(--so-muted); opacity: 1; }
 .k-composer-ta:focus, .k-composer-ta:focus-visible { outline: none; box-shadow: none; }
-.k-composer:has(.k-composer-ta[aria-invalid="true"]) { border-color: var(--so-danger); outline-color: transparent; }
+.k-composer:has(.k-composer-ta[aria-invalid="true"]) { border-color: var(--so-danger); }
 .k-composer + .k-err { margin-top: 6px; }
-.k-composer-bar { display: flex; align-items: center; gap: 6px; padding: 2px 0 0 2px; flex-wrap: wrap; min-height: 36px; }
-.k-composer-plus { box-sizing: border-box; width: 32px; height: 32px; min-height: 0; margin: 0; padding: 0; border-radius: 50%; display: grid; place-items: center; color: var(--so-muted); border: 1px solid var(--so-line); background: transparent; cursor: pointer; box-shadow: none; transition: background-color var(--m-quick) var(--m-ease), color var(--m-quick) var(--m-ease); }
-.k-composer-chip { box-sizing: border-box; height: 32px; min-height: 0; margin: 0; display: inline-flex; align-items: center; gap: 4px; padding: 0 8px 0 10px; border: 0; border-radius: 999px; font: 500 12.5px/1 var(--so-font-sans); color: var(--so-muted); background: transparent; cursor: pointer; box-shadow: none; transition: background-color var(--m-quick) var(--m-ease), color var(--m-quick) var(--m-ease); }
+.k-composer-bar { display: flex; align-items: center; gap: 8px; padding: 4px 0 0; flex-wrap: wrap; min-height: 40px; }
+.k-composer-plus { box-sizing: border-box; width: 36px; height: 36px; min-height: 0; margin: 0; padding: 0; border-radius: 50%; display: grid; place-items: center; flex: none; color: var(--so-ink); border: 0; background: var(--so-composer-control); cursor: pointer; box-shadow: none; transition: background-color var(--m-quick) var(--m-ease), color var(--m-quick) var(--m-ease); }
+.k-composer-plus .k-i { width: 18px; height: 18px; }
+/* A pill chip: the primary word, then a dimmer secondary word (a project, then the agent). */
+.k-composer-chip { box-sizing: border-box; height: 36px; min-height: 0; max-width: 100%; margin: 0; display: inline-flex; align-items: center; gap: 6px; padding: 0 14px; border: 0; border-radius: 999px; font: 500 13.5px/1 var(--so-font-sans); color: var(--so-ink); background: var(--so-composer-control); cursor: pointer; box-shadow: none; transition: background-color var(--m-quick) var(--m-ease), color var(--m-quick) var(--m-ease); }
+.k-composer-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-composer-chip .k-chip-sub { color: var(--so-muted); font-weight: 400; }
 .k-composer-plus:disabled, .k-composer-chip:disabled { opacity: .5; pointer-events: none; }
-/* The round send: ink with text, muted until then; Stop takes its place while the work runs. */
-.k-send-slot { position: relative; display: inline-grid; width: 34px; height: 34px; flex: none; }
-.k-send-slot .k-send { grid-area: 1 / 1; position: relative; box-sizing: border-box; width: 34px; height: 34px; min-height: 0; margin: 0; padding: 0; border-radius: 50%; display: grid; place-items: center; background: var(--so-ink); color: var(--so-paper); border: 0; cursor: pointer; box-shadow: none; transition: background-color var(--m-quick) var(--m-ease), color var(--m-quick) var(--m-ease), transform var(--m-base) var(--m-ease); }
-.k-send::before { content: ""; position: absolute; inset: -5px; }
-.k-send .k-i { width: 17px; height: 17px; stroke-width: 2.2; }
-.k-send[aria-disabled="true"], .k-composer:not(.has-text) .k-send:not(.k-stop) { background: var(--so-raised); color: var(--so-muted); }
+/* A small act inside the bar (Pause and send) is a filled pill like the chips, never an outlined box in the box. */
+.k-composer-bar .k-btn:not(.k-send) { border-color: transparent; border-radius: 999px; background: var(--so-composer-control); }
+.k-composer-plus:focus-visible, .k-composer-chip:focus-visible { outline: 2px solid var(--so-ring); outline-offset: 2px; }
+/* A toggle chip (an on/off choice inside the box, as Read code before planning): a filled pill whose mark fills when
+   on; the checkbox inside is the control (role=switch), so it works without script. */
+.k-tchip { position: relative; box-sizing: border-box; height: 36px; margin: 0; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px 0 12px; border-radius: 999px; background: var(--so-composer-control); color: var(--so-muted); font: 500 13.5px/1 var(--so-font-sans); cursor: pointer; transition: color var(--m-quick) var(--m-ease); }
+.k-tchip > input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; z-index: 1; }
+.k-tchip-mark { box-sizing: border-box; width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid currentColor; flex: none; display: grid; place-items: center; transition: background-color var(--m-quick) var(--m-ease), border-color var(--m-quick) var(--m-ease); }
+.k-tchip:has(input:checked) { color: var(--so-ink); }
+.k-tchip:has(input:checked) .k-tchip-mark { background: var(--so-ink); border-color: var(--so-ink); }
+.k-tchip:has(input:checked) .k-tchip-mark::after { content: ""; width: 3px; height: 6px; margin-top: -2px; border: solid var(--so-paper); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+.k-tchip:has(input:focus-visible) { outline: 2px solid var(--so-ring); outline-offset: 2px; }
+/* The round send: solid ink with a paper arrow once there are words, the muted control fill until then; Stop takes
+   its place while the work runs. */
+.k-send-slot { position: relative; display: inline-grid; width: 36px; height: 36px; flex: none; }
+.k-send-slot .k-send { grid-area: 1 / 1; position: relative; box-sizing: border-box; width: 36px; height: 36px; min-height: 0; margin: 0; padding: 0; border-radius: 50%; display: grid; place-items: center; background: var(--so-ink); color: var(--so-paper); border: 0; cursor: pointer; box-shadow: none; transition: background-color var(--m-quick) var(--m-ease), color var(--m-quick) var(--m-ease), transform var(--m-base) var(--m-ease); }
+.k-send::before { content: ""; position: absolute; inset: -4px; }
+.k-send .k-i { width: 18px; height: 18px; stroke-width: 2.2; }
+.k-send[aria-disabled="true"], .k-composer:not(.has-text) .k-send:not(.k-stop) { background: var(--so-composer-control); color: var(--so-muted); }
 .k-send[aria-disabled="true"] { cursor: default; }
 .k-send:not([aria-disabled="true"]):active { transform: scale(.94); }
 .k-stop { visibility: hidden; }
@@ -344,17 +370,18 @@
 .k-send:focus-visible { outline: 2px solid var(--so-ring); outline-offset: 2px; }
 .k-composer-files { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px; }
 .k-composer-files:empty { display: none; }
-.k-composer-file { display: inline-flex; align-items: center; gap: 6px; height: 28px; margin-top: 6px; padding: 0 4px 0 10px; border: 1px solid var(--so-line); border-radius: 999px; font-size: 12px; }
+.k-composer-file { display: inline-flex; align-items: center; gap: 6px; height: 28px; margin-top: 6px; padding: 0 4px 0 12px; border: 0; border-radius: 999px; background: var(--so-composer-control); font-size: 12px; }
 .k-composer-file button { width: 22px; height: 22px; min-height: 0; margin: 0; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--so-muted); }
-.k-composer-note { padding: 2px 10px 6px; }
-.k-composer-err { padding: 2px 10px 6px; }
+/* Under the box, in small dim words: its note, then its refusal. */
+.k-composer-note.k-composer-note { margin: 0; padding: 0 16px; font-size: 12px; color: var(--so-muted); line-height: 1.45; }
+.k-composer-err { padding: 0 16px; }
 .k-composer-err:empty { display: none; }
 /* One line: the text and the send share a row. */
-.k-composer.line { grid-template-columns: minmax(0, 1fr) auto; align-items: end; padding: 4px 6px 4px 8px; }
-.k-composer.line .k-composer-ta { padding: 8px 6px; min-height: 36px; }
-.k-composer.line .k-composer-bar { padding: 0 0 1px; min-height: 0; }
+.k-composer.line { --c-r: 26px; grid-template-columns: minmax(0, 1fr) auto; align-items: end; padding: 5px 6px 5px 10px; }
+.k-composer.line .k-composer-ta { padding: 9px 6px; min-height: 42px; font-size: 16px; }
+.k-composer.line .k-composer-bar { padding: 0 0 3px; min-height: 0; }
 .k-composer.line .k-composer-bar .k-grow { display: none; }
-.k-composer.line .k-composer-files, .k-composer.line .k-composer-err, .k-composer.line .k-composer-note { grid-column: 1 / -1; }
+.k-composer.line .k-composer-files { grid-column: 1 / -1; }
 /* A composer docked to the bottom rides above the phone keyboard (kit behaviour sets html.kb-open and --kb). */
 .k-composer-dock { position: sticky; bottom: 0; z-index: 4; padding: 12px 24px 14px; background: var(--so-paper); border-top: 1px solid var(--so-line); }
 
@@ -425,8 +452,9 @@
   .k-card:hover { background: color-mix(in srgb, var(--so-raised) 60%, transparent); }
   .k-backlink:hover { color: var(--so-ink); }
   .k-menu > button:hover, .k-menu > a:hover { background: var(--so-soft); }
-  .k-composer-plus:hover { background: var(--so-raised); color: var(--so-ink); }
-  .k-composer-chip:hover { background: var(--so-raised); color: var(--so-ink); }
+  .k-composer-plus:hover, .k-composer-chip:hover, .k-tchip:hover { background: color-mix(in srgb, var(--so-composer-control) 88%, var(--so-ink)); }
+  .k-input:hover, .k-textarea:hover, .k-sel:hover { background: color-mix(in srgb, var(--so-field) 94%, var(--so-ink)); }
+  .k-selw-chip .k-sel:hover { background: color-mix(in srgb, var(--so-composer-control) 88%, var(--so-ink)); }
   .k-nav:hover { background: var(--so-nav-hover); color: var(--so-ink); }
   .k-crumbs a:hover { color: var(--so-ink); }
 }
@@ -509,16 +537,17 @@
   .k-frow .k-err { text-align: left; }
   .k-frow-c .k-seg { width: 100%; }
   .k-frow-c .k-seg > button { flex: 1; justify-content: center; }
-  .k-composer-ta.k-composer-ta { font-size: 16px; }
+  .k-composer-ta.k-composer-ta { font-size: 17px; }
   .k-composer-bar .k-btn-sm { height: 44px; }
-  /* Every composer control is a real 44px target; the circles stay drawn at 36px inside it. */
+  /* Every composer control is a real, filled 44px target. */
+  .k-composer { --c-r: 26px; padding: 6px 8px 8px; }
+  .k-composer-ta.k-composer-ta { padding: 10px 10px 6px; }
   .k-send-slot, .k-send-slot .k-send { width: 44px; height: 44px; }
-  .k-send-slot .k-send { background: radial-gradient(circle, var(--so-ink) 17.5px, transparent 18px); }
-  .k-send[aria-disabled="true"], .k-composer:not(.has-text) .k-send:not(.k-stop) { background: radial-gradient(circle, var(--so-raised) 17.5px, transparent 18px); }
   .k-send::before { content: none; }
-  .k-composer-plus { width: 44px; height: 44px; border: 0; background: radial-gradient(circle, transparent 15.5px, var(--so-line) 16px, var(--so-line) 16.5px, transparent 17px); }
-  .k-composer-chip { height: 44px; }
-  .k-composer-bar { gap: 2px; }
+  .k-composer-plus { width: 44px; height: 44px; }
+  .k-composer-chip, .k-tchip, .k-selw-chip .k-sel.k-sel { height: 44px; }
+  .k-selw-chip .k-sel.k-sel { font-size: 16px; }
+  .k-composer-bar { gap: 6px; }
   .k-composer-file button { width: 32px; height: 32px; }
   .k-composer-dock { padding: 12px 16px 16px; }
   html.kb-open .k-composer-dock { position: fixed; left: 0; right: 0; bottom: var(--kb, 0px); z-index: 13; }
@@ -563,9 +592,9 @@ main:has(> .k-out) { max-width: none; margin: 0; padding: 0; }
 .k-refusal .k-empty-t::first-letter, .k-refusal .k-notice > span::first-letter { text-transform: uppercase; }
 
 /* A composer's note can follow its switch: k-on-note while it is on, k-off-note while it is off (no script). */
-.k-composer .k-off-note { display: none; }
-.k-composer:has(.k-switch-input):not(:has(.k-switch-input:checked)) .k-on-note { display: none; }
-.k-composer:has(.k-switch-input):not(:has(.k-switch-input:checked)) .k-off-note { display: inline; }
+.k-composer-field .k-off-note { display: none; }
+.k-composer-field:has(.k-switch-input):not(:has(.k-switch-input:checked)) .k-on-note { display: none; }
+.k-composer-field:has(.k-switch-input):not(:has(.k-switch-input:checked)) .k-off-note { display: inline; }
 
 /* The composer's focus is the box's (KIT.md): the workspace's own :focus-visible ring never lands on its textarea. */
 .k-composer .k-composer-ta.k-composer-ta:focus-visible { outline: none; box-shadow: none; }
@@ -614,7 +643,7 @@ main:has(> .k-out) { max-width: none; margin: 0; padding: 0; }
 
 /* ---------- Reduced motion changes presentation only ---------- */
 @media (prefers-reduced-motion: reduce) {
-  .k-btn, .k-send, .k-composer, .k-composer-plus, .k-composer-chip, .k-trk, .k-trk::after, .k-tabs > *, .k-slots, .k-crow-bar { transition: none; }
+  .k-btn, .k-send, .k-composer, .k-composer-plus, .k-composer-chip, .k-tchip, .k-tchip-mark, .k-input, .k-textarea, .k-sel, .k-trk, .k-trk::after, .k-tabs > *, .k-slots, .k-crow-bar { transition: none; }
   .k-steps-fill { transition: none; }
   .k-grow-in, .k-msg-in, .k-swap-in, .k-scrim, .k-btn.swap .k-face, .k-check-draw path, .k-composer .k-i { animation: none !important; }
   .k-check-draw path { stroke-dashoffset: 0; }

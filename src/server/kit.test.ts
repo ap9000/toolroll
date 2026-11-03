@@ -1,11 +1,12 @@
+// @vitest-environment happy-dom
 /**
  * The server kit's security rules (src/design/KIT.md "Approval"): the approval form carries the password field
  * exactly when the rules ask for one (a way in always does, Passwordless or not), an automatic approval renders
  * nothing to press, the form always carries the request's CSRF field, and text from records is escaped.
  */
 import { describe, expect, test } from "vitest";
-import { htmlString } from "../html.js";
-import { approvalFactsNow, approveForm, composer, row, slots, chip } from "./kit.js";
+import { html, htmlString } from "../html.js";
+import { approvalFactsNow, approveForm, composer, row, select, sendButton, slots, chip, toggleChip } from "./kit.js";
 import { requestContext } from "./request-context.js";
 import type { ApprovalFacts, ApprovalKind } from "../design/kit.js";
 
@@ -52,7 +53,30 @@ test("words from records are text, never markup", () => {
   const hostile = `"><script>alert(1)</script>`;
   const markup = render(false, () => htmlString(row({ href: "/t/x", chip: chip(hostile), title: hostile, desc: hostile }))
     + htmlString(slots({ status: chip(hostile), text: hostile, acts: "", terms: hostile, err: hostile }))
-    + htmlString(composer({ id: "ask", name: "text", label: hostile, value: hostile, placeholder: hostile, send: chip("x"), project: { current: hostile, items: [hostile] } })));
+    + htmlString(composer({ id: "ask", name: "text", label: hostile, value: hostile, placeholder: hostile, send: chip("x"), project: { current: hostile, items: [hostile], sub: hostile } })));
   expect(markup).not.toContain("<script>");
   expect(markup).toContain("&lt;script&gt;");
+});
+
+test("the composer is one filled object: chips inside, its note and refusal under the box", () => {
+  const markup = render(false, () => htmlString(composer({ id: "nt", name: "title", label: "What should change?", send: sendButton({ label: "File task" }), error: "Name the change.",
+    project: { current: "payments-api", items: ["payments-api"], sub: "Lead" },
+    before: html`${select({ id: "nt-project", name: "repo", label: "Project", items: [["/r/a", "payments-api"]], current: "/r/a", chip: true })}${toggleChip({ id: "nt-plan", name: "plan-first", label: "Read code before planning", on: true, attrs: { value: "1" } })}`,
+    note: "The agent reads the code first." })));
+  const host = new DOMParser().parseFromString(`<body>${markup}</body>`, "text/html").body;
+  const field = host.querySelector(".k-composer-field")!;
+  const box = field.querySelector(".k-composer")!;
+  // The chip: the primary word, then the dimmer secondary word; no chevron box.
+  expect(box.querySelector(".k-composer-chip [data-k-project-name]")!.textContent).toBe("payments-api");
+  expect(box.querySelector(".k-composer-chip .k-chip-sub")!.textContent).toBe("Lead");
+  // A project chosen without script is a native select drawn as a pill; an on/off choice is a toggle chip (role=switch).
+  expect(box.querySelector(".k-selw-chip select[name=repo]")).not.toBeNull();
+  const toggle = box.querySelector<HTMLInputElement>(".k-tchip input#nt-plan")!;
+  expect(toggle.getAttribute("role")).toBe("switch");
+  expect(toggle.hasAttribute("checked")).toBe(true);
+  // Words never sit inside the box: the note and the refusal follow it.
+  expect(box.querySelector(".k-composer-note, .k-composer-err")).toBeNull();
+  expect(field.querySelector(":scope > .k-composer-note")!.textContent).toBe("The agent reads the code first.");
+  expect(field.querySelector(":scope > #nt-err")!.textContent).toBe("Name the change.");
+  expect(box.querySelector("textarea")!.getAttribute("aria-describedby")).toBe("nt-err");
 });

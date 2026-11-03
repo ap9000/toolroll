@@ -71,8 +71,35 @@ test("the desk top bar: Chat, the lead's name and the project, New chat and Lead
 test("a project's thread names its project in the bar and as the composer's chip; New chat stays on the main conversation", async () => {
   await mount(workspace({ conversation: conversation({ project: "/repos/payments-api", messages: [message(1, "operator", "Hi")] }) }));
   expect(document.querySelector(".k-tb-ctx")!.textContent).toBe("Ada · payments-api");
-  expect(document.querySelector(".k-composer-chip")!.textContent).toBe("payments-api");
+  const chip = document.querySelector(".k-composer-chip")!;
+  expect(chip.firstElementChild!.textContent).toBe("payments-api");
+  expect(chip.querySelector(".k-chip-sub")!.textContent).toBe("Ada");
   expect(document.querySelector('form[action="/chat/mate/end"]')).toBeNull();
+});
+
+test("the composer is one object: the chip says All projects and the lead, and Conversation settings open from the + menu", async () => {
+  await mount(workspace({ controlsHtml: '<details class="lead-follow"><summary>Automatic crew updates</summary><form method="post" action="/chat/mate/follow"><button type="submit">Enable updates</button></form></details>',
+    conversation: conversation({ messages: [message(1, "operator", "Hi")] }) }));
+  const chip = document.querySelector(".k-composer-chip")!;
+  expect(chip.firstElementChild!.textContent).toBe("All projects");
+  expect(chip.querySelector(".k-chip-sub")!.textContent).toBe("Ada");
+  // Nothing boxed under the composer: the settings are not on the page until the + menu opens them.
+  expect(document.querySelector(".so-composer-area details")).toBeNull();
+  expect(document.querySelector('form[action="/chat/mate/follow"]')).toBeNull();
+  const plus = document.querySelector<HTMLButtonElement>(".k-composer-plus")!;
+  await act(async () => plus.click());
+  const menu = document.querySelector(".k-menu")!;
+  expect([...menu.querySelectorAll("button")].map(one => one.textContent)).toEqual(["Choose project", "Conversation settings"]);
+  await act(async () => button("Conversation settings", menu)!.click());
+  await settle();
+  const panel = document.querySelector<HTMLElement>('[role="dialog"][aria-modal="true"]:not([hidden]) .lc-settings')!.closest<HTMLElement>('[role="dialog"]')!;
+  expect(panel.textContent).toContain("Conversation settings");
+  expect(panel.querySelector('form[action="/chat/mate/follow"]')).not.toBeNull();
+  // Escape closes it and focus goes back to the + button.
+  await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  await settle();
+  expect(document.querySelector(".lc-settings")).toBeNull();
+  expect(document.activeElement).toBe(plus);
 });
 
 test("yours on the right with Edit; the lead's with its name, code Copy, Copy and Retry; Retry asks the same question as a new message", async () => {

@@ -106,17 +106,24 @@ export function input(options: { id: string; name: string; value?: string; type?
 export function textarea(options: { id: string; name: string; value?: string; rows?: number; error?: boolean; attrs?: Attrs }): Html {
   return html`<textarea class="k-textarea" id="${options.id}" name="${options.name}" rows="${options.rows ?? 3}"${attributes({ "aria-invalid": options.error ? "true" : undefined, "aria-describedby": `${options.id}-err`, ...options.attrs })}>${options.value ?? ""}</textarea>`;
 }
-/** A native select with the kit's chevron: 32px, `sm` 28px in a toolbar, 44px and 16px text on a phone. */
-export function select(options: { id?: string; name?: string; label?: string; items: ReadonlyArray<readonly [value: string, label: string] | string>; current?: string; sm?: boolean; wide?: boolean; attrs?: Attrs }): Html {
+/** A native select in the field family, with the chevron: 36px, `sm` 28px in a toolbar, 44px and 16px text on a phone.
+ * `chip` draws it as a composer's filled pill (a project inside the message box): still a native select, so it works
+ * without script. */
+export function select(options: { id?: string; name?: string; label?: string; items: ReadonlyArray<readonly [value: string, label: string] | string>; current?: string; sm?: boolean; wide?: boolean; chip?: boolean; attrs?: Attrs }): Html {
   const opts = options.items.map(item => {
     const [value, label] = typeof item === "string" ? [item, item] : item;
     return html`<option value="${value}"${value === options.current ? html` selected` : ""}>${label}</option>`;
   });
-  return html`<span class="${cls("k-selw", options.sm && "sm", options.wide && "wide")}"><select class="k-sel"${attributes({ id: options.id, name: options.name, "aria-label": options.label, ...options.attrs })}>${opts}</select></span>`;
+  return html`<span class="${cls("k-selw", options.sm && "sm", options.wide && "wide", options.chip && "k-selw-chip")}"><select class="k-sel"${attributes({ id: options.id, name: options.name, "aria-label": options.label, ...options.attrs })}>${opts}</select></span>`;
 }
 /** An on/off setting in a form: a checkbox with role=switch and a visible label (posts `name=on` when on). */
 export function switchInput(options: { id: string; name: string; label: string; on: boolean; attrs?: Attrs }): Html {
   return html`<label class="k-switch"><input class="k-switch-input" type="checkbox" role="switch" id="${options.id}" name="${options.name}"${options.on ? html` checked` : ""}${attributes(options.attrs ?? {})}><span class="k-trk" aria-hidden="true"></span><span>${options.label}</span></label>`;
+}
+/** An on/off choice inside a composer, drawn as a filled pill chip whose mark fills when on: a checkbox with
+ * role=switch (posts `name=value` when on), so it works without script. Its longer words go under the box (`note`). */
+export function toggleChip(options: { id: string; name: string; label: string; on: boolean; attrs?: Attrs }): Html {
+  return html`<label class="k-tchip"><input class="k-switch-input" type="checkbox" role="switch" id="${options.id}" name="${options.name}"${options.on ? html` checked` : ""}${attributes(options.attrs ?? {})}><span class="k-tchip-mark" aria-hidden="true"></span><span>${options.label}</span></label>`;
 }
 /** Two columns: label and one muted line | the control. `inline` keeps the control beside the label on a phone. */
 export function formRow(label: string, hint: string | null, control: Html, variant: "" | "inline" | "top" | "wide" = ""): Html {
@@ -311,8 +318,9 @@ ${options.stop ? html`<button class="k-send k-stop" type="button" aria-label="${
 }
 
 /**
- * The message box: one soft rounded container, the textarea grows from `rows` to `maxRows` lines then scrolls,
- * one bottom row inside (+ menu, the project as a quiet chip, small controls, the round send). Textarea
+ * The message box: one filled rounded object, the textarea grows from `rows` to `maxRows` lines then scrolls,
+ * one bottom row inside (+ menu, the project as a filled pill chip, toggle chips, the round send); its note and its
+ * refusal sit under the box (all inside `.k-composer-field`). Textarea
  * `<id>-text` (named `name`), refusal slot `<id>-err`, chosen project a hidden input `<id>-project` (named
  * `projectName`). A refused send keeps the words in the box with the reason in the error slot.
  */
@@ -325,7 +333,7 @@ export function composer(options: {
   rows?: number;
   maxRows?: number;
   plus?: boolean;
-  project?: { current: string; items: readonly string[]; name?: string };
+  project?: { current: string; items: readonly string[]; name?: string; sub?: string };
   before?: Html;
   send: Html;
   note?: HtmlValue;
@@ -339,16 +347,16 @@ export function composer(options: {
   const value = options.value ?? "";
   const textId = `${options.id}-text`;
   const project = options.project
-    ? html`<button class="k-composer-chip" type="button" data-k-composer-project="${options.id}" aria-haspopup="dialog" aria-label="Project: ${options.project.current}. Change"${options.disabled ? html` disabled` : ""}><span data-k-project-name>${options.project.current}</span>${icon("chevron", true)}</button>\
+    ? html`<button class="k-composer-chip" type="button" data-k-composer-project="${options.id}" aria-haspopup="dialog" aria-label="Project: ${options.project.current}. Change"${options.disabled ? html` disabled` : ""}><span data-k-project-name>${options.project.current}</span>${options.project.sub ? html`<span class="k-chip-sub">${options.project.sub}</span>` : ""}</button>\
 <input type="hidden" id="${options.id}-project" name="${options.project.name ?? "project"}" value="${options.project.current}" data-items="${JSON.stringify(options.project.items)}">`
     : html``;
   const plus = options.plus
     ? html`<button class="k-composer-plus" type="button" data-k-composer-plus="${options.id}" aria-haspopup="dialog" aria-label="Add to your message"${options.disabled ? html` disabled` : ""}>${icon("plus")}</button>`
     : html``;
-  return html`<div class="${cls("k-composer", options.line && "line", options.disabled && "off", value.trim() && "has-text", options.working && "working")}" data-k-composer="${options.id}">\
+  return html`<div class="k-composer-field"><div class="${cls("k-composer", options.line && "line", options.disabled && "off", value.trim() && "has-text", options.working && "working")}" data-k-composer="${options.id}">\
 <label class="k-sr" for="${textId}">${options.label}</label><div class="k-composer-files" data-k-files="${options.id}"></div>\
 <textarea class="k-composer-ta" id="${textId}" name="${options.name}" rows="${options.rows ?? 1}" data-min="${options.rows ?? 1}" data-max="${options.maxRows ?? 8}"${attributes({ placeholder: options.placeholder, disabled: options.disabled === true, "aria-invalid": options.error ? "true" : undefined, "aria-describedby": `${options.id}-err`, ...options.textAttrs })}>${value}</textarea>\
-<div class="k-composer-bar">${plus}${project}${options.before ?? ""}<span class="k-grow"></span>${options.send}</div>\
+<div class="k-composer-bar">${plus}${project}${options.before ?? ""}<span class="k-grow"></span>${options.send}</div></div>\
 ${options.note ? html`<p class="k-note k-composer-note">${options.note}</p>` : ""}<div class="k-composer-err k-err" id="${options.id}-err" role="alert">${options.error ?? ""}</div></div>`;
 }
 

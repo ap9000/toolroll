@@ -57,14 +57,14 @@ Each finding names its rule, the file:line and a suggestion. The suggested token
 - **KBoard**: A list's rows as columns (Needs you · Queued · Running · Finished), hairlines only; on a phone one column at a time with a pager above.
 - **KButton**: Every act a person can take. Ink primary for the screen's one act; outline and ghost for the rest; danger for an irreversible act. (variant: primary|outline|ghost|danger; iconOnly: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|minus|fit|bolt|code|list|board|panel; lead: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|minus|fit|bolt|code|list|board|panel)
 - **KChip**: Status chips: the five words (Needs you, Running, Queued, Finished, Failed), one tone each; a specific ask keeps its group's tone. (tone: |needs|ask|live|done|failed)
-- **KComposer**: The message box: one soft rounded box, auto-growing textarea (rows → 8 lines), + menu, the project as a quiet chip, small controls, and the round send that becomes Stop while the work runs.
+- **KComposer**: The message box: one filled rounded object, auto-growing 17px textarea, a row of filled circles and pills (+, project chip, toggle chips) and the round ink send that becomes Stop.
 - **KCount**: A count pill in tabular figures; ink only for a Needs-you count, muted at zero.
 - **KDisclose**: A disclosure for secondary detail (diagnostics, provenance, exact scope).
 - **KDocHeader**: A reading page: the 760px column (KDoc), a back link, the one h1 and a meta line (KDocHeader).
 - **KDock**: The phone dock: the screen's one primary (the same act its card hides on a phone).
 - **KEmpty**: The one empty state: a sentence and one action.
 - **KFacts**: Facts: a key/value list (task details, a run's record, an audit entry).
-- **KField**: A field: label, the control, one hint line, and the error tied to the control (aria-invalid, aria-describedby). Errors appear next to the control, never as a banner.
+- **KField**: A field in the one field family: dim label above, one filled surface (no outline, 12px radius, textareas auto-grow), hint and error below, tied to the control.
 - **KFilter**: A list's text filter: a search field with its icon that narrows the rows already shown.
 - **KFormRow**: The two-column settings row: label and one muted line | the control; stacks on a phone. (variant: |inline|top|wide)
 - **KIcon**: One 24×24 stroke icon from the kit set, drawn in currentColor. (name: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|minus|fit|bolt|code|home|tasks|flows|agents|projects|settings|pen|arrow|list|board|panel)
@@ -76,7 +76,7 @@ Each finding names its rule, the file:line and a suggestion. The suggested token
 - **KRadios**: Radio cards: one choice from a few, each with a bold label and one muted line.
 - **KRow**: A list row between hairlines under a group heading: chip · title (the whole row is the link) · one muted line · meta · one action in one column.
 - **KSeg**: The segmented track: filters or views of one list (aria-pressed), or as addresses (KLinkSeg, aria-current).
-- **KSelect**: A native select with the kit chevron: 32px, sm 28px in a toolbar, 44px and 16px on a phone.
+- **KSelect**: A native select in the field family with the kit chevron: filled 36px, sm 28px pill, chip a composer pill; 44px and 16px on a phone.
 - **KSettingsShell**: The Settings frame: Overview and the eight groups, a desk breadcrumb, a phone back header, one 760px column.
 - **KSlots**: The approval box: status (chip + heading) · supporting text · actions · terms, and the error slot. The same slots in every state, so nothing moves.
 - **KSteps**: A few named steps on one line (a task's Plan · Approval · Build · Checks · Ready), filled up to where the work is; the current step says why under its name.

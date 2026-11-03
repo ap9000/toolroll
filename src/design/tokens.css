@@ -8,10 +8,16 @@
   --so-attention: var(--so-signal);
   --so-attention-soft: var(--so-signal-soft);
   --so-code-bg: #fafafa;
+  /* Composer: the filled surface of the message box, one step off the page. */
+  --so-composer: #f2f2f2;
+  /* Composer Control: the filled circle and pill chips inside the composer (+, project, toggle chips) and the empty send. */
+  --so-composer-control: #e3e3e3;
   /* Vermilion: failure and irreversible acts. */
   --so-danger: #c4320a;
   --so-danger-soft: #feebe7;
   --so-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  /* Field: the filled surface of a text field, select or secondary text box (the field family: no outline; the label names it, focus draws the ink ring). */
+  --so-field: #ececec;
   /* Field Line: the boundary that identifies a control (fields, outline buttons, switches, radio cards), 3:1 or better on paper. */
   --so-field-line: #8f8f8f;
   --so-font-mono: "Geist Mono", ui-monospace, "SF Mono", "SFMono-Regular", "Menlo", "Consolas", monospace;
@@ -162,8 +168,11 @@
     --so-accent-hover: #ffffff;
     --so-accent-text: #ededed;
     --so-code-bg: #111111;
+    --so-composer: #242424;
+    --so-composer-control: #333333;
     --so-danger: #ff977d;
     --so-danger-soft: rgb(255 151 125 / .12);
+    --so-field: #232323;
     --so-field-line: #6b6b6b;
     --so-ground: #0b0b0b;
     --so-info: #70b8ff;
@@ -210,8 +219,11 @@
   --so-accent-hover: #ffffff;
   --so-accent-text: #ededed;
   --so-code-bg: #111111;
+  --so-composer: #242424;
+  --so-composer-control: #333333;
   --so-danger: #ff977d;
   --so-danger-soft: rgb(255 151 125 / .12);
+  --so-field: #232323;
   --so-field-line: #6b6b6b;
   --so-ground: #0b0b0b;
   --so-info: #70b8ff;

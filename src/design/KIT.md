@@ -25,15 +25,18 @@ The React workspace's scoped preflight skips any element with a `k-` class (`src
 ## Tokens
 
 Colour comes only from `--so-*` tokens. No hex, `rgb()` or new colours in a page. Paper `--so-paper` is every
-surface; frame grey `--so-ground` is the rail only; dividers are 1px `--so-line` hairlines; fields and outline
-buttons use `--so-field-line`; floating edges use `--so-overlay-line`.
+surface; frame grey `--so-ground` is the rail only; dividers are 1px `--so-line` hairlines; text fields are filled
+`--so-field` (see [Fields](#fields)); outline buttons use `--so-field-line`; floating edges use `--so-overlay-line`.
 
 The kit added these System tokens to Signal 1.0.0's (in `src/design/system/tokens`, generated into `tokens.css`):
 
 | Token | Light / dark | For |
 |---|---|---|
 | `--so-needs`, `--so-needs-soft` | the warning amber and its wash | what waits on this person, only |
-| `--so-field-line` | `#8f8f8f` / `#6b6b6b` (3:1 on paper) | the boundary that identifies a control (audit F6) |
+| `--so-field-line` | `#8f8f8f` / `#6b6b6b` (3:1 on paper) | the boundary of an outline button, switch track or radio card (audit F6); never a text field's |
+| `--so-field` | `#ececec` / `#232323` | the filled surface of every text field, select and secondary text box |
+| `--so-composer` | `#f2f2f2` / `#242424` | the composer's filled surface, one step off the page |
+| `--so-composer-control` | `#e3e3e3` / `#333333` | the filled circles and pills inside a composer (+, chips, the empty send) |
 | `--so-overlay-line` | `#b8b8b8` / `#4a4a4a` | the border of a popover, sheet, drawer or menu |
 | `--so-ring` | ink | the 2px `:focus-visible` outline |
 | `--so-scrim` | black 22% / 50% | what a blocking kit overlay dims the page with |
@@ -58,7 +61,9 @@ components still use Signal's shadow tokens; zeroing them waits for the waves th
 | Section heading `.k-sec h3`, `.k-secthead h3` | 600 13px/1.3 |
 | Group heading `.k-grp` | 600 12.5px |
 | Body | 400 13px/1.5; reading paragraphs 14px/1.7, max 66ch |
-| Label, button | 500 13px (`k-btn-sm` 12.5px) |
+| Button | 500 13px (`k-btn-sm` 12.5px) |
+| Field label `.k-label` | 500 12.5px `--so-muted` |
+| Field text | 400 13.5px (16px on a phone); composer 17px |
 | Meta, muted lines | 12–12.5px `--so-muted` |
 | Chip | 500 11.5px |
 
@@ -109,8 +114,9 @@ Server builders are in `src/server/kit.ts`; React components in `src/browser/kit
 | Tabs | `linkTabs` | `KLinkTabs`, `KTabs` | sections of one object; link tabs are addresses |
 | Filters | `segLinks`, `iconSegLinks` | `KSeg`, `KLinkSeg` | views and filters of one list; as addresses when the server filters (List / Board as icons) |
 | Text filter | `filterInput` | `KFilter` | narrows the rows already on the page; site search is ⌘K |
-| Field | `field`, `input`, `textarea` | `KField`, `KInput`, `KTextarea` | the error sits next to the control, never a banner |
-| Select | `select` | `KSelect` | native, with the chevron |
+| Field | `field`, `input`, `textarea` | `KField`, `KInput`, `KTextarea` | the field family (see [Fields](#fields)); the error sits next to the control, never a banner |
+| Select | `select({ chip })` | `KSelect` | native, filled, with the chevron; `chip` is a composer's project pill |
+| Toggle chip | `toggleChip` | — | an on/off choice inside a composer: a filled pill, checkbox role=switch |
 | Switch | `switchInput` | `KSwitch`, `KSwitchInput` | says its state in words |
 | Form row | `formRow(label, hint, control, variant)` | `KFormRow` | `inline`, `top`, `wide` |
 | Radio cards | `radios` | `KRadios` | an item's `tag` (a `Recommended` chip) sits in the card's third column |
@@ -135,7 +141,7 @@ Server builders are in `src/server/kit.ts`; React components in `src/browser/kit
 | Section form | `kitSectionForm` (`settings-kit.ts`) | — | see [Section saves](#section-saves) |
 | Phone dock | `dock(primary)` | `KDock` | the screen's one primary on a phone |
 | Dock's Needs-you button | — (the app shell draws it) | `KDockNeeds` | the one Needs-you count beside the primary; opens the Needs-you list |
-| Composer | `composer`, `sendButton` | `KComposer` | see [Composer](#composer) |
+| Composer | `composer`, `sendButton` | `KComposer` | see [Composer](#composer); `menu` adds + items |
 | Page outside the shell | `outPage`, `outField` | — | sign in, first account, invite, an error; see [Outside the shell](#outside-the-shell) |
 | Guided steps | `checklist` | — | the first run's steps: mark, step and one line, its one action |
 | Ideas | `ideas` | — | words a tap drafts into a composer (`data-k-draft`); a link without script |
@@ -164,20 +170,51 @@ one trailing action). The screen's one primary lives in the dock (`dock`, `KDock
 hidden on a phone when it is marked `docked`. The Settings section nav is hidden, so a settings page links its
 sections from the body.
 
+## Fields
+
+Every place a person types or picks is one field family, server HTML, React and the older pages alike (the older
+pages' bare `input`, `select` and `textarea` take the same look from `console.css`, the workspace's from
+`workspace.css` and the shadcn `Input`, `Textarea` and `Select`):
+
+- **One surface.** The control is one filled `--so-field` surface, radius 12px, no outline at rest (a transparent 1px
+  border keeps its edge in forced colours). Never a box inside a box: a field never sits in another outlined box,
+  and nothing outlined sits inside a field or a composer.
+- **Label above, words below.** A small dim label (500 12.5px `--so-muted`) above; one hint line, then the error
+  (`k-err`), below. The label names the field, so a field at rest needs no outline; never a placeholder instead of a
+  label.
+- **Focus** is the 2px ink ring (`--so-ring`, 3:1 or better in both themes); hover deepens the fill a step.
+- **Sizes.** 36px at a desk (`sm` select 28px, a pill), 44px and 16px text on a phone (no iOS zoom).
+- **Textareas** grow with their words (`field-sizing: content`, to 360px, then scroll); no resize grip.
+- **Selects** are native (they work without script) with the kit's chevron in the same fill.
+- Password fields keep `name="token"`, `autocomplete="current-password"` and every other attribute; only the look
+  changes.
+
 ## Composer
 
-The message box is one soft rounded container (22px radius, hairline `--so-field-line`, no shadow, no inner boxed
-fields). Its textarea grows from `rows` to `maxRows` (8) lines and then scrolls. Focus shows on the box (ink border
-and a faint ink ring), never on the textarea. One bottom row inside it: a small **+** (Attach a file, Mention a task,
-Choose project; only what this box supports), the project as a quiet chip that opens a menu (a bottom sheet on a
-phone), any small controls (`before`), then the **round send**: an arrow up, 34px drawn and 44px to touch on a
-phone, muted while the box is empty, ink once it has text. `gate` (a message box) marks it `aria-disabled` while
-empty; a form's send stays pressable so an empty press says what is missing next to the box. With Stop it carries
-its twin: the box's `working` class swaps them and the icon morphs (160ms, none under reduced motion). No "Enter
-sends" hint. On a phone the text is 16px; with the keyboard up (`visualViewport` → `html.kb-open`, `--kb`) a
-docked composer (`k-composer-dock`) rides just above it and the dock steps aside. A refused send keeps the words in
-the box with the reason under it (`composerError`). A note can follow the box's switch without script (`k-on-note`,
-`k-off-note`). A form whose send the phone dock carries (`k-dock-send`, as New task) hides the round send on a phone.
+The primary "write something" box (chat, Home ask, New task, New flow, an agent's note, a task's message box): one
+filled rounded object (`--so-composer`, 28px radius, 26px on a phone, no outline, no shadow, no inner boxed
+fields). Its textarea is 17px and grows from `rows` to `maxRows` (8) lines and then scrolls. Focus shows on the box
+(its edge turns ink-grey, 3:1 or better on the page), never on the textarea. One bottom row inside it, all filled
+`--so-composer-control` shapes, no outlines: a round **+** (Attach a file, Mention a task, Choose project, then the
+caller's `menu` items, as a conversation's settings; only what this box supports), the **chip** (a pill: the primary
+word, then a dimmer secondary word, as "payments-api  Lead"; it opens the project menu, a bottom sheet on a phone),
+any toggle chips (`toggleChip`, as Read code before planning) or small acts (a pill), then the **round send**: an
+arrow up, 36px (44px on a phone), solid ink with a paper arrow once the box has text, the muted control fill while
+empty. Never amber. `gate` (a message box) marks it `aria-disabled` while empty; a form's send stays pressable so an
+empty press says what is missing next to the box. With Stop it carries its twin: the box's `working` class swaps
+them and the icon morphs (160ms, none under reduced motion). No "Enter sends" hint, no mic without a real feature
+behind it. A project chosen without script is a native select drawn as the chip (`select({ chip: true })`).
+
+The box's note and its refusal sit **under** it in small dim words (all inside `.k-composer-field`), never inside it:
+a toggle chip's longer words follow it there without script (`k-on-note`, `k-off-note`). A refused send keeps the
+words in the box with the reason under it (`composerError`). On a phone every control is a filled 44px target; with
+the keyboard up (`visualViewport` → `html.kb-open`, `--kb`) a docked composer (`k-composer-dock`) rides just above it
+and the dock steps aside. A form whose send the phone dock carries (`k-dock-send`, as New task) hides the round send
+on a phone.
+
+A conversation's settings (crew updates, its details, End the conversation) open from its **+** menu in a kit
+popover (a sheet on a phone), so the composer stays one object; the page without script still draws them under its
+form.
 
 ## Outside the shell
 
