@@ -913,8 +913,8 @@ details.result-request-open > summary::marker { content: ""; }
 .so-thread-entry { padding: 9px 0; border-bottom: 1px solid var(--so-line); }
 .so-thread-line { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--so-muted); }
 .so-thread-line b { color: var(--so-ink); font-weight: 500; }
-.so-thread-text { margin: 4px 0 0 82px; font-size: 13px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
-.so-thread-quote { padding: 8px 12px; border-left: 2px solid var(--so-field-line); background: var(--so-raised); border-radius: 0 6px 6px 0; }
+.so-thread-text { margin: var(--so-space-xs) 0 0 82px; font-size: 13px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
+.so-thread-quote { padding: var(--so-space-sm) var(--so-space-md); border-left: 2px solid var(--so-field-line); background: var(--so-raised); border-radius: 0 var(--so-radius-sm) var(--so-radius-sm) 0; }
 .so-inline-form { display: inline; }
 .so-task-evidence { display: block; font-size: 12.5px; }
 .so-task-tools { flex: none; flex-wrap: nowrap; gap: 2px; }
@@ -926,10 +926,10 @@ details.result-request-open > summary::marker { content: ""; }
 
 /* The result inside a task page (views/result-view.tsx): hairlines, no sheets or shadows (src/design/KIT.md). */
 .so-result-panel { display: grid; gap: 0; }
-.so-result-body { padding: 14px 0 4px; }
+.so-result-body { padding: 14px 0 var(--so-space-xs); }
 .so-result-request-box { border-top: 1px solid var(--so-line); padding-top: 14px; display: grid; gap: 10px; scroll-margin-top: 16px; }
 .so-result-request-box.is-quiet:not(:has(details[open])) { display: none; }
-.so-result-decision [data-result-acts] { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.so-result-decision [data-result-acts] { display: flex; flex-wrap: wrap; align-items: center; gap: var(--so-space-sm); }
 .so-result-decision [data-accept-with-reason] { display: grid; gap: 6px; max-width: 360px; }
 /* Server cards a kit page still places (holds, stop details, a scope ledger): one hairline box, never a raised sheet. */
 .so-workspace--kit .k-doc :where(.card) { box-shadow: none; border: 1px solid var(--so-line); border-radius: var(--so-radius-card); background: var(--so-paper); }

@@ -28,7 +28,10 @@
         "check",
         "alert",
         "more",
-        "file"
+        "file",
+        "list",
+        "board",
+        "panel"
       ],
       "default": "plus"
     },
