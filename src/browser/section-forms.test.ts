@@ -15,6 +15,7 @@ import { createRoot } from "react-dom/client";
 import { GuardedHtml } from "./guarded-html.js";
 import { alertsGroup, approvalGroup, pushScriptOf, type SettingsFacts } from "../settings-groups-ui.js";
 import { installKitBehavior } from "./kit/behavior.js";
+import { kitSectionForm } from "../settings-kit.js";
 
 const FACTS: SettingsFacts = {
   name: "alex", approver: true, operator: true, browser: true, installation: true, said: null, problem: null, theme: "system", accent: "#171717", version: null,
@@ -164,5 +165,41 @@ test("#3: push enrolment posts exactly once, after the password and the subscrip
   await tick(20);
   expect(posted).toHaveLength(1);
   expect(posted[0]).toMatchObject({ endpoint: "https://push.example/1", p256dh: "a-b_c", auth: "d-e_f", token: "pw" });
+  vi.unstubAllGlobals();
+});
+
+test("a form with fields named action and id posts to its own action and keeps its own id (they never shadow the form's)", async () => {
+  render(withFormToken("c".repeat(64), () => htmlString(kitSectionForm({ proof: "email", action: "/settings/email", id: "shadowed", hidden: { action: "save", id: "7" }, body: html`<input name="host" value="h">` }))));
+  // A real browser's named form properties (happy-dom doesn't draw them): the fields stand in for form.action and form.id.
+  const shadow = () => { const it = form("shadowed"); for (const name of ["action", "id"]) Object.defineProperty(it, name, { configurable: true, get: () => it.querySelector(`input[name="${name}"]`) }); };
+  shadow();
+  const fetched = vi.fn(async (_to: string) => ({ url: `${location.origin}/settings/alerts?said=x`, redirected: true, ok: true, status: 200, text: async () => "" }));
+  vi.stubGlobal("fetch", fetched);
+  save("shadowed");
+  await tick();
+  expect(fetched).toHaveBeenCalledTimes(1);
+  expect(new URL(String(fetched.mock.calls[0]![0])).pathname).toBe("/settings/email");
+  expect(assigned).toEqual(["/settings/alerts?said=x"]);
+  // Refused: the refusal slot is the form's own, named by its id attribute.
+  render(withFormToken("c".repeat(64), () => htmlString(kitSectionForm({ proof: "email", action: "/settings/email", id: "shadowed", hidden: { action: "save", id: "7" }, body: html`<input name="host" value="h">` }))));
+  shadow();
+  vi.stubGlobal("fetch", vi.fn(async () => ({ url: `${location.origin}/settings/email`, redirected: false, ok: false, status: 400, text: async () => "<p role=alert>No.</p>" })));
+  save("shadowed");
+  await tick();
+  expect(document.getElementById("shadowed-err")!.textContent).toContain("No.");
+  vi.unstubAllGlobals();
+});
+
+test("a save that lands on the page already open (only its #anchor differs) loads the page again instead of only scrolling", async () => {
+  window.history.replaceState(null, "", "/settings/alerts");
+  render(alerts());
+  pick('#reach-form input[name="mode"][value="all"]');
+  vi.stubGlobal("fetch", vi.fn(async () => ({ url: `${location.origin}/settings/alerts`, redirected: true, ok: true, status: 200, text: async () => "" })));
+  save("reach-form");
+  await tick();
+  expect(assigned).toEqual([]);
+  expect(reloads).toBe(1);
+  expect(`${location.pathname}${location.hash}`).toBe("/settings/alerts#notifications");
+  window.history.replaceState(null, "", "/");
   vi.unstubAllGlobals();
 });

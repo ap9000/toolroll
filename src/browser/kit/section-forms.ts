@@ -36,6 +36,9 @@ type SForm = HTMLFormElement & {
   kSubmitter?: HTMLElement | null;
 };
 const FORM = "form.k-sform";
+/** A form's own id and action, read from its attributes: a field named "id" or "action" (an invite's id, a settings
+ * act) shadows the form's properties of that name. */
+const idOf = (form: HTMLFormElement): string => HTMLFormElement.prototype.getAttribute.call(form, "id") ?? "";
 const SVG = "http://www.w3.org/2000/svg";
 
 const proofOf = (form: HTMLFormElement): HTMLElement | null => form.querySelector<HTMLElement>("[data-k-proof]");
@@ -222,7 +225,7 @@ function refused(form: SForm, message: string): void {
     words.textContent = message;
     notice.append(words);
     slot.replaceChildren(notice);
-    if (!slot.id) slot.id = `${form.id || "k-sform"}-err`;
+    if (!slot.id) slot.id = `${idOf(form) || "k-sform"}-err`;
     saveOf(form)?.setAttribute("aria-describedby", slot.id);
     (form.querySelector(".k-ssave") ?? slot).scrollIntoView({ block: "center", behavior: "instant" as ScrollBehavior });
   }
@@ -251,21 +254,23 @@ const otherChanged = (form: HTMLFormElement): SForm[] => Array.from(document.que
 function unconfirmedHref(form: HTMLFormElement): string {
   const here = new URL(window.location.href);
   for (const key of ["said", "problem", "unconfirmed"]) here.searchParams.delete(key);
-  here.searchParams.set("unconfirmed", form.id);
+  here.searchParams.set("unconfirmed", idOf(form));
   const anchor = form.closest("section[id]")?.id;
   return `${here.pathname}${here.search}${anchor ? `#${anchor}` : ""}`;
 }
 
-/** Where the post goes: the pressed button's own formaction (Check again, Remove), else the form's. */
+/** Where the post goes: the pressed button's own formaction (Check again, Remove), else the form's. Read from the
+ * attribute: a form with a field named "action" (many settings forms post one) shadows `form.action` with that field. */
 const actionOf = (form: HTMLFormElement, submitter: HTMLElement | null): string =>
-  submitter instanceof HTMLButtonElement && submitter.form === form && submitter.hasAttribute("formaction") ? submitter.formAction : form.action;
+  submitter instanceof HTMLButtonElement && submitter.form === form && submitter.hasAttribute("formaction") ? submitter.formAction
+    : new URL(HTMLFormElement.prototype.getAttribute.call(form, "action") ?? "", window.location.href).href;
 
 /** The post may have landed but its answer never arrived (a network failure, a server error, the page after the
  * redirect failing, a sign-in page): never "nothing was saved". The form stays pending and the same page opens again
  * with ?unconfirmed=<form id>, where the server says so in this section and shows what is stored now. */
 function unconfirmed(form: SForm): void {
   leaving = true;
-  window.location.assign(form.id ? unconfirmedHref(form) : window.location.href);
+  window.location.assign(idOf(form) ? unconfirmedHref(form) : window.location.href);
 }
 
 async function post(form: SForm, snapshot: readonly [string, string][], proof: readonly [string, string][], submitter: HTMLElement | null): Promise<void> {
@@ -297,8 +302,14 @@ async function post(form: SForm, snapshot: readonly [string, string][], proof: r
   const here = landed.pathname === window.location.pathname;
   const anchor = form.closest("section[id]")?.id;
   leaving = true;
-  if (response.redirected) window.location.assign(`${landed.pathname}${landed.search}${here && anchor ? `#${anchor}` : ""}`);
-  else window.location.reload();
+  const target = `${landed.pathname}${landed.search}${here && anchor ? `#${anchor}` : ""}`;
+  // Opening the page we're on with only a different #anchor would just scroll, showing what was there before the
+  // save: put the anchor in place and load the page again instead.
+  if (response.redirected && `${landed.pathname}${landed.search}` !== `${window.location.pathname}${window.location.search}`) window.location.assign(target);
+  else {
+    if (response.redirected) window.history.replaceState(window.history.state, "", target);
+    window.location.reload();
+  }
 }
 
 function submitNative(form: SForm, submitter: HTMLElement | null): void {
@@ -346,7 +357,7 @@ const proofEntries = (proof: HTMLElement | null): [string, string][] =>
 function openProof(form: SForm, snapshot: [string, string][], submitter: HTMLElement | null): void {
   const proof = proofOf(form)!;
   const home = proof.nextElementSibling;
-  const id = `${form.id || "k-sform"}-pop`;
+  const id = `${idOf(form) || "k-sform"}-pop`;
   const panel = document.createElement("div");
   panel.className = "k-pop";
   panel.id = id;
@@ -415,7 +426,7 @@ function save(form: SForm, submitter: HTMLElement | null): void {
 /** Other sections have unsaved changes and this save opens a new page: say which, in place; Cancel posts nothing. */
 function discardFirst(form: SForm, others: readonly SForm[], submitter: HTMLElement | null): void {
   const names = [...new Set(others.map(sectionName))];
-  const id = `${form.id || "k-sform"}-discard`;
+  const id = `${idOf(form) || "k-sform"}-discard`;
   const panel = document.createElement("div");
   panel.className = "k-pop";
   panel.id = id;
