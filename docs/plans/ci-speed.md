@@ -41,7 +41,9 @@ PR run 41634514443 (ui-waves-bcd), from the jobs API and the shards' uploaded Vi
    `macos_lane: all` and still runs every file on macOS. `src/ci-shards.test.ts` pins every Seatbelt and OS-fence
    native attack and the key Mac files into the lane, and fails on a stale listed path.
 4. **Scripted journeys on pull requests.** `journeys.yml` runs `app-e2e.mjs` and `flows-e2e.mjs` with
-   `--journeys scripted` (no model calls), their groups side by side, each group its own world. Advisory: its checks
+   `--journeys scripted` (no model calls), their groups side by side, each group its own world: every group with
+   scripted journeys of its own, the same ones the release check runs on a Mac (mail's GreenMail in the runner's Docker,
+   onboarding through util-linux's `script`). Advisory: its checks
    are in `ADVISORY_PR_CHECKS` by name and workflow, so a release neither waits for them nor fails on them; the release
    check still runs every journey.
 5. **Superseded runs.** `ci.yml` and `journeys.yml` cancel an ordinary pull request's older run when a newer push

@@ -65,6 +65,10 @@ if (docker) {
   mkdirSync(certDir, { recursive: true });
   execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(certDir, "key.pem"), "-out", join(certDir, "cert.pem"), "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
   execFileSync("openssl", ["pkcs12", "-export", "-in", join(certDir, "cert.pem"), "-inkey", join(certDir, "key.pem"), "-out", join(certDir, "keystore.p12"), "-passout", "pass:e2e-keystore", "-name", "greenmail"], { stdio: "ignore" });
+  // openssl writes the keystore for its owner only; GreenMail reads it as its own user (uid 999). Docker Desktop's file
+  // sharing hides that on a Mac; on Linux the bind mount keeps the mode, and without this IMAPS never starts. It is
+  // this run's throwaway certificate.
+  chmodSync(join(certDir, "keystore.p12"), 0o644);
   mailCert = join(certDir, "cert.pem");
 }
 
@@ -1186,7 +1190,12 @@ async function mailServer() {
     throw new Skip("the mail server container couldn't start (is port 993 or 3025 taken?)");
   }
   const smtp = nodemailer.createTransport({ host: "127.0.0.1", port: 3025, secure: false, ignoreTLS: true });
-  const stop = () => { smtp.close(); execFileSync("docker", ["rm", "-f", name], { stdio: "ignore", timeout: 60_000, killSignal: "SIGKILL" }); };
+  const stop = () => {
+    smtp.close();
+    // What the server said, kept with the run's logs (a TLS keystore it couldn't read shows only here).
+    try { writeFileSync(join(w.out, `greenmail-${name}.log`), execFileSync("docker", ["logs", name], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024 })); } catch { /* the logs are only a help */ }
+    execFileSync("docker", ["rm", "-f", name], { stdio: "ignore", timeout: 60_000, killSignal: "SIGKILL" });
+  };
   try { await until("the mail server", async () => { await smtp.verify(); return true; }, { timeoutMs: 60_000, everyMs: 2000 }); } catch (error) { stop(); throw error; }
   /** Everything in someone's inbox (GreenMail signs a person in with their address as the password). */
   const inbox = async user => {
@@ -2309,6 +2318,14 @@ async function freshInstall(name, { claude, crewModels = false }) {
 }
 const shellWord = text => `'${String(text).replace(/'/g, "'\\''")}'`;
 /**
+ * `script` running `/bin/sh -c inner` at a pseudo-terminal, quietly, its typescript thrown away. BSD's (macOS) takes the
+ * command as words after the file; util-linux's (Linux) takes one shell command with -c, run by $SHELL — unset in a
+ * fresh install's environment, so /bin/sh — and -e passes on its exit status. Either way /bin/sh runs `inner` directly.
+ */
+const scriptCommand = inner => process.platform === "darwin" || process.platform.endsWith("bsd")
+  ? `script -q /dev/null /bin/sh -c ${shellWord(inner)}`
+  : `script -qec ${shellWord(inner)} /dev/null`;
+/**
  * `toolroll up` at a real terminal, as a person starts it: `script` gives it one (a pseudo-terminal, and a session and
  * so a process group of its own). The shell that starts `script` exits at once, so nothing of this run is above `up`:
  * it walks the programs above it to tell whether a coding agent started it (then it opens no browser), and with this
@@ -2320,7 +2337,7 @@ async function startUp(install, { name, env, log, opened, upPid, go }) {
   for (const one of [opened, upPid, go, log]) rmSync(one, { force: true });
   const up = [process.execPath, w.bin, "up", "--port", String(install.port), "--for", String(40 * 60_000)].map(shellWord).join(" ");
   const inner = `echo $$ > ${shellWord(upPid)}; while [ ! -e ${shellWord(go)} ]; do sleep 0.05; done; exec ${up}`;
-  const shell = spawnOwned(`script for toolroll up (${name})`, "/bin/sh", ["-c", `cd ${shellWord(install.shop)} && exec script -q /dev/null /bin/sh -c ${shellWord(inner)} < /dev/null > ${shellWord(log)} 2>&1 &`], { stdio: "ignore", env });
+  const shell = spawnOwned(`script for toolroll up (${name})`, "/bin/sh", ["-c", `cd ${shellWord(install.shop)} && exec ${scriptCommand(inner)} < /dev/null > ${shellWord(log)} 2>&1 &`], { stdio: "ignore", env });
   install.groups.push(shell.pid);
   await new Promise(done => { if (shell.exitCode !== null) done(); else shell.once("exit", done); });
   const running = () => groupAlive(shell.pid);
