@@ -639,6 +639,8 @@ const KIT_VIEWS = new Set(["agents", "home", "search"]);
 export function isKitPage(workspace: BrowserWorkspace): boolean {
   if (workspace.team) return false;
   if (workspace.view != null) return KIT_VIEWS.has(workspace.view.kind);
+  // The lead chat draws its own top bar (lead-chat.tsx); a result or task opened beside it keeps the older frame.
+  if (workspace.conversation && new URL(workspace.path, window.location.origin).pathname === "/chat" && !workspace.focus && !workspace.result) return true;
   return !workspace.conversation && (workspace.pageHtml ?? "").includes("data-kit-page");
 }
 

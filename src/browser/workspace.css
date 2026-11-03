@@ -43,6 +43,8 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-workspace :where(input, textarea, select), .so-navigation-dialog :where(input, textarea, select) { font: inherit; caret-color: var(--so-signal); }
 .so-workspace ::selection, .so-navigation-dialog ::selection { background: var(--so-selection); color: var(--so-ink); }
 .so-workspace :focus-visible, .so-navigation-dialog :focus-visible { outline: 2px solid var(--so-signal); outline-offset: 2px; }
+/* A kit composer shows focus on its box, never on its textarea (src/design/KIT.md "Composer"). */
+.so-workspace .k-composer-ta:focus-visible { outline: none; }
 .so-workspace :where([tabindex="-1"]):focus { outline: none; }
 .so-workspace * { scrollbar-width: thin; scrollbar-color: var(--so-scroll) transparent; }
 .so-workspace ::-webkit-scrollbar { height: 6px; width: 6px; }
