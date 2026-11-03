@@ -11,7 +11,7 @@
   /* Composer: the filled surface of the message box, one step off the page. */
   --so-composer: #f2f2f2;
   /* Composer Control: the filled circle and pill chips inside the composer (+, project, toggle chips) and the empty send. */
-  --so-composer-control: #e3e3e3;
+  --so-composer-control: #dcdcdc;
   /* Vermilion: failure and irreversible acts. */
   --so-danger: #c4320a;
   --so-danger-soft: #feebe7;

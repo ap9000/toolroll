@@ -753,11 +753,11 @@
       "$value": {
         "colorSpace": "srgb",
         "components": [
-          0.8902,
-          0.8902,
-          0.8902
+          0.8627,
+          0.8627,
+          0.8627
         ],
-        "hex": "#e3e3e3"
+        "hex": "#dcdcdc"
       },
       "$description": "Composer Control: the filled circle and pill chips inside the composer (+, project, toggle chips) and the empty send.",
       "$extensions": {

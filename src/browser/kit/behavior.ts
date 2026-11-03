@@ -290,6 +290,16 @@ let installed = false;
 /** A busy button's own face, put back when the page returns (Back). */
 const savedFaces = new WeakMap<HTMLButtonElement, Node[]>();
 
+/** How focus arrived (KIT.md "Composer"): Tab sets html.k-kbd and a pointer clears it, so the composer draws its
+ * ring only for keyboard focus (a tap's cue is the caret and the fill). html.k-js says this runs; without it the ring
+ * always shows. */
+function trackFocusModality(): void {
+  const root = document.documentElement;
+  root.classList.add("k-js");
+  document.addEventListener("keydown", event => { if (event.key === "Tab" || event.key === "F6") root.classList.add("k-kbd"); }, true);
+  document.addEventListener("pointerdown", () => { root.classList.remove("k-kbd"); }, true);
+}
+
 export function installKitBehavior(): void {
   if (installed || typeof document === "undefined") return;
   installed = true;
@@ -360,6 +370,7 @@ export function installKitBehavior(): void {
     }
   });
   document.addEventListener("keydown", trapTab, true);
+  trackFocusModality();
   const syncAll = (): void => { releaseRemoved(); for (const textarea of document.querySelectorAll<HTMLTextAreaElement>(".k-composer-ta")) composerSync(textarea); };
   window.addEventListener("standing-orders:workspace-rendered", syncAll);
   window.visualViewport?.addEventListener("resize", trackKeyboard);

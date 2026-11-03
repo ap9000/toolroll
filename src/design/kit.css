@@ -324,8 +324,12 @@
    of filled circles and pills inside; its note and refusal sit under it, outside the box ---------- */
 .k-composer-field { display: grid; gap: 6px; min-width: 0; }
 .k-composer { --c-r: 28px; box-sizing: border-box; border: 1px solid transparent; border-radius: var(--c-r); background: var(--so-composer); display: grid; padding: 8px 10px 10px; transition: border-color var(--m-quick) var(--m-ease), background-color var(--m-quick) var(--m-ease); }
-/* Focus: the edge turns ink-grey (3:1 or better on the page in both themes); the textarea draws no ring of its own. */
-.k-composer:focus-within { border-color: color-mix(in srgb, var(--so-ink) 50%, var(--so-composer)); }
+/* Focus: the fill lifts a step (a tap's cue is that and the caret); keyboard focus also draws the 2px ink ring, 3:1 or
+   better in both themes (html.k-kbd from the kit behaviour; without script the ring always shows). The textarea draws
+   no ring of its own. */
+.k-composer { outline: 2px solid transparent; outline-offset: 2px; }
+.k-composer:focus-within { background: color-mix(in srgb, var(--so-composer) 97%, var(--so-ink)); }
+html:not(.k-js) .k-composer:focus-within, html.k-kbd .k-composer:focus-within { outline-color: var(--so-ring); }
 .k-composer.off { background: var(--so-raised); color: var(--so-muted); }
 .k-composer-ta.k-composer-ta { box-sizing: border-box; width: 100%; min-height: 44px; margin: 0; padding: 10px 10px 8px; border: 0; border-radius: 0; outline: none; resize: none; background: transparent; box-shadow: none; color: var(--so-ink); font: 400 17px/1.5 var(--so-font-sans); letter-spacing: -0.005em; overflow-y: hidden; scrollbar-width: thin; }
 .k-composer-ta::placeholder { color: var(--so-muted); opacity: 1; }
@@ -453,6 +457,7 @@
   .k-backlink:hover { color: var(--so-ink); }
   .k-menu > button:hover, .k-menu > a:hover { background: var(--so-soft); }
   .k-composer-plus:hover, .k-composer-chip:hover, .k-tchip:hover { background: color-mix(in srgb, var(--so-composer-control) 88%, var(--so-ink)); }
+  .k-dock-needs:hover { background: color-mix(in srgb, var(--so-composer-control) 88%, var(--so-ink)); }
   .k-input:hover, .k-textarea:hover, .k-sel:hover { background: color-mix(in srgb, var(--so-field) 94%, var(--so-ink)); }
   .k-selw-chip .k-sel:hover { background: color-mix(in srgb, var(--so-composer-control) 88%, var(--so-ink)); }
   .k-nav:hover { background: var(--so-nav-hover); color: var(--so-ink); }
@@ -465,7 +470,7 @@
 /* ---------- Phone dock: the Needs-you button and the screen's one primary ---------- */
 .k-dock { display: none; }
 /* The Needs-you button (the app shell's dock): a dot, the words, the ink count, and which projects it covers. */
-.k-dock-needs { display: grid; align-content: center; gap: 1px; box-sizing: border-box; width: 136px; min-height: 48px; margin: 0; padding: 0 12px; border-radius: 8px; border: 1px solid var(--so-field-line); background: var(--so-paper); color: var(--so-ink); text-align: left; white-space: nowrap; cursor: pointer; box-shadow: none; }
+.k-dock-needs { display: grid; align-content: center; gap: 1px; box-sizing: border-box; width: 136px; min-height: 48px; margin: 0; padding: 0 14px; border-radius: 14px; border: 1px solid transparent; background: var(--so-composer-control); color: var(--so-ink); text-align: left; white-space: nowrap; cursor: pointer; box-shadow: none; }
 .k-dock-needs-l { display: inline-flex; align-items: center; gap: 7px; font: 500 14px/1.2 var(--so-font-sans); }
 .k-dock-needs-s { overflow: hidden; text-overflow: ellipsis; font-size: 11.5px; color: var(--so-muted); padding-left: 14px; }
 .k-dock-needs:focus-visible { outline: 2px solid var(--so-ring); outline-offset: 2px; }
@@ -564,6 +569,9 @@
   .k-dock { display: flex; gap: 8px; align-items: stretch; position: fixed; left: 0; right: 0; bottom: 0; z-index: 12; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); background: var(--so-paper); border-top: 1px solid var(--so-line); }
   .k-dock-primary { flex: 1; display: flex; }
   .k-dock-primary .k-btn { width: 100%; }
+  /* The dock is filled controls only: a secondary act there is a filled control, never an outlined box. */
+  .k-dock .k-btn-outline { border-color: transparent; background: var(--so-composer-control); }
+  .k-dock .k-btn { min-height: 48px; border-radius: 14px; }
 }
 @media (min-width: 761px) { .k-phone-only { display: none !important; } }
 

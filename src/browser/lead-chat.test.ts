@@ -206,3 +206,16 @@ test("helpers: the question a reply answers, and a pill's words", () => {
   expect(pillWords("Make a flow for ")).toBe("Make a flow for…");
   expect(pillWords("What needs me?")).toBe("What needs me?");
 });
+
+test("the composer's ring is for keyboard focus only: Tab marks it, a pointer clears it", async () => {
+  await mount(workspace());
+  const root = document.documentElement;
+  expect(root.classList.contains("k-js")).toBe(true);
+  await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })));
+  expect(root.classList.contains("k-kbd")).toBe(true);
+  await act(async () => document.dispatchEvent(new Event("pointerdown", { bubbles: true })));
+  expect(root.classList.contains("k-kbd")).toBe(false);
+  // Typing in the box never turns the ring on.
+  await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })));
+  expect(root.classList.contains("k-kbd")).toBe(false);
+});

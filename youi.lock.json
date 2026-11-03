@@ -2,8 +2,8 @@
   "schema": "youi.lock/v1",
   "system": "toolroll",
   "systemVersion": "1.0.0",
-  "sourceCommit": "0b34f56134784d4e27d34ac8046f3976a2f2dc91",
-  "syncedAt": "2026-11-03T20:08:41.841Z",
+  "sourceCommit": "c5772e27b602d779d94f73953290621e0ae6c52d",
+  "syncedAt": "2026-11-03T20:23:13.546Z",
   "files": {
     ".agents/skills/youiyoux/SKILL.md": {
       "kind": "generated",
@@ -11,7 +11,7 @@
     },
     "src/design/SYSTEM.md": {
       "kind": "generated",
-      "sha256": "183625bb51fda949cf65bdfb23258f4a4ef6fc0e5aada0ef2296940a6a6a8d2c"
+      "sha256": "d398b4470d21a0624ddb39fdfd7ea60f6381ba18ccf07cb1c14a40907f5ffcde"
     },
     "src/design/theme.css": {
       "kind": "generated",
@@ -19,7 +19,7 @@
     },
     "src/design/tokens.css": {
       "kind": "generated",
-      "sha256": "00fc0a8864012932865841b3047c8d663727f172b64aade5e2f8bf8cae63bc20"
+      "sha256": "a588ec08a04bc1863cb6c0a0095595fedf7efe0b586b655a1d5f75928bf8ac7b"
     },
     "youi-rules/color.no-raw-color.yml": {
       "kind": "generated",

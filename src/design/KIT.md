@@ -36,7 +36,7 @@ The kit added these System tokens to Signal 1.0.0's (in `src/design/system/token
 | `--so-field-line` | `#8f8f8f` / `#6b6b6b` (3:1 on paper) | the boundary of an outline button, switch track or radio card (audit F6); never a text field's |
 | `--so-field` | `#ececec` / `#232323` | the filled surface of every text field, select and secondary text box |
 | `--so-composer` | `#f2f2f2` / `#242424` | the composer's filled surface, one step off the page |
-| `--so-composer-control` | `#e3e3e3` / `#333333` | the filled circles and pills inside a composer (+, chips, the empty send) |
+| `--so-composer-control` | `#dcdcdc` / `#333333` | the filled circles and pills inside a composer (+, chips, the empty send) |
 | `--so-overlay-line` | `#b8b8b8` / `#4a4a4a` | the border of a popover, sheet, drawer or menu |
 | `--so-ring` | ink | the 2px `:focus-visible` outline |
 | `--so-scrim` | black 22% / 50% | what a blocking kit overlay dims the page with |
@@ -166,7 +166,9 @@ the phone header, then `doc(docHeader(…), …)`.
 The console's one breakpoint (the prototype drew at 640px; the app has always switched at 760px, and two
 breakpoints left controls at 28–32px in between, audit B M4). Every standalone kit control is 44px; every field
 has 16px text; no horizontal page scroll at 390px. The top bar becomes the phone header (back or menu · title ·
-one trailing action). The screen's one primary lives in the dock (`dock`, `KDock`); the card's copy of it is
+one trailing action). The screen's one primary lives in the dock (`dock`, `KDock`), beside the Needs-you button;
+the dock holds filled controls only (the Needs-you button and any secondary act are `--so-composer-control` fills,
+never outlined boxes; the amber dot is its one accent); the card's copy of it is
 hidden on a phone when it is marked `docked`. The Settings section nav is hidden, so a settings page links its
 sections from the body.
 
@@ -193,8 +195,10 @@ pages' bare `input`, `select` and `textarea` take the same look from `console.cs
 
 The primary "write something" box (chat, Home ask, New task, New flow, an agent's note, a task's message box): one
 filled rounded object (`--so-composer`, 28px radius, 26px on a phone, no outline, no shadow, no inner boxed
-fields). Its textarea is 17px and grows from `rows` to `maxRows` (8) lines and then scrolls. Focus shows on the box
-(its edge turns ink-grey, 3:1 or better on the page), never on the textarea. One bottom row inside it, all filled
+fields). Its textarea is 17px and grows from `rows` to `maxRows` (8) lines and then scrolls. Focus shows on the box,
+never on the textarea: its fill lifts a step (with the caret, that is a tap's or a click's cue), and keyboard focus
+also draws the 2px ink ring (3:1 or better). The kit behaviour tells them apart (Tab sets `html.k-kbd`, a pointer
+clears it; `html.k-js` says it runs); without script the ring always shows. One bottom row inside it, all filled
 `--so-composer-control` shapes, no outlines: a round **+** (Attach a file, Mention a task, Choose project, then the
 caller's `menu` items, as a conversation's settings; only what this box supports), the **chip** (a pill: the primary
 word, then a dimmer secondary word, as "payments-api  Lead"; it opens the project menu, a bottom sheet on a phone),
