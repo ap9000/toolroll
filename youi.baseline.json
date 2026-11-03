@@ -1,26 +1,26 @@
 {
   "schema": "youi.baseline/v1",
   "project": "toolroll",
-  "recordedAt": "2026-11-03T06:25:17.164Z",
+  "recordedAt": "2026-11-03T09:25:46.085Z",
   "identity": {
     "tool": "youi-scanner/0.1.0",
     "system": {
       "id": "toolroll",
       "version": "1.0.0"
     },
-    "definitions": "d8656572f9c1",
+    "definitions": "d44f573d8c67",
     "design": {
-      "commit": "572266ace6dd48d77c061327a67707e4adeb1685",
-      "dirty": true
+      "commit": "c71521810bcd4841358e1422021ac76e2b5d1434",
+      "dirty": false
     },
     "project": {
-      "commit": "572266ace6dd48d77c061327a67707e4adeb1685",
-      "dirty": true
+      "commit": "c71521810bcd4841358e1422021ac76e2b5d1434",
+      "dirty": false
     }
   },
   "totals": {
-    "errors": 75,
-    "warnings": 119
+    "errors": 65,
+    "warnings": 115
   },
   "entries": [
     {
@@ -829,110 +829,6 @@
         64,
         84,
         90
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/color.no-raw-color",
-      "file": "src/browser/views/settings-view.tsx",
-      "text": "#000",
-      "severity": "error",
-      "count": 1,
-      "lines": [
-        87
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/color.no-raw-color",
-      "file": "src/browser/views/settings-view.tsx",
-      "text": "#00f",
-      "severity": "error",
-      "count": 1,
-      "lines": [
-        128
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/color.no-raw-color",
-      "file": "src/browser/views/settings-view.tsx",
-      "text": "#0f0",
-      "severity": "error",
-      "count": 1,
-      "lines": [
-        128
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/color.no-raw-color",
-      "file": "src/browser/views/settings-view.tsx",
-      "text": "#0ff",
-      "severity": "error",
-      "count": 1,
-      "lines": [
-        128
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/color.no-raw-color",
-      "file": "src/browser/views/settings-view.tsx",
-      "text": "#f00",
-      "severity": "error",
-      "count": 2,
-      "lines": [
-        128,
-        128
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/color.no-raw-color",
-      "file": "src/browser/views/settings-view.tsx",
-      "text": "#f0f",
-      "severity": "error",
-      "count": 1,
-      "lines": [
-        128
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/color.no-raw-color",
-      "file": "src/browser/views/settings-view.tsx",
-      "text": "#ff0",
-      "severity": "error",
-      "count": 1,
-      "lines": [
-        128
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/color.no-raw-color",
-      "file": "src/browser/views/settings-view.tsx",
-      "text": "#fff",
-      "severity": "error",
-      "count": 1,
-      "lines": [
-        87
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/color.no-raw-color",
-      "file": "src/browser/views/settings-view.tsx",
-      "text": "hsl(${hsv.h} 100% 50%)",
-      "severity": "error",
-      "count": 1,
-      "lines": [
-        87
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/components.no-native-controls",
-      "file": "src/browser/views/settings-view.tsx",
-      "text": "<button>",
-      "severity": "warn",
-      "count": 4,
-      "lines": [
-        51,
-        148,
-        274,
-        461
       ]
     },
     {
