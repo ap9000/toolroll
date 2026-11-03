@@ -2127,17 +2127,17 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       const refused = await post(cookie, `/r/${run}/comment`, { csrf, note: "x", line: "abc", return: back });
       expect(refused.status).toBe(400);
       const refusedHtml = await refused.text();
-      expect(refusedHtml).toContain(`<a href="${back.replace(/&/g, "&amp;")}">`);
+      expect(refusedHtml).toContain(`href="${back.replace(/&/g, "&amp;")}"`);
       expect(refusedHtml).toContain("Enter a whole line number from 1 to 1,000,000, or leave it blank.");
     }
     const foreign = await post(cookie, `/r/${run}/comment`, { csrf, note: "x", line: "abc", return: `/chat?task=t-back&result=${otherRun}` });
-    expect(await foreign.text()).toContain(`<a href="/r/${run}">`);
+    expect(await foreign.text()).toContain(`href="/r/${run}"`);
     expect(store.liveDiffComments(run)).toHaveLength(0);
     const savedInChanges = await post(cookie, `/r/${run}/comment`, { csrf, note: "Keep this view", return: `/chat?task=t-back&result=${run}`, tab: "changes" });
     expect(savedInChanges.status).toBe(303);
     expect(savedInChanges.headers.get("location")).toBe(`/chat?task=t-back&result=${run}&tab=changes&noted=1#request-changes`);
     const refusedInChecks = await post(cookie, `/r/${run}/comment`, { csrf, note: "x", line: "abc", return: `/r/${run}`, tab: "checks" });
-    expect(await refusedInChecks.text()).toContain(`<a href="/r/${run}?tab=checks">`);
+    expect(await refusedInChecks.text()).toContain(`href="/r/${run}?tab=checks"`);
     // The chat lens never shows another task's run as its result.
     const wrong = await read(`/chat?task=t-back&result=${otherRun}`);
     expect(wrong).not.toContain('<section class="card result-panel"');
@@ -2179,7 +2179,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const refusal = await edited.text();
     expect(refusal).toContain("this request identity already recorded a different note on this result");
     expect(refusal).toContain("&quot;Note A&quot;");
-    expect(refusal).toContain(`<a href="${back.replace(/&/g, "&amp;")}&amp;conflict=${token}#request-changes">← Back</a>`);
+    expect(refusal).toContain(`href="${back.replace(/&/g, "&amp;")}&amp;conflict=${token}#request-changes"`);
     expect(store.liveDiffComments(run).map(one => one.note)).toEqual(["Note A"]);
     // The same identity pinned to a file: a different note too.
     const repinned = await post(cookie, `/r/${run}/comment`, { csrf, note: "Note A", path: "src/a.ts", line: "2", request: token, return: back });
@@ -2196,7 +2196,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(crossed.status).toBe(409);
     const crossedWords = await crossed.text();
     expect(crossedWords).toContain(`already used on another result (build #${run})`);
-    expect(crossedWords).toContain(`<a href="/r/${otherRun}?conflict=${token}#request-changes">`);
+    expect(crossedWords).toContain(`href="/r/${otherRun}?conflict=${token}#request-changes"`);
     expect(store.liveDiffComments(otherRun)).toHaveLength(0);
     expect(store.liveDiffComments(run)).toHaveLength(1);
     // A fresh identity for the edited words: a second note, and the two receipts differ.

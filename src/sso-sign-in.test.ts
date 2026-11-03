@@ -101,7 +101,7 @@ test("an instance operator turns it on (the secret in a private file, the change
   const change = store.actionLedger({ repos: null, source: "policy" }).find(one => one.action === "sign-in with a provider turned on");
   expect(change?.detail).toMatch(/^off → Okta \(https:\/\/sso\.example\.com\) · eng-leads: operator, all projects; eng: viewer, 1 project · passwords: everyone$/);
   expect(change?.detail).not.toContain("shh");
-  expect(await (await fetch(`${base}/login`)).text()).toContain('<a class="button-link login-sso" href="/login/sso">Sign in with Okta</a>');
+  expect(await (await fetch(`${base}/login`)).text()).toMatch(/<a class="k-btn k-btn-primary k-wide" href="\/login\/sso"><span class="k-face">Sign in with Okta<\/span><\/a>/);
 });
 
 test("a person signs in with the provider: an account from their groups, set again by their groups at each sign-in; no group, no entry", async () => {
