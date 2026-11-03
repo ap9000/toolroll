@@ -1505,6 +1505,9 @@ CREATE TABLE IF NOT EXISTS ci_check (
   github_repo  TEXT NOT NULL,
   pr_number    INTEGER NOT NULL,
   head_sha     TEXT NOT NULL,
+  -- A check's identity: its kind (check run or commit status), its workflow and its name, so two workflows' checks
+  -- with the same name stay two rows (a failing one never hides behind a passing namesake).
+  ident        TEXT NOT NULL,
   name         TEXT NOT NULL,
   workflow     TEXT,
   state        TEXT NOT NULL CHECK (state IN ('queued','running','passed','failed','skipped','cancelled','neutral')),
@@ -1512,7 +1515,7 @@ CREATE TABLE IF NOT EXISTS ci_check (
   completed_at TEXT,
   url          TEXT,
   observed_at  TEXT NOT NULL,
-  PRIMARY KEY (github_repo, pr_number, head_sha, name)
+  PRIMARY KEY (github_repo, pr_number, head_sha, ident)
 );
 CREATE TABLE IF NOT EXISTS release_step (
   task_id    TEXT NOT NULL,
@@ -25772,7 +25775,9 @@ export function restoreTaskFamily(store: Store, taskId: string, by: string, now:
 
 /** One pull request check as GitHub last reported it for the observed head (v146 ci_check). */
 export type CiCheckRow = { name: string; workflow: string | null; state: "queued" | "running" | "passed" | "failed" | "skipped" | "cancelled" | "neutral"; startedAt: string | null; completedAt: string | null; url: string | null };
-export type ShipChecks = { githubRepo: string; prNumber: number; headSha: string; observedAt: string; checks: CiCheckRow[] };
+/** `observed`: the authoritative state of the same winning observation (ci_observation), which the overall status
+ * always comes from; the rows only show each check's own timing. */
+export type ShipChecks = { githubRepo: string; prNumber: number; headSha: string; observedAt: string; observed: "passing" | "failing" | "running" | "none"; checks: CiCheckRow[] };
 
 /** At most this many checks are kept for one head; GitHub's rollup is far smaller in practice. */
 export const CI_CHECKS_MAX = 200;
@@ -25788,6 +25793,14 @@ function ciInstant(value: unknown): string | null {
   const at = Date.parse(value);
   if (!Number.isFinite(at) || at < Date.UTC(2000, 0, 1)) return null;
   return new Date(at).toISOString();
+}
+/** The same ordering in SQL, for a column holding a check state. */
+const CI_SEVERITY_SQL = (column: string): string => `CASE ${column} ${Object.entries({ failed: 6, cancelled: 5, running: 4, queued: 3, neutral: 2, skipped: 1, passed: 0 }).map(([state, n]) => `WHEN '${state}' THEN ${n}`).join(" ")} ELSE 0 END`;
+/** How bad a check state is: when one check identity appears twice, the worse stands. */
+const CI_SEVERITY: Readonly<Record<CiCheckRow["state"], number>> = { failed: 6, cancelled: 5, running: 4, queued: 3, neutral: 2, skipped: 1, passed: 0 };
+/** A check's identity: its kind, its workflow and its name. */
+function ciCheckIdent(kind: "run" | "status", row: Pick<CiCheckRow, "workflow" | "name">): string {
+  return `${kind}\u0000${row.workflow ?? ""}\u0000${row.name}`;
 }
 /** Short, printable text, or null. Every control (C0, DEL, C1) and format character (bidi overrides and isolates,
  * zero-width marks) is removed, so a check name can't move the terminal's cursor or reorder what `task ship` prints.
@@ -25810,12 +25823,13 @@ function ciUrl(value: unknown): string | null {
  * GitHub's statusCheckRollup (gh pr view --json statusCheckRollup) as check rows: CheckRun items (name, workflowName,
  * status, conclusion, startedAt, completedAt, detailsUrl) and StatusContext items (context, state, startedAt, targetUrl).
  * Strict: an item that is not one of those shapes, has no usable name, or names a state it doesn't know is dropped; one
- * row per name (the first); at most CI_CHECKS_MAX.
+ * row per identity (kind, workflow and name), and when one identity appears twice (a re-run) the worse state stands;
+ * at most CI_CHECKS_MAX.
  */
 export function parseCiRollup(rollup: unknown): CiCheckRow[] {
   if (!Array.isArray(rollup)) return [];
   const rows: CiCheckRow[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   for (const item of rollup.slice(0, CI_CHECKS_MAX * 2)) {
     if (rows.length >= CI_CHECKS_MAX) break;
     if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
@@ -25846,10 +25860,13 @@ export function parseCiRollup(rollup: unknown): CiCheckRow[] {
       if (name === null || state === null) continue;
       row = { name, workflow: null, state, startedAt: ciInstant(raw["startedAt"] ?? raw["createdAt"]), completedAt: null, url: ciUrl(raw["targetUrl"]) };
     }
-    if (row === null || seen.has(row.name)) continue;
+    if (row === null) continue;
     // A completion before its start is GitHub's clock disagreeing with itself: keep the state, drop the end.
     if (row.startedAt !== null && row.completedAt !== null && row.completedAt < row.startedAt) row = { ...row, completedAt: null };
-    seen.add(row.name);
+    const ident = ciCheckIdent(kind === "StatusContext" || (kind === undefined && typeof raw["context"] === "string") ? "status" : "run", row);
+    const at = seen.get(ident);
+    if (at !== undefined) { if (CI_SEVERITY[row.state] > CI_SEVERITY[rows[at]!.state]) rows[at] = row; continue; }
+    seen.set(ident, rows.length);
     rows.push(row);
   }
   return rows;
@@ -25863,16 +25880,20 @@ export function recordCiChecks(store: Store, githubRepo: string, prNumber: numbe
   store.transact(() => {
     // One head per pull request is kept: an older head's rows go with the new observation.
     store.handle.prepare("DELETE FROM ci_check WHERE github_repo = ? AND pr_number = ?").run(githubRepo, prNumber);
-    const insert = store.handle.prepare(`INSERT OR IGNORE INTO ci_check (github_repo, pr_number, head_sha, name, workflow, state, started_at, completed_at, url, observed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const insert = store.handle.prepare(`INSERT INTO ci_check (github_repo, pr_number, head_sha, ident, name, workflow, state, started_at, completed_at, url, observed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (github_repo, pr_number, head_sha, ident) DO UPDATE SET state = excluded.state, started_at = excluded.started_at,
+        completed_at = excluded.completed_at, url = excluded.url WHERE ${CI_SEVERITY_SQL("excluded.state")} > ${CI_SEVERITY_SQL("ci_check.state")}`);
     const at = now.toISOString();
-    for (const row of rows.slice(0, CI_CHECKS_MAX)) insert.run(githubRepo, prNumber, headSha, row.name, row.workflow, row.state, row.startedAt, row.completedAt, row.url, at);
+    // Rows a caller built itself carry no kind: a row with a workflow is a check run, one without may be a status; the
+    // identity keeps the two apart either way.
+    for (const row of rows.slice(0, CI_CHECKS_MAX)) insert.run(githubRepo, prNumber, headSha, ciCheckIdent(row.workflow === null ? "status" : "run", row), row.name, row.workflow, row.state, row.startedAt, row.completedAt, row.url, at);
   });
 }
 
 /** A pull request's checks for the head the plane's last winning observation recorded, or null when none was. */
 export function ciChecksFor(store: Store, githubRepo: string, prNumber: number): ShipChecks | null {
-  const observation = store.handle.prepare("SELECT head_sha, observed_at FROM ci_observation WHERE github_repo = ? AND pr_number = ?").get(githubRepo, prNumber);
+  const observation = store.handle.prepare("SELECT head_sha, state, observed_at FROM ci_observation WHERE github_repo = ? AND pr_number = ?").get(githubRepo, prNumber);
   if (observation === undefined || String(observation["head_sha"]) === "" || String(observation["observed_at"]) === "") return null;
   const headSha = String(observation["head_sha"]);
   const rows = store.handle.prepare(`SELECT name, workflow, state, started_at, completed_at, url, observed_at FROM ci_check
@@ -25880,6 +25901,7 @@ export function ciChecksFor(store: Store, githubRepo: string, prNumber: number):
   const text = (value: unknown): string | null => value === null || value === undefined ? null : String(value);
   return {
     githubRepo, prNumber, headSha, observedAt: String(observation["observed_at"]),
+    observed: (["passing", "failing", "running"] as const).find(one => one === String(observation["state"])) ?? "none",
     checks: rows.map(row => ({ name: String(row["name"]), workflow: text(row["workflow"]), state: String(row["state"]) as CiCheckRow["state"],
       startedAt: text(row["started_at"]), completedAt: text(row["completed_at"]), url: text(row["url"]) })),
   };

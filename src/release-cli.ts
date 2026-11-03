@@ -38,6 +38,9 @@ export const RELEASE_HELP = `toolroll release <branch> — release Toolroll itse
 
   Run the same command to resume after a stop. Interrupted deployments recover their saved stage before retrying.
 
+  A branch whose name is one of this command's own words (status, nightly, carry…) is named with --branch <name>
+  or after --: \`toolroll release --branch status\`.
+
 toolroll release status [<task>] — the steps of a release (the newest one recorded, or the release task named): each
   step's state and how long it took, and where it stopped
 
@@ -122,7 +125,7 @@ export type ReleaseCliDeps = {
   now?: () => Date;
 };
 
-const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request", "--as", "--token", "--schedule", "--stage", "--lane-retire"]);
+const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request", "--as", "--token", "--schedule", "--stage", "--lane-retire", "--branch"]);
 const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry", "--start", "--recover-deploy", "--github"]);
 
 export async function runReleaseCommand(args: readonly string[], write: (line: string) => void, deps: ReleaseCliDeps = {}): Promise<number> {
@@ -137,9 +140,15 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   const positional: string[] = [];
   const limits: Record<string, number> = {};
   let stage: string | undefined, laneRetire: string | undefined, laneAlias: [string, string] | undefined;
+  // `--branch <name>` (or `-- <name>`) names the branch outright, so a branch called "status", "nightly" or "carry" is
+  // still a branch and never one of this command's own words.
+  let branchFlag: string | undefined, literal = false;
   let repo: string | undefined, tap: string | undefined, gate: string | undefined, to: string | undefined, request: string | undefined, as: string | undefined, token: string | undefined, scheduleFlag: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const raw = args[i]!;
+    // After `--`, every argument is a branch name, never a flag or a subcommand.
+    if (raw === "--" && !literal) { literal = true; continue; }
+    if (literal) { positional.push(raw); continue; }
     if (BARE_FLAGS.has(raw)) continue;
     // `--lane-alias <lane-id> <new name>`: two values, neither a flag of this command.
     if (raw === "--lane-alias") {
@@ -168,6 +177,7 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
       else if (arg === "--release-gate") gate = value;
       else if (arg === "--stage") stage = value;
       else if (arg === "--lane-retire") laneRetire = value;
+      else if (arg === "--branch") branchFlag = value;
       else {
         const match = /^([a-z]+)=([0-9]+)$/.exec(value);
         if (match === null || !(match[1]! in RELEASE_LIMITS) || Number(match[2]) < 1) return refuse("usage", `--limit takes <step>=<minutes> for one of: ${Object.keys(RELEASE_LIMITS).join(", ")}.`, 2);
@@ -180,11 +190,11 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   }
   if (bare.has("--help")) { write(RELEASE_HELP); return 0; }
   if (gate !== undefined) {
-    if (positional.length > 0 || args.some(arg => ["--repo", "--limit", "--tap", "--new"].includes(arg))) return refuse("usage", "--release-gate <id> takes no branch or release options.", 2);
+    if (positional.length > 0 || branchFlag !== undefined || literal || args.some(arg => ["--repo", "--limit", "--tap", "--new"].includes(arg))) return refuse("usage", "--release-gate <id> takes no branch or release options.", 2);
     return runGateRelease(gate, bare.has("--yes"), write, json, deps.gateWorld ?? installedGateWorld());
   }
   if (bare.has("--recover-deploy")) {
-    if (positional.length > 0 || args.some(arg => ["--repo", "--limit", "--tap", "--new", "--release-gate"].includes(arg.split("=")[0]!))) return refuse("usage", "--recover-deploy takes only --stage <dir>, --yes and --json.", 2);
+    if (positional.length > 0 || branchFlag !== undefined || literal || args.some(arg => ["--repo", "--limit", "--tap", "--new", "--release-gate"].includes(arg.split("=")[0]!))) return refuse("usage", "--recover-deploy takes only --stage <dir>, --yes and --json.", 2);
     return runRescue(stage, bare.has("--yes"), write, json, deps.rescueWorld ?? installedRescueWorld(deps.cwd ?? process.cwd()));
   }
   if (stage !== undefined) return refuse("usage", "--stage goes with --recover-deploy.", 2);
@@ -194,19 +204,22 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
     if ([bare.has("--github"), laneAlias !== undefined, laneRetire !== undefined].filter(Boolean).length !== 1 || scheduleFlag !== undefined || bare.has("--start")) return refuse("usage", "Use one of --github, --lane-alias or --lane-retire, without --schedule or --start.", 2);
     return runGithubNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, alias: laneAlias, retire: laneRetire }, write, json, deps);
   }
-  // `release status [<task>]`: the steps recorded for a release (a branch named "status" can't be released by name).
-  if (positional[0] === "status" && positional.length <= 2) {
+  const named = branchFlag !== undefined || literal;
+  if (branchFlag !== undefined && (positional.length > 0 || literal)) return refuse("usage", "Name the branch once: `--branch <name>` takes no other branch.", 2);
+  // `release status [<task>]`: the steps recorded for a release. A branch named "status" is released with
+  // `--branch status` (or `-- status`).
+  if (!named && positional[0] === "status" && positional.length <= 2) {
     if (args.some(arg => VALUE_FLAGS.has(arg.split("=")[0]!) || ["--new", "--no-carry", "--start"].includes(arg))) return refuse("usage", "`toolroll release status [<task>]` takes only --json.", 2);
     return runStatusCommand(positional[1], write, json, deps);
   }
-  if (positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: bare.has("--start") }, write, json, deps);
-  if (["carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok"].includes(positional[0] ?? "") && positional.length === 2) {
+  if (!named && positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: bare.has("--start") }, write, json, deps);
+  if (!named && ["carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok"].includes(positional[0] ?? "") && positional.length === 2) {
     return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry" | "auto-approve" | "publish-ok", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
   }
-  if (positional.length !== 1) return refuse("usage", `Which branch? \`toolroll release <branch>\`.\n${RELEASE_HELP}`, 2);
-  const branch = positional[0]!;
+  if (branchFlag === undefined && positional.length !== 1) return refuse("usage", `Which branch? \`toolroll release <branch>\`.\n${RELEASE_HELP}`, 2);
+  const branch = branchFlag ?? positional[0]!;
 
-  if (LEASE_SHAPED.test(branch)) {
+  if (!named && LEASE_SHAPED.test(branch)) {
     const releaseOptions = args.filter(arg => VALUE_FLAGS.has(arg) || arg === "--new");
     if (releaseOptions.length > 0) return refuse("ambiguous", `${branch} looks like a lease id, but ${releaseOptions[0]} is a release option. Return a lease with \`toolroll worker release <lease>\`; a branch shaped like a lease id can't be released.`, 2);
     (deps.warn ?? (line => process.stderr.write(`${line}\n`)))(LEASE_DEPRECATION);

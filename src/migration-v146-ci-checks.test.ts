@@ -73,8 +73,8 @@ describe("parseCiRollup", () => {
     expect(parseCiRollup(rollup)).toEqual([]);
   });
 
-  test("bad times and links read null, a duplicate name is kept once, and the count is bounded", () => {
-    const [row] = parseCiRollup([run({ startedAt: "yesterday", completedAt: "0001-01-01T00:00:00Z", detailsUrl: "javascript:alert(1)" }), run({ conclusion: "FAILURE" })]);
+  test("bad times and links read null, and the count is bounded", () => {
+    const [row] = parseCiRollup([run({ startedAt: "yesterday", completedAt: "0001-01-01T00:00:00Z", detailsUrl: "javascript:alert(1)" })]);
     expect(row).toEqual({ name: "Lint", workflow: "CI", state: "passed", startedAt: null, completedAt: null, url: null });
     expect(parseCiRollup([run({ detailsUrl: "http://github.com/x" })])[0]!.url).toBeNull();
     expect(parseCiRollup([run({ detailsUrl: "https://user:pw@github.com/x" })])[0]!.url).toBeNull();
@@ -82,6 +82,29 @@ describe("parseCiRollup", () => {
     // C1 controls (a CSI introducer among them) and bidi/format characters are gone too: no terminal escape, no spoofed order.
     expect(parseCiRollup([run({ name: "Lint\u009b31m\u0085\u202eevil\u202c\u2066x\u2069\u200e\u200f\u200b\ufeff" })])[0]!.name).toBe("Lint31mevilx");
     expect(parseCiRollup(Array.from({ length: 500 }, (_, n) => run({ name: `check ${n}` })))).toHaveLength(200);
+  });
+});
+
+describe("a failing check is never hidden behind a namesake", () => {
+  test("the same name in two workflows stays two checks; the same check twice keeps the worse state", () => {
+    expect(parseCiRollup([run({ name: "test", workflowName: "unit" }), run({ name: "test", workflowName: "security", conclusion: "FAILURE" })])
+      .map(one => [one.workflow, one.name, one.state])).toEqual([["unit", "test", "passed"], ["security", "test", "failed"]]);
+    expect(parseCiRollup([run(), run({ conclusion: "FAILURE" })]).map(one => one.state)).toEqual(["failed"]);
+    expect(parseCiRollup([run({ conclusion: "FAILURE" }), run()]).map(one => one.state)).toEqual(["failed"]);
+    // A check run and a commit status with one name are two checks too.
+    expect(parseCiRollup([run({ name: "ci/build", workflowName: null }), { __typename: "StatusContext", context: "ci/build", state: "FAILURE" }])).toHaveLength(2);
+  });
+
+  test("both are stored, and the overall status is the observation's own", () => {
+    const store = openStore(":memory:");
+    try {
+      const generation = store.reserveObservation("alex/thing", 9);
+      settleWithChecks(store, { githubRepo: "alex/thing", prNumber: 9, headSha: "oid-1", state: "failing", generation },
+        [run({ name: "test", workflowName: "unit" }), run({ name: "test", workflowName: "security", conclusion: "FAILURE" })], T0);
+      const read = ciChecksFor(store, "alex/thing", 9)!;
+      expect(read.observed).toBe("failing");
+      expect(read.checks.map(one => [one.workflow, one.state]).sort()).toEqual([["security", "failed"], ["unit", "passed"]]);
+    } finally { store.close(); }
   });
 });
 
@@ -123,7 +146,7 @@ describe("ci_check is written only with a winning observation", () => {
       opened(store);
       const exec: PublishExec = async () => ({ code: 0, stdout: JSON.stringify({ headRefOid: "oid-1", state: "OPEN", statusCheckRollup: [run(), run({ name: "E2E", conclusion: "FAILURE" }), { bogus: true }] }), stderr: "", timedOut: false, notFound: false });
       await observeChecks(store, { clock: () => T0, exec });
-      expect(shipChecksForTask(store, "t-1")).toEqual({ githubRepo: "alex/thing", prNumber: 9, headSha: "oid-1", observedAt: T0.toISOString(), checks: [
+      expect(shipChecksForTask(store, "t-1")).toEqual({ githubRepo: "alex/thing", prNumber: 9, headSha: "oid-1", observedAt: T0.toISOString(), observed: "failing", checks: [
         { name: "E2E", workflow: "CI", state: "failed", startedAt: "2026-11-02T09:58:00.000Z", completedAt: "2026-11-02T09:58:11.000Z", url: "https://github.com/alex/thing/actions/runs/1/job/2" },
         { name: "Lint", workflow: "CI", state: "passed", startedAt: "2026-11-02T09:58:00.000Z", completedAt: "2026-11-02T09:58:11.000Z", url: "https://github.com/alex/thing/actions/runs/1/job/2" },
       ] });

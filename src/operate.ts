@@ -13392,8 +13392,10 @@ function taskShipCommand(positional: readonly string[], context: Context): numbe
   const now = (context.clock ?? (() => context.now))();
   const checks = ship.checks.map(one => ({ ...one, seconds: elapsedSeconds(one.startedAt, one.completedAt, now) }));
   const passed = checks.filter(one => one.state === "passed").length;
-  return succeed(write, json, command, { task: id, pullRequest: ship.prNumber, githubRepo: ship.githubRepo, head: ship.headSha, observedAt: ship.observedAt, checks }, () => [
-    `Pull request #${ship.prNumber} (${ship.githubRepo}) at ${ship.headSha.slice(0, 7)}: ${passed} of ${checks.length} checks passed`,
-    ...checks.map(one => `  ${one.name.padEnd(24)} ${(SHIP_CHECK_WORDS[one.state] ?? one.state).padEnd(9)} ${one.seconds === null ? "–" : dur(one.seconds)}`),
+  // The overall answer is the observation's own (the one merges read), never a sum of the rows.
+  const overall = ship.observed === "failing" ? "failing" : ship.observed === "passing" ? "passing" : ship.observed === "running" ? "running" : "not read";
+  return succeed(write, json, command, { task: id, pullRequest: ship.prNumber, githubRepo: ship.githubRepo, head: ship.headSha, observedAt: ship.observedAt, status: ship.observed, checks }, () => [
+    `Pull request #${ship.prNumber} (${ship.githubRepo}) at ${ship.headSha.slice(0, 7)}: checks ${overall} · ${passed} of ${checks.length} passed`,
+    ...checks.map(one => `  ${(one.workflow === null ? one.name : `${one.workflow} / ${one.name}`).padEnd(32)} ${(SHIP_CHECK_WORDS[one.state] ?? one.state).padEnd(9)} ${one.seconds === null ? "–" : dur(one.seconds)}`),
   ]);
 }

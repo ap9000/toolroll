@@ -48,6 +48,20 @@ describe("toolroll release <branch>", () => {
     expect(JSON.parse(lines.join("\n"))).toMatchObject({ ok: false, command: "release", reason: "github-auth", step: "preflight", resume: "toolroll release toolroll/simplify-release --repo /rv" });
   });
 
+  test("a branch named like one of the command's words is released with --branch or after --, and resumes that way", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "so-release-cli-"));
+    for (const argv of [["--branch", "status"], ["--", "status"], ["--branch=nightly"]]) {
+      const lines: string[] = [];
+      expect(await runReleaseCommand(["--repo", "/rv", "--json", ...argv], line => lines.push(line), { adapters: signedOut, stateDir }), argv.join(" ")).toBe(3);
+      const branch = argv.at(-1)!.replace("--branch=", "");
+      expect(JSON.parse(lines.join("\n")), argv.join(" ")).toMatchObject({ ok: false, command: "release", step: "preflight", resume: `toolroll release --branch ${branch} --repo /rv` });
+    }
+    // Bare, the word is still the command's own; --branch takes no second branch.
+    const lines: string[] = [];
+    expect(await runReleaseCommand(["--branch", "a", "b", "--json"], line => lines.push(line))).toBe(2);
+    expect(JSON.parse(lines.join("\n"))).toMatchObject({ ok: false, reason: "usage" });
+  });
+
   test("--release-gate shows the proof, lifts only with --yes, and takes no release options", async () => {
     const lines: string[] = [];
     const world = { database: "/s/orders.db", stateDir: "/s", now: () => new Date(), open: () => { throw new Error("not opened in this test"); }, servicePlists: () => [], processes: () => [] };

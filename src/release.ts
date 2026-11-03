@@ -424,7 +424,7 @@ export function landedWords(landed: readonly LandedCommit[]): string[] {
 
 const branchFile = (branch: string) => branch.replace(/[^A-Za-z0-9._-]+/g, "_");
 export const journalFile = (stateDir: string, branch: string) => join(stateDir, "releases", `${branchFile(branch)}.json`);
-export const resumeCommand = (branch: string, checkout: string) => `toolroll release ${branch} --repo ${checkout}`;
+export const resumeCommand = (branch: string, checkout: string) => `toolroll release ${releaseBranchArg(branch)} --repo ${checkout}`;
 
 /** Whole or not at all: a private temp file, synced, renamed into place, its folder synced. */
 export function writeJournal(file: string, journal: ReleaseJournal): void {
@@ -845,7 +845,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       catch (error) { if (transientNetworkError(error)) return false; throw error; }
       const verdict = prChecksVerdict(runs, j.candidate.sha, REQUIRED_PR_CHECKS, { workflow: REQUIRED_PR_CHECKS_WORKFLOW });
       if (verdict.state === "failed") {
-        throw new Stop("ci-failed", `GitHub's checks failed on ${j.candidate.sha.slice(0, 7)}: ${verdict.failed.join(", ")}. ${nothing}. ${j.approval === null ? "" : `The approval covers ${j.candidate.sha.slice(0, 7)} only. `}Rerun the failed job on GitHub and run \`${resume}\` again, or fix the branch and release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
+        throw new Stop("ci-failed", `GitHub's checks failed on ${j.candidate.sha.slice(0, 7)}: ${verdict.failed.join(", ")}. ${nothing}. ${j.approval === null ? "" : `The approval covers ${j.candidate.sha.slice(0, 7)} only. `}Rerun the failed job on GitHub and run \`${resume}\` again, or fix the branch and release the new commit with \`toolroll release ${releaseBranchArg(j.branch)} --repo ${j.checkout} --new\`.`);
       }
       if (verdict.state !== "passed") return false;
       // The plane's note can survive a crash before the journal saved ciAhead. Clear it on the plane's own reading,
@@ -1575,3 +1575,8 @@ export function workflowIs(path: string | null | undefined, file: string): boole
   const ref = path.startsWith(`${file}@`) ? path.slice(file.length + 1) : "";
   return /^[A-Za-z0-9._+/-]+$/.test(ref) && !/\.ya?ml$/i.test(ref);
 }
+
+/** The words `toolroll release` reads as its own (release-cli.ts), never as a branch: such a branch is named with --branch. */
+const RELEASE_WORDS = new Set(["status", "nightly", "carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok"]);
+/** How a person names this branch to `toolroll release` again. */
+export function releaseBranchArg(branch: string): string { return RELEASE_WORDS.has(branch) ? `--branch ${branch}` : branch; }
