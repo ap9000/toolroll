@@ -1,0 +1,69 @@
+name: Journeys
+
+# Every pull request (docs/plans/ci-speed.md, item 4): the scripted end-to-end journeys (scripts/app-e2e.mjs and
+# scripts/flows-e2e.mjs with --journeys scripted: the real console, worker and browser, the model scripted, no model
+# calls), their groups side by side, each in a world of its own (scripts/e2e-parallel.mjs). A journey a change left
+# stale fails here, on the pull request, instead of in the release check. Advisory for now: it is not one of
+# REQUIRED_PR_CHECKS, and the release verdict leaves these jobs out by name and workflow (release.ts
+# ADVISORY_PR_CHECKS), so a release never waits for them or fails on them; the release check still runs every journey.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels the run on its older head; never a release-* branch's run.
+concurrency:
+  group: journeys-${{ (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-')) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  journeys:
+    name: journeys · ${{ matrix.script }} (scripted)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        script: [app, flows]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          persist-credentials: false
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+      # The Linux fence's tools, as the unit shards set them up (agents in the journeys run fenced), and sqlite3 for the
+      # journeys' own database reads.
+      - timeout-minutes: 8
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep sqlite3
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: npm ci
+      - run: npm run build
+      # Playwright isn't a dependency (scripts/e2e-kit.mjs loadPlaywright finds npx's copy): pinned, with its Chromium.
+      - timeout-minutes: 8
+        run: npx -y playwright@1.64.1 install --with-deps chromium
+      # Scripted failures are final (no retry hides one) and one failed group stops no other, as in the release check.
+      - name: Scripted journeys, groups side by side
+        run: node scripts/e2e-parallel.mjs scripts/${{ matrix.script }}-e2e.mjs --skip-build --journeys scripted --at-once 3 --output "$RUNNER_TEMP/journeys"
+        env:
+          CI: "true"
+          TOOLROLL_RELEASE_NO_RETRY: "1"
+          TOOLROLL_CHECK_KEEP_GOING: "1"
+          TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS: "90"
+      - if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: journeys-${{ matrix.script }}
+          path: ${{ runner.temp }}/journeys
+          retention-days: 7

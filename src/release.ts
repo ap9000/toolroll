@@ -86,10 +86,16 @@ export const PROTECTION_MINIMUM_CHECKS: readonly string[] = REQUIRED_PR_CHECKS.f
 /**
  * Pull-request checks a release never waits for or fails on, by exact name and the workflow file that defines them:
  * youiyoux's UI drift check (src/design/KIT.md), which fails a pull request that adds design drift but says nothing
- * about whether a build is safe to release. Only a GitHub Actions run of that name from that workflow is left out; the
- * same name from anywhere else is judged like any other check. Never a required check.
+ * about whether a build is safe to release, and the scripted journeys on a pull request (journeys.yml,
+ * docs/plans/ci-speed.md item 4), advisory while they settle in CI: the release check runs every journey itself. Only a
+ * GitHub Actions run of that name from that workflow is left out; the same name from anywhere else is judged like any
+ * other check. Never a required check.
  */
-export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = { "youiyoux · UI drift": ".github/workflows/youiyoux.yml" };
+export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = {
+  "youiyoux · UI drift": ".github/workflows/youiyoux.yml",
+  "journeys · app (scripted)": ".github/workflows/journeys.yml",
+  "journeys · flows (scripted)": ".github/workflows/journeys.yml",
+};
 
 /**
  * Main's protection as the plane's gh reads it (release-adapters.ts readMainProtection): `effective` only when one layer

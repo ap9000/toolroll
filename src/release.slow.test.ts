@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openStore, recordReleaseStep, releaseProgressFor } from "./store.js";
 import {
-  checksVerdict, gateTaskId, journalFile, ownerApproval, prChecksVerdict, readJournal, writeJournal, PROTECTION_MINIMUM_CHECKS, PROTECTION_REPORT_ONLY_CHECKS, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
+  ADVISORY_PR_CHECKS, checksVerdict, gateTaskId, journalFile, ownerApproval, prChecksVerdict, readJournal, writeJournal, PROTECTION_MINIMUM_CHECKS, PROTECTION_REPORT_ONLY_CHECKS, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
   type CheckRun, type GateState, type HomebrewState, type MainProtection, type ReleaseAdapters, type ReleaseJournal,
 } from "./release.js";
 
@@ -1667,6 +1667,29 @@ describe("toolroll release: approve automatically when checks pass", () => {
       expect(verdict([ui({ app: "some-app" })])).toMatchObject({ state: "failed" });
       // Leaving it out never stands in for a required check.
       expect(prChecksVerdict([...all().slice(1), ui({ conclusion: "success" })], SHA, REQUIRED_PR_CHECKS, { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW })).toMatchObject({ state: "pending" });
+    }
+  });
+
+  test("ci-speed item 4: the scripted journeys from their own workflow never hold or fail a release; the same names from elsewhere still count", () => {
+    const CI_YML = ".github/workflows/ci.yml", RC_YML = ".github/workflows/release-candidate.yml", JOURNEYS_YML = ".github/workflows/journeys.yml";
+    const all = (): CheckRun[] => REQUIRED_PR_CHECKS.map((name, i) => {
+      const rc = REQUIRED_PR_CHECKS_WORKFLOW[name] === RC_YML;
+      return { id: 100 + i, name, status: "completed", conclusion: "success", app: "github-actions", head: SHA, suite: rc ? 6 : 5, workflow: rc ? 2 : 1, workflowPath: rc ? RC_YML : CI_YML };
+    });
+    for (const name of ["journeys · app (scripted)", "journeys · flows (scripted)"]) {
+      expect(ADVISORY_PR_CHECKS[name]).toBe(JOURNEYS_YML);
+      expect((REQUIRED_PR_CHECKS as readonly string[]).includes(name)).toBe(false);
+      const journey = (over: Partial<CheckRun>): CheckRun => ({ id: 400, name, status: "completed", conclusion: "failure", app: "github-actions", head: SHA, suite: 10, workflow: 4, workflowPath: JOURNEYS_YML, ...over });
+      for (const auto of [{}, { auto: true as const }]) {
+        const verdict = (extra: CheckRun[]) => prChecksVerdict([...all(), ...extra], SHA, REQUIRED_PR_CHECKS, { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW });
+        // Failed, cancelled by a newer push, still running: the release stands on its required checks.
+        expect(verdict([journey({})])).toMatchObject({ state: "passed", failures: [] });
+        expect(verdict([journey({ conclusion: "cancelled" })])).toMatchObject({ state: "passed", failures: [] });
+        expect(verdict([journey({ status: "in_progress", conclusion: null })])).toMatchObject({ state: "passed" });
+        // The same name from another workflow or app is an ordinary check: it fails the verdict.
+        expect(verdict([journey({ workflowPath: CI_YML, workflow: 1, suite: 5 })])).toMatchObject({ state: "failed" });
+        expect(verdict([journey({ app: "some-app" })])).toMatchObject({ state: "failed" });
+      }
     }
   });
 

@@ -8,7 +8,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
-import { INCLUDE, inventory, readReport, reportsIn, shardsProblem } from "../scripts/ci-shards.mjs";
+import { spawnSync } from "node:child_process";
+import { INCLUDE, inventory, laneFiles, LANES, NATIVE_PROBES, readReport, reportsIn, shardsProblem } from "../scripts/ci-shards.mjs";
+import { planShards } from "../scripts/ci-timings.mjs";
 
 const scratch = mkdtempSync(join(tmpdir(), "ci-shards-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -98,7 +100,9 @@ describe("pipeline-speed A: the shards' join", () => {
 
   test("the include policy is vitest.config.ts's, and finds exactly its files without following a symlinked folder", () => {
     const config = readFileSync(join(import.meta.dirname, "..", "vitest.config.ts"), "utf8");
-    expect(JSON.parse(/include:\s*(\[[^\]]*\])/.exec(config)![1]!.replace(/'/g, "\""))).toEqual(INCLUDE);
+    // The whole suite, unless TOOLROLL_TEST_LANE names a lane: then exactly that lane's files.
+    expect(JSON.parse(/include:[^\[]*\?\s*(\[[^\]]*\])/.exec(config)![1]!.replace(/'/g, "\""))).toEqual(INCLUDE);
+    expect(config).toContain(`: laneFiles(import.meta.dirname, lane),`);
     const tree = join(scratch, "tree");
     for (const one of ["src/a.test.ts", "src/deep/b.test.ts", "src/helper.ts", "test/attacks/c.test.ts", "test/other.test.ts", "src/node_modules/x.test.ts"]) write(tree, one, "");
     mkdirSync(join(scratch, "outside"), { recursive: true });
@@ -125,5 +129,87 @@ describe("pipeline-speed A: the shards' join", () => {
     const loose = folder("shards-loose");
     write(loose, "forged.json", "{}");
     expect(() => reportsIn(loose, "22")).toThrow(/unexpected forged\.json/);
+  });
+});
+
+const REPO = join(import.meta.dirname, "..");
+
+describe("ci-speed item 3: the macOS lane", () => {
+  test("a file is in by its area, by the smoke list, or because its text names something platform-specific; nothing else", () => {
+    const tree = join(scratch, "lane");
+    write(tree, "src/agent-fence-x.test.ts", "test('x', () => {});\n");
+    write(tree, "src/plain.test.ts", "test('plain', () => {});\n");
+    write(tree, "src/branches.test.ts", "test.skipIf(process.platform === 'linux')('mac', () => {});\n");
+    write(tree, "src/launch.test.ts", "// writes a LaunchAgent plist\n");
+    write(tree, "src/store.test.ts", "test('store', () => {});\n");
+    write(tree, "test/attacks/fence-y.test.ts", "test('y', () => {});\n");
+    write(tree, "test/attacks/release-z.test.ts", "test('z', () => {});\n");
+    write(tree, "test/attacks/release-native.test.ts", "test('n', ctx => { needs(ctx, seatbelt()); });\n");
+    expect(laneFiles(tree, "macos")).toEqual(["src/agent-fence-x.test.ts", "src/branches.test.ts", "src/launch.test.ts", "src/store.test.ts", "test/attacks/fence-y.test.ts", "test/attacks/release-native.test.ts"]);
+    expect(() => laneFiles(tree, "windows")).toThrow(/no lane windows/);
+  });
+
+  test("in this checkout: every macOS native attack, the fences, launchd, the desktop app, linking, installing and git views are in the lane", () => {
+    const lane = laneFiles(REPO, "macos");
+    const all = inventory(REPO);
+    // A test the macOS shards must run (TOOLROLL_REQUIRE_NATIVE=darwin) can never fall out: every file that probes
+    // Seatbelt or the OS fence is in, by its text, whatever its name.
+    const native = all.filter(file => new RegExp(NATIVE_PROBES.darwin.source).test(readFileSync(join(REPO, file), "utf8")));
+    expect(native.length).toBeGreaterThan(5);
+    expect(native.filter(file => !lane.includes(file))).toEqual([]);
+    for (const file of ["src/agent-fence.slow.test.ts", "src/sandbox-launch.test.ts", "src/daemon.test.ts", "src/desktop-update.slow.test.ts", "src/link.test.ts", "src/install-method.test.ts",
+      "src/up.slow.test.ts", "src/worktree.slow.test.ts", "src/teardown-git.test.ts", "src/toolroll-update.slow.test.ts", "test/attacks/fence-apple-events.test.ts", "test/attacks/fence-keychain.test.ts",
+      "test/attacks/checkout-git-view-binding.test.ts", "test/attacks/release-carry.test.ts"]) expect(lane, file).toContain(file);
+    // Every listed path and smoke file still names something here: a renamed file can't leave a dead entry behind.
+    for (const pattern of LANES.macos.paths) expect(all.some(file => pattern.test(file)), String(pattern)).toBe(true);
+    for (const file of LANES.macos.smoke) expect(all, file).toContain(file);
+    // It is a lane, not the suite: the release policy's own attacks run on Linux only.
+    expect(lane).not.toContain("test/attacks/auto-approve-green.test.ts");
+    expect(lane.length).toBeLessThan(all.length / 2);
+  });
+
+  test("the join judges the lane: the shards must run exactly its files, once", () => {
+    const tree = join(scratch, "lane-join");
+    for (const one of ["src/mac.test.ts", "src/plain.test.ts"]) write(tree, one, one.includes("mac") ? "test('m', () => { if (process.platform === 'darwin') {} });\n" : "test('p', () => {});\n");
+    const files = laneFiles(tree, "macos");
+    expect(files).toEqual(["src/mac.test.ts"]);
+    const at = (name: string) => ({ name: join(tree, name), status: "passed", assertionResults: [{ status: "passed" }] });
+    const one = (names: string[]) => new Map<number, unknown>([[1, report(names.map(at))]]);
+    expect(shardsProblem(one(["src/mac.test.ts"]), files, { shards: 1, root: tree, base: tree })).toBeNull();
+    expect(shardsProblem(one([]), files, { shards: 1, root: tree, base: tree })).toMatch(/executed no tests|ran in no shard/);
+    expect(shardsProblem(one(["src/mac.test.ts", "src/plain.test.ts"]), files, { shards: 1, root: tree, base: tree })).toMatch(/include policy doesn't find/);
+    // The command line refuses a lane it doesn't know.
+    const cli = spawnSync(process.execPath, [join(REPO, "scripts/ci-shards.mjs"), "verify", scratch, "--root", tree, "--base", tree, "--sha", "a".repeat(40), "--node", "24", "--shards", "1", "--lane", "windows"], { encoding: "utf8" });
+    expect(cli.status).toBe(1);
+    expect(cli.stderr).toMatch(/--lane takes all or macos/);
+  });
+});
+
+describe("ci-speed item 1: timing-balanced shards", () => {
+  const timings = { linux: { "a.test.ts": 100, "b.test.ts": 60, "c.test.ts": 50, "d.test.ts": 40, "e.test.ts": 10 }, darwin: { "a.test.ts": 300 } };
+  test("every file goes to exactly one shard, longest first, and the same inputs give the same plan", () => {
+    const files = ["e.test.ts", "d.test.ts", "c.test.ts", "b.test.ts", "a.test.ts", "new.test.ts"];
+    const { plan } = planShards(files, timings, 2, { workers: 1 });
+    expect([...plan.keys()].sort()).toEqual([...files].sort());
+    expect(new Set(plan.values())).toEqual(new Set([0, 1]));
+    // Balanced on time: a (100) alone against b+c (110), then d, e and the untimed file fill the lighter shard.
+    expect(plan.get("a.test.ts")).not.toBe(plan.get("b.test.ts"));
+    expect(planShards([...files].reverse(), timings, 2, { workers: 1 }).plan).toEqual(plan);
+    expect(() => planShards(files, timings, 0)).toThrow(/no shard count/);
+  });
+
+  test("a file timed on one platform only weighs the same on the other; one never timed weighs a typical file", () => {
+    const linux = planShards(["a.test.ts", "b.test.ts"], timings, 2, { platform: "linux" }).shards;
+    const darwin = planShards(["a.test.ts", "b.test.ts"], timings, 2, { platform: "darwin" }).shards;
+    expect(Math.max(...linux.map(one => one.longest))).toBe(100);
+    expect(Math.max(...darwin.map(one => one.longest))).toBe(300);
+    expect(planShards(["z.test.ts"], timings, 1).shards[0]!.total).toBeGreaterThan(0);
+  });
+
+  test("the committed timings cover this checkout's suite", () => {
+    const committed = JSON.parse(readFileSync(join(REPO, "test", "timings.json"), "utf8")) as { linux: Record<string, number> };
+    const all = inventory(REPO);
+    // New files plan as typical ones until the next refresh; most of the suite must be timed.
+    expect(all.filter(file => committed.linux[file] !== undefined).length).toBeGreaterThan(all.length * 0.9);
   });
 });

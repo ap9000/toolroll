@@ -144,7 +144,7 @@ unchanged carry rules (release-once.md), and only while the setting stays on.
   directory; the receipt and level come from the plane's evidence store and ledger.
 - Fail closed everywhere: an unreadable setting is `ask`; a missing or mismatched evidence row stands on nothing.
 
-## Attack list (each has a test under `test/attacks/auto-approve-green.test.ts`)
+## Attack list (each has a test under `test/attacks/auto-approve-green.test.ts`, or `auto-approve-green-scope.test.ts` for codex r1 #2's change classes)
 
 1. A lead token (or a remembered login, an API token, an empty password) turns the setting on: refused.
 2. A forged or stale CI observation: another head, a missing required check, a check named alike by another app, a

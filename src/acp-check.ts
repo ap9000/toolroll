@@ -51,6 +51,8 @@ export type AcpCheckJob = {
   agent?: ProviderRunner;
   /** Tests only: a PATH to find the agent on. */
   env?: Readonly<Record<string, string | undefined>>;
+  /** Tests only: how long the stop step waits to see the agent's command alive (default STOP_WAIT_MS). */
+  stopWaitMs?: number;
   progress?: (line: string) => void;
 };
 
@@ -269,7 +271,7 @@ async function runSteps(job: AcpCheckJob, request: AcpCheckRequest, at: StepCont
     },
     acp: { prompt: "", model: "", expect: null, onControl: (control: AcpControl) => {
       // The agent's word only times the cancel: what the plane itself sees alive is what is graded.
-      const until = Date.now() + STOP_WAIT_MS;
+      const until = Date.now() + (job.stopWaitMs ?? STOP_WAIT_MS);
       const poll = setInterval(() => {
         if (Date.now() > until) { clearInterval(poll); control.cancel(CANCEL_ANSWER_MS); return; }
         if (!started) return;

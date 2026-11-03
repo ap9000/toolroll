@@ -154,9 +154,17 @@ The summary reports observed concurrency and waits.
 ## CI
 
 The matrix is in `docs/plans/test-matrix.md`. Every pull request runs
-`.github/workflows/ci.yml`: the full suite on Ubuntu and macOS with Node 24
-(four shards each, joined by the required `node 24 · ubuntu-latest` and
-`node 24 · macos-latest` checks), and the area lanes: Linux cgroup
+`.github/workflows/ci.yml`: the full suite on Ubuntu with Node 24 in six
+shards, and on macOS its macOS lane (every file that can behave differently on
+a Mac, plus a smoke set; `scripts/ci-shards.mjs` LANES) in three, joined by the
+required `node 24 · ubuntu-latest` and `node 24 · macos-latest` checks (the
+nightly runs every file on macOS too). Shards are balanced by each file's
+measured time (`test/timings.json`; refresh it with `node scripts/ci-timings.mjs
+refresh --run <ci run id>`, see what each shard would take with `node
+scripts/ci-timings.mjs plan`), and a newer push to a pull request cancels the
+older run (never a `release-*` branch's). `journeys.yml` runs the scripted
+journeys on every pull request, advisory (see `docs/plans/ci-speed.md`). The
+area lanes: Linux cgroup
 containment, the Linux fence, Windows Job Object containment and the git
 2.41/2.47 lanes. A documentation-only pull request (only Markdown under
 `docs/`, `CHANGELOG.md` or `README.md`, added or modified; see

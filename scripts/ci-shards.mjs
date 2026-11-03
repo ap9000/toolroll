@@ -7,7 +7,12 @@
  * elsewhere, every report's counts consistent and tests actually executed.
  *
  *   node <trusted copy>/scripts/ci-shards.mjs verify <shards-folder> --root <candidate checkout> --base <trusted checkout>
- *     --sha <sha> --node <n> --shards <K> [--native linux|darwin]
+ *     --sha <sha> --node <n> --shards <K> [--native linux|darwin] [--lane all|macos]
+ *
+ * `--lane macos` (docs/plans/ci-speed.md): the macOS shards ran the macOS lane, not the whole suite (`--lane all`, as the
+ * nightly runs it, is the whole suite) — every file
+ * LANES.macos selects in the tested commit (laneFiles), which Linux also runs with everything else. The selection is
+ * this trusted copy's policy over the candidate's tree, so a candidate can't shrink what its macOS shards owe.
  *
  * `--native <platform>` (docs/plans/test-matrix.md): the shards ran with TOOLROLL_REQUIRE_NATIVE=<platform>, so that
  * platform's native fence attacks run or fail. The skip policy agrees: a file whose base copy can skip only through a
@@ -42,6 +47,44 @@ export const NATIVE_PROBES = {
   darwin: /\bneeds\(\s*ctx\s*,\s*(?:seatbelt|osFence)\(\)\s*\)/g,
   linux: /\bneeds\(\s*ctx\s*,\s*osFence\(\)\s*\)/g,
 };
+/**
+ * The test lanes a shard set may run instead of the whole inventory (docs/plans/ci-speed.md, item 3). `macos`: what
+ * can behave differently on a Mac — the fences and Seatbelt, launchd, TCC and the keychain, path handling, git on a Mac,
+ * linking and installing, containment — plus a smoke set; Linux runs every file. A file is in when its path matches
+ * `paths`, it is listed in `smoke`, or its text names something platform-specific (`markers`): a new test that touches
+ * macOS-only code is in the lane without anyone listing it. vitest.config.ts runs exactly laneFiles() under
+ * TOOLROLL_TEST_LANE (src/ci-shards.test.ts holds the two equal and names the files that must stay in).
+ */
+export const LANES = {
+  macos: {
+    paths: [
+      // The attack suite's fences, checkouts, pools, git views and flows (its release-policy attacks are platform-free).
+      /^test\/attacks\/(?!release-|auto-approve-|nightly-)[^/]+\.test\.ts$/,
+      /^src\/[^/]*(fence|sandbox|seatbelt|launchd|daemon|containment|keychain|desktop|install|link|worktree|teardown-git|git-floor|checkout|folder|home|paths|toolroll-update|update-safe)[^/]*\.test\.ts$/,
+    ],
+    markers: /darwin|process\.platform|seatbelt|sandbox-exec|launchctl|launchd|LaunchAgent|\bTCC\b|tccutil|needs\(\s*ctx\s*,\s*(?:seatbelt|osFence)\(\)|keychain|\/private\/(?:var|tmp)/i,
+    smoke: [
+      "src/cli.test.ts", "src/cli-fast.test.ts", "src/contracts/cli.test.ts", "src/fake-pid.test.ts", "src/password-freshness.test.ts",
+      "src/store.test.ts", "src/serve.console.slow.test.ts", "src/up-processes.test.ts", "src/up-split.slow.test.ts",
+    ],
+  },
+};
+
+/** The files of `lane` among `root`'s inventory, sorted. A file whose text can't be read as a regular file is in (fail
+ * closed: the lane then owes it). */
+export function laneFiles(root, lane, listed = inventory(root)) {
+  const policy = Object.hasOwn(LANES, lane) ? LANES[lane] : null;
+  if (policy === null) throw new Error(`no lane ${String(lane)}`);
+  return listed.filter(file => {
+    if (policy.paths.some(re => re.test(file)) || policy.smoke.includes(file)) return true;
+    try {
+      const at = join(root, file);
+      if (!lstatSync(at).isFile()) return true;
+      return policy.markers.test(readFileSync(at, "utf8"));
+    } catch { return true; }
+  });
+}
+
 /** Assertion states that mean a test didn't run. */
 const NOT_RUN = new Set(["skipped", "pending", "todo", "disabled"]);
 
@@ -167,16 +210,17 @@ export function reportsIn(folder, node) {
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const [command, folder, ...args] = process.argv.slice(2);
   try {
-    if (command !== "verify") { console.error("usage: ci-shards.mjs verify <shards-folder> --root <checkout> --base <trusted checkout> --sha <sha> --node <n> --shards <K> [--native linux|darwin]"); process.exit(2); }
-    const shards = Number(flag(args, "shards")), sha = flag(args, "sha"), node = flag(args, "node"), root = flag(args, "root"), base = flag(args, "base"), native = flag(args, "native");
+    if (command !== "verify") { console.error("usage: ci-shards.mjs verify <shards-folder> --root <checkout> --base <trusted checkout> --sha <sha> --node <n> --shards <K> [--native linux|darwin] [--lane all|macos]"); process.exit(2); }
+    const shards = Number(flag(args, "shards")), sha = flag(args, "sha"), node = flag(args, "node"), root = flag(args, "root"), base = flag(args, "base"), native = flag(args, "native"), lane = flag(args, "lane");
     if (!SHA.test(sha ?? "")) throw new Error("no tested commit");
     if (typeof root !== "string" || typeof base !== "string") throw new Error("--root and --base are required");
-    const listed = inventory(root);
+    if (args.includes("--lane") && lane !== "all" && !Object.hasOwn(LANES, lane ?? "")) throw new Error(`--lane takes all or ${Object.keys(LANES).join(" or ")}`);
+    const listed = lane === undefined || lane === "all" ? inventory(root) : laneFiles(root, lane);
     const reports = reportsIn(folder, node);
     if (args.includes("--native") && !Object.hasOwn(NATIVE_PROBES, native ?? "")) throw new Error(`--native takes ${Object.keys(NATIVE_PROBES).join(" or ")}`);
     const problem = shardsProblem(reports, listed, { shards, root, base, native });
     if (problem !== null) { console.error(`node ${node}: ${problem}`); process.exit(1); }
     const executed = [...reports.values()].reduce((n, one) => n + one.numPassedTests, 0);
-    console.log(`node ${node}: ${shards} shards passed on ${sha}, ${listed.length} test files, ${executed} tests executed`);
+    console.log(`node ${node}: ${shards} shards passed on ${sha}, ${listed.length} test files${lane === undefined || lane === "all" ? "" : ` (the ${lane} lane)`}, ${executed} tests executed`);
   } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
 }

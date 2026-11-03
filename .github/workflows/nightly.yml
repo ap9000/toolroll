@@ -14,9 +14,14 @@ permissions:
   contents: read
 
 jobs:
+  # Pull requests run only the macOS lane on macOS (docs/plans/ci-speed.md, item 3); the nightly runs every file there.
   ci:
     name: nightly
     uses: ./.github/workflows/ci.yml
+    with:
+      macos_lane: all
   release-candidate:
     name: nightly floor
     uses: ./.github/workflows/release-candidate.yml
+    with:
+      macos_lane: all

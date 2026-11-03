@@ -15,10 +15,23 @@ test("a quiet machine shares three quarters of its cores, and the shares add up 
   }
 });
 
-test("a busy machine gets one of each, one part after another — slower, never stacked on the load", () => {
+test("a busy machine runs one part after another — slower, never stacked on the load", () => {
   // 2026-10-20: load 21 on 24 cores.
-  expect(checkBudget(24, 21)).toEqual({ free: 2, unitWorkers: 1, lanes: { app: 1, flows: 1 }, upgradeWorkers: 1, sequential: true });
+  expect(checkBudget(24, 21)).toEqual({ free: 2, unitWorkers: 1, lanes: { app: 1, flows: 1 }, upgradeWorkers: 2, sequential: true });
   expect(checkBudget(2, 0)).toMatchObject({ free: 2, sequential: true });
+});
+
+test("one part after another, each part takes the whole budget while it runs, and never more (ci-speed item 6)", () => {
+  // 0.9.87's check: load 13 on 24 cores ran its units on 2 workers and its app journeys one group at a time.
+  expect(checkBudget(24, 13)).toEqual({ free: 5, unitWorkers: 4, lanes: { app: 2, flows: 2 }, upgradeWorkers: 4, sequential: true });
+  for (const [cores, load] of [[24, 13], [24, 21], [2, 0], [8, 4], [12, 6]] as const) {
+    const budget = checkBudget(cores, load);
+    if (!budget.sequential) continue;
+    // The units run beside the typecheck, then the journeys' two scripts side by side, then the upgrade path alone.
+    expect(1 + budget.unitWorkers, `${cores}/${load} units`).toBeLessThanOrEqual(budget.free);
+    expect(budget.lanes.app + budget.lanes.flows, `${cores}/${load} journeys`).toBeLessThanOrEqual(Math.max(2, budget.free));
+    expect(budget.upgradeWorkers, `${cores}/${load} upgrade`).toBeLessThanOrEqual(budget.free);
+  }
 });
 
 test("a stricter TOOLROLL_UPGRADE_WORKERS stays stricter", () => {
@@ -37,6 +50,6 @@ test("unmeasured load (Windows reports 0) budgets from the cores alone and is ne
 
 test("the summary names the load the check ran under and the budget it chose", () => {
   expect(loadWords([2, 9.4, 6], 24, checkBudget(24, 2))).toBe("load: 2.0 at start, peak 9.4, mean 5.8 on 24 cores; budget 16 of 24 cores: 7 unit workers, 4 app and 2 flows browser lanes, 2 upgrade workers");
-  expect(loadWords([21], 24, checkBudget(24, 21))).toMatch(/one part after another$/);
+  expect(loadWords([21], 24, checkBudget(24, 21))).toMatch(/one part after another, each with the whole budget$/);
   expect(loadWords([Number.NaN], 8, checkBudget(8))).toMatch(/^load: not measured on this platform; budget 6 of 8 cores/);
 });
