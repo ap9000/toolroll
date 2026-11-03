@@ -206,7 +206,8 @@ export function NeedsDock({ workspace }: { workspace: BrowserWorkspace }) {
   const needs = needsOf(workspace);
   const [sheet, setSheet] = useState<HTMLElement | null>(null);
   const close = useCallback(() => setSheet(null), []);
-  if (workspace.sensitive || needs.count === 0) return null;
+  // Shown on a sensitive page too: the count and its list are reads, like the rail's own count (no form, no room).
+  if (needs.count === 0) return null;
   return <div className="so-dock" data-needs-dock>
     <KDockNeeds count={needs.count} label={needs.label} scope={needs.scope === null ? "All projects" : needs.label} onOpen={event => setSheet(event.currentTarget)} />
     {sheet && <NeedsSheet needs={needs} trigger={sheet} onClose={close} />}

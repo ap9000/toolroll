@@ -51,7 +51,7 @@
   .so-ph .so-phone-work-button { margin: 0 var(--so-space-xs) 0 0; }
   /* The dock: the Needs-you button on the left; a page's own dock (its one primary) fills the rest of the same bar. */
   .so-dock { display: flex; gap: var(--so-phone-row); align-items: stretch; position: fixed; left: 0; right: 0; bottom: 0; z-index: 12; min-height: 48px; padding: 10px var(--so-phone-card) calc(10px + env(safe-area-inset-bottom)); background: var(--so-paper); border-top: 1px solid var(--so-line); }
-  .so-workspace:has(.so-dock) .k-dock { left: 148px; z-index: 13; padding-left: 0; border-top: 0; background: transparent; }
+  .so-workspace:has(.so-dock) .k-dock { left: 156px; z-index: 13; padding-left: 0; border-top: 0; background: transparent; }
   .so-workspace:not(:has(.k-dock)) .so-dock .k-dock-needs { flex: 1; width: auto; }
   /* Room under the page for the dock. */
   .so-workspace:has(.so-dock, .k-dock) .so-main-content { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
