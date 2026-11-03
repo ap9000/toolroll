@@ -1736,7 +1736,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (!facts?.csrf || !actor || !store.isInstanceOperator(actor)) return {};
         const update = updateFacts();
         if (update === null || !update.newer || update.release === null || facts.updateSeen === update.release.version) return {};
-        return { update: { version: update.release.version, security: update.release.security, href: "/settings#updates", dismissHref: "/settings/updates/dismiss" } };
+        return { update: { version: update.release.version, security: update.release.security, href: "/settings/system#updates", dismissHref: "/settings/updates/dismiss" } };
       })(),
       ...(() => {
         const databaseFile = store.databaseFile();
@@ -2276,7 +2276,6 @@ export { TASK_COMPOSER_MODES,type TaskComposerMode } from "./server/render-chat.
 export { inboxFingerprints,parseInboxTab,queueScript,type InboxTab } from "./server/render-pages.js";
 export { ssoStepUps,wrongHostPage } from "./server/render-people.js";
 export { diffFileAnchor,editorFileHref,needActionOf,orderChangedFiles,plainConclusionOf,rankReviewQueue,reviewFilePriority,reviewPriorityOf,runFactsFragment,withinSignedTouches,type ReviewFileRow,type ReviewPriority,type ReviewQueueFacts } from "./server/render-results.js";
-export { settingsGroups,settingsTiles } from "./server/render-settings.js";
 export { decisionAnswerScript,earlierVersionsWords,revisionLineageWords,type RouteView } from "./server/render-tasks.js";
 export { SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type DecisionServer } from "./server/session.js";
 

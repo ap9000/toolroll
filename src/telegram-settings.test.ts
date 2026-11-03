@@ -46,6 +46,10 @@ test("each teammate pairs and unpairs their own phone from the console; a code s
     expect(minted.status).toBe(200);
     const shown = await minted.text();
     const code = /\/pair ([0-9a-f]{32})/.exec(shown)![1]!;
+    // The code page is script-free, the code is selectable text, and it is in no address.
+    expect(shown).not.toContain("<script");
+    expect(shown).toContain(`<code class="k-scode">/pair ${code}</code>`);
+    expect(shown.match(/(?:href|action|src)="[^"]*"/g)?.filter(one => one.includes(code)) ?? []).toEqual([]);
     // The code pairs alex's own chat; sam's simultaneous code pairs sam's.
     expect(store.consumeTelegramPairing({ codeHash: hashPairingCode(code), botId: "777000", chatId: "4242", userId: "4242", updateId: 1 }, new Date())).toMatchObject({ ok: true });
     // A project-scoped subagent can manage their own phone without gaining
@@ -55,8 +59,12 @@ test("each teammate pairs and unpairs their own phone from the console; a code s
     const samPage = await (await fetch(`${base}/settings/telegram`, { headers: { cookie: samCookie } })).text();
     expect(samPage).toContain("Your phone is not paired.");
     const samCsrf = /name="csrf" value="([^"]+)"/.exec(samPage)![1]!;
-    const samSettings = await (await fetch(`${base}/settings`, { headers: { cookie: samCookie } })).text();
+    const samSettings = await (await fetch(`${base}/settings/alerts`, { headers: { cookie: samCookie } })).text();
     expect(samSettings).toContain('href="/settings/telegram"');
+    // A project-limited account sees nothing of the installation's bot: not its id, not its last characters, no form.
+    expect(samSettings).not.toContain("777000");
+    expect(samSettings).not.toContain("7890");
+    expect(samSettings).not.toContain('action="/settings/telegram-token"');
     expect((await post("/settings/telegram-token", { csrf: samCsrf, password: samPassword, token: BOT_TOKEN }, samCookie)).status).toBe(403);
     const samResponse = await post("/settings/telegram/pair", { csrf: samCsrf, password: samPassword }, samCookie);
     expect(samResponse.status).toBe(200);

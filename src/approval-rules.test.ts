@@ -80,7 +80,7 @@ async function approveAs(name: string, cookie: string, id: string): Promise<{ st
 test("an instance operator sets a project's rules with a step-up, nobody else can, and the ledger keeps before → after", async () => {
   const alex = await signIn("alex");
   const form = await page(alex, `/settings/approval?repo=${encodeURIComponent(REPO)}`);
-  expect(form).toContain("Save rules");
+  expect(form).toContain('<form method="post" action="/settings/approval" id="rules-form"');
   const fields = { csrf: csrfOf(form), repo: REPO, not_requester: "1", protect: "paths", paths: "infra/**\nmigrations/**" };
   const wrong = await post(alex, "/settings/approval", { ...fields, password: "not-it" });
   expect(decodeURIComponent(wrong.headers.get("location") ?? "")).toContain("didn't match");

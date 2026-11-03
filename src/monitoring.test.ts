@@ -289,7 +289,7 @@ test("the Monitoring page takes a step-up, shows the secret once, keeps each cha
       .headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
     const cookie = await signIn("alex", alex.token);
     const page = await (await fetch(`${base}/settings/monitoring`, { headers: { cookie } })).text();
-    expect(page).toContain("<h1>Monitoring</h1>");
+    expect(page).toContain('<h2 class="k-same">Monitoring</h2>');
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
     const post = (fields: Record<string, string>) => fetch(`${base}/settings/monitoring`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
     expect((await post({ webhook: "https://logs.example.com/in", password: "wrong" })).status).toBe(303);

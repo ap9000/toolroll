@@ -304,7 +304,7 @@ test("Settings → Retention is an instance operator's; saving takes the passwor
       .headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
     const cookie = await signIn("alex", alex.token);
     const page = await (await fetch(`${base}/settings/retention`, { headers: { cookie } })).text();
-    expect(page).toContain("<h1>Retention</h1>");
+    expect(page).toContain('<h2 class="k-same">Retention</h2>');
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
     const post = (fields: Record<string, string>) => fetch(`${base}/settings/retention`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
     const choices = { evidence: "1", checkouts: "365", chat: "forever", notifications: "30" };

@@ -54,7 +54,8 @@ const formOf = (html: string, action: string): string => {
   expect(start, `no form for ${action}`).toBeGreaterThan(-1);
   return html.slice(start, html.indexOf("</form>", start));
 };
-const PASSWORD_FIELD = /<input type="password" name="password" autocomplete="current-password" required>/;
+// Check access offers a wider level to an operator, so its field is marked typed-only (data-so-typed): still a real password field.
+const PASSWORD_FIELD = /<input type="password" name="password"(?: data-so-typed)? autocomplete="current-password" required>/;
 const ACTS = ["/settings/project/writes", "/settings/project/sandbox", "/settings/project/check-access", "/settings/project/network"] as const;
 
 async function passwordlessCookie(): Promise<{ cookie: string; csrf: string }> {

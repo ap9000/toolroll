@@ -24,7 +24,7 @@ const T0 = new Date("2026-10-02T12:00:00.000Z");
 const later = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
 const TASK_ARGS = { title: "Add a refund page", goal: "People can ask for a refund.", acceptance: [{ id: "c1", statement: "A refund can be requested.", evidence: ["manual-review"] }] };
 const INTEGRATIONS: Integration[] = [
-  { key: "telegram", group: "chat", name: "Telegram", state: "connected", account: "@toolroll_bot", detail: null, checked: true, checkedAt: null, lastSuccessAt: null, lastError: null, lastErrorAt: null, usedBy: ["Chat"], action: { kind: "test", label: "Send test" } },
+  { key: "telegram", group: "chat", name: "Telegram", state: "connected", account: "@toolroll_bot", detail: null, checked: true, checkedAt: null, lastSuccessAt: null, lastError: null, lastErrorAt: null, usedBy: ["Chat"], action: { kind: "test", label: "Check connection" } },
   { key: "slack", group: "chat", name: "Slack", state: "not-set-up", account: null, detail: null, checked: true, checkedAt: null, lastSuccessAt: null, lastError: null, lastErrorAt: null, usedBy: [], action: { kind: "setup", label: "Set up", href: "/settings/slack", command: null } },
 ];
 

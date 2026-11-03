@@ -15,6 +15,7 @@
  */
 import { attributes, html, htmlString, joinHtml, postForm, reauth, replaceMarkup, type Html, type HtmlValue } from "./html.js";
 import { isSettingsFrame } from "./settings-kit-script.js";
+import { requestContext } from "./server/request-context.js";
 import { contractReads, PROOF_INVENTORY, proofRow, type ProofRow } from "./settings-proofs.js";
 
 export { isSettingsFrame };
@@ -36,6 +37,16 @@ export function headingText(page: string): string | null {
 /** The breadcrumb for a settings-frame page: "Settings / <this page>", or nothing on the hub and outside the frame. */
 export function settingsCrumbs(pathname: string, title: string, page: string): Crumb[] | undefined {
   if (!isSettingsFrame(pathname) || pathname === "/settings") return undefined;
+  // A page in the revamp kit's Settings frame (server/kit.ts settingsShell) names its own trail: Settings, its group, itself.
+  const kit = /<nav class="k-tb-ctx k-crumbs" aria-label="Breadcrumb">([\s\S]*?)<\/nav>/.exec(page);
+  if (kit !== null) {
+    const trail: Crumb[] = [{ label: "Settings", href: "/settings" }];
+    for (const step of kit[1]!.matchAll(/<a href="([^"]*)">([\s\S]*?)<\/a>|<b aria-current="page">([\s\S]*?)<\/b>/g)) {
+      const label = (headingText(`<h1>${step[2] ?? step[3] ?? ""}</h1>`) ?? "").slice(0, 80);
+      if (label !== "") trail.push({ label, href: step[1] ?? null });
+    }
+    return trail;
+  }
   const name = headingText(page) ?? (title.charAt(0).toUpperCase() + title.slice(1));
   return [{ label: "Settings", href: "/settings" }, { label: name, href: null }];
 }
@@ -115,12 +126,15 @@ export const typedOnly = (row: ProofRow): boolean => row.proof === "typed-passwo
 /** The proof field a row's handler reads, as today's forms write it; empty for a CSRF-only row. A step-up field goes
  * through `reauth` (Passwordless leaves it out); a credential or typed field always shows. A typed-only field carries
  * `data-so-typed`, so the identity-provider swap leaves it a real password field (keepTypedFields). Never a value. */
-export function proofField(row: ProofRow, options: { label?: string } = {}): Html {
+export function proofField(row: ProofRow, options: { label?: string; optional?: boolean } = {}): Html {
   if (row.field === null || row.proof === "none") return html``;
   if (!contractReads(row, row.field)) throw new Error(`${row.id}: its form doesn't read ${row.field}`);
   const label = options.label ?? "Your Toolroll password";
   if (typedOnly(row)) return html`<label>${label}<input type="password" name="${row.field}" data-so-typed autocomplete="current-password" required></label>`;
-  const field = html`<label>${label}<input type="password" name="${row.field}" autocomplete="current-password" required></label>`;
+  // A row that needs its proof only for some posts (its `when`) leaves the field optional: the handler decides.
+  const field = options.optional === true && row.when !== undefined
+    ? html`<label>${label}<input type="password" name="${row.field}" autocomplete="current-password"></label>`
+    : html`<label>${label}<input type="password" name="${row.field}" autocomplete="current-password" required></label>`;
   return row.proof === "step-up" ? reauth(field) : field;
 }
 
@@ -170,14 +184,20 @@ export type StepUpForm = {
  * moved into a `<dialog>` inside the same form by settings-kit-script.ts, which opens it on submit, keeps the pressed
  * button, and posts nothing on Cancel. The server still proves everything.
  */
-export function stepUpForm(form: StepUpForm): Html {
-  const row = proofRow(form.proof);
-  if (!row.routes.includes(form.action)) throw new Error(`${row.id} doesn't post to ${form.action}`);
-  const hidden = form.hidden ?? {};
+/** The row for a form posting to `action` with these hidden terms; throws on a form the row doesn't describe. */
+function rowForForm(proof: string, action: string, hidden: Readonly<Record<string, string | number | null | undefined>>): ProofRow {
+  const row = proofRow(proof);
+  if (!row.routes.includes(action)) throw new Error(`${row.id} doesn't post to ${action}`);
   for (const name of Object.keys(hidden)) if (row.field === name || row.secrets.includes(name)) throw new Error(`${row.id}: ${name} is never a hidden value`);
   // The exact variant: its own selector must be in the hidden terms, and no other variant's may be.
   if (row.select !== undefined && String(hidden[row.select.field] ?? "") !== row.select.value) throw new Error(`${row.id} posts ${row.select.field}=${row.select.value}`);
-  for (const other of variantsOf(row)) if (other.select !== undefined && String(hidden[other.select.field] ?? "") === other.select.value) throw new Error(`${form.action} with ${other.select.field}=${other.select.value} is ${other.id}, not ${row.id}`);
+  for (const other of variantsOf(row)) if (other.select !== undefined && String(hidden[other.select.field] ?? "") === other.select.value) throw new Error(`${action} with ${other.select.field}=${other.select.value} is ${other.id}, not ${row.id}`);
+  return row;
+}
+
+export function stepUpForm(form: StepUpForm): Html {
+  const hidden = form.hidden ?? {};
+  const row = rowForForm(form.proof, form.action, hidden);
   const proof = proofField(row);
   const asks = htmlString(proof) !== "";
   const note = proofNote(row);
@@ -222,3 +242,71 @@ export const SETTINGS_KIT_CSS = ":root{--so-settings-width:760px}" +
   ".kit-dialog::backdrop{background:rgb(0 0 0 / .35)}.kit-dialog h2{margin:0 0 6px;font-size:17px}.kit-dialog-slot .kit-proof{display:block}" +
   ".kit-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin:16px 0 0}" +
   "@media (max-width:900px){.kit-save-bar button,.kit-dialog-actions button,.kit-crumbs a{min-height:44px}.kit-crumbs a{display:inline-flex;align-items:center}}";
+
+// ---- the revamp kit's section form (wave D) ------------------------------------------------------------------------
+
+export type SectionForm = {
+  /** The proof inventory row this form posts under. */
+  proof: string;
+  /** The exact route (one of the row's). */
+  action: string;
+  /** Unique on the page; the refusal slot is `<id>-err`. */
+  id: string;
+  /** The section's own fields. */
+  body: HtmlValue;
+  /** Hidden terms posted back unchanged (the shown project, a nonce, a digest…). */
+  hidden?: Readonly<Record<string, string | number | null | undefined>>;
+  /** The button: "Save" by default; a name=value it posts. */
+  save?: { label?: string; name?: string; value?: string; variant?: "primary" | "outline" | "danger" };
+  /** A settings section: Save shows only once something in it changed, and saves only what changed with the rest. An
+   * act (Invite, Remove) leaves this off: its button always shows. */
+  gate?: boolean;
+  /** The proof is needed only when the form posts this value (the row's `when`): [field, value]. */
+  proofWhen?: readonly [field: string, value: string];
+  /** Post as a page navigation: the answer is a page of its own (a one-time secret, a review). */
+  native?: boolean;
+  /** The answer is a file the browser saves (implies native): the page stays, so the button never stays busy. */
+  download?: boolean;
+  /** What saying yes does, for the password popover (the row's own words by default). */
+  confirm?: string;
+  /** What the handler sent back for this section, in place: done, or refused (role=alert). */
+  said?: string | null;
+  problem?: string | null;
+};
+
+/**
+ * A settings section's form in the revamp kit's look, posted to its existing route with its existing fields and
+ * proof. Without the kit's script it is a plain form: the proof field (when the row asks for one) shows in place and
+ * Save posts. With it (src/browser/kit/behavior.ts, section forms): Save appears once something changed, the proof is
+ * asked in a password popover only when the rules need it, one validated snapshot is posted, a second press does
+ * nothing while one is pending, and a refusal shows next to Save with the edits kept. The server proves everything.
+ */
+export function kitSectionForm(form: SectionForm): Html {
+  const hidden = form.hidden ?? {};
+  const row = rowForForm(form.proof, form.action, hidden);
+  if (form.proofWhen !== undefined && row.when === undefined) throw new Error(`${row.id} always needs its proof`);
+  const proof = proofField(row, { label: "Your password", optional: form.proofWhen !== undefined });
+  const asks = htmlString(proof) !== "";
+  const save = form.save ?? {};
+  const button = html`<button${attributes({ type: "submit", class: `k-btn k-btn-${save.variant ?? "primary"} k-btn-sm`, name: save.name ?? null, value: save.value ?? null, "data-k-save": true })}><span class="k-face">${save.label ?? "Save"}</span></button>`;
+  const note = proofNote(row);
+  return postForm(form.action, joinHtml([
+    form.body,
+    asks ? html`<div class="k-sproof" data-k-proof>${proof}</div>` : "",
+    html`<div class="k-ssave"><span class="k-ssave-said" aria-live="polite">${form.said ?? ""}</span>${button}</div>`,
+    html`<div class="k-ssave-err" id="${form.id}-err">${form.problem ? html`<p class="k-notice" role="alert"><span>${form.problem}</span></p>`
+      : unconfirmedHere(form.id) ? html`<p class="k-notice info" role="status">Couldn’t confirm whether this saved. This page shows what is stored now; check it before saving again.</p>` : ""}</div>`,
+  ]), { hidden, attrs: {
+    id: form.id, class: "k-sform", "data-k-sform": row.id, "data-k-gate": form.gate === true ? true : null, "data-k-native": form.native === true || form.download === true ? true : null, "data-k-download": form.download === true ? true : null,
+    "data-k-proof-if": form.proofWhen === undefined ? null : `${form.proofWhen[0]}=${form.proofWhen[1]}`,
+    "data-k-confirm": form.confirm ?? row.action, "data-k-note": note,
+  } });
+}
+
+/** Whether this request is the page again after a save of form `id` couldn't be confirmed (section-forms.ts asks for it
+ * with ?unconfirmed=<id>). It only picks which of this page's own forms shows the fixed note; the value is never drawn. */
+function unconfirmedHere(id: string): boolean {
+  const at = requestContext.getStore()?.returnTo;
+  if (at === undefined) return false;
+  try { return new URL(at, "http://toolroll.local").searchParams.get("unconfirmed") === id; } catch { return false; }
+}

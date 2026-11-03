@@ -261,7 +261,7 @@ describe('quiet learning', () => {
     try {
       const login=await fetch(url+'/login',{method:'POST',body:new URLSearchParams({name:'alex',token:password}),redirect:'manual'});const cookie=login.headers.get('set-cookie')!.split(';')[0]!;
       const get=async(path:string)=>(await fetch(url+path,{headers:{cookie}})).text();
-      expect(await get('/settings')).toContain('Learning'); const html=await get('/settings/learning');const csrf=/name="csrf" value="([^"]+)"/.exec(html)![1]!; const v=view();
+      expect(await get('/settings/agents')).toContain('href="/settings/learning"'); const html=await get('/settings/learning');const csrf=/name="csrf" value="([^"]+)"/.exec(html)![1]!; const v=view();
       const data={csrf,repo,identity:v.identity,revision:String(v.revision),action:'enable'};
       const post=async(values:Record<string,string>)=>fetch(url+'/settings/learning/change',{method:'POST',headers:{cookie},body:new URLSearchParams(values),redirect:'manual'});
       expect((await post({...data,csrf:'bad'})).status).toBe(403);expect((await post({...data,repo:join(root,'hidden')})).status).toBe(403);

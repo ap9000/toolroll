@@ -368,13 +368,13 @@ test("Settings → Storage renders its sweep state hook, the swept paths, and ho
   const view = (last: Parameters<typeof storageHtml>[0]["sweep"]) => htmlString(withFormToken("c".repeat(64), () => storageHtml({ plan: plan(), csrf: "c".repeat(64), ...(last === undefined ? {} : { sweep: last }) }, {})));
   const schedule = (state: SweepSchedule["state"], more: Partial<SweepSchedule> = {}): SweepSchedule => ({ state, lastAt: null, nextAt: null, busy: null, ...more });
   const never = view({ last: null, off: false, schedule: schedule("no-service") });
-  expect(never).toContain('<p class="meta" data-sweep-state="no-service">Automatic sweep: waiting: no Toolroll service running.</p>');
+  expect(never).toContain('<p class="k-note" data-sweep-state="no-service">Automatic sweep: waiting: no Toolroll service running.</p>');
   const at = "2026-10-04T03:12:00.000Z";
   const normal = view({ last: { at, source: "automatic", actor: "worker", parts: [part("test temp", 104_990, { items: ["/tmp/so-route-cli-1"] }), part("orphans", 1, { items: ["node (4123), 4 days, in /state/worktrees/site/build-1"] }), part("checkouts", 2, { bytes: 600 * 1024 ** 2 })] } });
   expect(normal).toContain("node (4123), 4 days, in /state/worktrees/site/build-1");
-  expect(normal).not.toContain('class="problem"');
+  expect(normal).not.toContain('class="k-notice"');
   const failed = view({ last: { at, source: "automatic", actor: "worker", parts: [part("test temp", 3, { failed: 2 }), part("orphans", 0, { problem: "working folders couldn't be read: lsof could not list working folders" })] } });
-  expect(failed).toContain('<p class="problem">');
+  expect(failed).toContain('<p class="k-notice" role="alert">');
   expect(failed).toContain("Removed 3 test temp folders. 2 couldn&#39;t be removed. Couldn&#39;t check processes.");
   expect(failed).toContain("Leftover processes: working folders couldn&#39;t be read");
   expect(view(undefined)).not.toContain("data-last-sweep");

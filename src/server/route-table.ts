@@ -305,6 +305,10 @@ get("settings", "settings.knowledge", "/settings/knowledge", { limited: "unscope
 get("settings", "settings.learning", "/settings/learning", { limited: "unscoped", ...free });
 get("settings", "settings.telegram", "/settings/telegram", { limited: "self", ...free, ...approver("An approver can pair their own phone.", "/settings") });
 get("settings", "settings.page", "/settings", { limited: "unscoped", ...free });
+// The Settings groups (docs/plans/settings-revamp.md §3): one read-only page each, drawn by the overview's handler.
+// Anyone signed in may open one; the page shows only the sections this person can use, and every form's own route
+// keeps its own role and proof.
+for (const one of ["general", "agents", "alerts", "projects", "access", "system"]) get("settings", `settings.group-${one}`, `/settings/${one}`, { limited: "unscoped", ...free });
 get("pages", "health", "/health", { ...free, ...anyOperator("An instance operator reads server health.", "/") });
 get("pages", "metrics", "/metrics", { ...free, ...anyOperator("An instance operator reads metrics.", "/") });
 get("chat", "push.key", "/push/key");

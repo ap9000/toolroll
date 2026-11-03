@@ -173,6 +173,15 @@ export const KIT_ICONS = {
   fit: [path("M15 3h6v6"), path("M9 21H3v-6"), path("M21 3l-7 7"), path("M3 21l7-7")],
   bolt: [path("M13 2 4 14h7l-1 8 9-12h-7z")],
   code: [path("m16 18 6-6-6-6"), path("m8 6-6 6 6 6")],
+  // The Settings groups' icons (wave D; SETTINGS_GROUP_ICONS).
+  sun: [circle(12, 12, 4), path("M12 2v2"), path("M12 20v2"), path("m4.93 4.93 1.41 1.41"), path("m17.66 17.66 1.41 1.41"), path("M2 12h2"), path("M20 12h2"), path("m6.34 17.66-1.41 1.41"), path("m19.07 4.93-1.41 1.41")],
+  cpu: [["rect", { x: 4, y: 4, width: 16, height: 16, rx: 2 }], ["rect", { x: 9, y: 9, width: 6, height: 6, rx: 1 }], path("M15 2v2"), path("M15 20v2"), path("M2 15h2"), path("M2 9h2"), path("M20 15h2"), path("M20 9h2"), path("M9 2v2"), path("M9 20v2")],
+  bell: [path("M10.27 21a2 2 0 0 0 3.46 0"), path("M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33")],
+  shield: [path("M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z")],
+  folder: [path("M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z")],
+  people: [path("M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"), circle(9, 7, 4), path("M22 21v-2a4 4 0 0 0-3-3.87"), path("M16 3.13a4 4 0 0 1 0 7.75")],
+  coin: [circle(12, 12, 10), path("M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"), path("M12 18V6")],
+  monitor: [["rect", { x: 2, y: 3, width: 20, height: 14, rx: 2 }], path("M8 21h8"), path("M12 17v4")],
   list: [path("M8 6h13"), path("M8 12h13"), path("M8 18h13"), path("M3 6h.01"), path("M3 12h.01"), path("M3 18h.01")],
   board: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], path("M9 3v18"), path("M15 3v18")],
   panel: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], path("M15 3v18")],
@@ -192,6 +201,14 @@ export const SETTINGS_GROUPS: ReadonlyArray<readonly [label: string, slug: strin
   ["Spend", "spend", "/spend"],
   ["System", "system", "/settings/system"],
 ];
+
+/** Each group's icon on the Settings overview (wave D). */
+export const SETTINGS_GROUP_ICONS: Readonly<Record<string, KitIcon>> = {
+  general: "sun", agents: "cpu", alerts: "bell", approval: "shield", projects: "folder", access: "people", spend: "coin", system: "monitor",
+};
+
+/** How a Settings row says what waits on this person: "1 item needs you", "2 items need you". */
+export const needsWords = (n: number): string => n === 1 ? "1 item needs you" : `${n} items need you`;
 
 /** The not-found page's default words. */
 export const NOT_FOUND = {

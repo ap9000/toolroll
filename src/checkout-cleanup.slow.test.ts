@@ -278,7 +278,7 @@ test("Settings → Storage shows checkout space and what a clean-up frees; Clean
     const measured = await fetch(`${base}/settings/storage/check`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf: /name="csrf" value="([0-9a-f]{64})"/.exec(unmeasured)![1]! }), redirect: "manual" });
     expect(measured.headers.get("location")).toBe("/settings/storage");
     const page = await (await fetch(`${base}/settings/storage`, { headers: { cookie } })).text();
-    expect(page).toContain("<h1>Storage</h1>");
+    expect(page).toContain('<h2 class="k-same">Storage</h2>');
     expect(page).toContain(goes);
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
     const preview = /name="preview" value="([0-9a-f]+)"/.exec(page)![1]!;

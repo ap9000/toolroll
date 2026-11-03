@@ -476,7 +476,7 @@ describe("the settings card", () => {
     const cookie = await login();
 
     // Before: not set, and the card says so.
-    let page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    let page = await (await fetch(`${base}/settings/alerts`, { headers: { cookie } })).text();
     expect(page).toContain("not set");
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)?.[1] as string;
 
@@ -485,8 +485,11 @@ describe("the settings card", () => {
       method: "POST",
       headers: { cookie, origin: base },
       body: new URLSearchParams({ token: "not a token", csrf }),
+      redirect: "manual",
     });
-    expect(bad.status).toBe(400);
+    // Refused back to its section with the reason; nothing is stored.
+    expect(bad.status).toBe(303);
+    expect(bad.headers.get("location")).toMatch(/^\/settings\/alerts\?problem=.+#telegram-token$/);
 
     // The real thing lands owner-only beside the database.
     const token = "777000:AAExampleExampleExample123";
@@ -502,7 +505,7 @@ describe("the settings card", () => {
     expect(readFileSync(file, "utf8").trim()).toBe(token);
 
     // After: recognizable, never whole.
-    page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    page = await (await fetch(`${base}/settings/alerts`, { headers: { cookie } })).text();
     expect(page).toContain("e123");
     expect(page).not.toContain(token);
   });

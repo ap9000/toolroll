@@ -351,6 +351,10 @@ Server builders are in `src/server/kit.ts`; React components in `src/browser/kit
 | Board | `board`, `boardCol`, `card` | `KBoard`, `KBoardCol`, `KCard` | a list's rows as columns, the optional view beside List; one column at a time on a phone |
 | Not found | `notFound(path)` | `KNotFound` | inside the shell |
 | Settings frame | `settingsShell` | `KSettingsShell` | Overview + the eight groups (`SETTINGS_GROUPS`) |
+| Settings section | `settingsSection` | — | heading (+ muted state) · one muted lead · rows; `id` is the anchor |
+| Settings link rows | `settingsLink`, `settingsLinks` | — | icon · title (+ "1 item needs you") · one status line · chevron; the whole row is the link |
+| Settings record | `settingsRecord` | — | a session, token, person or device: title · one line · when · one action · what opens under it |
+| Section form | `kitSectionForm` (`settings-kit.ts`) | — | see [Section saves](#section-saves) |
 | Phone dock | `dock(primary)` | `KDock` | the screen's one primary on a phone |
 | Composer | `composer`, `sendButton` | `KComposer` | see [Composer](#composer) |
 | Page outside the shell | `outPage`, `outField` | — | sign in, first account, invite, an error; see [Outside the shell](#outside-the-shell) |
@@ -465,6 +469,26 @@ build the terms (the panel and the password popover) and the submitted value fro
 fields. Invalid values are refused next to their field before any popover. One pending act per form: a second press
 does nothing until the first settles. However a password popover goes away (Close, Escape, the scrim, a navigation
 or re-render), it settles as cancelled (`onClose`), so the pending guard is released.
+
+## Section saves
+
+A settings section that saves is one `kitSectionForm` (`src/settings-kit.ts`), drawn from its proof inventory row
+(`src/settings-proofs.ts`) so the proof field is exactly the one its handler reads. Without script it is a plain form:
+the proof field shows in place and Save posts. With the workspace's kit behaviour (`src/browser/kit/section-forms.ts`):
+
+- `gate`: Save shows only once something in the section changed; the bar says what changed ("Quality: Strict ·
+  Asks for your password."). The section edited last carries the one ink Save; another changed section keeps an
+  outline Save. Without `gate` (an act: Invite, Remove, Cancel invite) the button always shows.
+- Save takes one snapshot of the form; the password popover's terms and the posted values come from it.
+- The password is asked only when the server rendered a proof field (Passwordless and CSRF-only rows render none)
+  and, with `proofWhen`, only when the snapshot posts that value (Full access, approve releases automatically).
+- One pending save per form. The snapshot posts with fetch; a handler's refusal (`?problem=`, a 4xx refusal page)
+  shows next to Save with the edits kept; success opens the page the server answered with. Anything that proves
+  nothing (a network failure, a server error, a sign-in page) is unconfirmed: the page opens again with
+  `?unconfirmed=<form id>` and `kitSectionForm` draws "Couldn't confirm whether this saved" in that section.
+- Saving while other sections have unsaved changes asks first, in place; leaving with changes asks through the
+  browser. Nothing is kept in Web Storage.
+- `native`: the answer is a page of its own (a one-time secret, a review, another site), so it posts as a navigation.
 
 ## Words
 
