@@ -15,12 +15,12 @@ import "./flow-view.css";
 import { Bell, BellOff, Bot, CalendarClock, Download, Ellipsis, Hourglass, LineChart, ListChecks, MessageSquareReply, Copy, Flag, GitPullRequest, Hammer, Inbox, Megaphone, MessageSquare, MousePointerClick, Pencil, PenLine, Plus, Search, Send, Signpost, Split, Globe, Mail, Wrench, SquareKanban, UserCheck, Webhook, Workflow, X, Zap } from "lucide-react";
 import { threadWhen } from "./task-view.js";
 import { deadlineWords, shortWhen, viewerZone } from "../../when-html.js";
-import { useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { BrowserFlowCard, BrowserFlowSentItem, BrowserFlowStage, BrowserFlowTrigger, BrowserFlowView } from "../../browser-workspace.js";
 import { unattendedBudgetOf, unattendedCoverWords, unattendedEndAfterWords, unattendedLimitWords, unattendedRunsOf, untilDayWords } from "../../flow-unattended-words.js";
 import { Passwordless } from "../ui/post-form.js";
 import { Badge, Button, Input, Label, Textarea, cn } from "../components/ui/index.js";
-import { KActs, KApprove, KButton, KIcon, KChip, KCount, KDisclose, KDock, KEmpty, KField, KGroup, KInput, KLinkButton, KNotice, KOverlay, KPageHeader, KRow, KSeg, KSelect, KSlots, KStatus, useKMenu } from "../kit/index.js";
+import { KActs, KApprove, KButton, KIcon, openOverlay, KChip, KCount, KDisclose, KDock, KEmpty, KField, KGroup, KInput, KLinkButton, KNotice, KOverlay, KPageHeader, KRow, KSeg, KSelect, KSlots, KStatus, useKMenu } from "../kit/index.js";
 
 /** A person's initials in a small circle, the same colour for the same name everywhere. */
 function Face({ name, size = "sm" }: { name: string; size?: "sm" | "md" }) {
@@ -1270,14 +1270,21 @@ function BrowserLine({ view, csrf, apply }: { view: BrowserFlowView; csrf: strin
  * flow's terms move on, it says so and the person reads the new ones first. The digest shown rides back.
  */
 type BrowserNow = NonNullable<BrowserFlowView["browser"]>;
-/** The browser terms a person is reading, frozen when they first see them (the frame and the dock share it). */
+/**
+ * The browser terms a person is reading, frozen when they first see them unapproved (the frame and the dock share it).
+ * Each time browser use stops standing (none, ended, or allowed and then ended), the first unapproved reading is the
+ * one shown and approved; anything newer only offers "Read the new terms", never a yes to terms nobody read.
+ */
 function useFrozenBrowser(browser: BrowserFlowView["browser"]): { frozen: BrowserNow | null; moved: boolean; reread: () => void } {
-  const [shown, setShown] = useState(browser);
-  // Allowed (or gone) and back: the next frame reads the terms as they are then.
-  useEffect(() => { if (browser == null || browser.status === "allowed") setShown(browser); }, [browser]);
-  if (browser == null || browser.status === "allowed") return { frozen: null, moved: false, reread: () => setShown(browser) };
-  const frozen = shown != null && shown.status !== "allowed" ? shown : browser;
-  return { frozen, moved: frozen.digest !== browser.digest, reread: () => setShown(browser) };
+  const unapproved = browser != null && browser.status !== "allowed" ? browser : null;
+  const shown = useRef<BrowserNow | null>(unapproved);
+  const [, redraw] = useState(0);
+  // Allowed (or gone): the next unapproved reading freezes afresh. Unapproved: the first reading stays.
+  if (unapproved === null) shown.current = null;
+  else if (shown.current === null) shown.current = unapproved;
+  const reread = useCallback(() => { shown.current = unapproved; redraw(n => n + 1); }, [unapproved]);
+  const frozen = shown.current;
+  return { frozen, moved: frozen !== null && unapproved !== null && frozen.digest !== unapproved.digest, reread };
 }
 
 function BrowserFrame({ view, csrf, apply, phone, frozen, moved, reread }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; phone: boolean; frozen: BrowserNow | null; moved: boolean; reread: () => void }) {
@@ -1339,11 +1346,12 @@ function UnattendedPanel({ view, csrf, apply, onSigned }: { view: BrowserFlowVie
   if (read.snapshot !== null) lastValid.current = read.snapshot;
   const shown = read.snapshot ?? lastValid.current;
   const pending = useRef<OwnSnapshot | null>(null);
+  const budgetField = useRef<HTMLInputElement>(null), runsField = useRef<HTMLInputElement>(null);
   if (!view.unattended.canSign) return <div data-flow-unattended-panel><p className="k-note" data-flow-unattended-problem>{view.unattended.problem}</p></div>;
   const set = (key: "days" | "budget" | "runs") => (event: { target: { value: string } }) => { setMissing(null); setDraft(current => ({ ...current, [key]: event.target.value })); };
   const check = (): boolean => {
     const now = readOwn(view, draft);
-    if (now.snapshot === null) { document.getElementById(now.errors.budget !== undefined ? "fl-own-budget" : "fl-own-runs")?.focus(); return false; }
+    if (now.snapshot === null) { (now.errors.budget !== undefined ? budgetField : runsField).current?.focus(); return false; }
     if (now.snapshot.covered.length === 0) { setMissing("Pick a schedule above to sign."); return false; }
     pending.current = now.snapshot; setSigning(now.snapshot);
     return true;
@@ -1354,8 +1362,8 @@ function UnattendedPanel({ view, csrf, apply, onSigned }: { view: BrowserFlowVie
     <KField label="Lasts">{ids => <KSelect id={ids.id} value={draft.days} onChange={set("days")} data-flow-unattended-days wide
       items={Array.from({ length: view.unattended.maxDays }, (_, index) => [String(index + 1), `${index + 1} day${index === 0 ? "" : "s"}`] as const)} />}</KField>
     <div className="fl-two">
-      <KField label="Budget per attempt ($)" error={read.errors.budget ?? null}>{ids => <KInput id="fl-own-budget" inputMode="decimal" placeholder="No cap" value={draft.budget} onChange={set("budget")} aria-invalid={ids.invalid || undefined} aria-describedby={ids.describedBy} data-flow-unattended-budget />}</KField>
-      <KField label="Runs a day" error={read.errors.runs ?? null}>{ids => <KInput id="fl-own-runs" inputMode="numeric" placeholder="No limit" value={draft.runs} onChange={set("runs")} aria-invalid={ids.invalid || undefined} aria-describedby={ids.describedBy} data-flow-unattended-runs />}</KField>
+      <KField label="Budget per attempt ($)" error={read.errors.budget ?? null}>{ids => <KInput ref={budgetField} id={ids.id} inputMode="decimal" placeholder="No cap" value={draft.budget} onChange={set("budget")} aria-invalid={ids.invalid || undefined} aria-describedby={ids.describedBy} data-flow-unattended-budget />}</KField>
+      <KField label="Runs a day" error={read.errors.runs ?? null}>{ids => <KInput ref={runsField} id={ids.id} inputMode="numeric" placeholder="No limit" value={draft.runs} onChange={set("runs")} aria-invalid={ids.invalid || undefined} aria-describedby={ids.describedBy} data-flow-unattended-runs />}</KField>
     </div>
     {optional.length > 0 && <fieldset className="fl-checks" data-flow-unattended-schedules>
       <legend>Also cover</legend>
@@ -1804,6 +1812,20 @@ function FlowCanvas(props: CanvasProps) {
     });
     return () => cancelAnimationFrame(frame);
   }, [placing, vertical, flow]);
+  // Expanded, the canvas is the kit's modal surface (openOverlay): the page behind is inert, Tab stays inside, Escape
+  // from anywhere in it comes back, and Done takes focus. Coming back puts focus on Expand again (the page does that).
+  const collapseRef = useRef(props.onCollapse);
+  collapseRef.current = props.onCollapse;
+  useLayoutEffect(() => {
+    const node = box.current;
+    if (!expanded || node === null) return;
+    let settled = false;
+    const restore = () => { node.hidden = false; node.removeAttribute("role"); node.removeAttribute("aria-modal"); node.removeAttribute("tabindex"); };
+    const close = openOverlay(node, null, { dim: false, onClose: how => { settled = true; restore(); if (how !== "close") collapseRef.current?.(); } });
+    node.setAttribute("aria-label", `${props.name}, full screen`);
+    node.querySelector<HTMLElement>("[data-flow-collapse]")?.focus();
+    return () => { if (!settled) close(); restore(); node.removeAttribute("aria-label"); };
+  }, [expanded, props.name]);
   // Expanding or coming back changes the canvas's width: keep the zoom and the height you were at, centred again.
   const wasExpanded = useRef(expanded);
   useEffect(() => {
@@ -1834,7 +1856,6 @@ function FlowCanvas(props: CanvasProps) {
     else if (event.key === "-" || event.key === "_") void flow.zoomOut({ duration: 160 });
     else if (event.key === "0") void flow.fitView({ padding: 0.12, maxZoom: 1, duration: 160 });
     else if (event.key.startsWith("Arrow")) void flow.setViewport({ x: x + (event.key === "ArrowLeft" ? step : event.key === "ArrowRight" ? -step : 0), y: y + (event.key === "ArrowUp" ? step : event.key === "ArrowDown" ? -step : 0), zoom });
-    else if (event.key === "Escape" && expanded) props.onCollapse?.();
     else return;
     event.preventDefault();
   };
@@ -1934,7 +1955,15 @@ export function FlowView({ view: initial, csrf }: { view: BrowserFlowView; csrf:
     return () => document.documentElement.classList.remove("fl-locked");
   }, [expanded]);
   useEffect(() => { if (!phone) { setExpanded(false); } }, [phone]);
-  const collapse = useCallback(() => { setExpanded(false); requestAnimationFrame(() => (document.querySelector<HTMLElement>("[data-flow-expand]") ?? expandFrom.current)?.focus({ preventScroll: true })); }, []);
+  const collapse = useCallback(() => setExpanded(false), []);
+  // Back from full screen: focus returns to Expand, once it is drawn again.
+  const wasExpanded = useRef(false);
+  useEffect(() => {
+    if (expanded) { wasExpanded.current = true; return; }
+    if (!wasExpanded.current) return;
+    wasExpanded.current = false;
+    document.querySelector<HTMLElement>("[data-flow-expand]")?.focus({ preventScroll: true });
+  }, [expanded]);
 
   const live = view.triggers.filter(one => one.state !== "removed");
   const stages = draft?.stages ?? view.stages;

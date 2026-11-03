@@ -270,6 +270,11 @@ test("the Spend page, its CSV and budgets are an instance operator's; the task p
     const post = (fields: Record<string, string>) => fetch(`${base}/spend/budget`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
     expect((await post({ target: `project:${REPO}`, usd: "2", stop: "1", action: "save", password: "wrong" })).headers.get("location")).toContain("problem=");
     expect(store.budgets()).toEqual([]);
+    // A refused new limit for a person comes back with that person still chosen (a retry never lands on someone else).
+    const back = (await post({ target: "person:sam", usd: "40", stop: "1", action: "save", password: "wrong" })).headers.get("location")!;
+    const retry = await (await fetch(`${base}${back}`, { headers: { cookie } })).text();
+    expect(retry).toContain('<option value="person:sam" selected>');
+    expect(retry).not.toContain('<option value="person:alex" selected>');
     expect((await post({ target: `project:${REPO}`, usd: "2", stop: "1", action: "save", password: alex.token })).headers.get("location")).toContain("said=");
     expect(store.budgets()).toMatchObject([{ scope: "project", key: REPO, limitMicrousd: 2_000_000, hardStop: true }]);
     expect((await post({ target: "project:/somewhere/else", usd: "2", action: "save", password: alex.token })).headers.get("location")).toContain("problem=");

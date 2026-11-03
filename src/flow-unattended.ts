@@ -235,10 +235,11 @@ function closeGrant(store: Store, row: Record<string, unknown>, by: string, reas
 export function endUnattendedGrants(store: Store, filter: { flow: number } | { repo: string } | { signer: string } | { script: { repo: string; name: string } }, by: string, reason: Exclude<UnattendedEnd, "expired" | "revoked" | "renewed">, now: Date): number {
   const rows = "flow" in filter ? store.handle.prepare("SELECT * FROM flow_unattended_grant WHERE flow = ? AND revoked_at IS NULL").all(filter.flow)
     : "signer" in filter ? store.handle.prepare("SELECT * FROM flow_unattended_grant WHERE signed_by = ? AND revoked_at IS NULL").all(filter.signer)
-    // A script saved or removed: the grants in its project that signed a schedule running it (an unreadable one too, to be safe).
+    // A script saved or removed: the grants in its project that signed a schedule running it, or whose flow has a step
+    // that runs it (pre-authorized work would run the new code unseen); an unreadable one too, to be safe.
     : "script" in filter ? store.handle.prepare("SELECT * FROM flow_unattended_grant WHERE repo = ? AND revoked_at IS NULL").all(filter.script.repo).filter(row => {
         const terms = unattendedTermsFromJson(String(row["terms_json"]));
-        return terms === null || terms.triggers.some(one => one.script?.name === filter.script.name);
+        return terms === null || terms.triggers.some(one => one.script?.name === filter.script.name) || flowStepRunsScript(store, Number(row["flow"]), filter.script.name);
       })
     // A project's rules reach the flows in it and the flows whose build zones work in it.
     : store.handle.prepare(`SELECT ug.* FROM flow_unattended_grant ug JOIN flow f ON f.id = ug.flow WHERE ug.revoked_at IS NULL
@@ -740,4 +741,14 @@ function unattendedEndedOf(store: Store, flowId: number, now: Date): { why: stri
   if (row === undefined || row["revoked_at"] == null) return null;
   const why = ENDED_WORDS[String(row["revoke_reason"]) as UnattendedEnd];
   return why === undefined || Date.parse(String(row["absolute_expiry"])) <= now.getTime() ? null : { why, at: String(row["revoked_at"]) };
+}
+
+/** Whether one of the flow's "Run a script" steps runs this script (an unreadable drawing counts, to be safe). */
+function flowStepRunsScript(store: Store, flowId: number, name: string): boolean {
+  const flow = store.getFlow(flowId);
+  if (flow === null) return false;
+  try {
+    const drawn = JSON.parse(flow.definitionJson) as { stages?: { kind?: unknown; script?: unknown }[] };
+    return (drawn.stages ?? []).some(stage => stage.kind === "check" && stage.script === name);
+  } catch { return true; }
 }

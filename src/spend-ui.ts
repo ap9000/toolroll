@@ -123,7 +123,7 @@ function limitForm(row: LimitRowView | null, edit: LimitEdit, view: SpendView, t
   const choose = row === null && targets !== undefined
     ? field({ id: `${id}-for`, label: "For", control: html`<span class="k-selw wide"><select class="k-sel" id="${id}-for" name="target" required>${(["People", "Subagents"] as const).map(group => {
       const members = targets.filter(one => one.group === group);
-      return members.length === 0 ? "" : html`<optgroup label="${group}">${members.map(one => html`<option value="${one.value}">${one.label}</option>`)}</optgroup>`;
+      return members.length === 0 ? "" : html`<optgroup label="${group}">${members.map(one => html`<option value="${one.value}"${one.value === edit.target ? html` selected` : ""}>${one.label}</option>`)}</optgroup>`;
     })}</select></span>` })
     : "";
   const password = approvalAsk("step-up", facts) === "password"

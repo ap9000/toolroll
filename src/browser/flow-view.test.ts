@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { BrowserFlowView } from "../browser-workspace.js";
 import { flowFromSteps } from "../flows.js";
 import { FlowView } from "./views/flow-view.js";
+import { installKitBehavior } from "./kit/index.js";
 
 const definition = flowFromSteps([{ id: "build", title: "Build", kind: "task", instructions: "Fix checkout rounding" }, { id: "review", title: "Review", kind: "approval" }], null);
 const view = (waiting: string, live: string): BrowserFlowView => ({
@@ -144,6 +145,9 @@ test.each([false, true])("runs on its own: the live line with one-click Revoke, 
   expect(terms()[TERMS.head.length]).toBe(covers(["“Weekly upkeep”, Mondays at 09:00", "the issues script, daily at 07:00"]));
   await act(async () => script.click());
   const runs = panel.querySelector<HTMLInputElement>("[data-flow-unattended-runs]")!;
+  // Each limit field is its label's control.
+  expect(document.querySelector(`label[for="${CSS.escape(runs.id)}"]`)?.textContent).toBe("Runs a day");
+  expect(document.querySelector(`label[for="${CSS.escape(panel.querySelector<HTMLInputElement>("[data-flow-unattended-budget]")!.id)}"]`)?.textContent).toBe("Budget per attempt ($)");
   // An invalid limit is refused next to its field, before any password: the terms keep the last valid reading.
   await typeInto(runs, "3.5");
   expect(runs.getAttribute("aria-invalid")).toBe("true");
@@ -224,6 +228,54 @@ test("browser use: a live update never swaps the terms the password approves", a
   await act(async () => [...panel().querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent === "Read the new terms")!.click());
   expect(panel().querySelector("[data-flow-browser-terms]")!.textContent).toContain(`Approval digest ${"b".repeat(32)}`);
   expect([...panel().querySelectorAll("button")].some(one => one.textContent === "Allow browser")).toBe(true);
+});
+
+test("browser use: after an approval ends, the first unapproved terms are frozen; a newer script while the password is open only offers Reload", async () => {
+  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: false, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  const drawn = flowFromSteps([{ id: "run", title: "Run journeys", kind: "check", script: "journeys", browser: true }], null);
+  const browser = (status: "allowed" | "ended", version: number, digest: string): NonNullable<BrowserFlowView["browser"]> => ({ status, words: status === "allowed" ? "Browser: allowed by alex, Nov 1" : "Browser approval ended: the script changed",
+    signedBy: "alex", signedAt: "2026-11-01T12:00:00Z", zones: [{ zone: "run", title: "Run journeys", script: "journeys", version, digest: String(version).repeat(64) }], terms: ["Lets the journeys script start Chromium."], digest, problem: null });
+  const at = (live: string, next: NonNullable<BrowserFlowView["browser"]>): BrowserFlowView => ({ ...view("Ready", live), canEdit: true, start: drawn.start, stages: drawn.stages, cards: [], browser: next });
+  const views = [at("two", browser("ended", 2, "b".repeat(32))), at("three", browser("ended", 3, "c".repeat(32)))];
+  const posted: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (path: string) => { if (path.endsWith("/browser")) posted.push(path); return { ok: true, json: async () => views.shift() }; }));
+  await act(async () => root!.render(createElement(FlowView, { view: at("one", browser("allowed", 1, "a".repeat(32))), csrf: "fixture" })));
+  expect(document.querySelector("[data-flow-browser-panel]")).toBeNull();
+  const nudge = (live: string) => act(async () => { streams.at(-1)!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ at: live }) })); });
+  await nudge("two");
+  const panel = () => document.querySelector("[data-flow-browser-panel]")!;
+  expect(panel().textContent).toContain("Browser approval expired");
+  await act(async () => [...panel().querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent === "Allow browser")!.click());
+  await typeInto(document.querySelector<HTMLInputElement>('.k-pop input[name="token"]')!, "correct horse");
+  // Another script edit lands while the password is open: the terms read stay, and nothing can approve the new ones.
+  await nudge("three");
+  expect(panel().querySelector("[data-flow-browser-terms]")!.textContent).toContain(`Approval digest ${"b".repeat(32)}`);
+  expect(panel().querySelector("[data-flow-browser-moved]")).not.toBeNull();
+  expect(document.querySelector('.k-pop input[name="token"]')).toBeNull();
+  expect([...panel().querySelectorAll("button")].some(one => one.textContent === "Allow browser")).toBe(false);
+  expect(posted).toEqual([]);
+});
+
+test("phone: Expand gives the canvas the screen as a modal surface; Escape from any control in it comes back to Expand", async () => {
+  installKitBehavior();
+  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: query === "(max-width: 760px)", media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(createElement(FlowView, { view: view("Ready", "x"), csrf: "fixture" })));
+  await act(async () => [...document.querySelectorAll<HTMLButtonElement>(".fl-viewsw button")].find(one => one.textContent === "Canvas")!.click());
+  await act(async () => document.querySelector<HTMLButtonElement>("[data-flow-expand]")!.click());
+  const surface = document.querySelector<HTMLElement>(".fl-canvas.expanded")!;
+  expect(surface.getAttribute("aria-modal")).toBe("true");
+  expect(document.activeElement).toBe(surface.querySelector("[data-flow-collapse]"));
+  // The page behind is out of reach while it's expanded.
+  expect(document.querySelector<HTMLElement>(".fl-head")!.closest<HTMLElement>("[inert]") ?? document.querySelector<HTMLElement>(".fl-head")!.parentElement!.querySelector(":scope > [inert]")).not.toBeNull();
+  const zoomIn = surface.querySelector<HTMLButtonElement>('[aria-label="Zoom in (+)"]')!;
+  zoomIn.focus();
+  await act(async () => { zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await new Promise(resolve => requestAnimationFrame(() => resolve(null))); });
+  expect(document.querySelector(".fl-canvas.expanded")).toBeNull();
+  expect(document.querySelector<HTMLElement>(".fl-canvas")!.hidden).toBe(false);
+  expect(document.activeElement).toBe(document.querySelector("[data-flow-expand]"));
+  expect(document.querySelector("[inert]")).toBeNull();
 });
 
 test("a person who can't sign reads why, and a flow without a schedule shows nothing", async () => {
