@@ -212,6 +212,10 @@
 .k-slot-acts .k-btn.k-btn-ghost { min-width: 0; }
 .k-slot-terms { margin: 0; font-size: 12px; color: var(--so-muted); line-height: 1.5; min-height: 1.5em; }
 .k-slot-err:empty { display: none; }
+/* The choice an act takes (radio cards, a note), between the text and the actions. */
+.k-slot-body { display: grid; gap: 12px; min-width: 0; }
+/* A short tag on a radio card (Recommended): the card's third column. */
+.k-opt > .k-chip { align-self: start; }
 /* The password a step-up asks for, inside the slots' form: label above, never a placeholder in its place. */
 .k-reauth { display: grid; gap: 6px; max-width: 320px; }
 /* The Needs-you panel: waits that aren't tasks, on their own page. */

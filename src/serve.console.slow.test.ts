@@ -1010,11 +1010,12 @@ describe("the operations console", () => {
     store.finishRun(run, { outcome: "built", reason: "clean", now: T0 });
     const cookie = await login();
 
-    const list = await (await fetch(url("/runs"), { headers: { cookie } })).text();
-    expect(list).toContain(`/r/${run}`);
-
-    expect((await fetch(url("/runs?before=abc"), { headers: { cookie } })).status).toBe(400);
-    expect((await fetch(url("/runs?before=9007199254740993"), { headers: { cookie } })).status).toBe(400);
+    // Build history lives on Agents now; the old list's address forwards there, whatever it carried.
+    for (const path of ["/runs", "/runs?before=abc"]) {
+      const moved = await fetch(url(path), { headers: { cookie }, redirect: "manual" });
+      expect(moved.status, path).toBe(302);
+      expect(moved.headers.get("location"), path).toBe("/agents");
+    }
 
     const screen = await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text();
     expect(screen).toContain("$0.42");
@@ -1981,11 +1982,13 @@ describe("the board — the pipeline as lanes, live in place", () => {
     expect(again.status).toBe(409);
   });
 
-  test("the old morning route forwards to activity, which speaks of windows, not nights", async () => {
+  test("the old morning and activity routes forward to Home, which has the summary now", async () => {
     const cookie = await login();
-    const moved = await fetch(url("/morning"), { headers: { cookie }, redirect: "manual" });
-    expect(moved.status).toBe(302);
-    expect(moved.headers.get("location")).toBe("/activity");
+    for (const path of ["/morning", "/activity"]) {
+      const moved = await fetch(url(path), { headers: { cookie }, redirect: "manual" });
+      expect(moved.status, path).toBe(302);
+      expect(moved.headers.get("location"), path).toBe("/");
+    }
   });
 });
 
@@ -2866,8 +2869,8 @@ describe("the workbench (attended A1) and the live substrate", () => {
     expect(open).toContain("data-elapsed-since=");
     store.finishRun(1, { outcome: "built", committed: true, now: new Date() });
     const closed = await (await fetch(url("/r/1?fragment=facts"), { headers: { cookie } })).text();
-    expect(closed).toContain("finished");
-    expect(closed).toContain("reload for the final record");
+    expect(closed).toContain("It finished.");
+    expect(closed).toContain("Reload for the final record");
     expect(closed).not.toContain("<form");
   });
 });
@@ -2960,8 +2963,7 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
   test("a live run says running in plain words; an orphaned run stays never finished and gets no poller", async () => {
     const cookie = await login();
     const alive = await (await fetch(url(`/r/${liveRun}`), { headers: { cookie } })).text();
-    expect(alive).toContain("badge-running");
-    expect(alive).toContain(">running<");
+    expect(alive).toContain('<span class="k-chip live">Running</span>');
     expect(alive).toContain("agent working");
     expect(alive).toContain('id="run-facts-stamp"');
 
@@ -2969,20 +2971,20 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
     // poller stamp. (The page's side list still shows OTHER runs' badges,
     // so the fragment is the honest place to assert absence.)
     const orphan = await (await fetch(url(`/r/${orphanRun}`), { headers: { cookie } })).text();
-    expect(orphan).toContain("never finished");
+    expect(orphan).toContain(">Never finished<");
     // The chrome layer's script text mentions the attribute name, so the
     // markup form (with =) is the honest absence assertion.
     expect(orphan).not.toContain('data-elapsed-since="');
     expect(orphan).not.toContain('id="run-facts-stamp"');
     expect(orphan).not.toContain("?fragment=facts");
     const orphanFacts = await (await fetch(url(`/r/${orphanRun}?fragment=facts`), { headers: { cookie } })).text();
-    expect(orphanFacts).not.toContain("badge-running");
+    expect(orphanFacts).not.toContain('<span class="k-chip live">Running</span>');
   });
 
   test("the facts fragment stops the poller for finished AND orphaned runs, and answers live otherwise", async () => {
     const cookie = await login();
     const alive = await (await fetch(url(`/r/${liveRun}?fragment=facts`), { headers: { cookie } })).text();
-    expect(alive).toContain(">running<");
+    expect(alive).toContain('<span class="k-chip live">Running</span>');
     expect(alive).not.toContain("data-region-stop");
 
     const orphan = await (await fetch(url(`/r/${orphanRun}?fragment=facts`), { headers: { cookie } })).text();
@@ -2991,7 +2993,7 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
 
     store.finishRun(liveRun, { outcome: "built", committed: true, now: new Date() });
     const finished = await (await fetch(url(`/r/${liveRun}?fragment=facts`), { headers: { cookie } })).text();
-    expect(finished).toContain("reload for the final record");
+    expect(finished).toContain("Reload for the final record");
     expect(finished).toContain("data-region-stop");
   });
 

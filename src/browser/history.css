@@ -1,0 +1,84 @@
+/* History pages on the revamp kit (UI revamp wave B): an attempt (/r/<id>), a task's full record (/t/<id>/evidence),
+ * an agent's question (/d/<id>) and the audit log (/ledger). Server HTML (src/server/render-history.ts,
+ * src/ledger-view.ts); the kit (src/design/kit.css) does the rest. Only what the kit has no piece for: lists of
+ * timed lines, a small table, the audit rows. Tokens only; phones are 760px and narrower. */
+
+.h-page { min-width: 0; }
+
+/* Reading text and machine output inside a doc column. */
+.h-read { margin: 0; font-size: 14px; line-height: 1.7; max-width: 66ch; }
+.h-lead { margin-top: calc(-1 * var(--so-space-sm)); }
+.h-pre { margin: 0; padding: var(--so-space-md); border: 1px solid var(--so-line); border-radius: var(--so-radius-md); background: var(--so-raised); white-space: pre-wrap; overflow-wrap: anywhere; }
+.h-live { max-height: 24rem; overflow: auto; }
+.h-list { display: grid; gap: var(--so-space-xs); }
+.h-list ul, .h-ol { margin: 0; padding-left: var(--so-space-xl); display: grid; gap: var(--so-space-xs); font-size: 13px; }
+.h-select { user-select: all; overflow-wrap: anywhere; }
+
+/* Timed lines (notes, comments, the record's audit log): time · words, between hairlines. */
+.h-notes, .h-log, .h-files { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--so-line); }
+.h-notes > li, .h-files > li { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: var(--so-space-md); align-items: baseline; padding: var(--so-space-sm) 0; border-bottom: 1px solid var(--so-line); font-size: 13px; overflow-wrap: anywhere; }
+.h-files > li { grid-template-columns: minmax(0, 1fr) auto; }
+.h-log > li { display: grid; grid-template-columns: 128px minmax(0, 1fr) auto 104px; gap: var(--so-space-md); align-items: baseline; padding: var(--so-space-sm) 0; border-bottom: 1px solid var(--so-line); font-size: 12.5px; overflow-wrap: anywhere; }
+.h-seal { text-align: right; }
+
+/* Small forms in a doc column: a note line, a pair of fields, a one-button form. */
+.h-addnote { display: flex; gap: var(--so-space-sm); align-items: center; }
+.h-addnote .k-input { flex: 1; min-width: 0; }
+.h-form { display: grid; gap: var(--so-space-md); }
+.h-pair { display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: var(--so-space-md); }
+.h-inline { display: grid; gap: var(--so-space-sm); justify-items: start; }
+/* A question's options read as sentences: one card per line. */
+.h-question .k-radios { grid-template-columns: minmax(0, 1fr); }
+.h-check { display: flex; gap: var(--so-space-sm); align-items: flex-start; font-size: 13px; }
+.h-check input { margin: 3px 0 0; accent-color: var(--so-ink); }
+
+/* The record's Agents table: one line per run. */
+.h-table { display: grid; border-top: 1px solid var(--so-line); overflow-x: auto; }
+.h-tr { display: grid; grid-template-columns: 64px 72px minmax(140px, 1.6fr) minmax(88px, 1fr) 64px minmax(96px, 1fr) 104px; gap: var(--so-space-md); align-items: baseline; padding: var(--so-space-sm) 0; border-bottom: 1px solid var(--so-line); font-size: 12.5px; min-width: 640px; }
+.h-th { color: var(--so-muted); font-weight: 500; }
+.h-changes { display: grid; gap: var(--so-space-sm); padding-top: var(--so-space-sm); }
+.h-tools { flex-wrap: nowrap; }
+.h-phone-tools { display: none; }
+.h-foot { overflow-wrap: anywhere; }
+
+/* The audit log: the top bar, its tools, then quiet timed rows. */
+.h-tools-row { display: grid; gap: var(--so-space-md); padding: var(--so-space-md) var(--so-space-2xl); border-bottom: 1px solid var(--so-line); }
+.h-chain { display: grid; gap: var(--so-space-sm); justify-items: start; }
+.h-filters { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) auto; gap: var(--so-space-md); align-items: end; padding-top: var(--so-space-md); }
+.h-export { grid-template-columns: repeat(2, minmax(0, 180px)) auto; padding-bottom: var(--so-space-sm); }
+.h-audit { display: grid; grid-template-columns: 168px minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); gap: var(--so-space-lg); align-items: baseline; min-height: 40px; box-sizing: border-box; padding: 10px var(--so-space-2xl); border-bottom: 1px solid var(--so-line); font-size: 13px; overflow-wrap: anywhere; }
+.h-audit-time { color: var(--so-muted); font-size: 12px; }
+.h-actor { color: inherit; font-weight: 600; text-decoration: none; }
+.h-audit-detail { display: block; color: var(--so-muted); font-size: 12px; }
+.h-audit-place, .h-audit-out { color: var(--so-muted); font-size: 12px; }
+.h-foot-row { display: grid; gap: var(--so-space-md); padding: var(--so-space-md) var(--so-space-2xl) 40px; }
+.h-ledger .k-empty { padding: var(--so-space-3xl) var(--so-space-2xl); }
+
+@media (hover: hover) {
+  .h-actor:hover { text-decoration: underline; text-decoration-color: var(--so-field-line); text-underline-offset: 3px; }
+}
+
+@media (max-width: 760px) {
+  .h-notes > li, .h-log > li { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .h-seal { text-align: left; }
+  .h-addnote { flex-direction: column; align-items: stretch; }
+  .h-pair { grid-template-columns: minmax(0, 1fr); }
+  .h-tools { display: none; }
+  .h-phone-tools { display: flex; }
+  .h-phone-tools .k-btn { width: 100%; }
+  .h-tools-row { padding: var(--so-phone-card) var(--so-phone-gutter); }
+  .h-filters, .h-export { grid-template-columns: minmax(0, 1fr); }
+  .h-audit { grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 10px var(--so-phone-gutter); }
+  .h-foot-row { padding: var(--so-phone-card) var(--so-phone-gutter) 40px; }
+  .h-ledger .k-empty { padding: var(--so-space-xl) var(--so-phone-gutter); }
+}
+
+/* Print: the full record alone, without the app around it or its own buttons. */
+@media print {
+  body:has([data-evidence-pack]) * { visibility: hidden; }
+  [data-evidence-pack], [data-evidence-pack] * { visibility: visible; }
+  [data-evidence-pack] { position: absolute; inset: 0 auto auto 0; width: 100%; }
+  [data-evidence-pack] .k-ph, [data-evidence-pack] .k-backlink, [data-evidence-pack] .h-tools, [data-evidence-pack] .h-phone-tools { display: none; }
+  [data-evidence-pack] .k-sec { break-inside: avoid-page; }
+  [data-evidence-pack] .h-tr { min-width: 0; }
+}

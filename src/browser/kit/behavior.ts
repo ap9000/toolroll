@@ -267,6 +267,9 @@ function composerMenus(event: MouseEvent): boolean {
 
 let installed = false;
 /** Wire the kit's behaviour onto the document once: delegated listeners, so markup placed later works too. */
+/** A busy button's own face, put back when the page returns (Back). */
+const savedFaces = new WeakMap<HTMLButtonElement, Node[]>();
+
 export function installKitBehavior(): void {
   if (installed || typeof document === "undefined") return;
   installed = true;
@@ -299,6 +302,38 @@ export function installKitBehavior(): void {
       const words = toggle.querySelector("[data-k-words]");
       if (words) words.textContent = (on ? onWord : offWord) ?? "";
       toggle.dispatchEvent(new CustomEvent("k-switch", { bubbles: true, detail: { on } }));
+      return;
+    }
+    // A server page's Print (data-k-print): the browser's print dialog; the page's print rules decide what shows.
+    if (target.closest("[data-k-print]")) { event.preventDefault(); window.print(); }
+  });
+  // A server page's native form whose button names its busy face (data-k-busy="Answering…"): the face shows until
+  // the next page arrives, and a second press does nothing meanwhile. The page coming back (Back) restores it.
+  document.addEventListener("submit", event => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || event.defaultPrevented) return;
+    const button = (event.submitter instanceof HTMLButtonElement ? event.submitter : null) ?? form.querySelector<HTMLButtonElement>("button[type=submit][data-k-busy]");
+    const busy = button?.dataset["kBusy"];
+    if (button === null || button === undefined || busy === undefined) return;
+    if (form.getAttribute("aria-busy") === "true") { event.preventDefault(); return; }
+    form.setAttribute("aria-busy", "true");
+    const face = button.querySelector(".k-face");
+    if (face !== null) {
+      savedFaces.set(button, Array.from(face.childNodes));
+      face.replaceChildren(Object.assign(document.createElement("span"), { className: "k-spin" }), document.createTextNode(busy));
+      face.firstElementChild?.setAttribute("aria-hidden", "true");
+    }
+    button.classList.add("busy");
+  });
+  window.addEventListener("pageshow", () => {
+    for (const form of document.querySelectorAll<HTMLFormElement>("form[aria-busy=true]")) {
+      const button = form.querySelector<HTMLButtonElement>("button.busy[data-k-busy]");
+      if (button === null) continue;
+      form.removeAttribute("aria-busy");
+      button.classList.remove("busy");
+      const face = button.querySelector(".k-face");
+      const saved = savedFaces.get(button);
+      if (face !== null && saved !== undefined) face.replaceChildren(...saved);
     }
   });
   document.addEventListener("keydown", trapTab, true);

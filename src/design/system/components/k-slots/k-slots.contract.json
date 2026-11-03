@@ -27,6 +27,10 @@
       "type": "node",
       "required": true
     },
+    "body": {
+      "type": "node",
+      "description": "The choice the act takes (radio cards, a note), between the text and the actions."
+    },
     "acts": {
       "type": "node",
       "required": true

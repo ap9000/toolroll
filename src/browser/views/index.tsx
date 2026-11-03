@@ -11,6 +11,7 @@ const taskResult: ResultSlot = (selected, csrf, current) => <SelectedResult key=
 import { TasksView } from "./tasks-view.js";
 import { FlowView } from "./flow-view.js";
 import { AgentsView } from "./agents-view.js";
+import "../history.css";
 
 export { TaskDetails, type ThreadChat } from "./task-view.js";
 
