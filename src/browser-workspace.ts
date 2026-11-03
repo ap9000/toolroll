@@ -348,7 +348,7 @@ export type BrowserTaskView = {
     /** When a remembered password stops counting (ISO); the page words it in the viewer's zone. */
     rememberedUntil: string | null; planHtml: string } | null;
   /** Ship: the pull request's checks, each on one time axis (task ship's twin). Null: no checks read yet. */
-  ship?: { pr: number; head: string; state: "running" | "passed" | "failed"; rows: import("./design/kit.js").TimingRow[]; summary: string; observedAt: string } | null;
+  ship?: { pr: number; head: string; state: "running" | "passed" | "failed" | "none"; rows: import("./design/kit.js").TimingRow[]; summary: string; observedAt: string } | null;
   /** A release's own steps (release status's twin). Null: this task is no release, or nothing recorded. */
   release?: { tag: string; version: string; pr: number | null; state: "running" | "waiting" | "failed" | "done"; rows: import("./design/kit.js").TimingRow[];
     headline: string; stopped: { step: string; message: string; at: string } | null; startedAt: string } | null;

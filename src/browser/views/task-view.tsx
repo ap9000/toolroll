@@ -213,7 +213,8 @@ function ApprovalBox({ approve, latest, onEdit }: { approve: NonNullable<Browser
 /** Ship: the pull request's checks on one elapsed-time axis (`toolroll task ship` is its twin). Merge stays the pull
  * request card's own act. Nothing animates while a check runs: a ring says running. */
 function ShipBox({ ship }: { ship: NonNullable<BrowserTaskView["ship"]> }) {
-  const chip = ship.state === "failed" ? <KChip word="Check failed" tone="failed" /> : ship.state === "running" ? <KChip word="Checks running" tone="live" /> : <KChip word="Checks passed" tone="done" />;
+  const chip = ship.state === "failed" ? <KChip word="Check failed" tone="failed" /> : ship.state === "running" ? <KChip word="Checks running" tone="live" />
+    : ship.state === "passed" ? <KChip word="Checks passed" tone="done" /> : <KChip word="No current checks" />;
   return <section className="k-sec" aria-label="Ship" data-ship={ship.state}>
     <KTiming label={`Pull request #${ship.pr} · checks`} head="Check" chip={chip} rows={ship.rows}
       foot={<>{ship.summary} on <span className="k-mono">{ship.head}</span> · read <time dateTime={ship.observedAt} title={whenTitle(ship.observedAt)}>{threadWhen(ship.observedAt)}</time></>} />

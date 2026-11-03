@@ -877,8 +877,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     // Ship (its pull request's checks, each on one time axis) and a release's own steps, read from the store now.
     const rootId = family?.root.id ?? taskId;
     const oneTaskView = onePage?.kind === "task" ? { ...onePage, ship: shipViewOf(shipChecksForTask(runtime.store, rootId), runtime.clock()),
-      release: releaseStepsViewOf(releaseProgressFor(runtime.store, rootId), runtime.clock(),
-        (() => { try { return releaseViewOf(runtime.store, rootId, runtime.clock())?.state ?? null; } catch { return null; } })()) } : onePage;
+      release: releaseStepsViewOf(releaseProgressFor(runtime.store, rootId), runtime.clock()) } : onePage;
     // The Result tab's no-script page, under the task's own (the same HTML its result page serves), and its script.
     if (extras.result != null) {
       page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result">${extras.result.html}</section>`;
@@ -1200,12 +1199,13 @@ export function shipViewOf(ship: ShipChecks | null, now: Date): NonNullable<Brow
   const failed = ship.checks.filter(one => one.state === "failed" || one.state === "cancelled").length;
   const running = ship.checks.length - passed - failed;
   // The overall status is the observation's own (the one merges read); the rows only time each check.
-  const state = ship.observed === "failing" ? "failed" as const : ship.observed === "passing" ? "passed" as const : ship.observed === "running" ? "running" as const
-    : failed > 0 ? "failed" as const : running > 0 ? "running" as const : "passed" as const;
+  // `none` (the pull request closed or merged, or GitHub reported no checks) is never painted as passed.
+  const state = ship.observed === "failing" ? "failed" as const : ship.observed === "passing" ? "passed" as const : ship.observed === "running" ? "running" as const : "none" as const;
   return {
     pr: ship.prNumber, head: ship.headSha.slice(0, 7), state, rows,
     summary: state === "failed" ? (failed > 0 ? `${failed} of ${ship.checks.length} ${ship.checks.length === 1 ? "check" : "checks"} failed` : "Checks are failing on GitHub")
-      : state === "running" ? `${passed} of ${ship.checks.length} checks passed` : `All ${ship.checks.length} ${ship.checks.length === 1 ? "check" : "checks"} passed`,
+      : state === "running" ? `${passed} of ${ship.checks.length} checks passed` : state === "passed" ? `All ${ship.checks.length} ${ship.checks.length === 1 ? "check" : "checks"} passed`
+      : "No current checks: the pull request is closed or merged, or GitHub reported none",
     observedAt: ship.observedAt,
   };
 }
@@ -1218,7 +1218,7 @@ const RELEASE_STEP_WORDS: Readonly<Record<string, string>> = {
 
 /** A release's steps as its progress view shows them: every step in order on one time axis, the ones not reached
  * queued, and where it stands in one line. Null: this task is no release. */
-export function releaseStepsViewOf(progress: ReturnType<typeof releaseProgressFor>, now: Date, authority: string | null = null): NonNullable<BrowserTaskView["release"]> | null {
+export function releaseStepsViewOf(progress: ReturnType<typeof releaseProgressFor>, now: Date): NonNullable<BrowserTaskView["release"]> | null {
   if (progress === null) return null;
   const origin = Date.parse(progress.startedAt);
   const recorded = new Map(progress.steps.map(one => [one.step, one]));
@@ -1230,7 +1230,8 @@ export function releaseStepsViewOf(progress: ReturnType<typeof releaseProgressFo
   const steps = firstAt <= 0 ? all : all.slice(firstAt);
   const rows: TimingRow[] = steps.map(step => {
     const one = recorded.get(step);
-    if (one === undefined) return all.indexOf(step) < lastAt ? { name: RELEASE_STEP_WORDS[step] ?? step, sub: "not recorded", st: "ok" as const, start: 0, dur: 0 }
+    // A step with no record is never painted as done: between recorded ones it says so, after them it is queued.
+    if (one === undefined) return all.indexOf(step) < lastAt ? { name: RELEASE_STEP_WORDS[step] ?? step, sub: "not recorded", st: "q" as const, start: 0, dur: 0 }
       : { name: RELEASE_STEP_WORDS[step] ?? step, st: "q" as const, start: 0, dur: 0 };
     const start = Date.parse(one.startedAt), end = one.endedAt === null ? now.getTime() : Date.parse(one.endedAt);
     const st: TimingRow["st"] = one.state === "done" ? "ok" : one.state === "failed" ? "bad" : one.state === "waiting" ? "wait" : "run";
@@ -1238,15 +1239,14 @@ export function releaseStepsViewOf(progress: ReturnType<typeof releaseProgressFo
       start: Number.isFinite(start) && Number.isFinite(origin) ? Math.max(0, (start - origin) / 1000) : 0, dur: Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, (end - start) / 1000) : 0 };
   });
   const current = rows.findIndex(row => row.st === "run" || row.st === "wait" || row.st === "bad");
-  // Finished is what happened, never that every row is there: its last step done, or its authority merged with nothing
-  // still running (a later step's write lost on the way).
-  const done = progress.stopped === null && (recorded.get("homebrew")?.state === "done" || (authority === "merged" && current === -1));
+  // Released only on its own evidence: the last step (Homebrew, after publication) recorded done. A merge (authority
+  // `merged`) is not a release: verifying the tree, the tag and publication still follow it.
+  const done = progress.stopped === null && recorded.get("homebrew")?.state === "done";
   const at = current === -1 ? null : rows[current]!;
   const last = lastAt === -1 ? null : RELEASE_STEP_WORDS[all[lastAt]!] ?? all[lastAt]!;
   return {
     tag: progress.tag, version: progress.version, pr: progress.pr,
-    // Steps after it never ran in a finished release: they read as what they are, not queued.
-    rows: done ? rows.map(row => row.st === "q" ? { ...row, st: "ok" as const, sub: "not recorded" } : row) : rows,
+    rows,
     state: progress.stopped !== null ? "failed" : done ? "done" : at?.st === "wait" ? "waiting" : "running",
     headline: done ? `Released ${progress.version}` : progress.stopped !== null ? `Stopped at ${RELEASE_STEP_WORDS[progress.stopped.step] ?? progress.stopped.step}`
       : at !== null ? `${at.name} · Step ${current + 1} of ${rows.length}` : last === null ? "Starting" : `${last} done · the next step starts on its own`,

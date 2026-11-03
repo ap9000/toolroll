@@ -25774,7 +25774,9 @@ export function restoreTaskFamily(store: Store, taskId: string, by: string, now:
 // ---- v146: pull request checks' own timing, and release steps ------------------------------------------------------
 
 /** One pull request check as GitHub last reported it for the observed head (v146 ci_check). */
-export type CiCheckRow = { name: string; workflow: string | null; state: "queued" | "running" | "passed" | "failed" | "skipped" | "cancelled" | "neutral"; startedAt: string | null; completedAt: string | null; url: string | null };
+/** `kind`: a check run or a commit status (part of the check's identity); a row built without it reads as a run when it
+ * names a workflow, else as a status. */
+export type CiCheckRow = { name: string; workflow: string | null; state: "queued" | "running" | "passed" | "failed" | "skipped" | "cancelled" | "neutral"; startedAt: string | null; completedAt: string | null; url: string | null; kind?: "run" | "status" };
 /** `observed`: the authoritative state of the same winning observation (ci_observation), which the overall status
  * always comes from; the rows only show each check's own timing. */
 export type ShipChecks = { githubRepo: string; prNumber: number; headSha: string; observedAt: string; observed: "passing" | "failing" | "running" | "none"; checks: CiCheckRow[] };
@@ -25800,7 +25802,8 @@ const CI_SEVERITY_SQL = (column: string): string => `CASE ${column} ${Object.ent
 const CI_SEVERITY: Readonly<Record<CiCheckRow["state"], number>> = { failed: 6, cancelled: 5, running: 4, queued: 3, neutral: 2, skipped: 1, passed: 0 };
 /** A check's identity: its kind, its workflow and its name. */
 function ciCheckIdent(kind: "run" | "status", row: Pick<CiCheckRow, "workflow" | "name">): string {
-  return `${kind}\u0000${row.workflow ?? ""}\u0000${row.name}`;
+  // Unit separators, never NUL (SQLite text ends at one): names and workflows had every control character removed.
+  return `${kind}\u001f${row.workflow ?? ""}\u001f${row.name}`;
 }
 /** Short, printable text, or null. Every control (C0, DEL, C1) and format character (bidi overrides and isolates,
  * zero-width marks) is removed, so a check name can't move the terminal's cursor or reorder what `task ship` prints.
@@ -25851,19 +25854,19 @@ export function parseCiRollup(rollup: unknown): CiCheckRow[] {
         : null;
       if (name === null || state === null) continue;
       const completedAt = state === "running" || state === "queued" ? null : ciInstant(raw["completedAt"]);
-      row = { name, workflow: ciText(raw["workflowName"]), state, startedAt: state === "queued" ? null : ciInstant(raw["startedAt"]), completedAt, url: ciUrl(raw["detailsUrl"]) };
+      row = { name, workflow: ciText(raw["workflowName"]), state, startedAt: state === "queued" ? null : ciInstant(raw["startedAt"]), completedAt, url: ciUrl(raw["detailsUrl"]), kind: "run" };
     } else if (kind === "StatusContext" || (kind === undefined && typeof raw["context"] === "string")) {
       const name = ciText(raw["context"]);
       const value = typeof raw["state"] === "string" ? raw["state"].toUpperCase() : "";
       const state: CiCheckRow["state"] | null = value === "SUCCESS" ? "passed" : value === "FAILURE" || value === "ERROR" ? "failed"
         : value === "PENDING" || value === "EXPECTED" ? "running" : null;
       if (name === null || state === null) continue;
-      row = { name, workflow: null, state, startedAt: ciInstant(raw["startedAt"] ?? raw["createdAt"]), completedAt: null, url: ciUrl(raw["targetUrl"]) };
+      row = { name, workflow: null, state, startedAt: ciInstant(raw["startedAt"] ?? raw["createdAt"]), completedAt: null, url: ciUrl(raw["targetUrl"]), kind: "status" };
     }
     if (row === null) continue;
     // A completion before its start is GitHub's clock disagreeing with itself: keep the state, drop the end.
     if (row.startedAt !== null && row.completedAt !== null && row.completedAt < row.startedAt) row = { ...row, completedAt: null };
-    const ident = ciCheckIdent(kind === "StatusContext" || (kind === undefined && typeof raw["context"] === "string") ? "status" : "run", row);
+    const ident = ciCheckIdent(row.kind ?? "run", row);
     const at = seen.get(ident);
     if (at !== undefined) { if (CI_SEVERITY[row.state] > CI_SEVERITY[rows[at]!.state]) rows[at] = row; continue; }
     seen.set(ident, rows.length);
@@ -25887,7 +25890,7 @@ export function recordCiChecks(store: Store, githubRepo: string, prNumber: numbe
     const at = now.toISOString();
     // Rows a caller built itself carry no kind: a row with a workflow is a check run, one without may be a status; the
     // identity keeps the two apart either way.
-    for (const row of rows.slice(0, CI_CHECKS_MAX)) insert.run(githubRepo, prNumber, headSha, ciCheckIdent(row.workflow === null ? "status" : "run", row), row.name, row.workflow, row.state, row.startedAt, row.completedAt, row.url, at);
+    for (const row of rows.slice(0, CI_CHECKS_MAX)) insert.run(githubRepo, prNumber, headSha, ciCheckIdent(row.kind ?? (row.workflow === null ? "status" : "run"), row), row.name, row.workflow, row.state, row.startedAt, row.completedAt, row.url, at);
   });
 }
 
@@ -25896,14 +25899,15 @@ export function ciChecksFor(store: Store, githubRepo: string, prNumber: number):
   const observation = store.handle.prepare("SELECT head_sha, state, observed_at FROM ci_observation WHERE github_repo = ? AND pr_number = ?").get(githubRepo, prNumber);
   if (observation === undefined || String(observation["head_sha"]) === "" || String(observation["observed_at"]) === "") return null;
   const headSha = String(observation["head_sha"]);
-  const rows = store.handle.prepare(`SELECT name, workflow, state, started_at, completed_at, url, observed_at FROM ci_check
+  const rows = store.handle.prepare(`SELECT ident, name, workflow, state, started_at, completed_at, url, observed_at FROM ci_check
       WHERE github_repo = ? AND pr_number = ? AND head_sha = ? ORDER BY COALESCE(started_at, '9999'), name`).all(githubRepo, prNumber, headSha);
   const text = (value: unknown): string | null => value === null || value === undefined ? null : String(value);
   return {
     githubRepo, prNumber, headSha, observedAt: String(observation["observed_at"]),
     observed: (["passing", "failing", "running"] as const).find(one => one === String(observation["state"])) ?? "none",
     checks: rows.map(row => ({ name: String(row["name"]), workflow: text(row["workflow"]), state: String(row["state"]) as CiCheckRow["state"],
-      startedAt: text(row["started_at"]), completedAt: text(row["completed_at"]), url: text(row["url"]) })),
+      startedAt: text(row["started_at"]), completedAt: text(row["completed_at"]), url: text(row["url"]),
+      kind: String(row["ident"]).startsWith("status\u001f") ? "status" as const : "run" as const })),
   };
 }
 

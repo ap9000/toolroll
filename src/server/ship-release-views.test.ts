@@ -18,6 +18,13 @@ describe("Ship", () => {
     expect(ship.state).toBe("failed");
     expect(ship.summary).toBe("Checks are failing on GitHub");
   });
+
+  test("a closed or merged pull request's `none` observation never reads passed, whatever its old rows say", () => {
+    const ship = shipViewOf({ githubRepo: "a/b", prNumber: 9, headSha: "abc1234def", observedAt: at(0), observed: "none",
+      checks: [{ name: "test", workflow: "unit", state: "passed", startedAt: at(3), completedAt: at(2), url: null }] }, NOW)!;
+    expect(ship.state).toBe("none");
+    expect(ship.summary).not.toMatch(/passed/);
+  });
 });
 
 describe("Release progress", () => {
@@ -29,15 +36,15 @@ describe("Release progress", () => {
     expect(view.rows.map(row => row.name)[0]).toBe("Release check");
   });
 
-  test("a resumed older release whose last writes were lost reads Released once its authority merged", () => {
-    const view = releaseStepsViewOf(progress([step("deploy", 20, 18), step("ci", 10, 8), step("merge", 7, 6)]), NOW, "merged")!;
-    expect(view.state).toBe("done");
-    expect(view.rows.find(row => row.name === "Pull request checks")?.st).toBe("ok");
-    expect(view.rows.find(row => row.name === "Point the CLI at it")?.sub).toBe("not recorded");
-    // Not yet merged: it says where it stands, never "Starting".
-    const open = releaseStepsViewOf(progress([step("deploy", 20, 18)]), NOW, "open")!;
-    expect(open.state).toBe("running");
-    expect(open.headline).toBe("Deploy to this Mac done · the next step starts on its own");
+  test("a merge is not a release: merged with tag and publication still to come reads where it stands, never Released", () => {
+    const view = releaseStepsViewOf(progress([step("deploy", 20, 18), step("ci", 10, 8), step("merge", 7, 6)]), NOW)!;
+    expect(view.state).toBe("running");
+    expect(view.headline).toBe("Merge into main done · the next step starts on its own");
+    // Steps with no record are never painted as done: not between recorded ones, not after them.
+    expect(view.rows.find(row => row.name === "Point the CLI at it")).toMatchObject({ st: "q", sub: "not recorded" });
+    expect(view.rows.filter(row => ["Tag", "Publish to npm", "Homebrew"].includes(row.name)).every(row => row.st === "q")).toBe(true);
+    // Published but Homebrew not yet recorded: still not Released.
+    expect(releaseStepsViewOf(progress([step("merge", 9, 8), step("tag", 8, 7), step("publish", 7, 6)]), NOW)!.state).toBe("running");
   });
 
   test("a stop stays a stop, and a running step says which", () => {

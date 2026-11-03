@@ -52,12 +52,12 @@ describe("parseCiRollup", () => {
       run({ name: "Docs", status: "QUEUED", conclusion: null, startedAt: null, completedAt: null }),
       { __typename: "StatusContext", context: "netlify/deploy", state: "SUCCESS", startedAt: "2026-11-02T09:58:01Z", targetUrl: "https://app.netlify.com/x" },
     ])).toEqual([
-      { name: "Lint", workflow: "CI", state: "passed", startedAt: "2026-11-02T09:58:00.000Z", completedAt: "2026-11-02T09:58:11.000Z", url: "https://github.com/alex/thing/actions/runs/1/job/2" },
-      { name: "Unit tests", workflow: "CI", state: "running", startedAt: "2026-11-02T09:58:00.000Z", completedAt: null, url: "https://github.com/alex/thing/actions/runs/1/job/2" },
-      { name: "E2E", workflow: "CI", state: "failed", startedAt: "2026-11-02T09:58:00.000Z", completedAt: "2026-11-02T09:58:11.000Z", url: "https://github.com/alex/thing/actions/runs/1/job/2" },
-      { name: "Docs", workflow: "CI", state: "queued", startedAt: null, completedAt: null, url: "https://github.com/alex/thing/actions/runs/1/job/2" },
+      { name: "Lint", workflow: "CI", state: "passed", startedAt: "2026-11-02T09:58:00.000Z", completedAt: "2026-11-02T09:58:11.000Z", url: "https://github.com/alex/thing/actions/runs/1/job/2", kind: "run" },
+      { name: "Unit tests", workflow: "CI", state: "running", startedAt: "2026-11-02T09:58:00.000Z", completedAt: null, url: "https://github.com/alex/thing/actions/runs/1/job/2", kind: "run" },
+      { name: "E2E", workflow: "CI", state: "failed", startedAt: "2026-11-02T09:58:00.000Z", completedAt: "2026-11-02T09:58:11.000Z", url: "https://github.com/alex/thing/actions/runs/1/job/2", kind: "run" },
+      { name: "Docs", workflow: "CI", state: "queued", startedAt: null, completedAt: null, url: "https://github.com/alex/thing/actions/runs/1/job/2", kind: "run" },
       // Only a link to GitHub itself is kept.
-      { name: "netlify/deploy", workflow: null, state: "passed", startedAt: "2026-11-02T09:58:01.000Z", completedAt: null, url: null },
+      { name: "netlify/deploy", workflow: null, state: "passed", startedAt: "2026-11-02T09:58:01.000Z", completedAt: null, url: null, kind: "status" },
     ]);
   });
 
@@ -75,7 +75,7 @@ describe("parseCiRollup", () => {
 
   test("bad times and links read null, and the count is bounded", () => {
     const [row] = parseCiRollup([run({ startedAt: "yesterday", completedAt: "0001-01-01T00:00:00Z", detailsUrl: "javascript:alert(1)" })]);
-    expect(row).toEqual({ name: "Lint", workflow: "CI", state: "passed", startedAt: null, completedAt: null, url: null });
+    expect(row).toEqual({ name: "Lint", workflow: "CI", state: "passed", startedAt: null, completedAt: null, url: null, kind: "run" });
     expect(parseCiRollup([run({ detailsUrl: "http://github.com/x" })])[0]!.url).toBeNull();
     expect(parseCiRollup([run({ detailsUrl: "https://user:pw@github.com/x" })])[0]!.url).toBeNull();
     expect(parseCiRollup([run({ name: "Lint\u0000\u001b[31m" })])[0]!.name).toBe("Lint[31m");
@@ -93,6 +93,16 @@ describe("a failing check is never hidden behind a namesake", () => {
     expect(parseCiRollup([run({ conclusion: "FAILURE" }), run()]).map(one => one.state)).toEqual(["failed"]);
     // A check run and a commit status with one name are two checks too.
     expect(parseCiRollup([run({ name: "ci/build", workflowName: null }), { __typename: "StatusContext", context: "ci/build", state: "FAILURE" }])).toHaveLength(2);
+  });
+
+  test("a workflow-less check run and a commit status with one name stay two checks through the store", () => {
+    const store = openStore(":memory:");
+    try {
+      const generation = store.reserveObservation("alex/thing", 9);
+      settleWithChecks(store, { githubRepo: "alex/thing", prNumber: 9, headSha: "oid-1", state: "failing", generation },
+        [run({ name: "ci/build", workflowName: null }), { __typename: "StatusContext", context: "ci/build", state: "FAILURE" }], T0);
+      expect(ciChecksFor(store, "alex/thing", 9)!.checks.map(one => [one.kind, one.name, one.state]).sort()).toEqual([["run", "ci/build", "passed"], ["status", "ci/build", "failed"]]);
+    } finally { store.close(); }
   });
 
   test("both are stored, and the overall status is the observation's own", () => {
@@ -147,8 +157,8 @@ describe("ci_check is written only with a winning observation", () => {
       const exec: PublishExec = async () => ({ code: 0, stdout: JSON.stringify({ headRefOid: "oid-1", state: "OPEN", statusCheckRollup: [run(), run({ name: "E2E", conclusion: "FAILURE" }), { bogus: true }] }), stderr: "", timedOut: false, notFound: false });
       await observeChecks(store, { clock: () => T0, exec });
       expect(shipChecksForTask(store, "t-1")).toEqual({ githubRepo: "alex/thing", prNumber: 9, headSha: "oid-1", observedAt: T0.toISOString(), observed: "failing", checks: [
-        { name: "E2E", workflow: "CI", state: "failed", startedAt: "2026-11-02T09:58:00.000Z", completedAt: "2026-11-02T09:58:11.000Z", url: "https://github.com/alex/thing/actions/runs/1/job/2" },
-        { name: "Lint", workflow: "CI", state: "passed", startedAt: "2026-11-02T09:58:00.000Z", completedAt: "2026-11-02T09:58:11.000Z", url: "https://github.com/alex/thing/actions/runs/1/job/2" },
+        { name: "E2E", workflow: "CI", state: "failed", startedAt: "2026-11-02T09:58:00.000Z", completedAt: "2026-11-02T09:58:11.000Z", url: "https://github.com/alex/thing/actions/runs/1/job/2", kind: "run" },
+        { name: "Lint", workflow: "CI", state: "passed", startedAt: "2026-11-02T09:58:00.000Z", completedAt: "2026-11-02T09:58:11.000Z", url: "https://github.com/alex/thing/actions/runs/1/job/2", kind: "run" },
       ] });
       expect(shipChecksForTask(store, "no-such-task")).toBeNull();
     } finally { store.close(); }
