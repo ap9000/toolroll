@@ -4,7 +4,7 @@
   "name": "KComposer",
   "version": "1.0.0",
   "status": "stable",
-  "summary": "The message box: one soft rounded box, auto-growing textarea (rows → 8 lines), + menu, the project as a quiet chip, small controls, and the round send that becomes Stop while the work runs.",
+  "summary": "The message box: one filled rounded object, auto-growing 17px textarea, a row of filled circles and pills (+, project chip, toggle chips) and the round ink send that becomes Stop.",
   "source": {
     "file": "k-composer.tsx",
     "export": "KComposer",
@@ -51,7 +51,7 @@
     },
     "project": {
       "type": "string",
-      "description": "A structured value: see the component's TypeScript type."
+      "description": "A structured value { current, items, sub? }: the chip shows current, then sub dimmer (the agent or model)."
     },
     "gate": {
       "type": "boolean",
@@ -66,18 +66,24 @@
     "error": {
       "type": "string",
       "description": "A refusal: the words stay in the box."
+    },
+    "menu": {
+      "type": "string",
+      "description": "Extra + menu items { label, act } after attach, mention and project (a conversation's settings)."
     }
   },
   "tokens": {
-    "border": "youi:toolroll/token/color.field-line",
+    "surface": "youi:toolroll/token/color.composer",
+    "control": "youi:toolroll/token/color.composer-control",
     "focus": "youi:toolroll/token/color.ink",
     "send": "youi:toolroll/token/color.ink"
   },
   "a11y": {
     "minTouchTarget": 44,
     "notes": [
-      "Focus shows on the box, never the textarea.",
-      "On a phone the text is 16px and every control a 44px target; with the keyboard up a docked composer rides above it."
+      "Focus shows on the box (its edge turns ink-grey, 3:1 or better on the page), never the textarea.",
+      "On a phone the text is 17px and every control a filled 44px target; with the keyboard up a docked composer rides above it.",
+      "Every + menu item and the chip are buttons that open the kit menu (a bottom sheet on a phone); a toggle chip is a checkbox with role=switch."
     ]
   },
   "rules": [

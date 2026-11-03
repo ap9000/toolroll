@@ -4,7 +4,7 @@
   "name": "KSelect",
   "version": "1.0.0",
   "status": "stable",
-  "summary": "A native select with the kit chevron: 32px, sm 28px in a toolbar, 44px and 16px on a phone.",
+  "summary": "A native select in the field family with the kit chevron: filled 36px, sm 28px pill, chip a composer pill; 44px and 16px on a phone.",
   "source": {
     "file": "k-select.tsx",
     "export": "KSelect",
@@ -29,7 +29,9 @@
     }
   },
   "tokens": {
-    "border": "youi:toolroll/token/color.field-line"
+    "surface": "youi:toolroll/token/color.field",
+    "chip": "youi:toolroll/token/color.composer-control",
+    "ring": "youi:toolroll/token/color.ring"
   },
   "a11y": {
     "role": "combobox",

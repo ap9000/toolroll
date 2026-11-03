@@ -9,7 +9,7 @@ import { projectName } from "../project.js";
 import type { QualityMode } from "../quality.js";
 import type { UnattendedPermissionMode } from "../scope.js";
 import { type Chrome, screen, type Screen } from "./chrome.js";
-import { btn, composer, disclose, doc, docHeader, dock, field, ideas, input, note, phoneHeader, radios, select, sendButton, switchInput, textarea } from "./kit.js";
+import { btn, composer, disclose, doc, docHeader, dock, field, ideas, input, note, phoneHeader, radios, select, sendButton, textarea, toggleChip } from "./kit.js";
 
 export type TaskComposerPrefill = { title: string; goal: string; not: string; touches: string; acceptance: string; values?: URLSearchParams };
 
@@ -65,8 +65,8 @@ export function newTaskPage(
   const folder = !typed ? "" : field({ id: "nt-repo", label: "Project folder", hint: "No projects yet: name the folder of a git repository.",
     control: input({ id: "nt-repo", name: "repo", value: chosen, hint: true, attrs: { required: true, placeholder: "/path/to/repository", autocapitalize: "none", spellcheck: "false" } }) });
   const bar = joinHtml([
-    typed ? "" : select({ id: "nt-project", name: "repo", label: "Project", items, current: chosen, sm: true }),
-    switchInput({ id: "nt-plan", name: "plan-first", label: "Read code before planning", on: planOn, attrs: { value: "1" } }),
+    typed ? "" : select({ id: "nt-project", name: "repo", label: "Project", items, current: chosen, chip: true }),
+    toggleChip({ id: "nt-plan", name: "plan-first", label: "Read code before planning", on: planOn, attrs: { value: "1" } }),
   ]);
   const box = composer({
     id: "nt", name: "title", label: "What should change?", placeholder: "What should change? One or two sentences is enough.",

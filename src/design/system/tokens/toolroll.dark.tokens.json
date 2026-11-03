@@ -461,6 +461,42 @@
         "hex": "#6b6b6b"
       }
     },
+    "field": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.1373,
+          0.1373,
+          0.1373
+        ],
+        "hex": "#232323"
+      }
+    },
+    "composer": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.1412,
+          0.1412,
+          0.1412
+        ],
+        "hex": "#242424"
+      }
+    },
+    "composer-control": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.2,
+          0.2,
+          0.2
+        ],
+        "hex": "#333333"
+      }
+    },
     "overlay-line": {
       "$type": "color",
       "$value": {

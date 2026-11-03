@@ -12,10 +12,13 @@
   --color-card: var(--so-paper);
   --color-card-foreground: var(--so-ink);
   --color-code-bg: var(--so-code-bg);
+  --color-composer: var(--so-composer);
+  --color-composer-control: var(--so-composer-control);
   --color-danger: var(--so-danger);
   --color-danger-soft: var(--so-danger-soft);
   --color-destructive: var(--so-danger);
   --color-destructive-soft: var(--so-danger-soft);
+  --color-field: var(--so-field);
   --color-field-line: var(--so-field-line);
   --color-foreground: var(--so-ink);
   --color-ground: var(--so-ground);

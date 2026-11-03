@@ -488,7 +488,7 @@ function CardPanel({ card, view, csrf, apply, onAllowBrowser }: { card: BrowserF
     </div>}
     {view.canEdit && card.state === "active" && <div className="flex flex-col gap-2">
       <Label htmlFor="flow-move" className="text-body">Move to</Label>
-      <select id="flow-move" className="h-9 rounded-md border bg-transparent px-2 text-body" value={card.stage} disabled={busy}
+      <select id="flow-move" className={SELECT_INLINE} value={card.stage} disabled={busy}
         onChange={event => void act(`${base}/move`, { stage: event.target.value })}>
         {view.stages.map(one => <option key={one.id} value={one.id}>{one.title}</option>)}
       </select>
@@ -523,7 +523,9 @@ function CardPanel({ card, view, csrf, apply, onAllowBrowser }: { card: BrowserF
 function Field({ label, hint, children }: { label: string; hint?: string | undefined; children: ReactNode }) {
   return <label className="grid gap-1.5"><span className="text-body font-medium">{label}</span>{children}{hint !== undefined && <span className="text-caption text-muted-foreground font-normal">{hint}</span>}</label>;
 }
-const SELECT = "h-9 w-full rounded-md border bg-transparent px-2 text-body";
+const SELECT = "h-9 w-full rounded-xl border border-transparent bg-field px-3 text-body";
+/** The same field-family select, sized to its words. */
+const SELECT_INLINE = "h-9 rounded-xl border border-transparent bg-field px-3 text-body";
 
 const SURE_LEVELS = [0.95, 0.9, 0.85, 0.8, 0.7, 0.6];
 type SortSettingsValue = NonNullable<BrowserFlowStage["sort"]>;
@@ -1176,7 +1178,7 @@ function WebhookSigning({ trigger, view, csrf, apply, onReveal }: { trigger: Bro
       {hook.warning !== null && <p className={cn("text-caption font-normal", current === "none" || !hook.ready ? "text-warning" : "text-muted-foreground")} data-trigger-signing-warning>{hook.warning}</p>}
       {hook.readerNote !== null && <p className="text-caption text-muted-foreground font-normal" data-trigger-reader-note>{hook.readerNote}</p>}
       <Field label="Signed by" hint="Who signs this webhook's deliveries. Changing it keeps the address and drops the secret: it then needs one again.">
-        <select className="h-9 rounded-md border bg-background px-2 text-body" value={sender} onChange={event => setSender(event.target.value)} data-trigger-sender>
+        <select className={SELECT_INLINE} value={sender} onChange={event => setSender(event.target.value)} data-trigger-sender>
           {SENDER_CHOICES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
       </Field>

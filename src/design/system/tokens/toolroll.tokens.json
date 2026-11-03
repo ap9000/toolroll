@@ -712,6 +712,60 @@
         }
       }
     },
+    "field": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.9255,
+          0.9255,
+          0.9255
+        ],
+        "hex": "#ececec"
+      },
+      "$description": "Field: the filled surface of a text field, select or secondary text box (the field family: no outline; the label names it, focus draws the ink ring).",
+      "$extensions": {
+        "dev.youiyoux": {
+          "css": "field"
+        }
+      }
+    },
+    "composer": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.949,
+          0.949,
+          0.949
+        ],
+        "hex": "#f2f2f2"
+      },
+      "$description": "Composer: the filled surface of the message box, one step off the page.",
+      "$extensions": {
+        "dev.youiyoux": {
+          "css": "composer"
+        }
+      }
+    },
+    "composer-control": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.8627,
+          0.8627,
+          0.8627
+        ],
+        "hex": "#dcdcdc"
+      },
+      "$description": "Composer Control: the filled circle and pill chips inside the composer (+, project, toggle chips) and the empty send.",
+      "$extensions": {
+        "dev.youiyoux": {
+          "css": "composer-control"
+        }
+      }
+    },
     "overlay-line": {
       "$type": "color",
       "$value": {

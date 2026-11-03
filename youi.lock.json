@@ -2,24 +2,24 @@
   "schema": "youi.lock/v1",
   "system": "toolroll",
   "systemVersion": "1.0.0",
-  "sourceCommit": "6ab9aaeddbafb2958f1e77d506abed94c93cbb3c",
-  "syncedAt": "2026-11-03T12:16:56.308Z",
+  "sourceCommit": "c5772e27b602d779d94f73953290621e0ae6c52d",
+  "syncedAt": "2026-11-03T20:23:13.546Z",
   "files": {
     ".agents/skills/youiyoux/SKILL.md": {
       "kind": "generated",
-      "sha256": "54fd6849f3f9bc44b818816eaacba38b3f4ddc3b1c1f122042bc82a6d2de3b06"
+      "sha256": "e4d6a502a416a587428e99263bc0a50a17755a3461a8b40ddad5b8f16eb4271c"
     },
     "src/design/SYSTEM.md": {
       "kind": "generated",
-      "sha256": "1595289f3774ee43e3941d6643907ae520e7aff79168289ee4d4403329ab3525"
+      "sha256": "d398b4470d21a0624ddb39fdfd7ea60f6381ba18ccf07cb1c14a40907f5ffcde"
     },
     "src/design/theme.css": {
       "kind": "generated",
-      "sha256": "ce2babbe2bccceca7321582cd47047aba3bf1d6419c6f969cc21b87832c30f61"
+      "sha256": "70453bfb50ce16446af3f875cab5c5788ebf1a59faccba2d94632a88a1549a8c"
     },
     "src/design/tokens.css": {
       "kind": "generated",
-      "sha256": "d329d3dea025e8d33643abbf36041d8fabb718ebdaee3d0a401abaa4ca7ba023"
+      "sha256": "a588ec08a04bc1863cb6c0a0095595fedf7efe0b586b655a1d5f75928bf8ac7b"
     },
     "youi-rules/color.no-raw-color.yml": {
       "kind": "generated",

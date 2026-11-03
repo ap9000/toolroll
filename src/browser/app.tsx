@@ -586,10 +586,10 @@ function useTaskThreadChat(controller: ReturnType<typeof useWorkspace>): ThreadC
         {stale ? <ViewButton variant="outline" size="sm" onClick={controller.reconnect}>Reconnect</ViewButton> : !sending && !offline && <ViewButton variant="ghost" size="sm" onClick={() => { void controller.check(); }}>Check again</ViewButton>}
       </div>}
       <PostForm onSubmit={event => { void controller.send(event, mode); }} action="/chat" data-workspace-composer data-task-composer aria-busy={sending}
-        className="rounded-xl border border-input bg-card px-3 pb-2 pt-2.5 shadow-[0_1px_2px_rgb(0_0_0/.04)] transition-[border-color,box-shadow] duration-100 focus-within:border-attention focus-within:shadow-[0_0_0_3px_var(--so-signal-soft)] phone:px-2.5">
+        className="so-task-composer-box rounded-[28px] border border-transparent bg-composer px-4 pb-2.5 pt-3 transition-[border-color] duration-100 phone:px-3">
         <label htmlFor="task-message" className="sr-only">Message the agent</label>
         <textarea ref={box} id="task-message" name="message" rows={2} maxLength={chat.maxChars} placeholder="Message the agent: ask, or ask for a change" value={draft.text}
-          className="block max-h-[180px] min-h-12 w-full resize-none px-0.5 pb-2 text-sm leading-relaxed outline-none placeholder:text-muted-foreground phone:min-h-11 phone:text-base"
+          className="block max-h-[180px] min-h-12 w-full resize-none px-0.5 pb-2 text-[16px] leading-relaxed outline-none placeholder:text-muted-foreground phone:min-h-11 phone:text-[17px]"
           onChange={event => controller.edit(event.target.value)} onKeyDown={event => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && (returnSends() || event.metaKey || event.ctrlKey)) { event.preventDefault(); if (!disabled) event.currentTarget.form?.requestSubmit(); }
           }} aria-describedby="task-composer-hint" />
