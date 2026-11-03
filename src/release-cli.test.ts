@@ -56,10 +56,22 @@ describe("toolroll release <branch>", () => {
       const branch = argv.at(-1)!.replace("--branch=", "");
       expect(JSON.parse(lines.join("\n")), argv.join(" ")).toMatchObject({ ok: false, command: "release", step: "preflight", resume: `toolroll release --branch ${branch} --repo /rv` });
     }
-    // Bare, the word is still the command's own; --branch takes no second branch.
-    const lines: string[] = [];
-    expect(await runReleaseCommand(["--branch", "a", "b", "--json"], line => lines.push(line))).toBe(2);
-    expect(JSON.parse(lines.join("\n"))).toMatchObject({ ok: false, reason: "usage" });
+    // Bare, the word is still the command's own; a branch is named once, one way, never a guess between two.
+    for (const argv of [["--branch", "a", "b"], ["--branch", "a", "--branch", "b"], ["--branch=a", "--", "b"], ["a", "--", "b"], ["--", "a", "b"]]) {
+      const lines: string[] = [];
+      expect(await runReleaseCommand(["--json", ...argv], line => lines.push(line), { adapters: signedOut, stateDir }), argv.join(" ")).toBe(2);
+      expect(JSON.parse(lines.join("\n")), argv.join(" ")).toMatchObject({ ok: false, reason: "usage" });
+    }
+  });
+
+  test("a trailing -- never turns the words before it into a branch: `release status --` is still the status read", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "so-release-cli-"));
+    const database = join(stateDir, "orders.db");
+    const read = async (argv: string[]) => { const lines: string[] = []; const code = await runReleaseCommand(argv, line => lines.push(line), { adapters: signedOut, stateDir, database }); return { code, out: lines.join("\n") }; };
+    const plain = await read(["--json", "status"]);
+    const trailing = await read(["--json", "status", "--"]);
+    expect(trailing).toEqual(plain);
+    expect(JSON.parse(trailing.out)).toMatchObject({ command: "release status" });
   });
 
   test("--release-gate shows the proof, lifts only with --yes, and takes no release options", async () => {
