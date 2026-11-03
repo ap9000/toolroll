@@ -1572,7 +1572,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // view (or every project), so the rail, the phone header and Home all read the same number.
         needsYou: { count: needsYou, saturated: s.chrome.inboxSaturated === true, scope: tasksProject ?? null,
           label: s.chrome.inboxLabel ?? `${needsYou} ${needsYou === 1 ? 'needs' : 'need'} you`,
-          href: tasksProject === null ? '/work?view=needs-you' : `/work?project=${encodeURIComponent(tasksProject)}&view=needs-you` },
+          // Every project, said by name (all=1), so a session's own open project never narrows the list the count opens.
+          href: tasksProject === null ? '/work?all=1&view=needs-you' : `/work?project=${encodeURIComponent(tasksProject)}&view=needs-you` },
         chats,
         // The same count per project (the rail's project rows), read from the same work index totals.
         ...(() => { if (sensitive) return {}; try { return { needsYouByProject: projectCounts(clock()).map(one => ({ path: one.repo, count: one.totals['needs-you'] })) }; } catch { return {}; } })(),

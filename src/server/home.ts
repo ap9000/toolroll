@@ -82,7 +82,8 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
   const totals = needs.totals;
   // Queued: the Tasks list's own Queued count (the same predicate its view=queued filter lists).
   const queued = totals.queued;
-  const scopeQuery = project === null ? "" : `project=${encodeURIComponent(project)}&`;
+  // Every project is said by name (all=1): /work alone would narrow to the session's open project.
+  const scopeQuery = project === null ? "all=1&" : `project=${encodeURIComponent(project)}&`;
   const counts: BrowserHomeView["counts"] = [
     { key: "needs", label: "Needs you", value: totals["needs-you"], href: `/work?${scopeQuery}view=needs-you` },
     { key: "running", label: "Running", value: totals.running, href: `/work?${scopeQuery}view=running` },

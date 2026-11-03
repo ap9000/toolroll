@@ -105,3 +105,27 @@ test("search with nothing found in a truncated read says so and offers every tas
   expect(host.textContent).toContain("so an older task may not show");
   expect(host.querySelector('a[href="/work?view=all"]')?.textContent).toBe("Open every task in Tasks");
 });
+
+test("the one Needs-you count moves when work does: read again from its list, the rail, the dock and its sheet agree", async () => {
+  const { Rail, NeedsDock, refreshNeeds } = await import("./shell.js");
+  const href = "/work?all=1&view=needs-you";
+  const workspace = { version: 1, path: "/search", title: "Search", user: "alex", csrf: "c", sensitive: false, refreshUrl: "/search", receipt: null, projects: [], crew: [], crewTruncated: false,
+    conversation: null, focus: null, result: null, catchUpHtml: "", controlsHtml: "", notices: [], pageHtml: "", navigation: [{ label: "Home", href: "/", active: false, count: 3 }],
+    needsYou: { count: 3, saturated: false, scope: null, label: "3 need you across all your projects", href } } as unknown as import("../browser-workspace.js").BrowserWorkspace;
+  const rows = Array.from({ length: 4 }, (_, n) => ({ id: `t${n}`, title: `Task ${n}`, href: `/t/t${n}`, project: null, age: "1h ago", chip: "Plan", group: "decide", status: { label: "Needs you" } }));
+  const asked: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => { asked.push(url); return new Response(JSON.stringify({ view: { kind: "tasks", needsYou: 4, rows, pages: { next: null } } }), { status: 200 }); }));
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("max-width"), media: query, addEventListener() {}, removeEventListener() {} }));
+  const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(createElement("div", null, createElement(Rail, { workspace, states: null, current: null }), createElement(NeedsDock, { workspace }))));
+  expect(host.querySelector("[data-needs-count]")?.textContent).toBe("3");
+  await act(async () => { await refreshNeeds(href); });
+  expect(asked[0]).toBe("/work?all=1&view=needs-you&format=workspace");
+  expect(host.querySelector("[data-needs-count]")?.textContent).toBe("4");
+  expect(host.querySelector(".k-dock-needs")?.getAttribute("aria-label")).toBe("Needs you: 4 need you across all your projects");
+  await act(async () => { host.querySelector<HTMLButtonElement>(".k-dock-needs")!.click(); });
+  await act(async () => { await new Promise(done => setTimeout(done, 0)); });
+  const sheet = document.querySelector(".so-needs-sheet")!;
+  expect(sheet.querySelectorAll(".so-ti").length).toBe(4);
+  expect(sheet.querySelector(".k-count")?.textContent).toBe("4");
+});

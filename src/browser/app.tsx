@@ -25,14 +25,14 @@ import { HeadlineBadge, headlineGlyph } from "./views/status-summary.js";
 import { Toaster, Button as ViewButton, cn } from "./components/ui/index.js";
 import { updateNoticeWords } from "../update-notice.js";
 import { shortAge } from "../when-html.js";
-import { useLiveRoom } from "./live.js";
+import { setLiveQuiet, useLiveRoom } from "./live.js";
 import { createChime } from "./chime.js";
 import { ActivityLine, WORKSPACE_NUDGE } from "./live-task.js";
 import { isSettingsFrame } from "../settings-kit-script.js";
 import { installKitBehavior } from "./kit/behavior.js";
 import { Icon } from "./icons.js";
 import { LeadChat, returnSends } from "./lead-chat.js";
-import { NeedsDock, PhoneHeader, Rail, needsOf } from "./shell.js";
+import { NeedsDock, PhoneHeader, Rail, useNeeds, useNeedsRefresh } from "./shell.js";
 import { SearchMenu } from "./search.js";
 import "./workspace.css";
 
@@ -104,7 +104,8 @@ export function useWorkspace(initial: BrowserWorkspace) {
   // The Agents board follows the workspace too, and its opened agent's own room nudges it (agents-view.tsx).
   // Home follows the workspace the same way: its counts and rows move as work does, and an answer given in place re-reads it.
   const agentsBoard = (initial.view?.kind === "agents" || initial.view?.kind === "home") && !initial.sensitive;
-  const followsWorkspace = Boolean(initial.conversation || initial.refreshSeconds || agentsBoard);
+  // A sensitive page follows nothing live (live.ts setLiveQuiet): a refresh beat or a conversation never opens a stream there.
+  const followsWorkspace = !initial.sensitive && Boolean(initial.conversation || initial.refreshSeconds || agentsBoard);
   const check = useCallback(async (force = true, retry = false): Promise<void> => {
     clearRefreshRetry();
     if (!mounted.current || state.current.stale || !(followsWorkspace || liveTask) || !canRefreshWorkspace()) return;
@@ -471,8 +472,10 @@ export function titleWithCount(title: string, count: number): string {
 }
 function AttentionMarks({ workspace }: { workspace: BrowserWorkspace }) {
   const states = useProjectStates(workspace);
-  // The tab's "(N)" is the one Needs-you count the rail and the dock show (workspace.needsYou), never a second sum.
-  const count = needsOf(workspace).count;
+  // The tab's "(N)" is the one Needs-you count the rail and the dock show (workspace.needsYou), never a second sum, read
+  // again from its own list when the summary room says work moved.
+  const count = useNeeds(workspace).count;
+  useNeedsRefresh(workspace, states);
   // The chime hears every snapshot this page sees (it plays only when this browser turned it on).
   const chime = useRef<ReturnType<typeof createChime> | null>(null);
   useEffect(() => {
@@ -647,6 +650,8 @@ export function isKitPage(workspace: BrowserWorkspace): boolean {
 
 export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const controller = useWorkspace(initial);
+  // Set before the parts' rooms settle (a layout effect runs before their passive ones); kept in step on a re-read.
+  useLayoutEffect(() => { setLiveQuiet(controller.workspace.sensitive); }, [controller.workspace.sensitive]);
   const resultHost = useRef<HTMLDivElement>(null);
   const [teamSnapshot, setTeamSnapshot] = useState<TeamSnapshot | undefined>(initial.team);
   const workspace = teamSnapshot?.tasks ? { ...controller.workspace, ...browserCrewFromIndex(teamSnapshot.tasks, teamSnapshot.selected?.id) } : controller.workspace;
@@ -821,6 +826,8 @@ if (mount && data) {
   try {
     const initial: unknown = JSON.parse(data.textContent ?? "null");
     if (!isWorkspace(initial)) throw new Error("Workspace data is incomplete");
+    // A sensitive page holds no live connection, from its first render (the rooms its parts ask for stay closed).
+    setLiveQuiet(initial.sensitive);
     createRoot(mount).render(<WorkspaceApp initial={initial} />);
   } catch {
     // The server-rendered fallback remains usable if mounting cannot start.

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import type { Server } from "node:http";
 import type { BrowserHomeView, BrowserSearchView, BrowserTasksView, BrowserWorkspace } from "./browser-workspace.js";
 import { addApprover } from "./scope.js";
@@ -32,6 +33,7 @@ beforeEach(async () => {
   evidenceRoot = mkdtempSync(join(tmpdir(), "so-home-ev-"));
   repoA = realpathSync(mkdtempSync(join(tmpdir(), "so-home-a-")));
   repoB = realpathSync(mkdtempSync(join(tmpdir(), "so-home-b-")));
+  for (const repo of [repoA, repoB]) execFileSync("git", ["init", "-q", repo]);
   const alex = addApprover(store, "alex", T0);
   if (!alex.ok) throw new Error("bootstrap failed");
   token = alex.token;
@@ -59,7 +61,7 @@ test("Home's four counts are the Tasks list's own counts, scoped the same way, a
   const tab = (label: string) => tasks.tabs.find(one => one.label === label)?.count;
   expect(home.counts.find(one => one.key === "needs")!.value).toBe(tasks.needsYou);
   expect(home.counts.find(one => one.key === "running")!.value).toBe(tab("Running") ?? tab("Building"));
-  expect(home.counts.map(one => one.href)).toEqual(["/work?view=needs-you", "/work?view=running", "/work?view=queued", "/work?view=completed"]);
+  expect(home.counts.map(one => one.href)).toEqual(["/work?all=1&view=needs-you", "/work?all=1&view=running", "/work?all=1&view=queued", "/work?all=1&view=completed"]);
   expect(home.say).toMatch(/need|Nothing needs you|No tasks yet/);
   // The rail's Home carries the one Needs-you count the server sends.
   expect(workspace.navigation[0]).toMatchObject({ label: "Home", href: "/", active: true });
@@ -75,7 +77,7 @@ test("Home's four counts are the Tasks list's own counts, scoped the same way, a
     expect(scopedPage.needsYou).toMatchObject({ scope: repo, count: scoped.counts[0]!.value, href: scoped.counts[0]!.href });
   }
   // Unscoped Home and its chrome both cover every project.
-  expect(workspace.needsYou).toMatchObject({ scope: null, href: "/work?view=needs-you" });
+  expect(workspace.needsYou).toMatchObject({ scope: null, href: "/work?all=1&view=needs-you" });
   // A project outside this workspace is refused, never quietly widened.
   const outside = await fetch(url(`/?project=${encodeURIComponent("/somewhere/else")}`), { headers: { cookie } });
   expect(outside.status).toBe(404);
@@ -114,6 +116,27 @@ test("each of Home's counts equals the list its link opens (Queued included), on
     demoStore.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("with a project open in the session, Home's count, the list it opens and the dock's list are the same projects", async () => {
+  task("ship-webhooks", "Harden webhook delivery", repoA);
+  task("log-format", "Rotate the request-log format", repoB);
+  const cookie = await login();
+  const csrf = (await page("/work", cookie)).csrf;
+  const opened = await fetch(url("/projects/open"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, path: repoA, return: "/work" }), redirect: "manual" });
+  expect([302, 303], (await opened.text()).match(/class="problem">[^<]*|<p>[^<]*/g)?.join(" | ")).toContain(opened.status);
+  expect((await page("/work", cookie)).needsYou?.scope).toBe(repoA);
+  const workspace = await page("/", cookie);
+  const home = workspace.view as BrowserHomeView;
+  const needs = home.counts.find(one => one.key === "needs")!;
+  // Home covers every project; its link, the rail's count and the dock's list say so by name.
+  expect(home.project).toBeNull();
+  expect(needs.href).toBe("/work?all=1&view=needs-you");
+  expect(workspace.needsYou).toMatchObject({ scope: null, count: needs.value, href: needs.href });
+  const list = (await page(needs.href, cookie)).view as BrowserTasksView;
+  expect(list.needsYou).toBe(needs.value);
+  expect(list.rows.length).toBe(needs.value);
+  expect(needs.value).toBe(2);
 });
 
 test("before anything is filed, Home is the first-run checklist in the chat; the chat itself stays where it was", async () => {

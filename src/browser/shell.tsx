@@ -26,6 +26,51 @@ export function needsOf(workspace: BrowserWorkspace): Needs {
   return { count, saturated: false, scope: null, label: home?.countLabel ?? `${count} ${count === 1 ? "needs" : "need"} you`, href: "/work?view=needs-you" };
 }
 
+/**
+ * The one Needs-you count, kept current on every page (UI revamp wave B): the page's own read sets it, and when work
+ * moves (the summary room's change) or the dock's list is read, the count is read again from the very list it opens
+ * (`href`, the same scope), so the rail, the dock, its sheet and the tab title never disagree or go stale. A sensitive
+ * page holds no live connection, so there it changes only with the page.
+ */
+const shared = { from: undefined as unknown, value: null as Needs | null, listeners: new Set<() => void>() };
+function publish(href: string, count: number): void {
+  if (shared.value === null || shared.value.href !== href || shared.value.count === count) return;
+  shared.value = { ...shared.value, count, label: shared.value.label.replace(/^\d+\+?\s+needs?\b/, `${count} ${count === 1 ? "needs" : "need"}`), saturated: false };
+  for (const listener of [...shared.listeners]) listener();
+}
+export function useNeeds(workspace: BrowserWorkspace): Needs {
+  if (shared.from !== workspace.needsYou) { shared.from = workspace.needsYou; shared.value = needsOf(workspace); }
+  const [, render] = useState(0);
+  useEffect(() => {
+    const listener = () => render(n => n + 1);
+    shared.listeners.add(listener);
+    return () => { shared.listeners.delete(listener); };
+  }, []);
+  return shared.value ?? needsOf(workspace);
+}
+/** Read the count again from the list it opens (the Tasks list's own Needs-you figure for that scope). */
+export async function refreshNeeds(href: string): Promise<void> {
+  try {
+    const url = new URL(href, window.location.origin);
+    url.searchParams.set("format", "workspace");
+    const response = await fetch(url.pathname + url.search, { credentials: "same-origin", cache: "no-store", headers: { accept: "application/json" }, signal: AbortSignal.timeout(12_000) });
+    if (!response.ok || response.redirected) return;
+    const data = await response.json() as { view?: BrowserTasksView | null };
+    if (data.view?.kind === "tasks" && typeof data.view.needsYou === "number") publish(href, data.view.needsYou);
+  } catch { /* the count stays as the page read it; the next change asks again */ }
+}
+/** Work moved (the summary room said so after the page's own read): read the one count again, once things settle. */
+export function useNeedsRefresh(workspace: BrowserWorkspace, states: unknown): void {
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) { first.current = false; return; }
+    if (workspace.sensitive || states === null) return;
+    const href = (shared.value ?? needsOf(workspace)).href;
+    const timer = window.setTimeout(() => { void refreshNeeds(href); }, 400);
+    return () => window.clearTimeout(timer);
+  }, [states]);
+}
+
 const NAV_ICONS: Record<string, KitIcon> = { Home: "home", Tasks: "tasks", Flows: "flows", Agents: "agents", Projects: "projects", Settings: "settings" };
 export const OPEN_SEARCH_EVENT = "so:open-search";
 export const openSearch = (trigger?: HTMLElement | null): void => { window.dispatchEvent(new CustomEvent(OPEN_SEARCH_EVENT, { detail: trigger ?? null })); };
@@ -89,7 +134,7 @@ function Account({ workspace }: { workspace: BrowserWorkspace }) {
 
 /** The desk rail: brand and New task, Search (⌘K), the six destinations, the projects, and the account. */
 export function Rail({ workspace, states, current }: { workspace: BrowserWorkspace; states: BrowserProjectState[] | null; current: string | null }) {
-  const needs = needsOf(workspace);
+  const needs = useNeeds(workspace);
   return <nav className="so-rail" aria-label="Main">
     <div className="so-rail-top"><Brand /><span className="k-grow" />
       <a className="k-btn k-btn-ghost k-btn-sm k-btn-icon" href="/tasks/new" aria-label="New task" title="New task"><KIcon name="pen" /></a></div>
@@ -120,7 +165,7 @@ export function ShellOverlay({ className, label, trigger, dim = true, onClose, c
 
 /** The phone's navigation: the same destinations as the rail, in a sheet. */
 function NavSheet({ workspace, trigger, onClose, states, current }: { workspace: BrowserWorkspace; trigger: HTMLElement | null; onClose: () => void; states: BrowserProjectState[] | null; current: string | null }) {
-  const needs = needsOf(workspace);
+  const needs = useNeeds(workspace);
   return <ShellOverlay className="k-sheet so-nav-sheet" label="Navigation" trigger={trigger} onClose={onClose}>
     <div className="k-sheet-h"><div className="k-sheet-ht"><h2><span className="so-brand-mark" aria-hidden="true"><i /><i /><i /></span>Toolroll</h2></div>
       <KButton variant="ghost" iconOnly="x" label="Close" data-k-close="" /></div>
@@ -160,6 +205,7 @@ async function readNeeds(href: string): Promise<{ rows: SheetRow[]; more: boolea
   const view = data.view;
   if (!view || view.kind !== "tasks") throw new Error("unavailable");
   const label = (group: string): string => group in ASK_LABEL ? ASK_LABEL[group as keyof typeof ASK_LABEL] : "Waiting on you";
+  publish(href, view.needsYou);
   return {
     rows: view.rows.map(row => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, group: label(row.group),
       // The specific ask, never the list's own name again (the same words Home uses).
@@ -203,7 +249,7 @@ function NeedsSheet({ needs, trigger, onClose }: { needs: Needs; trigger: HTMLEl
 /** The phone dock: the Needs-you button (always one tap away) beside the screen's one primary, which the page's own
  * `KDock` / `dock()` draws into the same bar. */
 export function NeedsDock({ workspace }: { workspace: BrowserWorkspace }) {
-  const needs = needsOf(workspace);
+  const needs = useNeeds(workspace);
   const [sheet, setSheet] = useState<HTMLElement | null>(null);
   const close = useCallback(() => setSheet(null), []);
   // Shown on a sensitive page too: the count and its list are reads, like the rail's own count (no form, no room).
