@@ -1,26 +1,26 @@
 {
   "schema": "youi.baseline/v1",
   "project": "toolroll",
-  "recordedAt": "2026-11-03T06:25:17.164Z",
+  "recordedAt": "2026-11-03T08:41:39.368Z",
   "identity": {
     "tool": "youi-scanner/0.1.0",
     "system": {
       "id": "toolroll",
       "version": "1.0.0"
     },
-    "definitions": "d8656572f9c1",
+    "definitions": "2430d3de34c2",
     "design": {
-      "commit": "572266ace6dd48d77c061327a67707e4adeb1685",
+      "commit": "e853ca9bf1c5851617c4a6237902305044d8fa37",
       "dirty": true
     },
     "project": {
-      "commit": "572266ace6dd48d77c061327a67707e4adeb1685",
+      "commit": "e853ca9bf1c5851617c4a6237902305044d8fa37",
       "dirty": true
     }
   },
   "totals": {
-    "errors": 75,
-    "warnings": 119
+    "errors": 74,
+    "warnings": 100
   },
   "entries": [
     {
@@ -695,7 +695,7 @@
       "severity": "error",
       "count": 1,
       "lines": [
-        31
+        33
       ]
     },
     {
@@ -705,7 +705,7 @@
       "severity": "error",
       "count": 1,
       "lines": [
-        31
+        33
       ]
     },
     {
@@ -713,10 +713,9 @@
       "file": "src/browser/views/flow-view.tsx",
       "text": "#64748b",
       "severity": "error",
-      "count": 2,
+      "count": 1,
       "lines": [
-        31,
-        1913
+        33
       ]
     },
     {
@@ -726,7 +725,7 @@
       "severity": "error",
       "count": 1,
       "lines": [
-        31
+        33
       ]
     },
     {
@@ -736,7 +735,7 @@
       "severity": "error",
       "count": 1,
       "lines": [
-        31
+        33
       ]
     },
     {
@@ -746,7 +745,7 @@
       "severity": "error",
       "count": 1,
       "lines": [
-        31
+        33
       ]
     },
     {
@@ -756,7 +755,7 @@
       "severity": "error",
       "count": 1,
       "lines": [
-        28
+        30
       ]
     },
     {
@@ -764,18 +763,12 @@
       "file": "src/browser/views/flow-view.tsx",
       "text": "<button>",
       "severity": "warn",
-      "count": 10,
+      "count": 4,
       "lines": [
-        175,
-        215,
-        349,
-        860,
-        1235,
-        1302,
-        1304,
-        1574,
-        1803,
-        1914
+        172,
+        343,
+        850,
+        1590
       ]
     },
     {
@@ -783,10 +776,9 @@
       "file": "src/browser/views/flow-view.tsx",
       "text": "text-[11.5px]",
       "severity": "warn",
-      "count": 2,
+      "count": 1,
       "lines": [
-        1346,
-        1578
+        1594
       ]
     },
     {
@@ -794,19 +786,10 @@
       "file": "src/browser/views/flow-view.tsx",
       "text": "text-[11px]",
       "severity": "warn",
-      "count": 11,
+      "count": 2,
       "lines": [
-        27,
-        44,
-        168,
-        170,
-        187,
-        188,
-        192,
-        196,
-        197,
-        209,
-        217
+        29,
+        46
       ]
     },
     {

@@ -158,4 +158,4 @@ html.fl-locked, html.fl-locked body { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   :is([data-view] .fl-page, [data-view].fl-drawer-body) .fl-zone-n, :is([data-view] .fl-page, [data-view].fl-drawer-body) .fl-card { transition: none; }
 }
-:is([data-view] .fl-page, [data-view].fl-drawer-body).fl-drawer-body { display: grid; gap: 16px; min-width: 0; }
+:is([data-view] .fl-page, [data-view].fl-drawer-body).fl-drawer-body { display: grid; gap: var(--so-space-lg); min-width: 0; }
