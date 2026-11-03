@@ -15,8 +15,10 @@ import { KOverlay } from "./k-overlay.js";
  * The approval covers exactly what was shown: pass `terms` from the snapshot you will submit, never live fields.
  * The server proves the person again when the act arrives.
  */
-export function KApprove({ kind, facts, label, terms, text, primary = true, docked, onApprove }: {
+export function KApprove({ kind, facts, label, terms, text, primary = true, docked, busy: busyLabel = "Starting…", onApprove }: {
   kind: ApprovalKind; facts: ApprovalFacts; label: string; terms: ReactNode; text?: ReactNode; primary?: boolean; docked?: boolean;
+  /** The busy face while the act runs ("Starting…", "Confirming…"). */
+  busy?: string;
   onApprove: (password: string | null, how: ReturnType<typeof approvalHow>) => Promise<string | null>;
 }) {
   const ask = approvalAsk(kind, facts);
@@ -43,7 +45,7 @@ export function KApprove({ kind, facts, label, terms, text, primary = true, dock
     void run(typeof value === "string" ? value : "");
   };
   return <>
-    <KButton variant={primary ? "primary" : "outline"} label={label} docked={docked === true} busy={busy && trigger === null ? "Starting…" : false}
+    <KButton variant={primary ? "primary" : "outline"} label={label} docked={docked === true} busy={busy && trigger === null ? busyLabel : false}
       aria-haspopup={ask === "password" ? "dialog" : undefined}
       onClick={event => { if (ask === "password") setTrigger(event.currentTarget); else void run(null); }} />
     {ask === "click" && refusal && <KNotice>{refusal}</KNotice>}
@@ -54,7 +56,7 @@ export function KApprove({ kind, facts, label, terms, text, primary = true, dock
         <label className="k-label" htmlFor={fieldId}>Your password</label>
         <KInput id={fieldId} type="password" name="token" autoComplete="current-password" required autoFocus aria-describedby={`${fieldId}-err`} aria-invalid={refusal ? true : undefined} />
         <span className="k-err" id={`${fieldId}-err`} role="alert">{refusal ?? ""}</span>
-        <KActs><KButton type="submit" variant="primary" label={label} busy={busy ? "Starting…" : false} /><KButton variant="ghost" label="Cancel" data-k-close="" /></KActs>
+        <KActs><KButton type="submit" variant="primary" label={label} busy={busy ? busyLabel : false} /><KButton variant="ghost" label="Cancel" data-k-close="" /></KActs>
       </form>
       <p className="k-pop-foot k-note">{termsOf(kind, { ...facts, remembered: false, passwordless: false }) === "Asks for your password." && kind === "standard"
         ? "After this, standard approvals on this computer need no password for 15 minutes." : termsOf(kind, facts)}</p>

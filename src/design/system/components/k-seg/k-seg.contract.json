@@ -4,11 +4,13 @@
   "name": "KSeg",
   "version": "1.0.0",
   "status": "stable",
-  "summary": "The segmented track: filters or views of one list (aria-pressed).",
+  "summary": "The segmented track: filters or views of one list (aria-pressed), or as addresses (KLinkSeg, aria-current).",
   "source": {
     "file": "k-seg.tsx",
     "export": "KSeg",
-    "also": []
+    "also": [
+      "KLinkSeg"
+    ]
   },
   "platforms": [
     "web"

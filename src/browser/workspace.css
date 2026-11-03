@@ -116,6 +116,14 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 
 .so-workspace .so-main-content { flex: 1; min-height: 0; min-width: 0; max-width: none; width: 100%; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .so-page-content { padding: var(--so-space-2xl) var(--so-space-3xl); overflow: auto; min-height: 0; }
+/* A kit page (src/design/KIT.md) owns its spacing: no page padding. The shell's header stays the phone header, so the
+ * kit's own phone header is not drawn twice (the shell itself is wave B's). */
+.so-workspace--kit .so-page-content { padding: 0; display: flex; flex-direction: column; flex: 1; }
+.so-workspace--kit .so-page-content > [data-view] { flex: 1; display: flex; flex-direction: column; }
+.so-workspace--kit [data-kit-page] { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.so-workspace--kit .so-page-content > .so-demo-notice { margin: var(--so-space-md) var(--so-space-xl) 0; }
+.so-workspace--kit .k-ph { display: none; }
+
 /* The settings frame: one 760px column, the breadcrumb in the header, and room under a sticky Save. */
 .so-workspace--settings .so-page-content > * { max-width: var(--so-settings-width, 760px); }
 .so-workspace--settings .so-page-content:has(.kit-save-bar) { scroll-padding-bottom: 80px; }
@@ -898,3 +906,34 @@ details.result-request-open > summary::marker { content: ""; }
 .ui-message-content .chat-steer pre.chat-steer-code { margin: 0; padding: 6px 8px; border: 0; border-radius: var(--so-radius-sm); background: var(--so-paper); font: 400 12px/1.5 var(--so-font-mono); white-space: pre; overflow-x: auto; max-width: 100%; }
 .ui-message-content .chat-steer pre.chat-steer-code code { font: inherit; background: none; padding: 0; }
 .ui-message-content .chat-steer p.chat-steer-note { margin: 0; }
+
+/* The task page's Activity thread (src/browser/views/task-view.tsx): one line per entry between hairlines, the time
+ * in its own column, words and cards under it. */
+.so-thread { list-style: none; margin: 0; padding: 0; display: grid; }
+.so-thread-entry { padding: 9px 0; border-bottom: 1px solid var(--so-line); }
+.so-thread-line { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--so-muted); }
+.so-thread-line b { color: var(--so-ink); font-weight: 500; }
+.so-thread-text { margin: var(--so-space-xs) 0 0 82px; font-size: 13px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
+.so-thread-quote { padding: var(--so-space-sm) var(--so-space-md); border-left: 2px solid var(--so-field-line); background: var(--so-raised); border-radius: 0 var(--so-radius-sm) var(--so-radius-sm) 0; }
+.so-inline-form { display: inline; }
+.so-task-evidence { display: block; font-size: 12.5px; }
+.so-task-tools { flex: none; flex-wrap: nowrap; gap: 2px; }
+.k-slot-text > .so-task-evidence, .k-slot-text > [data-activity] { margin-top: 2px; }
+@media (max-width: 760px) {
+  .so-thread-text { margin-left: 0; }
+  .so-task-tools .k-btn:not(.k-btn-icon) .k-face { font-size: 13px; }
+}
+
+/* The result inside a task page (views/result-view.tsx): hairlines, no sheets or shadows (src/design/KIT.md). */
+.so-result-panel { display: grid; gap: 0; }
+.so-result-body { padding: 14px 0 var(--so-space-xs); }
+.so-result-request-box { border-top: 1px solid var(--so-line); padding-top: 14px; display: grid; gap: 10px; scroll-margin-top: 16px; }
+.so-result-request-box.is-quiet:not(:has(details[open])) { display: none; }
+.so-result-decision [data-result-acts] { display: flex; flex-wrap: wrap; align-items: center; gap: var(--so-space-sm); }
+.so-result-decision [data-accept-with-reason] { display: grid; gap: 6px; max-width: 360px; }
+/* Server cards a kit page still places (holds, stop details, a scope ledger): one hairline box, never a raised sheet. */
+.so-workspace--kit .k-doc :where(.card) { box-shadow: none; border: 1px solid var(--so-line); border-radius: var(--so-radius-card); background: var(--so-paper); }
+.so-workspace--kit .k-doc :where(.card .card) { border: 0; padding: 0; }
+.k-slot-acts > [data-retry] { flex: 1 1 100%; }
+/* A kit page with a phone dock keeps its last row clear of it. */
+@media (max-width: 760px) { .so-workspace--kit [data-kit-page]:has(.k-dock) { padding-bottom: 76px; } }

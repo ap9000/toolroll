@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { openStore, recordReleaseStep, releaseProgressFor } from "./store.js";
 import {
   checksVerdict, gateTaskId, journalFile, ownerApproval, prChecksVerdict, readJournal, writeJournal, PROTECTION_MINIMUM_CHECKS, PROTECTION_REPORT_ONLY_CHECKS, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
   type CheckRun, type GateState, type HomebrewState, type MainProtection, type ReleaseAdapters, type ReleaseJournal,
@@ -201,6 +202,42 @@ describe("toolroll release", () => {
     // Finished is finished: running it again changes nothing.
     expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
     expect(s.calls).toHaveLength(9);
+  });
+
+  test("records each step's start, end and outcome (v146) in order, and a stop where it happened", async () => {
+    const store = openStore(":memory:");
+    try {
+      const { adapters } = world();
+      const outcome = await runRelease(options(stateDir()), { ...adapters, progress: entry => recordReleaseStep(store, entry) });
+      expect(outcome).toMatchObject({ ok: true });
+      const progress = releaseProgressFor(store, gateTaskId("0.9.52", SHA))!;
+      expect(progress).toMatchObject({ tag: "v0.9.52", version: "0.9.52", pr: 170, stopped: null });
+      expect(progress.steps.map(one => one.step)).toEqual(["gate", "approval", "check", "complete", "quiet", "deploy", "link", "ci", "merge", "tree", "tag", "publish", "homebrew"]);
+      expect(progress.steps.every(one => one.state === "done" && one.endedAt !== null && one.endedAt >= one.startedAt)).toBe(true);
+
+      const failed = world();
+      failed.s.onSleep = [one => {
+        if (one.gate.approval === null) one.gate.approval = { by: "alex", at: "2026-10-08T09:00:00.000Z", digest: DIGEST, basis: "password", role: "approver", active: true, person: { ok: true, method: "password-now" } };
+        else one.gate.result = { run: 2757, head: SHA, check: "failed", level: "full", receipt: RECEIPT, worktree: "/w" };
+      }];
+      const other = openStore(":memory:");
+      try {
+        expect(await runRelease(options(stateDir()), { ...failed.adapters, progress: entry => recordReleaseStep(other, entry) })).toMatchObject({ ok: false, step: "check" });
+        const stopped = releaseProgressFor(other, gateTaskId("0.9.52", SHA))!;
+        expect(stopped.steps.find(one => one.step === "approval")).toMatchObject({ state: "done" });
+        expect(stopped.stopped).toMatchObject({ step: "check" });
+        expect(stopped.stopped!.message).not.toBe("");
+      } finally { other.close(); }
+    } finally { store.close(); }
+  });
+
+  test("a progress record that fails on every write never changes the release", async () => {
+    const plain = world(), broken = world();
+    const a = await runRelease(options(stateDir()), plain.adapters);
+    const b = await runRelease(options(stateDir()), { ...broken.adapters, progress: () => { throw new Error("database is locked"); } });
+    expect(b.ok).toBe(a.ok);
+    expect(broken.s.calls).toEqual(plain.s.calls);
+    expect(b.ok && a.ok && { ...b.journal, id: "", createdAt: "", updatedAt: "" }).toEqual(a.ok && { ...a.journal, id: "", createdAt: "", updatedAt: "" });
   });
 
   test.each(MUTATIONS)("a crash right after %s landed resumes without doing it twice", async mutation => {

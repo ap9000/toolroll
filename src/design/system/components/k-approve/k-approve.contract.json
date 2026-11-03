@@ -42,6 +42,10 @@
     "onApprove": {
       "type": "function",
       "required": true
+    },
+    "busy": {
+      "type": "string",
+      "description": "The busy face while the act runs (default “Starting…”)."
     }
   },
   "tokens": {},

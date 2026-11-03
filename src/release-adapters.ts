@@ -23,7 +23,7 @@ import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
 import { findCliLinks, switchCliLinks } from "./release-links.js";
 import {
   databasePath, finishReleaseOperation, requireFreshReleaseApproval, openStore, releaseAuthorityOfTask, releaseCarries, releaseOperations, renewReleaseLease, reserveRelease, runReleaseOperation,
-  Store, releaseIssuerGone, takeReleaseLease, type Database,
+  Store, recordReleaseStep, releaseIssuerGone, takeReleaseLease, type Database,
 } from "./store.js";
 import { acquireDeploymentLock } from "./deploy-lock.js";
 import { autoReleaseApprovalOf, liveReleaseOf } from "./scope.js";
@@ -389,7 +389,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     githubReads(run, ciGh));
 
   return {
-    ...(existsSync(database) ? { release } : {}),
+    ...(existsSync(database) ? { release, progress: releaseProgressRecorder(() => openStore(database), store => store.close()) } : {}),
     now: options.now ?? (() => new Date()),
     sleep: options.sleep ?? sleep,
     say,
@@ -1239,4 +1239,14 @@ function mainTriggered(run: Record<string, unknown>): boolean {
   if (run["event"] === "push") return run["branch"] === "main";
   if (run["event"] === "pull_request") return bases.length > 0 && bases.every(base => base === "main");
   return false;
+}
+
+/** The release's step record (store.ts release_step, v146) through a store opened for each entry: a failure to open or
+ * write is swallowed, so recording never stops or changes the release. */
+export function releaseProgressRecorder(open: () => Store, done: (store: Store) => void): NonNullable<ReleaseAdapters["progress"]> {
+  return entry => {
+    let store: Store | null = null;
+    try { store = open(); recordReleaseStep(store, entry); } catch { /* best effort: the release goes on */ }
+    finally { if (store !== null) { try { done(store); } catch { /* best effort */ } } }
+  };
 }

@@ -1157,7 +1157,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // version; no row is every saved task: not archived), the completed workflow runs on a watched branch the checks
 // trigger saw (branch_check_run), and the reservations that hold work back from being put away (merge_in_flight,
 // deploy_in_flight, flow_step_task; V145_SCHEMA, new tables only).
-export const SCHEMA_VERSION = 145;
+// v146 adds, and changes no saved row: each pull request check's own timing as GitHub last reported it for the head the
+// plane observed (ci_check), and each release step's start, end and outcome (release_step; V146_SCHEMA, new tables only).
+export const SCHEMA_VERSION = 146;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1295,7 +1297,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1492,6 +1494,43 @@ CREATE TABLE IF NOT EXISTS flow_step_task (
   task_id TEXT NOT NULL,
   PRIMARY KEY (card, entry, task_id)
 );
+`;
+/** v146: `ci_check` is one pull request check (a GitHub check run or commit status) as the plane's winning observation of
+ * that head read it: written only with the observation that won its generation, replacing that head's rows wholesale.
+ * `release_step` is one step of a release (release.ts RELEASE_STEPS) as `toolroll release` moved through it: when it
+ * started, when it ended and how; recording it never changes the release. Both are read-only history for the Ship and
+ * Release views and their CLI twins. */
+export const V146_SCHEMA = `
+CREATE TABLE IF NOT EXISTS ci_check (
+  github_repo  TEXT NOT NULL,
+  pr_number    INTEGER NOT NULL,
+  head_sha     TEXT NOT NULL,
+  -- A check's identity: its kind (check run or commit status), its workflow and its name, so two workflows' checks
+  -- with the same name stay two rows (a failing one never hides behind a passing namesake).
+  ident        TEXT NOT NULL,
+  name         TEXT NOT NULL,
+  workflow     TEXT,
+  state        TEXT NOT NULL CHECK (state IN ('queued','running','passed','failed','skipped','cancelled','neutral')),
+  started_at   TEXT,
+  completed_at TEXT,
+  url          TEXT,
+  observed_at  TEXT NOT NULL,
+  PRIMARY KEY (github_repo, pr_number, head_sha, ident)
+);
+CREATE TABLE IF NOT EXISTS release_step (
+  task_id    TEXT NOT NULL,
+  tag        TEXT NOT NULL,
+  version    TEXT NOT NULL,
+  pr         INTEGER,
+  step       TEXT NOT NULL,
+  state      TEXT NOT NULL CHECK (state IN ('running','done','failed','waiting')),
+  started_at TEXT NOT NULL,
+  ended_at   TEXT,
+  detail     TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (task_id, tag, step)
+);
+CREATE INDEX IF NOT EXISTS release_step_by_task ON release_step (task_id, updated_at);
 `;
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
@@ -5787,6 +5826,8 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   db.exec(FLOW_BROWSER_SCHEMA);
   // v145: put-away tasks, green checks per branch and the reservations that hold work back (new tables only).
   db.exec(V145_SCHEMA);
+  // v146: pull request checks' own timing and release steps (new tables only).
+  db.exec(V146_SCHEMA);
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -25741,4 +25782,211 @@ export function liveInviteTerms(store: Store, tokenValue: string, now: Date): { 
     .get(createHash("sha256").update(tokenValue, "utf8").digest("hex"), now.toISOString());
   if (row === undefined) return null;
   return { role: String(row["role"]) === "approver" ? "approver" : "viewer", mintedBy: String(row["minted_by"]), expiresAt: String(row["expires_at"]), projects: readProjectAccess(row["projects_json"]) };
+}
+
+// ---- v146: pull request checks' own timing, and release steps ------------------------------------------------------
+
+/** One pull request check as GitHub last reported it for the observed head (v146 ci_check). */
+/** `kind`: a check run or a commit status (part of the check's identity); a row built without it reads as a run when it
+ * names a workflow, else as a status. */
+export type CiCheckRow = { name: string; workflow: string | null; state: "queued" | "running" | "passed" | "failed" | "skipped" | "cancelled" | "neutral"; startedAt: string | null; completedAt: string | null; url: string | null; kind?: "run" | "status" };
+/** `observed`: the authoritative state of the same winning observation (ci_observation), which the overall status
+ * always comes from; the rows only show each check's own timing. */
+export type ShipChecks = { githubRepo: string; prNumber: number; headSha: string; observedAt: string; observed: "passing" | "failing" | "running" | "none"; checks: CiCheckRow[] };
+
+/** At most this many checks are kept for one head; GitHub's rollup is far smaller in practice. */
+export const CI_CHECKS_MAX = 200;
+const CI_CHECK_TEXT_MAX = 200;
+const CI_CHECK_URL_MAX = 2048;
+const CI_FAILED_CONCLUSIONS = new Set(["FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
+const CI_PENDING = new Set(["QUEUED", "WAITING", "PENDING", "REQUESTED"]);
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/** A timestamp GitHub gave, as an exact ISO instant, or null (GitHub's zero time "0001-01-01T00:00:00Z" is no time). */
+function ciInstant(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 40 || !ISO_INSTANT.test(value)) return null;
+  const at = Date.parse(value);
+  if (!Number.isFinite(at) || at < Date.UTC(2000, 0, 1)) return null;
+  return new Date(at).toISOString();
+}
+/** The same ordering in SQL, for a column holding a check state. */
+const CI_SEVERITY_SQL = (column: string): string => `CASE ${column} ${Object.entries({ failed: 6, cancelled: 5, running: 4, queued: 3, neutral: 2, skipped: 1, passed: 0 }).map(([state, n]) => `WHEN '${state}' THEN ${n}`).join(" ")} ELSE 0 END`;
+/** How bad a check state is: when one check identity appears twice, the worse stands. */
+const CI_SEVERITY: Readonly<Record<CiCheckRow["state"], number>> = { failed: 6, cancelled: 5, running: 4, queued: 3, neutral: 2, skipped: 1, passed: 0 };
+/** A check's identity: its kind, its workflow and its name. */
+function ciCheckIdent(kind: "run" | "status", row: Pick<CiCheckRow, "workflow" | "name">): string {
+  // Unit separators, never NUL (SQLite text ends at one): names and workflows had every control character removed.
+  return `${kind}\u001f${row.workflow ?? ""}\u001f${row.name}`;
+}
+/** Short, printable text, or null. Every control (C0, DEL, C1) and format character (bidi overrides and isolates,
+ * zero-width marks) is removed, so a check name can't move the terminal's cursor or reorder what `task ship` prints.
+ * Check names never need a zero-width joiner, so emoji sequences lose theirs: that is the accepted cost. */
+function ciText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.replace(/[\p{Cc}\p{Cf}]/gu, "").trim();
+  return text === "" || text.length > CI_CHECK_TEXT_MAX ? null : text;
+}
+/** Only an https link to GitHub itself is kept; anything else reads null. */
+function ciUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > CI_CHECK_URL_MAX) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.username === "" && url.password === "" && url.port === "" && url.hostname === "github.com" ? url.toString() : null;
+  } catch { return null; }
+}
+
+/**
+ * GitHub's statusCheckRollup (gh pr view --json statusCheckRollup) as check rows: CheckRun items (name, workflowName,
+ * status, conclusion, startedAt, completedAt, detailsUrl) and StatusContext items (context, state, startedAt, targetUrl).
+ * Strict: an item that is not one of those shapes, has no usable name, or names a state it doesn't know is dropped; one
+ * row per identity (kind, workflow and name), and when one identity appears twice (a re-run) the worse state stands;
+ * at most CI_CHECKS_MAX.
+ */
+export function parseCiRollup(rollup: unknown): CiCheckRow[] {
+  if (!Array.isArray(rollup)) return [];
+  const rows: CiCheckRow[] = [];
+  const seen = new Map<string, number>();
+  for (const item of rollup.slice(0, CI_CHECKS_MAX * 2)) {
+    if (rows.length >= CI_CHECKS_MAX) break;
+    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+    const raw = item as Record<string, unknown>;
+    const kind = raw["__typename"];
+    let row: CiCheckRow | null = null;
+    if (kind === "CheckRun" || (kind === undefined && typeof raw["status"] === "string" && raw["context"] === undefined)) {
+      const name = ciText(raw["name"]);
+      const status = typeof raw["status"] === "string" ? raw["status"].toUpperCase() : "";
+      const conclusion = typeof raw["conclusion"] === "string" ? raw["conclusion"].toUpperCase() : "";
+      const state: CiCheckRow["state"] | null = status === "IN_PROGRESS" ? "running"
+        : CI_PENDING.has(status) ? "queued"
+        : status !== "COMPLETED" ? null
+        : conclusion === "SUCCESS" ? "passed"
+        : CI_FAILED_CONCLUSIONS.has(conclusion) ? "failed"
+        : conclusion === "CANCELLED" ? "cancelled"
+        : conclusion === "SKIPPED" ? "skipped"
+        : conclusion === "NEUTRAL" || conclusion === "STALE" ? "neutral"
+        : null;
+      if (name === null || state === null) continue;
+      const completedAt = state === "running" || state === "queued" ? null : ciInstant(raw["completedAt"]);
+      row = { name, workflow: ciText(raw["workflowName"]), state, startedAt: state === "queued" ? null : ciInstant(raw["startedAt"]), completedAt, url: ciUrl(raw["detailsUrl"]), kind: "run" };
+    } else if (kind === "StatusContext" || (kind === undefined && typeof raw["context"] === "string")) {
+      const name = ciText(raw["context"]);
+      const value = typeof raw["state"] === "string" ? raw["state"].toUpperCase() : "";
+      const state: CiCheckRow["state"] | null = value === "SUCCESS" ? "passed" : value === "FAILURE" || value === "ERROR" ? "failed"
+        : value === "PENDING" || value === "EXPECTED" ? "running" : null;
+      if (name === null || state === null) continue;
+      row = { name, workflow: null, state, startedAt: ciInstant(raw["startedAt"] ?? raw["createdAt"]), completedAt: null, url: ciUrl(raw["targetUrl"]), kind: "status" };
+    }
+    if (row === null) continue;
+    // A completion before its start is GitHub's clock disagreeing with itself: keep the state, drop the end.
+    if (row.startedAt !== null && row.completedAt !== null && row.completedAt < row.startedAt) row = { ...row, completedAt: null };
+    const ident = ciCheckIdent(row.kind ?? "run", row);
+    const at = seen.get(ident);
+    if (at !== undefined) { if (CI_SEVERITY[row.state] > CI_SEVERITY[rows[at]!.state]) rows[at] = row; continue; }
+    seen.set(ident, rows.length);
+    rows.push(row);
+  }
+  return rows;
+}
+
+/**
+ * Replace one head's checks wholesale (v146). Call ONLY with an observation that won its generation (publish.ts settles
+ * and records in one transaction): a losing, stale answer never writes here.
+ */
+export function recordCiChecks(store: Store, githubRepo: string, prNumber: number, headSha: string, rows: readonly CiCheckRow[], now: Date): void {
+  store.transact(() => {
+    // One head per pull request is kept: an older head's rows go with the new observation.
+    store.handle.prepare("DELETE FROM ci_check WHERE github_repo = ? AND pr_number = ?").run(githubRepo, prNumber);
+    const insert = store.handle.prepare(`INSERT INTO ci_check (github_repo, pr_number, head_sha, ident, name, workflow, state, started_at, completed_at, url, observed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (github_repo, pr_number, head_sha, ident) DO UPDATE SET state = excluded.state, started_at = excluded.started_at,
+        completed_at = excluded.completed_at, url = excluded.url WHERE ${CI_SEVERITY_SQL("excluded.state")} > ${CI_SEVERITY_SQL("ci_check.state")}`);
+    const at = now.toISOString();
+    // Rows a caller built itself carry no kind: a row with a workflow is a check run, one without may be a status; the
+    // identity keeps the two apart either way.
+    for (const row of rows.slice(0, CI_CHECKS_MAX)) insert.run(githubRepo, prNumber, headSha, ciCheckIdent(row.kind ?? (row.workflow === null ? "status" : "run"), row), row.name, row.workflow, row.state, row.startedAt, row.completedAt, row.url, at);
+  });
+}
+
+/** A pull request's checks for the head the plane's last winning observation recorded, or null when none was. */
+export function ciChecksFor(store: Store, githubRepo: string, prNumber: number): ShipChecks | null {
+  const observation = store.handle.prepare("SELECT head_sha, state, observed_at FROM ci_observation WHERE github_repo = ? AND pr_number = ?").get(githubRepo, prNumber);
+  if (observation === undefined || String(observation["head_sha"]) === "" || String(observation["observed_at"]) === "") return null;
+  const headSha = String(observation["head_sha"]);
+  const rows = store.handle.prepare(`SELECT ident, name, workflow, state, started_at, completed_at, url, observed_at FROM ci_check
+      WHERE github_repo = ? AND pr_number = ? AND head_sha = ? ORDER BY COALESCE(started_at, '9999'), name`).all(githubRepo, prNumber, headSha);
+  const text = (value: unknown): string | null => value === null || value === undefined ? null : String(value);
+  return {
+    githubRepo, prNumber, headSha, observedAt: String(observation["observed_at"]),
+    observed: (["passing", "failing", "running"] as const).find(one => one === String(observation["state"])) ?? "none",
+    checks: rows.map(row => ({ name: String(row["name"]), workflow: text(row["workflow"]), state: String(row["state"]) as CiCheckRow["state"],
+      startedAt: text(row["started_at"]), completedAt: text(row["completed_at"]), url: text(row["url"]),
+      kind: String(row["ident"]).startsWith("status\u001f") ? "status" as const : "run" as const })),
+  };
+}
+
+/** A task's pull request checks: its family's newest publication that has a pull request number, and that pull
+ * request's checks (ciChecksFor). Null: no pull request, or none observed yet. */
+export function shipChecksForTask(store: Store, taskId: string): ShipChecks | null {
+  const refs = taskFamilyRefs(store, taskId).map(one => one.id);
+  if (refs.length === 0) return null;
+  const row = store.handle.prepare(`SELECT github_repo, pr_number FROM publication WHERE task_ref IN (SELECT value FROM json_each(?))
+      AND pr_number IS NOT NULL ORDER BY id DESC LIMIT 1`).get(JSON.stringify(refs));
+  return row === undefined ? null : ciChecksFor(store, String(row["github_repo"]), Number(row["pr_number"]));
+}
+
+/** One release step as `toolroll release` moved through it (v146 release_step). */
+export type ReleaseStepRow = { step: string; state: "running" | "done" | "failed" | "waiting"; startedAt: string; endedAt: string | null; detail: string | null };
+export type ReleaseProgress = { tag: string; version: string; pr: number | null; startedAt: string; updatedAt: string; steps: ReleaseStepRow[]; stopped: { step: string; message: string; at: string } | null };
+/** What a release coordinator says about one step. */
+export type ReleaseStepEntry = { taskId: string; tag: string; version: string; pr: number | null; step: string; state: ReleaseStepRow["state"]; at: Date; detail?: string | null };
+
+const RELEASE_STEP_NAMES = new Set(["gate", "approval", "check", "complete", "quiet", "deploy", "link", "ci", "merge", "tree", "tag", "publish", "homebrew"]);
+
+/**
+ * Record a release step (v146): `running` or `waiting` opens it (its first start is kept), `done` or `failed` ends it.
+ * A step that runs again after a stop starts its row again. A failed write throws here; the release's adapter swallows
+ * it, so recording never changes a release.
+ */
+export function recordReleaseStep(store: Store, entry: ReleaseStepEntry): void {
+  if (!RELEASE_STEP_NAMES.has(entry.step) || entry.taskId === "" || entry.tag === "") return;
+  const at = entry.at.toISOString();
+  // A stop message can carry a remote tool's words: no control or format character reaches `release status`.
+  const detail = entry.detail == null ? null : entry.detail.replace(/[\p{Cc}\p{Cf}]+/gu, " ").trim().slice(0, 1000);
+  const ended = entry.state === "done" || entry.state === "failed";
+  store.handle.prepare(`INSERT INTO release_step (task_id, tag, version, pr, step, state, started_at, ended_at, detail, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (task_id, tag, step) DO UPDATE SET
+        state = excluded.state, version = excluded.version, pr = excluded.pr, updated_at = excluded.updated_at,
+        started_at = CASE WHEN release_step.ended_at IS NOT NULL AND excluded.ended_at IS NULL THEN excluded.started_at ELSE release_step.started_at END,
+        ended_at = excluded.ended_at,
+        detail = CASE WHEN excluded.detail IS NOT NULL OR excluded.ended_at IS NULL THEN excluded.detail ELSE release_step.detail END`)
+    .run(entry.taskId, entry.tag, entry.version, entry.pr, entry.step, entry.state, at, ended ? at : null, detail, at);
+}
+
+/** A release's steps, for the release task: the newest tag recorded for it, its steps in the order they ran, and the
+ * step it stopped at when the last thing recorded was a failure. Null: no step recorded. */
+export function releaseProgressFor(store: Store, taskId: string): ReleaseProgress | null {
+  const newest = store.handle.prepare("SELECT tag FROM release_step WHERE task_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1").get(taskId);
+  if (newest === undefined) return null;
+  const tag = String(newest["tag"]);
+  const rows = store.handle.prepare("SELECT * FROM release_step WHERE task_id = ? AND tag = ? ORDER BY started_at, rowid").all(taskId, tag);
+  const steps: ReleaseStepRow[] = rows.map(row => ({ step: String(row["step"]), state: String(row["state"]) as ReleaseStepRow["state"], startedAt: String(row["started_at"]),
+    endedAt: row["ended_at"] === null ? null : String(row["ended_at"]), detail: row["detail"] === null ? null : String(row["detail"]) }));
+  const last = [...rows].sort((a, b) => String(a["updated_at"]).localeCompare(String(b["updated_at"]))).at(-1)!;
+  const stopped = String(last["state"]) === "failed" ? { step: String(last["step"]), message: last["detail"] === null ? "" : String(last["detail"]), at: String(last["updated_at"]) } : null;
+  const pr = last["pr"] === null ? null : Number(last["pr"]);
+  return { tag, version: String(last["version"]), pr, startedAt: steps[0]!.startedAt, updatedAt: String(last["updated_at"]), steps, stopped };
+}
+
+/** The release task whose steps were recorded most recently (v146), or null when none was. */
+export function latestReleaseStepTask(store: Store): string | null {
+  const row = store.handle.prepare("SELECT task_id FROM release_step ORDER BY updated_at DESC, rowid DESC LIMIT 1").get();
+  return row === undefined ? null : String(row["task_id"]);
+}
+
+/** Seconds a step or check took (to its end, or to `now` while it runs); null without a start. */
+export function elapsedSeconds(startedAt: string | null, endedAt: string | null, now: Date): number | null {
+  if (startedAt === null) return null;
+  const start = Date.parse(startedAt), end = endedAt === null ? now.getTime() : Date.parse(endedAt);
+  return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, Math.round((end - start) / 1000)) : null;
 }

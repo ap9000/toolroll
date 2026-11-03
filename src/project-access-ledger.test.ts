@@ -80,7 +80,7 @@ describe("project access and the action ledger", () => {
     const home = await get("/");
     expect(home.status).toBe(303);
     expect(home.headers.get("location")).toBe("/work");
-    for (const path of ["/work", "/inbox", "/projects", "/people", "/tasks/new", "/board", "/board?scope=all", "/board?view=order", "/runs", "/review", "/done", "/ledger", "/settings", "/settings/learning", "/t/alpha-task"]) {
+    for (const path of ["/work", "/inbox", "/projects", "/people", "/tasks/new", "/board", "/board?scope=all", "/board?view=order", "/runs", "/review", "/ledger", "/settings", "/settings/learning", "/t/alpha-task"]) {
       const response = await get(path);
       expect(response.status, path).toBe(200);
       const text = await response.text();
@@ -88,6 +88,10 @@ describe("project access and the action ledger", () => {
       expect(text, path).not.toContain(beta);
       expect(text, path).not.toContain("beta-task");
     }
+    // Done is Tasks' Finished filter now (wave A): the old address answers with a redirect there.
+    const done = await get("/done");
+    expect(done.status).toBe(303);
+    expect(done.headers.get("location")).toBe("/work?view=completed");
     expect((await get("/t/beta-task")).status).toBe(404);
     expect((await get("/ledger?project=" + encodeURIComponent(beta))).status).toBe(403);
     expect((await get("/settings/learning?repo=" + encodeURIComponent(beta))).status).toBe(403);

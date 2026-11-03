@@ -268,7 +268,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // the database alone: a row reads no check log. A live build's row says which step it is on, or the step it is
     // stuck on, from that live attempt's own progress only, never a stopped attempt's; the step's words come from its
     // current plan (one saved file, for live rows only), and without it the row names the step by number.
-    work = { ...work, items: work.items.map((item): WorkIndexItem & { progress?: string } => {
+    const enrich = (page: WorkIndexPage): WorkIndexPage => ({ ...page, items: page.items.map((item): WorkIndexItem & { progress?: string } => {
       if (item.liveRunId !== null) {
         const ref = store.lookupRef(item.activeTaskId);
         const recorded = ref === null ? null : store.latestCheckpointForRun(item.liveRunId);
@@ -284,9 +284,19 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       if (family === null || family.problem !== null) return item;
       const failure = failureOf(family.versions.flatMap(version => store.runsFor(version.refId)), null, false);
       return failure.kind === "reason" ? item : { ...item, status: { ...item.status, detail: failure.line } };
-    }) };
+    }) });
+    work = enrich(work);
+    // The Board view: the same index as four columns (needs you, queued, running, finished), never a second classifier.
+    const board = url.searchParams.get("layout") !== "board" ? null : (() => {
+      const column = (view: "needs-you" | "queued" | "running" | "completed"): WorkIndexPage =>
+        enrich(workIndexPage(store, now, workAccess(), { view, limit: BOARD_COLUMN_LIMIT, project, root: evidenceRoot, ...(state === null ? {} : { state }) }));
+      return { needs: column("needs-you"), queued: column("queued"), running: column("running"), finished: column("completed") };
+    })();
     const page = workPage(chromeFor(project, "work", undefined, rollup ? "all" : undefined), {
       view,
+      lens: project,
+      all: url.searchParams.get("all") === "1",
+      board,
       ...(url.searchParams.has('project') && project !== null ? { projectFilter: project } : {}),
       work,
       previous: url.searchParams.has('cursor'),
@@ -696,7 +706,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // One page per task (docs/plans/one-page-task-and-agent.md): the tab named, and the Result tab's result — the shown
     // version's own, or the exact run `run=` names, which must be a result of that very version.
     const tabWord = url.searchParams.get("tab");
-    const tab = tabWord === "result" || tabWord === "plan" ? tabWord : "activity";
+    // The first tab (Plan, or Result once there is one) unless the address names Activity or Attempts.
+    const tab = tabWord === "result" || tabWord === "activity" || tabWord === "attempts" ? tabWord : "plan";
     const runWord = url.searchParams.get("run");
     const named = runWord === null ? null : /^[1-9][0-9]{0,14}$/.test(runWord) ? Number(runWord) : -1;
     if (named === -1) return refuse(response, who, 404, "No such result for this task.", taskHref(family.root.id));
@@ -3060,12 +3071,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "code.changes-read": showCode("changes", true),
     "code.ship-preview": showCode("ship", true),
     "code.other": showCode("unknown"),
+    // Retired into Tasks and the task page (src/design/KIT.md): each old address still answers, as a redirect.
     "inbox": showInbox,
     "work": showWork,
     "next": showNext,
     "board": showBoard,
     "review": showReview,
-    "done": showDone,
+    "done": async ctx => { const to = retiredTasksAddress("done", ctx.url); return to === null ? showDone(ctx) : redirect(ctx.response, to); },
     "tasks": showTasks,
     "queue": showQueue,
     "tasks.new": showNewTask,
@@ -3199,3 +3211,23 @@ export function createTidyHandlers(runtime: ServerRuntime) {
 
   return { "work.put-away": showPutAway, "work.put-away.apply": applyPutAway, "task.act.archive": oneTask("archive"), "task.act.restore": oneTask("restore") };
 }
+
+/**
+ * Where a retired Tasks address goes now (wave A, src/design/KIT.md): Done is Finished. `board` names where the old
+ * Board's state view goes once it is retired (Tasks' Board view; its Order view and its live fragment stay). Null: this
+ * address still answers itself.
+ */
+export function retiredTasksAddress(route: "board" | "done", url: URL): string | null {
+  // (The Board keeps its own page for now: Tasks' Board view is where the app links; see the wave A report.)
+  const project = url.searchParams.get("project");
+  const keep = project === null || url.searchParams.getAll("project").length !== 1 ? "" : `project=${encodeURIComponent(project)}&`;
+  switch (route) {
+    case "done": return `/work?${keep}view=completed`;
+    case "board":
+      if (url.searchParams.get("view") === "order" || url.searchParams.get("fragment") === "1") return null;
+      return url.searchParams.get("scope") === "all" ? "/work?all=1&layout=board" : `/work?${keep}layout=board`;
+  }
+}
+
+/** How many cards a Board column shows; the column's count covers them all and its "View all" opens the list. */
+export const BOARD_COLUMN_LIMIT = 40;
