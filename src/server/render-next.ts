@@ -2,8 +2,8 @@
  * /next (Wave E, src/design/KIT.md): everything waiting on a person, one at a time, each in the approval slots with
  * its one act, every act landing back here. The forms post exactly what they always have (the approve form's nonce,
  * digest and password; a decision's choice, confirm and note; a requeue), so every server check is unchanged. The
- * approval shows the password only when the rules ask (approveForm: standard, never "remembered" here, so it is the
- * password unless Passwordless is on, as before).
+ * approval shows the password only when the rules ask (approveForm, standard): none with Passwordless or a remembered
+ * password the task page's own preview says may approve these exact terms; otherwise the password, required.
  */
 import { originNote, type TaskOrigin } from "../task-source.js";
 import { html, joinHtml, postForm, type Html } from "../html.js";
@@ -47,6 +47,8 @@ export function nextPage(chrome: Chrome, data: {
   route: RouteView | null;
   /** v126: where the work came from (an outside event's line of context, never a term agreed to). */
   origin?: TaskOrigin | null;
+  /** A remembered password stands in for these exact terms (the task page's preview): one click, no field. */
+  remembered?: boolean;
   csrf: string;
   nonce: string;
   remaining: number;
@@ -91,7 +93,7 @@ export function nextPage(chrome: Chrome, data: {
     });
   } else if (item.kind === "approval") {
     const scope = data.scope;
-    const facts_ = approvalFactsNow({ remembered: false });
+    const facts_ = approvalFactsNow({ remembered: data.remembered === true });
     const terms = joinHtml([
       data.deliverable === "report" ? note("Research only: a read-only session investigates this goal and delivers a report. No branch; nothing in the repository changes.") : "",
       scope === null || scope.profileState !== "unresolved" ? "" : profileWords(scope),

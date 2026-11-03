@@ -2257,6 +2257,8 @@ describe("/next — clearing the queue one thing at a time", () => {
     });
     expect(answered.status).toBe(303);
     expect(answered.headers.get("location")).toBe("/next");
+    // Without a remembered password the approval carries the step-up (a remembered one is one click).
+    expect((await fetch(url("/session/forget-password"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, return: "/next" }), redirect: "manual" })).status).toBe(303);
 
     const second = await (await fetch(url("/next"), { headers: { cookie } })).text();
     expect(second).toContain("Approve exactly this");

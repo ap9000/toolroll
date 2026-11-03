@@ -355,6 +355,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         deliverable: ref?.deliverable ?? "branch",
         route,
         origin: originOf(store, item.approval.taskId, repo => store.accountCanAccess(who.name, repo)),
+        // Whether a remembered password may approve these exact terms: the task page's own preview (task-views.ts
+        // approvalFresh), read without minting a second nonce. Display only; the approve POST proves it again.
+        remembered: nonce !== "" && runtime.taskViewData(item.approval.taskId, who, null, { mintNonce: false })?.approvalFresh != null,
         csrf, nonce, remaining: remaining.length, skipped: [...skipped], now,
       }));
     }
