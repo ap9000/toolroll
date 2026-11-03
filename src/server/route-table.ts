@@ -206,25 +206,30 @@ get("pages", "projects.browse", "/projects/browse", free);
 get("pages", "projects.github", "/projects/github", { ...free, callers: ["cookie"], callerRefusal: { status: 403, type: "text/plain; charset=utf-8", body: "listing repositories feeds a browser session's act" },
   ...anyApprover("your login can watch — adding projects is an approver's act") });
 get("pages", "projects.page", "/projects", { limited: "unscoped", ...free });
+// One project's reading page (/projects/<name>): reads only, like every GET (docs/plans/get-side-effects.md). It shows a
+// project this account can see and never switches the session's project; its Open project button posts to
+// /projects/select. The handler resolves the name among the account's visible projects; anything else is not found.
+get("pages", "projects.project", "^\\/projects\\/[^/]+$", { limited: "unscoped", ...free, sample: "/projects/payments-api" });
 get("pages", "home", "/", { limited: "collection", ...free });
+get("pages", "search", "/search", { limited: "collection", ...free });
 get("tasks", "inbox", "/inbox", { limited: "collection", ...free });
 get("tasks", "work", "/work", { limited: "collection", ...free });
 // Put away old tasks (task-tidy.md): the preview reads only; putting away is an approver's step-up in a browser session.
 get("tasks", "work.put-away", "/work/put-away", { limited: "collection", ...free, callers: ["cookie"], ...approver("Only an approver can put tasks away.", "/work") });
 post("tasks", "work.put-away.apply", "/work/put-away", { scope: "step-up", limited: "collection", ...approver("Only an approver can put tasks away.", "/work") });
 get("tasks", "next", "/next", { limited: "collection" });
-get("pages", "morning", "/morning");
+get("pages", "morning", "/morning", { limited: "collection", ...free }); // a redirect to / now
 get("pages", "workbench", "/workbench", free);
 get("tasks", "board", "/board", { limited: "collection" });
 get("tasks", "review", "/review", { limited: "collection" });
 get("settings", "spend", "/spend", { ...free, ...anyOperator("An instance operator sees spend.", "/") });
 get("settings", "settings.spend", "/settings/spend", { ...free, ...anyOperator("An instance operator sets spending limits.", "/settings") });
 get("pages", "ledger", "/ledger", { limited: "unscoped", ...free });
-get("pages", "activity", "/activity");
-get("tasks", "done", "/done", { limited: "collection" });
+get("pages", "activity", "/activity", { limited: "collection", ...free }); // a redirect to / now (Home has the summary)
+get("tasks", "done", "/done", { limited: "collection", ...free }); // a redirect to the Tasks list's Finished view now
 get("settings", "mode", "/mode");
 get("people", "people.page", "/people", { limited: "unscoped", ...free });
-get("pages", "system", "/system");
+get("pages", "system", "/system", free);
 // Where every "Connect a builder" leads: read-only, open to a project-limited person (the handler shows only a visible project).
 get("pages", "start-builder", "/start-builder", { limited: "unscoped", ...free });
 get("tasks", "tasks", "/tasks", { limited: "collection", ...free }); // a redirect to /work now: never sent to the project opener first
@@ -235,6 +240,9 @@ get("pages", "agents", "/agents", { limited: "unscoped", ...free });
 // Browser sessions only, like the transcript and the peek: no token (a lead's, a runner's, a remote one) reads live output.
 get("pages", "agents.live", "/agents/live", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/1" });
+// Terminals' address in the Agents area: a 302 to /term, admitted exactly as /term is (an operator's browser session).
+get("pages", "agents.terminals", "/agents/terminals", TERM);
+// Fleet and System are parts of Agents now: GET aliases to /agents#computers and /agents#models.
 get("pages", "fleet", "/fleet", free);
 get("tasks", "tasks.new", "/tasks/new", { limited: "collection", ...free });
 // The first run's own page (Wave E): five guided steps, reads only; it leads Home once the first run is over.
@@ -242,7 +250,7 @@ get("tasks", "welcome", "/welcome", { limited: "collection", ...free });
 get("tasks", "task.page", `^\\/t\\/${TASK}$`, { project: "task", limited: "resource", ...free, sample: "/t/one" });
 get("tasks", "task.evidence", `^\\/t\\/${TASK}\\/evidence$`, { project: "task", limited: "resource", ...free, sample: "/t/one/evidence" });
 get("pages", "ledger.export", "/ledger/export", { limited: "unscoped", ...free });
-get("tasks", "runs", "/runs", { limited: "collection" });
+get("tasks", "runs", "/runs", { limited: "collection", ...free }); // a redirect to /agents now
 get("pages", "menu", "/menu", { limited: "collection", ...free });
 get("tasks", "run.page", `^\\/r\\/${ID}$`, { project: "run", limited: "resource", ...free, sample: "/r/1" });
 get("tasks", "run.evidence", `^\\/r\\/${ID}\\/evidence\\/${ID}$`, { project: "run", limited: "resource", ...free, sample: "/r/1/evidence/2" });
@@ -301,6 +309,10 @@ get("settings", "settings.knowledge", "/settings/knowledge", { limited: "unscope
 get("settings", "settings.learning", "/settings/learning", { limited: "unscoped", ...free });
 get("settings", "settings.telegram", "/settings/telegram", { limited: "self", ...free, ...approver("An approver can pair their own phone.", "/settings") });
 get("settings", "settings.page", "/settings", { limited: "unscoped", ...free });
+// The Settings groups (docs/plans/settings-revamp.md §3): one read-only page each, drawn by the overview's handler.
+// Anyone signed in may open one; the page shows only the sections this person can use, and every form's own route
+// keeps its own role and proof.
+for (const one of ["general", "agents", "alerts", "projects", "access", "system"]) get("settings", `settings.group-${one}`, `/settings/${one}`, { limited: "unscoped", ...free });
 get("pages", "health", "/health", { ...free, ...anyOperator("An instance operator reads server health.", "/") });
 get("pages", "metrics", "/metrics", { ...free, ...anyOperator("An instance operator reads metrics.", "/") });
 get("chat", "push.key", "/push/key");

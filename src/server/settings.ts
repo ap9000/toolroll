@@ -40,7 +40,10 @@ import { PACKAGE_VERSION } from "../version.js";
 import type { HandlerContext } from './handler-context.js';
 import { handlersOf } from './handler-registry.js';
 import type { ServerRuntime } from './runtime.js';
-import { refuse,screen } from "./chrome.js";
+import { refuse,screen,when } from "./chrome.js";
+import { requestContext } from "./request-context.js";
+import { btn,empty,infoLine,settingsSection } from "./kit.js";
+import { approvalGroup,projectPicker,GROUP_PATHS,groupTitle,modeCeremonyHtml,modePageHtml,passwordlessHtml,HUB_ANCHOR_SCRIPT,pushScriptOf,settingsGroupPage,settingsSubPage,type SettingsFacts,type SettingsGroup } from "../settings-groups-ui.js";
 import { HANDOFF_STYLE,redirect,respond,safeReturn,sayTo,signInSpent,startedHere } from "./http.js";
 import { html, htmlString, joinHtml, postForm, type Html, reauth } from "../html.js";
 import { browserCaller,sessionWithinLifetime } from "./session.js";
@@ -59,7 +62,7 @@ import { checkSettingsHtml } from '../check-levels-ui.js';
 import { CHECK_LEVEL_WORDS,isCheckLevel,liveQuickCommand,projectCheckLevel,quickVerifyKey,setProjectCheckLevel,suggestQuickCommand } from '../check-levels.js';
 import { checkoutPlan,cleanCheckouts,discardCheckout,previewDigest,type CheckoutPlan } from "../checkout-cleanup.js";
 import { approveSetup,previewSetup,type SetupInputs } from "../control-setup.js";
-import { connectionHtml,controlSetupHtml,setupPreviewHtml } from "../control-ui.js";
+import { connectionHtml,connectionWords,controlSetupHtml,setupPreviewHtml } from "../control-ui.js";
 import { hasDisguisedText } from '../decision.js';
 import { checkDiscordCredentials,clearDiscordCredentials,DiscordError,loadDiscordCredentials,saveDiscordCredentials } from "../discord-api.js";
 import { discordSettingsHtml } from "../discord-settings.js";
@@ -67,9 +70,7 @@ import { dataExportHtml } from "../export-ui.js";
 import { buildExport,exportZip } from "../export.js";
 import { firstResultWords } from "../first-run.js";
 import { readEmailSettings,saveEmailSettings,sendingAccount,sendThroughServer } from "../flow-actions.js";
-import { galleryHtml } from "../flow-gallery-ui.js";
-import { startersHtml } from "../flow-starters-ui.js";
-import { starterOf,startersFor,switchOnStarter } from "../flow-starters.js";
+import { starterOf,switchOnStarter } from "../flow-starters.js";
 import { disconnectGoogle,googleConnected,googleConsent,readGoogleMail,saveGoogleClient } from "../google-mail.js";
 import { integrationsHtml } from "../integrations-ui.js";
 import { setYouiyouxIntake } from "../youiyoux-intake.js";
@@ -121,9 +122,10 @@ import { addProjectInstructions,ASSISTANTS,detectPreparation,modelChoices,previe
 import { skillsHtml,skillsScript } from "../skills-ui.js";
 import { checkSlackCredentials,clearSlackCredentials,loadSlackCredentials,saveSlackCredentials,SLACK_MANIFEST,SlackError } from "../slack-api.js";
 import { slackSettingsHtml } from "../slack-settings.js";
-import { spendHtml,spendSettingsHtml } from "../spend-ui.js";
+import { spendHtml,spendScript,type LimitEdit,type LimitRowView } from "../spend-ui.js";
+import { approvalFactsNow } from "./kit.js";
 import { spendReport,spendReportCsv,spendRows } from "../spend-report.js";
-import { limitsHtml,limitsView } from "../limits-ui.js";
+import { limitsView } from "../limits-ui.js";
 import { budgetStates,monthNamed,spendItems,usd as spendUsd,subagentNames as subagentNamesOf } from "../spend.js";
 import { removeSsoSettings,saveSsoSettings,SSO_CALLBACK,ssoChangeWords } from "../sso-settings.js";
 import { ssoSettingsHtml } from "../sso-ui.js";
@@ -138,7 +140,7 @@ import { LIVE_EVERY } from "../backup-ui.js";
 import { checkTeamsCredentials,clearTeamsCredentials,loadTeamsCredentials,saveTeamsCredentials,TeamsError } from "../teams-api.js";
 import { teamsSettingsHtml } from "../teams-settings.js";
 import { telegramSettingsHtml } from "../telegram-settings.js";
-import { hashPairingCode,loadBotToken,mintPairingCode,PAIRING_TTL_MS,redactToken,saveBotToken } from "../telegram.js";
+import { hashPairingCode,loadBotToken,mintPairingCode,PAIRING_TTL_MS,redactToken,saveBotToken,TOKEN_ENV } from "../telegram.js";
 import { newerThan,updatesHtml,updatesScript,updateStepsHtml } from "../toolroll-update-ui.js";
 import { abandonRuntimeUpdate,currentRuntime,launchRuntimeUpdate,markWhatsNewSeen,prepareRuntimeUpdate,requestRuntimeUpdateCancel,runningWorkWords,runtimeUpdateStatus,runtimeUpdateTerminal,type When } from "../toolroll-update.js";
 import { TOOLS_PROJECT_SCRIPT,toolsHtml,toolsProjectPicker } from "../tools-ui.js";
@@ -146,14 +148,15 @@ import { effectivePrimary,isMessagingChannel,savePrimary } from "../webhooks.js"
 import type { EdgeContext } from './handler-context.js';
 import { personChip,ROLE_TITLES } from "./chrome.js";
 import { chatReturnWithSaid,goOutside } from "./http.js";
-import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settingsPage,settingsWorkers,telegramDeliveryWords,telegramTrouble,type LeadFormFacts } from "./render-settings.js";
+import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settingsWorkers,telegramDeliveryWords,telegramTrouble,type LeadFormFacts } from "./render-settings.js";
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
   const { identities, store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, connectionKnown, lastChecks, checkRelease, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, chatCatalogKnown, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, googleVisits } = runtime;
 
-  // What agent work cost, by month: API dollars, plan usage and unknown cost apart (spend-report.ts). An instance
-  // operator's page. Its limits show read-only; they change on Settings → Spend.
+  // What agent work cost, by month: API dollars, plan usage and unknown cost apart (spend-report.ts), with this
+  // month's limits first. An instance operator's page. A limit opens its form in place (?edit=<scope:key>) and saves
+  // to /spend/budget with a step-up.
   async function spendPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, now } = ctx;
     const current = monthOf(now);
@@ -167,73 +170,48 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
       return void response.end(spendReportCsv(rows, subagentNames));
     }
     const shift = (by: number) => { const at = new Date(`${month.name}-01T00:00:00.000Z`); at.setUTCMonth(at.getUTCMonth() + by); return at.toISOString().slice(0, 7); };
-    // Limits read what the budget gate counts today (spend.ts spendItems), for the current month.
-    const budgets = month.name === current.name ? budgetStates(store.budgets(), spendItems(store.handle, current.from, current.to)) : null;
-    const windows = month.name !== current.name ? html`` : limitsHtml(limitsView(store.providerLimits(), [], { project: projectName, subagent: id => subagentNames.get(id) ?? `Subagent ${id}` }, now));
-    const view = { month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1), report: spendReport(rows), budgets, windows, subagentNames };
-    return sendScreen(response, 200, screen("Spend", spendHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }), { chrome: chromeFor(null, "spend") }));
+    // Limits read what the budget gate counts today (spend.ts spendItems): always this month's, whichever month is shown.
+    const items = spendItems(store.handle, current.from, current.to);
+    const saved = store.budgets();
+    const budgets = budgetStates(saved, items);
+    const has = (scope: string, key: string) => saved.some(one => one.scope === scope && one.key === key);
+    // Everything and each project with no limit yet, with what it spent this month (counted as a limit would count it).
+    const spentFor = (scope: "installation" | "project", key: string) => budgetStates([{ id: 0, scope, key, limitMicrousd: 1, hardStop: false, updatedBy: "", updatedAt: "" }], items)[0]!.spentMicrousd;
+    const unlimited: LimitRowView[] = [
+      ...(has("installation", "*") ? [] : [{ target: "installation:*", label: "Everything", budget: null, spentMicrousd: spentFor("installation", "*") }]),
+      ...consoleProjects().filter(repo => !has("project", repo)).map(repo => ({ target: `project:${repo}`, label: projectName(repo), budget: null, spentMicrousd: spentFor("project", repo) })),
+    ];
+    const targets = [
+      ...store.accountFacts().filter(one => one.revokedAt === null && !has("person", one.name)).map(one => ({ value: `person:${one.name}`, label: one.name, group: "People" as const })),
+      ...store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]).filter(one => !has("subagent", String(one.id)))
+        .map(one => ({ value: `subagent:${one.id}`, label: `${subagentNames.get(one.id) ?? one.handle} (${projectName(one.repo)})`, group: "Subagents" as const })),
+    ];
+    const editing = url.searchParams.get("edit");
+    const stop = url.searchParams.get("stop");
+    const edit: LimitEdit | null = editing === null || editing === "" ? null : {
+      target: editing, usd: url.searchParams.get("usd"), stop: stop === null ? null : stop === "1",
+      fieldError: url.searchParams.get("field") === "usd" ? url.searchParams.get("problem") : null,
+      problem: url.searchParams.get("field") === "usd" ? null : url.searchParams.get("problem"),
+    };
+    const windows = limitsView(store.providerLimits(), [], { project: projectName, subagent: id => subagentNames.get(id) ?? `Subagent ${id}` }, now);
+    const view = { month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1), current: current.name, report: spendReport(rows),
+      budgets, unlimited, targets, windows, subagentNames, edit, facts: approvalFactsNow() };
+    // A refusal for the open form shows in the form; anything else under the limits' heading.
+    const said = { said: url.searchParams.get("said"), problem: edit === null ? url.searchParams.get("problem") : null };
+    return sendScreen(response, 200, screen("Spend", spendHtml(view, said), { chrome: chromeFor(null, "spend"), functional: { script: spendScript() } }));
   }
   async function modePage(ctx: HandlerContext): Promise<void> {
-    const { who, response, now, project } = ctx;
+    const { url, who, response, now, project } = ctx;
     if (project === null) {
-      return refuse(response, who, 409, "open a project first — a mode is signed per repository");
+      return refuse(response, who, 409, "Open a project first: a mode is signed for one project.", "/projects");
     }
     const live = store.activeMode(project, now);
     const liveTerms = live === null ? null : modeTermsFromJson(live.termsJson);
-    const hasGrant = store.hasMergeCapableGrant(project, now);
-    const current =
-      live === null || liveTerms === null
-        ? html`<div class="card"><h2>Locked</h2><p class="meta">No mode is signed — every action asks for your password. That is the default.</p></div>`
-        : joinHtml([
-            html`<div class="card">`,
-            html`<h2 style="margin-top:0">${live.name} <span class="meta">signed by ${personChip(live.signedBy)}</span></h2>`,
-            joinHtml(modeWords(liveTerms)
-              .map(words => html`<p class="row">${words}</p>`), "\n"),
-            who.role === "approver"
-              ? postForm("/mode/revoke", html`\
-<button type="submit">End this mode now</button>\
-<span class="meta">one click — every act it covered falls back to its own ceremony</span>`, { attrs: { class: "row" } })
-              : "",
-            html`</div>`,
-          ], "\n");
-    const signForm =
-      who.role !== "approver"
-        ? ""
-        : joinHtml([
-            html`<div class="card">`,
-            html`<h2 style="margin-top:0">${live === null ? "sign a mode" : "replace it — a renewal is a new signature"}</h2>`,
-            postForm("/mode/confirm", joinHtml([
-              "",
-              html`<label>Preset<select name="name"><option value="standard">standard — approvals stay with me</option><option value="hands-off">hands-off — your filings auto-approve, full permissions</option></select></label>`,
-              html`<label>Days <span class="meta">(1–${MODE_MAX_DAYS})</span><input type="number" name="days" value="1" min="1" max="${MODE_MAX_DAYS}"></label>`,
-              html`<label>Merges<select name="publication">\
-<option value="notify">wait for me — even under a merge grant</option>\
-${hasGrant ? html`<option value="automerge">merge themselves when CI is green on the exact commit</option>` : ""}\
-</select></label>\
-${hasGrant ? "" : html`<span class="meta">self-merging needs a merge-capable publication grant first</span>`}`,
-              html`<label>My filings<select name="auto-approve">\
-<option value="">the preset's default (standard: wait for approval; hands-off: auto-approve)</option>\
-<option value="1">approve the moment I file them</option>\
-<option value="0">wait for their own approval</option>\
-</select></label>`,
-              html`<label>Planner approval<select name="plan-auto">\
-<option value="0">wait for my approval</option>\
-<option value="1">auto-approve plans that preserve my filed contract</option>\
-</select><span class="meta">Requires automatic filing approval. File the goal, paths, and acceptance criteria upfront. Changed scope and unanswered questions still pause.</span></label>`,
-              html`<label>From my chat app<select name="chat-approve">\
-<option value="">approve plans and merges here, with my password (the default)</option>\
-<option value="1">approve plans and merge ready pull requests from my paired chat, two taps each</option>\
-</select><span class="meta">Plans that widen permissions, exceed the attempt cap or touch protected paths still open Toolroll.</span></label>`,
-              html`<button type="submit">Read the full terms</button>`,
-              "",
-            ], "\n")),
-            html`</div>`,
-          ], "\n");
-    return sendScreen(
-      response,
-      200,
-      screen("mode", joinHtml([html`<h1>Operating mode</h1><p>Authorize this project's automatic approvals once, for up to ${MODE_MAX_DAYS} days. Select the touchpoints below; the signature covers the exact choices. Existing modes keep their original terms.</p><p class="meta">Scope changes, agent questions, and requested revisions still require your attention. Automatic merging also needs a publication grant.</p>`, current, signForm], "\n"), { chrome: chromeFor(project, "mode") }),
-    );
+    return sendScreen(response, 200, screen("Operating mode", modePageHtml({
+      project, name: projectName(project), maxDays: MODE_MAX_DAYS, approver: who.role === "approver", hasMergeGrant: store.hasMergeCapableGrant(project, now),
+      said: url.searchParams.get("said"), problem: url.searchParams.get("problem"),
+      live: live === null || liveTerms === null ? null : { name: live.name, signedBy: live.signedBy, until: when(live.absoluteExpiry), words: modeWords(liveTerms) },
+    }), { chrome: chromeFor(project, "mode") }));
   }
   const controlPage = (view: "setup" | "connection") => async (ctx: HandlerContext): Promise<void> => {
     const { url, who, response, project } = ctx;
@@ -248,7 +226,7 @@ ${hasGrant ? "" : html`<span class="meta">self-merging needs a merge-capable pub
       const command = asked === "claude" ? "claude auth login" : asked === "codex" ? "codex login" : asked === "gemini" ? "gemini" : null;
       return sendScreen(response, 200, screen(`${ASSISTANTS[asked].name} connection`, html`<h1>${ASSISTANTS[asked].name} ${connection?.state === "connected" ? "is connected" : "connection"}</h1>\
 ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On the computer running Toolroll, sign in with:</p><pre class="recap">${command}</pre>`}\
-<p><a href="/settings#providers">Manage API keys and authentication mode</a></p><input type="hidden" name="resume-task" value="${task}">`, { chrome: chromeFor(project, "settings") }));
+<p><a href="/settings/agents#providers">Manage API keys and how each agent is paid</a></p><input type="hidden" name="resume-task" value="${task}">`, { chrome: chromeFor(project, "settings") }));
     }
     const setup = store.liveWorktreeSetup(project);
     const preparation = detectPreparation(project);
@@ -299,7 +277,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const { response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.connectionCheck);
     const provider = body.get("provider") ?? "";
-    const back = safeReturn(body.get("return") ?? "/settings#providers");
+    const back = safeReturn(body.get("return") ?? "/settings/agents#providers");
     if (!isProviderId(provider)) return redirect(response, back);
     await connectionCheck(provider, true).catch(() => undefined);
     return redirect(response, back);
@@ -320,20 +298,20 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     // Only an instance operator changes models (docs/plans/spend-dashboard.md D4); a preset or a switch is previewed
     // here, read-only, and applied by its own password-checked POST.
     const view = modelsView(who.via === "cookie" && store.isInstanceOperator(who.name), who.via === "cookie" ? who.session.csrf : "", now, url.searchParams.get("said"), url.searchParams.get("problem"), url.searchParams);
-    return sendScreen(response, 200, screen("Models", html`<p><a href="/settings">Settings</a></p><h1>Models</h1>${modelsHtml(view)}`, { chrome: chromeFor(project, "settings"), functional: { script: modelsScript() } }));
+    return sendScreen(response, 200, screen("Models", modelsHtml({ ...view, facts: approvalFactsNow() }), { chrome: chromeFor(project, "settings"), functional: { script: modelsScript() } }));
   }
   async function skillsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
     const projects = consoleProjects();
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && !projects.includes(chosen)) return refuse(response,who,403,"That project is outside your access.","/projects");
-    const selector = projects.length > 1 ? html`<form class="skills" method="get"><label>Project<select name="repo">${projects.map(p=>html`<option value="${p}"${p===chosen?' selected':''}>${p.split('/').at(-1)??p}</option>`)}</select></label><button>Show project</button></form>` : '';
+    const selector = projectPicker("/settings/skills", projects.map(repo => ({ repo, name: projectName(repo) })), chosen);
     let content: Html = html`<p>Add a project to manage its skills.</p>`;
     if (chosen) {
       try { const agent=resolvePhaseAgent(store,'build',chosen,{});content = (skillsHtml(skillsView(store,chosen,who.name),who.via==='cookie'?who.session.csrf:'',who.role==='approver',{focus:url.searchParams.get('skill')??'',agent:agent.ok?`Report agent: ${agent.spec.provider} · ${agent.spec.model??'default'}. Change it on the test task before approval`:'Choose a report agent on the test task before approval'})); }
       catch(error) { content = html`<p class="problem" role="alert">${error instanceof Error?error.message:'Skills are unavailable. Reload to retry.'}</p>`; }
     }
-    return sendScreen(response,200,screen('Skills',html`<p><a href="/settings">Settings</a></p><h1>Skills</h1>${url.searchParams.get('saved')==='1'?html`<p role="status">Saved.</p>`:''}${selector}${content}`,{chrome:chromeFor(chosen||project,'settings'),functional:{script:skillsScript()}}));
+    return sendScreen(response,200,screen('Skills',settingsSubPage("agents", "Skills", html`${url.searchParams.get('saved')==='1'?html`<p role="status">Saved.</p>`:''}${selector}${content}`),{chrome:chromeFor(chosen||project,'settings'),functional:{script:skillsScript()}}));
   }
   async function toolsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
@@ -354,7 +332,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
           { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }));
       } catch { content = html`<p class="problem" role="alert">Tools are unavailable. Reload to retry.</p>`; }
     }
-    return sendScreen(response, 200, screen("Tools", html`<p><a href="/settings">Settings</a></p><h1>Tools</h1>${selector}${content}`, { chrome: chromeFor(chosen || project, "settings"), functional: { script: SETTINGS_AUTOSAVE_SCRIPT + TOOLS_PROJECT_SCRIPT } }));
+    return sendScreen(response, 200, screen("Tools", settingsSubPage("agents", "Tools", html`${selector}${content}`), { chrome: chromeFor(chosen || project, "settings"), functional: { script: SETTINGS_AUTOSAVE_SCRIPT + TOOLS_PROJECT_SCRIPT } }));
   }
   // Settings → Project: what Toolroll holds for a project; an instance operator deletes it here.
   async function projectPage(ctx: HandlerContext): Promise<void> {
@@ -363,23 +341,38 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const asked = url.searchParams.get("repo");
     const chosen = asked ?? (project != null && projects.includes(project) ? project : projects[0] ?? "");
     if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
-    const selector = projects.length > 1 ? html`<form class="approval-project" method="get" action="/settings/project"><label>Project<select name="repo">${projects.map(p => html`<option value="${p}"${p === chosen ? " selected" : ""}>${projectName(p)}</option>`)}</select></label><button>Show</button></form>` : "";
+    const selector = projectPicker("/settings/project", projects.map(repo => ({ repo, name: projectName(repo) })), chosen);
     const notice = { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") };
-    const content = chosen === "" ? html`${notice.said ? html`<p role="status">${notice.said}</p>` : ""}<p>No projects yet.</p>` : (projectSettingsHtml({ ...projectViewOf(chosen, who), remoteUrl: store.projectRemote(chosen) }, notice));
-    return sendScreen(response, 200, screen("Project", html`<p><a href="/settings">Settings</a></p><h1>Project</h1>${selector}${content}`, { chrome: chromeFor(chosen || null, "settings") }));
+    const content = chosen === "" ? html`${notice.said ? infoLine(notice.said) : ""}${empty({ title: "No projects yet.", action: btn("Add a project", { sm: true, href: "/projects" }) })}` : (projectSettingsHtml({ ...projectViewOf(chosen, who), remoteUrl: store.projectRemote(chosen) }, notice));
+    return sendScreen(response, 200, screen("Project", settingsSubPage("projects", "Project", html`${selector}${content}`), { chrome: chromeFor(chosen || null, "settings") }));
   }
-  // v102: Settings → Approval rules, a project's separation of duties. Anyone who sees the project reads them; an instance operator sets them.
+  // v102: Settings → Approvals and safety: the defaults for new tasks, a project's separation of duties and release
+  // approval, and the way to its operating mode. Anyone who sees the project reads them; each form's own route decides
+  // who may change it (an approver for the defaults and releases, an instance operator for the rules).
   async function approvalPage(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, project } = ctx;
+    const { url, who, response, project, now } = ctx;
     const projects = consoleProjects();
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings/approval");
-    const selector = projects.length > 1 ? html`<form class="approval-project" method="get" action="/settings/approval"><label>Project<select name="repo">${projects.map(p => html`<option value="${p}"${p === chosen ? " selected" : ""}>${projectName(p)}</option>`)}</select></label><button>Show</button></form>` : "";
     const approvers = chosen === "" ? 0 : store.listApprovers().filter(one => { const account = store.accountOf(one.name); return account !== null && account.revokedAt === null && account.role === "approver" && store.accountCanAccess(one.name, chosen); }).length;
     const release = chosen === "" ? null : releaseApprovalSetting(store, chosen);
-    const content = chosen === "" ? html`<p>Add a project to set its approval rules.</p>` : html`${approvalRulesHtml({ repo: chosen, name: projectName(chosen), rules: store.approvalRules(chosen), canChange: who.via === "cookie" && store.isInstanceOperator(who.name), approvers }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}${
+    const notice = { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") };
+    const csrf = who.via === "cookie" ? who.session.csrf : "";
+    const rules = chosen === "" ? html`` : html`${approvalRulesHtml({ repo: chosen, name: projectName(chosen), rules: store.approvalRules(chosen), canChange: who.via === "cookie" && store.isInstanceOperator(who.name), approvers }, notice)}${
       releaseApprovalHtml({ repo: chosen, auto: release!.auto, setBy: release!.setBy, at: release!.at, canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, chosen) })}`;
-    return sendScreen(response, 200, screen("Approval rules", html`<p><a href="/settings">Settings</a></p><h1>Approval rules</h1>${selector}${content}`, { chrome: chromeFor(chosen || project, "settings") }));
+    // The installation-wide defaults are not a project-limited account's to see or set.
+    const limited = restricted();
+    const permission = store.permissionDefault(), quality = store.qualityDefault();
+    const changed = (at: string | null, by: string | null) => at === null ? null : `Changed ${when(at)}${by === null ? "" : ` by ${by}`}`;
+    const live = chosen === "" ? null : store.activeMode(chosen, now);
+    const page = approvalGroup({
+      facts: { said: null, problem: null,
+        permission: limited ? null : { mode: permission.mode, canManage: who.role === "approver" && csrf !== "", changed: changed(permission.updatedAt, permission.updatedBy) },
+        quality: limited ? null : { mode: quality.mode, canManage: who.role === "approver" && csrf !== "", changed: changed(quality.updatedAt, quality.updatedBy) } },
+      flags: {}, projects: projects.map(repo => ({ repo, name: projectName(repo) })), chosen, rules,
+      mode: chosen === "" ? "Open a project to sign one" : live === null ? `${projectName(chosen)}: locked, approvals stay with people` : `${projectName(chosen)}: ${live.name} until ${when(live.absoluteExpiry)}`,
+    });
+    return sendScreen(response, 200, screen("Approvals and safety", page, { chrome: chromeFor(chosen || project, "settings") }));
   }
   // Sprint 8: Settings → Policy, the organisation policy and its history. Anyone signed in reads it; an instance operator changes it.
   async function policyPage(ctx: HandlerContext): Promise<void> {
@@ -387,23 +380,20 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const repos = consoleProjects();
     const toolNames = [...new Set(repos.flatMap(repo => store.projectTools(repo).map(one => one.name)))].sort();
     const view = { policy: store.orgPolicy(), history: store.policyHistory(50), canChange: who.via === "cookie" && store.isInstanceOperator(who.name), toolNames };
-    return sendScreen(response, 200, screen("Policy", html`<p><a href="/settings">Settings</a></p><h1>Policy</h1>${(policyHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
+    return sendScreen(response, 200, screen("Policy", settingsSubPage("approval", "Policy", html`${(policyHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings") }));
   }
-  // Settings → Flows: the starter flows, each switched on with one yes. ?starter= marks the one a task's
-  // "Do this every time…" asked about.
+  // Settings → Flows: the starter flows live under New flow → Starter flows now. This address (and a task's "Do this
+  // every time…", ?starter=) lands there with the project, the starter asked about and how a switch went.
   async function flowsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
     const projects = consoleProjects();
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings");
-    // Every template, beside the starters: Use this opens its page for this project.
-    const content = chosen === "" ? html`<p>Add a project to switch on starter flows.</p>` : html`${(startersHtml({
-      repo: chosen, projects: projects.map(path => ({ path, name: projectName(path) })), starters: startersFor(store, chosen), csrf: who.via === "cookie" ? who.session.csrf : "",
-      canSwitch: who.via === "cookie" && who.role === "approver" && !store.isDemo(), suggested: starterOf(url.searchParams.get("starter") ?? "")?.id ?? null,
-      said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}\
-<h2 class="gallery-heading">Templates</h2>${(galleryHtml({ repo: chosen, canUse: who.via === "cookie" && who.role === "approver" && !store.isDemo(), connections: connectionsOf(store, chosen) }))}`;
-    return sendScreen(response, 200, screen("Flows", html`<p><a href="/settings">Settings</a></p><h1>Flows</h1>${content}`, { chrome: chromeFor(chosen || project, "settings") }));
+    const query = new URLSearchParams({ group: "starters" });
+    if (chosen) query.set("repo", chosen);
+    for (const key of ["starter", "said", "problem"]) { const value = url.searchParams.get(key); if (value !== null) query.set(key, value.slice(0, 400)); }
+    return redirect(response, `/flows/new?${query.toString()}`);
   }
   // Settings → Integrations: which integrations work. The list is the last checks; a render never waits on one.
   async function integrationsPage(ctx: HandlerContext): Promise<void> {
@@ -411,7 +401,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const who = browserCaller(ctx.who);
     if (!options.configDir) return refuse(response, who, 403, "An installation approver sees integrations.", "/settings");
     const list = integrations.list();
-    return sendScreen(response, 200, screen("Integrations", html`<p><a href="/settings">Settings</a></p><h1>Integrations</h1>${(integrationsHtml(list, who.session.csrf, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), checking: integrations.checking, secrets: toolSecretStorage() }))}`,
+    return sendScreen(response, 200, screen("Integrations", settingsSubPage("system", "Integrations", html`${(integrationsHtml(list, who.session.csrf, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), checking: integrations.checking, secrets: toolSecretStorage() }))}`),
       { chrome: chromeFor(project, "settings") }));
   }
   // v104: Settings → Monitoring, where the audit stream and traces go. An instance operator's page.
@@ -420,7 +410,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const who = browserCaller(ctx.who);
     if (!options.configDir) return refuse(response, who, 403, "An instance operator sets up monitoring.", "/settings");
     const view = { settings: readMonitoring(options.configDir), status: store.monitoringStatus(), head: store.ledgerHeadId(), origin: consoleOrigin(request.headers.host) };
-    return sendScreen(response, 200, screen("Monitoring", html`<p><a href="/settings">Settings</a></p><h1>Monitoring</h1>${(monitoringHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
+    return sendScreen(response, 200, screen("Monitoring", settingsSubPage("system", "Monitoring", html`${(monitoringHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings") }));
   }
   // Settings → Updates: the installed version, three ways to update, the update's steps live, then What's new. An instance operator's page.
@@ -438,7 +428,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const checksOff = updateChecksOff(process.env, options.configDir ?? dirname(databaseFile)).off;
     const known = lastChecks.known<{ version: string } | { problem: string }>("release")?.value ?? null;
     const view = { current, latest: active ? { version: current } : known ?? (checksOff ? { off: true as const } : { pending: true as const }), method: options.updates?.method ?? installMethod(), journal: status.journal, running: status.running, whatsNew: status.whatsNew, rollbackTo: status.lastUpdate?.to === current ? status.lastUpdate.from : null, csrf: who.session.csrf };
-    return sendScreen(response, 200, screen("Updates", html`<p><a href="/settings">Settings</a></p><h1>Updates</h1>${(updatesHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
+    return sendScreen(response, 200, screen("Updates", settingsSubPage("system", "Updates", html`${(updatesHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings"), ...(active ? { functional: { script: updatesScript(), fetches: true } } : {}) }));
   }
   // v105: Settings → Retention, how long each kind of data is kept. An instance operator's page.
@@ -446,7 +436,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const { url, response, now, project } = ctx;
     const who = browserCaller(ctx.who);
     const view = { periods: store.retentionPeriods(), chosen: Object.keys(store.retentionChosen()) as RetentionKind[], next: retentionPlan(store, evidenceRoot, now).counts, lastSweep: lastSweepAt(store), csrf: who.session.csrf };
-    return sendScreen(response, 200, screen("Retention", html`<p><a href="/settings">Settings</a></p><h1>Retention</h1>${(retentionHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
+    return sendScreen(response, 200, screen("Retention", settingsSubPage("system", "Retention", html`${(retentionHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings") }));
   }
   // Settings → Storage: what task checkouts use, cleaning up now (the preview behind the password), and when a
@@ -459,14 +449,14 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     // The last measurement (docs/plans/get-side-effects.md): the background checks measure the checkouts, and so do
     // Check now and every clean-up; opening the page runs no du or git.
     const measured = lastChecks.known<CheckoutPlan>("storage");
-    const check = postForm("/settings/storage/check", html`<button type="submit" class="secondary">Check now</button>`, { attrs: { class: "inline" } });
+    const check = postForm("/settings/storage/check", btn("Check now", { sm: true, type: "submit" }));
     if (measured === null) {
-      return sendScreen(response, 200, screen("Storage", html`<p><a href="/settings">Settings</a></p><h1>Storage</h1><section class="storage"><div class="card storage-state"><h2>Checkouts not measured yet</h2>${check}</div></section>`,
+      return sendScreen(response, 200, screen("Storage", settingsSubPage("system", "Storage", settingsSection({ id: "storage", title: "Checkouts not measured yet", lead: "Toolroll measures the checkouts in the background. Check now measures them at once.", body: check })),
         { chrome: chromeFor(project, "settings") }));
     }
     const plan = { ...measured.value, cleanup: store.checkoutCleanup() };
     const sweep = { last: lastSweep(store), off: storageSweepOff(), schedule: sweepSchedule(store, now) };
-    return sendScreen(response, 200, screen("Storage", html`<p><a href="/settings">Settings</a></p><h1>Storage</h1>${(storageHtml({ plan, csrf: who.session.csrf, sweep, landed: landedSummary(store), measured: html`<p class="meta">Measured ${new Date(measured.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })} ${check}</p>` }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
+    return sendScreen(response, 200, screen("Storage", settingsSubPage("system", "Storage", html`${(storageHtml({ plan, csrf: who.session.csrf, sweep, landed: landedSummary(store), measured: html`<div class="k-acts"><span class="k-note">Measured ${new Date(measured.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</span>${check}</div>` }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings") }));
   }
   // Settings → Projects → Pull requests: one project's setup. Off, the checks run on open, so the page says
@@ -482,7 +472,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const check = publishing.on || !canChange ? null : lastChecks.known<Awaited<ReturnType<typeof checkPublishing>>>(`publishing:${repo}`)?.value ?? "unchecked";
     const body = (pullRequestSettingsHtml({ repo, name: projectName(repo), csrf: who.session.csrf, canChange, publishing, check,
       said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }));
-    return sendScreen(response, 200, screen("Pull requests", html`<p><a href="/projects">Projects</a></p><h1>Pull requests</h1>${body}`, { chrome: chromeFor(project, "projects") }));
+    return sendScreen(response, 200, screen("Pull requests", settingsSubPage("projects", "Pull requests", html`${body}`), { chrome: chromeFor(project, "projects") }));
   }
   // Settings → Projects → Checks: how much checks after each build, and the quick command beside the full one.
   async function checksPage(ctx: HandlerContext): Promise<void> {
@@ -495,7 +485,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
       level: projectCheckLevel(store, repo).level, full: store.liveVerifyCommand(repo), quick, suggestion: quick === null ? suggestQuickCommand(repo) : null,
       review: (({ on, source }) => ({ on, source }))(store.reviewSwitch(repo, clock())), batch: { on: projectBatchChecks(store, repo).on },
       said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }));
-    return sendScreen(response, 200, screen("Checks", html`<p><a href="/projects">Projects</a></p><h1>Checks</h1>${body}`, { chrome: chromeFor(project, "projects") }));
+    return sendScreen(response, 200, screen("Checks", settingsSubPage("projects", "Checks", html`${body}`), { chrome: chromeFor(project, "projects") }));
   }
   // Sprint 8: Settings → Backups, how the last backup went and the schedule. An instance operator's page.
   async function backupsPage(ctx: HandlerContext): Promise<void> {
@@ -507,14 +497,14 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const live = liveBackupState(store);
     const view = { settings, folder: backupFolderOf(settings, databaseFile), defaultFolder: defaultBackupFolder(databaseFile), runs: store.backupRuns(20), csrf: who.session.csrf, now,
       live: { state: live, folder: liveFolderOf(live.settings, databaseFile), defaultFolder: defaultLiveFolder(databaseFile) } };
-    return sendScreen(response, 200, screen("Backups", html`<p><a href="/settings">Settings</a></p><h1>Backups</h1>${(backupHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
+    return sendScreen(response, 200, screen("Backups", settingsSubPage("system", "Backups", html`${(backupHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings") }));
   }
   // v105: Settings → Data, where an instance operator downloads everything. The download is a POST with the password.
   async function dataPage(ctx: HandlerContext): Promise<void> {
     const { url, response, project } = ctx;
     browserCaller(ctx.who);
-    return sendScreen(response, 200, screen("Data", html`<p><a href="/settings">Settings</a></p><h1>Data</h1>${(dataExportHtml({ problem: url.searchParams.get("problem") }))}`,
+    return sendScreen(response, 200, screen("Data", settingsSubPage("system", "Data export", html`${(dataExportHtml({ problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings") }));
   }
   // v100: Settings → Sign-in, the identity provider people sign in with. An instance operator's page.
@@ -527,7 +517,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const settings = ssoSettings();
     const body = ssoSettingsHtml({ settings, redirect: origin === null ? null : `${origin}${SSO_CALLBACK}`, projects, linked: settings !== null && store.ssoIdentitiesOf(who.name).some(one => one.issuer.replace(/\/+$/, "") === settings.issuer) },
       { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") });
-    return sendScreen(response, 200, screen("Sign-in", html`<p><a href="/settings">Settings</a></p><h1>Sign-in</h1>${body}`, { chrome: chromeFor(project, "settings") }));
+    return sendScreen(response, 200, screen("Sign-in", settingsSubPage("access", "Sign-in with a provider", html`${body}`), { chrome: chromeFor(project, "settings") }));
   }
   /** Passwordless (docs/plans/passwordless.md): the switch, and the trade in plain words. */
   async function passwordlessPage(ctx: HandlerContext): Promise<void> {
@@ -535,15 +525,8 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     browserCaller(ctx.who);
     const setting = passwordlessSetting(store);
     const said = url.searchParams.get("said"), problem = url.searchParams.get("problem");
-    const note = problem ? html`<p class="problem" role="alert">${problem}</p>` : said ? html`<p role="status">${said}</p>` : "";
-    const since = setting.at === null ? "" : html` <span class="meta">(${setting.on ? "on" : "off"} since ${new Date(setting.at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}, by ${setting.setBy ?? "someone"})</span>`;
-    const control = setting.on
-      ? postForm("/settings/passwordless", html`<button class="secondary">Turn Passwordless off</button>`, { hidden: { action: "off" } })
-      : postForm("/settings/passwordless", html`<label>Your password<input type="password" name="password" autocomplete="current-password" required></label><button>Turn Passwordless on</button>`, { attrs: { class: "card approve-form" }, hidden: { action: "on" } });
-    return sendScreen(response, 200, screen("Passwordless", html`<p><a href="/settings">Settings</a></p><h1>Passwordless</h1>${note}\
-<p>When it's on, signing in is the only password: approvals, settings, budgets, signing a mode and starting a terminal no longer ask again — in the browser, on the phone, and in this computer's <code>toolroll</code> command (through its remembered login).</p>\
-<p class="meta">${PASSWORDLESS_TRADE}</p>\
-<p><strong>Passwordless is ${setting.on ? "on" : "off"}.</strong>${since}</p>${control}`, { chrome: chromeFor(project, "settings") }));
+    const since = setting.at === null ? null : `${setting.on ? "on" : "off"} since ${new Date(setting.at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}, by ${setting.setBy ?? "someone"}`;
+    return sendScreen(response, 200, screen("Passwordless", passwordlessHtml({ on: setting.on, since, trade: PASSWORDLESS_TRADE, said, problem }), { chrome: chromeFor(project, "settings") }));
   }
   async function passwordlessSave(ctx: HandlerContext): Promise<void> {
     const { response, now, posted } = ctx;
@@ -566,7 +549,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const projects = consoleProjects();
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && (!projects.includes(chosen) || !visible(chosen))) return refuse(response, who, 403, "That project is outside your access.", "/settings/knowledge");
-    const selector = projects.length > 1 ? framedSection('Project', html`<form class="field-row" method="get" action="/settings/knowledge"><label><span class="visually-hidden">Project</span><select name="repo">${projects.map(p=>html`<option value="${p}"${p===chosen?' selected':''}>${p.split('/').at(-1)??p}</option>`)}</select></label><button>Show project</button></form>`) : '';
+    const selector = projectPicker("/settings/knowledge", projects.map(repo => ({ repo, name: projectName(repo) })), chosen);
     let content: Html = html`<p>Add a project to keep its knowledge here.</p>`;
     if (chosen) {
       try {
@@ -576,7 +559,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
           const revision=Number(url.searchParams.get('version'));
           const previous=knowledgeVersion(store,chosen,who.name,revision);
           const restore=csrf&&who.role==='approver'&&revision!==view.revision?postForm('/settings/knowledge/change',html`<p>Replaces knowledge for future tasks. Existing runs keep their saved context.</p><button>Restore version ${revision}</button>`,{attrs:{class:'knowledge'},hidden:{repo:chosen,identity:view.identity,revision:String(view.revision),action:'restore',restore:String(revision)}}):'';
-          return sendScreen(response,200,screen('Knowledge history',html`<p><a href="/settings/knowledge?repo=${encodeURIComponent(chosen)}">Current knowledge</a></p><h1>Version ${revision}</h1>${knowledgeHtml({...view,knowledge:previous,history:[],stale:null},'',false)}${restore}`,{chrome:chromeFor(chosen,'settings')}));
+          return sendScreen(response,200,screen('Knowledge history',settingsSubPage('agents',`Knowledge · version ${revision}`,html`<p class="k-note"><a class="k-link" href="/settings/knowledge?repo=${encodeURIComponent(chosen)}">Current knowledge</a></p>${knowledgeHtml({...view,knowledge:previous,history:[],stale:null},'',false)}${restore}`),{chrome:chromeFor(chosen,'settings')}));
         }
         const query = (url.searchParams.get('q') ?? '').slice(0, 1000);
         const result = query.trim() ? repositoryContextRead({ repo: chosen, query, mode: url.searchParams.get('mode') === 'impact' ? 'impact' : 'search', cacheRoot: join(dirname(evidenceRoot), 'repository-context') }) : null;
@@ -589,20 +572,20 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
 <details class="knowledge frame"><summary class="frame-head">Learned lessons</summary><div class="frame-panel">${(learningHtml(learningView(store,evidenceRoot,chosen,who.name),csrf,who.role==='approver'))}</div></details>`;
       } catch { content = html`<p class="problem" role="alert">Project knowledge is unavailable. Reload to retry.</p>`; }
     }
-    return sendScreen(response,200,screen('Knowledge',html`<p><a href="/settings">Settings</a></p><h1>Knowledge</h1>${url.searchParams.get('saved')==='1'?html`<p role="status">Saved for future tasks.</p>`:''}${selector}${content}`,{chrome:chromeFor(chosen||project,'settings')}));
+    return sendScreen(response,200,screen('Knowledge',settingsSubPage("agents", "Knowledge", html`${url.searchParams.get('saved')==='1'?html`<p role="status">Saved for future tasks.</p>`:''}${selector}${content}`),{chrome:chromeFor(chosen||project,'settings')}));
   }
   async function learningPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
     const projects = consoleProjects();
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && (!projects.includes(chosen) || !visible(chosen))) return refuse(response, who, 403, "That project is outside your access.", "/settings/learning");
-    const selector = html`<form method="get" action="/settings/learning"><label>Project<select name="repo">${projects.map(p => html`<option value="${p}"${p === chosen ? " selected" : ""}>${p.split("/").at(-1) ?? p}</option>`)}</select></label><button>Show project</button></form>`;
+    const selector = projectPicker("/settings/learning", projects.map(repo => ({ repo, name: projectName(repo) })), chosen);
     let content: Html = html`<p>No project is available.</p>`;
     if (chosen) {
       try { content = (learningHtml(learningView(store, evidenceRoot, chosen, who.name, Math.max(0, Number(url.searchParams.get("before")) || 0)), who.via === "cookie" ? who.session.csrf : "", who.role === "approver")); }
       catch { content = html`<p class="problem" role="alert">Learning is unavailable. Reload to retry. Task results are unchanged.</p>`; }
     }
-    return sendScreen(response, 200, screen("Learning", html`<p><a href="/settings">Settings</a></p><h1>Learning</h1>${selector}${content}`, { chrome: chromeFor(chosen || project, "settings") }));
+    return sendScreen(response, 200, screen("Learning", settingsSubPage("agents", "Learning", html`${selector}${content}`), { chrome: chromeFor(chosen || project, "settings") }));
   }
   // Settings → Lead (onboarding): what runs the lead in one line, and the full form under Advanced.
   async function leadPage(ctx: HandlerContext): Promise<void> {
@@ -622,7 +605,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const signedIn = runtime.localSignIn?.states.claude === "connected" ? "Claude Code" : runtime.localSignIn?.states.codex === "connected" ? "Codex" : null;
     const promises = openCommitments(store, who.name, 50).map(one => ({ id: one.id, what: one.what, when: conditionWords(store, one.condition), until: one.expiresAt }));
     return sendScreen(response, 200, screen("Lead", leadSettingsHtml({ config, facts, words: leadWords(), signedIn, command: agentSignInCommand(),
-      said: url.searchParams.get("said"), saved: url.searchParams.get("saved") === "1", identity: leadIdentityOf(store, who.name), promises,
+      said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), saved: url.searchParams.get("saved") === "1", identity: leadIdentityOf(store, who.name), promises,
       about: aboutYouOf(store, who.name), aboutSaved: url.searchParams.get("saved") === "about",
       subagents: store.subagents(consoleProjects().filter(repo => store.accountCanAccess(who.name, repo))).map(one => ({ id: one.id, label: labelOf(one), project: projectName(one.repo), paused: one.state === "paused" })) }), { chrome: chromeFor(project, "settings") }));
   }
@@ -662,66 +645,105 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   }
   async function settingsHome(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response, now, project } = ctx;
-    if (options.telegramTokenFile === undefined || restricted()) {
-      return sendScreen(response, 200, screen("Settings", html`<h1>Settings</h1><p><a href="/settings/models">Models</a> · <a href="/settings/skills">Skills</a> · <a href="/settings/tools">Tools</a> · <a href="/settings/knowledge">Project knowledge</a> · <a href="/settings/telegram">Telegram</a></p><details><summary>Learning history</summary><a href="/settings/learning">Learning</a></details>`, { chrome: chromeFor(project, "settings") }));
-    }
-    const existing = loadBotToken({}, options.telegramTokenFile);
-    const hasEnv = (envValue(process.env, "TELEGRAM_TOKEN") ?? "") !== "";
+    // The overview and its group pages (docs/plans/settings-revamp.md §3): one handler reads the facts once and draws
+    // the page asked for; each section's form posts to its own route, which proves the act again.
+    const group: SettingsGroup = GROUP_PATHS[url.pathname] ?? "hub";
+    const minimal = options.telegramTokenFile === undefined || restricted();
     const csrf = who.via === "cookie" ? who.session.csrf : "";
+    const operator = who.via === "cookie" && store.isInstanceOperator(who.name);
+    const existing = options.telegramTokenFile === undefined ? null : loadBotToken({}, options.telegramTokenFile);
+    const hasEnv = (envValue(process.env, "TELEGRAM_TOKEN") ?? "") !== "";
     const messaging =
-      options.configDir === undefined
+      options.configDir === undefined || minimal
         ? null
-        : effectivePrimary(process.env, options.configDir, loadBotToken(process.env, options.telegramTokenFile) !== null);
-    const push = {
-      // The card lights only where a secure context exists: the stated
+        : effectivePrimary(process.env, options.configDir, options.telegramTokenFile !== undefined && loadBotToken(process.env, options.telegramTokenFile) !== null);
+    const push = minimal || csrf === "" ? null : {
+      // The section lights only where a secure context exists: the stated
       // public origin, or localhost development (arc 3 finding 2).
       available: options.publicUrl !== undefined || (request.headers.host ?? "").startsWith("localhost") || (request.headers.host ?? "").startsWith("127.0.0.1"),
-      devices: who.via === "cookie" ? store.listPushSubscriptions(who.name) : [],
+      devices: store.listPushSubscriptions(who.name).filter(one => one.retiredAt === null || one.retiredReason === "gone")
+        .map(one => ({ id: one.id, words: `${one.uaWords} · since ${when(one.createdAt)}`, state: one.retiredAt !== null ? "expired" as const : one.consecutiveFailures >= 20 ? "failing" as const : "ok" as const, removable: one.retiredAt === null })),
     };
-    const providerKeys = who.role !== "approver"
+    const providerKeys = who.role !== "approver" || minimal || csrf === ""
       ? null
-      // ACP agents sign in their own way; Toolroll keeps no key for them, so the key card lists only the others.
-      : await Promise.all(PROVIDER_IDS.filter(isKeyedProvider).map(async provider => ({
-          provider,
-          envName: PROVIDER_KEY_ENV[provider],
-          ...keyStatus(provider, providerHome),
-          ...(connectionKnown(provider) === null ? {} : { connection: connectionKnown(provider)! }),
-          ambient: (process.env[PROVIDER_KEY_ENV[provider]] ?? "") !== "",
-          mode: readAuthMode(provider, providerHome) === "api-key" ? "api-key" as const : "subscription" as const,
-          subscriptionCapable: SUBSCRIPTION_CAPABLE[provider],
-        })));
-    const telegramConfigured = loadBotToken(process.env, options.telegramTokenFile) !== null;
-    const digest = telegramConfigured
-      ? (() => {
-          const cadence = store.telegramDigest();
-          return { everyMs: cadence.everyMs, lastSentAt: cadence.lastSentAt, held: store.countRoutinePending() };
-        })()
-      : null;
-    return sendScreen(
-      response,
-      200,
-      settingsPage(chromeFor(project, "settings"), existing, hasEnv, csrf, url.searchParams.get("said"), messaging, push, providerKeys, digest, {
-        ...store.permissionDefault(),
-        canManage: who.role === "approver",
-      }, {
-        ...store.qualityDefault(),
-        canManage: who.role === "approver",
-      }, who.role === "approver" && csrf !== "" ? (() => {
+      // ACP agents sign in their own way; Toolroll keeps no key for them, so the key list holds only the others.
+      : await Promise.all(PROVIDER_IDS.filter(isKeyedProvider).map(async provider => {
+          const key = keyStatus(provider, providerHome), connection = connectionKnown(provider) ?? undefined;
+          const mode = readAuthMode(provider, providerHome) === "api-key" ? "api-key" as const : "subscription" as const;
+          const ambient = (process.env[PROVIDER_KEY_ENV[provider]] ?? "") !== "";
+          const name = ASSISTANTS[provider]?.name ?? provider;
+          const status = connection !== undefined && connection.state === "connected"
+            ? { tone: "ok" as const, words: [connectionWords(connection), connection.plan].filter(Boolean).join(" · ") }
+            : mode === "subscription"
+              ? { tone: connection === undefined ? "neutral" as const : "warn" as const, words: connection === undefined ? "Uses its own sign-in" : connectionWords(connection) }
+              : connection?.state === "key-works" ? { tone: "ok" as const, words: "API key works" } : connection?.state === "key-refused" ? { tone: "warn" as const, words: "API key refused" }
+              : key.set ? { tone: "ok" as const, words: "API key saved" } : ambient ? { tone: "ok" as const, words: "Key from this computer’s environment" } : { tone: "off" as const, words: "Not set up" };
+          return {
+            provider, name, tone: status.tone, words: status.words,
+            connection: connection === undefined ? null : { words: connectionWords(connection), facts: [connection.email, connection.plan, connection.method].filter(Boolean).join(" · ") },
+            usage: `${mode === "subscription" ? "Uses its own sign-in, so no API-key spend" : "Uses the API key"} · ${key.set ? `key stored${key.updatedAt === null ? "" : ` ${key.updatedAt.slice(0, 10)}`}` : ambient ? "key in this server's environment" : "no key stored"}`,
+            envName: PROVIDER_KEY_ENV[provider], subscriptionCapable: SUBSCRIPTION_CAPABLE[provider], mode, set: key.set,
+          };
+        }));
+    const telegramBot = options.telegramTokenFile === undefined ? null : loadBotToken(process.env, options.telegramTokenFile);
+    const digest = telegramBot === null || minimal ? null : (() => {
+      const cadence = store.telegramDigest();
+      return { everyMs: cadence.everyMs, held: store.countRoutinePending() };
+    })();
+    const chosen = minimal || csrf === "" ? null : store.notificationPreference(who.name);
+    const updates = minimal ? null : settingsUpdates(who.name, csrf);
+    const lastBackup = operator ? store.backupRuns(1)[0] ?? null : null;
+    const accounts = minimal || !operator ? null : store.accountFacts().filter(one => one.revokedAt === null);
+    const passwordless = minimal ? null : passwordlessSetting(store).on;
+    const facts: SettingsFacts = {
+      name: who.name, approver: who.role === "approver", operator, browser: who.via === "cookie", installation: !minimal,
+      said: url.searchParams.get("said"), problem: url.searchParams.get("problem"),
+      theme: requestContext.getStore()?.theme ?? "system", accent: requestContext.getStore()?.accent ?? DEFAULT_ACCENT,
+      version: updates?.current ?? (operator ? PACKAGE_VERSION : null),
+      permission: minimal ? null : (() => { const one = store.permissionDefault(); return { mode: one.mode, canManage: who.role === "approver" && csrf !== "", changed: one.updatedAt === null ? null : `Changed ${when(one.updatedAt)}${one.updatedBy === null ? "" : ` by ${one.updatedBy}`}` }; })(),
+      quality: minimal ? null : (() => { const one = store.qualityDefault(); return { mode: one.mode, canManage: who.role === "approver" && csrf !== "", changed: one.updatedAt === null ? null : `Changed ${when(one.updatedAt)}${one.updatedBy === null ? "" : ` by ${one.updatedBy}`}` }; })(),
+      providers: providerKeys,
+      workers: minimal ? null : settingsWorkers(store, now),
+      updates,
+      firstResult: (() => {
+        // The installation fact: when the first Ready result arrived, measured from the first account.
+        const at = store.firstSuccessAt(now), since = store.installationStartedAt();
+        return at === null || since === null ? null : firstResultWords(since, at);
+      })(),
+      chat: chosen === null ? null : { mode: chosen.mode, digestAt: chosen.digestAt, screenshots: chosen.screenshots, projects: notificationProjects(store, who.name) },
+      messaging,
+      push,
+      digest: digest === null || csrf === "" || chosen?.mode === "quiet" ? null : { every: digest.everyMs === null ? "off" : String(Math.round(digest.everyMs / 60_000)), held: digest.everyMs === null ? null : `${digest.held} routine update${digest.held === 1 ? "" : "s"} held` },
+      telegram: {
+        // The installation's bot: no part of it (not even its id or last characters) for a project-limited account.
+        state: minimal ? "" : hasEnv ? "from the environment" : existing === null ? "not set" : "saved",
+        current: minimal ? "" : hasEnv ? `set in the environment (${TOKEN_ENV}), which takes precedence over anything saved here` : existing === null ? "not set" : `saved: ${redactToken(existing.token)} (bot ${existing.botId})`,
+        delivery: minimal ? null : telegramDeliveryWords(store, telegramBot), failing: !minimal && telegramTrouble(store, telegramBot),
+      },
+      email: who.role === "approver" && csrf !== "" && !minimal ? (() => {
         // v87: the mail server flows send email through; the password is never shown back.
         // v89: where Inbox triggers read it, and a connected Google account (its client secret is never shown back either).
         const email = readEmailSettings(options.configDir ?? null), google = (() => { try { return readGoogleMail(options.configDir ?? null); } catch { return null; } })(), origin = consoleOrigin(request.headers.host);
         const googleView = { connected: googleConnected(options.configDir ?? null)?.address ?? null, clientId: google?.clientId ?? "", redirect: origin === null ? null : `${origin}${GOOGLE_CALLBACK}` };
         return email === null ? { set: false, host: "", port: 587, secure: false, user: "", from: "", imapHost: "", imapPort: 993, google: googleView }
           : { set: true, host: email.host, port: email.port, secure: email.secure, user: email.user, from: email.from, imapHost: email.imap?.host ?? "", imapPort: email.imap?.port ?? 993, google: googleView };
-      })() : null, telegramDeliveryWords(store, loadBotToken(process.env, options.telegramTokenFile)), settingsWorkers(store, now), settingsUpdates(who.name, csrf), (() => {
-        // The installation fact: when the first Ready result arrived, measured from the first account.
-        const at = store.firstSuccessAt(now), since = store.installationStartedAt();
-        return at === null || since === null ? null : firstResultWords(since, at);
-      })(), (() => {
-        const chosen = store.notificationPreference(who.name);
-        return { mode: chosen.mode, digestAt: chosen.digestAt, screenshots: chosen.screenshots, projects: notificationProjects(store, who.name) };
-      })(), telegramTrouble(store, loadBotToken(process.env, options.telegramTokenFile)), who.via === "cookie" ? phoneSetup(who) ?? null : null),
-    );
+      })() : null,
+      phone: who.via === "cookie" && !minimal ? phoneSetup(who) ?? null : null,
+      projects: consoleProjects().map(repo => ({ repo, name: projectName(repo) })),
+      people: accounts === null ? null : { approvers: accounts.filter(one => one.role === "approver").map(one => one.name), viewers: accounts.filter(one => one.role !== "approver").map(one => one.name), invites: store.openInvites(now).length },
+      passwordless,
+      sso: operator ? (() => { try { const sso = ssoSettings(); return sso === null ? null : sso.label ?? "your identity provider"; } catch { return null; } })() : null,
+      access: { sessions: store.webSessions(who.name).length, tokens: store.apiTokens(who.name).filter(one => one.revokedAt === null && Date.parse(one.expiresAt) > now.getTime()).length },
+      backup: lastBackup === null ? null : lastBackup.ok === false
+        ? { failed: true, words: `Failed ${when(lastBackup.startedAt)}${lastBackup.error === null ? "" : `: ${lastBackup.error}`}` }
+        : { failed: false, words: lastBackup.finishedAt === null ? "Backing up now" : `Backed up ${when(lastBackup.finishedAt)}` },
+    };
+    const pushScript = pushScriptOf(facts);
+    const script = group === "hub" ? HUB_ANCHOR_SCRIPT : group === "alerts" && pushScript !== null ? pushScript : null;
+    return sendScreen(response, 200, screen(groupTitle(group), settingsGroupPage(group, facts), {
+      chrome: chromeFor(project, "settings"),
+      ...(script === null ? {} : { functional: { script, ...(group === "alerts" ? { fetches: true } : {}) } }),
+    }));
   }
   // A person says a provider's sign-in works again: its sign-in pause
   // lifts, its tasks may start, and one short message says so.
@@ -745,20 +767,20 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const { who, response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.updatesDismiss);
     const version = body.get("version") ?? "";
-    if (!/^[0-9A-Za-z.-]{1,60}$/.test(version)) return refuse(response, who, 400, "Choose a version to dismiss.", "/settings#updates");
+    if (!/^[0-9A-Za-z.-]{1,60}$/.test(version)) return refuse(response, who, 400, "Choose a version to dismiss.", "/settings/system#updates");
     response.setHeader("Set-Cookie", `so-update-seen=${version}; SameSite=Lax; Path=/; Max-Age=31536000`);
     if (body.get("quiet") === "1") { response.writeHead(204); response.end(); return; }
-    return redirect(response, safeReturn(body.get("return") ?? "/settings#updates"));
+    return redirect(response, safeReturn(body.get("return") ?? "/settings/system#updates"));
   }
   // The daily check's switch: an installation setting, so an operator's. (Its own address: POST /settings/updates starts an update.)
   async function updatesChecks(ctx: HandlerContext): Promise<void> {
     const { who, response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.updatesChecks);
     if (options.configDir === undefined) return refuse(response, who, 404, "Updates are not set up on this console.", "/settings");
-    if (!store.isInstanceOperator(who.name)) return refuse(response, who, 403, "Only an operator can change update checks.", "/settings#updates");
+    if (!store.isInstanceOperator(who.name)) return refuse(response, who, 403, "Only an operator can change update checks.", "/settings/system#updates");
     const on = body.get("check") === "on";
     setUpdateChecks(options.configDir, on);
-    return redirect(response, `/settings?said=${encodeURIComponent(on ? "Toolroll looks for a newer version once a day." : "Update checks are off.")}#updates`);
+    return redirect(response, `/settings/system?said=${encodeURIComponent(on ? "Toolroll looks for a newer version once a day." : "Update checks are off.")}#updates`);
   }
   async function skillsRevise(ctx: HandlerContext): Promise<void> {
     const { response, posted } = ctx;
@@ -798,33 +820,39 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const message=error instanceof Error?error.message:'Skills could not be saved. Try again.';
       let content: Html=html`<p role="alert">${message}</p><a href="${back}">Reload Skills</a>`;
       try {content=(skillsHtml(skillsView(store,repo,who.name),who.session.csrf,true,{error:message,draft:Object.fromEntries((['method','content','url','sample','sha'] as const).map(k=>[k,body.get(k)??'']))}));}catch{/* Do not display unverified packages. */}
-      return sendScreen(response,409,screen('Skills',html`<h1>Skills</h1>${content}`,{chrome:chromeFor(repo,'settings'),functional:{script:skillsScript()}}));
+      return sendScreen(response,409,screen('Skills',settingsSubPage("agents", "Skills", html`${content}`),{chrome:chromeFor(repo,'settings'),functional:{script:skillsScript()}}));
     }
   };
-  // v105: set or remove a monthly budget. An instance operator, with a step-up; the ledger keeps before → after.
+  // v105: set or remove a monthly budget. An instance operator, with a step-up; the ledger keeps before → after. The
+  // amount is checked before the password (nothing is written before the password is proved), so a refused amount
+  // shows next to its field with the person's draft kept.
   async function spendBudget(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.spendBudget);
-    const back = sayTo(response, "/settings/spend");
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change a budget.");
-    const target = /^(installation|project|person|subagent):(.+)$/.exec(body.get("target") ?? "");
-    if (target === null) return back("problem", "Choose what the budget is for.");
+    const targetField = body.get("target") ?? "";
+    const remove = body.get("action") === "remove";
+    const draft = { usd: body.get("usd") ?? "", stop: body.get("stop") === "1" ? "1" : "0" };
+    const done = (words: string) => redirect(response, `/spend?said=${encodeURIComponent(words)}`);
+    const refused = (words: string, field?: "usd") => redirect(response, `/spend?${new URLSearchParams({ edit: targetField === "" ? "new" : targetField, ...draft, ...(field ? { field } : {}), problem: words }).toString()}`);
+    const target = /^(installation|project|person|subagent):(.+)$/.exec(targetField);
+    if (target === null) return refused("Choose what the limit is for. Nothing changed.");
     const scope = target[1] as "installation" | "project" | "person" | "subagent", key = target[2]!;
     const known = scope === "installation" ? key === "*"
       : scope === "project" ? consoleProjects().includes(key)
       : scope === "person" ? store.accountFacts().some(one => one.name === key && one.revokedAt === null)
       : store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]).some(one => String(one.id) === key);
-    if (!known) return back("problem", "That isn't a project, person or subagent here.");
+    if (!known) return refused("That isn't a project, person or subagent here. Nothing changed.");
+    const dollars = Number((body.get("usd") ?? "").replace(/[$,\s]/g, ""));
+    if (!remove && (!Number.isFinite(dollars) || dollars < 1 || dollars > 10_000_000)) return refused("Use a whole number of dollars, at least $1, like 40. Nothing changed.", "usd");
+    if (!authenticateApprover(who, body.get("password") ?? "").ok) return refused("That password didn't match. Nothing changed.");
     const label = budgetLabel({ scope, key }).replace(/'s$/, "");
-    if (body.get("action") === "remove") {
+    if (remove) {
       const existing = store.budgets().find(one => one.scope === scope && one.key === key);
-      if (existing === undefined || !store.removeBudget(existing.id, who.name, now)) return back("problem", "That budget is already gone.");
-      return back("said", `${label}: budget removed.`);
+      if (existing === undefined || !store.removeBudget(existing.id, who.name, now)) return refused("That limit is already gone. Nothing changed.");
+      return done(`${label}: limit removed.`);
     }
-    const dollars = Number(body.get("usd") ?? "");
-    if (!Number.isFinite(dollars) || dollars < 1 || dollars > 10_000_000) return back("problem", "A monthly limit is a whole number of dollars, at least $1.");
     const saved = store.setBudget({ scope, key, limitMicrousd: Math.round(dollars) * 1_000_000, hardStop: body.get("stop") === "1" }, who.name, now);
-    return back("said", `${label}: ${spendUsd(saved.limitMicrousd)} a month${saved.hardStop ? ", API work stops at 100%" : ", alerts only"}.`);
+    return done(`${label}: ${spendUsd(saved.limitMicrousd)} a month${saved.hardStop ? ", new API work pauses at the limit" : ", alerts only"}.`);
   }
   // Settings → Project → Builds at once: an approver for the project sets it; the ledger keeps before → after.
   async function projectConcurrency(ctx: HandlerContext): Promise<void> {
@@ -889,7 +917,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const back = (key: "said" | "problem", words: string, to = repo) => redirect(response, `/settings/project?${to === "" ? "" : `repo=${encodeURIComponent(to)}&`}${key}=${encodeURIComponent(words)}`);
     const view = projectViewOf(repo, who);
     if ((body.get("name") ?? "").trim() !== view.name) return back("problem", `Type ${view.name} exactly to delete it.`);
-    const confirm = (problem: string | null) => sendScreen(response, 200, screen(`Delete ${view.name}?`, html`<p><a href="/settings/project?repo=${encodeURIComponent(repo)}">${view.name}</a></p><h1>Delete ${view.name}?</h1>${projectDeleteConfirmHtml(view, problem)}`,
+    const confirm = (problem: string | null) => sendScreen(response, 200, screen(`Delete ${view.name}?`, settingsSubPage("projects", `Delete ${view.name}?`, html`<p class="k-note"><a class="k-link" href="/settings/project?repo=${encodeURIComponent(repo)}">Back to ${view.name}, and delete nothing</a></p>${projectDeleteConfirmHtml(view, problem)}`),
       { chrome: chromeFor(repo, "settings"), forceSensitive: true }));
     if (view.running.length > 0) return back("problem", `Nothing was deleted: ${view.running.join(", ")}. Stop it, then try again.`);
     if (body.get("step") !== "delete") return confirm(null);
@@ -1237,7 +1265,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     setYouiyouxIntake(store, repo, on, who.name, clock());
     return back("said", on ? `youiyoux requests in ${basename(repo)} become tasks again.` : `youiyoux requests in ${basename(repo)} are off.`);
   }
-  // Settings → Integrations → Send test: one harmless read-only check of one integration, now.
+  // Settings → Integrations → Check connection: one harmless read-only check of one integration, now.
   async function integrationsTest(ctx: HandlerContext): Promise<void> {
     const { who, response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.integrationsTest);
@@ -1470,7 +1498,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const repo = body.get('repo') ?? '';
     if (!visible(repo) || !store.accountCanAccess(who.name, repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
     const refreshed = await repositoryContext({ repo, query: '', refresh: true, cacheRoot: join(dirname(evidenceRoot), 'repository-context') });
-    return sendScreen(response, refreshed.index.status === 'ready' ? 200 : 503, screen('Project context', html`<h1>Project context</h1><p>${refreshed.index.status === 'ready' ? 'Code index refreshed.' : 'The index is unavailable. Source search still works.'}</p><a class="button-link" href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Open knowledge</a>`, { chrome: chromeFor(repo, 'settings') }));
+    return sendScreen(response, refreshed.index.status === 'ready' ? 200 : 503, screen('Project context', settingsSubPage("agents", "Project context", html`<p>${refreshed.index.status === 'ready' ? 'Code index refreshed.' : 'The index is unavailable. Source search still works.'}</p><a class="button-link" href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Open knowledge</a>`), { chrome: chromeFor(repo, 'settings') }));
   }
   async function knowledgeProposal(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
@@ -1479,7 +1507,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
     if (!['accept', 'reject'].includes(decision) || !/^[0-9]{1,12}$/.test(body.get('proposal') ?? '')) return refuse(response, who, 400, 'Choose accept or reject for one proposal.', '/settings/knowledge');
     try { decideProposal(store, { repo, actor: who.name, id: Number(body.get('proposal')), decision: decision as 'accept' | 'reject' }, now); }
-    catch (error) { return sendScreen(response, 409, screen('Knowledge', html`<h1>Knowledge</h1><p role="alert">${error instanceof Error ? error.message : 'That proposal could not be decided.'}</p><p><a href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Back to knowledge</a></p>`, { chrome: chromeFor(repo, 'settings') })); }
+    catch (error) { return sendScreen(response, 409, screen('Knowledge', settingsSubPage("agents", "Knowledge", html`<p role="alert">${error instanceof Error ? error.message : 'That proposal could not be decided.'}</p><p><a href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Back to knowledge</a></p>`), { chrome: chromeFor(repo, 'settings') })); }
     return redirect(response, `/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
   }
   async function knowledgeDecision(ctx: HandlerContext): Promise<void> {
@@ -1496,7 +1524,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const draft = { claim: body.get('claim') ?? '', why: body.get('why') ?? '' };
       let content: Html = html``;
       try { content = (decisionsHtml(repo, listDecisions(store, repo, who.name, { limit: 50 }), who.session.csrf, true, draft, error instanceof Error ? error.message : 'Save failed. Your draft is below.')); } catch { content = html`<p role="alert">Project decisions are unavailable. Your unsaved draft is below.</p><pre class="knowledge">${JSON.stringify(draft, null, 2)}</pre>`; }
-      return sendScreen(response, 409, screen('Knowledge', html`<h1>Knowledge</h1>${content}`, { chrome: chromeFor(repo, 'settings') }));
+      return sendScreen(response, 409, screen('Knowledge', settingsSubPage("agents", "Knowledge", html`${content}`), { chrome: chromeFor(repo, 'settings') }));
     }
     return redirect(response, `/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
   }
@@ -1514,7 +1542,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     } catch (error) {
       let content: Html = html`<p role="alert">Project knowledge is unavailable. Your unsaved draft is below.</p><pre class="knowledge">${JSON.stringify(draft,null,2)}</pre>`;
       try { content=(knowledgeHtml(knowledgeView(store,repo,who.name),who.session.csrf,true,draft,error instanceof Error?error.message:'Save failed. Your draft is below.')); } catch { /* never render unverified saved context */ }
-      return sendScreen(response,409,screen('Knowledge',html`<h1>Knowledge</h1>${content}`,{chrome:chromeFor(repo,'settings')}));
+      return sendScreen(response,409,screen('Knowledge',settingsSubPage("agents", "Knowledge", html`${content}`),{chrome:chromeFor(repo,'settings')}));
     }
     return redirect(response,`/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
   }
@@ -1528,7 +1556,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     try {
       changeLearning(store, evidenceRoot, { repo, actor: who.name, identity: body.get("identity") ?? "", revision: Number(body.get("revision")), action: action as "adopt" | "disable" | "reset" | "enable" | "pause", lesson: Number(body.get("lesson")), version: Number(body.get("version")), sha: body.get("sha") ?? "" }, clock());
     } catch (error) {
-      return sendScreen(response, 409, screen("Learning", html`<section class="learning"><h1>Learning</h1><p class="problem" role="alert">${error instanceof Error ? error.message : "Learning could not be changed. Reload to retry."}</p><a class="button-link" href="/settings/learning?repo=${encodeURIComponent(repo)}">Reload Learning</a></section>`));
+      return sendScreen(response, 409, screen("Learning", settingsSubPage("agents", "Learning", html`<section class="learning"><p class="problem" role="alert">${error instanceof Error ? error.message : "Learning could not be changed. Reload to retry."}</p><a class="button-link" href="/settings/learning?repo=${encodeURIComponent(repo)}">Reload Learning</a></section>`)));
     }
     return redirect(response, `/settings/learning?repo=${encodeURIComponent(repo)}`);
   }
@@ -1545,7 +1573,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const nonceKey = `project-instructions:${project}`;
       if (step === "preview") {
         const nonce = mintApprovalNonce(who.name, nonceKey, preview.fingerprint);
-        return sendScreen(response, 200, screen("Review agent instructions", html`<h1>Review agent instructions</h1><p>${preview.plan.skillPath}</p><pre class="recap">${preview.content}</pre>${postForm("/control/instructions-approve", html`${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`)}<button>Add these instructions</button>`, { hidden: { repo: project, nonce, fingerprint: preview.fingerprint } })}`, { chrome: chromeFor(project, "settings") }));
+        return sendScreen(response, 200, screen("Review agent instructions", settingsSubPage("projects", "Review agent instructions", html`<p>${preview.plan.skillPath}</p><pre class="recap">${preview.content}</pre>${postForm("/control/instructions-approve", html`${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`)}<button>Add these instructions</button>`, { hidden: { repo: project, nonce, fingerprint: preview.fingerprint } })}`), { chrome: chromeFor(project, "settings") }));
       }
       if (who.via === "cookie" && !consumeApprovalNonce(body.get("nonce") ?? "", who.name, nonceKey, body.get("fingerprint") ?? "")) return refuse(response, who, 409, "This instruction preview expired. Review it again.", "/control");
       if (!authenticateApprover(who, body.get("token") ?? "").ok) return refuse(response, who, 403, "Your operator credential is required.", "/control");
@@ -1767,7 +1795,7 @@ ${postForm("/settings/chat-approval/save", html`\
       return refuse(response, who, 400, "primary must be one of the configured services");
     }
     savePrimary(options.configDir, wanted);
-    return redirect(response, "/settings");
+    return redirect(response, `/settings/alerts?said=${encodeURIComponent("Alerts go through the chosen app now.")}#alert-service`);
   }
   async function permissionDefaultSave(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
@@ -1780,12 +1808,12 @@ ${postForm("/settings/chat-approval/save", html`\
     // Widening every new task to Full access takes a password (chat-management.md §0a.3): an ordinary step-up, so a
     // signed-in session does under Passwordless. Back to Auto narrows, and needs none.
     if (wanted === "bypassPermissions" && store.permissionDefault().mode !== "bypassPermissions" && !authenticateApprover(who, body.get("password") ?? "").ok) {
-      return redirect(response, `/settings?said=${encodeURIComponent("Enter your Toolroll password to start new tasks with Full access. Nothing changed.")}`);
+      return redirect(response, `/settings/approval?problem=${encodeURIComponent("Enter your Toolroll password to start new tasks with Full access. Nothing changed.")}#defaults`);
     }
     store.setPermissionDefault(wanted, who.name, now);
     return redirect(
       response,
-      `/settings?said=${encodeURIComponent(
+      `/settings/approval?said=${encodeURIComponent(
         wanted === "bypassPermissions"
           ? "New tasks now start with Full access. Approved tasks keep their setting."
           : "New tasks now start with Auto. Approved tasks keep their setting.",
@@ -1803,7 +1831,7 @@ ${postForm("/settings/chat-approval/save", html`\
     store.setQualityDefault(wanted, who.name, now);
     return redirect(
       response,
-      `/settings?said=${encodeURIComponent(
+      `/settings/approval?said=${encodeURIComponent(
         wanted === "strict"
           ? "New tasks now use Strict / release. Approved tasks keep their setting."
           : "New tasks now use Default quality. Approved tasks keep their setting.",
@@ -1826,7 +1854,7 @@ ${postForm("/settings/chat-approval/save", html`\
       : after.screenshots !== before.screenshots
       ? after.screenshots === "off" ? "Results arrive without screenshots." : `Results arrive with ${after.screenshots === "first" ? "their first screenshot" : "up to 4 screenshots"}.`
       : after.digestAt === null ? "Evening digest off." : `Evening digest at ${after.digestAt}.`;
-    return redirect(response, `/settings?said=${encodeURIComponent(said)}`);
+    return redirect(response, `/settings/alerts?said=${encodeURIComponent(said)}#notifications`);
   }
   async function notificationsMute(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
@@ -1837,7 +1865,7 @@ ${postForm("/settings/chat-approval/save", html`\
     if (project === undefined) return refuse(response, who, 400, "that project isn't one you can see", "/settings");
     const muted = body.get("pings") !== "on";
     store.setProjectMuted(who.name, repo, muted, now);
-    return redirect(response, `/settings?said=${encodeURIComponent(muted ? `${project.name} muted. It still shows in Tasks and your evening digest.` : `${project.name} pings you again.`)}#notifications`);
+    return redirect(response, `/settings/alerts?said=${encodeURIComponent(muted ? `${project.name} muted. It still shows in Tasks and your evening digest.` : `${project.name} pings you again.`)}#notifications`);
   }
   async function telegramDigestSave(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
@@ -1850,7 +1878,7 @@ ${postForm("/settings/chat-approval/save", html`\
     if (!(wanted in allowed)) return refuse(response, who, 400, "the digest cadence is one of the listed choices", "/settings");
     const minutes = allowed[wanted] ?? null;
     store.setTelegramDigest(minutes === null ? null : minutes * 60_000, who.name, now);
-    return redirect(response, `/settings?said=${encodeURIComponent(minutes === null ? "Digest off: each update arrives as it happens." : `Digest every ${minutes >= 60 ? `${minutes / 60}h` : `${minutes}m`}. Anything that needs you still arrives at once.`)}`);
+    return redirect(response, `/settings/alerts?said=${encodeURIComponent(minutes === null ? "Digest off: each update arrives as it happens." : `Digest every ${minutes >= 60 ? `${minutes / 60}h` : `${minutes}m`}. Anything that needs you still arrives at once.`)}`);
   }
   const providerKeyAct = (op: "save" | "clear") => async (ctx: HandlerContext): Promise<void> => {
     const { who, response, posted } = ctx;
@@ -1863,13 +1891,13 @@ ${postForm("/settings/chat-approval/save", html`\
     if (op === "clear") {
       const cleared = clearProviderKey(provider, providerHome);
       const clearedMode = readAuthMode(provider, providerHome);
-      return redirect(response, `/settings?said=${encodeURIComponent(
+      return redirect(response, `/settings/agents?said=${encodeURIComponent(
         !cleared
           ? "no stored key to remove"
           : clearedMode === "subscription"
             ? `the ${provider} key is removed — ${provider} uses its own login, so builds are unaffected`
             : `the ${provider} key is removed — an environment variable, if one exists, takes over`,
-      )}`);
+      )}#providers`);
     }
     // Validate EVERYTHING before mutating anything (Codex round 5,
     // finding 2): an invalid key must never persist a mode change it
@@ -1896,7 +1924,7 @@ ${postForm("/settings/chat-approval/save", html`\
     if (modeChanged) setAuthMode(provider, wantedMode, providerHome);
     const modeNote = modeChanged ? ` \u00b7 ${provider} now uses ${wantedMode === "api-key" ? "the API key" : "its own subscription / login"}` : "";
     if (value === "") {
-      return redirect(response, `/settings?said=${encodeURIComponent(modeChanged ? `${provider} now uses ${wantedMode === "api-key" ? "the API key" : "its own subscription / login"}` : `no change — ${provider} already uses ${currentMode === "api-key" ? "the API key" : "its own subscription / login"}`)}`);
+      return redirect(response, `/settings/agents?said=${encodeURIComponent(modeChanged ? `${provider} now uses ${wantedMode === "api-key" ? "the API key" : "its own subscription / login"}` : `no change — ${provider} already uses ${currentMode === "api-key" ? "the API key" : "its own subscription / login"}`)}#providers`);
     }
     saveProviderKey(provider, value, providerHome); // known plausible
     // Verify right now, so a paste gets an immediate yes/no instead of a
@@ -1905,7 +1933,7 @@ ${postForm("/settings/chat-approval/save", html`\
     const checked = readAuthMode(provider, providerHome) === "api-key" ? await connectionCheck(provider, true) : null;
     const verdict = checked?.verdict ?? await verifyProviderKey(provider, value);
     const stored = `the ${provider} key is stored`;
-    return redirect(response, `/settings?said=${encodeURIComponent((verdict.ok ? `${stored} and verified — it works` : `${stored}. ${verdictWords(provider, verdict)}`) + modeNote)}`);
+    return redirect(response, `/settings/agents?said=${encodeURIComponent((verdict.ok ? `${stored} and verified — it works` : `${stored}. ${verdictWords(provider, verdict)}`) + modeNote)}#providers`);
   };
   async function telegramTokenSave(ctx: HandlerContext): Promise<void> {
     const { who, response, posted } = ctx;
@@ -1913,26 +1941,18 @@ ${postForm("/settings/chat-approval/save", html`\
     const body = readForm(posted, CONSOLE_FORMS.telegramToken);
     const value = body.get("token") ?? "";
     const saved = saveBotToken(options.telegramTokenFile, value);
-    if (!saved.ok) {
-      const existing = loadBotToken({}, options.telegramTokenFile);
-      const hasEnv = (envValue(process.env, "TELEGRAM_TOKEN") ?? "") !== "";
-      const csrf = who.via === "cookie" ? who.session.csrf : "";
-      return sendScreen(response, 400, settingsPage(chromeFor(who.via === "cookie" ? who.session.project : runtime.defaultProject, "settings"), existing, hasEnv, csrf, saved.message, options.configDir === undefined ? null : effectivePrimary(process.env, options.configDir, loadBotToken(process.env, options.telegramTokenFile) !== null), null, null, null, {
-        ...store.permissionDefault(),
-        canManage: who.role === "approver",
-      }));
-    }
-    return redirect(response, "/settings");
+    if (!saved.ok) return redirect(response, `/settings/alerts?problem=${encodeURIComponent(saved.message)}#telegram-token`);
+    return redirect(response, `/settings/alerts?said=${encodeURIComponent("Bot token saved. Pair your phone on the Telegram page.")}#telegram-token`);
   }
   // v87: the mail server Send email steps use, and a test email to its own address.
   const emailAct = (op: "save" | "test" | "read-test") => async (ctx: HandlerContext): Promise<void> => {
     const { who, response, posted } = ctx;
     if (who.role !== "approver" || options.configDir === undefined) return refuse(response, who, 404, "There's no page at this address.", "/chat");
     const body = readForm(posted, CONSOLE_FORMS.email);
-    const said = (words: string) => redirect(response, `/settings?said=${encodeURIComponent(words)}#email`);
+    const said = (words: string, key: "said" | "problem" = "said") => redirect(response, `/settings/alerts?${key}=${encodeURIComponent(words)}#email`);
     if (op === "save") {
       const saved = saveEmailSettings(options.configDir, { host: body.get("host"), port: body.get("port"), secure: body.get("secure"), user: body.get("user"), from: body.get("from"), password: body.get("password"), imapHost: body.get("imapHost"), imapPort: body.get("imapPort") });
-      return said(saved.ok ? saved.said : saved.message);
+      return saved.ok ? said(saved.said) : said(saved.message, "problem");
     }
     if (op === "read-test") {
       // Sign in and open the inbox read-only, as an Inbox trigger's first check does: nothing is read or changed.
@@ -1952,7 +1972,7 @@ ${postForm("/settings/chat-approval/save", html`\
     const { who, request, response, posted } = ctx;
     if (who.role !== "approver" || options.configDir === undefined) return refuse(response, who, 404, "There's no page at this address.", "/chat");
     const body = readForm(posted, CONSOLE_FORMS.google);
-    const said = (words: string) => redirect(response, `/settings?said=${encodeURIComponent(words)}#email`);
+    const said = (words: string) => redirect(response, `/settings/alerts?said=${encodeURIComponent(words)}#email`);
     if (op === "disconnect") {
       await disconnectGoogle(options.configDir, options.googleFetch ?? fetch);
       return said("Google disconnected. Email goes through the mail server again, if one is set up.");
@@ -2012,15 +2032,8 @@ ${postForm("/settings/chat-approval/save", html`\
       const nonce = mintApprovalNonce(who.name, "mode-sign", `${project}:${digest}`);
       const signed = Object.fromEntries((["name", "days", "publication", "auto-approve", "plan-auto", "chat-approve"] as const)
         .map(field => [field, body.get(field) ?? ""]));
-      const bodyHtml = html`<h1 style="overflow-wrap:anywhere">Sign the ${name} mode for ${project}</h1>\
-${postForm("/mode/sign", html`\
-<p><strong>Your password signs exactly this:</strong></p>\
-${modeWords(terms)
-          .map(words => html`<p class="recap" style="margin-top:.4rem">${words}</p>`)}\
-<label>Your password, typed again<input type="password" name="token" autocomplete="current-password"></label>\
-<div class="sticky-actions"><button type="submit">Sign it</button></div>`, { attrs: { class: "card approve-form" }, hidden: { nonce, digest, ...signed, expiry } })}\
-<p class="meta"><a href="/mode">back — sign nothing</a></p>`;
-      return sendScreen(response, 200, screen("mode", bodyHtml, { chrome: chromeFor(project, "mode") }));
+      const bodyHtml = modeCeremonyHtml({ name, project: projectName(project), words: modeWords(terms), chatApprove: signed["chat-approve"] === "1", hidden: { nonce, digest, ...signed, expiry } });
+      return sendScreen(response, 200, screen("Sign the mode", bodyHtml, { chrome: chromeFor(project, "mode") }));
     }
 
     // /mode/sign: the fixed expiry rides the form; the digest is
@@ -2052,7 +2065,7 @@ ${modeWords(terms)
       },
       now,
     );
-    return redirect(response, "/mode");
+    return redirect(response, `/mode?said=${encodeURIComponent(`The ${signedTerms.name} mode is signed for ${projectName(project)}.`)}`);
   };
   async function modeRevoke(ctx: HandlerContext): Promise<void> {
     const { who, request, response, now } = ctx;
@@ -2189,7 +2202,7 @@ ${modeWords(terms)
   async function googleCallback(ctx: EdgeContext): Promise<void> {
     const { request, response, url } = ctx;
     const done = (said: string) => {
-      const back = `/settings?said=${encodeURIComponent(said)}#email`;
+      const back = `/settings/alerts?said=${encodeURIComponent(said)}#email`;
       response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff", "x-frame-options": "DENY", "set-cookie": signInSpent(GOOGLE_CALLBACK),
         "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'" });
       response.end(htmlString(html`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=${back}"><title>Toolroll</title>${HANDOFF_STYLE}<p>${said} <a href="${back}">Back to Settings</a></p>`));
@@ -2295,6 +2308,12 @@ ${modeWords(terms)
     "settings.learning": learningPage,
     "settings.telegram": telegramPage,
     "settings.page": settingsHome,
+    "settings.group-general": settingsHome.bind(null),
+    "settings.group-agents": settingsHome.bind(null),
+    "settings.group-alerts": settingsHome.bind(null),
+    "settings.group-projects": settingsHome.bind(null),
+    "settings.group-access": settingsHome.bind(null),
+    "settings.group-system": settingsHome.bind(null),
     "provider.resume": providerResume,
     "settings.updates-dismiss": updatesDismiss,
     "session.forget-password": forgetPassword,
@@ -2480,29 +2499,10 @@ ${modeWords(terms)
     const changed = setReleaseApproval(store, repo, true, who.name, now);
     return back("said", changed.changed ? "Releases approve themselves once CI and the release check pass." : "Saved.");
   }
-  // Settings → Spend: the monthly limits editor and the models in use. An instance operator's page; changing a limit
-  // posts to /spend/budget with a step-up.
+  // Settings → Spend moved onto the Spend page (/spend), limits first; the old address keeps working.
   async function spendSettingsPage(ctx: HandlerContext): Promise<void> {
-    const { url, response, now } = ctx;
-    const current = monthOf(now);
-    const subagents = store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]);
-    const subagentNames = subagentNamesOf(store.handle);
-    const projects = consoleProjects();
-    const people = store.accountFacts().filter(one => one.revokedAt === null).map(one => one.name);
-    const models = (["plan", "build", "review"] as const).map(phase => {
-      const agent = resolvePhaseAgent(store, phase, null, {});
-      return { role: phase === "plan" ? "Planner" : phase === "build" ? "Builder" : "Reviewer", model: agent.ok ? `${agent.spec.provider} · ${agent.spec.model ?? "its default model"}` : "Not set" };
-    });
-    const view = {
-      budgets: budgetStates(store.budgets(), spendItems(store.handle, current.from, current.to)), subagentNames, models,
-      targets: [
-        { value: "installation:*", label: "Everything", group: "Everything" as const },
-        ...projects.map(repo => ({ value: `project:${repo}`, label: projectName(repo), group: "Projects" as const })),
-        ...people.map(name => ({ value: `person:${name}`, label: name, group: "People" as const })),
-        ...subagents.map(one => ({ value: `subagent:${one.id}`, label: `${subagentNames.get(one.id) ?? one.handle} (${projectName(one.repo)})`, group: "Subagents" as const })),
-      ],
-    };
-    return sendScreen(response, 200, screen("Spend settings", spendSettingsHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }), { chrome: chromeFor(null, "settings") }));
+    const said = ctx.url.searchParams.get("said"), problem = ctx.url.searchParams.get("problem");
+    return redirect(ctx.response, `/spend${problem !== null ? `?problem=${encodeURIComponent(problem)}` : said !== null ? `?said=${encodeURIComponent(said)}` : ""}`);
   }
   // Settings → Models (docs/plans/spend-dashboard.md, slice 3): the one editor. Both posts are an instance operator's,
   // browser-only step-ups: the password (or a Passwordless session, or an identity-provider re-check) is proved here,

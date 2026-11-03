@@ -167,7 +167,7 @@ describe('project knowledge',()=>{
     try{
       const login=await fetch(url+'/login',{method:'POST',body:new URLSearchParams({name:'alex',token:password}),redirect:'manual'});const cookie=login.headers.get('set-cookie')!.split(';')[0]!;
       const page=await (await fetch(url+'/settings/knowledge',{headers:{cookie}})).text();
-      expect(page.match(/<p role="status">This project&#39;s saved knowledge is from before a change; review and apply it\.<\/p>/g)).toHaveLength(1);expect(page).toContain('Apply saved knowledge');expect(page).not.toContain('Add instructions');
+      expect(page.match(/<p class="k-notice info" role="status">This project&#39;s saved knowledge is from before a change; review and apply it\.<\/p>/g)).toHaveLength(1);expect(page).toContain('Apply saved knowledge');expect(page).not.toContain('Add instructions');
       const csrf=/name="csrf" value="([^"]+)"/.exec(page)![1]!;
       const post=(data:Record<string,string>)=>fetch(url+'/settings/knowledge/change',{method:'POST',headers:{cookie},body:new URLSearchParams(data),redirect:'manual'});
       const data={csrf,repo,identity:view().identity,revision:'1',action:'apply'};

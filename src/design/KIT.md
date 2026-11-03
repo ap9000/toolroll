@@ -113,14 +113,14 @@ Server builders are in `src/server/kit.ts`; React components in `src/browser/kit
 | Select | `select` | `KSelect` | native, with the chevron |
 | Switch | `switchInput` | `KSwitch`, `KSwitchInput` | says its state in words |
 | Form row | `formRow(label, hint, control, variant)` | `KFormRow` | `inline`, `top`, `wide` |
-| Radio cards | `radios` | `KRadios` | |
+| Radio cards | `radios` | `KRadios` | an item's `tag` (a `Recommended` chip) sits in the card's third column |
 | Facts, acts, notes | `facts`, `acts`, `note`, `notice`, `infoLine` | `KFacts`, `KActs`, `KNote`, `KNotice`, `KInfoLine` | a refusal is `notice` (role=alert); a neutral system line is `infoLine` |
 | Empty state | `empty({ title, text, action })` | `KEmpty` | one sentence, one action |
 | Disclosure | `disclose` | `KDisclose` | secondary detail only |
 | List row | `group`, `row` | `KGroup`, `KRow` | chip · title (the row is the link) · one line · meta · one action |
 | List page header | `pageHeader`, `phoneHeader` | `KPageHeader`, `KPhoneHeader` | |
 | Reading page | `doc`, `docHeader` | `KDoc`, `KDocHeader` | |
-| Approval box | `slots` | `KSlots` | four fixed slots in every state |
+| Approval box | `slots` | `KSlots` | four fixed slots in every state; `body` holds the choice the act takes (radio cards, a note) |
 | Approve control | `approveForm` | `KApprove` | see [Approval](#approval) |
 | Needs-you panel | `needsPanel` | `KNeedsPanel` | waits that aren't tasks, on their own page |
 | Overlays | `overlay` + `overlayTrigger` | `KOverlay`, `useKMenu` | popover, drawer, sheet, menu |
@@ -129,7 +129,12 @@ Server builders are in `src/server/kit.ts`; React components in `src/browser/kit
 | Board | `board`, `boardCol`, `card` | `KBoard`, `KBoardCol`, `KCard` | a list's rows as columns, the optional view beside List; one column at a time on a phone |
 | Not found | `notFound(path)` | `KNotFound` | inside the shell |
 | Settings frame | `settingsShell` | `KSettingsShell` | Overview + the eight groups (`SETTINGS_GROUPS`) |
+| Settings section | `settingsSection` | — | heading (+ muted state) · one muted lead · rows; `id` is the anchor |
+| Settings link rows | `settingsLink`, `settingsLinks` | — | icon · title (+ "1 item needs you") · one status line · chevron; the whole row is the link |
+| Settings record | `settingsRecord` | — | a session, token, person or device: title · one line · when · one action · what opens under it |
+| Section form | `kitSectionForm` (`settings-kit.ts`) | — | see [Section saves](#section-saves) |
 | Phone dock | `dock(primary)` | `KDock` | the screen's one primary on a phone |
+| Dock's Needs-you button | — (the app shell draws it) | `KDockNeeds` | the one Needs-you count beside the primary; opens the Needs-you list |
 | Composer | `composer`, `sendButton` | `KComposer` | see [Composer](#composer) |
 | Page outside the shell | `outPage`, `outField` | — | sign in, first account, invite, an error; see [Outside the shell](#outside-the-shell) |
 | Guided steps | `checklist` | — | the first run's steps: mark, step and one line, its one action |
@@ -208,6 +213,9 @@ the order of events are identical.
   a row leaving, a notice under the control).
 - A refusal must be seen: in place, with what didn't change ("Nothing changed."). The draft stays.
 - Every act shows its busy face ("Starting…", "Sending…", "Saving…") until the outcome is known.
+  A server page's native form gets it from `data-k-busy="Answering…"` on its submit button (the kit behaviour swaps
+  the face, holds a second press, and puts the face back when the page returns). A server page's Print button is
+  `data-k-print`.
 
 ## Approval
 
@@ -243,6 +251,26 @@ build the terms (the panel and the password popover) and the submitted value fro
 fields. Invalid values are refused next to their field before any popover. One pending act per form: a second press
 does nothing until the first settles. However a password popover goes away (Close, Escape, the scrim, a navigation
 or re-render), it settles as cancelled (`onClose`), so the pending guard is released.
+
+## Section saves
+
+A settings section that saves is one `kitSectionForm` (`src/settings-kit.ts`), drawn from its proof inventory row
+(`src/settings-proofs.ts`) so the proof field is exactly the one its handler reads. Without script it is a plain form:
+the proof field shows in place and Save posts. With the workspace's kit behaviour (`src/browser/kit/section-forms.ts`):
+
+- `gate`: Save shows only once something in the section changed; the bar says what changed ("Quality: Strict ·
+  Asks for your password."). The section edited last carries the one ink Save; another changed section keeps an
+  outline Save. Without `gate` (an act: Invite, Remove, Cancel invite) the button always shows.
+- Save takes one snapshot of the form; the password popover's terms and the posted values come from it.
+- The password is asked only when the server rendered a proof field (Passwordless and CSRF-only rows render none)
+  and, with `proofWhen`, only when the snapshot posts that value (Full access, approve releases automatically).
+- One pending save per form. The snapshot posts with fetch; a handler's refusal (`?problem=`, a 4xx refusal page)
+  shows next to Save with the edits kept; success opens the page the server answered with. Anything that proves
+  nothing (a network failure, a server error, a sign-in page) is unconfirmed: the page opens again with
+  `?unconfirmed=<form id>` and `kitSectionForm` draws "Couldn't confirm whether this saved" in that section.
+- Saving while other sections have unsaved changes asks first, in place; leaving with changes asks through the
+  browser. Nothing is kept in Web Storage.
+- `native`: the answer is a page of its own (a one-time secret, a review, another site), so it posts as a navigation.
 
 ## Words
 

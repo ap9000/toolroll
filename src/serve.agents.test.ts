@@ -77,6 +77,20 @@ afterEach(async () => {
 });
 
 describe("the Agents board", () => {
+  test("a running planner is on the list too, under Working, never \"No agents\"", async () => {
+    const cookie = await login("alex", alexToken);
+    store.createTask({ id: "t-plan", title: "Plan the limiter" }, T0);
+    const ref = store.refFor("built-in", "t-plan", "ours").id;
+    store.placeTask(ref, repoA);
+    const taken = acquire(store, ref, "builder-1", { token: "tok-builder-1", now: new Date(), ttlMs: 3_600_000 });
+    if (!taken.ok) throw new Error("claim failed");
+    store.startRun({ taskRef: ref, leaseId: taken.claim.leaseId, runner: "builder-1", branch: "b-plan", worktree, now: new Date(), role: "planner", ...presented(store, ref, "planner") });
+    const view = await board("/agents", cookie);
+    expect(view.empty).toBeNull();
+    const working = view.groups.find(group => group.key === "working");
+    expect(working?.rows.map(row => [row.taskId, row.label])).toEqual([["t-plan", "Planning"]]);
+  });
+
   test("replaces Peek, and groups agents by state in the viewer's own projects", async () => {
     const cookie = await login("alex", alexToken);
     const peek = await fetch(url("/peek"), { headers: { cookie }, redirect: "manual" });
@@ -358,10 +372,8 @@ describe("composer receipts and reach (cockpit §4, round 2)", () => {
     const view = workspaceOf(await (await fetch(url("/t/t-rev"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTaskView;
     expect(view.steering).toMatchObject({ steer: null, controls: { send: null, words: "This reviewer can't take notes; stop it to change its course.", stop: { run: Number(review) } } });
     expect(view.steerRecent).toContain(build);
-    const lanes = (await board("/agents", cookie)).lanes;
-    const hrefs = (lanes?.lanes ?? []).flatMap(lane => lane.segments.map(one => one.href));
-    expect(hrefs.length).toBeGreaterThan(0);
-    expect(hrefs.every(href => href.startsWith("/agents?run="))).toBe(true);
+    // The Agents page lists builds; any running role (this review too) still opens in the agent view by its run.
+    expect((await board(`/agents?run=${review}`, cookie)).selected).toMatchObject({ runId: Number(review), live: true });
   });
 });
 

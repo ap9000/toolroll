@@ -5716,7 +5716,7 @@ $ integrations --saved --json → 0
       "action": {
         "kind": "setup",
         "label": "Set up",
-        "href": "/settings#telegram-token",
+        "href": "/settings/alerts#telegram-token",
         "command": null
       }
     },
@@ -5797,7 +5797,7 @@ $ integrations --saved --json → 0
       "state": "connected",
       "action": {
         "kind": "test",
-        "label": "Send test"
+        "label": "Check connection"
       }
     },
     {
@@ -5856,7 +5856,7 @@ $ integrations --saved --json → 0
       "action": {
         "kind": "setup",
         "label": "Set up",
-        "href": "/settings#email",
+        "href": "/settings/alerts#email",
         "command": null
       }
     },
@@ -5917,7 +5917,7 @@ $ integrations --saved --json → 0
       "state": "connected",
       "action": {
         "kind": "test",
-        "label": "Send test"
+        "label": "Check connection"
       }
     },
     {
@@ -5937,7 +5937,7 @@ $ integrations --saved --json → 0
       "state": "connected",
       "action": {
         "kind": "test",
-        "label": "Send test"
+        "label": "Check connection"
       }
     }
   ],

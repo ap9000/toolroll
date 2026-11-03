@@ -1,94 +1,75 @@
-/* Live mode: Operations Ledger ink, one terminal full-bleed, a drawer on the phone. */
-:root {
-  --t-ground: #0C0E12; --t-surface: #14171D; --t-inset: #1B1F27; --t-line: #262B35;
-  --t-text: #E6E8EC; --t-muted: #8A93A3; --t-blue: #5B9DFF; --t-green: #3FB97F; --t-red: #F06464; --t-amber: #F5A524;
-  --t-sans: "Geist", "Geist Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --t-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  color-scheme: dark;
-}
+/* Terminals (UI revamp wave B): the kit's look on the standalone page. Tokens (tokens.css) and the kit (kit.css) are
+ * bundled ahead of this sheet; colour comes only from --so-* tokens, so the page follows the system's light or dark. */
 @font-face { font-family: "Geist"; src: url("/fonts/geist-sans-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
 @font-face { font-family: "Geist"; src: url("/fonts/geist-sans-500.woff2") format("woff2"); font-weight: 500; font-display: swap; }
 @font-face { font-family: "Geist"; src: url("/fonts/geist-sans-600.woff2") format("woff2"); font-weight: 600; font-display: swap; }
 @font-face { font-family: "Geist Mono"; src: url("/fonts/geist-mono-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: var(--t-ground); color: var(--t-text); font: 14px/1.45 var(--t-sans); -webkit-font-smoothing: antialiased; }
+html, body { margin: 0; height: 100%; background: var(--so-paper); color: var(--so-ink); font: 400 13px/1.5 var(--so-font-sans); -webkit-font-smoothing: antialiased; }
 body { overscroll-behavior: none; }
 #so-term { height: 100dvh; }
-button, select, input { font: inherit; color: inherit; }
 
-.term-app { display: grid; grid-template-columns: 264px 1fr; height: 100dvh; }
-.term-app--loading { display: grid; place-items: center; color: var(--t-muted); }
-.term-side { background: var(--t-surface); border-right: 1px solid var(--t-line); overflow-y: auto; }
-.term-scrim { display: none; }
-.term-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.term-app { display: flex; flex-direction: column; height: 100dvh; }
+.term-app--loading { display: grid; place-items: center; }
 
-.term-list { display: flex; flex-direction: column; padding: 8px; gap: 2px; }
-.term-list-head { display: flex; align-items: center; gap: 8px; padding: 6px 6px 10px; }
-.term-list-head h1 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; }
-.term-back { color: var(--t-muted); text-decoration: none; padding: 2px 6px; border-radius: 6px; }
-.term-back:hover { color: var(--t-text); background: var(--t-inset); }
-.term-list-empty { padding: 4px 8px; }
-.term-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 8px; border: 0; border-radius: 8px; background: none; cursor: pointer; }
-.term-item:hover { background: var(--t-inset); }
-.term-item--on { background: var(--t-inset); box-shadow: inset 0 0 0 1px var(--t-line); }
-.term-item-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-.term-item-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.term-item-meta { color: var(--t-muted); font: 11.5px/1.4 var(--t-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.term-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--t-line); flex: none; }
-.term-dot--live { background: var(--t-blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-blue) 20%, transparent); }
+/* The top bar: back to Agents, the title, how many run, New terminal. */
+.term-tb { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: var(--so-space-sm) var(--so-space-2xl); border-bottom: 1px solid var(--so-line); flex: none; }
+.term-tb h1 { margin: 0; font: 600 15px/1.3 var(--so-font-sans); letter-spacing: -0.01em; }
+.term-ctx { color: var(--so-muted); font-size: 12.5px; }
+.term-back { display: inline-flex; align-items: center; gap: var(--so-space-xs); margin-right: 6px; color: var(--so-muted); font-size: 12.5px; text-decoration: none; }
 
-.term-glyph { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; font: 600 11px/1 var(--t-mono); flex: none;
-  background: color-mix(in srgb, currentColor 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent); }
-.term-glyph--claude { color: #E8956B; }
-.term-glyph--codex { color: var(--t-blue); }
-.term-glyph--shell { color: var(--t-muted); }
+.term-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr); }
+.term-side { border-right: 1px solid var(--so-line); overflow-y: auto; }
+.term-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow-y: auto; }
 
-.term-bar { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 12px; border-bottom: 1px solid var(--t-line); background: var(--t-ground); flex: none; }
-.term-menu { display: none; background: none; border: 0; font-size: 18px; padding: 4px 6px; cursor: pointer; }
-.term-bar-title { display: flex; align-items: center; gap: 8px; font-weight: 500; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; }
-.term-bar-branch { color: var(--t-muted); font: 12px var(--t-mono); overflow: hidden; text-overflow: ellipsis; }
-.term-link { font-size: 12px; color: var(--t-muted); white-space: nowrap; }
-.term-link--live { color: var(--t-blue); }
-.term-link--signed-out, .term-link--gone { color: var(--t-red); }
-.term-link--busy { color: var(--t-text); }
+/* The list: one row per terminal, the open one marked with an ink edge. */
+.term-list { display: grid; padding: 0; }
+.term-none { margin: 0; padding: var(--so-space-md) var(--so-space-lg); font-size: 12.5px; color: var(--so-muted); }
+.term-item { display: grid; text-decoration: none; gap: 5px; width: 100%; margin: 0; padding: 10px var(--so-space-lg); border: 0; border-bottom: 1px solid var(--so-line); background: transparent; color: var(--so-ink); font: inherit; text-align: left; cursor: pointer; }
+.term-item[aria-current] { box-shadow: inset 2px 0 0 var(--so-ink); }
+.term-item[aria-current] .term-item-t { font-weight: 600; }
+.term-item-t { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.term-item-m { display: flex; align-items: center; gap: var(--so-space-sm); min-width: 0; color: var(--so-muted); }
+.term-item-m .k-mono { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.term-screen { flex: 1; min-height: 0; padding: 6px 4px 4px 8px; background: var(--t-ground); }
+/* One terminal: its head, the screen, the phone's key row. */
+.term-pane { flex: 1; display: flex; flex-direction: column; gap: var(--so-space-md); min-height: 0; padding: var(--so-space-lg) var(--so-space-2xl) var(--so-space-2xl); }
+.term-ph { display: flex; align-items: center; gap: var(--so-space-md); }
+.term-ph > div { flex: 1; display: grid; gap: 2px; min-width: 0; }
+.term-ph b { font-weight: 600; font-size: 13.5px; }
+.term-ph-m { color: var(--so-muted); font-size: 12px; }
+.term-link { font-size: 12px; color: var(--so-muted); white-space: nowrap; }
+.term-link--live { color: var(--so-live-ink); }
+.term-link--signed-out, .term-link--gone { color: var(--so-fail-ink); }
+.term-link--busy { color: var(--so-ink); }
+.term-screen { flex: 1; min-height: 320px; padding: 10px var(--so-space-md); border: 1px solid var(--so-line); border-radius: var(--so-radius-card); background: var(--so-code-bg); overflow: hidden; }
 .term-screen .xterm { height: 100%; }
-.term-screen .xterm-viewport { background: var(--t-ground) !important; }
+.term-screen .xterm-viewport { background: var(--so-code-bg) !important; }
+.term-keys { display: none; gap: 6px; overflow-x: auto; flex: none; padding-bottom: env(safe-area-inset-bottom); }
+.term-key { min-width: 44px; font-family: var(--so-font-mono); flex: none; touch-action: manipulation; }
+.term-key[aria-pressed="true"] { background: var(--so-soft); border-color: var(--so-ink); }
 
-.term-keys { display: none; gap: 6px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); background: var(--t-surface); border-top: 1px solid var(--t-line); overflow-x: auto; flex: none; }
-.term-key { min-width: 40px; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--t-line); background: var(--t-inset); font: 13px var(--t-mono); touch-action: manipulation; flex: none; }
-.term-key:active, .term-key--on { background: var(--t-line); border-color: var(--t-muted); }
+/* New terminal: project, program, the terms, Start. */
+.term-form { display: grid; gap: 14px; align-content: start; max-width: 760px; padding: var(--so-space-xl) var(--so-space-2xl); }
+.term-terms { justify-self: start; margin: 0; padding: var(--so-space-sm) 10px; border-radius: 7px; background: var(--so-raised); font-size: 12.5px; }
+.term-radios .k-radios { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
-.term-new { max-width: 440px; margin: 40px auto; padding: 0 16px; display: flex; flex-direction: column; gap: 14px; }
-.term-new h2 { margin: 0; font-size: 18px; font-weight: 600; }
-.term-new p { margin: 0; }
-.term-muted { color: var(--t-muted); }
-.term-field { display: flex; flex-direction: column; gap: 6px; }
-.term-field span { font-size: 12px; color: var(--t-muted); }
-.term-field select, .term-field input { height: 38px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--t-line); background: var(--t-inset); }
-.term-programs { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.term-programs legend { font-size: 12px; color: var(--t-muted); margin-bottom: 6px; }
-.term-program { display: flex; align-items: center; gap: 8px; padding: 10px; border-radius: 10px; border: 1px solid var(--t-line); background: var(--t-surface); cursor: pointer; font-size: 13px; }
-.term-program input { position: absolute; opacity: 0; pointer-events: none; }
-.term-program--on { border-color: var(--t-blue); box-shadow: inset 0 0 0 1px var(--t-blue); }
-/* The ceremony: a password form waits on you, so it carries the one accent. */
-.term-ceremony { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--t-amber) 45%, transparent); background: color-mix(in srgb, var(--t-amber) 6%, transparent); }
-.term-ceremony p { font-size: 13px; }
-.term-error { color: var(--t-red); }
-.term-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.term-button { display: inline-flex; align-items: center; height: 36px; padding: 0 14px; border-radius: 8px; border: 1px solid transparent; background: var(--t-text); color: var(--t-ground); font-weight: 500; cursor: pointer; text-decoration: none; }
-.term-button:disabled { opacity: .5; cursor: default; }
-.term-button--quiet { background: none; color: var(--t-text); border-color: var(--t-line); }
-.term-button--small { height: 28px; padding: 0 10px; font-size: 12.5px; }
+@media (hover: hover) and (pointer: fine) {
+  .term-item:hover { background: color-mix(in srgb, var(--so-raised) 60%, transparent); }
+  .term-back:hover { color: var(--so-ink); }
+}
 
-@media (max-width: 720px) {
-  .term-app { grid-template-columns: 1fr; }
-  .term-side { position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); z-index: 20; transform: translateX(-100%); transition: transform .2s ease; padding-top: env(safe-area-inset-top); }
-  .term-app--drawer .term-side { transform: none; }
-  .term-app--drawer .term-scrim { display: block; position: fixed; inset: 0; z-index: 10; border: 0; background: rgb(0 0 0 / .5); }
-  .term-menu { display: block; }
-  .term-bar { padding-top: env(safe-area-inset-top); height: calc(44px + env(safe-area-inset-top)); }
+@media (max-width: 760px) {
+  .term-tb { padding: 0 var(--so-space-sm) 0 var(--so-space-xs); padding-top: env(safe-area-inset-top); min-height: calc(52px + env(safe-area-inset-top)); }
+  .term-tb .k-btn-primary { height: 44px; }
+  .term-ctx { display: none; }
+  .term-tb h1 { flex: 1; }
+  .term-grid { grid-template-columns: minmax(0, 1fr); }
+  .term-side { border-right: 0; }
+  .term-app--pane .term-side { display: none; }
+  .term-app:not(.term-app--pane) .term-main { display: none; }
+  .term-pane { padding: var(--so-space-sm) var(--so-space-sm) var(--so-space-sm); gap: var(--so-space-sm); }
+  .term-screen { padding: var(--so-space-xs) 6px; border-radius: var(--so-radius-md); }
   .term-keys { display: flex; }
-  .term-screen { padding: 4px 2px 2px 4px; }
+  .term-form { padding: var(--so-phone-gutter); }
 }

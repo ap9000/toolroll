@@ -3017,46 +3017,6 @@ export function decisionOptionForms(decision: Decision, returnTo: string | null)
     }), "\n");
 }
 
-export function decisionPage(
-  chrome: Chrome,
-  decision: Decision,
-  taskId: string,
-  artifacts: Artifact[],
-  who: Who,
-  now: Date,
-  returnTo: string | null = null,
-): Screen {
-  const options = decisionOptionForms(decision, returnTo);
-
-  const answered =
-    decision.supersededReason !== null
-      ? html`<p class="meta">${closedQuestionReason(decision.supersededReason)}</p>`
-      : decision.state === "answered"
-      ? html`<div class="answered">Answered: <strong>${decision.choice ?? ""}</strong> by ${decision.answeredBy ?? ""}${decision.note === null ? "" : ` — ${decision.note}`}</div>`
-      : "";
-
-  const evidence =
-    artifacts.length === 0
-      ? ""
-      : joinHtml([
-        html`<div class="evidence"><strong>Evidence</strong>`,
-        joinHtml(artifacts.map(
-          artifact => html`<a href="/d/${decision.id}/evidence/${artifact.id}">${evidenceWords(artifact.kind)}${artifact.truncated ? " (truncated)" : ""} · ${artifact.bytesStored} bytes</a>`,
-        ), "\n"),
-        html`</div>`,
-      ]);
-
-  return screen(`decide · ${taskId}`, joinHtml([
-    html`<h1>${taskId} <span class="badge badge-${decision.state}">${decision.supersededReason !== null ? "closed" : decision.state}</span>${
-      isOverdue(decision, now) ? html` <span class="badge badge-overdue">Overdue</span>` : ""
-    }${decision.deadline === null ? "" : html` <span class="meta">deadline ${decision.deadline}</span>`}</h1>`,
-    html`<div class="recap">${decision.recap}</div>`,
-    html`<div class="question">${decision.question}</div>`,
-    decision.state === "answered" ? answered : options,
-    evidence,
-    html`<p class="meta"><a href="${returnTo === null ? "/" : returnTo}">← ${returnTo === null ? "everything waiting" : "back to the task chat"}</a></p>`,
-  ], "\n"), { chrome });
-}
 export function taskOf(store: Store, decision: Decision): string {
   const run = store.getRun(decision.run);
   return run === null ? "?" : store.externalIdFor(run.taskRef) ?? "?";

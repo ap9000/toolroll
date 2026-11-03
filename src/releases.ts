@@ -134,7 +134,7 @@ export function notifySecurityRelease(store: Store, release: Release | null, cur
       dedupeKey: `release:security:${newer.version}:${recipient}`,
       kind: "security-release",
       pushClass: "attention",
-      link: "/settings#updates",
+      link: "/settings/system#updates",
       subject: `Toolroll ${newer.version} is a security release`,
       body: `This computer runs ${current}. Update with \`${updateCommand}\`. Notes: ${newer.url}`,
       recipient,

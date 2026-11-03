@@ -65,15 +65,14 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
 
   test("a password on screen strips the chrome additions but keeps the page's own behavior", async () => {
     const cookie = await login();
-    // /fleet: register/retire take passwords; the reorder poller stays.
-    const fleet = await (await fetch(url("/fleet"), { headers: { cookie } })).text();
-    expect(fleet).not.toContain('id="palette-index"');
-    expect(fleet).not.toContain('aria-label="keyboard shortcuts"');
-    expect((fleet.match(/<script nonce=/g) ?? []).length).toBe(1);
-    expect(fleet).toContain("fleet-region");
+    // /fleet became the computers on Agents (UI revamp wave B): a plain 302, its password forms gone from the page
+    // (register and retire ask in place on Agents, and the token page carries no script at all).
+    const fleet = await fetch(url("/fleet"), { headers: { cookie }, redirect: "manual" });
+    expect(fleet.status).toBe(302);
+    expect(fleet.headers.get("location")).toBe("/agents#computers");
     // /settings: token forms beside the push enrollment script — exactly
     // one composed script, no palette.
-    const settings = await fetch(url("/settings"), { headers: { cookie } });
+    const settings = await fetch(url("/settings/alerts"), { headers: { cookie } });
     const settingsHtml = await settings.text();
     expect(settingsHtml).not.toContain('id="palette-index"');
     expect((settingsHtml.match(/<script nonce=/g) ?? []).length).toBe(1);
@@ -85,7 +84,7 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     const page = await (await fetch(url("/settings/retention"), { headers: { cookie } })).text();
     // The server-rendered document (what a browser without JavaScript shows) beside the workspace's data.
     const shell = page.replace(/<script[\s\S]*?<\/script>/g, "");
-    expect(shell).toMatch(/<nav class="kit-crumbs" aria-label="Breadcrumb"><ol><li><a href="\/settings">Settings<\/a><\/li><li aria-current="page">Retention<\/li><\/ol><\/nav>/);
+    expect(shell).toMatch(/<nav class="kit-crumbs" aria-label="Breadcrumb"><ol><li><a href="\/settings">Settings<\/a><\/li><li><a href="\/settings\/system">System<\/a><\/li><li aria-current="page">Retention<\/li><\/ol><\/nav>/);
     expect(shell.match(/<h1\b/g)).toHaveLength(1);
     // The hub itself is the top of the trail: no breadcrumb there.
     const hub = (await (await fetch(url("/settings"), { headers: { cookie } })).text()).replace(/<script[\s\S]*?<\/script>/g, "");
@@ -94,18 +93,21 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
 
   test("Settings shows one legacy webhook warning with replacement links, including both services", async () => {
     const cookie = await login();
-    const get = async () => (await fetch(url("/settings"), { headers: { cookie } })).text();
-    expect((workspaceOf(await get()).view as import("./browser-workspace.js").BrowserSettingsView).legacyWebhookWarning).toBeUndefined();
+    const get = async () => (await fetch(url("/settings/alerts"), { headers: { cookie } })).text();
+    expect(await get()).not.toContain("Legacy webhooks are deprecated");
     for (const service of ["slack", "discord"]) writeFileSync(join(dir, `${service}-webhook`), `https://fixture.example/${service}-secret`);
-    const html = await get(), view = workspaceOf(html).view as import("./browser-workspace.js").BrowserSettingsView;
-    expect(view.legacyWebhookWarning).toBe("Legacy webhooks are deprecated. Connect Slack or Discord in Chat settings.");
+    const html = await get();
+    const words = html.replace(/<script[\s\S]*?<\/script>/g, "");
+    expect(words.match(/Legacy webhooks are deprecated/g)).toHaveLength(1);
+    expect(words).toContain('<a class="k-link" href="/settings/slack">Slack</a>');
+    expect(words).toContain('<a class="k-link" href="/settings/discord">Discord</a>');
     expect(html).not.toContain("fixture.example");
-    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(html)![1]!;
-    const invalid = await fetch(url("/settings/telegram-token"), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf, token: "invalid" }) });
-    expect(invalid.status).toBe(400);
-    const failed = await invalid.text();
-    expect((workspaceOf(failed).view as import("./browser-workspace.js").BrowserSettingsView).legacyWebhookWarning).toBe(view.legacyWebhookWarning);
-
+    // A save the page couldn't confirm: the server says so in that section, and only for one of its own forms.
+    const unconfirmed = await (await fetch(url("/settings/alerts?unconfirmed=reach-form"), { headers: { cookie } })).text();
+    expect(/<form[^>]*id="reach-form"[\s\S]*?<\/form>/.exec(unconfirmed)?.[0]).toContain("Couldn’t confirm whether this saved.");
+    const stranger = await (await fetch(url(`/settings/alerts?unconfirmed=${encodeURIComponent('<b id="x">')}`), { headers: { cookie } })).text();
+    expect(stranger).not.toContain("Couldn’t confirm whether this saved.");
+    expect(stranger).not.toContain('<b id="x">');
   });
 
   test("sensitivity is judged per response: /next with a step-up is sensitive, all-clear is not", async () => {
@@ -341,7 +343,7 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
       // capability on, session off: no links, an offer to turn them on
       const before = await (await fetch(url(`/r/${runId}`), { headers: { cookie } })).text();
       expect(before).not.toContain("vscode://");
-      expect(before).toContain("open files in VS Code from this device");
+      expect(before).toContain("Open files in VS Code from this device");
       // session yes: tame paths link (worktree space encoded), traversal never does
       await activate(cookie);
       const after = await (await fetch(url(`/r/${runId}`), { headers: { cookie } })).text();

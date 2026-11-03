@@ -944,7 +944,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     permission = "WRITE";
     const offer = await page();
     expect(offer).toContain("Ready to turn on");
-    expect(offer).toContain('Pull requests open on <span class="mono">alex/payouts</span> into <span class="mono">main</span>, as alex.');
+    expect(offer).toContain('Pull requests open on <span class="k-mono">alex/payouts</span> into <span class="k-mono">main</span>, as alex.');
     const csrf = csrfOf(offer);
     const fields = { csrf, repo: "/repo/main", act: "on", github: "alex/payouts", base: "main" };
     const refused = await post(cookie, "/settings/pull-requests", fields);

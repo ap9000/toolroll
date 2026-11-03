@@ -43,7 +43,7 @@ export type IntegrationGroup = "chat" | "code" | "mail" | "tools" | "monitoring"
 export type IntegrationPlace = { href: string | null; command: string | null };
 export type IntegrationAction =
   | ({ kind: "setup"; label: "Set up" } & IntegrationPlace)
-  | { kind: "test"; label: "Send test" }
+  | { kind: "test"; label: "Check connection" }
   | ({ kind: "fix"; label: "Fix"; words: string } & IntegrationPlace)
   /** A project's youiyoux requests: one switch, and the problem to fix when it is Broken. */
   | { kind: "switch"; label: "Turn off" | "Turn on"; repo: string; on: boolean; words: string | null };
@@ -382,7 +382,7 @@ function targets(io: IntegrationIo): Target[] {
 
   list.push({
     key: "telegram", group: "chat", name: "Telegram", configured: telegram !== null, account: null,
-    setup: place("/settings#telegram-token"), fix: place("/settings#telegram-token"), usedBy: chatUses("telegram"), activity: telegramActivity(store),
+    setup: place("/settings/alerts#telegram-token"), fix: place("/settings/alerts#telegram-token"), usedBy: chatUses("telegram"), activity: telegramActivity(store),
     probe: telegram === null ? null : check => probeTelegram(check, telegram.token),
   });
   list.push({
@@ -429,7 +429,7 @@ function targets(io: IntegrationIo): Target[] {
     : { okAt: str(mailWatch["updated_at"]), error: null, errorAt: null, failing: false };
   list.push({
     key: "email", group: "mail", name: "Email", configured: email !== null || google !== null, account: email?.from ?? google?.address ?? null,
-    setup: place("/settings#email"), fix: place("/settings#email"), usedBy: [...flowWords(emailUses)], activity: merge(triggerActivity(emailUses), watchActivity),
+    setup: place("/settings/alerts#email"), fix: place("/settings/alerts#email"), usedBy: [...flowWords(emailUses)], activity: merge(triggerActivity(emailUses), watchActivity),
     probe: email === null ? null : check => probeEmail(check, { host: email.host, port: email.port, secure: email.secure }, email.imap),
   });
 
@@ -484,7 +484,7 @@ function targets(io: IntegrationIo): Target[] {
   for (const provider of AGENTS) {
     list.push({
       key: `agent:${provider}`, group: "agents", name: providerName(provider), configured: true, account: null,
-      setup: place("/settings#providers"), fix: place("/settings#providers"), usedBy: ["Tasks"], activity: NO_ACTIVITY,
+      setup: place("/settings/agents#providers"), fix: place("/settings/agents#providers"), usedBy: ["Tasks"], activity: NO_ACTIVITY,
       probe: check => probeAgent(check, provider),
     });
   }
@@ -512,7 +512,7 @@ function combine(target: Target, row: CheckRow | undefined): Integration {
   if (failing !== null) {
     return { ...base, ...common, state: "broken", action: { kind: "fix", label: "Fix", words: scrubIntegrationText(failing ?? "The last check failed."), ...target.fix } };
   }
-  return { ...base, ...common, state: "connected", action: { kind: "test", label: "Send test" } };
+  return { ...base, ...common, state: "connected", action: { kind: "test", label: "Check connection" } };
 }
 
 /**
@@ -607,7 +607,7 @@ export function renderIntegrations(list: readonly Integration[], secrets: Secret
 export type IntegrationMonitor = {
   /** The list now, from the last answers saved. It only reads: a page calls it on every render (docs/plans/get-side-effects.md). */
   list(): Integration[];
-  /** Check now and wait (Send test, Check now, or the first answer in a test). */
+  /** Check now and wait (Check connection, Check now, or the first answer in a test). */
   check(keys?: readonly string[]): Promise<Integration[]>;
   /** The background pass: start a check when the last one is older than the cache. Never called from a page. */
   refreshIfDue(): void;

@@ -589,7 +589,7 @@ test("u1: a record nothing can prove: within 2 minutes it stops waiting, new wor
     expect(updateWaitingOf(f.stateDir, stillInTheWay(f))).toMatchObject({ stopped: true, run, action: `toolroll run settle ${run} --why "it is not running"` });
     const html = htmlString(withFormToken("x", () => updatesHtml({ current: "0.6.0", latest: { version: "0.7.0" }, method: { kind: "npm", updateCommand: "npm install -g toolroll@latest" }, journal: j, running: false, whatsNew: null, rollbackTo: null, csrf: "x" }, {})));
     expect(html).toContain(`Update to 0.7.0 stopped: run #${run} is in the way`);
-    expect(html).toContain(`<code>toolroll run settle ${run} --why &quot;it is not running&quot;</code>`);
+    expect(html).toContain(`<code class="k-mono">toolroll run settle ${run} --why &quot;it is not running&quot;</code>`);
     expect(html).not.toMatch(/witness|unproven/i);
     // Once settled, nothing is in the way and nothing more is said.
     const s = openStore(f.databaseFile);

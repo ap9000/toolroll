@@ -11,7 +11,9 @@ import { LIMITS } from "../decision.js";
 import { run as execRun } from "../exec.js";
 import { setFlowSecret } from "../flow-actions.js";
 import { addCardToFlow,advanceFlows,cancelFlowCard,crossProjectProblem,decideFlowCard,flowDefinitionOf,moveCardInFlow } from "../flow-engine.js";
-import { galleryHtml,galleryUseHtml } from "../flow-gallery-ui.js";
+import { galleryUseHtml,newFlowHtml } from "../flow-gallery-ui.js";
+import { startersHtml } from "../flow-starters-ui.js";
+import { starterOf,startersFor } from "../flow-starters.js";
 import { galleryAdmitsAnyone,galleryDefaults,galleryDiagram,galleryTemplateOf,galleryToolsOf,previewGallery,useGalleryTemplate,type GalleryAnswers,type GalleryPreview } from "../flow-gallery.js";
 import { flowInsights } from "../flow-insights.js";
 import { assignFlowCard,commentOnFlowCard,watchFlowCard } from "../flow-people.js";
@@ -24,13 +26,13 @@ import { FLOW_TEMPLATES,FlowContractError,validateFlowDefinition,withZoneNames }
 import { revokeFlowBrowser, signFlowBrowser } from "../flow-browser.js";
 import { prepareUnattendedCandidates,parseUnattendedAsk,revokeUnattended,signUnattended,untilWords } from "../flow-unattended.js";
 import { keyStatus } from "../keys.js";
-import { kitPageHtml,kitsGalleryHtml } from "../kits-ui.js";
+import { kitPageHtml,kitRowsHtml } from "../kits-ui.js";
 import { addKitGithubTrigger,addKitSample,kitOf,setUpKit } from "../kits.js";
 import { connectionsOf } from "../mcp-connect.js";
 import {
   authorizedProject, projectName,
 } from "../project.js";
-import { recipeAnswersFromForm,recipeDefinitionPreviewHtml,recipeEditorHtml,recipeFromForm,recipeLibraryHtml,recipeRunHtml,recipeScript,workflowPreviewHtml } from "../recipe-ui.js";
+import { recipeAnswersFromForm,recipeDefinitionPreviewHtml,recipeEditorHtml,recipeFromForm,recipeRowsHtml,recipeRunHtml,recipeScript,workflowPreviewHtml } from "../recipe-ui.js";
 import { createWorkflowPreview,exportRecipe,findRecipe,importRecipe,launchWorkflow,prepareRecipeRun,RecipeError,savedRecipes,saveWorkflowRecipe,starterRecipes,workflowPreview } from "../recipes.js";
 import { isAlive as runnerAlive } from "../runner.js";
 import { createSubagentFrom,labelOf,nameOf,saveSoul,sendSubagentSummaries,setSubagentState,subagentSettings } from "../subagent-admin.js";
@@ -61,7 +63,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     const diagram = preview?.built.definition ?? galleryDiagram(template);
     const page = galleryUseHtml({ template, projects: projects.map(path => ({ path, name: projectName(path) })), repo, answers, name, preview, problem,
       csrf: who.via === "cookie" ? who.session.csrf : "", diagram, tools: preview?.tools ?? galleryToolsOf(template, diagram, connectionsOf(store, repo)), said });
-    return sendScreen(response, problem !== null && preview === null && notice !== null ? 400 : 200, screen(template.name, html`<p><a href="/flows/new">New flow</a></p><h1>${template.name}</h1>${page}`, { chrome: chromeFor(repo, "flows") }));
+    return sendScreen(response, problem !== null && preview === null && notice !== null ? 400 : 200, screen(template.name, page, { chrome: chromeFor(repo, "flows") }));
   }
   // ---- path parameters and shared lookups ------------------------------------
 
@@ -81,15 +83,47 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
 
   // ---- flows: reads ----------------------------------------------------------
 
-  // Flows → New: the gallery, and each template's page.
+  // Flows → New: describe it to the lead, or start from a template (with the kits, recipes and starter flows as groups).
   async function newFlowGallery(ctx: HandlerContext): Promise<void> {
     const { url, response, who, project } = ctx;
     const projects = consoleProjects();
-    const canUse = who.via === "cookie" && who.role === "approver" && projects.length > 0;
-    // The chosen project, else the one being looked at: its tools are what each card says is connected.
+    const approver = who.via === "cookie" && who.role === "approver";
+    const canUse = approver && projects.length > 0;
+    // The chosen project, else the one being looked at, else the first: its tools are what each row says is connected.
     const asked = url.searchParams.get("repo");
-    const repo = asked !== null && projects.includes(asked) ? asked : project !== null && projects.includes(project) ? project : null;
-    return sendScreen(response, 200, screen("New flow", html`<p><a href="/flows">Flows</a></p><h1>New flow</h1>${(galleryHtml({ repo, canUse, connections: repo === null ? null : connectionsOf(store, repo) }))}`, { chrome: chromeFor(repo ?? project, "flows") }));
+    const repo = asked !== null && projects.includes(asked) ? asked : project !== null && projects.includes(project) ? project : projects[0] ?? null;
+    // Describe what you want: the words go to the lead as a chat draft, which drafts the flow for the person to confirm.
+    const described = url.searchParams.get("describe");
+    let askError: string | null = null;
+    if (described !== null && canUse) {
+      const words = described.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim();
+      const named = projects.find(one => projectName(one) === url.searchParams.get("project")) ?? repo;
+      if (words !== "") return redirect(response, `/chat?draft=${encodeURIComponent(`Make a flow${named === null ? "" : ` in ${projectName(named)}`}: ${words}`.slice(0, 4000))}`);
+      askError = "Describe what should happen first.";
+    }
+    // One-time work: the open project's recipes (recipe screens work in the open project).
+    let recipes: Html;
+    try {
+      const revision = who.via === "cookie" ? who.session.projectRevision : 0;
+      const recent = project === null ? [] : store.handle.prepare("SELECT document,task_id,flow_id FROM workflow_preview WHERE repo=? AND (task_id IS NOT NULL OR flow_id IS NOT NULL) ORDER BY created_at DESC LIMIT 12").all(project).map(row => {
+        const d = importRecipe(String(row["document"]));
+        const task = row["task_id"] === null ? null : store.getTask(String(row["task_id"]));
+        const flow = row["flow_id"] === null ? null : store.getFlow(Number(row["flow_id"]));
+        const on = flow !== null && flow.state === "active" && store.flowTriggers(flow.id).some(one => one.kind === "schedule" && one.state === "active");
+        return { name: d.name, href: task !== null ? taskHref(task.id) : `/flows/${Number(row["flow_id"])}`, state: task?.state ?? (flow === null || flow.state !== "active" ? "Archived" : on ? "Scheduled" : "Paused") };
+      });
+      recipes = recipeRowsHtml(starterRecipes(), project === null ? [] : savedRecipes(store, who.name, project), project, project === null ? null : projectName(project), revision, recent);
+    } catch (error) {
+      if (!(error instanceof RecipeError)) throw error;
+      recipes = html`<p class="k-notice" role="alert">${error.message}</p>`;
+    }
+    const starters = repo === null ? html`` : startersHtml({ repo, projectName: projectName(repo), starters: startersFor(store, repo), canSwitch: approver && !store.isDemo(),
+      suggested: starterOf(url.searchParams.get("starter") ?? "")?.id ?? null });
+    const said = url.searchParams.get("said"), problem = url.searchParams.get("problem");
+    const page = newFlowHtml({ repo, projects: projects.map(path => ({ path, name: projectName(path) })), canUse, group: url.searchParams.get("group") ?? "all",
+      connections: repo === null ? null : connectionsOf(store, repo), ask: { value: described ?? "", error: askError }, kits: kitRowsHtml(store, repo), recipes, starters,
+      said: said === null ? null : said.slice(0, 400), problem: problem === null ? null : problem.slice(0, 400) });
+    return sendScreen(response, 200, screen("New flow", page, { chrome: chromeFor(repo ?? project, "flows"), functional: { script: FLOW_IMPORT_SCRIPT } }));
   }
 
   async function galleryTemplatePage(ctx: HandlerContext): Promise<void> {
@@ -111,7 +145,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     const { url, who, response, project } = ctx;
     const projects = consoleProjects();
     const flows = store.listFlows(projects);
-    return sendScreen(response, 200, screen("Flows", html`<h1>Flows</h1>${(flowsListHtml(store, flows, projects, who.via === "cookie" && who.role === "approver", url.searchParams.get("problem")))}`, { chrome: chromeFor(project, "flows"), functional: { script: FLOW_IMPORT_SCRIPT } }));
+    return sendScreen(response, 200, screen("Flows", flowsListHtml(store, flows, projects, who.via === "cookie" && who.role === "approver", url.searchParams.get("problem"), url.searchParams.get("project"), clock()), { chrome: chromeFor(project, "flows"), functional: { script: FLOW_IMPORT_SCRIPT } }));
   }
 
   async function flowInsightsRead(ctx: HandlerContext): Promise<void> {
@@ -158,10 +192,10 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
   // ---- starter kits: the gallery, and each kit's checklist in a project ------
 
   async function kitsGallery(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, project } = ctx;
-    const projects = consoleProjects();
-    const canSetUp = who.via === "cookie" && who.role === "approver";
-    return sendScreen(response, 200, screen("Starter kits", html`<h1>Starter kits</h1>${(kitsGalleryHtml(store, projects, projectName, canSetUp, { problem: url.searchParams.get("problem") }))}`, { chrome: chromeFor(project, "flows") }));
+    const { url, response } = ctx;
+    // Starter kits live under New flow → With an agent now; a refusal sent here still shows there.
+    const problem = url.searchParams.get("problem");
+    return redirect(response, `/flows/new?group=kits${problem === null ? "" : `&problem=${encodeURIComponent(problem.slice(0, 400))}`}`);
   }
 
   async function kitPage(ctx: HandlerContext): Promise<void> {
@@ -170,8 +204,8 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     const canSetUp = who.via === "cookie" && who.role === "approver";
     const kit = kitOf(pathPart(url, 2));
     const repo = url.searchParams.get("repo") ?? (projects.length === 1 ? projects[0]! : "");
-    if (kit === null || !projects.includes(repo)) return redirect(response, "/kits");
-    return sendScreen(response, 200, screen(kit.name, html`<h1>${kit.name}</h1>${(kitPageHtml(store, kit, repo, options.configDir ?? null, canSetUp, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`, { chrome: chromeFor(repo, "flows") }));
+    if (kit === null || !projects.includes(repo)) return redirect(response, "/flows/new?group=kits");
+    return sendScreen(response, 200, screen(kit.name, kitPageHtml(store, kit, repo, options.configDir ?? null, canSetUp, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }, projectName), { chrome: chromeFor(repo, "flows") }));
   }
 
   // ---- v92 / D5: the lead's subagents — the list, and one page per subagent ----
@@ -211,22 +245,9 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
 
   type RecipeScreen = "run" | "start" | "new" | "edit" | "from-task" | "preview" | "export" | "other";
 
+  /** Recipes are New flow → One-time work now: the old address lands there. */
   async function recipeLibrary(ctx: HandlerContext): Promise<void> {
-    const { who, response, project } = ctx;
-    try {
-      const revision = who.via === "cookie" ? who.session.projectRevision : 0;
-      const recent = project === null ? [] : store.handle.prepare("SELECT document,task_id,flow_id FROM workflow_preview WHERE repo=? AND (task_id IS NOT NULL OR flow_id IS NOT NULL) ORDER BY created_at DESC LIMIT 12").all(project).map(row => {
-        const d = importRecipe(String(row["document"]));
-        const task = row["task_id"] === null ? null : store.getTask(String(row["task_id"]));
-        const flow = row["flow_id"] === null ? null : store.getFlow(Number(row["flow_id"]));
-        const on = flow !== null && flow.state === "active" && store.flowTriggers(flow.id).some(one => one.kind === "schedule" && one.state === "active");
-        return { name: d.name, href: task !== null ? taskHref(task.id) : `/flows/${Number(row["flow_id"])}`, state: task?.state ?? (flow === null || flow.state !== "active" ? "Archived" : on ? "Scheduled" : "Paused") };
-      });
-      return sendScreen(response, 200, screen("Workflow recipes", recipeLibraryHtml(starterRecipes(), project === null ? [] : savedRecipes(store, who.name, project), project, revision, recent), { chrome: chromeFor(project, "recipes"), functional: { script: recipeScript() } }));
-    } catch (error) {
-      if (error instanceof RecipeError) return refuse(response, who, error.status, error.message, "/recipes");
-      throw error;
-    }
+    return redirect(ctx.response, "/flows/new?group=recipes");
   }
 
   /** One recipe screen in the open project: the editor (start, new, edit, from a task), use, preview, export; any other address is no screen. */
@@ -511,7 +532,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     const previewedOf = (plan: FlowImportPlan | null) => createHash("sha256").update(`${document}\0${JSON.stringify(plan?.values ?? given)}`).digest("hex").slice(0, 32);
     const csrf = who.via === "cookie" ? who.session.csrf : "";
     const page = (plan: FlowImportPlan | null, problem: string | null, status: number) => sendScreen(response, status, screen(`Import ${file.name}`,
-      html`<p><a href="/flows">Flows</a></p><h1>Import ${file.name}</h1>${(flowImportHtml({ plan, file, document, repo, csrf, values: given, previewed: previewedOf(plan), problem }))}`, { chrome: chromeFor(repo, "flows") }));
+      flowImportHtml({ plan, file, document, repo, csrf, values: given, previewed: previewedOf(plan), problem }), { chrome: chromeFor(repo, "flows") }));
     let plan: FlowImportPlan;
     try { plan = planFlowImport(store, repo, file, given, who.name); }
     catch (error) {
@@ -569,7 +590,14 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     }
     if (action === "scripts") {
       // The project's script library, reached from any of its flows.
-      if (body.get("approve") === "yes") return store.approveFlowScript(flow.repo, body.get("name") ?? "") ? settle("Approved. Zones that run it go on.") : answer(404, { ok: false, said: "That script isn't waiting for approval." });
+      if (body.get("approve") === "yes") {
+        // The approval covers the version and content the panel showed (its version and digest ride back).
+        const version = Number(body.get("version")), digest = body.get("digest") ?? "";
+        const approved = Number.isSafeInteger(version) && version > 0 && digest !== "" ? store.approveFlowScript(flow.repo, body.get("name") ?? "", { version, digest }) : "changed";
+        return approved === "approved" ? settle("Approved. Zones that run it go on.")
+          : approved === "changed" ? answer(409, { ok: false, said: "This script changed since you read it. Read the new script, then approve it. Nothing was approved." })
+          : answer(404, { ok: false, said: "That script isn't waiting for approval." });
+      }
       if (body.get("remove") === "yes") return store.removeFlowScript(flow.repo, body.get("name") ?? "", who.name, now) ? settle("Script removed. Zones that ran it wait until it's back.") : answer(404, { ok: false, said: "There's no script by that name." });
       const saved = saveScript(store, flow.repo, { name: body.get("name"), about: body.get("about"), body: body.get("body"), timeoutMinutes: body.get("timeoutMinutes"), language: body.get("language"), file: body.get("file") }, who.name, now);
       if (saved.ok) await prepareUnattendedCandidates(store, flow.id);

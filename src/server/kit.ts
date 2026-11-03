@@ -10,7 +10,7 @@
  */
 import { attributes, html, joinHtml, passwordlessRendering, postForm, type AttributeValue, type Html, type HtmlValue, type PostFormOptions } from "../html.js";
 import {
-  KIT_ICONS, NOT_FOUND, SETTINGS_GROUPS, STATUS, STEP_WORDS, TIMING_WORDS, approvalAsk, chipOfHeadline, dur, stepsFill, termsOf, timingBars,
+  KIT_ICONS, NOT_FOUND, SETTINGS_GROUPS, STATUS, STEP_WORDS, TIMING_WORDS, approvalAsk, chipOfHeadline, dur, needsWords, stepsFill, termsOf, timingBars,
   type ApprovalFacts, type ApprovalKind, type ChipTone, type IconShape, type KitIcon, type StatusKey, type StepItem, type TimingRow,
 } from "../design/kit.js";
 import type { Headline } from "../task-status.js";
@@ -123,8 +123,8 @@ export function formRow(label: string, hint: string | null, control: Html, varia
   return html`<div class="${cls("k-frow", variant)}"><div class="k-frow-l"><span class="k-frow-t">${label}</span>${hint ? html`<span class="k-frow-h">${hint}</span>` : ""}</div><div class="k-frow-c">${control}</div></div>`;
 }
 /** Radio cards: one choice from a few, each with a bold label and one muted line. */
-export function radios(options: { name: string; legend: string; current: string; items: ReadonlyArray<{ value: string; label: string; text?: string }> }): Html {
-  return html`<fieldset class="k-radios"><legend class="k-sr">${options.legend}</legend>${options.items.map(item => html`<label class="k-opt"><input type="radio" name="${options.name}" value="${item.value}"${item.value === options.current ? html` checked` : ""}><span><b>${item.label}</b>${item.text ? html`<span>${item.text}</span>` : ""}</span></label>`)}</fieldset>`;
+export function radios(options: { name: string; legend: string; current: string; items: ReadonlyArray<{ value: string; label: string; text?: string; tag?: Html }> }): Html {
+  return html`<fieldset class="k-radios"><legend class="k-sr">${options.legend}</legend>${options.items.map(item => html`<label class="k-opt"><input type="radio" name="${options.name}" value="${item.value}"${item.value === options.current ? html` checked` : ""}><span><b>${item.label}</b>${item.text ? html`<span>${item.text}</span>` : ""}</span>${item.tag ?? ""}</label>`)}</fieldset>`;
 }
 
 // ---- blocks -----------------------------------------------------------------------------------------------------
@@ -147,11 +147,14 @@ export const disclose = (summary: string, body: HtmlValue, open = false): Html =
 
 // ---- lists ------------------------------------------------------------------------------------------------------
 
-export const group = (label: string, n?: Html): Html => html`<h2 class="k-grp">${label}${n ?? ""}</h2>`;
+/** A group heading with its count; `right` puts one quiet tool at its end. */
+export const group = (label: string, n?: Html, right?: Html): Html => html`<h2 class="k-grp">${label}${n ?? ""}${right ? html`<span class="k-grow"></span>${right}` : ""}</h2>`;
 /** A list row: chip · title (the whole row is the link) · one muted line · meta · one action, always in one column. */
-export function row(options: { href: string; chip: Html; title: string; desc?: HtmlValue; meta?: HtmlValue; action?: Html; wait?: boolean; message?: Html; attrs?: Attrs }): Html {
-  return html`<div class="${cls("k-row", options.wait && "wait")}"${attributes(options.attrs ?? {})}><span class="k-row-c">${options.chip}</span>\
-<a class="k-row-t" href="${options.href}">${options.title}</a><span class="k-row-d">${options.desc ?? ""}</span>\
+export function row(options: { href?: string; chip: Html; title: string; desc?: HtmlValue; meta?: HtmlValue; action?: Html; wait?: boolean; message?: Html; attrs?: Attrs }): Html {
+  // No href: a thing with no page of its own (a computer); its title is text and its action is the way in.
+  const title = options.href === undefined ? html`<span class="k-row-t">${options.title}</span>` : html`<a class="k-row-t" href="${options.href}">${options.title}</a>`;
+  return html`<div class="${cls("k-row", options.wait && "wait", options.href === undefined && "k-row-static")}"${attributes(options.attrs ?? {})}><span class="k-row-c">${options.chip}</span>\
+${title}<span class="k-row-d">${options.desc ?? ""}</span>\
 <span class="k-row-m">${options.meta ?? ""}</span><span class="k-row-a">${options.action ?? ""}</span>${options.message ? html`<div class="k-row-msg">${options.message}</div>` : ""}</div>`;
 }
 
@@ -177,10 +180,11 @@ export const doc = (...parts: HtmlValue[]): Html => html`<div class="k-doc">${pa
 // ---- approval ---------------------------------------------------------------------------------------------------
 
 /** The four fixed slots: status (chip + heading) · supporting text · actions · terms, plus the error slot. The same
- * slots in every state (waiting, approved, automatic, refused), so nothing moves. */
-export function slots(options: { wait?: boolean; status: Html; text: HtmlValue; acts: HtmlValue; terms: HtmlValue; err?: HtmlValue; attrs?: Attrs }): Html {
+ * slots in every state (waiting, approved, automatic, refused), so nothing moves. `body`: the choice the act takes
+ * (radio cards, a note), between the text and the actions. */
+export function slots(options: { wait?: boolean; status: Html; text: HtmlValue; body?: HtmlValue; acts: HtmlValue; terms: HtmlValue; err?: HtmlValue; attrs?: Attrs }): Html {
   return html`<section class="${cls("k-slots", options.wait && "wait")}"${attributes(options.attrs ?? {})}><div class="k-slot-status">${options.status}</div>\
-<p class="k-slot-text">${options.text}</p><div class="k-slot-acts k-acts">${options.acts}</div><p class="k-slot-terms">${options.terms}</p>\
+<p class="k-slot-text">${options.text}</p>${options.body === undefined ? "" : html`<div class="k-slot-body">${options.body}</div>`}<div class="k-slot-acts k-acts">${options.acts}</div><p class="k-slot-terms">${options.terms}</p>\
 <div class="k-slot-err">${options.err ? notice(options.err) : ""}</div></section>`;
 }
 
@@ -429,3 +433,38 @@ export function ideas(options: { label: HtmlValue; into: string; items: Readonly
     html`<a class="k-btn k-btn-outline k-idea" href="${item.href}" data-k-draft="${item.draft}" data-k-into="${options.into}">${item.label}</a>`)}</div></section>`;
 }
 
+// ---- settings pages (wave D) ------------------------------------------------------------------------------------
+
+/** A settings section: its heading (with an optional muted state after it), one muted lead line, then its rows.
+ * No nested wells. `id` is also the anchor other pages link to. */
+export function settingsSection(options: { id: string; title: string; state?: HtmlValue; lead?: HtmlValue; right?: Html; body: HtmlValue }): Html {
+  const head = `${options.id}-h`;
+  return html`<section class="k-ssec" id="${options.id}" aria-labelledby="${head}"><div class="k-secthead"><h3 id="${head}">${options.title}\
+${options.state ? html`<span class="k-ssec-state">${options.state}</span>` : ""}</h3>${options.right ?? ""}</div>\
+${options.lead ? html`<p class="k-ssec-lead">${options.lead}</p>` : ""}${options.body}</section>`;
+}
+
+/** One row that opens a settings page: icon, title (with "1 item needs you" when something waits), one status line,
+ * anything on the right, a chevron. The whole row is the link. */
+export function settingsLink(options: { href: string; title: string; status?: HtmlValue; icon?: KitIcon; needs?: number; right?: Html }): Html {
+  const flag = options.needs ? html`<span class="k-sflag">${needsWords(options.needs)}</span>` : "";
+  return html`<a class="${cls("k-slink", !options.icon && "noico")}" href="${options.href}">${options.icon ? icon(options.icon) : ""}\
+<span class="k-sl"><span class="k-sl-t"><span>${options.title}</span>${flag}</span>${options.status ? html`<span class="k-sl-h">${options.status}</span>` : ""}</span>\
+<span class="k-slink-r">${options.right ?? ""}</span><span class="k-chev" aria-hidden="true"></span></a>`;
+}
+
+/** A list of settings links under a section heading ("In this group"), or the overview's unlabelled list. */
+export function settingsLinks(title: string | null, links: readonly Html[], options: { label?: string } = {}): Html {
+  return html`<section class="k-ssec"${title === null ? html` aria-label="${options.label ?? "All settings"}"` : ""}>${title === null ? "" : html`<div class="k-secthead"><h3>${title}</h3></div>`}\
+<div class="k-slinks">${links}</div></section>`;
+}
+
+/** A record row (a session, a token, a person, a device, a provider): title and one muted line · when · one action,
+ * and anything opened under it (a form, a refusal). */
+export function settingsRecord(options: { title: HtmlValue; sub?: HtmlValue; when?: HtmlValue; action?: HtmlValue; more?: HtmlValue; attrs?: Attrs }): Html {
+  return html`<div class="k-srec"${attributes(options.attrs ?? {})}><div class="k-sl"><span class="k-sl-t">${options.title}</span>${options.sub ? html`<span class="k-sl-h">${options.sub}</span>` : ""}</div>\
+<span class="k-srec-when">${options.when ?? ""}</span><span class="k-srec-a">${options.action ?? ""}</span>${options.more ? html`<div class="k-srec-more">${options.more}</div>` : ""}</div>`;
+}
+
+/** A command or path to copy by hand: monospace, selectable. */
+export const codeLine = (text: string): Html => html`<code class="k-scode">${text}</code>`;

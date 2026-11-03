@@ -259,16 +259,22 @@ test("the Spend page, its CSV and budgets are an instance operator's; the task p
       .headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
     const cookie = await signIn("alex", alex.token);
     const page = await (await fetch(`${base}/spend`, { headers: { cookie } })).text();
-    expect(page).toContain("<h1>Spend</h1>");
+    expect(page).toContain('<h2 class="k-same">Spend</h2>');
     expect(page).toContain('data-amount-kind="api" data-microusd="3000000"');
-    // Limits change on Settings → Spend, not on the Spend page.
+    // A limit's form opens in place (Edit limit); Settings → Spend's old address leads here.
     expect(page).not.toContain('action="/spend/budget"');
-    const settings = await (await fetch(`${base}/settings/spend`, { headers: { cookie } })).text();
+    expect((await fetch(`${base}/settings/spend`, { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe("/spend");
+    const settings = await (await fetch(`${base}/spend?edit=${encodeURIComponent(`project:${REPO}`)}`, { headers: { cookie } })).text();
     expect(settings).toContain('action="/spend/budget"');
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(settings)![1]!;
     const post = (fields: Record<string, string>) => fetch(`${base}/spend/budget`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
     expect((await post({ target: `project:${REPO}`, usd: "2", stop: "1", action: "save", password: "wrong" })).headers.get("location")).toContain("problem=");
     expect(store.budgets()).toEqual([]);
+    // A refused new limit for a person comes back with that person still chosen (a retry never lands on someone else).
+    const back = (await post({ target: "person:sam", usd: "40", stop: "1", action: "save", password: "wrong" })).headers.get("location")!;
+    const retry = await (await fetch(`${base}${back}`, { headers: { cookie } })).text();
+    expect(retry).toContain('<option value="person:sam" selected>');
+    expect(retry).not.toContain('<option value="person:alex" selected>');
     expect((await post({ target: `project:${REPO}`, usd: "2", stop: "1", action: "save", password: alex.token })).headers.get("location")).toContain("said=");
     expect(store.budgets()).toMatchObject([{ scope: "project", key: REPO, limitMicrousd: 2_000_000, hardStop: true }]);
     expect((await post({ target: "project:/somewhere/else", usd: "2", action: "save", password: alex.token })).headers.get("location")).toContain("problem=");

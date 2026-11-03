@@ -98,7 +98,7 @@ describe("the lead checks before it speaks", () => {
 
   test("c2: the lead reads integration status, and Settings → Integrations is a fixed control", () => {
     const list: Integration[] = [
-      { key: "telegram", group: "chat", name: "Telegram", state: "connected", account: "@toolroll_bot", detail: null, checked: true, checkedAt: null, lastSuccessAt: "2026-10-02T11:00:00.000Z", lastError: null, lastErrorAt: null, usedBy: ["Chat"], action: { kind: "test", label: "Send test" } },
+      { key: "telegram", group: "chat", name: "Telegram", state: "connected", account: "@toolroll_bot", detail: null, checked: true, checkedAt: null, lastSuccessAt: "2026-10-02T11:00:00.000Z", lastError: null, lastErrorAt: null, usedBy: ["Chat"], action: { kind: "test", label: "Check connection" } },
       { key: "slack", group: "chat", name: "Slack", state: "not-set-up", account: null, detail: null, checked: true, checkedAt: null, lastSuccessAt: null, lastError: null, lastErrorAt: null, usedBy: [], action: { kind: "setup", label: "Set up", href: "/settings/slack", command: null } },
       { key: "email", group: "mail", name: "Email", state: "broken", account: null, detail: null, checked: true, checkedAt: null, lastSuccessAt: null, lastError: "Sign-in refused", lastErrorAt: null, usedBy: ["Flows"], action: { kind: "fix", label: "Fix", words: "Sign in to the mailbox again.", href: "/settings/email", command: null } },
     ];

@@ -309,8 +309,9 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     const script = store.flowScript(project, name.trim().toLowerCase());
     if (script === null) return refuse(project, 'unknown-script', `There's no script called ${name} in ${projectName(project)}.`);
     if (script.held === null) return ok({ applied: false, repo: project, said: `${script.name} already runs.` }, [`${script.name} already runs.`]);
-    store.approveFlowScript(project, script.name);
-    record(project, 'accepted', `script ${script.name} approved`);
+    // Bound to the version just read: a script swapped under the same name meanwhile is refused, never approved unseen.
+    if (store.approveFlowScript(project, script.name, { version: script.version, digest: script.digest }) !== 'approved') return refuse(project, 'changed', `${script.name} changed while this ran. Read it again (toolroll flows show), then approve it. Nothing was approved.`);
+    record(project, 'accepted', `script ${script.name} v${script.version} approved`);
     settle(project);
     return ok({ applied: true, repo: project, said: `Approved ${script.name}. Zones that run it go on.` }, [`Approved ${script.name}. Zones that run it go on.`]);
   }
@@ -540,6 +541,8 @@ function describeFlow(store: Store, flow: FlowRow, now: Date) {
     }),
     cards: store.flowCards(flow.id, true).slice(0, 10).map(card => cardOf(definition, card)),
     unattended: unattendedJson(store, flow, now),
+    // The latest grant a change ended early (the flow, a script, a schedule): why and when, as the flow page says it.
+    ...(() => { const ended = unattendedViewOf(store, flow, { name: flow.owner, approver: true }, now).ended; return ended === null ? {} : { unattendedEnded: ended }; })(),
     // Browser use, only for a flow with a zone that starts one: the same status line the flow page shows.
     ...(() => { const view = browserViewOf(store, flow); return view === null ? {} : { browser: { status: view.status, words: view.words, signedBy: view.signedBy, signedAt: view.signedAt } }; })(),
   };
@@ -557,7 +560,7 @@ function showLines(flow: ReturnType<typeof describeFlow>): string[] {
   return [
     `#${flow.id} ${flow.name} · ${flow.project} · owner ${flow.owner}`,
     flow.unattended === null
-      ? `Runs on its own: no · turn on: toolroll flows unattended ${flow.id} on --days N`
+      ? `Runs on its own: no${'unattendedEnded' in flow && flow.unattendedEnded !== undefined ? ` (it ended ${untilWords(flow.unattendedEnded.at)}: ${flow.unattendedEnded.why})` : ''} · turn on: toolroll flows unattended ${flow.id} on --days N`
       : `Runs on its own until ${untilWords(flow.unattended.until)} · revoke: toolroll flows unattended ${flow.id} off`,
     ...(flow.unattended === null ? [] : [`  Covers: ${flow.unattended.covers.join('; ')}`]),
     ...(flow.browser === undefined ? [] : [`${flow.browser.words} · ${flow.browser.status === 'allowed' ? `turn off: toolroll flows browser ${flow.id} off` : `allow: toolroll flows browser ${flow.id} on`}`]),

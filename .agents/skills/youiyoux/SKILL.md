@@ -55,7 +55,7 @@ Each finding names its rule, the file:line and a suggestion. The suggested token
 - **KActs**: An action bar: one row of actions, 8px apart.
 - **KApprove**: The approve control: a password popover only when the rules say so, one click otherwise, nothing when a rule approves automatically. (kind: none|standard|step-up|way-in)
 - **KBoard**: A list's rows as columns (Needs you · Queued · Running · Finished), hairlines only; on a phone one column at a time with a pager above.
-- **KButton**: Every act a person can take. Ink primary for the screen's one act; outline and ghost for the rest; danger for an irreversible act. (variant: primary|outline|ghost|danger; iconOnly: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|list|board|panel; lead: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|list|board|panel)
+- **KButton**: Every act a person can take. Ink primary for the screen's one act; outline and ghost for the rest; danger for an irreversible act. (variant: primary|outline|ghost|danger; iconOnly: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|minus|fit|bolt|code|list|board|panel; lead: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|minus|fit|bolt|code|list|board|panel)
 - **KChip**: Status chips: the five words (Needs you, Running, Queued, Finished, Failed), one tone each; a specific ask keeps its group's tone. (tone: |needs|ask|live|done|failed)
 - **KComposer**: The message box: one soft rounded box, auto-growing textarea (rows → 8 lines), + menu, the project as a quiet chip, small controls, and the round send that becomes Stop while the work runs.
 - **KCount**: A count pill in tabular figures; ink only for a Needs-you count, muted at zero.
@@ -67,7 +67,7 @@ Each finding names its rule, the file:line and a suggestion. The suggested token
 - **KField**: A field: label, the control, one hint line, and the error tied to the control (aria-invalid, aria-describedby). Errors appear next to the control, never as a banner.
 - **KFilter**: A list's text filter: a search field with its icon that narrows the rows already shown.
 - **KFormRow**: The two-column settings row: label and one muted line | the control; stacks on a phone. (variant: |inline|top|wide)
-- **KIcon**: One 24×24 stroke icon from the kit set, drawn in currentColor. (name: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|list|board|panel)
+- **KIcon**: One 24×24 stroke icon from the kit set, drawn in currentColor. (name: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|minus|fit|bolt|code|home|tasks|flows|agents|projects|settings|pen|arrow|list|board|panel)
 - **KNeedsPanel**: Waits that aren't tasks (a spend limit, a failed backup), on their own page: one amber outline, a count, one action each. Never part of the global Needs-you count.
 - **KNotFound**: The not-found page inside the shell: what was asked for and two ways on.
 - **KNotice**: A refusal in place (role=alert: what went wrong and what didn't change), a neutral system line, or a muted supporting note. There are no toasts.
@@ -83,3 +83,5 @@ Each finding names its rule, the file:line and a suggestion. The suggested token
 - **KSwitch**: An on/off setting: KSwitch acts at once and says its state in words; KSwitchInput is a checkbox with role=switch for a form.
 - **KTabs**: Underline tabs for sections of one object: KLinkTabs when each is an address (aria-current="page"), KTabs inside one page (role=tablist, arrow keys).
 - **KTiming**: A run's steps on one elapsed-time axis (Release, a flow's run, a pull request's checks); a queued row has no bar until it starts.
+
+Also in `src/browser/kit`, owned but without a contract yet (no checked props, not in the usage map): section-forms.ts. Use them when they fit; ask for a contract before relying on their props.

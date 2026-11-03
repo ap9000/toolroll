@@ -1,58 +1,56 @@
 /**
- * Starter kits pages: the gallery — each kit's promise, what it sets
- * up, one button — and a kit's own page: its checklist, with the next step on
- * each line (connect email, connect a tool, try a sample card).
+ * Starter kits: the "With an agent" rows of New flow (each kit's promise, what it sets up, one button to its page)
+ * and a kit's own page, a reading page: what it sets up, then its checklist with the next step on each line
+ * (connect email, connect a tool, try a sample card).
  */
 import type { Store } from "./store.js";
 import { kitChecklist, kitInstalled, KITS, type Kit } from "./kits.js";
 import { SUBAGENT_TEMPLATES } from "./subagents.js";
 import { html, postForm, reauth, type Html } from "./html.js";
+import { templateRow } from "./flow-gallery-ui.js";
+import { acts, btn, count, doc, docHeader, dock, facts, group, icon, infoLine, input, note, notice, phoneHeader } from "./server/kit.js";
 
-const CHECK = html`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`;
-const RING = html`<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg>`;
-
-export const KITS_CSS = `.kits{max-width:960px;min-width:0}.kits-lede{color:var(--so-muted);margin:.25rem 0 1.5rem;max-width:40rem}.kit-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}` +
-  `.kit{display:flex;flex-direction:column;gap:10px;padding:20px;border:1px solid var(--so-line);border-radius:12px;background:var(--so-paper)}.kit h2{font-size:1.1rem;margin:0}.kit p{margin:0}.kit .kit-promise{line-height:1.5}` +
-  `.kit .kit-gets{font-size:.85rem;color:var(--so-muted);line-height:1.5}.kit form{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:auto;padding-top:6px}.kit form label{display:grid;gap:4px;font-size:.85rem;flex:1 1 140px}` +
-  `.kit button,.kit .kit-open{min-height:44px}.kit .kit-open{display:inline-flex;align-items:center;margin-top:auto;font-weight:600}` +
-  `.kit-steps{list-style:none;padding:0;margin:1rem 0;display:grid;gap:2px;max-width:44rem}.kit-steps li{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--so-line);border-radius:10px;background:var(--so-paper)}` +
-  `.kit-steps svg{flex:none;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}.kit-steps li[data-done="true"] svg{color:var(--so-success)}.kit-steps li[data-done="false"] svg{color:var(--so-muted)}` +
-  `.kit-steps .kit-step-said{flex:1;min-width:0}.kit-steps li[data-done="true"] .kit-step-said{color:var(--so-muted)}.kit-steps form{margin:0}.kit-steps button,.kit-steps .kit-step-go{min-height:40px;white-space:nowrap}` +
-  `.kit-steps .kit-step-go{display:inline-flex;align-items:center;padding:0 12px;border:1px solid var(--so-line);border-radius:8px;text-decoration:none;font-size:.9rem}` +
-  `@media(max-width:600px){.kit-steps li{flex-wrap:wrap}.kit-steps .kit-step-said{flex-basis:calc(100% - 40px)}.kit form select{font-size:16px}}`;
+export const KITS_CSS = `.fl-kit-steps{list-style:none;padding:0;margin:0;display:grid;border-top:1px solid var(--so-line)}` +
+  `.fl-kit-steps li{display:flex;align-items:center;gap:12px;min-height:48px;padding:8px 0;border-bottom:1px solid var(--so-line);min-width:0}` +
+  `.fl-kit-steps li>.k-i{flex:none;color:var(--so-muted)}.fl-kit-steps li[data-done="true"]>.k-i{color:var(--so-done-ink)}.fl-kit-ring{flex:none;width:14px;height:14px;margin:0 1px;border:1.5px solid var(--so-field-line);border-radius:50%;box-sizing:border-box}` +
+  `.fl-kit-said{flex:1;min-width:0;font-size:13px;overflow-wrap:anywhere}.fl-kit-steps li[data-done="true"] .fl-kit-said{color:var(--so-muted)}.fl-kit-steps form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0}.fl-kit-steps .k-input{width:180px}` +
+  `@media(max-width:760px){.fl-kit-steps li{flex-wrap:wrap}.fl-kit-said{flex-basis:calc(100% - 40px)}.fl-kit-steps form,.fl-kit-steps .k-input{width:100%}}`;
 
 const subagentWords = (kit: Kit) => { const template = SUBAGENT_TEMPLATES.find(one => one.id === kit.subagent.template); return template === undefined ? kit.subagent.handle : template.label.toLowerCase(); };
+const agentName = (kit: Kit) => kit.subagent.handle.charAt(0).toUpperCase() + kit.subagent.handle.slice(1);
+const kitHref = (kit: Kit, repo: string) => `/kits/${kit.id}?repo=${encodeURIComponent(repo)}`;
 
-/** The gallery: every kit, set up in a project with one button (or opened, when it's already there). */
-export function kitsGalleryHtml(store: Store, projects: readonly string[], projectName: (repo: string) => string, canSetUp: boolean, notice: { problem?: string | null }): Html {
-  const cards = KITS.map(kit => {
-    const here = projects.filter(repo => kitInstalled(store, kit, repo) !== null);
-    const open = projects.length === 1 && here.length === 1;
-    const name = kit.subagent.handle.charAt(0).toUpperCase() + kit.subagent.handle.slice(1);
-    const gets = `${name} (${subagentWords(kit)}) · the ${kit.flowName} flow${kit.tools.length === 0 ? "" : ` · works with ${kit.tools.map(one => one.label).join(" and ")}`}`;
-    const action = open ? html`<a class="kit-open" href="/kits/${kit.id}?repo=${encodeURIComponent(projects[0]!)}">Open ${kit.name} →</a>`
-      : !canSetUp || projects.length === 0 ? ""
-      : postForm(`/kits/${kit.id}/setup`, html`${projects.length === 1 ? ""
-        : html`<label>Project<select name="repo">${projects.map(repo => html`<option value="${repo}">${projectName(repo)}${here.includes(repo) ? " (set up)" : ""}</option>`)}</select></label>`}<button>Set it up</button>`,
-        { hidden: { repo: projects.length === 1 ? projects[0]! : null } });
-    return html`<article class="kit" data-kit="${kit.id}"><h2>${kit.name}</h2><p class="kit-promise">${kit.promise}</p><p class="kit-gets">${gets}</p>${action}</article>`;
+/** "With an agent": every kit as a row; Set it up (or Open, once it's there) goes to the kit's page for `repo`. */
+export function kitRowsHtml(store: Store, repo: string | null): Html {
+  const rows = KITS.map(kit => {
+    const here = repo !== null && kitInstalled(store, kit, repo) !== null;
+    const gets = `${agentName(kit)} (${subagentWords(kit)}) and the ${kit.flowName} flow${kit.tools.length === 0 ? "" : ` · works with ${kit.tools.map(one => one.label).join(" and ")}`}`;
+    return templateRow({ name: kit.name, promise: kit.promise, line: gets, attrs: html` data-kit="${kit.id}"`,
+      action: repo === null ? "" : btn(here ? "Open" : "Set it up", { sm: true, href: kitHref(kit, repo), attrs: { "aria-label": `${here ? "Open" : "Set up"} ${kit.name}` } }) });
   });
-  return html`<section class="kits">${notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : ""}<p class="kits-lede">A working setup in one click: a subagent, the flow it works, and what to connect next. Nothing goes out without you approving it.</p><div class="kit-grid">${cards}</div></section>`;
+  return html`${group("With an agent", count(KITS.length))}<div data-group="kits">${rows}</div>`;
 }
 
-/** A kit's own page: what's set up, and the next step on each line. */
-export function kitPageHtml(store: Store, kit: Kit, repo: string, dir: string | null, canSetUp: boolean, notice: { said?: string | null; problem?: string | null }): Html {
+/** A kit's own page: what it sets up, Set up (once), then the next step on each line. */
+export function kitPageHtml(store: Store, kit: Kit, repo: string, dir: string | null, canSetUp: boolean, notice_: { said?: string | null; problem?: string | null }, projectName: (repo: string) => string = one => one): Html {
   const steps = kitChecklist(store, kit, repo, dir);
   const set = kitInstalled(store, kit, repo);
+  const back = `/flows/new?group=kits&repo=${encodeURIComponent(repo)}`;
   const rows = steps.map(step => {
-    const go = step.done ? (step.href === null ? "" : html`<a class="kit-step-go" href="${step.href}">Open</a>`)
+    const go = step.done ? (step.href === null ? "" : btn("Open", { sm: true, href: step.href }))
       : step.action === "sample" || step.action === "github"
-        ? (canSetUp ? postForm(`/kits/${kit.id}/${step.action}`, step.action === "sample" ? html`<button>Try it</button>`
+        ? (canSetUp ? postForm(`/kits/${kit.id}/${step.action}`, step.action === "sample" ? btn("Try it", { sm: true, type: "submit" })
           // Issues from anyone come in: it takes your password (an ordinary step-up; a session does under Passwordless).
-          : html`${reauth(html`<input type="password" name="password" autocomplete="current-password" aria-label="Your password" placeholder="Your password">`)}<button class="secondary">Bring them in</button>`, { hidden: { repo } }) : "")
-        : step.href === null ? "" : html`<a class="kit-step-go" href="${step.href}">${step.action === "connect" ? "Connect" : "Set up"}</a>`;
-    return html`<li data-step="${step.id}" data-done="${String(step.done)}">${step.done ? CHECK : RING}<span class="kit-step-said">${step.said}</span>${go}</li>`;
+          : html`${reauth(input({ id: `fl-kit-${step.id}-password`, name: "password", type: "password", attrs: { autocomplete: "current-password", "aria-label": "Your password", placeholder: "Your password" } }))}${btn("Bring them in", { sm: true, type: "submit" })}`, { hidden: { repo } }) : "")
+        : step.href === null ? "" : btn(step.action === "connect" ? "Connect" : "Set up", { sm: true, href: step.href });
+    return html`<li data-step="${step.id}" data-done="${String(step.done)}">${step.done ? icon("check", true) : html`<span class="fl-kit-ring" aria-hidden="true"></span>`}<span class="fl-kit-said">${step.said}</span>${go}</li>`;
   });
-  const setUp = set === null && canSetUp ? postForm(`/kits/${kit.id}/setup`, html`<button>Set up ${kit.name}</button>`, { hidden: { repo } }) : "";
-  return html`<section class="kits">${notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : ""}${notice.said ? html`<p class="said" role="status">${notice.said}</p>` : ""}<p class="kits-lede">${kit.promise}</p>${setUp}${rows.length === 0 ? "" : html`<ol class="kit-steps">${rows}</ol>`}<p class="meta"><a href="/kits">All starter kits</a></p></section>`;
+  const setUp = set === null && canSetUp ? postForm(`/kits/${kit.id}/setup`, acts(btn(`Set up ${kit.name}`, { variant: "primary", type: "submit", docked: true })), { hidden: { repo }, attrs: { id: "fl-kit-setup" } }) : "";
+  const about = facts([["Project", projectName(repo)], ["Agent", `${agentName(kit)} (${subagentWords(kit)})`], ["Flow", kit.flowName], ...(kit.tools.length === 0 ? [] : [["Works with", kit.tools.map(one => one.label).join(" and ")] as const])]);
+  return html`<div class="fl-kit" data-kit-page data-kit="${kit.id}">${phoneHeader(kit.name, { back })}${doc(
+    docHeader({ title: kit.name, back: [back, "New flow"], meta: kit.promise, same: true }),
+    notice_.problem ? notice(notice_.problem) : "", notice_.said ? infoLine(notice_.said) : "",
+    about, set === null ? note("Nothing goes out without you approving it.") : "", setUp,
+    rows.length === 0 ? "" : html`<section class="k-sec" aria-labelledby="fl-kit-next"><h3 id="fl-kit-next">Next steps</h3><ol class="fl-kit-steps">${rows}</ol></section>`)}\
+${set === null && canSetUp ? dock(btn(`Set up ${kit.name}`, { variant: "primary", type: "submit", attrs: { form: "fl-kit-setup" } })) : ""}</div>`;
 }

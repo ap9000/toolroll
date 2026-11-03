@@ -14,6 +14,7 @@ import { SSO_CALLBACK } from "../sso-settings.js";
 import type { EdgeContext,HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
 import { personChip,refuse,screen } from "./chrome.js";
+import { inviteLinkHtml,ownAccessHtml,peopleHtml,settingsSubPage } from "../settings-groups-ui.js";
 import { redirect,respond,sayTo } from "./http.js";
 /** people handlers, moved without changing their route bodies. */
 import { randomBytes } from "node:crypto";
@@ -55,7 +56,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const view = { who: who.name, everyone, canSeeEveryone: store.isInstanceOperator(who.name), now: Date.now(),
       sessions: store.webSessions(everyone ? null : who.name).map(one => ({ ...one, here: one.idHash === here })), tokens: store.apiTokens(everyone ? null : who.name),
       limits: { note: tokenLimitWords.bind(null, store.handle), section: store.isInstanceOperator(who.name) ? requestLimitsHtml(store.handle, store.apiTokens(null), Date.now()) : html`` } };
-    return sendScreen(response, 200, screen("Sessions & tokens", html`<p><a href="/settings">Settings</a></p><h1>Sessions &amp; tokens</h1>${credentialsHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}`,
+    return sendScreen(response, 200, screen("Sessions & tokens", settingsSubPage("access", "Sessions and tokens", html`${credentialsHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}`),
       { chrome: chromeFor(project, "settings") }));
   }
 
@@ -80,7 +81,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     // the process admission); a viewer sees exactly themselves (U3).
     if (restricted()) {
       const projects = admissionList() ?? [];
-      return sendScreen(response, 200, screen("people", html`<h1>Your access</h1><p>${personChip(who.name)} · ${who.role === "approver" ? "operator" : "viewer"}</p><p>${who.role === "approver" ? "You can create, manage, and approve work in these projects." : "You can read work in these projects."}</p><ul>${projects.map(repo => html`<li>${projectName(repo)}</li>`)}</ul><p class="meta">An instance operator manages invitations and project access.</p><p><a href="${personHref(who.name)}">Your remote activity</a></p>`, { chrome: chromeFor(project, "people") }));
+      return sendScreen(response, 200, screen("Your access", ownAccessHtml({ name: who.name, approver: who.role === "approver", projects: projects.map(repo => projectName(repo)), activity: personHref(who.name) }), { chrome: chromeFor(project, "people") }));
     }
     const approverView = store.isInstanceOperator(who.name);
     const accounts = store.accountFacts().filter(one => approverView || one.name === who.name);
@@ -92,87 +93,28 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       return seen;
     };
     const projectChoices = consoleProjects();
-    const accessFields = (selected: readonly string[] | null) =>
-      html`<label>Project access<select name="access"><option value="selected"${selected !== null ? " selected" : ""}>Selected projects</option><option value="all"${selected === null ? " selected" : ""}>All projects</option></select></label>\
-<p class="meta">Operators with all-project access also manage the instance.</p><fieldset><legend>Projects</legend>${projectChoices.length === 0 ? html`<p class="meta">Add a project before granting selected access.</p>` : projectChoices.map(repo => html`<label class="row"><input type="checkbox" name="projects" value="${repo}"${selected?.includes(repo) ? " checked" : ""}>${projectName(repo)}</label>`)}</fieldset>`;
-    const cards = accounts.map(one => {
+    const people = accounts.map(one => {
       const seen = lastSeenOf(one.name);
-      const acts = store.recentActsOf(one.name);
-      const standing =
-        one.revokedAt !== null
-          ? html`revoked ${one.revokedAt.slice(0, 16).replace("T", " ")} by ${personChip(one.revokedBy ?? "?")}`
-          : one.role === "approver"
-            ? "approves"
-            : "watches";
-      return joinHtml([
-        html`<div class="card">`,
-        html`<h2 style="margin-top:0">${personChip(one.name)} <span class="meta">${standing}</span></h2>`,
-        html`<p class="meta">${one.projects === null ? "All projects" : one.projects.length === 0 ? "No project access" : one.projects.map(repo => projectName(repo)).join(", ")}</p>`,
-        approverView && one.revokedAt === null ? html`<details><summary>Edit project access</summary>${postForm("/people/projects", html`${accessFields(one.projects)}<label>Your password<input type="password" name="token" autocomplete="current-password" required></label><p class="meta">Changing access signs this person out and ends their derived sessions and modes. Previously approved work stays recorded.</p><button type="submit">Save project access</button>`, { hidden: { name: one.name } })}</details>` : "",
-        html`<p class="meta">${seen === null ? "not signed in right now" : `signed in \u2014 active ${new Date(seen).toISOString().slice(11, 16)} UTC`} \u00b7 joined ${one.addedAt.slice(0, 10)}</p>`,
-        html`<p><a href="${personHref(one.name)}">Tokens and remote activity</a></p>`,
-        acts.length === 0
-          ? html`<p class="meta">No recorded acts yet</p>`
-          : joinHtml(acts.map(act => html`<p class="row meta">${act.kind} ${act.subject} \u00b7 ${act.at.slice(0, 16).replace("T", " ")}</p>`), "\n"),
-        approverView && one.revokedAt === null && one.name !== who.name
-          ? postForm("/people/revoke", html`\
-${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label>`)}\
-<button type="submit">Remove ${one.name}'s sign-in</button>\
-<span class="meta">ends their access and everything it signed \u2014 history stays</span>`, { attrs: { class: "row" }, hidden: { name: one.name } })
-          : "",
-        html`</div>`,
-      ], "\n");
+      return {
+        name: one.name, you: one.name === who.name, approver: one.role === "approver", projects: one.projects,
+        projectNames: one.projects === null ? "All projects" : one.projects.length === 0 ? "No project access" : one.projects.map(repo => projectName(repo)).join(", "),
+        revoked: one.revokedAt === null ? null : `Removed ${one.revokedAt.slice(0, 16).replace("T", " ")} by ${one.revokedBy ?? "someone"}`,
+        seen: seen === null ? `Joined ${one.addedAt.slice(0, 10)}` : now.getTime() - seen < 5 * 60_000 ? "Signed in now" : `Active ${new Date(seen).toISOString().slice(11, 16)} UTC`,
+        joined: one.addedAt.slice(0, 10), activity: personHref(one.name),
+        acts: store.recentActsOf(one.name).map(act => `${act.kind} ${act.subject} ${act.at.slice(0, 16).replace("T", " ")}`),
+      };
     });
     const invites = approverView ? store.openInvites(now) : [];
-    const inviteRows = invites.map(one =>
-      html`<p class="row">${one.role} invite · ${one.projects === null ? "all projects" : one.projects.map(repo => projectName(repo)).join(", ")} \u00b7 from ${personChip(one.mintedBy)} \u00b7 expires ${one.expiresAt.slice(0, 16).replace("T", " ")}${one.attempts > 0 ? ` \u00b7 ${one.attempts} failed attempt${one.attempts === 1 ? "" : "s"}` : ""}\
- ${postForm("/people/invite-revoke", html`\
-${reauth(html`<label>Password <input type="password" name="token" autocomplete="current-password" style="width:8rem"></label>`)}\
-<button type="submit">Cancel it</button>`, { attrs: { style: "display:inline" }, hidden: { id: one.id } })}</p>`,
-    );
-    const inviteCard = !approverView
-      ? ""
-      : joinHtml([
-          html`<div class="card">`,
-          html`<h2 style="margin-top:0">Invite someone</h2>`,
-          inviteRows.length === 0 ? html`<p class="meta">No open invites</p>` : joinHtml(inviteRows, "\n"),
-          postForm("/people/invite", joinHtml([
-            "",
-            html`<label>They can<select name="role"><option value="viewer">Viewer — read work</option><option value="approver">Operator — create, manage and approve work</option></select></label>`,
-            accessFields(project === null ? [] : [project]),
-            html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label>`,
-            html`<button type="submit">Make an invite link</button>`,
-            html`<span class="meta">single-use, expires in 72 hours</span>`,
-          ], "\n"), { attrs: { class: "row" } }),
-          html`</div>`,
-        ], "\n");
-    // Coordinators (MCP spec v6): the machine principals beside the
-    // human ones — name, immutable fingerprint, what they may file
-    // into, their rate, and the revoke road. Approver eyes only.
-    const coordinatorCard = !approverView
-      ? ""
-      : (() => {
-          const rows = listCoordinators(store);
-          if (rows.length === 0) return "";
-          return joinHtml([
-            html`<div class="card">`,
-            html`<h2 style="margin-top:0">Agent filers</h2>`,
-            html`<p class="meta">Agents that can propose tasks. You approve what runs.</p>`,
-            ...rows.map(one =>
-              html`<p class="row"><span class="mono">${`${one.name}#${one.cid.slice(0, 4)}`}</span> ${one.revokedAt !== null
-                ? html`<span class="meta">revoked ${one.revokedAt.slice(0, 10)}</span>`
-                : html`<span class="meta">${one.perHour}/hour · files into ${one.repos.join(", ")} · ${one.expiresAt === null ? "no expiry (made before expiry)" : `expires ${one.expiresAt.slice(0, 10)}`} · last filed ${one.lastFiledAt === null ? "never" : one.lastFiledAt.slice(0, 16).replace("T", " ")}</span>`}</p>`,
-            ),
-            html`<details class="settings-more"><summary>Revoke an agent filer</summary><p class="meta">Run <code>toolroll coordinator revoke &lt;cid&gt; --as you</code> on this computer.</p></details>`,
-            html`</div>`,
-          ], "\n");
-        })();
+    const filers = !approverView ? [] : listCoordinators(store).map(one => ({ name: `${one.name}#${one.cid.slice(0, 4)}`, words: one.revokedAt !== null ? `Revoked ${one.revokedAt.slice(0, 10)}`
+      : `${one.perHour} an hour · files into ${one.repos.join(", ")} · ${one.expiresAt === null ? "no expiry (made before expiry)" : `expires ${one.expiresAt.slice(0, 10)}`} · last filed ${one.lastFiledAt === null ? "never" : one.lastFiledAt.slice(0, 16).replace("T", " ")}` }));
     return sendScreen(
       response,
       200,
-      screen("people", joinHtml([html`<h1>People</h1>`, ...cards, coordinatorCard, inviteCard], "\n"), {
-        chrome: chromeFor(project, "people"),
-      }),
+      screen("People", peopleHtml({
+        operator: approverView, you: who.name, said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), people,
+        invites: invites.map(one => ({ id: one.id, role: one.role, projects: one.projects === null ? "All projects" : one.projects.map(repo => projectName(repo)).join(", "), from: one.mintedBy, expires: `${one.expiresAt.slice(0, 16).replace("T", " ")} UTC`, attempts: one.attempts })),
+        projects: projectChoices.map(repo => ({ repo, name: projectName(repo) })), openProject: project !== null && projectChoices.includes(project) ? project : null, filers,
+      }), { chrome: chromeFor(project, "people") }),
     );
   }
 
@@ -259,16 +201,8 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     const minted = store.mintInvite(role, who.name, now, undefined, access.projects);
     const origin = options.publicUrl !== undefined ? options.publicUrl.replace(/\/$/, "") : `http://${request.headers.host ?? "this-console"}`;
     const linkScreen = screen(
-      "people",
-      joinHtml([
-        html`<h1>Invite link</h1>`,
-        html`<div class="card">`,
-        html`<p>Shown once, so copy it now.</p>`,
-        html`<p class="mono secret-value">${`${origin}/join/${minted.token}`}</p>`,
-        html`<p class="meta">Send it to one person. It works once, lets them ${role === "approver" ? "approve and act" : "read work"} in ${access.projects === null ? "all projects" : access.projects.map(repo => projectName(repo)).join(", ")}, and expires ${minted.expiresAt.slice(0, 16).replace("T", " ")} UTC. Cancel it any time on People.</p>`,
-        html`</div>`,
-        html`<p class="meta"><a href="/people">Back to People</a></p>`,
-      ], "\n"),
+      "Invite link",
+      inviteLinkHtml({ link: `${origin}/join/${minted.token}`, approver: role === "approver", projects: access.projects === null ? "all projects" : access.projects.map(repo => projectName(repo)).join(", "), expires: `${minted.expiresAt.slice(0, 16).replace("T", " ")} UTC` }),
       // A one-time secret on screen: no script of any kind rides along.
       { chrome: chromeFor(projectOf(who, request) ?? null, "people"), forceSensitive: true },
     );

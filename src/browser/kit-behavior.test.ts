@@ -47,3 +47,50 @@ test("a pre-rendered popover opened over a drawer is live; closing each gives ba
   expect(anyInert()).toEqual([]);
   expect(document.querySelector(".k-scrim")).toBeNull();
 });
+
+test("a server form's button shows its busy face once, a second press does nothing, and Back puts the face back", () => {
+  document.body.innerHTML = `<form id="f" method="post" action="/d/1/answer"><button id="go" class="k-btn" type="submit" data-k-busy="Answering…"><span class="k-face">Answer</span></button></form>`;
+  const form = $("f") as HTMLFormElement;
+  // Counted after the kit's own listener (on the document): what the browser would send.
+  let sent = 0;
+  const count = (event: Event) => { if (!event.defaultPrevented) sent += 1; event.preventDefault(); };
+  window.addEventListener("submit", count);
+  const press = () => form.dispatchEvent(Object.assign(new Event("submit", { bubbles: true, cancelable: true }), { submitter: $("go") }));
+  press();
+  expect($("go").textContent).toBe("Answering…");
+  expect($("go").classList.contains("busy")).toBe(true);
+  expect(form.getAttribute("aria-busy")).toBe("true");
+  press();
+  expect(sent).toBe(1);
+  window.dispatchEvent(new Event("pageshow"));
+  expect($("go").textContent).toBe("Answer");
+  expect(form.hasAttribute("aria-busy")).toBe(false);
+  window.removeEventListener("submit", count);
+});
+
+test("Back also frees a busy button that sits outside its form (form=\"…\", the phone dock's copy), so the next press sends", () => {
+  document.body.innerHTML = `<form id="answer-form" method="post" action="/d/1/answer"></form><div class="k-dock"><button id="dock" class="k-btn" type="submit" form="answer-form" data-k-busy="Answering…"><span class="k-face">Answer</span></button></div>`;
+  const form = $("answer-form") as HTMLFormElement;
+  let sent = 0;
+  const count = (event: Event) => { if (!event.defaultPrevented) sent += 1; event.preventDefault(); };
+  window.addEventListener("submit", count);
+  const press = () => form.dispatchEvent(Object.assign(new Event("submit", { bubbles: true, cancelable: true }), { submitter: $("dock") }));
+  press();
+  expect($("dock").classList.contains("busy")).toBe(true);
+  window.dispatchEvent(new Event("pageshow"));
+  expect($("dock").textContent).toBe("Answer");
+  expect($("dock").classList.contains("busy")).toBe(false);
+  expect(form.hasAttribute("aria-busy")).toBe(false);
+  press();
+  expect(sent).toBe(2);
+  window.removeEventListener("submit", count);
+});
+
+test("Print on a server page opens the browser's print dialog", () => {
+  document.body.innerHTML = `<button id="print" class="k-btn" type="button" data-k-print>Print</button>`;
+  let printed = 0;
+  const original = window.print;
+  window.print = () => { printed += 1; };
+  try { $("print").click(); } finally { window.print = original; }
+  expect(printed).toBe(1);
+});

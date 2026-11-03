@@ -161,11 +161,12 @@ describe("flow gallery", () => {
 
       // Flows → New renders a Use this for every template.
       const gallery = await get("/flows/new");
-      expect(gallery.match(/>Use this<\/a>/g)).toHaveLength(GALLERY.length);
-      // Settings → Flows shows it beside the starters.
+      expect(gallery.match(/aria-label="Use [^"]+"><span class="k-face">Use this<\/span><\/a>/g)!.length).toBeGreaterThanOrEqual(GALLERY.length);
+      for (const template of GALLERY) expect(gallery).toContain(`href="/flows/new/${template.id}?repo=${encodeURIComponent(repo)}"`);
+      // Settings → Flows lands on New flow's starter flows, beside the templates.
       const settings = await get(`/settings/flows?repo=${encodeURIComponent(repo)}`);
       expect(settings).toContain('data-starter="ci-fix"');
-      expect(settings).toContain(`href="/flows/new/weekly-upkeep?repo=${encodeURIComponent(repo)}"`);
+      expect(await get(`/flows/new?repo=${encodeURIComponent(repo)}`)).toContain(`href="/flows/new/weekly-upkeep?repo=${encodeURIComponent(repo)}"`);
 
       // Each template, from its page: preview the sample answers, then create exactly that.
       for (const template of [...GALLERY, BLANK]) {

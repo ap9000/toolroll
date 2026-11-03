@@ -80,7 +80,7 @@ describe("project access and the action ledger", () => {
     const home = await get("/");
     expect(home.status).toBe(303);
     expect(home.headers.get("location")).toBe("/work");
-    for (const path of ["/work", "/inbox", "/projects", "/people", "/tasks/new", "/board", "/board?scope=all", "/board?view=order", "/runs", "/review", "/ledger", "/settings", "/settings/learning", "/t/alpha-task"]) {
+    for (const path of ["/work", "/inbox", "/projects", "/people", "/tasks/new", "/board", "/board?scope=all", "/board?view=order", "/review", "/ledger", "/settings", "/settings/learning", "/t/alpha-task"]) {
       const response = await get(path);
       expect(response.status, path).toBe(200);
       const text = await response.text();
@@ -88,10 +88,12 @@ describe("project access and the action ledger", () => {
       expect(text, path).not.toContain(beta);
       expect(text, path).not.toContain("beta-task");
     }
-    // Done is Tasks' Finished filter now (wave A): the old address answers with a redirect there.
-    const done = await get("/done");
-    expect(done.status).toBe(303);
-    expect(done.headers.get("location")).toBe("/work?view=completed");
+    // The retired history pages answer as redirects: Finished tasks and Agents carry what they listed.
+    for (const [path, to] of [["/runs", "/agents"], ["/done", "/work?view=completed"]] as const) {
+      const response = await get(path);
+      expect([302, 303], path).toContain(response.status);
+      expect(response.headers.get("location"), path).toBe(to);
+    }
     expect((await get("/t/beta-task")).status).toBe(404);
     expect((await get("/ledger?project=" + encodeURIComponent(beta))).status).toBe(403);
     expect((await get("/settings/learning?repo=" + encodeURIComponent(beta))).status).toBe(403);
@@ -99,7 +101,8 @@ describe("project access and the action ledger", () => {
     const knowledge = await get('/settings/knowledge?repo=' + encodeURIComponent(alpha));
     expect(knowledge.status).toBe(200);expect(await knowledge.text()).not.toContain('BETA PRIVATE WORK');
     const settings = await (await get("/settings")).text();
-    expect(settings).toContain('href="/settings/learning"');
+    expect(await (await get("/settings/agents")).text()).toContain('href="/settings/learning"');
+    expect(await (await get("/settings/approval")).text()).not.toContain('action="/settings/quality-default"');
     expect(settings).not.toContain('action="/settings/quality-default"');
     expect(settings).not.toContain('action="/settings/telegram"');
     const header = await fetch(base + "/work", { headers: { authorization: `Bearer member:${password}`, "x-standing-orders-project": beta } });

@@ -14,8 +14,8 @@ const methodOf = (route: RouteDeclaration): string => route.method === "POST" ? 
 // Hand-kept access decisions, independent of ROUTES. Equality catches additions and policy changes as well as removals;
 // a deny row must not disappear from the HTTP refusal matrix by silently becoming unscoped/collection/resource.
 const LIMITED_ACCESS = {
-  'code.page': 'self', 'projects.page': 'unscoped',
-  'home': 'collection', 'inbox': 'collection', 'work': 'collection', 'next': 'collection',
+  'code.page': 'self', 'projects.page': 'unscoped', 'projects.project': 'unscoped',
+  'home': 'collection', 'search': 'collection', 'morning': 'collection', 'activity': 'collection', 'inbox': 'collection', 'work': 'collection', 'next': 'collection',
   'work.put-away': 'collection', 'work.put-away.apply': 'collection', 'task.act.archive': 'resource', 'task.act.restore': 'resource',
   'board': 'collection', 'review': 'collection', 'ledger': 'unscoped', 'done': 'collection',
   'people.page': 'unscoped', 'tasks': 'collection', 'tasks.new': 'collection', 'welcome': 'collection',
@@ -30,6 +30,7 @@ const LIMITED_ACCESS = {
   'chat.page': 'conversation', 'routine.page': 'resource', 'chat.action': 'proposal',
   'settings.skills': 'unscoped', 'settings.flows': 'collection', 'settings.knowledge': 'unscoped',
   'settings.learning': 'unscoped', 'settings.telegram': 'self', 'settings.page': 'unscoped',
+  'settings.group-general': 'unscoped', 'settings.group-agents': 'unscoped', 'settings.group-alerts': 'unscoped', 'settings.group-projects': 'unscoped', 'settings.group-access': 'unscoped', 'settings.group-system': 'unscoped',
   'decision.page': 'resource', 'decision.evidence': 'resource', 'code.act-other': 'self', 'code.answer-send': 'self', 'code.changes': 'self', 'code.continue-send': 'self',
   'code.other': 'self', 'code.changes-read': 'self', 'code.ship-preview': 'self', 'code.recover-send': 'self', 'code.resume-send': 'self', 'code.send-send': 'self',
   // Lead sweeps: the handler shows and acts only on a sweep in a project the reader can see.

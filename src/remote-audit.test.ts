@@ -270,13 +270,13 @@ describe("People → a person", () => {
     const html = htmlString(personAuditHtml({ name: "sam", tokens, token: null, nextCursor: "41", now: NOW, actions: [
       { id: 42, at: NOW.toISOString(), person: "sam", token: "<b>laptop</b>", source: "mcp", kind: "tool", name: "task_show", command: "task show", tool: "task_show", repo: "/srv/a-very-long-project-name", taskId: "t-1", outcome: "refused", reason: "not-found" },
     ] }));
-    expect(html).toContain("<h1>sam</h1>");
-    expect(html).toContain(`<a href="/people?person=sam&amp;token-name=%3Cb%3Elaptop%3C%2Fb%3E">&lt;b&gt;laptop&lt;/b&gt;</a>`);
+    expect(html).toContain('<h2 class="k-same">sam</h2>');
+    expect(html).toContain(`<a class="k-link" href="/people?person=sam&amp;token-name=%3Cb%3Elaptop%3C%2Fb%3E">&lt;b&gt;laptop&lt;/b&gt;</a>`);
     expect(html).toContain("Active · Can act · last used 2026-10-06 11:58 UTC");
     expect(html).toContain("Expired · Read only · last used never");
     expect(html).toContain("Revoked · Read only");
     expect(html).toContain("2026-10-06 12:00 UTC · &lt;b&gt;laptop&lt;/b&gt; · Agent (MCP) · a-very-long-project-name · not-found");
-    expect(html).toContain(`<a href="/people?person=sam&amp;before=41">Older actions</a>`);
+    expect(html).toContain(`href="/people?person=sam&amp;before=41"><span class="k-face">Older actions</span></a>`);
     expect(html).not.toContain("<b>");
     const empty = htmlString(personAuditHtml({ name: "vic", tokens: [], token: "ci", nextCursor: null, now: NOW, actions: [] }));
     expect(empty).toContain("No API tokens.");
@@ -310,10 +310,10 @@ describe("People → a person", () => {
     it("lets an approver open anyone, within their projects, and anyone else only themselves", async () => {
       const operator = await login("alex");
       const people = await get(operator, "/people");
-      expect(people.html).toContain(`<a href="/people?person=sam">Tokens and remote activity</a>`);
+      expect(people.html).toContain(`href="/people?person=sam"`);
       const samPage = await get(operator, "/people?person=sam");
       expect(samPage.status).toBe(200);
-      expect(samPage.html).toContain("<h1>sam</h1>");
+      expect(samPage.html).toContain('<h2 class="k-same">sam</h2>');
       expect(samPage.html).toContain(`href="/people?person=sam&amp;token-name=laptop"`);
       expect((await get(operator, "/people?person=sam&token-name=laptop+%C2%B7+old")).html).toContain("No remote actions with this token.");
       expect((await get(operator, "/people?person=alex")).html).toContain("task list");
@@ -321,7 +321,7 @@ describe("People → a person", () => {
       // sam approves in A: alex's line in B is not theirs to see.
       const limited = await login("sam");
       const ownLink = await get(limited, "/people");
-      expect(ownLink.html).toContain(`<a href="/people?person=sam">Your remote activity</a>`);
+      expect(ownLink.html).toContain(`href="/people?person=sam"><span class="k-face">Your activity</span></a>`);
       const alexForSam = await get(limited, "/people?person=alex");
       expect(alexForSam.status).toBe(200);
       expect(alexForSam.html).toContain("No remote actions.");

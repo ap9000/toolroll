@@ -173,7 +173,7 @@ describe("c3: status and the security notification", () => {
       expect(notifySecurityRelease(store, release("0.7.1", true), "0.6.0", "brew upgrade ap9000/toolroll/toolroll", at(3_600_000))).toBe(0);
       expect(sent()).toEqual(operators.map(recipient => ({
         dedupe_key: `release:security:0.7.1:${recipient}`, kind: "security-release", recipient,
-        subject: "Toolroll 0.7.1 is a security release", link: "/settings#updates", push_class: "attention",
+        subject: "Toolroll 0.7.1 is a security release", link: "/settings/system#updates", push_class: "attention",
       })));
       // A later security release is a new message; an ordinary or an older one sends none.
       expect(notifySecurityRelease(store, release("0.7.2", true), "0.6.0", "npm install -g toolroll@latest", at(1))).toBe(operators.length);
@@ -226,14 +226,16 @@ describe("c4 (behaviour): Settings → Updates and the console notice", () => {
   test("Settings shows this version, the latest, the command, the switch and each worker's version; the notice is neutral and dismissible per version", async () => {
     const cookie = await login();
     const data = await (await fetch(`${base}/settings?format=workspace`, { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
-    expect(data.view).toMatchObject({ kind: "settings", updates: {
-      current: PACKAGE_VERSION,
-      latest: { version: newer, newer: true, security: true, notes: "## Security\nA path check.", url: `https://github.com/ap9000/toolroll/releases/tag/v${newer}` },
-      updateCommand: "brew upgrade ap9000/toolroll/toolroll",
-      check: { on: true, byEnv: false, canManage: true },
-      workers: [{ name: "laptop", version: "0.0.1", older: true }],
-    } });
-    expect(data.update).toEqual({ version: newer, security: true, href: "/settings#updates", dismissHref: "/settings/updates/dismiss" });
+    // Settings → System says this version, the newer one, the command, the switch and each worker's version.
+    const system = await (await fetch(`${base}/settings/system`, { headers: { cookie } })).text();
+    expect(system).toContain(`<span class="k-mono">${PACKAGE_VERSION}</span>`);
+    expect(system).toContain(`${newer} is available`);
+    expect(system).toContain("brew upgrade ap9000/toolroll/toolroll");
+    expect(system).toContain("The newer version has security fixes.");
+    expect(system).toContain(`https://github.com/ap9000/toolroll/releases/tag/v${newer}`);
+    expect(system).toContain('action="/settings/updates/checks"');
+    expect(system).toMatch(/laptop[\s\S]*Older than this computer[\s\S]*0\.0\.1/);
+    expect(data.update).toEqual({ version: newer, security: true, href: "/settings/system#updates", dismissHref: "/settings/updates/dismiss" });
 
     const page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)?.[1] ?? "";
@@ -252,7 +254,9 @@ describe("c4 (behaviour): Settings → Updates and the console notice", () => {
     expect(updateChecksOff({}, dir)).toEqual({ off: true, byEnv: false });
     const quiet = await (await fetch(`${base}/settings?format=workspace`, { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
     expect(quiet.update).toBeUndefined();
-    expect(quiet.view).toMatchObject({ updates: { latest: null, check: { on: false } } });
+    const quietPage = await (await fetch(`${base}/settings/system`, { headers: { cookie } })).text();
+    expect(quietPage).toContain("Checks are off");
+    expect(quietPage).not.toContain("is available");
     await fetch(`${base}/settings/updates/checks`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, check: "on" }), redirect: "manual" });
     expect(updateChecksOff({}, dir).off).toBe(false);
   });

@@ -49,6 +49,14 @@ export class LiveHub {
   private quietUntil = 0;
   private scheduled = false;
   private watching = false;
+  /** A sensitive page (a password field, a one-time secret) opens no live connection at all, whoever asks for a room. */
+  private quiet = false;
+
+  setQuiet(on: boolean): void {
+    if (this.quiet === on) return;
+    this.quiet = on;
+    this.schedule();
+  }
 
   /** `hidden`: the room stays joined while the tab is hidden (the summary: a count, never a watch). Every other room
    * leaves with the tab, so a hidden tab never counts as watching anything. */
@@ -67,6 +75,7 @@ export class LiveHub {
   }
 
   private wanted(hidden: boolean): string {
+    if (this.quiet) return "";
     const rooms = [...new Set([...this.subscriptions.values()].filter(one => !hidden || one.hidden).map(one => one.room))].sort();
     return rooms.length === 0 ? "" : `/live?${rooms.map(room => `room=${encodeURIComponent(room)}`).join("&")}`;
   }
@@ -167,6 +176,9 @@ if (typeof window !== "undefined") {
 
 /** Join a room for as long as the component shows it; null joins nothing. The listener may change freely.
  * `keepWhenHidden`: stay joined while the tab is hidden (only for a room that is never a watch). */
+/** Whether this page may hold a live connection: false on a sensitive page (the workspace sets it before it renders). */
+export function setLiveQuiet(on: boolean): void { hub.setQuiet(on); }
+
 export function useLiveRoom(room: string | null, listener: LiveListener, keepWhenHidden = false): void {
   const current = useRef(listener);
   current.current = listener;

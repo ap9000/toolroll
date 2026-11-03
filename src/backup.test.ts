@@ -309,7 +309,7 @@ test("Settings → Backups is an instance operator's: the last backup and its re
     const cookie = await signIn("alex", alex.token);
     const page = async () => (await fetch(`${base}/settings/backups`, { headers: { cookie } })).text();
     const first = await page();
-    expect(first).toContain("<h1>Backups</h1>");
+    expect(first).toContain('<h2 class="k-same">Backups</h2>');
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(first)![1]!;
     const post = (path: string, fields: Record<string, string>) => fetch(`${base}${path}`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
 

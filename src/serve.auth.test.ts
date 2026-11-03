@@ -136,8 +136,10 @@ describe("the web decision view", () => {
     const screen = await (await fetch(url(`/d/${decisionId}`), { headers: { cookie } })).text();
     expect(screen).toContain("Fail open or fail closed?");
     expect(screen).toContain("Fail open");
-    expect(screen).toContain("recommended");
-    expect(screen).toContain("irreversible, tap to arm");
+    expect(screen).toContain(">Recommended<");
+    // The irreversible option says so on its card, and answering it asks for a tick the server checks again.
+    expect(screen).toContain("Can&#39;t be undone");
+    expect(screen).toContain('name="confirm" value="yes"');
     expect(screen).toContain(`/d/${decisionId}/evidence/${artifactId}`);
 
     // Answerable: one POST, and the machine heard it.
@@ -306,10 +308,15 @@ describe("the web decision view", () => {
     const unconfirmed = await fetch(url(`/d/${decisionId}/answer`), {
       method: "POST",
       headers: { authorization: `Bearer alex:${approverToken}` },
-      body: new URLSearchParams({ choice: "drop" }),
+      body: new URLSearchParams({ choice: "drop", note: "gone for good" }),
     });
     expect(unconfirmed.status).toBe(400);
     expect(store.getDecision(decisionId)?.state).toBe("open");
+    // The refusal sits in the question's own box with nothing changed, and the answer being made stays in it.
+    const refused = await unconfirmed.text();
+    expect(refused).toContain("“Drop the table” can&#39;t be undone: tick the box to confirm it. Nothing changed.");
+    expect(refused).toMatch(/value="drop" checked/);
+    expect(refused).toContain(">gone for good</textarea>");
 
     const confirmed = await fetch(url(`/d/${decisionId}/answer`), {
       method: "POST",
@@ -476,7 +483,7 @@ describe("the settings card", () => {
     const cookie = await login();
 
     // Before: not set, and the card says so.
-    let page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    let page = await (await fetch(`${base}/settings/alerts`, { headers: { cookie } })).text();
     expect(page).toContain("not set");
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)?.[1] as string;
 
@@ -485,8 +492,11 @@ describe("the settings card", () => {
       method: "POST",
       headers: { cookie, origin: base },
       body: new URLSearchParams({ token: "not a token", csrf }),
+      redirect: "manual",
     });
-    expect(bad.status).toBe(400);
+    // Refused back to its section with the reason; nothing is stored.
+    expect(bad.status).toBe(303);
+    expect(bad.headers.get("location")).toMatch(/^\/settings\/alerts\?problem=.+#telegram-token$/);
 
     // The real thing lands owner-only beside the database.
     const token = "777000:AAExampleExampleExample123";
@@ -502,7 +512,7 @@ describe("the settings card", () => {
     expect(readFileSync(file, "utf8").trim()).toBe(token);
 
     // After: recognizable, never whole.
-    page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    page = await (await fetch(`${base}/settings/alerts`, { headers: { cookie } })).text();
     expect(page).toContain("e123");
     expect(page).not.toContain(token);
   });
@@ -955,8 +965,8 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     await boot({ projectRoots: [root], ghList });
     const cookie = await login();
     const page = await githubPage(cookie);
-    // The on-disk clone is offered as add + open, with its path said plainly.
-    expect(page).toContain("add + open");
+    // The on-disk clone is offered as Add and open, with its path said plainly.
+    expect(page).toContain("Add and open");
     expect(page).toContain(cloned);
     // The absent one pre-fills the EXISTING clone ceremony — preview,
     // password, and size check all still stand behind that form.
@@ -995,7 +1005,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     const cookie = await login();
     const page = await githubPage(cookie);
     // Neither local directory mapped: both rows offer the clone ceremony.
-    expect(page).not.toContain("add + open");
+    expect(page).not.toContain("Add and open");
     expect((renderedHtmlOf(page).match(/Clone here/g) ?? []).length).toBe(2);
     expect((workspaceOf(page).pageHtml!.match(/Clone here/g) ?? []).length).toBe(2);
     // The hostile description reached the page dead, not live.
@@ -1027,7 +1037,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     await boot({ projectRoots: [root], ghList: async () => ({ ok: false as const, reason: "gh-auth" as const, message: "gh is not signed in — run `gh auth login --hostname github.com` where serve runs" }) });
     const cookie = await login();
     const page = await githubPage(cookie);
-    expect(page).toContain("gh is not signed in");
+    expect(page).toContain("The GitHub CLI isn’t signed in.");
   });
 
   test("preview mints a single-use record; confirm takes the password, clones, enrolls, opens; replay refuses", async () => {

@@ -1,18 +1,15 @@
-import { activityMetrics, activityScope, activityLimit } from '../project-activity.js';
 /** Everyday console pages: home, inbox, board, work, projects, fleet and the queue. */
 import { archivedWords, tidyGroups, TIDY_DEFAULT_DAYS, type TidyItem } from "../tidy.js";
 import { stepUpForm } from "../settings-kit.js";
-import { type Html, html, type HtmlValue, htmlString, joinHtml, postForm, replaceMarkup, reauth } from "../html.js";
+import { type Html, html, type HtmlValue, joinHtml, postForm, replaceMarkup, reauth } from "../html.js";
 import { type AssignmentSnapshot } from "../assignment.js";
 import { type BoardCard } from "../board.js";
-import { type BrowserLimits,type BrowserProjectRow,type BrowserProjectsView,type BrowserTasksView,browserWorkActionHref } from "../browser-workspace.js";
-import { CHECK_LEVEL_WORDS,type CheckLevel } from "../check-levels.js";
+import { type BrowserLimits,type BrowserTasksView,browserWorkActionHref } from "../browser-workspace.js";
 import { type DispatchDiagnosis } from "../dispatch.js";
 import { type FirstRunStep } from "../first-run.js";
 import { type Gap } from "../gaps.js";
 import { limitsHtml } from "../limits-ui.js";
 import { type Ask,ASK_LABEL,ASKS,START_BUILDER_COMMAND } from "../needs-you.js";
-import { type ListOutcome } from "../onboard.js";
 import { type parseBaseTreeSnapshot } from "../peek.js";
 import { projectName } from "../project.js";
 import { type CriterionMatrixRow } from "../proof.js";
@@ -25,9 +22,8 @@ import { HEADLINES, type Headline } from "../task-status.js";
 import { chipOfHeadline, type ChipTone } from "../design/kit.js";
 import { WORK_VIEWS,type WorkFacts,type WorkStatus,type WorkView } from "../workspace-ui.js";
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { buildsViews,CHEVRON_ICON,type Chrome,consoleSpend,FOLDER_PATHS,GRIP_HANDLE,isOverdue,projectChip,relativeAge,safePrUrl,screen,type Screen,sentenceCase,strokeIcon,TO_FRONT_ICON,when,whenTime } from "./chrome.js";
+import { buildsViews,CHEVRON_ICON,type Chrome,consoleSpend,GRIP_HANDLE,isOverdue,projectChip,relativeAge,safePrUrl,screen,type Screen,sentenceCase,TO_FRONT_ICON,when,whenTime } from "./chrome.js";
 import { reviewHref,taskHref } from "./http.js";
 import { criterionMatrixSummary,incidentWords,PHASE_WORDS,phaseWords } from "./render-results.js";
 import { decisionAnswerCard,decisionAnswerScript,dispatchHeadline,statusLineHtml,workDiagnosticsHtml } from "./render-tasks.js";
@@ -258,9 +254,8 @@ export function inboxPage(chrome: Chrome, data: {
   });
 }
 
-/** System: the machinery — workers, background service, workspaces. */
 /** Start a builder: the one command, as text to select (/start-builder, where every "Connect a builder" leads, and
- * /system#builder). `project`: the open project's name, when the viewer may see it; `connected`: whether a builder
+ * the Agents page). `project`: the open project's name, when the viewer may see it; `connected`: whether a builder
  * that may build there is checking in (null: say nothing); `managed`: whether this person can start one themselves
  * (registering a builder takes an instance operator), else who to ask. */
 export function startBuilderHtml(data: { heading: "h1" | "h2"; project: string | null; connected: boolean | null; managed: boolean }): Html {
@@ -274,96 +269,6 @@ export function startBuilderHtml(data: { heading: "h1" | "h2"; project: string |
       ? html`<p class="meta">Keep it running. Approved tasks start on their own. The console alone (<code>toolroll serve</code>) doesn't build.</p>`
       : html`<p class="meta">Starting a builder takes someone who manages this Toolroll. Ask them to run it there; your tasks start on their own once it connects.</p>`
   }</div></section>`;
-}
-
-export function systemPage(chrome: Chrome, data: {
-  agents: {
-    phase: "plan" | "build" | "repair" | "review";
-    provider?: string;
-    model?: string | null;
-    source?: "pinned" | "flag" | "project" | "installation" | "default";
-    problem?: string;
-    setBy: string | null;
-  }[];
-  building: { taskId: string; runner: string; claimedAt: string; expiresAt: string; model: string | null }[];
-  runners: Runner[];
-  worktrees: WorktreeRow[];
-  episode: { id: number; startedAt: string; endedAt: string | null; ticks: number; built: number; broke: number } | null;
-  outboxPending: number;
-  externalWork?: { remoteRepo: string; blocked: string | null; openEpisode: string | null }[];
-  now: Date;
-}): Screen {
-  const nowMs = data.now.getTime();
-  const runnerCards = data.runners
-    .filter(one => one.retiredAt === null)
-    .map(one => {
-      const age = nowMs - new Date(one.heartbeatAt).getTime();
-      const dot = age < 5 * 60_000 ? "dot-ok" : age < 60 * 60_000 ? "dot-warn" : "dot-off";
-      const said = age < 5 * 60_000 ? "alive" : age < 60 * 60_000 ? `quiet ${Math.round(age / 60_000)}m` : "not heard from";
-      const busy = data.building.filter(claim => claim.runner === one.name).length;
-      return html`<div class="stat-card"><span class="k"><span class="dot ${dot}"></span>${one.name}</span><span class="v">builder · ${said} · ${busy}/${one.capacity} building</span></div>`;
-    });
-  const worktreeCards = data.worktrees.map(tree => {
-    const leased = tree.leasedAt !== null && tree.releasedAt === null;
-    const dot = leased ? "dot-ok" : tree.verified ? "dot-off" : "dot-warn";
-    const state = leased ? "building" : tree.verified ? "free" : "needs review";
-    const name = tree.path.split("/").pop() ?? tree.path;
-    return html`<div class="stat-card"><span class="k"><span class="dot ${dot}${leased ? " pulse" : ""}"></span><span class="mono">${name}</span></span><span class="v">workspace · ${tree.branch} · ${state}</span></div>`;
-  });
-  const watchCard =
-    data.episode === null
-      ? null
-      : html`<div class="stat-card"><span class="k"><span class="dot ${data.episode.endedAt === null ? "dot-ok pulse" : "dot-off"}"></span>Toolroll</span><span class="v">${
-          data.episode.endedAt === null
-            ? html`running since ${whenTime(data.episode.startedAt)}`
-            : html`last run: ${data.episode.built} built, ${data.episode.broke} broke · ended ${whenTime(data.episode.endedAt)}`
-        }</span></div>`;
-  const cards = [...runnerCards, watchCard, ...worktreeCards].filter((one): one is Html => one !== null);
-  const PHASE_SAID: Record<string, string> = {
-    plan: "planning sessions ask questions and draft the plan you approve",
-    build: "builds do the work, unattended, inside the approved scope",
-    repair: "repair turns mend a malformed handoff in the same session",
-  };
-  const agentLines = joinHtml(data.agents
-    .map(one => {
-      if (one.problem !== undefined) {
-        return html`<p class="row"><span class="mono">${one.phase}</span> <span class="badge badge-failed">Misconfigured</span> <span class="meta">${one.problem}</span></p>`;
-      }
-      const who =
-        one.source === "project"
-          ? html`chosen for this project${one.setBy === null ? null : html` by ${one.setBy}`}`
-          : one.source === "installation"
-            ? html`set for the whole installation${one.setBy === null ? null : html` by ${one.setBy}`}`
-            : html`the default — nothing configured`;
-      const dollars = one.provider === "claude" ? null : html` · <span title="this provider reports tokens, not dollars — its runs land as unmeasured spend">no dollar costs</span>`;
-      return html`<p class="row"><span class="mono">${one.phase}</span> <strong>${one.provider === null || one.provider === undefined ? "" : agentModelName(one.provider, one.model ?? null)}</strong>${one.model === null || one.model === undefined ? html` <span class="meta">(its default model)</span>` : null}<span class="right meta">${who}${dollars}</span></p><p class="meta" style="margin-top:0">${PHASE_SAID[one.phase] ?? ""}</p>`;
-    }), "\n");
-  const agentsCard =
-    html`<h2>Agents</h2><p class="meta">Which AI provider runs each phase. An instance operator changes them in <a href="/settings/models">Settings → Models</a> with their password, or with <code>toolroll config</code>.</p><div class="card">${agentLines}<p class="meta">Repair always stays on the provider that built — only its model can differ. A schedule's task filed under an approval moved from a routine is pinned to the agents approved then.</p></div>`;
-
-  return screen("system", joinHtml([
-    html`<h1>System</h1>`,
-    html`<p class="hint">builders execute tasks in isolated temporary copies of each project</p>`,
-    agentsCard,
-    cards.length === 0 ? null : html`<div class="cards">${cards}</div>`,
-    startBuilderHtml({ heading: "h2", project: null, connected: data.runners.some(one => one.retiredAt === null && runnerAlive(one, data.now)) ? null : false, managed: true }),
-    data.outboxPending > 0 ? html`<p class="meta">Notifications: ${data.outboxPending} pending delivery</p>` : null,
-    (data.externalWork ?? []).length === 0
-      ? null
-      : html`<h2>External work</h2>${joinHtml(
-          (data.externalWork ?? []).map(
-            one =>
-              html`<p class="row"><span class="mono">${one.remoteRepo}</span> ${
-                one.blocked !== null
-                  ? html`<span class="badge badge-failed">Dispatch blocked</span> <span class="meta">the tracker connection needs repair — \`toolroll sync\` says why</span>`
-                  : one.openEpisode !== null
-                    ? html`<span class="badge badge-failed">Sync failing</span> <span class="meta">${one.openEpisode}</span>`
-                    : html`<span class="meta">syncing normally</span>`
-              }</p>`,
-          ),
-          "\n",
-        )}`,
-  ], "\n"), { chrome, refreshSeconds: data.building.length > 0 ? 10 : 60 });
 }
 
 /**
@@ -632,36 +537,6 @@ export function boardBody(
     html`<details class="lane lane-done"${data.done.length === 0 ? null : html` open`}><summary><h2>${laneChip("done", html`<a href="/done">Done recently</a>`)}</h2></summary><p class="hint">The most recent. The full list is under Done.</p>${doneCards}</details>`,
     html`</div>`,
   ], "\n");
-}
-
-/** Completed work: one row per done task, its final run and PR attached. */
-export function donePage(
-  chrome: Chrome,
-  rows: ReturnType<Store["listCompletedWorkScoped"]>,
-  ciRed: (pr: number) => boolean,
-): Screen {
-  const list =
-    rows.length === 0
-      ? html`<p class="meta">No finished tasks yet.</p>`
-      : joinHtml(rows.map(row => {
-          const pr =
-            row.prNumber === null
-              ? row.publicationState === null
-                ? null
-                : html` <span class="badge">${sentenceCase(row.publicationState)}</span>`
-              : html` <a href="${row.prUrl ?? "#"}" class="badge badge-open">PR #${row.prNumber}</a>${ciRed(row.prNumber) ? html` <span class="badge badge-failed">CI failing</span>` : null}`;
-          const needsVerification =
-            (row.proofVerdict === "short" || row.proofVerdict === "refuted") && !row.proofAccepted
-              ? html` <span class="badge badge-failed">${row.proofVerdict === "refuted" ? "conflicting evidence" : "missing evidence"}</span>`
-              : null;
-          return html`<div class="card"><p><a href="${taskHref(row.taskId)}"><strong>${row.title}</strong></a>${row.outcome === "no-change" ? html` <span class="badge">No change needed</span>` : null}${pr}${needsVerification}${criterionMatrixSummary(row.proofMatrix)}</p>${row.handoff === null ? null : html`<p class="meta">${row.handoff.length > 200 ? row.handoff.slice(0, 200) + "…" : row.handoff}</p>`}<p class="meta mono">${row.taskId} · ${whenTime(row.completedAt)}${row.ranMinutes === null ? null : html` · ran ${row.ranMinutes}m`}${row.provider === null ? null : html` · ${runCostWords({ authMode: row.authMode, costUsd: row.costUsd, tokensIn: null, tokensOut: null })}`} · <a href="${reviewHref(row.taskId)}">review →</a></p></div>`;
-        }), "\n");
-  return screen("done", joinHtml([
-    html`<h1>Done</h1>`,
-    buildsViews("done"),
-    html`<p class="hint">completed work in order of completion — each with its final build, the agent's conclusion, usage, and its pull request; <a href="/review">review</a> opens the same saved work and its checks</p>`,
-    list,
-  ], "\n"), { chrome });
 }
 
 export function homePage(chrome: Chrome, data: {
@@ -966,40 +841,6 @@ export function workPage(
   return screen('work', html`<div class="work-head"><h1>Tasks</h1>${putAwayLink === null ? null : html`<a class="button-link" href="${putAwayLink.href}" data-put-away-old>${putAwayLink.label}</a>`}${tools}</div>${limitsHtml(data.limits ?? null)}${legacyTabs}${stateLinks}${list}${pages}`, { chrome, workspace: { view } });
 }
 
-export function browsePage(chrome: Chrome, data: {
-  at: string;
-  root: string;
-  roots: string[];
-  parent: string | null;
-  entries: { name: string; path: string; git: boolean }[];
-  /** Unused: postForm adds the request's CSRF field. Kept for callers. */
-  csrf: string;
-}): Screen {
-  const crumb = data.at === data.root ? projectName(data.root) : `${projectName(data.root)}${data.at.slice(data.root.length)}`;
-  const openForm = (path: string): Html =>
-    postForm("/projects/open", html`<button type="submit">Open</button>`, { attrs: { class: "inline" }, hidden: { path } });
-  return screen("projects", joinHtml([
-    html`<h1>Choose a folder</h1>`,
-    html`<p class="meta">git repositories float to the top and can be opened; anything else can be entered — only folders under ${
-      data.roots.length === 1 ? html`<span class="mono">${projectName(data.root)}</span>` : "the configured roots"
-    } are visible here</p>`,
-    data.roots.length > 1
-      ? html`<p class="meta">Roots: ${joinHtml(data.roots.map(one => html`<a href="/projects/browse?at=${encodeURIComponent(one)}" class="mono">${projectName(one)}</a>`), " · ")}</p>`
-      : null,
-    html`<p class="mono meta">${crumb}</p>`,
-    data.parent === null
-      ? null
-      : html`<p class="row"><a href="/projects/browse?at=${encodeURIComponent(data.parent)}">← up one level</a></p>`,
-    data.entries.length === 0
-      ? html`<p class="meta">No folders here</p>`
-      : joinHtml(data.entries.map(
-          one =>
-            html`<p class="row"><a href="/projects/browse?at=${encodeURIComponent(one.path)}"><strong>${one.name}</strong></a>${one.git ? html` <span class="badge badge-done">git</span>` : null}<span class="right">${one.git ? openForm(one.path) : html`<a class="meta" href="/projects/browse?at=${encodeURIComponent(one.path)}">enter →</a>`}</span></p>`,
-        ), "\n"),
-    html`<p class="meta"><a href="/projects">← back to projects</a></p>`,
-  ], "\n"), { chrome });
-}
-
 
 /** The compact completed row shared by both halves of the control room. */
 export type WorkbenchDone = { taskId: string; title: string; outcome: string | null; repo: string | null };
@@ -1255,242 +1096,6 @@ export function githubIdentityOf(remoteUrl: string): string | null {
   return null;
 }
 
-/** The GitHub listing page: the account's repositories with ONE honest
- * action each. Names, descriptions, and paths are gh/filesystem DATA —
- * escaped at the sink like everything else. */
-export function githubReposPage(
-  chrome: Chrome,
-  data: {
-    /** The last listing; null until someone lists (a POST: listing asks GitHub, so a page visit never does). */
-    listed: ListOutcome | null;
-    local: Map<string, string>;
-    registered: Set<string>;
-    /** Unused: postForm adds the request's CSRF field. Kept for callers. */
-    csrf: string;
-    cloneReady: boolean;
-    openProject: string | null;
-    /** A projects folder didn't answer in time: local copies weren't matched this time. */
-    localUnanswered?: boolean;
-  },
-): Screen {
-  const openForm = (path: string, label: string): Html =>
-    postForm("/projects/open", html`<button type="submit">${label}</button>`, { attrs: { class: "inline" }, hidden: { path } });
-  const cloneForm = (nameWithOwner: string): Html =>
-    postForm("/projects/onboard-preview", html`<button type="submit">Clone here →</button>`, { attrs: { class: "inline" }, hidden: { repo: nameWithOwner, root: "0" } });
-  const list = (label: string) => postForm("/projects/github", html`<button type="submit"${label === "Refresh list" ? html` class="secondary"` : ""}>${label}</button>`, { attrs: { class: "inline" } });
-  const rows =
-    data.listed === null
-      ? list("List repositories")
-      : !data.listed.ok
-      ? html`<p class="meta">${data.listed.message}</p>`
-      : data.listed.repos.length === 0
-        ? html`<p class="meta">The signed-in GitHub account has no repositories to list</p>`
-        : joinHtml(data.listed.repos.map(repo => {
-            const localPath = data.local.get(repo.nameWithOwner.toLowerCase()) ?? null;
-            const action =
-              localPath !== null && data.openProject === localPath
-                ? html`<span class="badge badge-done">Open now</span>`
-                : localPath !== null
-                  ? openForm(localPath, data.registered.has(localPath) ? "open →" : "add + open →")
-                  : data.cloneReady
-                    ? cloneForm(repo.nameWithOwner)
-                    : html`<span class="meta">choose a projects folder first</span>`;
-            return joinHtml([
-              html`<div class="card project-card">`,
-              html`<div class="row"><strong>${repo.nameWithOwner}</strong>${repo.isPrivate ? html` <span class="badge">Private</span>` : null}`,
-              html`<span class="right">${action}</span></div>`,
-              localPath === null
-                ? html`<p class="meta">Not on this machine yet${/^\d{4}-\d{2}-\d{2}T/.test(repo.updatedAt) ? html` · pushed ${whenTime(repo.updatedAt)}` : null}</p>`
-                : html`<p class="meta mono" style="overflow-wrap:anywhere;margin:.2rem 0">${localPath}</p>`,
-              repo.description === "" ? null : html`<p class="meta">${repo.description}</p>`,
-              html`</div>`,
-            ], "\n");
-          }), "\n");
-  return screen("projects", joinHtml([
-    html`<h1>Your GitHub repositories</h1>`,
-    html`<p class="meta">Repositories available to the GitHub account signed in on this machine — open one you already have, or clone a new one after a quick preview.</p>`,
-    data.localUnanswered === true ? html`<p class="meta">Your projects folder didn't answer, so copies already on this machine aren't matched yet. Try again in a moment.</p>` : null,
-    rows,
-    data.listed === null ? null : list("Refresh list"),
-    html`<p class="row" style="margin-top:.6rem"><a class="badge" href="/projects">← back to projects</a></p>`,
-  ], "\n"), { chrome });
-}
-
-export function projectsPage(
-  chrome: Chrome,
-  recent: { path: string; name: string; lastOpenedAt: string }[],
-  candidates: string[],
-  open: string | null,
-  problem: string | null,
-  _unscopedMode: boolean,
-  browsable = false,
-  onboard: OnboardCardState | null = null,
-  peeks: Record<string, ProjectPeek | null> = {},
-  returnTo = "/",
-  pullRequestsOn?: (path: string) => boolean,
-  checkLevelOf?: (path: string) => CheckLevel,
-  activity?: BrowserProjectsView["activity"],
-): Screen {
-  const activityHtml = activity === undefined ? null : html`<details><summary>Activity · ${activity.project}</summary>${activity.report === null
-    ? html`<p role="alert">Activity is unavailable.</p><a href="/projects">Reload</a>`
-    : html`<p>${activityScope(activity.report)}</p>${activity.report.truncated ? html`<p>${activityLimit(activity.report)}</p>` : null}${activityMetrics(activity.report).map(metric => html`<details><summary>${metric.label} · ${metric.value}</summary><p>${metric.detail}</p>${metric.rows.length === 0 ? html`<p>No tasks in this group.</p>` : html`<ul>${metric.rows.map(row => html`<li><a href="${row.href}">${row.title}</a> · Recorded checks: ${row.checks}</li>`)}</ul>`}</details>`)}`}</details>`;
-  // The onboarding card (repo onboarding, findings 1-39): preview first,
-  // then a password-confirmed clone into a configured root. Disabled
-  // states explain themselves in words (finding 28/39).
-  const onboardCard =
-    onboard === null
-      ? null
-      : !onboard.enabled
-        ? html`<p class="meta">${onboard.why}</p>`
-        : joinHtml([
-            html`<details class="project-add-more"${onboard.record === null ? null : html` open`}><summary>${onboard.record === null ? 'Paste a GitHub link' : 'Review repository'}</summary>`,
-            html`<p class="meta">Paste a GitHub repository — you will preview it before anything is downloaded. It goes into your saved projects folder and the builder connects automatically. Large-file (LFS) objects are not downloaded.</p>`,
-            onboard.record === null
-              ? postForm("/projects/onboard-preview", joinHtml([
-                  html`<label>Repository <input type="text" name="repo" placeholder="owner/name or https://github.com/owner/name"></label>`,
-                  onboard.roots.length > 1
-                    ? html`<label>Into <select name="root">${onboard.roots.map((one, index) => html`<option value="${index}">${one}</option>`)}</select></label>`
-                    : html`<input type="hidden" name="root" value="0"><p class="meta">Into ${onboard.roots[0] ?? ""}</p>`,
-                  html`<button type="submit">Preview</button>`,
-                ], "\n"), { attrs: { class: "card" } })
-              : joinHtml([
-                  html`<div class="card">`,
-                  html`<p><strong>${onboard.record[1].nameWithOwner}</strong> <span class="meta">${
-                    onboard.record[1].diskUsageKib === null ? "size unknown" : `${Math.max(1, Math.round(onboard.record[1].diskUsageKib / 1024))} MiB`
-                  } — will land at ${onboard.record[1].target}</span></p>`,
-                  postForm("/projects/onboard-confirm", joinHtml([
-                    onboard.record[1].large
-                      ? html`<label class="row"><input type="checkbox" name="big-ok" value="1"> this is a large repository (or its size is unknown) — clone it anyway</label>`
-                      : null,
-                    html`${reauth(html`<label>Your password, typed again <input type="password" name="token" autocomplete="current-password"></label>`)}`,
-                    html`<div class="sticky-actions"><button type="submit">Clone and open</button></div>`,
-                  ], "\n"), { hidden: { nonce: onboard.record[0] } }),
-                  html`</div>`,
-                ], "\n"),
-            html`</details>`,
-          ], "\n");
-  // Opening a project is a POST (the session's scope changes); a card's
-  // name and counts are the same form, returning to the screen that count
-  // names — so every number on this page is a road, not a fact to admire.
-  const openForm = (path: string, label: string, destination = returnTo, className?: string): Html =>
-    postForm(
-      "/projects/open",
-      html`<button type="submit"${className === undefined ? null : html` class="${className}"`}${className === "button-link" ? html` style="min-height:44px"` : null}>${label}</button>`,
-      { attrs: { class: "inline" }, returnTo: destination, hidden: { path } },
-    );
-
-  // A project switcher CARD (v30 UI): the name and path, an at-a-glance
-  // peek — what waits on a person, what is queued or running, what built
-  // in the last day — and the open action. A vertical stack that reads on
-  // a phone, not a dense row.
-  const peekChips = (path: string, peek: ProjectPeek | null): Html => {
-    if (peek === null) return html`<span class="meta">not scanned</span>`;
-    const isOpen = open !== null && open === path;
-    const chip = (text: string, href: string, cls: string): Html =>
-      isOpen ? html`<a class="badge ${cls}" href="${href}">${text}</a>` : openForm(path, text, href, `badge ${cls}`);
-    const bits: Html[] = [];
-    if (peek.waiting > 0) bits.push(chip(`${peek.waiting} waiting on you`, "/", "badge-open"));
-    if (peek.running > 0) bits.push(chip(`${peek.running} running`, "/runs", "badge-parked"));
-    if (peek.queued > 0) bits.push(chip(`${peek.queued} queued`, "/board?view=order", "badge-queued"));
-    if (peek.doneRecently > 0) bits.push(chip(`${peek.doneRecently} built today`, "/done", "badge-parked"));
-    return bits.length === 0 ? html`<span class="meta">quiet — nothing queued or waiting</span>` : joinHtml(bits, " ");
-  };
-  const projectCard = (one: { path: string; name: string; note: string; peek: ProjectPeek | null }): Html =>
-    joinHtml([
-      html`<div class="card project-card">`,
-      html`<div class="row">${
-        open !== null && open === one.path
-          ? html`<a class="project-name" href="${returnTo}"><strong>${one.name}</strong></a>`
-          : openForm(one.path, one.name, returnTo, "project-name")
-      }`,
-      html`<span class="right">${
-        open !== null && open === one.path ? html`<span class="badge badge-done">Open now</span>` : openForm(one.path, "Open", returnTo, "button-link")
-      }</span></div>`,
-      html`<p class="meta mono" style="overflow-wrap:anywhere;margin:.2rem 0">${one.path}</p>`,
-      html`<p class="row" style="gap:.35rem;flex-wrap:wrap">${peekChips(one.path, one.peek)}</p>`,
-      html`<p class="meta row" style="justify-content:space-between;margin-bottom:0"><span>${one.note}</span><a href="/settings/knowledge?repo=${encodeURIComponent(one.path)}" style="display:inline-flex;align-items:center;min-height:44px">Knowledge</a></p>`,
-      html`</div>`,
-    ], "\n");
-  const cards = (items: { path: string; name: string; note: string }[]): Html =>
-    joinHtml(items.map(one => projectCard({ ...one, peek: peeks[one.path] ?? null })), "\n");
-
-  const recentItems = recent.map(one => ({ path: one.path, name: one.name, note: `last opened ${when(one.lastOpenedAt)}` }));
-  const candidateItems = candidates.map(path => ({ path, name: projectName(path), note: "seen in the queue" }));
-  // The rebuilt page's rows (shadcn/ui): the same projects, peeks and roads.
-  const home = homedir();
-  const rowOf = (path: string, name: string, openedAt: string | null): BrowserProjectRow => {
-    const peek = peeks[path] ?? null;
-    return {
-      name, path, shortPath: path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path, open: open !== null && open === path, openedAt,
-      knowledgeHref: `/settings/knowledge?repo=${encodeURIComponent(path)}`,
-      ...(pullRequestsOn === undefined ? {} : { pullRequests: { href: `/settings/pull-requests?repo=${encodeURIComponent(path)}`, on: pullRequestsOn(path) } }),
-      ...(checkLevelOf === undefined ? {} : { checks: { href: `/settings/checks?repo=${encodeURIComponent(path)}`, level: CHECK_LEVEL_WORDS[checkLevelOf(path)] } }),
-      peek: peek === null ? null : [
-        ...(peek.waiting > 0 ? [{ label: `${peek.waiting} waiting on you`, href: "/", tone: "attention" as const }] : []),
-        ...(peek.running > 0 ? [{ label: `${peek.running} running`, href: "/runs", tone: "neutral" as const }] : []),
-        ...(peek.queued > 0 ? [{ label: `${peek.queued} queued`, href: "/board?view=order", tone: "neutral" as const }] : []),
-        ...(peek.doneRecently > 0 ? [{ label: `${peek.doneRecently} built today`, href: "/done", tone: "neutral" as const }] : []),
-      ],
-    };
-  };
-
-  // The two ways to ADD a project are the page's large, primary actions:
-  // browse this machine, or choose a GitHub repository. Manual path entry
-  // stays available as the clearly secondary expert road.
-  const addAction = (href: string, paths: Html, title: string, detail: string): Html =>
-    html`<a class="project-add-action" href="${href}"><span class="project-add-icon">${strokeIcon(paths)}</span><span class="project-add-copy"><strong>${title}</strong><small>${detail}</small></span><span class="project-add-arrow" aria-hidden="true">→</span></a>`;
-  const addForms = joinHtml([
-    browsable || onboard !== null && !onboard.enabled && onboard.why.includes('--project-root')
-      ? null
-      : html`<p class="meta">Choose a projects folder once with <code>toolroll up --project-root &lt;dir&gt;</code>. Toolroll remembers it after that.</p>`,
-    onboardCard === null ? null : html`<div style="margin-top:.5rem">${onboardCard}</div>`,
-    html`<details class="project-add-more"><summary>Enter an exact path instead</summary>`,
-    html`${postForm("/projects/open", joinHtml([
-      html`<label>Path on this server<input type="text" name="path" placeholder="/Users/you/code/your-repo"></label>`,
-      html`<button type="submit">Open project</button>`,
-    ], "\n"), { attrs: { class: "card" }, returnTo })}</details>`,
-  ], "\n");
-  const addCard = joinHtml([
-    html`<div class="card project-add-card">`,
-    html`<h2 class="project-add-title">Add a project</h2>`,
-    html`<div class="project-add-actions">`,
-    browsable
-      ? addAction("/projects/browse", FOLDER_PATHS, "Choose a local folder", "Browse the project folders on this machine")
-      : null,
-    onboard === null
-      ? null
-      : addAction(
-          "/projects/github",
-          html`<circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 9v6"/><path d="M18 9a9 9 0 0 1-9 9"/>`,
-          "Add from GitHub",
-          "Choose from repositories available to your GitHub login",
-        ),
-    html`</div>`,
-    addForms,
-    html`</div>`,
-  ], "\n");
-
-  // Arriving from New task with no project open: say what this step is for.
-  const choosing = returnTo.startsWith("/tasks/new");
-  return screen("projects", joinHtml([
-    choosing ? html`<h1>New task</h1><p class="meta">Choose the project it belongs to.</p>` : html`<h1>Projects</h1>`,
-    choosing ? null : html`<p class="meta">Add a folder or GitHub repository once. Its tasks and chat stay here.</p>`,
-    problem === null ? null : html`<div class="problem">${problem}</div>`,
-    recentItems.length === 0 && candidateItems.length === 0
-      ? html`<div class="card"><p><strong>Nothing to open yet.</strong></p><p class="meta">Add one below — opening it registers it here for next time.</p></div>`
-      : null,
-    activityHtml,
-    recentItems.length > 0 ? html`<h2>Recent</h2>${cards(recentItems)}` : null,
-    candidateItems.length > 0 ? html`<h2>Available</h2>${cards(candidateItems)}` : null,
-    addCard,
-  ], "\n"), { chrome, workspace: { view: {
-    kind: "projects", choosing, problem, returnTo, ...(activity === undefined ? {} : { activity }),
-    recent: recent.map(one => rowOf(one.path, one.name, one.lastOpenedAt)),
-    available: candidates.map(path => rowOf(path, projectName(path), null)),
-    add: { browse: browsable ? "/projects/browse" : null, github: onboard === null ? null : "/projects/github", html: htmlString(addForms) },
-  } satisfies BrowserProjectsView } });
-}
-
 /** The no-script "move to the front" sentinel: the form cannot name the
  * front of a partition, so the handler resolves it (slice 1b, fix 1). */
 export const QUEUE_FRONT = "__TOP__";
@@ -1559,105 +1164,6 @@ export function queueBody(
     workers.map(worker => column(worker.name + (worker.retired ? " (retired)" : ""), worker.name, noteForm(worker), columnOf(worker.name), "nothing queued — this worker will take from the shared queue")),
     "\n",
   )}</div>`;
-}
-
-/**
- * The fleet screen — one lane per runner, and the work in front of it.
- * Building claims pin to the top of their worker's lane (live — never
- * draggable); queued reservations sit below it (draggable to another
- * worker, re-reserving them). Every card wears its project chip, which is
- * the whole point: which agent is on which project is the page's answer.
- * Form-free like the board, except the per-worker note, so the lane stack
- * can re-render itself while somebody watches.
- */
-export function fleetBody(
-  queued: ReturnType<Store["fleetQueue"]>,
-  building: ReturnType<Store["liveClaims"]>,
-  runners: Runner[],
-  queueRevision: number,
-  visibleRepo: (repo: string | null) => boolean,
-): Html {
-  const chip = (repo: string | null): Html | null =>
-    repo === null ? null : html` <span class="badge">${projectName(repo)}</span>`;
-  const queuedCardOf = (one: ReturnType<Store["fleetQueue"]>[number]): Html =>
-    html`<div class="lane-card queue-card" data-task="${one.id}" data-taken="${one.taken ? "1" : "0"}"><p class="row">${one.taken ? null : GRIP_HANDLE}<a href="${taskHref(one.id)}">${one.title}</a></p><p class="row meta"><span class="mono">${one.id}</span>${chip(one.repo)}${one.approved ? null : html` <span class="badge">Unapproved scope</span>`}${one.blockers > 0 ? html` <span class="badge">Waits for ${one.blockers}</span>` : null}${one.taken ? html` <span class="badge">Being taken</span>` : null}</p></div>`;
-  const lanes = runners.map(runner => {
-    const own = queued.filter(one => one.assignedRunner === runner.name && visibleRepo(one.repo));
-    const live = building.filter(one => one.runner === runner.name);
-    const retired = runner.retiredAt !== null;
-    const head =
-      retired
-        ? html`<p class="meta">This worker is retired — drag these elsewhere, or register the name again</p>`
-        : html`${postForm(
-            "/queue/note",
-            html`<input type="text" name="note" class="runner-note" value="${runner.queueNote ?? ""}" data-initial="${runner.queueNote ?? ""}" placeholder="what this worker is working through" aria-label="column note" maxlength="200">`,
-            { attrs: { class: "row" }, hidden: { from: "fleet", runner: runner.name } },
-          )}<p class="meta">${runnerAlive(runner, new Date()) ? "alive" : "quiet"} · ${live.length}/${runner.capacity} building</p>`;
-    const buildingCards = joinHtml(live.map(
-      claim =>
-        html`<div class="lane-card" data-taken="1"><p class="row"><span class="dot dot-ok pulse"></span> ${claim.taskId}</p><p class="row meta">building${chip(claim.repo ?? null)}${claim.model === null ? null : html` · ${modelName(null, claim.model)}`} · ${Math.max(1, Math.round((Date.now() - new Date(claim.claimedAt).getTime()) / 60_000))}m</p></div>`,
-    ), "\n");
-    const queuedCards = joinHtml(own.map(queuedCardOf), "\n");
-    const empty =
-      live.length === 0 && own.length === 0
-        ? html`<p class="meta lane-empty">${retired ? "nothing left" : "idle — will take from the shared queue"}</p>`
-        : null;
-    return html`<section class="lane queue-column${live.length > 0 ? " lane-live" : ""}" data-column="${runner.name}"><h2>${runner.name}${retired ? " (retired)" : ""}</h2>${head}${buildingCards}${queuedCards}${empty}</section>`;
-  });
-  // The shared queue: anything reserved for nobody.
-  const shared = queued.filter(one => one.assignedRunner === null && visibleRepo(one.repo));
-  const sharedCards = joinHtml(shared.map(queuedCardOf), "\n");
-  const sharedLane =
-    html`<section class="lane queue-column" data-column="anyone"><h2>Shared queue</h2><p class="meta">Any free worker takes from here, top first</p>${sharedCards}${shared.length === 0 ? html`<p class="meta lane-empty">nothing waiting — every task is reserved or running</p>` : null}</section>`;
-  return html`<div class="lanes" data-queue-revision="${queueRevision}">${sharedLane}${joinHtml(lanes, "\n")}</div>`;
-}
-
-/** Identical drag mechanics to the queue — the pointer events land on the worker's column. */
-export function fleetScript(): string {
-  return (
-    `(function(){var region=document.getElementById("fleet-region");if(!region)return;` +
-    `var stamp=document.getElementById("fleet-region-stamp");var dragging=null;` +
-    `function dirty(){if(region.contains(document.activeElement)&&document.activeElement!==document.body)return true;` +
-    `var inputs=region.querySelectorAll("input[type=text]");for(var i=0;i<inputs.length;i++){` +
-    `if(inputs[i].value!==(inputs[i].getAttribute("data-initial")||""))return true;}` +
-    `return false;}` +
-    `function paused(){return dragging!==null||dirty();}` +
-    `var wait=12000;var last=Date.now();var busy=false;` +
-    `function tell(){if(!stamp)return;if(paused()){stamp.textContent="paused while you edit";return;}` +
-    `stamp.textContent="updated "+Math.round((Date.now()-last)/1000)+"s ago";}setInterval(tell,1000);` +
-    `function cycle(){if(document.hidden||busy||paused()){setTimeout(cycle,wait);return;}busy=true;` +
-    `fetch("/fleet?fragment=1",{redirect:"manual",cache:"no-store"})` +
-    `.then(function(r){if(r.type==="opaqueredirect"||r.status===401||r.status===403){location.href="/login";return null;}` +
-    `return r.ok?r.text():null;})` +
-    `.then(function(t){if(t&&!paused()){region.innerHTML=t;last=Date.now();}})` +
-    `.catch(function(){})` +
-    `.then(function(){busy=false;tell();setTimeout(cycle,wait);});}setTimeout(cycle,wait);` +
-    `region.addEventListener("pointerdown",function(e){var handle=e.target.closest(".queue-handle");if(!handle)return;` +
-    `var card=handle.closest(".queue-card");if(!card||card.getAttribute("data-taken")==="1")return;` +
-    `e.preventDefault();dragging={task:card.getAttribute("data-task"),card:card};card.style.opacity="0.5";});` +
-    `region.addEventListener("pointermove",function(e){if(!dragging)return;e.preventDefault();` +
-    `var over=document.elementFromPoint(e.clientX,e.clientY);if(!over)return;` +
-    `var target=over.closest(".queue-card");var lane=over.closest(".queue-column");` +
-    `region.querySelectorAll(".queue-card,.queue-column").forEach(function(n){n.style.outline="";});` +
-    `if(target&&target!==dragging.card){target.style.outline="2px solid currentColor";}` +
-    `else if(lane){lane.style.outline="2px dashed currentColor";}});` +
-    `region.addEventListener("pointerup",function(e){if(!dragging)return;var drag=dragging;dragging=null;` +
-    `drag.card.style.opacity="";region.querySelectorAll(".queue-card,.queue-column").forEach(function(n){n.style.outline="";});` +
-    `var over=document.elementFromPoint(e.clientX,e.clientY);if(!over){tell();return;}` +
-    `var target=over.closest(".queue-card");var lane=over.closest(".queue-column");if(!lane){tell();return;}` +
-    `var column=lane.getAttribute("data-column");var before=target&&target!==drag.card?target.getAttribute("data-task"):"";` +
-    `if(target&&target.getAttribute("data-taken")==="1"){before="";}` +
-    `var wrap=region.querySelector("[data-queue-revision]");` +
-    `var fields={respond:"fragment",csrf:(region.querySelector("input[name=csrf]")||{value:""}).value,` +
-    `queueRevision:wrap?wrap.getAttribute("data-queue-revision"):"",task:drag.task,column:column,before:before};` +
-    `var post=new URLSearchParams();Object.keys(fields).forEach(function(k){post.append(k,fields[k]);});` +
-    `fetch("/queue/move",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:post.toString(),redirect:"manual"})` +
-    `.then(function(r){return r.ok?fetch("/fleet?fragment=1",{cache:"no-store"}).then(function(f){return f.ok?f.text():null;}):null;})` +
-    `.then(function(t){if(t&&!paused()){region.innerHTML=t;last=Date.now();}else if(t===null){location.href="/fleet";}})` +
-    `.catch(function(){})` +
-    `.then(function(){tell();});});` +
-    `})();`
-  );
 }
 
 /** The /queue page's one nonce'd script: delegated pointer-event drag (it

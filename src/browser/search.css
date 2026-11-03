@@ -1,0 +1,44 @@
+/* Search (UI revamp wave B; prototype pages/agents.css .agents-k): the ⌘K panel, centred over a dimmed page at a
+ * desk, the whole screen on a phone. Bordered, never a shadow. */
+.so-cmdk { position: fixed; z-index: 40; left: 50%; top: 12vh; width: 640px; max-width: calc(100vw - 32px); max-height: min(640px, 76vh); transform: translateX(-50%); box-sizing: border-box; display: flex; flex-direction: column; background: var(--so-paper); color: var(--so-ink); border: 1px solid var(--so-overlay-line); border-radius: var(--so-radius-sheet); overflow: hidden; }
+.so-cmdk:focus { outline: none; }
+.so-cmdk[hidden] { display: none; }
+.so-cmdk.k-grow-in { transform-origin: top center; animation: so-cmdk-in var(--m-base) var(--m-ease) both; }
+@keyframes so-cmdk-in { from { opacity: 0; transform: translateX(-50%) scale(0.98); } to { opacity: 1; transform: translateX(-50%); } }
+.so-cmdk-h { display: flex; align-items: center; gap: 10px; padding: 10px var(--so-space-md) 10px 14px; border-bottom: 1px solid var(--so-line); color: var(--so-muted); }
+.so-cmdk-in.so-cmdk-in { flex: 1; min-width: 0; height: 32px; margin: 0; padding: 0 6px; border: 0; border-radius: var(--so-radius-sm); background: transparent; color: var(--so-ink); font: 400 15px/1.3 var(--so-font-sans); box-shadow: none; outline: none; }
+.so-cmdk-in::-webkit-search-cancel-button { appearance: none; -webkit-appearance: none; }
+.so-cmdk-in:focus-visible { outline: 2px solid var(--so-ring); outline-offset: 0; }
+.so-cmdk-x.so-cmdk-x { min-width: 0; }
+.so-cmdk-list { flex: 1; min-height: 0; overflow: auto; padding: var(--so-space-xs) 6px var(--so-space-sm); overscroll-behavior: contain; }
+.so-cmdk-g { margin: 0; padding: var(--so-space-md) 10px 6px; font: 500 12px/1 var(--so-font-sans); color: var(--so-muted); }
+.so-cmdk-i { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px var(--so-space-md); align-items: center; padding: var(--so-space-sm) 10px; border-radius: 7px; color: var(--so-ink); text-decoration: none; scroll-margin: 8px; }
+.so-cmdk-i[aria-selected="true"] { background: var(--so-nav-hover); }
+.so-cmdk-t { display: inline-flex; align-items: center; gap: var(--so-space-sm); min-width: 0; font: 500 13px/1.35 var(--so-font-sans); }
+.so-cmdk-t > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.so-cmdk-s { grid-column: 1; font-size: 12px; color: var(--so-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.so-cmdk-i > .k-chip { grid-column: 2; grid-row: 1; justify-self: end; }
+.so-cmdk-none { margin: 0; padding: 14px 10px var(--so-space-xs); font-size: 13px; color: var(--so-muted); }
+.so-cmdk-f { display: flex; align-items: center; gap: var(--so-space-md); padding: var(--so-space-sm) 14px; border-top: 1px solid var(--so-line); font-size: 12px; color: var(--so-muted); }
+.so-cmdk-f .so-kbd + .so-kbd { margin-left: 3px; }
+
+/* The search page's box and its rows (views/search-view.tsx). */
+[data-view] .so-search .so-search-box { display: inline-flex; align-items: center; gap: var(--so-space-sm); box-sizing: border-box; height: 32px; flex: 1; min-width: 240px; max-width: 520px; padding: 0 10px; border: 1px solid var(--so-field-line); border-radius: var(--so-radius-md); color: var(--so-muted); background: var(--so-paper); }
+[data-view] .so-search .so-search-box:focus-within { border-color: var(--so-ink); outline: 2px solid var(--so-ring); outline-offset: 1px; }
+[data-view] .so-search .so-search-box input.so-search-in { flex: 1; min-width: 0; height: 30px; min-height: 0; margin: 0; padding: 0; border: 0; background: transparent; color: var(--so-ink); font: 400 13px/1 var(--so-font-sans); outline: none; box-shadow: none; }
+[data-view] .so-search .so-search-box input::-webkit-search-cancel-button { appearance: none; -webkit-appearance: none; }
+
+@media (max-width: 760px) {
+  .so-cmdk { left: 0; top: 0; width: 100%; max-width: none; height: var(--viewport-height, 100dvh); max-height: none; transform: none; border: 0; border-radius: 0; padding-top: env(safe-area-inset-top); }
+  .so-cmdk.k-grow-in { animation: k-fade var(--m-base) var(--m-ease) both; }
+  .so-cmdk-in.so-cmdk-in { font-size: 16px; height: 44px; border: 1px solid var(--so-field-line); border-radius: var(--so-radius-md); padding: 0 10px; }
+  .so-cmdk-x.so-cmdk-x { width: 44px; height: 44px; padding: 0; }
+  .so-cmdk-i { min-height: 44px; padding: 10px; }
+  .so-cmdk-t { white-space: normal; }
+  .so-cmdk-t > span { white-space: normal; }
+  .so-cmdk-f { padding: 10px var(--so-phone-gutter) calc(10px + env(safe-area-inset-bottom)); }
+  .so-cmdk-f .k-link { display: inline-flex; align-items: center; min-height: 44px; }
+  [data-view] .so-search .so-search-box { height: 44px; min-width: 0; max-width: none; flex-basis: 100%; }
+  [data-view] .so-search .so-search-box input.so-search-in { font-size: 16px; height: 42px; }
+}
+@media (prefers-reduced-motion: reduce) { .so-cmdk.k-grow-in { animation: none; } }

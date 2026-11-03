@@ -6,9 +6,9 @@
  * while the agent runs, and to the end once it has finished. Everything is
  * rendered as text; nothing from the window becomes markup.
  */
-import { Bot, Check, ChevronDown, ChevronRight, FileText, Globe, ListTodo, Pencil, Search, Terminal, Wrench, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type ComponentType } from "react";
-import { cn } from "../components/ui/index.js";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { KButton, KIcon, KSeg } from "../kit/index.js";
+import { cn } from "../kit/utils.js";
 
 type Kind = "session" | "message" | "edit" | "command" | "read" | "search" | "lookup" | "plan" | "delegate" | "tool";
 type WireRecord =
@@ -151,9 +151,6 @@ export function useConversation(url: string | null, live: boolean): Conversation
   return shown;
 }
 
-const KIND_ICONS: Record<Kind, ComponentType<{ className?: string; "aria-hidden"?: boolean }>> = {
-  session: Bot, message: Bot, edit: Pencil, command: Terminal, read: FileText, search: Search, lookup: Globe, plan: ListTodo, delegate: Bot, tool: Wrench,
-};
 const KIND_WORDS: Record<Kind, string> = {
   session: "Started", message: "Said", edit: "Edited files", command: "Ran a command", read: "Read the code", search: "Searched the code",
   lookup: "Looked something up", plan: "Updated its plan", delegate: "Asked a helper", tool: "Used a tool",
@@ -170,8 +167,14 @@ const lasted = (from: string, to: string): string | null => {
   return ms < 1_000 ? "<1s" : ms < 60_000 ? `${Math.round(ms / 1_000)}s` : `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1_000)}s`;
 };
 
+/** One quiet timed row: when · who · what (UI revamp wave B). */
+function Line({ at, who, kind, children, ...data }: { at: string; who: string; kind: "say" | "tool" | "note" | "you" | "mark"; children: ReactNode } & Record<`data-${string}`, string | undefined>) {
+  return <li className={cn("agents-l", `agents-l-${kind}`)} {...data}>
+    <time className="agents-lt k-num" dateTime={at || undefined}>{clock(at)}</time><span className="agents-lw">{who}</span><div className="agents-lx">{children}</div>
+  </li>;
+}
+
 function StepRow({ item, final }: { item: Extract<ConversationItem, { kind: "step" }>; final: boolean }) {
-  const Icon = KIND_ICONS[item.step];
   const verb = KIND_VERBS[item.step];
   const command = item.step === "command" && item.target !== null;
   const done = item.done;
@@ -180,72 +183,59 @@ function StepRow({ item, final }: { item: Extract<ConversationItem, { kind: "ste
     : done === null ? (final ? { words: "No result", tone: "muted" } : { words: "Running…", tone: "running" })
       : done.ok === true ? { words: "Done", tone: "ok" } : done.ok === false ? { words: "Failed", tone: "failed" } : { words: "Ended without a result", tone: "muted" };
   const time = done === null || done.ok === null ? null : lasted(item.at, done.at);
-  const head = <span className="flex min-w-0 items-start gap-2">
-    <Icon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden={true} />
-    <span className="min-w-0 flex-1 break-words">
-      {item.target === null ? <span className="text-muted-foreground">{KIND_WORDS[item.step]}</span>
-        : command ? <code className="font-mono text-mono text-foreground" data-step-target>{item.target}</code>
-          : <><span className="text-muted-foreground">{verb ?? KIND_WORDS[item.step]} </span><code className="font-mono text-mono text-foreground" data-step-target>{item.target}</code></>}
+  const head = <span className="agents-step">
+    <span className="agents-step-t">
+      {item.target === null ? <span className="k-muted">{KIND_WORDS[item.step]}</span>
+        : command ? <code className="k-mono" data-step-target>{item.target}</code>
+          : <><span className="k-muted">{verb ?? KIND_WORDS[item.step]} </span><code className="k-mono" data-step-target>{item.target}</code></>}
     </span>
-    {status !== null && <span className={cn("flex shrink-0 items-center gap-1 text-caption tabular-nums",
-      status.tone === "ok" ? "text-success" : status.tone === "failed" ? "text-danger" : status.tone === "running" ? "text-info" : "text-muted-foreground")} data-step-status={status.tone}>
-      {status.tone === "ok" ? <Check className="size-3.5" aria-hidden={true} /> : status.tone === "failed" ? <X className="size-3.5" aria-hidden={true} /> : null}
-      <span className={status.tone === "ok" ? "sr-only" : undefined}>{status.words}</span>{time !== null && <span>{time}</span>}
+    {status !== null && <span className={cn("agents-step-s", `agents-step-${status.tone}`)} data-step-status={status.tone}>
+      {status.tone === "ok" ? <KIcon name="check" small /> : status.tone === "failed" ? <KIcon name="x" small /> : null}
+      <span className={status.tone === "ok" ? "k-sr" : undefined}>{status.words}</span>{time !== null && <span className="k-num">{time}</span>}
     </span>}
   </span>;
   const out = done?.out ?? [];
-  if (out.length === 0) return <li className="py-1" data-step={item.step}>{head}</li>;
-  return <li className="py-1" data-step={item.step}>
-    <StepOutput head={head} out={out} />
-  </li>;
+  return <Line at={item.at} who="Tool" kind="tool" data-step={item.step}>{out.length === 0 ? head : <StepOutput head={head} out={out} />}</Line>;
 }
 
-/** A step with output: the row itself shows and hides the output's last lines. */
-function StepOutput({ head, out }: { head: React.ReactNode; out: string[] }) {
+/** A step with output: Show output opens its last lines under the row. */
+function StepOutput({ head, out }: { head: ReactNode; out: string[] }) {
   const [open, setOpen] = useState(false);
   return <>
-    <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} data-step-toggle
-      className="flex w-full min-w-0 flex-col items-stretch gap-0.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring phone:min-h-11">
-      {head}
-      <span className="flex items-center gap-1 pl-5.5 text-caption text-muted-foreground">
-        {open ? <ChevronDown className="size-3" aria-hidden={true} /> : <ChevronRight className="size-3" aria-hidden={true} />}{open ? "Hide output" : "Show output"}
-      </span>
-    </button>
-    <pre hidden={!open} className="mt-1.5 ml-5.5 max-h-72 overflow-auto rounded-md border border-border bg-muted px-2.5 py-2 font-mono text-mono leading-[1.5] whitespace-pre-wrap break-words" data-step-output>{out.join("\n")}</pre>
+    {head}
+    <span className="agents-step-more"><KButton variant="ghost" sm label={open ? "Hide output" : "Show output"} aria-expanded={open} onClick={() => setOpen(value => !value)} data-step-toggle /></span>
+    <div hidden={!open} className="agents-out" data-step-output>{out.join("\n")}</div>
   </>;
 }
 
-function NoteBubble({ note }: { note: ConversationNote }) {
-  return <li className="flex justify-end py-1.5" data-conversation-note={note.id}>
-    <div className="max-w-[85%] rounded-card border border-border bg-muted px-3 py-2">
-      <p className="text-caption text-muted-foreground">{note.mine ? "You" : note.author} · {clock(note.at)}</p>
-      <p className="mt-0.5 text-body whitespace-pre-wrap break-words text-foreground">{note.text}</p>
-      <p className="mt-1 text-caption text-muted-foreground" data-note-standing>{note.standing}{note.readAt === null ? "" : ` ${clock(note.readAt)}`}</p>
-    </div>
-  </li>;
+function NoteRow({ note }: { note: ConversationNote }) {
+  return <Line at={note.at} who={note.mine ? "You" : note.author} kind="you" data-conversation-note={String(note.id)}>
+    <span className="agents-note-x">{note.text}</span>
+    <span className="agents-note-s" data-note-standing>{note.standing}{note.readAt === null ? "" : ` ${clock(note.readAt)}`}</span>
+  </Line>;
 }
 
-type Shown = { key: string; at: string; node: React.ReactNode };
+type Shown = { key: string; at: string; node: ReactNode };
 
 /** Items and notes in one time order; an item with no time (an older run's plain line) keeps its place. */
-function merged(conversation: Conversation): Shown[] {
+function merged(conversation: Conversation, agent: string): Shown[] {
   const notes = conversation.notes.slice().sort((a, b) => a.at.localeCompare(b.at));
   const out: Shown[] = [];
   let next = 0;
   for (const item of conversation.items) {
     while (next < notes.length && item.at !== "" && notes[next]!.at < item.at) {
       const note = notes[next++]!;
-      out.push({ key: `note:${note.id}`, at: note.at, node: <NoteBubble key={`note:${note.id}`} note={note} /> });
+      out.push({ key: `note:${note.id}`, at: note.at, node: <NoteRow key={`note:${note.id}`} note={note} /> });
     }
     const node = item.kind === "say"
-      ? <li key={item.key} className="py-1.5 text-body-reading whitespace-pre-wrap break-words text-foreground">{item.lines.join("\n")}</li>
+      ? <Line key={item.key} at={item.at} who={agent} kind="say">{item.lines.join("\n")}</Line>
       : item.kind === "step" ? <StepRow key={item.key} item={item} final={conversation.final} />
-        : <li key={item.key} className="py-1 text-caption text-muted-foreground" data-conversation-marker>{item.words}</li>;
+        : <Line key={item.key} at={item.at} who="Toolroll" kind="mark" data-conversation-marker="">{item.words}</Line>;
     out.push({ key: item.key, at: item.at, node });
   }
   for (; next < notes.length; next += 1) {
     const note = notes[next]!;
-    out.push({ key: `note:${note.id}`, at: note.at, node: <NoteBubble key={`note:${note.id}`} note={note} /> });
+    out.push({ key: `note:${note.id}`, at: note.at, node: <NoteRow key={`note:${note.id}`} note={note} /> });
   }
   return out;
 }
@@ -263,15 +253,15 @@ function savedView(): "conversation" | "terminal" {
  * conversation reads (sanitized, text only, commands only where the project allows them), and never types anything.
  */
 function TerminalLines({ conversation }: { conversation: Conversation }) {
-  const lines: React.ReactNode[] = [];
+  const lines: ReactNode[] = [];
   const notes = conversation.notes.slice().sort((a, b) => a.at.localeCompare(b.at));
   let next = 0;
-  const note = (one: ConversationNote) => lines.push(<li key={`note:${one.id}`} className="text-info" data-terminal-note>
-    {`» ${one.mine ? "you" : one.author}: ${one.text}`}<span className="text-muted-foreground">{`  (${one.standing}${one.readAt === null ? "" : ` ${clock(one.readAt)}`})`}</span></li>);
+  const note = (one: ConversationNote) => lines.push(<li key={`note:${one.id}`} className="agents-t-note" data-terminal-note>
+    {`» ${one.mine ? "you" : one.author}: ${one.text}`}<span className="k-muted">{`  (${one.standing}${one.readAt === null ? "" : ` ${clock(one.readAt)}`})`}</span></li>);
   for (const item of conversation.items) {
     while (next < notes.length && item.at !== "" && notes[next]!.at < item.at) note(notes[next++]!);
-    if (item.kind === "say") { lines.push(<li key={item.key} className="text-foreground" data-terminal-say>{item.lines.join("\n")}</li>); continue; }
-    if (item.kind === "marker") { lines.push(<li key={item.key} className="text-muted-foreground" data-terminal-marker>{`— ${item.words} —`}</li>); continue; }
+    if (item.kind === "say") { lines.push(<li key={item.key} data-terminal-say>{item.lines.join("\n")}</li>); continue; }
+    if (item.kind === "marker") { lines.push(<li key={item.key} className="k-muted" data-terminal-marker>{`— ${item.words} —`}</li>); continue; }
     const done = item.done;
     const status = item.once ? "" : done === null ? (conversation.final ? "  [no result]" : "  [running]") : done.ok === true ? "" : done.ok === false ? "  [failed]" : "  [ended without a result]";
     const head = item.step === "command" && item.target !== null ? `$ ${item.target}`
@@ -279,16 +269,16 @@ function TerminalLines({ conversation }: { conversation: Conversation }) {
     const out = done?.out ?? [];
     const tail = out.slice(-TERMINAL_TAIL);
     lines.push(<li key={item.key} data-terminal-step={item.step}>
-      <span className={item.step === "command" ? "text-foreground" : "text-muted-foreground"}>{head}</span>
-      {status !== "" && <span className={done?.ok === false ? "text-danger" : "text-muted-foreground"}>{status}</span>}
-      {tail.length > 0 && <span className="block pl-3 text-muted-foreground" data-terminal-output>{out.length > tail.length ? `… ${out.length - tail.length} earlier lines\n` : ""}{tail.join("\n")}</span>}
+      <span className={item.step === "command" ? undefined : "k-muted"}>{head}</span>
+      {status !== "" && <span className={done?.ok === false ? "agents-step-failed" : "k-muted"}>{status}</span>}
+      {tail.length > 0 && <span className="agents-t-out k-muted" data-terminal-output>{out.length > tail.length ? `… ${out.length - tail.length} earlier lines\n` : ""}{tail.join("\n")}</span>}
     </li>);
   }
   for (; next < notes.length; next += 1) note(notes[next]!);
-  return <ol className="flex flex-col gap-0.5 font-mono text-mono leading-[1.45] whitespace-pre-wrap break-words" data-terminal>{lines}</ol>;
+  return <ol className="agents-term" data-terminal>{lines}</ol>;
 }
 
-export function ConversationPane({ url, live }: { url: string | null; live: boolean }) {
+export function ConversationPane({ url, live, agent = "Agent" }: { url: string | null; live: boolean; agent?: string }) {
   const conversation = useConversation(url, live);
   const box = useRef<HTMLDivElement | null>(null);
   const pinned = useRef(true);
@@ -315,7 +305,7 @@ export function ConversationPane({ url, live }: { url: string | null; live: bool
     const node = scroller();
     if (node !== null && pinned.current) node.scrollTop = node.scrollHeight;
   }, [conversation.revision]);
-  const shown = merged(conversation);
+  const shown = merged(conversation, agent);
   const [view, setView] = useState<"conversation" | "terminal">(savedView);
   const choose = (next: "conversation" | "terminal") => { setView(next); try { window.localStorage.setItem(VIEW_SETTING, next); } catch { /* this browser keeps no settings */ } };
   // Switching views keeps the pin: a reader at the end stays at the end.
@@ -327,26 +317,24 @@ export function ConversationPane({ url, live }: { url: string | null; live: bool
   const empty = conversation.state === "off" ? "Output from other computers isn't shown yet."
     : conversation.state === "unavailable" || conversation.state === "error" ? failed
     : conversation.state === "loading" ? "Reading the conversation…" : live ? "Nothing yet. What the agent says and does shows here as it works." : "This agent left no transcript.";
-  return <section aria-label="Conversation" className="flex min-h-0 flex-col">
-    <div className="mb-1.5 flex items-center justify-end gap-2">
-      <h3 className="sr-only">{view === "terminal" ? "Terminal" : "Conversation"}</h3>
-      <div role="group" aria-label="How to show it" className="flex gap-1" data-conversation-view={view}>
-        {(["conversation", "terminal"] as const).map(one => <button key={one} type="button" aria-pressed={view === one} onClick={() => choose(one)}
-          className={cn("rounded-md border px-2 py-0.5 text-caption shadow-none phone:min-h-11", view === one ? "border-border bg-foreground/[0.07] font-medium text-foreground" : "border-transparent bg-transparent text-muted-foreground hover:text-foreground")}>
-          {one === "terminal" ? "Terminal" : "Conversation"}</button>)}
-      </div>
+  return <section aria-label="Conversation" className="agents-conv">
+    <div className="agents-conv-h">
+      <h3 className="k-sr">{view === "terminal" ? "Terminal" : "Conversation"}</h3>
+      <span data-conversation-view={view}>
+        <KSeg label="How to show it" current={view} onChange={key => choose(key === "terminal" ? "terminal" : "conversation")}
+          items={[{ key: "conversation", label: "Conversation" }, { key: "terminal", label: "Terminal" }]} />
+      </span>
     </div>
-    {shown.length === 0 ? <p className="rounded-md border border-dashed border-border px-3 py-6 text-body text-muted-foreground" data-transcript-empty>{empty}</p>
-      : <div ref={attach} tabIndex={0} aria-label="Agent conversation" data-agent-transcript
-        onScroll={event => { const node = event.currentTarget; if (scroller() === node) pinned.current = node.scrollTop + node.clientHeight >= node.scrollHeight - 24; }}
-        className="max-h-[52vh] min-h-40 overflow-y-auto overscroll-contain rounded-md border border-border bg-card px-3 py-2 outline-none focus-visible:ring-2 focus-visible:ring-ring phone:max-h-none phone:min-h-0 phone:flex-1">
-        {conversation.older > 0 && <p className="py-1 text-caption text-muted-foreground">{conversation.older} earlier {conversation.older === 1 ? "note is" : "notes are"} on the task page.</p>}
-        {view === "terminal" ? <TerminalLines conversation={conversation} /> : <ol className="flex flex-col">{shown.map(one => one.node)}</ol>}
-        {conversation.state === "off" && <p className="py-1 text-caption text-muted-foreground" data-conversation-state="off">{empty}</p>}
-        {(conversation.state === "error" || conversation.state === "unavailable") && <p role="status" className="py-1 text-caption text-warning" data-conversation-state="error">{failed}</p>}
+    {shown.length === 0 ? <p className="agents-conv-empty" data-transcript-empty>{empty}</p>
+      : <div ref={attach} tabIndex={0} aria-label="Agent conversation" data-agent-transcript className="agents-tx"
+        onScroll={event => { const node = event.currentTarget; if (scroller() === node) pinned.current = node.scrollTop + node.clientHeight >= node.scrollHeight - 24; }}>
+        {conversation.older > 0 && <p className="k-note">{conversation.older} earlier {conversation.older === 1 ? "note is" : "notes are"} on the task page.</p>}
+        {view === "terminal" ? <TerminalLines conversation={conversation} /> : <ol className="agents-lines">{shown.map(one => one.node)}</ol>}
+        {conversation.state === "off" && <p className="k-note" data-conversation-state="off">{empty}</p>}
+        {(conversation.state === "error" || conversation.state === "unavailable") && <p role="status" className="k-note" data-conversation-state="error">{failed}</p>}
       </div>}
-    {conversation.detail === "base" && <p className="mt-1.5 text-caption text-muted-foreground" data-conversation-detail="base">
-      Commands were hidden for this run. <a className="inline-flex min-h-11 items-center underline underline-offset-2 desk:min-h-0" href="/settings/project">Change this in project settings</a>
+    {conversation.detail === "base" && <p className="k-note" data-conversation-detail="base">
+      Commands were hidden for this run. <a className="k-link" href="/settings/project">Change this in project settings</a>
     </p>}
   </section>;
 }

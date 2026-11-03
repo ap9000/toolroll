@@ -1,5 +1,6 @@
 import { STALE_KNOWLEDGE, type KnowledgeDraft, type KnowledgeSelection, type KnowledgeView } from './project-knowledge.js';
-import { html, postForm, type Html } from './html.js';
+import { html, joinHtml, postForm, type Html } from './html.js';
+import { acts, btn, codeLine, disclose, formRow, input, note, notice, settingsLink, settingsRecord, settingsSection, textarea } from './server/kit.js';
 // Hidden fields as they always were: a missing value is an empty field.
 const fields = (data:Record<string,unknown>):Record<string,string> => Object.fromEntries(Object.entries(data).map(([k,v])=>[k,String(v ?? '')]));
 /** A section as a frame (after ReUI's Frame, MIT): its heading on the raised well, its body one paper panel. The
@@ -12,18 +13,47 @@ export function knowledgeHtml(view:KnowledgeView,csrf:string,canManage:boolean,d
   const manage=canManage && !!csrf;
   const base={repo:view.repo,identity:view.identity,revision:view.revision};
   const form=(action:string,body:Html,extra:Record<string,unknown>={})=>postForm('/settings/knowledge/change',body,{hidden:fields({...base,action,...extra})});
-  const referenceFields=(d:KnowledgeDraft)=>html`<label>Name<input name="title" maxlength="120" value="${d.title}" required></label><label>Reference text<textarea name="content" rows="5" maxlength="12000">${d.content}</textarea></label><details${d.path?html` open`:''}><summary>Use a project document</summary><label>Committed .md or .txt path<input name="path" value="${d.path}" placeholder="docs/design-guide.md"></label><p class="meta">Uses the committed file instead of the text above. Save again to refresh it.</p></details><button type="submit">Save reference</button>`;
-  const refs=view.knowledge.references.map(ref=>html`<details class="card"${draft?.id===ref.id?html` open`:''}><summary><strong>${ref.title}</strong></summary>${ref.path?html`<span class="meta knowledge-source">${ref.path} · ${ref.sourceRevision?.slice(0,7)}</span>`:''}<pre>${ref.content}</pre>${manage?html`<details${draft?.id===ref.id?html` open`:''}><summary>Edit reference</summary>${form('save',referenceFields(draft?.id===ref.id?draft:{title:ref.title,content:ref.path?'':ref.content,path:ref.path??''}),{id:ref.id})}<details><summary>Remove reference</summary>${form('remove',html`<p>Remove from future tasks. Previous run context stays available.</p><button>Remove reference</button>`,{id:ref.id})}</details></details>`:''}</details>`);
-  const history=view.history.map(h=>html`<li><a class="button-link" href="/settings/knowledge?repo=${encodeURIComponent(view.repo)}&version=${h.revision}">Version ${h.revision}</a> · ${h.actor} · ${h.at.slice(0,16).replace('T',' ')} UTC</li>`);
+  const referenceFields=(d:KnowledgeDraft,key:string)=>joinHtml([
+    formRow('Name',null,input({id:`ref-${key}-title`,name:'title',value:d.title??'',attrs:{maxlength:120,required:true,'aria-label':'Name'}}),'wide'),
+    formRow('Reference text',null,textarea({id:`ref-${key}-content`,name:'content',rows:5,value:d.content??'',attrs:{maxlength:12000,'aria-label':'Reference text'}}),'top'),
+    disclose('Use a project document',formRow('Committed .md or .txt path','Uses the committed file instead of the text above. Save again to refresh it.',
+      input({id:`ref-${key}-path`,name:'path',value:d.path??'',attrs:{placeholder:'docs/design-guide.md','aria-label':'Committed .md or .txt path'}}),'wide'),Boolean(d.path)),
+    acts(btn('Save reference',{sm:true,type:'submit'})),
+  ]);
+  const refs=view.knowledge.references.map(ref=>settingsRecord({
+    title:ref.title,
+    sub:ref.path?html`<span class="k-mono">${ref.path} · ${ref.sourceRevision?.slice(0,7)}</span>`:'',
+    more:joinHtml([
+      disclose('Read reference',html`<pre class="k-scode">${ref.content}</pre>`,draft?.id===ref.id),
+      manage?disclose('Edit reference',joinHtml([
+        form('save',referenceFields(draft?.id===ref.id?draft:{title:ref.title,content:ref.path?'':ref.content,path:ref.path??''},String(ref.id)),{id:ref.id}),
+        disclose('Remove reference',form('remove',joinHtml([note('Remove from future tasks. Previous run context stays available.'),acts(btn('Remove reference',{sm:true,variant:'danger',type:'submit'}))]),{id:ref.id})),
+      ]),draft?.id===ref.id):'',
+    ]),
+  }));
+  const history=view.history.map(h=>settingsLink({href:`/settings/knowledge?repo=${encodeURIComponent(view.repo)}&version=${h.revision}`,title:`Version ${h.revision}`,status:`${h.actor} · ${h.at.slice(0,16).replace('T',' ')} UTC`}));
+  const problem=error?notice(error):'';
   if (view.stale) {
     // One notice, the saved knowledge on demand, one approver action. Editing waits until it is applied.
     const saved=view.stale.knowledge;
-    const review=html`<details><summary>Review saved knowledge</summary><pre class="knowledge-instructions">${saved.instructions||'No project instructions.'}</pre>${saved.references.map(ref=>html`<details><summary>${ref.title}</summary><pre>${ref.content}</pre></details>`)}</details>`;
-    return html`<section class="knowledge knowledge-library">${error?html`<p class="problem" role="alert">${error}</p>`:''}<section class="card knowledge-stale"><p role="status">${STALE_KNOWLEDGE}.</p>${review}${manage?form('apply',html`<button>Apply saved knowledge</button>`):''}</section></section>`;
+    const review=disclose('Review saved knowledge',joinHtml([html`<pre class="k-scode">${saved.instructions||'No project instructions.'}</pre>`,...saved.references.map(ref=>disclose(ref.title,html`<pre class="k-scode">${ref.content}</pre>`))]));
+    return joinHtml([problem,settingsSection({id:'knowledge-stale',title:'Saved knowledge',body:joinHtml([
+      html`<p class="k-notice info" role="status">${STALE_KNOWLEDGE}.</p>`,review,
+      manage?form('apply',acts(btn('Apply saved knowledge',{variant:'primary',type:'submit'}))):'',
+    ])})]);
   }
-  const instructions = html`<pre class="knowledge-instructions">${view.knowledge.instructions||'No project instructions yet.'}</pre>`;
-  const editor = manage ? html`<details class="knowledge-editor"${draft?.instructions!==undefined?html` open`:''}><summary>${view.knowledge.instructions?'Edit instructions':'Add instructions'}</summary>${form('instructions',html`<textarea aria-label="Project instructions" name="instructions" rows="5" maxlength="4000" placeholder="Goals, preferences, and what good work looks like…">${draft?.instructions??view.knowledge.instructions}</textarea><button>Save instructions</button>`)}</details>` : '';
-  return html`<section class="knowledge knowledge-library">${error?html`<p class="problem" role="alert">${error}</p>`:''}${framedSection('Instructions',html`${instructions}${editor}`,'knowledge-intro')}${framedSection('References',html`${refs.length?refs:html`<p class="meta">Add a spec, design guide, or useful project document.</p>`}${manage?html`<details class="card"${draft?.title&&!draft.id?html` open`:''}><summary>Add reference</summary>${form('save',referenceFields(draft?.id?{}:draft??{}))}</details>`:''}`)}${history.length?html`<details class="knowledge frame"><summary class="frame-head">Change history</summary><div class="frame-panel"><ol>${history}</ol></div></details>`:''}</section>`;
+  const instructions = html`<pre class="k-scode">${view.knowledge.instructions||'No project instructions yet.'}</pre>`;
+  const editor = manage ? disclose(view.knowledge.instructions?'Edit instructions':'Add instructions',form('instructions',joinHtml([
+    textarea({id:'knowledge-instructions',name:'instructions',rows:5,value:draft?.instructions??view.knowledge.instructions,attrs:{'aria-label':'Project instructions',maxlength:4000,placeholder:'Goals, preferences, and what good work looks like…'}}),
+    acts(btn('Save instructions',{sm:true,type:'submit'})),
+  ])),draft?.instructions!==undefined) : '';
+  const add = manage ? disclose('Add reference',form('save',referenceFields(draft?.id?{}:draft??{},'new')),Boolean(draft?.title&&!draft.id)) : '';
+  return joinHtml([
+    problem,
+    settingsSection({id:'instructions',title:'Instructions',lead:'What every task in this project reads first.',body:joinHtml([instructions,editor])}),
+    settingsSection({id:'references',title:'References',body:joinHtml([refs.length?joinHtml(refs):note('Add a spec, design guide, or useful project document.'),add])}),
+    history.length?settingsSection({id:'knowledge-history',title:'Change history',body:html`<div class="k-slinks">${history}</div>`}):'',
+  ]);
 }
 export function knowledgeContextHtml(snapshot:KnowledgeSelection|null):Html|'' {
   if (!snapshot) return '';
@@ -37,20 +67,48 @@ export function decisionsHtml(repo: string, decisions: Decision[], csrf: string,
   const manage = canManage && !!csrf;
   const base = { repo };
   const form = (action: string, body: Html, extra: Record<string, unknown> = {}) => postForm('/settings/knowledge/decision', body, { hidden: fields({ ...base, action, ...extra }) });
-  const rows = decisions.map(d => html`<details class="card decision" id="decision-${d.id}"><summary><strong>${d.claim}</strong> <span class="meta">#${d.id} · ${d.decidedBy} · ${d.decidedAt.slice(0, 10)}</span></summary><p>${d.why}</p><p class="meta">${d.sourceKind}${d.sourceRef ? ` · ${d.sourceRef}` : ''}${d.supersedes === null ? '' : ` · replaces #${d.supersedes}`}</p>${manage ? form('retire', html`<label>Why it no longer holds<input name="reason" maxlength="500" required></label><button type="submit">Retire</button>`, { decision: d.id }) : ''}</details>`);
-  const add = manage ? html`<details class="knowledge-editor"${draft?.claim !== undefined ? html` open` : ''}><summary>Record a decision</summary>${form('record', html`<label>The choice, in one sentence<input name="claim" maxlength="240" value="${draft?.claim}" required></label><label>Why<textarea name="why" rows="3" maxlength="2000" required>${draft?.why}</textarea></label><button type="submit">Record</button>`)}</details>` : '';
-  return framedSection('Decisions', html`${error ? html`<p class="problem" role="alert">${error}</p>` : ''}${rows.length ? rows : html`<p class="meta">No decisions yet. The lead suggests one when a conversation settles a choice.</p>`}${add}`);
+  const rows = decisions.map(d => settingsRecord({
+    title: d.claim, sub: d.why, when: html`<span class="k-num">#${d.id}</span> · ${d.decidedBy} · ${d.decidedAt.slice(0, 10)}`, attrs: { id: `decision-${d.id}` },
+    more: joinHtml([
+      note(`${d.sourceKind}${d.sourceRef ? ` · ${d.sourceRef}` : ''}${d.supersedes === null ? '' : ` · replaces #${d.supersedes}`}`),
+      manage ? disclose('Retire', form('retire', joinHtml([
+        formRow('Why it no longer holds', null, input({ id: `decision-${d.id}-reason`, name: 'reason', attrs: { maxlength: 500, required: true, 'aria-label': 'Why it no longer holds' } }), 'wide'),
+        acts(btn('Retire', { sm: true, variant: 'danger', type: 'submit' })),
+      ]), { decision: d.id })) : '',
+    ]),
+  }));
+  const add = manage ? disclose('Record a decision', form('record', joinHtml([
+    formRow('The choice, in one sentence', null, input({ id: 'decision-claim', name: 'claim', value: draft?.claim ?? '', attrs: { maxlength: 240, required: true, 'aria-label': 'The choice, in one sentence' } }), 'wide'),
+    formRow('Why', null, textarea({ id: 'decision-why', name: 'why', rows: 3, value: draft?.why ?? '', attrs: { maxlength: 2000, required: true, 'aria-label': 'Why' } }), 'top'),
+    acts(btn('Record', { sm: true, type: 'submit' })),
+  ])), draft?.claim !== undefined) : '';
+  return settingsSection({ id: 'decisions', title: 'Decisions', body: joinHtml([error ? notice(error) : '', rows.length ? joinHtml(rows) : note('No decisions yet. The lead suggests one when a conversation settles a choice.'), add]) });
 }
 export function memorySearchHtml(repo: string, query: string, hits: MemoryHit[] | null): Html {
-  const kind = (h: MemoryHit) => h.kind === 'decision' ? html`<a href="#decision-${h.ref}">decision #${h.ref}</a>` : h.kind === 'conversation' ? 'conversation' : h.kind;
-  const results = hits === null ? '' : hits.length === 0 ? html`<p class="meta">Nothing in project memory matches.</p>` : html`<ul class="memory-hits">${hits.map(h => html`<li><strong>${kind(h)}</strong> · ${h.title}<br><span class="meta">${h.snippet}</span></li>`)}</ul>`;
-  return framedSection('Search project memory', html`<form class="field-row" method="get" action="/settings/knowledge"><input type="hidden" name="repo" value="${repo}"><label><span class="visually-hidden">Search project memory</span><input name="memory" value="${query}" maxlength="300" placeholder="Search decisions, references, lessons…" type="search" autocomplete="off"></label><button type="submit">Search</button></form>${results}`, 'memory-search');
+  const kind = (h: MemoryHit) => h.kind === 'decision' ? html`<a class="k-link" href="#decision-${h.ref}">Decision #${h.ref}</a>` : h.kind === 'conversation' ? 'Conversation' : h.kind.charAt(0).toUpperCase() + h.kind.slice(1);
+  const results = hits === null ? '' : hits.length === 0 ? note('Nothing in project memory matches.') : joinHtml(hits.map(h => settingsRecord({ title: html`${kind(h)} · ${h.title}`, sub: h.snippet })));
+  return settingsSection({ id: 'memory-search', title: 'Search project memory', body: joinHtml([
+    html`<form method="get" action="/settings/knowledge" class="k-acts k-picker" role="search"><input type="hidden" name="repo" value="${repo}">${input({ id: 'memory-query', name: 'memory', type: 'search', value: query, attrs: { maxlength: 300, placeholder: 'Search decisions, references, lessons…', autocomplete: 'off', 'aria-label': 'Search project memory' } })}${btn('Search', { sm: true, type: 'submit' })}</form>`,
+    results,
+  ]) });
 }
 import type { MemoryProposal } from './memory-pass.js';
 export function proposalsHtml(repo: string, proposals: MemoryProposal[], status: { surface: string; instructionBytes: number; budgetBytes: number; sessions: { total: number; analyzed: number; failed: number }; openGaps: number; pending: number } | null, csrf: string, canManage: boolean): Html {
   const manage = canManage && !!csrf;
-  const line = status === null ? '' : html`<p class="meta memory-stats"><span>${status.sessions.analyzed}/${status.sessions.total} sessions read${status.sessions.failed ? ` · ${status.sessions.failed} failed` : ''}</span><span>${status.openGaps} open gap${status.openGaps === 1 ? '' : 's'}</span><span>Instructions ${status.instructionBytes}/${status.budgetBytes} bytes</span></p><details class="settings-more"><summary>Read new sessions</summary><p class="meta">Run <code>toolroll memory propose --repo ${repo}</code> on this computer.</p></details>`;
-  const decide = (p: MemoryProposal, decision: 'accept' | 'reject', label: string) => postForm('/settings/knowledge/proposal', html`<button type="submit">${label}</button>`, { attrs: { class: 'inline' }, hidden: fields({ repo, proposal: p.id, decision }) });
-  const cards = proposals.map(p => html`<details class="card proposal" open><summary><strong>${p.title}</strong> <span class="meta">#${p.id} · ${p.kind} · ${p.sessions} sessions</span></summary><p>${p.rationale}</p>${p.beforeText ? html`<pre class="knowledge-instructions">- ${p.beforeText}</pre>` : ''}${p.afterText ? html`<pre class="knowledge-instructions">+ ${p.afterText}</pre>` : ''}<ul class="memory-evidence">${p.evidence.map(ev => html`<li>“${ev.quote.slice(0, 200)}” <span class="meta">${ev.session.split(':')[0] ?? ''}</span></li>`)}</ul>${manage ? html`${decide(p, 'accept', 'Accept')} ${decide(p, 'reject', 'Reject')}` : ''}</details>`);
-  return framedSection('Proposed from sessions', html`${line}${cards.length ? cards : html`<p class="meta">Nothing to review. Suggestions appear when the same mistake shows up in two sessions.</p>`}`);
+  const line = status === null ? '' : joinHtml([
+    note(`${status.sessions.analyzed}/${status.sessions.total} sessions read${status.sessions.failed ? ` · ${status.sessions.failed} failed` : ''} · ${status.openGaps} open gap${status.openGaps === 1 ? '' : 's'} · Instructions ${status.instructionBytes}/${status.budgetBytes} bytes`),
+    disclose('Read new sessions', joinHtml([note('Run this on this computer:'), codeLine(`toolroll memory propose --repo ${repo}`)])),
+  ]);
+  const decide = (p: MemoryProposal, decision: 'accept' | 'reject', label: string) => postForm('/settings/knowledge/proposal', btn(label, { sm: true, variant: decision === 'accept' ? 'outline' : 'ghost', type: 'submit' }), { hidden: fields({ repo, proposal: p.id, decision }) });
+  const cards = proposals.map(p => settingsRecord({
+    title: p.title, sub: html`<span class="k-num">#${p.id}</span> · ${p.kind} · ${p.sessions} sessions`,
+    action: manage ? html`${decide(p, 'accept', 'Accept')}${decide(p, 'reject', 'Reject')}` : '',
+    more: joinHtml([
+      note(p.rationale),
+      p.beforeText ? html`<pre class="k-scode">- ${p.beforeText}</pre>` : '',
+      p.afterText ? html`<pre class="k-scode">+ ${p.afterText}</pre>` : '',
+      html`<ul class="k-note">${p.evidence.map(ev => html`<li>“${ev.quote.slice(0, 200)}” · ${ev.session.split(':')[0] ?? ''}</li>`)}</ul>`,
+    ]),
+  }));
+  return settingsSection({ id: 'proposals', title: 'Proposed from sessions', body: joinHtml([line, cards.length ? joinHtml(cards) : note('Nothing to review. Suggestions appear when the same mistake shows up in two sessions.')]) });
 }

@@ -233,9 +233,9 @@ test("Settings → Data downloads the .zip behind the password, for an instance 
     const signIn = async (name: string, token: string) => (await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name, token }), redirect: "manual" }))
       .headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
     const cookie = await signIn("alex", password);
-    expect(await (await fetch(`${base}/settings`, { headers: { cookie } })).text()).toContain('href="/settings/data"');
+    expect(await (await fetch(`${base}/settings/system`, { headers: { cookie } })).text()).toContain('href="/settings/data"');
     const page = await (await fetch(`${base}/settings/data`, { headers: { cookie } })).text();
-    expect(page).toContain("<h1>Data</h1>");
+    expect(page).toContain('<h2 class="k-same">Data export</h2>');
     expect(page).toContain('name="password"');
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
     const post = (fields: Record<string, string>) => fetch(`${base}/settings/data`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });

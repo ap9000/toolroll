@@ -200,51 +200,6 @@ export type BrowserLimitTile = {
 export type BrowserLimits = { tiles: BrowserLimitTile[] };
 /** The sidebar's usage chip (limits-ui.ts usageChipOf): the most-used subscription window, stale when its reading is old. */
 export type BrowserUsageChip = { text: string; tone: BrowserLimitTile['tone']; stale: boolean; href: string; title: string };
-export type BrowserSettingsView = {
-  kind: 'settings';
-  said: string | null;
-  /** Using it from a phone, under Chat apps (approvers only). */
-  phone?: BrowserPhoneCard;
-  /** The settings destinations under short headings; a chat app's tile says whether it is connected and gets alerts. */
-  groups: BrowserSettingsGroup[];
-  theme: 'system' | 'light' | 'dark';
-  /** The signal colour chosen for this browser (Settings → Appearance), "#rrggbb"; chart magenta by default. */
-  accent: string;
-  accentPresets: { id: string; name: string; year: number | null; hex: string }[];
-  permission: { mode: string; canManage: boolean; changed: string | null } | null;
-  quality: { mode: string; canManage: boolean; changed: string | null } | null;
-  providers: {
-    provider: string; name: string; tone: 'ok' | 'warn' | 'off' | 'neutral'; words: string;
-    connection: { words: string; facts: string; checkAction: string } | null;
-    usage: string; envName: string; subscriptionCapable: boolean; mode: 'subscription' | 'api-key'; set: boolean;
-  }[] | null;
-  legacyWebhookWarning?: string;
-  services: { configured: string[]; channel: string | null; implicit: boolean } | null;
-  push: { available: boolean; devices: { id: number; words: string; state: string; removable: boolean }[] } | null;
-  /** Quiet chat: how chats reach this person, and their evening digest time (null: off). */
-  chat?: { mode: 'quiet' | 'all'; digestAt: string | null;
-    /** Whether a result's saved screenshots follow its chat message: off, the first one, or up to 4. */
-    screenshots?: 'off' | 'first' | 'all';
-    /** Each project this person can see; a muted one sends no pings but stays in Tasks and the digest. */
-    projects?: { repo: string; name: string; muted: boolean }[] } | null;
-  digest: { every: string; held: string | null } | null;
-  telegram: { state: string; current: string;
-    /** v98: how the bot's messages reach Toolroll (pushed, or asked for), in words. */
-    delivery?: string | null };
-  /** Each worker: how many tasks it runs at once, and what it is running now. */
-  workers?: { name: string; tone: 'ok' | 'warn' | 'off'; state: string; capacity: number; busy: number;
-    running: { taskId: string; title: string; href: string; project: string | null }[] }[] | null;
-  /** v87: the mail server Send email steps use (approvers only); the password is never shown back. */
-  email?: { set: boolean; host: string; port: number; secure: boolean; user: string; from: string;
-    /** v89: where Email inbox triggers read (IMAP), and a Google account connected instead of a mail server (`redirect`: the address to register with Google, when this page's address can take one). */
-    imapHost: string; imapPort: number; google: { connected: string | null; clientId: string; redirect: string | null } } | null;
-  /** The installation's first Ready result, in words ("first result in 7 min"); null before it arrives. */
-  firstResult?: string | null;
-  /** Settings → Updates: this version, the latest known one and its notes, how to update, the daily-check switch, and each worker's version. */
-  updates?: BrowserUpdates | null;
-};
-/** A tile's `brand` is a chat app's logo (brand-mark.ts), drawn in place of its icon. */
-export type BrowserSettingsGroup = { title: string; tiles: { href: string; label: string; brand?: BrandIconId; status?: { tone: 'ok' | 'warn' | 'off'; words: string } }[] };
 export type BrowserUpdates = {
   current: string;
   /** The latest release the last check found; null before any check has worked. */
@@ -367,28 +322,32 @@ export type BrowserTaskMore = { group: "work" | "share" | "danger"; label: strin
   | { kind: "goto"; tab: BrowserTaskTab; target: string });
 /** One project on the Projects page; opening it is a POST to /projects/open. */
 export type BrowserProjectRow = {
-  name: string; path: string; shortPath: string; open: boolean;
+  name: string; path: string; shortPath: string;
+  /** The project's own page (/projects/<name>). */
+  href: string;
+  /** The session's open project. */
+  open: boolean;
   /** When it was last opened here; null for a project only seen in the queue. */
   openedAt: string | null;
-  knowledgeHref: string;
-  /** Settings → Projects → Pull requests for this project, and whether they are on. */
-  pullRequests?: { href: string; on: boolean };
-  /** Settings → Projects → Checks for this project, and its level in words. */
-  checks?: { href: string; level: string };
-  /** What waits, runs, queues or finished today; null when not scanned. */
-  peek: { label: string; href: string; tone: 'attention' | 'info' | 'neutral' | 'success' }[] | null;
+  /** The row's chip: something waits on this person, or runs; null for neither. */
+  status: 'needs' | 'running' | null;
+  /** Its counts in words ("2 need you · 1 running"); null when not scanned. */
+  summary: string | null;
 };
 export type BrowserProjectsView = {
   kind: 'projects';
-  activity?: { project: string; report: import('./project-outcomes.js').ProjectOutcomes | null };
   /** Arrived from New task: choosing where the task belongs. */
   choosing: boolean;
+  /** A refusal that belongs to the page, not to one form (already says what didn't change). */
   problem: string | null;
+  /** A neutral line (a finished clone). */
+  said: string | null;
   returnTo: string;
   recent: BrowserProjectRow[];
   available: BrowserProjectRow[];
-  /** The add roads; `html` carries the server's GitHub-link and exact-path forms. */
-  add: { browse: string | null; github: string | null; html: string };
+  /** The add ways (the server's forms), the clone review a preview minted, and whether the drawer opens at once
+   * (a refused GitHub link, shown next to its field). */
+  add: { html: string; review: string | null; openOnLoad: boolean };
 };
 export type BrowserResultTab = 'summary' | 'changes' | 'checks';
 /** The shared result panel in parts. Each tab's content, the feedback
@@ -625,7 +584,9 @@ export type BrowserFlowView = {
   tools: { name: string; about: string; functions: string[]; ready: boolean }[];
   /** The project's scripts: reusable steps a "Run a script" zone runs with no AI. */
   /** v90: each script's language, and the project file it runs instead of a body. */
-  scripts: { name: string; about: string; body: string; timeoutMinutes: number; version: number; savedBy: string; savedAt: string; usedHere: string[]; language: "shell" | "python" | "node"; file: string | null;
+  scripts: { name: string; about: string; body: string; timeoutMinutes: number; version: number;
+    /** The content digest the panel showed: an approval of a held script carries it back. */
+    digest: string; savedBy: string; savedAt: string; usedHere: string[]; language: "shell" | "python" | "node"; file: string | null;
     /** It came with an imported flow and waits for a person's approval before it runs. */
     held: boolean }[];
   start: string;
@@ -641,6 +602,8 @@ export type BrowserFlowView = {
     canSign: boolean; problem: string | null; maxDays: number; scheduled: boolean; terms: { head: string[]; rules: string[] };
     /** The schedules a signature could cover: plain ones always, `optional` ones (outside content, said why) only when picked. */
     schedules: { id: number; words: string; optional: string | null }[]; schedulesDigest: string;
+    /** The latest grant a change ended early (flow-unattended.ts unattendedViewOf): why and when. */
+    ended?: { why: string; at: string } | null;
   };
   /** Browser use (flow-browser.ts browserViewOf): null when no zone says it starts a browser. */
   browser: {
@@ -734,14 +697,69 @@ export type BrowserAgentsView = {
   empty: string | null;
   /** The Live grid (?view=live): every running agent's live output, watching only. */
   live?: boolean;
+  /** The Finished group's window (?window=), 24 hours unless the address says otherwise. */
+  window?: AgentLaneWindow;
+  /** The computers that build (what /fleet showed), for a person with access to the whole installation; null otherwise. */
+  computers?: BrowserComputers | null;
+  /** Which model runs each phase (what /system showed), for a person with access to the whole installation. */
+  phases?: BrowserAgentPhase[] | null;
+  /** The rest of what /system showed: workspaces, the background service, notifications and external work. */
+  system?: BrowserAgentsSystem | null;
+  /** This person may open terminals (an installation-wide operator in a browser). */
+  terminals?: boolean;
+  /** What a computer act said, in fixed words (a retired computer, by the name the store knows). */
+  computerSaid?: { tone: 'info' | 'error'; text: string } | null;
 };
 
-export type BrowserView = BrowserTasksView | BrowserSettingsView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView;
+/** One computer that builds (a registered runner): what it is doing and what waits for it. */
+export type BrowserComputer = {
+  name: string; host: string; state: 'building' | 'idle' | 'offline'; capacity: number;
+  /** Retired, listed only while tasks are still reserved for it. */
+  retired: boolean;
+  /** Its live builds this person may see; `hidden` counts the ones in projects they can't. */
+  building: { taskId: string; title: string; href: string; project: string | null }[]; hidden: number;
+  heardAt: string; registeredAt: string;
+  /** The projects it takes work from, that this person may see. */
+  projects: string[];
+  /** The operator's note on its queue (display only). */
+  note: string | null;
+  /** Queued tasks reserved for it, that this person may see. */
+  reserved: { id: string; title: string; href: string; project: string | null; taken: boolean }[];
+};
+export type BrowserComputers = {
+  list: BrowserComputer[];
+  /** Register, retire, move reserved work and notes: an approver in a browser session. */
+  manage: boolean;
+  /** The queue's revision, for a move (POST /queue/move). */
+  queueRevision: number;
+  /** Queued tasks no computer is reserved for. */
+  shared: number;
+};
+export type BrowserAgentPhase = {
+  phase: 'plan' | 'build' | 'repair' | 'review';
+  /** The provider and model in words; null when it can't be worked out (`problem` says why). */
+  model: string | null; problem: string | null;
+  /** Where the choice comes from, in words ("Set for the whole installation by alex"). */
+  source: string;
+  /** This provider reports tokens, not dollars. */
+  noDollars: boolean;
+};
+export type BrowserAgentsSystem = {
+  workspaces: { name: string; branch: string; state: 'building' | 'free' | 'needs review' }[];
+  /** The background service's latest run on the open project: running since `at`, or ended at `at`. */
+  service: { running: boolean; at: string; built: number; broke: number } | null;
+  outbox: number;
+  external: { repo: string; state: string }[];
+};
+
+export type BrowserView = BrowserTasksView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView | BrowserHomeView | BrowserSearchView;
 
 export type BrowserWorkspace = {
   /** The one Needs-you count (tasks only) with its scope: the Tasks list's own count for the project in view (`scope`,
    * a project path) or every project (null), its words ("5 need you in payments-api") and the list it opens. */
   needsYou?: { count: number; saturated: boolean; scope: string | null; label: string; href: string };
+  /** The same Needs-you count for each project (`path` null: work with no project), from the same work index totals. */
+  needsYouByProject?: { path: string | null; count: number }[];
   version: 1; path: string; title: string; user: string; csrf: string; sensitive: boolean;
   /** Passwordless is on for this signed-in browser: ceremony password fields are left out (docs/plans/passwordless.md). */
   passwordless?: boolean;
@@ -783,6 +801,44 @@ export type BrowserWorkspace = {
   phone?: BrowserPhoneCard;
   /** The Chat landing's live view: who is working now, four counts, and Catch up in tabs. */
   home?: BrowserHome | null;
+};
+
+/** Home ("/"): one sentence that answers "what needs me?", four counts that agree with the Tasks filters they open,
+ * what waits on this person grouped by what it asks, what is running, and the selected item answered in place. */
+export type BrowserHomeView = {
+  kind: 'home';
+  /** "7 need you across 2 projects.", derived from the same counts as the figures. */
+  say: string;
+  /** The project in view (a path) or every project (null), and the scope links (null with one project). */
+  project: string | null;
+  scopes: { key: string; label: string; href: string; active: boolean }[] | null;
+  counts: { key: 'needs' | 'running' | 'queued' | 'finished'; label: string; value: number; href: string }[];
+  groups: { key: 'decide' | 'review' | 'unblock' | 'running'; label: string; rows: BrowserHomeRow[] }[];
+  /** More waits than the list shows: open them all in Tasks. */
+  more: { count: number; href: string } | null;
+  newTask: string;
+  /** The lead's message box, where chat is allowed for this person: a POST to /chat in this scope. */
+  ask: { project: string | null; placeholder: string } | null;
+  empty: { title: string; text: string } | null;
+};
+export type BrowserHomeRow = {
+  id: string; title: string; href: string; project: string | null; age: string;
+  chip: { word: string; tone: '' | 'needs' | 'ask' | 'live' | 'done' | 'failed' };
+  /** One line: what it asks, or what the agent is doing now. */
+  line: string | null;
+  /** The one act that resolves it (a link), or null. */
+  action: { label: string; href: string } | null;
+  /** An agent's question, answered in place (POST /d/<id>/answer, one click); null when it must be answered on its page. */
+  question: { id: number; text: string; recap: string; options: { id: string; label: string; consequence: string; recommended: boolean }[] } | null;
+};
+
+/** Search ("/search"): the places and the tasks in view that match the words; the ⌘K menu's "See all results". */
+export type BrowserSearchView = {
+  kind: 'search';
+  q: string;
+  tasks: { id: string; title: string; href: string; project: string | null; age: string; chip: { word: string; tone: '' | 'needs' | 'ask' | 'live' | 'done' | 'failed' }; archived: boolean }[];
+  /** More tasks exist than were read: the Tasks list has them all. */
+  truncated: boolean;
 };
 
 /** One agent at work now: its task and the machine's own phase, in words. */
@@ -856,16 +912,17 @@ export function browserProjectsOf(projects: readonly { name: string; path: strin
 
 export function browserNavigationOf(path: string, project: string | null = null, needsYou = 0, tasksProject: string | null = project, needsYouLabel?: string): BrowserNavigationItem[] {
   const pathname = path.split('?')[0]!.split('#')[0]!;
-  const knowledge = pathname === '/settings/knowledge' || pathname.startsWith('/settings/knowledge/');
+  const under = (...roots: string[]) => roots.some(root => pathname === root || pathname.startsWith(`${root}/`));
+  // The rail (UI revamp, wave B): Home carries the one Needs-you count; the lead chat and an agent's question live
+  // under Home, a task's pages under Tasks, every computer and terminal under Agents, every setting under Settings.
   return [
-    { label: 'Chat', href: '/chat', active: pathname === '/chat' },
-    { label: 'Tasks', href: `/work${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
-      active: pathname === '/work' || pathname === '/tasks' || pathname.startsWith('/t/') || pathname.startsWith('/r/'),
+    { label: 'Home', href: '/', active: pathname === '/' || pathname === '/chat' || under('/d', '/activity', '/morning'),
       ...(needsYou > 0 ? { count: needsYou, ...(needsYouLabel === undefined ? {} : { countLabel: needsYouLabel }) } : {}) },
-    { label: 'Agents', href: '/agents', active: pathname === '/agents' || pathname === '/peek' },
-    { label: 'Flows', href: '/flows', active: pathname === '/flows' || pathname.startsWith('/flows/') },
-    { label: 'Projects', href: '/projects', active: pathname === '/projects' },
-    { label: 'Knowledge', href: `/settings/knowledge${project === null ? '' : `?repo=${encodeURIComponent(project)}`}`, active: knowledge },
-    { label: 'Settings', href: '/settings', active: !knowledge && (pathname === '/settings' || pathname.startsWith('/settings/')) },
+    { label: 'Tasks', href: `/work${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
+      active: under('/work', '/tasks', '/t', '/r', '/done', '/board', '/queue', '/inbox', '/review') },
+    { label: 'Flows', href: '/flows', active: under('/flows', '/recipes', '/kits', '/routines') },
+    { label: 'Agents', href: '/agents', active: under('/agents', '/peek', '/term', '/fleet', '/system', '/runs') },
+    { label: 'Projects', href: '/projects', active: under('/projects') },
+    { label: 'Settings', href: '/settings', active: under('/settings', '/spend', '/mode', '/people', '/ledger', '/menu') },
   ];
 }

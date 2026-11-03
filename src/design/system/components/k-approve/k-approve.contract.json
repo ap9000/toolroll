@@ -43,6 +43,10 @@
       "type": "function",
       "required": true
     },
+    "check": {
+      "type": "function",
+      "description": "Runs first on a press: take and validate the snapshot here. False opens nothing and posts nothing (show why next to the fields)."
+    },
     "busy": {
       "type": "string",
       "description": "The busy face while the act runs (default “Starting…”)."

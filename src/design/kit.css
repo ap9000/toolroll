@@ -172,6 +172,8 @@
 .k-row.wait .k-row-t { font-weight: 600; }
 /* The title link stretches over the row, so the whole row is one target; the action sits above it. */
 .k-row-t::before { content: ""; position: absolute; inset: 0; }
+/* A row with no page of its own (a computer): the title is text, the action is the way in. */
+.k-row.k-row-static .k-row-t::before { content: none; }
 .k-row-d { color: var(--so-muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .k-row-m { display: flex; gap: 12px; color: var(--so-muted); font-size: 12px; white-space: nowrap; }
 .k-row-a { display: flex; justify-content: flex-end; }
@@ -221,6 +223,8 @@
 .k-dh { display: flex; align-items: flex-start; gap: 6px; }
 .k-dh > div { flex: 1; display: grid; gap: 6px; min-width: 0; }
 .k-dh h1 { margin: 0; font: 600 24px/1.3 var(--so-font-sans); letter-spacing: -0.02em; color: var(--so-ink); }
+/* A title can be data (a project or folder name): never re-cased, even inside the workspace's native region. */
+.k-dh h1::first-letter { text-transform: none; }
 .k-dh-meta { margin: 0; font-size: 12.5px; color: var(--so-muted); }
 /* A title the phone header already shows stays for assistive tech but is drawn once. */
 .k-same { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -256,6 +260,10 @@
 .k-slot-acts .k-btn.k-btn-ghost { min-width: 0; }
 .k-slot-terms { margin: 0; font-size: 12px; color: var(--so-muted); line-height: 1.5; min-height: 1.5em; }
 .k-slot-err:empty { display: none; }
+/* The choice an act takes (radio cards, a note), between the text and the actions. */
+.k-slot-body { display: grid; gap: 12px; min-width: 0; }
+/* A short tag on a radio card (Recommended): the card's third column. */
+.k-opt > .k-chip { align-self: start; }
 /* The password a step-up asks for, inside the slots' form: label above, never a placeholder in its place. */
 .k-reauth { display: grid; gap: 6px; max-width: 320px; }
 /* The Needs-you panel: waits that aren't tasks, on their own page. */
@@ -413,6 +421,7 @@
   .k-switch:hover { background: transparent; }
   .k-opt:hover { border-color: var(--so-ink); }
   .k-row:hover { background: color-mix(in srgb, var(--so-raised) 60%, transparent); }
+  .k-row.k-row-static:hover { background: transparent; }
   .k-card:hover { background: color-mix(in srgb, var(--so-raised) 60%, transparent); }
   .k-backlink:hover { color: var(--so-ink); }
   .k-menu > button:hover, .k-menu > a:hover { background: var(--so-soft); }
@@ -422,8 +431,16 @@
   .k-crumbs a:hover { color: var(--so-ink); }
 }
 
+/* ---------- Code to copy: a command or a one-time secret, selected whole with one click ---------- */
+.k-code { display: inline-block; max-width: 100%; box-sizing: border-box; margin: 0; padding: 6px 10px; border-radius: 7px; background: var(--so-raised); color: var(--so-ink); font: 12.5px/1.45 var(--so-font-mono); overflow-wrap: anywhere; user-select: all; }
+
 /* ---------- Phone dock: the Needs-you button and the screen's one primary ---------- */
 .k-dock { display: none; }
+/* The Needs-you button (the app shell's dock): a dot, the words, the ink count, and which projects it covers. */
+.k-dock-needs { display: grid; align-content: center; gap: 1px; box-sizing: border-box; width: 136px; min-height: 48px; margin: 0; padding: 0 12px; border-radius: 8px; border: 1px solid var(--so-field-line); background: var(--so-paper); color: var(--so-ink); text-align: left; white-space: nowrap; cursor: pointer; box-shadow: none; }
+.k-dock-needs-l { display: inline-flex; align-items: center; gap: 7px; font: 500 14px/1.2 var(--so-font-sans); }
+.k-dock-needs-s { overflow: hidden; text-overflow: ellipsis; font-size: 11.5px; color: var(--so-muted); padding-left: 14px; }
+.k-dock-needs:focus-visible { outline: 2px solid var(--so-ring); outline-offset: 2px; }
 
 /* ---------- Phone (760px and narrower) ---------- */
 @media (max-width: 760px) {
@@ -603,3 +620,66 @@ main:has(> .k-out) { max-width: none; margin: 0; padding: 0; }
   .k-check-draw path { stroke-dashoffset: 0; }
   .k-spin { animation: none; border-right-color: currentColor; opacity: .5; }
 }
+
+/* ---------- Settings pages (wave D): sections, link rows, records, section saves ---------- */
+.k-ssec { display: grid; align-content: start; min-width: 0; scroll-margin-top: 64px; }
+.k-ssec-state { font-weight: 400; font-size: 12.5px; color: var(--so-muted); }
+.k-ssec-lead { margin: 0; padding: 10px 0 2px; font-size: 12.5px; color: var(--so-muted); line-height: 1.5; max-width: 66ch; }
+.k-ssec > .k-note, .k-ssec > .k-notice { margin-top: 10px; }
+.k-slinks { display: grid; }
+.k-slink { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto 16px; gap: 4px 12px; align-items: center; min-height: 56px; padding: 10px 0; border-bottom: 1px solid var(--so-line); color: var(--so-ink); text-decoration: none; }
+.k-slink.noico { grid-template-columns: minmax(0, 1fr) auto 16px; }
+.k-slink > .k-i { color: var(--so-muted); }
+.k-sl { display: grid; gap: 3px; min-width: 0; }
+.k-sl-t { display: inline-flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; font-weight: 500; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.k-sl-h { font-size: 12.5px; color: var(--so-muted); line-height: 1.45; overflow-wrap: anywhere; }
+.k-slink-r { display: flex; align-items: center; gap: 8px; }
+.k-chev { width: 7px; height: 7px; border: solid var(--so-muted); border-width: 1.5px 1.5px 0 0; transform: rotate(45deg); justify-self: center; }
+.k-sflag { display: inline-flex; align-items: center; gap: 6px; font: 500 12px/1 var(--so-font-sans); color: var(--so-neutral-ink); }
+.k-sflag::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--so-needs); }
+.k-srec { display: grid; grid-template-columns: minmax(0, 1fr) auto 124px; gap: 4px 16px; align-items: center; min-height: 52px; padding: 10px 0; border-bottom: 1px solid var(--so-line); }
+.k-srec-when { font-size: 12px; color: var(--so-muted); white-space: nowrap; }
+.k-srec-a { display: flex; justify-content: flex-end; gap: 8px; }
+.k-srec-a .k-btn { min-width: 108px; }
+.k-srec-more { grid-column: 1 / -1; min-width: 0; }
+.k-srec-more:empty { display: none; }
+.k-scode { display: block; justify-self: start; max-width: 100%; box-sizing: border-box; margin: 8px 0 0; padding: 8px 10px; border-radius: 7px; background: var(--so-raised); font: 12px/1.5 var(--so-font-mono); overflow-wrap: anywhere; user-select: all; }
+.k-sform { display: grid; min-width: 0; margin: 0; }
+.k-sform fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.k-ssave { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 8px 0; background: var(--so-paper); }
+.k-ssave-said { flex: 1; min-width: 0; font-size: 12.5px; color: var(--so-muted); }
+.k-ssave .k-btn { min-width: 96px; }
+.k-sform[data-dirty] .k-ssave { position: sticky; bottom: 0; z-index: 2; border-top: 1px solid var(--so-line); }
+.k-sform[data-dirty] .k-ssave-said { color: var(--so-ink); font-weight: 500; }
+.k-ssave-err:empty { display: none; }
+.k-ssave-err .k-notice { margin: 0 0 8px; }
+.k-sproof label, .k-sproof .k-field { display: grid; gap: 6px; margin: 8px 0 0; font: var(--so-typography-caption); color: var(--so-ink); max-width: 320px; }
+.k-sproof input[type="password"] { box-sizing: border-box; width: 100%; height: 32px; min-height: 0; margin: 0; padding: 0 10px; border: 1px solid var(--so-field-line); border-radius: 8px; background: var(--so-paper); color: var(--so-ink); font: 400 13px/1.4 var(--so-font-sans); box-shadow: none; }
+.k-pop .k-sproof label { margin: 0; max-width: none; }
+html.k-js .k-sform > .k-sproof { display: none; }
+html.k-js .k-sform[data-k-gate]:not([data-dirty]) .k-ssave .k-btn { display: none; }
+html.k-js .k-sform[data-k-gate]:not([data-dirty]) .k-ssave:has(.k-ssave-said:empty) { display: none; }
+.k-sopts { display: grid; gap: 8px; padding: 10px 0; }
+.k-sopt { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; min-height: 32px; font-size: 13px; color: var(--so-ink); cursor: pointer; }
+.k-sopt input { margin: 2px 0 0; accent-color: var(--so-ink); }
+.k-sopt b { display: block; font-weight: 500; }
+.k-sopt span span { display: block; color: var(--so-muted); font-size: 12.5px; line-height: 1.45; }
+.k-secret-val { display: block; padding: 8px 10px; border-radius: 7px; background: var(--so-raised); font: 12.5px/1.4 var(--so-font-mono); overflow-wrap: anywhere; user-select: all; }
+@media (hover: hover) and (pointer: fine) {
+  .k-slink:hover .k-sl-t > span:first-child { text-decoration: underline; text-decoration-color: var(--so-field-line); text-underline-offset: 3px; }
+}
+@media (max-width: 760px) {
+  .k-slink { min-height: 64px; padding: 12px 0; }
+  .k-srec { grid-template-columns: minmax(0, 1fr) auto; }
+  .k-srec-when { grid-column: 1; }
+  .k-srec-a { grid-column: 2; grid-row: 1 / span 2; }
+  .k-srec-a .k-btn { min-width: 0; }
+  .k-ssave .k-btn { min-height: 44px; }
+  .k-sproof input[type="password"] { height: 44px; font-size: 16px; }
+  .k-sproof label { max-width: none; }
+  .k-sopt { min-height: 44px; }
+}
+.k-srec-a .k-sform { display: block; }
+.k-srec-a .k-ssave { min-height: 0; padding: 0; background: none; }
+.k-srec-a .k-ssave-said:empty { display: none; }
+pre.k-scode { white-space: pre-wrap; }

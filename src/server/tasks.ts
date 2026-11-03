@@ -12,7 +12,7 @@ function returnedFlow(value: string | null): { flow: number; card: number } | nu
 import { originOf } from "../task-source.js";
 import { ACP_AGENTS, isAcpProvider } from "../acp-agents.js";
 import { handlersOf } from './handler-registry.js';
-import { closedQuestionWords } from "../decision.js";
+import { closedQuestionWords, LIMITS } from "../decision.js";
 import { DEPRECATED_PAGE } from "../deprecations.js";
 /** tasks handlers, moved without changing their route bodies. */
 import { html, htmlString, joinHtml, postForm, textHtml, type Html } from "../html.js";
@@ -34,7 +34,8 @@ import { builderReadyFor,diagnoseTaskDispatch,firstRunBuilderRepo } from "../dis
 import { firstTaskSuggestions,withBuilderStep } from "../first-run.js";
 import { newTaskPage,type TaskComposerPrefill } from "./render-new-task.js";
 import { nextPage } from "./render-next.js";
-import { evidencePack,evidencePackHtml } from "../evidence-pack.js";
+import { evidencePack } from "../evidence-pack.js";
+import { decisionPage, evidenceRecordPage, runPage } from "./render-history.js";
 import { readVerifiedArtifact,readVerifiedReport,writeEvidenceFile } from "../evidence.js";
 import { computeGaps } from "../gaps.js";
 import { limitsView } from "../limits-ui.js";
@@ -98,11 +99,11 @@ import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
 import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
 import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
-import { putAwayPage,boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
+import { putAwayPage,boardBody,boardWorkers,inboxFingerprints,inboxPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
 import { timingFor } from "../latency-timeline.js";
-import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
-import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,decisionPage,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
+import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
+import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
 import { type Who } from "./session.js";
 export function createTasksHandlers(runtime: ServerRuntime) {
   const { identities, store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, leadPrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
@@ -642,13 +643,12 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     return sendScreen(response, 200, reviewPage);
   }
 
+  /** Finished tasks live in the Tasks list's Finished view now (UI revamp wave B): the old address keeps answering, as a
+   * GET alias, with a named project carried along. */
   async function showDone(ctx: HandlerContext): Promise<void> {
-    const { response, project } = ctx;
-    return sendScreen(
-      response,
-      200,
-      donePage(chromeFor(project, "runs"), store.listCompletedWorkScoped(project, 50), pr => store.ciFailureObserved(pr)),
-    );
+    const { url, response } = ctx;
+    const named = url.searchParams.get("project");
+    return redirectGet(response, `/work?view=completed${named === null || named === "" ? "" : `&project=${encodeURIComponent(named)}`}`);
   }
 
   /** The old task list, retired into /work (docs/plans/reui-polish.md slice 7): its address keeps answering, as a
@@ -751,23 +751,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         "cache-control": "no-store", "x-content-type-options": "nosniff" });
       return void response.end(JSON.stringify(checkResponse("evidencePack", pack), null, 2));
     }
-    return sendScreen(response, 200, screen(`Evidence pack · ${family.root.id}`, evidencePackHtml(pack), { chrome: chromeFor(family.root.repo, "tasks") }));
+    return sendScreen(response, 200, evidenceRecordPage(chromeFor(family.root.repo, "tasks"), pack));
   }
 
+  /** Build history lives on Agents now ("Finished in the last …"), and each task keeps its own attempts: the old address
+   * keeps answering, as a GET alias. */
   async function showRuns(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, project } = ctx;
-    const raw = url.searchParams.get("before");
-    let before: number | null = null;
-    if (raw !== null) {
-      if (!/^[1-9][0-9]{0,14}$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
-        return refuse(response, who, 400, "that cursor is not a page", "/runs");
-      }
-      before = Number(raw);
-    }
-    const rows = store.listRunsBefore(before, RUNS_PAGE, project);
-    const verdicts = store.proofVerdictsFor(rows.map(one => one.id));
-    const accepted = new Set(rows.filter(one => store.proofAcceptance(one.id) !== null).map(one => one.id));
-    return sendScreen(response, 200, runsPage(chromeFor(project, "runs"), rows, liveRunIds(rows), rows.length === RUNS_PAGE ? rows[rows.length - 1]?.id ?? null : null, verdicts, accepted));
+    return redirectGet(ctx.response, "/agents");
   }
 
   async function showRun(ctx: HandlerContext): Promise<void> {
@@ -964,19 +954,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
   }
 
   async function showDecision(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, now, project } = ctx;
+    const { url, who, response, now } = ctx;
     const one = /^\/d\/([0-9]{1,15})$/.exec(url.pathname);
     if (one === null) return noPage(who, response);
-    const decision = store.getDecision(Number(one[1]));
-    if (decision === null) return refuse(response, who, 404, "no such decision");
-    const run = store.getRun(decision.run);
-    if (run !== null && !visible(taskRepoOf(run.taskRef))) {
-      return refuse(response, who, 404, "no such decision");
-    }
-    const taskId = taskOf(store, decision);
     const decisionReturn = url.searchParams.get("return");
-    const back = decisionReturn === null ? null : safeChatReturn(decisionReturn);
-    return sendScreen(response, 200, decisionPage(chromeFor(project, "none"), decision, taskId, store.evidenceFor(decision.id), who, now, back));
+    return decisionScreen(ctx, Number(one[1]), decisionReturn === null ? null : safeChatReturn(decisionReturn), null, 200, now, null);
   }
 
   async function showDecisionEvidence(ctx: HandlerContext): Promise<void> {
@@ -1318,7 +1300,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // Irreversible options never ride one accidental tap: the form arms
     // them behind an explicit confirmation field, and the server checks —
     // the client rendering is convenience, this is the rule.
+    // The question page's own form hears a refusal in its box, with nothing changed; /next keeps its refusal page.
+    const inPlace = requestedReturn !== "next";
+    const pageBack = requestedReturn === null ? null : decisionBack;
     if (chosen !== undefined && !chosen.reversible && body.get("confirm") !== "yes") {
+      if (inPlace) return decisionScreen(ctx, id, pageBack, `“${chosen.label}” can't be undone: tick the box to confirm it`, 400, now, { choice, note: body.get("note") });
       return refuse(response, who, 400, "an irreversible choice must be confirmed", requestedReturn === null ? `/d/${id}` : `/d/${id}?return=${encodeURIComponent(decisionBack)}`);
     }
     const note = body.get("note");
@@ -1336,6 +1322,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       const status = answered.reason === "bad-option" || answered.reason === "bad-note" ? 400 : 409;
       const closed = answered.reason === "closed" ? store.getDecision(id)?.supersededReason ?? null : null;
       const why = closed !== null ? closedQuestionWords(closed) : answered.reason === "already-answered" ? "already answered — somebody got there first" : answered.reason;
+      if (inPlace && answered.reason !== "closed" && answered.reason !== "already-answered") {
+        return decisionScreen(ctx, id, pageBack, answered.reason === "bad-option" ? "Choose one of the options" : answered.reason === "bad-note" ? `The note is too long or can't be sent (up to ${LIMITS.note} characters)` : why, status, now, { choice, note });
+      }
       return refuse(response, who, status, why, requestedReturn === null ? `/d/${id}` : decisionBack);
     }
     return redirect(response, decisionBack);
@@ -3061,6 +3050,21 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     return live;
   }
   const tidyHandlers = createTidyHandlers(runtime);
+  /** The question page, with a refusal in its box when an answer was refused (the box keeps the choice to make). */
+  function decisionScreen(ctx: HandlerContext, id: number, back: string | null, refusal: string | null, code: number, now: Date, draft: { choice: string | null; note: string | null } | null): void {
+    const { who, response, project } = ctx;
+    const decision = store.getDecision(id);
+    if (decision === null) return refuse(response, who, 404, "no such decision");
+    const run = store.getRun(decision.run);
+    if (run !== null && !visible(taskRepoOf(run.taskRef))) {
+      return refuse(response, who, 404, "no such decision");
+    }
+    const taskId = taskOf(store, decision);
+    const ref = taskId === "?" ? null : store.lookupRef(taskId);
+    const place = { title: ref === null ? null : store.getTask(taskId)?.title ?? null, repo: ref?.repo ?? null, run: run === null ? null : { id: run.id, role: run.role } };
+    return sendScreen(response, code, decisionPage(chromeFor(project, "none"), decision, taskId, store.evidenceFor(decision.id), now, place, back, refusal, draft));
+  }
+
   const registrations = handlersOf("tasks", {
     ...tidyHandlers,
     "code.page": showCode("workspace"),
@@ -3212,6 +3216,11 @@ export function createTidyHandlers(runtime: ServerRuntime) {
   return { "work.put-away": showPutAway, "work.put-away.apply": applyPutAway, "task.act.archive": oneTask("archive"), "task.act.restore": oneTask("restore") };
 }
 
+/** A retired page's GET alias: a plain 302 (the shared 303 helper belongs to POST landings), as pages.ts morningAlias. */
+function redirectGet(response: ServerResponse, to: string): void {
+  response.writeHead(302, { ...SAFETY, Location: to });
+  response.end();
+}
 /**
  * Where a retired Tasks address goes now (wave A, src/design/KIT.md): Done is Finished. `board` names where the old
  * Board's state view goes once it is retired (Tasks' Board view; its Order view and its live fragment stay). Null: this
