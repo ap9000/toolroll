@@ -10,6 +10,7 @@ import { Frame, FrameHeader, FramePanel } from "./components/ui/frame.js";
 import { StatusGlyph, type GlyphKind } from "./components/ui/status-glyph.js";
 import { Button } from "./components/ui/button.js";
 import { FormToken, PostForm } from "./ui/index.js";
+import { KButton } from "./kit/index.js";
 
 function Command({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
@@ -122,12 +123,13 @@ export function FirstRun({ firstRun }: { firstRun: BrowserFirstRun }) {
   </section>;
 }
 
-/** Above the composer until the first request: how it works in one sentence, three first tasks, and what runs the lead. */
+/** The empty chat until the first request: how it works in one sentence, three first tasks as pills (each only drafts
+ * words in the composer), and what runs the lead. */
 export function FirstRequest({ firstRun, onDraft }: { firstRun: BrowserFirstRun; onDraft: (text: string) => void }) {
   return <div className="so-first-request" data-first-request>
     {firstRun.intro && <p className="so-first-request-intro" data-how-it-works>{firstRun.intro}</p>}
-    {firstRun.suggestions.length > 0 && <div className="so-suggestions so-first-request-suggestions" aria-label="First tasks to try" data-first-tasks>
-      {firstRun.suggestions.map(one => <Button key={one.draft} variant="outline" size="sm" className="so-suggestion h-auto min-h-[30px] whitespace-normal py-1.5 text-left max-[901px]:min-h-11 phone:h-auto" data-source={one.source} onClick={() => onDraft(one.draft)}>{one.label}</Button>)}
+    {firstRun.suggestions.length > 0 && <div className="lc-sugs so-first-request-suggestions" aria-label="First tasks to try" data-first-tasks>
+      {firstRun.suggestions.map(one => <KButton key={one.draft} variant="outline" sm className="lc-sug" data-source={one.source} onClick={() => onDraft(one.draft)} label={one.label} />)}
     </div>}
     {firstRun.lead && <p className="so-first-request-lead" data-lead-line>{firstRun.lead.words} · <a href={firstRun.lead.href}>Change</a></p>}
   </div>;

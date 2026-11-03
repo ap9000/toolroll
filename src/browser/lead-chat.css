@@ -1,0 +1,183 @@
+/* The lead chat (lead-chat.tsx): the revamp prototype's chat (pages/setup.css .chat-*), on the kit's tokens and motion
+ * (src/design/KIT.md). Everything is scoped under .lc; colour only from --so-* tokens; no resting shadows. */
+
+.lc { display: flex; flex-direction: column; flex: 1; min-height: 0; background: var(--so-paper); }
+.lc .lc-tb-form { display: contents; }
+
+/* ---- the thread: one 760px column, the words 66ch ---- */
+.lc .lc-thread { box-sizing: border-box; display: flex; flex-direction: column; gap: var(--so-space-2xl); width: 100%; max-width: 760px; min-height: 100%; margin: 0 auto; padding: var(--so-space-3xl) var(--so-space-3xl) 40px; }
+.lc .lc-messages { display: flex; flex-direction: column; gap: 22px; }
+.lc .lc-messages:empty { display: none; }
+.lc .lc-msg { display: grid; gap: 6px; min-width: 0; margin: 0; }
+/* A message that arrives while the page is open fades in; the thread on first paint does not move. */
+.lc .lc-msg.lc-new { animation: lc-in var(--m-base) var(--m-ease); }
+@keyframes lc-in { from { opacity: 0; transform: translateY(4px); } }
+.lc .lc-you { justify-items: end; }
+.lc .lc-lead { gap: var(--so-space-sm); }
+
+/* Yours: a soft bubble on the right. */
+.lc .lc-bubble { box-sizing: border-box; max-width: min(80%, 560px); padding: 10px 14px; border-radius: 18px; background: var(--so-raised); color: var(--so-ink); font: var(--so-typography-body-reading); line-height: 1.55; overflow-wrap: anywhere; }
+.lc .lc-bubble :where(p, ul, ol, pre, blockquote) { margin: 0 0 var(--so-space-sm); }
+.lc .lc-bubble :where(p, ul, ol, pre, blockquote):last-child { margin-bottom: 0; }
+.lc .lc-bubble :where(ul, ol) { padding-left: var(--so-space-xl); }
+
+/* The lead's: its mark and name, then plain words. */
+.lc .lc-who { display: flex; align-items: center; gap: var(--so-space-sm); min-height: 22px; font-size: 13px; color: var(--so-ink); }
+.lc .lc-who b { font-weight: 600; }
+.lc .lc-time { font-size: 11.5px; color: var(--so-muted); font-variant-numeric: tabular-nums; }
+.lc-mark { box-sizing: border-box; display: inline-flex; align-items: flex-end; justify-content: center; gap: 2px; width: 22px; height: 22px; padding: 6px 5px; border-radius: 50%; background: var(--so-raised); flex: none; }
+.lc-mark i { width: 2.5px; border-radius: 1px; background: var(--so-ink); }
+.lc-mark i:nth-child(1) { height: 7px; }
+.lc-mark i:nth-child(2) { height: 11px; }
+.lc-mark i:nth-child(3) { height: 9px; }
+.lc .lc-activity { margin: 0; padding-left: 30px; font-size: 12.5px; line-height: 1.5; color: var(--so-muted); font-variant-numeric: tabular-nums; }
+.lc .lc-body { min-width: 0; max-width: 66ch; padding-left: 30px; color: var(--so-ink); font: var(--so-typography-body-reading); line-height: 1.65; overflow-wrap: anywhere; }
+.lc .lc-body :where(p) { margin: 0 0 10px; }
+.lc .lc-body :where(ul, ol) { display: grid; gap: var(--so-space-xs); margin: 0 0 10px; padding-left: var(--so-space-xl); }
+.lc .lc-body :where(ul) { list-style: disc; }
+.lc .lc-body :where(ol) { list-style: decimal; }
+.lc .lc-body :where(h1, h2, h3, h4) { margin: 14px 0 6px; font-size: 14px; font-weight: 600; line-height: 1.4; }
+.lc .lc-body :where(blockquote) { margin: 0 0 10px; padding-left: var(--so-space-md); border-left: 2px solid var(--so-line); color: var(--so-muted); }
+.lc .lc-body :where(a) { color: var(--so-ink); text-decoration: underline; text-underline-offset: 2px; }
+.lc .lc-body :where(.so-native-region > div > :last-child) { margin-bottom: 0; }
+.lc :is(.lc-body, .lc-bubble) :where(code) { font: 12.5px/1.4 var(--so-font-mono); background: var(--so-raised); border-radius: var(--so-radius-badge); padding: 1px 5px; }
+.lc .lc-bubble :where(code) { background: var(--so-paper); }
+/* A code block, with Copy beside it (placed by lead-chat.tsx useCodeCopy). */
+.lc .lc-code { position: relative; margin: 0 0 10px; border: 1px solid var(--so-line); border-radius: var(--so-radius-sheet); background: var(--so-raised); }
+.lc .lc-code pre { margin: 0; padding: var(--so-space-md) 14px; padding-right: 72px; overflow-x: auto; border: 0; background: none; white-space: pre; }
+.lc .lc-code pre code { padding: 0; background: none; font-size: 12.5px; line-height: 1.6; }
+.lc .lc-codecopy { position: absolute; top: 6px; right: 6px; box-sizing: border-box; height: 26px; min-height: 0; margin: 0; padding: 0 10px; border: 1px solid var(--so-line); border-radius: 999px; background: var(--so-paper); color: var(--so-muted); font: 500 12px/1 var(--so-font-sans); cursor: pointer; box-shadow: none; transition: color var(--m-quick) var(--m-ease), border-color var(--m-quick) var(--m-ease); }
+.lc .lc-codecopy:focus-visible { outline: 2px solid var(--so-ring); outline-offset: 2px; }
+
+/* Time and the message's acts: shown on hover or focus at a desk, always on touch. */
+.lc .lc-meta { display: flex; align-items: center; gap: 2px; min-height: 28px; margin-top: calc(-1 * var(--so-space-xs)); opacity: 0; transition: opacity var(--m-quick) var(--m-ease); }
+.lc .lc-lead .lc-meta { padding-left: var(--so-space-2xl); }
+.lc .lc-msg:hover .lc-meta, .lc .lc-msg:focus-within .lc-meta { opacity: 1; }
+.lc .k-btn.lc-act { height: 24px; padding: 0 var(--so-space-sm); font-size: 12px; }
+.lc .lc-said { padding-left: 30px; }
+.lc .lc-you .lc-said { padding-left: 0; }
+
+/* What the lead proposed: slim rows (icon · kind · title · chip); a proposal waiting on you opens under its row. */
+.lc .lc-cards { display: grid; gap: 6px; max-width: 670px; margin: 2px 0 0; padding: 0 0 0 30px; list-style: none; }
+.lc .lc-card { border: 1px solid var(--so-line); border-radius: var(--so-radius-sheet); background: var(--so-paper); transition: border-color var(--m-quick) var(--m-ease); }
+.lc .lc-card.open { border-color: var(--so-field-line); }
+.lc .lc-card-row { box-sizing: border-box; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 48px; padding: 6px 10px 6px var(--so-space-sm); border-radius: 11px; color: var(--so-ink); text-decoration: none; transition: background-color var(--m-quick) var(--m-ease); }
+a.lc-card-row:focus-visible { outline: 2px solid var(--so-ring); outline-offset: 2px; }
+.lc .lc-card-ic { width: 28px; height: 28px; border-radius: var(--so-radius-md); display: grid; place-items: center; background: var(--so-raised); color: var(--so-muted); }
+.lc .lc-card-t { display: grid; min-width: 0; }
+.lc .lc-card-v { font-size: 11.5px; line-height: 1.35; color: var(--so-muted); }
+.lc .lc-card-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/1.35 var(--so-font-sans); }
+.lc .lc-card-more { display: grid; gap: var(--so-space-sm); padding: 2px var(--so-space-md) var(--so-space-md) 46px; font-size: 13px; line-height: 1.5; }
+.lc .lc-card-body { color: var(--so-ink); }
+.lc .lc-card-body :where(h3, h4) { margin: 0 0 var(--so-space-xs); font-size: 13px; font-weight: 600; }
+.lc .lc-card-body :where(p, dl) { margin: 0 0 6px; }
+.lc .lc-card-body :where(dl > div) { display: flex; gap: var(--so-space-sm); }
+.lc .lc-card-body :where(dt) { color: var(--so-muted); min-width: 72px; }
+.lc .lc-card-body :where(dd) { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.lc .lc-card-said { margin: 0; color: var(--so-done-ink); }
+.lc .lc-card-said.bad { color: var(--so-fail-ink); }
+.lc .lc-card-note { margin: 0; color: var(--so-muted); }
+.lc .lc-card-arm { display: flex; align-items: center; gap: var(--so-space-sm); }
+.lc .lc-card-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.lc .lc-card-acts form { display: contents; }
+.lc .lc-cards-html { padding-left: 30px; }
+
+/* The reply being written: the three-dot Thinking… (still under reduced motion) and the caret. */
+.lc .lc-thinking { display: inline-flex; align-items: center; gap: var(--so-space-sm); padding: 0; font-size: 13px; font-weight: 400; color: var(--so-muted); }
+.lc .lc-body .lc-thinking { display: flex; margin-top: var(--so-space-xs); }
+.lc-dots { display: inline-flex; gap: 3px; }
+.lc-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--so-muted); animation: lc-dot 1.2s var(--m-ease) infinite; }
+.lc-dots i:nth-child(2) { animation-delay: .15s; }
+.lc-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes lc-dot { 0%, 60%, 100% { opacity: .3; } 30% { opacity: 1; } }
+.lc .lc-live .so-live-text { margin: 0 0 10px; white-space: pre-wrap; }
+.lc .lc-live .so-live-caret { background: var(--so-ink); }
+.lc .lc-live .so-live-steps { max-width: 640px; border-radius: var(--so-radius-sheet); }
+
+/* The earlier thread a change of reachable projects replaced, and the line under it. */
+.lc .lc-previous { display: flex; flex-direction: column; gap: 22px; opacity: .78; }
+.lc .lc-divider { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--so-muted); font-size: 12px; line-height: 1.4; text-align: center; }
+.lc .lc-divider::before, .lc .lc-divider::after { content: ""; flex: 1; min-width: 16px; border-top: 1px solid var(--so-line); }
+
+/* Empty: one sentence and suggestion pills, never a card wall. */
+.lc .lc-empty { display: grid; justify-items: center; gap: 10px; margin: auto 0; padding: 10vh 0 var(--so-space-lg); text-align: center; }
+.lc .lc-empty .lc-mark { width: 40px; height: 40px; padding: 11px 10px; gap: 3px; }
+.lc .lc-empty .lc-mark i { width: 4px; }
+.lc .lc-empty .lc-mark i:nth-child(1) { height: 11px; }
+.lc .lc-empty .lc-mark i:nth-child(2) { height: 19px; }
+.lc .lc-empty .lc-mark i:nth-child(3) { height: 15px; }
+.lc .lc-empty h2 { margin: 0; font: 600 20px/1.4 var(--so-font-sans); letter-spacing: -0.015em; color: var(--so-ink); }
+.lc .lc-empty > p { max-width: 52ch; margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--so-muted); }
+.lc .lc-sugs { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--so-space-sm); max-width: 640px; margin-top: var(--so-space-sm); }
+.lc .k-btn.lc-sug { height: auto; min-height: 36px; padding: 7px 14px; border-radius: 999px; border-color: var(--so-line); font-size: 13px; font-weight: 400; white-space: normal; text-align: left; }
+.lc .lc-kits { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--so-space-xs) var(--so-space-md); margin-top: 6px; font-size: 12.5px; color: var(--so-muted); }
+.lc .lc-kits a { color: var(--so-muted); text-decoration: underline; text-underline-offset: 2px; }
+.lc .lc-empty .so-first-request { display: grid; justify-items: center; gap: var(--so-space-sm); }
+.lc .lc-empty .so-first-request-lead { margin: var(--so-space-xs) 0 0; font-size: 12.5px; color: var(--so-muted); }
+.lc .lc-empty .so-first-request-intro:empty { display: none; }
+.lc .lc-brief { font-size: 13px; }
+
+/* ↓ Jump to the latest message: over the thread's bottom edge, only when scrolled up. */
+.lc .k-btn.lc-jump { position: absolute; left: 50%; bottom: 12px; z-index: 3; width: 36px; height: 36px; margin-left: -18px; padding: 0; border-radius: 50%; border-color: var(--so-overlay-line); background: var(--so-paper); opacity: 0; transform: translateY(6px); pointer-events: none; transition: opacity var(--m-base) var(--m-ease), transform var(--m-base) var(--m-ease); }
+.lc .k-btn.lc-jump.show { opacity: 1; transform: none; pointer-events: auto; }
+
+/* ---- the composer, docked at the bottom of the column ---- */
+.lc .so-composer-area { box-sizing: border-box; position: relative; flex-shrink: 0; width: 100%; max-width: 760px; margin: 0 auto; padding: var(--so-space-sm) var(--so-space-3xl) var(--so-space-lg); background: var(--so-paper); }
+.lc .so-composer-area form[data-workspace-composer], .lc .so-composer-area form[data-workspace-composer]:focus-within { position: relative; margin: 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; }
+.lc .lc-connection { display: flex; align-items: center; justify-content: space-between; gap: var(--so-space-sm); min-height: 32px; margin: 0 var(--so-space-xs) 6px; font-size: 12.5px; line-height: 1.45; color: var(--so-muted); }
+.lc .lc-connection > span { min-width: 0; overflow-wrap: anywhere; }
+.lc .so-composer-area > .lc-said { margin: 0 var(--so-space-xs) 6px; padding: 0; }
+.lc .lc-slash { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 20; display: flex; flex-direction: column; margin: 0; padding: var(--so-space-xs); list-style: none; border: 1px solid var(--so-overlay-line); border-radius: var(--so-radius-sheet); background: var(--so-paper); box-shadow: none; }
+.lc .lc-slash li { display: flex; align-items: baseline; gap: 10px; min-height: 36px; box-sizing: border-box; padding: var(--so-space-sm) 10px; border-radius: var(--so-radius-md); cursor: pointer; }
+.lc .lc-slash li[aria-selected="true"] { background: var(--so-soft); }
+.lc-slash-name { font: 500 12.5px/1.3 var(--so-font-mono); color: var(--so-ink); }
+.lc-slash-hint { font-size: 13px; color: var(--so-muted); }
+.lc .lc-settings { margin: var(--so-space-sm) var(--so-space-xs) 0; padding: 0; border: 0; border-radius: 0; background: none; font-size: 12px; color: var(--so-muted); }
+/* The kit composer shows focus on its box, never on the textarea (the workspace's general focus ring would). */
+.lc .k-composer-ta:focus-visible { outline: none; }
+.lc .lc-settings > summary { width: fit-content; padding: 2px 0; font-size: 12px; cursor: pointer; }
+
+/* ---- the Ask panel beside a page ---- */
+.lc.lc-docked .lc-thread { padding: 18px 18px var(--so-space-3xl); gap: var(--so-space-xl); }
+.lc.lc-docked .so-composer-area { padding: var(--so-space-sm) 14px 14px; }
+.lc.lc-docked .lc-empty { padding-top: 6vh; justify-items: start; text-align: left; }
+.lc.lc-docked .lc-empty h2 { font-size: 15px; }
+.lc.lc-docked .lc-sugs { justify-content: flex-start; }
+.lc.lc-docked :is(.lc-body, .lc-cards, .lc-activity, .lc-cards-html, .lc-said) { padding-left: 0; }
+.lc.lc-docked .lc-lead .lc-meta { padding-left: 0; }
+
+@media (hover: hover) and (pointer: fine) {
+  .lc a.lc-card-row:hover { background: var(--so-raised); }
+  .lc .lc-card:has(a.lc-card-row:hover) { border-color: var(--so-field-line); }
+  .lc .lc-codecopy:hover { color: var(--so-ink); border-color: var(--so-field-line); }
+  .lc .lc-slash li:hover { background: var(--so-soft); }
+}
+@media (hover: none) { .lc .lc-meta { opacity: 1; } }
+
+@media (max-width: 760px) {
+  .lc .lc-thread { padding: var(--so-phone-gutter) var(--so-phone-gutter) var(--so-space-3xl); gap: var(--so-space-xl); }
+  .lc .lc-bubble { max-width: 85%; }
+  .lc :is(.lc-body, .lc-cards, .lc-activity, .lc-cards-html, .lc-said) { padding-left: 0; }
+  .lc .lc-lead .lc-meta { padding-left: 0; }
+  .lc .k-btn.lc-act { height: 44px; padding: 0 var(--so-phone-card); font-size: 13px; }
+  .lc .lc-meta { margin-top: calc(-1 * var(--so-phone-row)); }
+  .lc .lc-card-row { min-height: 56px; }
+  .lc .lc-card-n { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .lc .lc-card-more { padding-left: var(--so-phone-card); }
+  .lc .lc-codecopy { height: 32px; }
+  .lc .k-btn.lc-sug { min-height: 44px; }
+  .lc .lc-slash li { min-height: 44px; }
+  .lc .lc-empty { padding-top: 6vh; }
+  .lc .k-btn.lc-jump { width: 44px; height: 44px; margin-left: -22px; }
+  .lc .so-composer-area { padding: var(--so-phone-row) var(--so-phone-gutter) max(var(--so-phone-card), var(--safe-bottom, 0px)); }
+  html[data-mobile-keyboard] .lc .so-composer-area { padding-top: 6px; padding-bottom: var(--so-phone-row); }
+  html[data-mobile-keyboard] .lc .lc-settings { display: none; }
+  .lc .lc-settings > summary { min-height: 44px; display: flex; align-items: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lc .lc-msg.lc-new { animation: none; }
+  .lc-dots i { animation: none; opacity: .6; }
+  .lc .lc-live .so-live-caret { animation: none; }
+  .lc .k-btn.lc-jump, .lc .lc-meta, .lc .lc-card, .lc .lc-card-row, .lc .lc-codecopy { transition: none; }
+}
