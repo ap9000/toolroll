@@ -79,6 +79,8 @@ describe("parseCiRollup", () => {
     expect(parseCiRollup([run({ detailsUrl: "http://github.com/x" })])[0]!.url).toBeNull();
     expect(parseCiRollup([run({ detailsUrl: "https://user:pw@github.com/x" })])[0]!.url).toBeNull();
     expect(parseCiRollup([run({ name: "Lint\u0000\u001b[31m" })])[0]!.name).toBe("Lint[31m");
+    // C1 controls (a CSI introducer among them) and bidi/format characters are gone too: no terminal escape, no spoofed order.
+    expect(parseCiRollup([run({ name: "Lint\u009b31m\u0085\u202eevil\u202c\u2066x\u2069\u200e\u200f\u200b\ufeff" })])[0]!.name).toBe("Lint31mevilx");
     expect(parseCiRollup(Array.from({ length: 500 }, (_, n) => run({ name: `check ${n}` })))).toHaveLength(200);
   });
 });

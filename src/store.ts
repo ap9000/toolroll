@@ -25789,10 +25789,12 @@ function ciInstant(value: unknown): string | null {
   if (!Number.isFinite(at) || at < Date.UTC(2000, 0, 1)) return null;
   return new Date(at).toISOString();
 }
-/** Short, printable text, or null. */
+/** Short, printable text, or null. Every control (C0, DEL, C1) and format character (bidi overrides and isolates,
+ * zero-width marks) is removed, so a check name can't move the terminal's cursor or reorder what `task ship` prints.
+ * Check names never need a zero-width joiner, so emoji sequences lose theirs: that is the accepted cost. */
 function ciText(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const text = value.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  const text = value.replace(/[\p{Cc}\p{Cf}]/gu, "").trim();
   return text === "" || text.length > CI_CHECK_TEXT_MAX ? null : text;
 }
 /** Only an https link to GitHub itself is kept; anything else reads null. */
@@ -25909,7 +25911,8 @@ const RELEASE_STEP_NAMES = new Set(["gate", "approval", "check", "complete", "qu
 export function recordReleaseStep(store: Store, entry: ReleaseStepEntry): void {
   if (!RELEASE_STEP_NAMES.has(entry.step) || entry.taskId === "" || entry.tag === "") return;
   const at = entry.at.toISOString();
-  const detail = entry.detail == null ? null : entry.detail.slice(0, 1000);
+  // A stop message can carry a remote tool's words: no control or format character reaches `release status`.
+  const detail = entry.detail == null ? null : entry.detail.replace(/[\p{Cc}\p{Cf}]+/gu, " ").trim().slice(0, 1000);
   const ended = entry.state === "done" || entry.state === "failed";
   store.handle.prepare(`INSERT INTO release_step (task_id, tag, version, pr, step, state, started_at, ended_at, detail, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
