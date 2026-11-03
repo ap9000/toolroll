@@ -116,6 +116,17 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 
 .so-workspace .so-main-content { flex: 1; min-height: 0; min-width: 0; max-width: none; width: 100%; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .so-page-content { padding: var(--so-space-2xl) var(--so-space-3xl); overflow: auto; min-height: 0; }
+/* A kit page (src/design/KIT.md) owns its spacing and its top bar: no page padding, and at a desk no header (search
+ * lives in the rail). On a phone the shell's header stays the phone header, so the kit's own is not drawn twice. */
+.so-workspace--kit .so-page-content { padding: 0; display: flex; flex-direction: column; flex: 1; }
+.so-workspace--kit .so-page-content > [data-view] { flex: 1; display: flex; flex-direction: column; }
+.so-workspace--kit [data-kit-page] { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.so-workspace--kit .so-page-content > .so-demo-notice { margin: var(--so-space-md) var(--so-space-xl) 0; }
+.so-workspace--kit .k-ph { display: none; }
+@media (min-width: 901px) {
+  .so-workspace--kit .so-workspace-header { display: none; }
+  .so-workspace--kit .so-workspace-notices { padding: var(--so-space-md) var(--so-space-xl) 0; }
+}
 /* The settings frame: one 760px column, the breadcrumb in the header, and room under a sticky Save. */
 .so-workspace--settings .so-page-content > * { max-width: var(--so-settings-width, 760px); }
 .so-workspace--settings .so-page-content:has(.kit-save-bar) { scroll-padding-bottom: 80px; }
