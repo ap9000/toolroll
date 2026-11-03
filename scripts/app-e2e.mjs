@@ -115,6 +115,9 @@ const standIn = createHttpServer(async (request, response) => {
   }
   send(404, {});
 });
+// Idle connections stay open for the whole run, as a real service's do: with Node's 5-second default the stand-in can
+// close one just as the console reuses it, and the console then says Stripe "could not be reached".
+standIn.keepAliveTimeout = 10 * 60_000; standIn.headersTimeout = 10 * 60_000 + 1_000;
 await new Promise(done => standIn.listen(stand.port, "127.0.0.1", done));
 
 // A stand-in identity provider on this computer (OpenID Connect): discovery, its keys, a sign-in page with
@@ -1089,6 +1092,9 @@ await journey("flows", SCRIPTED, "Code steps: a Python file and a Node script ge
     }
     await form.locator('button:has-text("Save script")').click();
     await until(`the ${name} script to be saved`, async () => (await flowView(codeFlow)).scripts.some(one => one.name === name), { timeoutMs: 15_000, everyMs: 500 });
+    // The server has it before the answer reaches the drawer (Save stays busy until then): wait for the drawer to close
+    // this form, or the next script is typed into this one's form just before it goes away (release check 3301).
+    await form.waitFor({ state: "hidden", timeout: 15_000 });
   };
   await saveScript({ name: "size", about: "Sizes up a lead", language: "python", file: "scripts/size.py" });
   await saveScript({ name: "note", about: "Writes the lead down", language: "node", body: "import { readFileSync } from 'node:fs';\nconst { card, outputs } = JSON.parse(readFileSync(0, 'utf8'));\nconsole.log(`Noted ${card.title} (${outputs.size.text}) with ${process.env.CRM_KEY}`);" });

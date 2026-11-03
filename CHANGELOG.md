@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.9.88 — 2026-11-03
+
+- **Every text box looks the same, and calmer.** Wherever you type or pick
+  something, the field is one soft filled shape with its label above and any
+  hint or error below, with no outlines at rest. Text boxes grow as you
+  write, so there are no resize grips. On a phone, fields are larger and easy
+  to tap.
+- **A message box like the chat apps you know.** The lead chat has one
+  rounded box with a **+** menu, a chip that shows the project, and a solid
+  round send button that turns into Stop while the lead works. The task
+  conversation's box has the same look.
+- **Conversation settings moved into the + menu.** The automatic crew
+  updates, conversation details, End the conversation and the link to Lead
+  settings now open from **+ → Conversation settings** instead of sitting
+  under the chat box. Escape closes it.
+- **New task matches.** Pick the project from the chip in the box, and turn on
+  "Read code before planning" with one tap.
+- **A filled phone dock**, matching the new look.
+
+### For developers
+
+- **Faster checks.** Pull request CI finishes in about 8 minutes instead of
+  about 19: test shards are balanced by measured time, and macOS runs only
+  the tests that depend on macOS (the nightly run still covers everything).
+  The scripted end-to-end journeys now run on every pull request, as an
+  advisory check. The Mac release check uses more of a busy machine.
+
 ## 0.9.87 — 2026-11-03
 
 - **The whole app is redesigned.** Every page, from sign-in to Settings,
