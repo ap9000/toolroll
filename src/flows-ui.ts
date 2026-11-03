@@ -28,7 +28,9 @@ import { flowCardTaskLine } from "./flow-card-task.js";
 import { unattendedViewOf } from "./flow-unattended.js";
 import { browserViewOf } from "./flow-browser.js";
 import { readFlowSecrets } from "./flow-secrets.js";
-import { html, joinHtml, postForm, type Html } from "./html.js";
+import { html, joinHtml, postForm, type Html, type HtmlValue } from "./html.js";
+import { acts, btn, chip, count, disclose, doc, docHeader, dock, empty, field, group, infoLine, input as input_, note, notice, overlay, overlayTrigger, pageHeader, phoneHeader, row, segLinks, select, status } from "./server/kit.js";
+import { agoWords } from "./lead-voice.js";
 const projectName = (repo: string) => repo.split(/[\\/]/).filter(Boolean).pop() ?? repo;
 
 /** v126: what happens to deliveries turned away (refused with 503), as far as each sender is known to say: nothing
@@ -64,46 +66,155 @@ function hookView(trigger: FlowTriggerRow, config: TriggerConfig, dir: string | 
     scope: sender === "sentry" || sender === "vercel" ? { project: config.project ?? null, team: config.team ?? null } : null };
 }
 
-export const FLOWS_CSS = `.flows{max-width:880px;min-width:0}.flows .card{padding:16px 18px;margin:12px 0}.flows .flow-row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}.flows .flow-row h2{font-size:1.05rem;margin:0}.flows .flow-counts{font-size:.85rem;color:var(--so-muted)}.flows form{display:grid;gap:10px;margin:0}.flows label{display:grid;gap:6px}.flows input,.flows select{box-sizing:border-box;width:100%;max-width:100%}.flows button{justify-self:start;min-height:44px}.flows .flow-fallback ol{padding-left:20px}.flows summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-weight:600}.flows .flow-buttons{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0 0}.flows .flow-import{margin-top:18px;padding-top:14px;border-top:1px solid var(--so-line)}.flows .flow-import h3{font-size:.95rem;margin:0}.flows .flow-terms{list-style:none;padding:0;margin:8px 0 16px;display:grid;gap:10px}.flows .flow-terms li{white-space:pre-line;overflow-wrap:anywhere}.flows .flow-terms pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.8rem;margin:6px 0 0}.flows .flow-import-preview h2{font-size:1rem;margin:20px 0 4px}.flows .flow-untrusted{font-weight:600}.flows button.primary{background:var(--primary);color:var(--primary-foreground);border-color:var(--primary)}.flows fieldset{border:0;padding:0;margin:0;display:grid;gap:10px;min-width:0}.flows legend{font-weight:600;padding:0;margin-bottom:6px}.flows textarea[hidden]{display:none}.flows button.secondary{background:transparent;color:var(--foreground);border:1px solid var(--border)}@media(max-width:600px){.flows input,.flows select{font-size:16px}}@media(max-width:760px){.flows .card{padding:10px 12px;margin:8px 0;position:relative}.flows .flow-row{row-gap:2px}.flows .flow-row h2 a::after{content:"";position:absolute;inset:0;border-radius:inherit}.flows .flow-counts{line-height:1.35}}`;
+/** The flow page's fallback rules, plus the Flows list and the import preview (kit pieces; only layout here). */
+export const FLOWS_CSS = `.flows{max-width:880px;min-width:0}.flows .card{padding:16px 18px;margin:12px 0}.flows form{display:grid;gap:10px;margin:0}.flows label{display:grid;gap:6px}.flows input,.flows select{box-sizing:border-box;width:100%;max-width:100%}.flows button{justify-self:start;min-height:44px}.flows .flow-fallback ol{padding-left:20px}.flows summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-weight:600}.flows button.primary{background:var(--primary);color:var(--primary-foreground);border-color:var(--primary)}.flows fieldset{border:0;padding:0;margin:0;display:grid;gap:10px;min-width:0}.flows legend{font-weight:600;padding:0;margin-bottom:6px}.flows textarea[hidden]{display:none}.flows button.secondary{background:transparent;color:var(--foreground);border:1px solid var(--border)}@media(max-width:600px){.flows input,.flows select{font-size:16px}}@media(max-width:760px){.flows .card{padding:10px 12px;margin:8px 0;position:relative}}` +
+  // The list: the phone's project bar under the phone header; notices and the example in the page's gutter.
+  `.fl-pbar{display:flex;gap:8px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--so-line)}.fl-pbar form{flex:1;display:flex;gap:8px;margin:0;min-width:0}.fl-pbar .k-selw{flex:1;min-width:0}` +
+  `.fl-say{padding:12px 24px 0}.fl-try{display:grid;gap:10px;justify-items:start;padding:0 24px 24px}.fl-try form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0}` +
+  // The import drawer: the file chooser is a labelled outline button over the native input.
+  `.fl-imp{display:grid;gap:18px;margin:0}.fl-file{display:flex;align-items:center;gap:10px;min-width:0}.fl-file input[type=file]{position:absolute;width:1px;height:1px;opacity:0}.fl-file label{cursor:pointer}.fl-file label:focus-within{outline:2px solid var(--so-ring);outline-offset:2px}.fl-file .k-note{min-width:0;overflow-wrap:anywhere}` +
+  `.fl-imp textarea[hidden]{display:none}.fl-terms{list-style:none;padding:0;margin:0;display:grid;gap:8px;font-size:13px;line-height:1.5}.fl-terms li{white-space:pre-line;overflow-wrap:anywhere}` +
+  `.fl-terms pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 0}.fl-pv-form{display:grid;gap:16px;margin:0}.fl-pv-form fieldset{border:0;padding:0;margin:0;display:grid;gap:14px;min-width:0}.fl-pv-form legend{font:600 13px/1.3 var(--so-font-sans);padding:0;margin-bottom:10px}` +
+  `@media(max-width:760px){.fl-say{padding:12px 16px 0}.fl-try{padding:0 16px 24px}.fl-file label{min-height:44px}}`;
 
-/** The flows a person can open, with how many cards wait in each, and the new-flow form. */
-export function flowsListHtml(store: Store, flows: readonly FlowRow[], projects: readonly string[], canCreate: boolean, problem: string | null): Html {
-  const rows = flows.map(flow => {
-    const cards = store.flowCards(flow.id, false);
-    const definition = flowDefinitionOf(flow);
-    const waiting = cards.filter(card => ["approval", "choose"].includes(definition?.stages.find(one => one.id === card.stage)?.kind ?? "")).length;
-    const buttons = store.flowTriggers(flow.id).filter(one => one.state === "active").flatMap(one => { const config = triggerConfigOf(one); return config?.kind === "button" ? [{ id: one.id, label: config.label }] : []; });
-    const trouble = troubleWords(flowInsights(store, flow, new Date(), 7)) ?? nightlyHealthOf(store, flow);
-    return html`<article class="card"><div class="flow-row"><h2><a href="/flows/${flow.id}">${flow.name}</a></h2><span class="flow-counts">${projectName(flow.repo)} · ${cards.length} card${cards.length === 1 ? "" : "s"} in progress${waiting > 0 ? ` · ${waiting} waiting for a decision` : ""}${trouble === null ? "" : ` · ${trouble}`}</span></div>${buttons.length > 0 && html`<p class="flow-buttons">${joinHtml(buttons.map(one => html`<a class="button-link" href="/flows/${flow.id}?start=${one.id}">${one.label}</a>`), " ")}</p>`}</article>`;
-  });
-  const projectField = projects.length === 1 ? html`<input type="hidden" name="repo" value="${projects[0]!}">` : html`<label>Project<select name="repo">${projects.map(repo => html`<option value="${repo}">${projectName(repo)}</option>`)}</select></label>`;
-  // A flow file (flow-share.ts): chosen here or fetched from a gist, previewed in plain words before anything is made.
-  const importForm = postForm("/flows/import", html`<h3>Or import a flow file</h3>${projectField}<label>File<input type="file" accept=".json,application/json" data-flow-file></label><textarea name="document" hidden data-flow-document></textarea><label>Or its address<input name="url" type="url" inputmode="url" placeholder="https://gist.github.com/…"></label><p class="problem" role="alert" data-flow-file-note hidden></p><button>Preview import</button>`,
-    { attrs: { class: "flow-import", "data-flow-import": true } });
-  // A new flow starts from the gallery (Flows → New): templates grouped by what they're for.
-  const create = canCreate && projects.length > 0 && html`<p class="flow-buttons"><a class="button-link" href="/flows/new">New flow</a></p>${importForm}`;
-  // No flows yet: one click makes a working example with a sample question in it.
-  const example = flows.length === 0 && canCreate && projects.length > 0
-    ? postForm("/flows/example", html`<h2>See a flow work</h2><p class="meta">Claude drafts a reply to a sample customer question; you approve it here or in your chat app.</p>${projectField}<button>Try an example</button>`,
-      { attrs: { class: "card flow-example" } })
-    : null;
-  const intro = html`<p class="meta">A flow is your process drawn as zones. Cards move through them: agents do the work, people approve, and the team hears about it.</p>${canCreate && projects.length > 0 && html`<p class="flow-chat">Describe how work should move and your lead drafts the flow for you to confirm, or start from a template. <a href="/chat?draft=${encodeURIComponent("Make a flow for ")}">Describe it in chat</a></p>`}<p class="flow-chat">subagents can decide and handle cards for you, within rules you write. <a href="/settings/lead/subagents">Subagents</a> · or set one up with its flow in one click: <a href="/kits">Starter kits</a></p>`;
-  return html`<section class="flows">${problem !== null && html`<p class="problem" role="alert">${problem}</p>`}${intro}${create}${rows.length > 0 ? rows : example ?? html`<p class="meta">No flows yet.</p>`}</section>`;
+/** "in 12 min", "in 5 h", "in 3 days": when a trigger next looks. */
+function nextWords(at: string, now: Date): string {
+  const minutes = Math.max(0, Math.round((Date.parse(at) - now.getTime()) / 60_000));
+  if (!Number.isFinite(minutes) || minutes < 1) return "now";
+  if (minutes < 60) return `in ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  return hours < 24 ? `in ${hours} h` : `in ${Math.round(hours / 24)} day${Math.round(hours / 24) === 1 ? "" : "s"}`;
 }
 
-/** Reads the chosen flow file into the form (the server reads it again, whole, before anything is made). */
-export const FLOW_IMPORT_SCRIPT = `(function(){var form=document.querySelector('[data-flow-import]');if(!form)return;var input=form.querySelector('[data-flow-file]'),text=form.querySelector('[data-flow-document]'),note=form.querySelector('[data-flow-file-note]'),address=form.querySelector('[name=url]');function say(words){note.textContent=words;note.hidden=words==='';}var reading=null;input.addEventListener('change',function(){text.value='';say('');var file=input.files&&input.files[0];if(!file){reading=null;return;}if(file.size>${FLOW_FILE_MAX_BYTES}){say('That file is too big: a flow file is at most ${FLOW_FILE_MAX_BYTES / 1024} KB.');input.value='';reading=null;return;}reading=file.text().then(function(value){text.value=value;});});form.addEventListener('submit',function(event){if(reading!==null&&text.value===''){event.preventDefault();reading.then(function(){form.requestSubmit();});return;}if(text.value===''&&address.value.trim()===''){event.preventDefault();say('Choose a flow file or give its address.');}});})();`;
+/** What starts a flow, in a few words: its active triggers, else the paused ones, else that cards are added by hand. */
+function triggerWords(store: Store, triggers: readonly FlowTriggerRow[]): string {
+  const shown = triggers.filter(one => one.state === "active");
+  const pick = shown.length > 0 ? shown : triggers.filter(one => one.state === "paused");
+  const words = pick.flatMap(one => {
+    const config = triggerConfigOf(one);
+    if (config === null) return [];
+    return [config.kind === "button" ? `When someone presses ${config.label}` : triggerHeadline(config, store).name];
+  });
+  if (words.length === 0) return "Cards added by hand";
+  return words.length === 1 ? words[0]! : `${words[0]!} and ${words.length - 1} more`;
+}
 
-/** An import's preview: the plan in plain words, what it asks for, and one Import button after the terms. */
+type FlowListGroup = "needs" | "running" | "on" | "paused";
+const FLOW_LIST_GROUPS: ReadonlyArray<readonly [FlowListGroup, string]> = [["needs", "Needs you"], ["running", "Running"], ["on", "Turned on"], ["paused", "Paused"]];
+
+/** One flow as a quiet row: what the store knows now (cards waiting on a decision, cards in progress, its triggers). */
+function flowListRow(store: Store, flow: FlowRow, now: Date, options: { canAct: boolean; showProject: boolean }): { group: FlowListGroup; row: Html } {
+  const cards = store.flowCards(flow.id, false);
+  const definition = flowDefinitionOf(flow);
+  const kindOf = (card: FlowCardRow) => definition?.stages.find(one => one.id === card.stage)?.kind ?? "";
+  const waiting = cards.filter(card => ["approval", "choose"].includes(kindOf(card)));
+  const triggers = store.flowTriggers(flow.id).filter(one => one.state !== "removed");
+  const active = triggers.filter(one => one.state === "active");
+  const button = active.flatMap(one => { const config = triggerConfigOf(one); return config?.kind === "button" ? [{ id: one.id, label: config.label }] : []; })[0];
+  const trouble = troubleWords(flowInsights(store, flow, now, 7)) ?? nightlyHealthOf(store, flow);
+  const starts = triggerWords(store, triggers);
+  const next = active.map(one => one.nextAt).filter((one): one is string => one !== null).sort()[0];
+  const meta = html`${options.showProject ? html`<span>${projectName(flow.repo)}</span>` : ""}${next !== undefined && active.length > 0 && waiting.length === 0 ? html`<span class="k-num">Next ${nextWords(next, now)}</span>` : ""}`;
+  const start = button !== undefined && options.canAct ? btn(button.label, { sm: true, href: `/flows/${flow.id}?start=${button.id}` }) : html``;
+  const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+  const tail = trouble === null ? "" : ` · ${trouble}`;
+  if (waiting.length > 0) {
+    const first = waiting[0]!;
+    const ask = kindOf(first) === "choose" ? chip("Choose", "ask") : chip("Approve", "ask");
+    const said = waiting.length === 1 ? `${first.title} waits for your decision` : `${plural(waiting.length, "card")} wait for your decision`;
+    return { group: "needs", row: row({ href: `/flows/${flow.id}`, chip: ask, title: flow.name, desc: `${starts} · ${said}${tail}`, meta, wait: true,
+      action: btn("Review", { sm: true, href: `/flows/${flow.id}?card=${first.id}`, attrs: { "aria-label": `Review ${first.title}` } }), attrs: { "data-flow": flow.id } }) };
+  }
+  if (cards.length > 0) {
+    return { group: "running", row: row({ href: `/flows/${flow.id}`, chip: status("running"), title: flow.name, desc: `${starts} · ${plural(cards.length, "card")} in progress${tail}`, meta, action: start, attrs: { "data-flow": flow.id } }) };
+  }
+  if (active.length > 0) {
+    const failing = active.find(one => one.failures > 0);
+    const last = active.filter(one => one.lastAt !== null).sort((a, b) => (b.lastAt ?? "").localeCompare(a.lastAt ?? ""))[0];
+    const chipNow = failing !== undefined || trouble !== null ? status("failed") : last === undefined ? chip("Not run yet", "", { dot: false }) : status("finished");
+    const lastWords = failing !== undefined ? `last check failed ${agoWords(failing.lastAt ?? failing.updatedAt, now)}${failing.lastOutcome ? `: ${failing.lastOutcome}` : ""}`
+      : last === undefined ? "not run yet" : `last ran ${agoWords(last.lastAt!, now)}${last.lastOutcome ? `: ${last.lastOutcome}` : ""}`;
+    return { group: "on", row: row({ href: `/flows/${flow.id}`, chip: chipNow, title: flow.name, desc: `${starts} · ${lastWords}${tail}`, meta, action: start, attrs: { "data-flow": flow.id } }) };
+  }
+  const paused = triggers.length > 0;
+  return { group: "paused", row: row({ href: `/flows/${flow.id}`, chip: chip(paused ? "Paused" : "Off", "", { dot: false }), title: flow.name,
+    desc: paused ? `${starts} · paused${tail}` : `${starts} · nothing starts it on its own${tail}`, meta, attrs: { "data-flow": flow.id } }) };
+}
+
+/** The project field of a list form: a select when there's a choice. */
+const projectSelect = (id: string, projects: readonly string[], current: string | null) => projects.length === 1
+  ? html`<input type="hidden" name="repo" value="${projects[0]!}">`
+  : field({ id, label: "Project", control: select({ id, name: "repo", items: projects.map(repo => [repo, projectName(repo)] as const), current: current ?? projects[0]!, wide: true }) });
+
+/** The import form: a flow file chosen here or fetched from a gist, previewed in plain words before anything is made. */
+function importFormHtml(projects: readonly string[], current: string | null): Html {
+  return postForm("/flows/import", html`${note("A flow file from another Toolroll, a teammate or a gist. Nothing runs until you import it, and any script it brings waits for your approval.")}\
+${projectSelect("fl-imp-project", projects, current)}\
+<div class="k-field"><span class="k-label">File</span><div class="fl-file"><label class="k-btn k-btn-outline k-btn-sm"><input type="file" accept=".json,application/json" data-flow-file><span class="k-face">Choose a file</span></label><span class="k-note" data-flow-file-name>No file chosen</span></div></div>\
+<textarea name="document" hidden data-flow-document></textarea>\
+${field({ id: "fl-imp-url", label: "Or its address", control: input_({ id: "fl-imp-url", name: "url", type: "url", attrs: { inputmode: "url", placeholder: "https://gist.github.com/…" } }) })}\
+<p class="k-notice" role="alert" data-flow-file-note hidden></p>${acts(btn("Preview import", { type: "submit" }))}`, { attrs: { class: "fl-imp", "data-flow-import": true } });
+}
+
+/**
+ * Flows: the top bar (a project filter, More, New flow), then each flow as a quiet row under Needs you, Running,
+ * Turned on and Paused. Words come only from what the store knows now: cards waiting on a decision, cards in
+ * progress, and the triggers (on, paused, when they last looked and what they found).
+ */
+export function flowsListHtml(store: Store, flows: readonly FlowRow[], projects: readonly string[], canCreate: boolean, problem: string | null, filter: string | null = null, now: Date = new Date()): Html {
+  const scope = filter !== null && projects.includes(filter) ? filter : null;
+  const shown = scope === null ? flows : flows.filter(one => one.repo === scope);
+  const making = canCreate && projects.length > 0;
+  const href = (repo: string | null) => repo === null ? "/flows" : `/flows?project=${encodeURIComponent(repo)}`;
+  const seg = projects.length > 1 ? segLinks("Project", scope ?? "all", [{ key: "all", label: "All", href: "/flows" }, ...projects.map(repo => ({ key: repo, label: projectName(repo), href: href(repo) }))]) : html``;
+  const more = (id: string, phone: boolean) => overlayTrigger("More", "fl-more", { variant: phone ? "outline" : "ghost", sm: !phone, iconOnly: "more", ...(id === "" ? {} : { attrs: { id } }) });
+  const create = making ? btn("New flow", { variant: "primary", sm: true, lead: "plus", href: "/flows/new" }) : html``;
+  const header = pageHeader("Flows", { right: html`${seg}${more("", false)}${create}` });
+  // On a phone the filter is a select (the form posts nothing: it's an address), beside More.
+  const phoneBar = html`<div class="fl-pbar k-phone-only">${projects.length > 1 ? html`<form method="get" action="/flows">${select({ name: "project", label: "Project", items: [["", "All projects"], ...projects.map(repo => [repo, projectName(repo)] as const)], current: scope ?? "", wide: true, attrs: { "data-k-autosubmit": "" } })}<noscript>${btn("Show", { sm: true, type: "submit" })}</noscript></form>` : html`<span class="k-grow"></span>`}${more("", true)}</div>`;
+  const menu = overlay({ id: "fl-more", kind: "menu", title: "More", body: html`${making ? html`<button type="button" data-k-open="fl-import" aria-haspopup="dialog" aria-controls="fl-import">Import a flow file…</button>` : ""}<a href="/flows/new?group=kits">Starter kits</a><a href="/settings/lead/subagents">Subagents</a>` });
+  const importDrawer = making ? overlay({ id: "fl-import", kind: "drawer", title: "Import a flow file", body: importFormHtml(projects, scope) }) : html``;
+  const say = problem !== null ? html`<div class="fl-say">${notice(problem)}</div>` : html``;
+  let body: Html;
+  if (flows.length === 0) {
+    const example = making ? html`<div class="fl-try">${postForm("/flows/example", html`<span class="k-note">Or see one work: Claude drafts a reply to a sample customer question for you to approve.</span>${projects.length === 1 ? html`<input type="hidden" name="repo" value="${projects[0]!}">` : select({ name: "repo", label: "Project", items: projects.map(repo => [repo, projectName(repo)] as const), sm: true })}${btn("Try an example", { sm: true, type: "submit" })}`)}</div>` : html``;
+    const words = { title: "No flows yet.", text: "A flow repeats work for you: run your tests every night, turn labelled issues into pull requests, draft replies to support mail." };
+    body = html`${empty(making ? { ...words, action: acts(btn("Browse templates", { sm: true, href: "/flows/new" }), overlayTrigger("Import a flow file", "fl-import", { variant: "ghost", sm: true })) } : words)}${example}`;
+  } else if (shown.length === 0) {
+    body = empty({ title: `No flows in ${projectName(scope!)}.`, action: btn("Show all projects", { variant: "ghost", sm: true, href: "/flows" }) });
+  } else {
+    const rows = shown.map(flow => flowListRow(store, flow, now, { canAct: canCreate, showProject: scope === null && projects.length > 1 }));
+    body = html`<div class="fl-rows" aria-label="Flows">${FLOW_LIST_GROUPS.map(([key, label]) => {
+      const mine = rows.filter(one => one.group === key);
+      return mine.length === 0 ? "" : html`${group(label, count(mine.length))}${mine.map(one => one.row)}`;
+    })}</div>`;
+  }
+  return html`<div class="fl-page" data-kit-page>${header}${phoneBar}${say}${body}${menu}${importDrawer}${making ? dock(btn("New flow", { variant: "primary", lead: "plus", href: "/flows/new" })) : ""}</div>`;
+}
+
+/** Reads the chosen flow file into the form (the server reads it again, whole, before anything is made), and sends a
+ * filter select's form when it changes. */
+export const FLOW_IMPORT_SCRIPT = `(function(){document.querySelectorAll('select[data-k-autosubmit]').forEach(function(s){s.addEventListener('change',function(){if(s.form)s.form.requestSubmit();});});var form=document.querySelector('[data-flow-import]');if(!form)return;var input=form.querySelector('[data-flow-file]'),text=form.querySelector('[data-flow-document]'),note=form.querySelector('[data-flow-file-note]'),named=form.querySelector('[data-flow-file-name]'),address=form.querySelector('[name=url]');function say(words){note.textContent=words;note.hidden=words==='';}var reading=null;input.addEventListener('change',function(){text.value='';say('');var file=input.files&&input.files[0];if(named)named.textContent=file?file.name:'No file chosen';if(!file){reading=null;return;}if(file.size>${FLOW_FILE_MAX_BYTES}){say('That file is too big: a flow file is at most ${FLOW_FILE_MAX_BYTES / 1024} KB.');input.value='';if(named)named.textContent='No file chosen';reading=null;return;}reading=file.text().then(function(value){text.value=value;});});form.addEventListener('submit',function(event){if(reading!==null&&text.value===''){event.preventDefault();reading.then(function(){form.requestSubmit();});return;}if(text.value===''&&address.value.trim()===''){event.preventDefault();say('Choose a flow file or give its address.');}});})();`;
+
+/** An import's preview, a reading page: the plan in plain words, what it asks for, and one Import button after the terms. */
 export function flowImportHtml(input: { plan: FlowImportPlan | null; file: FlowFile; document: string; repo: string; csrf: string; values: Record<string, string>; previewed: string; problem: string | null }): Html {
   const { plan, file } = input;
-  const fields = file.parameters.map(one => html`<label><span>${one.about}${one.optional === true && html` <span class="meta">(optional)</span>`}</span><input name="param.${one.id}" value="${input.values[one.id] ?? plan?.values[one.id] ?? one.default ?? ""}" maxlength="200" autocomplete="off"></label>`);
-  const list = (items: readonly string[]) => items.length === 0 ? "" : html`<ul class="flow-terms">${items.map(term => html`<li>${term}</li>`)}</ul>`;
+  const fields = file.parameters.map((one, index) => field({ id: `fl-param-${index}`, label: one.optional === true ? `${one.about} (optional)` : one.about,
+    control: input_({ id: `fl-param-${index}`, name: `param.${one.id}`, value: input.values[one.id] ?? plan?.values[one.id] ?? one.default ?? "", attrs: { maxlength: 200, autocomplete: "off" } }) }));
+  const list = (items: readonly string[]) => items.length === 0 ? "" : html`<ul class="fl-terms">${items.map(term => html`<li>${term}</li>`)}</ul>`;
+  const section = (title: string, body: HtmlValue) => html`<section class="k-sec"><h3>${title}</h3>${body}</section>`;
   // The steps, what they mean, the triggers and the scripts; each script's code one tap away, as on the Scripts panel.
-  const terms = plan === null ? "" : html`${plan.parts.about !== null && html`<p>${plan.parts.about}</p>`}<p class="flow-untrusted">Its instructions come from the file, not from you: read what each step is asked before you import.</p>${list(plan.parts.steps)}${plan.parts.triggers.length > 0 && html`<h2>Triggers</h2>${list(plan.parts.triggers)}`}${plan.parts.scripts.length + plan.parts.kept.length > 0 && html`<h2>Scripts</h2><ul class="flow-terms">${plan.scripts.add.map((one, index) => html`<li>${plan.parts.scripts[index]}${one.body !== undefined && html`<details><summary>Show the script</summary><pre>${one.body}</pre></details>`}</li>`)}${plan.parts.kept.map(one => html`<li>${one}</li>`)}</ul>`}<h2>Good to know</h2>${list([...plan.parts.notes, ...(plan.parts.needs === null ? [] : [plan.parts.needs])])}`;
-  const form = postForm("/flows/import", html`<textarea name="document" hidden>${input.document}</textarea>${fields.length > 0 && html`<fieldset class="flow-import-fields"><legend>Fill in</legend>${fields}</fieldset>`}<p class="flow-buttons">${plan !== null && html`<button name="confirm" value="yes" class="primary">Import flow</button>`}${fields.length > 0 && html`<button name="confirm" value="" class="${plan === null ? "" : "secondary"}">Update preview</button>`}<a href="/flows">Cancel</a></p>`,
-    { attrs: { class: "card" }, hidden: { repo: input.repo, previewed: input.previewed } });
-  return html`<section class="flows flow-import-preview">${input.problem !== null && html`<p class="problem" role="alert">${input.problem}</p>`}<p class="meta">Into ${projectName(input.repo)}. Nothing is made until you import it.</p>${terms}${form}</section>`;
+  const terms = plan === null ? "" : html`${plan.parts.about !== null && html`<p class="k-note">${plan.parts.about}</p>`}\
+${section("Steps", html`${infoLine("Its instructions come from the file, not from you: read what each step is asked before you import.")}${list(plan.parts.steps)}`)}\
+${plan.parts.triggers.length > 0 && section("Triggers", list(plan.parts.triggers))}\
+${plan.parts.scripts.length + plan.parts.kept.length > 0 && section("Scripts", html`<ul class="fl-terms">${plan.scripts.add.map((one, index) => html`<li>${plan.parts.scripts[index]}${one.body !== undefined && disclose("Show the script", html`<pre class="k-mono">${one.body}</pre>`)}</li>`)}${plan.parts.kept.map(one => html`<li>${one}</li>`)}</ul>`)}\
+${section("Good to know", list([...plan.parts.notes, ...(plan.parts.needs === null ? [] : [plan.parts.needs])]))}`;
+  const importButton = plan !== null ? btn("Import flow", { variant: "primary", type: "submit", docked: true, attrs: { name: "confirm", value: "yes" } }) : html``;
+  const form = postForm("/flows/import", html`<textarea name="document" hidden>${input.document}</textarea>${fields.length > 0 && html`<fieldset><legend>Fill in</legend>${fields}</fieldset>`}\
+${acts(importButton, fields.length > 0 ? btn(plan === null ? "Preview" : "Update preview", { variant: plan === null ? "primary" : "outline", type: "submit", attrs: { name: "confirm", value: "" } }) : "", btn("Cancel", { variant: "ghost", href: "/flows" }))}`,
+    { attrs: { class: "fl-pv-form", id: "fl-pv-form" }, hidden: { repo: input.repo, previewed: input.previewed } });
+  return html`<div class="fl-page" data-kit-page>${phoneHeader(`Import ${file.name}`, { back: "/flows" })}${doc(docHeader({ title: `Import ${file.name}`, back: ["/flows", "Flows"], meta: `Into ${projectName(input.repo)}. Nothing is made until you import it.`, same: true }),
+    input.problem !== null ? notice(input.problem) : "", terms, form)}${plan !== null ? dock(btn("Import flow", { variant: "primary", type: "submit", attrs: { form: "fl-pv-form", name: "confirm", value: "yes" } })) : ""}</div>`;
 }
 
 const historyText = (event: { fromStage: string | null; toStage: string; outcome: string; actor: string; note: string | null }, title: (id: string) => string, sorts: ReadonlySet<string> = new Set()): string => {
@@ -265,7 +376,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
     requestSecrets: flowSecretNames(setup.dir, flow.repo),
     tools: projectToolsOf(store, flow.repo).map(tool => ({ name: tool.name, about: tool.spec.about, functions: tool.lastTest?.ok === true ? tool.lastTest.tools : [],
       ready: toolStanding(tool, secretsSetFor(flow.repo, tool.spec, setup.toolHome)).ready })),
-    scripts: store.flowScripts(flow.repo).map(script => ({ name: script.name, about: script.about, body: script.body, timeoutMinutes: script.timeoutMinutes, version: script.version, savedBy: script.savedBy, savedAt: script.savedAt,
+    scripts: store.flowScripts(flow.repo).map(script => ({ name: script.name, about: script.about, body: script.body, timeoutMinutes: script.timeoutMinutes, version: script.version, digest: script.digest, savedBy: script.savedBy, savedAt: script.savedAt,
       language: script.language, file: script.file, held: script.held !== null,
       usedHere: stages.filter(stage => stage.kind === "check" && stage.script === script.name).map(stage => stage.title) })),
     start: definition?.start ?? stages[0]?.id ?? "",

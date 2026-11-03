@@ -234,8 +234,8 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const window = new Window();
     try {
       window.document.body.innerHTML = picker;
-      const button = [...window.document.querySelectorAll('button.project-name')].find(one => one.textContent === "beta")!;
-      const form = button.closest("form")!;
+      // The list's one action per row (kit rows): beta's Open form, which carries the destination.
+      const form = [...window.document.querySelectorAll<HTMLFormElement>('form[action="/projects/open"]')].find(one => one.querySelector('input[name="path"]')?.getAttribute("value") === beta && one.textContent === "Open")!;
       expect(form.querySelector('input[name="return"]')?.getAttribute("value")).toBe("/board?view=order");
       const csrf = csrfOf(picker);
       const invalid = await fetch(url("/projects/open"), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf, path: "/no/such/project", return: "/board?view=order" }) });
@@ -246,7 +246,8 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
       for (const bad of ["https://evil.example/", "//evil.example/", "/\\evil.example/", "/%2f%2fevil.example/"]) {
         const unsafe = await page(cookie, `/projects?return=${encodeURIComponent(bad)}`);
         window.document.body.innerHTML = unsafe;
-        expect(window.document.querySelector('button.project-name')?.closest("form")?.querySelector('input[name="return"]')?.getAttribute("value")).toBe("/");
+        const open = [...window.document.querySelectorAll<HTMLFormElement>('form[action="/projects/open"]')].find(one => one.textContent === "Open");
+        expect(open?.querySelector('input[name="return"]')?.getAttribute("value")).toBe("/");
       }
     } finally { await window.happyDOM.close(); }
   });
@@ -329,7 +330,9 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(live).toContain('<a href="/runs">1 live</a><a href="/board?view=order">0 queued</a>');
     expect(live).toContain('data-history-version="newest-sibling"');
     expect(live).toContain("1 earlier task version is still active");
-    expect(await page(cookie, "/projects")).toContain('>1 running</a>');
+    // The list says it in words; the project's own page links the counts (wave C: the list rows link to it).
+    expect(await page(cookie, "/projects")).toContain("1 running");
+    expect(await page(cookie, `/projects/${basename(alpha)}`)).toContain('>1 running</a>');
     expect(countsOf(await page(cookie, "/work"))["Running"]).toBe(1);
     // A released or exactly expired lease cannot keep an orphaned run live.
     release(store, claim.claim.leaseId, now);
@@ -470,7 +473,8 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
       expect(store.getTask(id)!.state).toBe("queued");
       const taskPage = await page(cookie, `/t/${id}`);
       expect(taskPage).toContain('<a href="/runs">1 live</a><a href="/board?view=order">1 queued</a>');
-      const projects = await page(cookie, "/projects");
+      expect(await page(cookie, "/projects")).toContain("1 running");
+      const projects = await page(cookie, `/projects/${basename(alpha)}`);
       expect(projects).toContain('>1 running</a>');
       expect(projects).toContain('>1 queued</a>');
     }

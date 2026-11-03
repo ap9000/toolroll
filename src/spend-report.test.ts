@@ -227,7 +227,7 @@ test("the page never shows unknown cost or unreported plan usage as $0", () => {
   run({ basis: "evidence", spend: { microusd: 0, source: "subscription", billing: "subscription" }, provider: "codex" });
   chat({ provider: "claude-subscription", settled: 0, billingReported: null });
   const report = spendReport(spendRows(store.handle, MONTH.from, MONTH.to));
-  const page = htmlString(spendHtml({ month: MONTH.name, previous: "2026-09", next: null, report, budgets: [], windows: html``, subagentNames: new Map() }, {}));
+  const page = htmlString(spendHtml({ month: MONTH.name, previous: "2026-09", next: null, report, budgets: [], windows: null, subagentNames: new Map() }, {}));
   const kinds = [...page.matchAll(/data-amount-kind="(subscription|unknown)"[^>]*>(.*?)<\/(div|td)>/g)];
   expect(kinds.length).toBeGreaterThanOrEqual(2);
   for (const [, , inner] of kinds) expect(inner).not.toMatch(/\$0(\.0+)?(?!\d|\.\d*[1-9])/);
@@ -244,7 +244,7 @@ test("sub-cent plan usage and estimates show as under a cent on the page, in the
   run({ basis: "default", spend: { microusd: 0, source: "subscription", billing: "subscription" }, costUsd: 0.001 });
   const report = spendReport(spendRows(store.handle, MONTH.from, MONTH.to));
   expect(report.totals).toMatchObject({ usageMicrousd: 1_000, estimatedMicrousd: 1_000 });
-  const page = htmlString(spendHtml({ month: MONTH.name, previous: "2026-09", next: null, report, budgets: [], windows: html``, subagentNames: new Map() }, {}));
+  const page = htmlString(spendHtml({ month: MONTH.name, previous: "2026-09", next: null, report, budgets: [], windows: null, subagentNames: new Map() }, {}));
   expect(page).not.toMatch(/\$0\.00/);
   expect(page).toContain("counted as &lt;$0.01 (estimated)");
   expect(page.match(/&lt;\$0\.01/g)!.length).toBeGreaterThanOrEqual(4);

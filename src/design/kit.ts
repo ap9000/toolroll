@@ -168,6 +168,11 @@ export const KIT_ICONS = {
   alert: [circle(12, 12, 9), path("M12 8v4"), path("M12 16h.01")],
   more: [circle(5, 12, 1), circle(12, 12, 1), circle(19, 12, 1)],
   file: [path("M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"), path("M14 3v5h5")],
+  // Wave C (flows): the canvas's zoom bar and the flow page's tools.
+  minus: [path("M5 12h14")],
+  fit: [path("M15 3h6v6"), path("M9 21H3v-6"), path("M21 3l-7 7"), path("M3 21l7-7")],
+  bolt: [path("M13 2 4 14h7l-1 8 9-12h-7z")],
+  code: [path("m16 18 6-6-6-6"), path("m8 6-6 6 6 6")],
   list: [path("M8 6h13"), path("M8 12h13"), path("M8 18h13"), path("M3 6h.01"), path("M3 12h.01"), path("M3 18h.01")],
   board: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], path("M9 3v18"), path("M15 3v18")],
   panel: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], path("M15 3v18")],

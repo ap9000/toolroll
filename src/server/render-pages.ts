@@ -1,18 +1,15 @@
-import { activityMetrics, activityScope, activityLimit } from '../project-activity.js';
 /** Everyday console pages: home, inbox, board, work, projects, fleet and the queue. */
 import { archivedWords, tidyGroups, TIDY_DEFAULT_DAYS, type TidyItem } from "../tidy.js";
 import { stepUpForm } from "../settings-kit.js";
-import { type Html, html, type HtmlValue, htmlString, joinHtml, postForm, replaceMarkup, reauth } from "../html.js";
+import { type Html, html, type HtmlValue, joinHtml, postForm, replaceMarkup, reauth } from "../html.js";
 import { type AssignmentSnapshot } from "../assignment.js";
 import { type BoardCard } from "../board.js";
-import { type BrowserLimits,type BrowserProjectRow,type BrowserProjectsView,type BrowserTasksView,browserWorkActionHref } from "../browser-workspace.js";
-import { CHECK_LEVEL_WORDS,type CheckLevel } from "../check-levels.js";
+import { type BrowserLimits,type BrowserTasksView,browserWorkActionHref } from "../browser-workspace.js";
 import { type DispatchDiagnosis } from "../dispatch.js";
 import { type FirstRunStep } from "../first-run.js";
 import { type Gap } from "../gaps.js";
 import { limitsHtml } from "../limits-ui.js";
 import { type Ask,ASK_LABEL,ASKS,START_BUILDER_COMMAND } from "../needs-you.js";
-import { type ListOutcome } from "../onboard.js";
 import { type parseBaseTreeSnapshot } from "../peek.js";
 import { projectName } from "../project.js";
 import { type CriterionMatrixRow } from "../proof.js";
@@ -25,9 +22,8 @@ import { HEADLINES, type Headline } from "../task-status.js";
 import { chipOfHeadline, type ChipTone } from "../design/kit.js";
 import { WORK_VIEWS,type WorkFacts,type WorkStatus,type WorkView } from "../workspace-ui.js";
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { buildsViews,CHEVRON_ICON,type Chrome,consoleSpend,FOLDER_PATHS,GRIP_HANDLE,isOverdue,projectChip,relativeAge,safePrUrl,screen,type Screen,sentenceCase,strokeIcon,TO_FRONT_ICON,when,whenTime } from "./chrome.js";
+import { buildsViews,CHEVRON_ICON,type Chrome,consoleSpend,GRIP_HANDLE,isOverdue,projectChip,relativeAge,safePrUrl,screen,type Screen,sentenceCase,TO_FRONT_ICON,when,whenTime } from "./chrome.js";
 import { reviewHref,taskHref } from "./http.js";
 import { criterionMatrixSummary,incidentWords,PHASE_WORDS,phaseWords } from "./render-results.js";
 import { decisionAnswerCard,decisionAnswerScript,dispatchHeadline,statusLineHtml,workDiagnosticsHtml } from "./render-tasks.js";
@@ -966,40 +962,6 @@ export function workPage(
   return screen('work', html`<div class="work-head"><h1>Tasks</h1>${putAwayLink === null ? null : html`<a class="button-link" href="${putAwayLink.href}" data-put-away-old>${putAwayLink.label}</a>`}${tools}</div>${limitsHtml(data.limits ?? null)}${legacyTabs}${stateLinks}${list}${pages}`, { chrome, workspace: { view } });
 }
 
-export function browsePage(chrome: Chrome, data: {
-  at: string;
-  root: string;
-  roots: string[];
-  parent: string | null;
-  entries: { name: string; path: string; git: boolean }[];
-  /** Unused: postForm adds the request's CSRF field. Kept for callers. */
-  csrf: string;
-}): Screen {
-  const crumb = data.at === data.root ? projectName(data.root) : `${projectName(data.root)}${data.at.slice(data.root.length)}`;
-  const openForm = (path: string): Html =>
-    postForm("/projects/open", html`<button type="submit">Open</button>`, { attrs: { class: "inline" }, hidden: { path } });
-  return screen("projects", joinHtml([
-    html`<h1>Choose a folder</h1>`,
-    html`<p class="meta">git repositories float to the top and can be opened; anything else can be entered — only folders under ${
-      data.roots.length === 1 ? html`<span class="mono">${projectName(data.root)}</span>` : "the configured roots"
-    } are visible here</p>`,
-    data.roots.length > 1
-      ? html`<p class="meta">Roots: ${joinHtml(data.roots.map(one => html`<a href="/projects/browse?at=${encodeURIComponent(one)}" class="mono">${projectName(one)}</a>`), " · ")}</p>`
-      : null,
-    html`<p class="mono meta">${crumb}</p>`,
-    data.parent === null
-      ? null
-      : html`<p class="row"><a href="/projects/browse?at=${encodeURIComponent(data.parent)}">← up one level</a></p>`,
-    data.entries.length === 0
-      ? html`<p class="meta">No folders here</p>`
-      : joinHtml(data.entries.map(
-          one =>
-            html`<p class="row"><a href="/projects/browse?at=${encodeURIComponent(one.path)}"><strong>${one.name}</strong></a>${one.git ? html` <span class="badge badge-done">git</span>` : null}<span class="right">${one.git ? openForm(one.path) : html`<a class="meta" href="/projects/browse?at=${encodeURIComponent(one.path)}">enter →</a>`}</span></p>`,
-        ), "\n"),
-    html`<p class="meta"><a href="/projects">← back to projects</a></p>`,
-  ], "\n"), { chrome });
-}
-
 
 /** The compact completed row shared by both halves of the control room. */
 export type WorkbenchDone = { taskId: string; title: string; outcome: string | null; repo: string | null };
@@ -1253,242 +1215,6 @@ export function githubIdentityOf(remoteUrl: string): string | null {
   const ssh = /^(?:ssh:\/\/)?git@github\.com[:/]([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/.exec(trimmed);
   if (ssh !== null) return `${ssh[1]}/${ssh[2]}`;
   return null;
-}
-
-/** The GitHub listing page: the account's repositories with ONE honest
- * action each. Names, descriptions, and paths are gh/filesystem DATA —
- * escaped at the sink like everything else. */
-export function githubReposPage(
-  chrome: Chrome,
-  data: {
-    /** The last listing; null until someone lists (a POST: listing asks GitHub, so a page visit never does). */
-    listed: ListOutcome | null;
-    local: Map<string, string>;
-    registered: Set<string>;
-    /** Unused: postForm adds the request's CSRF field. Kept for callers. */
-    csrf: string;
-    cloneReady: boolean;
-    openProject: string | null;
-    /** A projects folder didn't answer in time: local copies weren't matched this time. */
-    localUnanswered?: boolean;
-  },
-): Screen {
-  const openForm = (path: string, label: string): Html =>
-    postForm("/projects/open", html`<button type="submit">${label}</button>`, { attrs: { class: "inline" }, hidden: { path } });
-  const cloneForm = (nameWithOwner: string): Html =>
-    postForm("/projects/onboard-preview", html`<button type="submit">Clone here →</button>`, { attrs: { class: "inline" }, hidden: { repo: nameWithOwner, root: "0" } });
-  const list = (label: string) => postForm("/projects/github", html`<button type="submit"${label === "Refresh list" ? html` class="secondary"` : ""}>${label}</button>`, { attrs: { class: "inline" } });
-  const rows =
-    data.listed === null
-      ? list("List repositories")
-      : !data.listed.ok
-      ? html`<p class="meta">${data.listed.message}</p>`
-      : data.listed.repos.length === 0
-        ? html`<p class="meta">The signed-in GitHub account has no repositories to list</p>`
-        : joinHtml(data.listed.repos.map(repo => {
-            const localPath = data.local.get(repo.nameWithOwner.toLowerCase()) ?? null;
-            const action =
-              localPath !== null && data.openProject === localPath
-                ? html`<span class="badge badge-done">Open now</span>`
-                : localPath !== null
-                  ? openForm(localPath, data.registered.has(localPath) ? "open →" : "add + open →")
-                  : data.cloneReady
-                    ? cloneForm(repo.nameWithOwner)
-                    : html`<span class="meta">choose a projects folder first</span>`;
-            return joinHtml([
-              html`<div class="card project-card">`,
-              html`<div class="row"><strong>${repo.nameWithOwner}</strong>${repo.isPrivate ? html` <span class="badge">Private</span>` : null}`,
-              html`<span class="right">${action}</span></div>`,
-              localPath === null
-                ? html`<p class="meta">Not on this machine yet${/^\d{4}-\d{2}-\d{2}T/.test(repo.updatedAt) ? html` · pushed ${whenTime(repo.updatedAt)}` : null}</p>`
-                : html`<p class="meta mono" style="overflow-wrap:anywhere;margin:.2rem 0">${localPath}</p>`,
-              repo.description === "" ? null : html`<p class="meta">${repo.description}</p>`,
-              html`</div>`,
-            ], "\n");
-          }), "\n");
-  return screen("projects", joinHtml([
-    html`<h1>Your GitHub repositories</h1>`,
-    html`<p class="meta">Repositories available to the GitHub account signed in on this machine — open one you already have, or clone a new one after a quick preview.</p>`,
-    data.localUnanswered === true ? html`<p class="meta">Your projects folder didn't answer, so copies already on this machine aren't matched yet. Try again in a moment.</p>` : null,
-    rows,
-    data.listed === null ? null : list("Refresh list"),
-    html`<p class="row" style="margin-top:.6rem"><a class="badge" href="/projects">← back to projects</a></p>`,
-  ], "\n"), { chrome });
-}
-
-export function projectsPage(
-  chrome: Chrome,
-  recent: { path: string; name: string; lastOpenedAt: string }[],
-  candidates: string[],
-  open: string | null,
-  problem: string | null,
-  _unscopedMode: boolean,
-  browsable = false,
-  onboard: OnboardCardState | null = null,
-  peeks: Record<string, ProjectPeek | null> = {},
-  returnTo = "/",
-  pullRequestsOn?: (path: string) => boolean,
-  checkLevelOf?: (path: string) => CheckLevel,
-  activity?: BrowserProjectsView["activity"],
-): Screen {
-  const activityHtml = activity === undefined ? null : html`<details><summary>Activity · ${activity.project}</summary>${activity.report === null
-    ? html`<p role="alert">Activity is unavailable.</p><a href="/projects">Reload</a>`
-    : html`<p>${activityScope(activity.report)}</p>${activity.report.truncated ? html`<p>${activityLimit(activity.report)}</p>` : null}${activityMetrics(activity.report).map(metric => html`<details><summary>${metric.label} · ${metric.value}</summary><p>${metric.detail}</p>${metric.rows.length === 0 ? html`<p>No tasks in this group.</p>` : html`<ul>${metric.rows.map(row => html`<li><a href="${row.href}">${row.title}</a> · Recorded checks: ${row.checks}</li>`)}</ul>`}</details>`)}`}</details>`;
-  // The onboarding card (repo onboarding, findings 1-39): preview first,
-  // then a password-confirmed clone into a configured root. Disabled
-  // states explain themselves in words (finding 28/39).
-  const onboardCard =
-    onboard === null
-      ? null
-      : !onboard.enabled
-        ? html`<p class="meta">${onboard.why}</p>`
-        : joinHtml([
-            html`<details class="project-add-more"${onboard.record === null ? null : html` open`}><summary>${onboard.record === null ? 'Paste a GitHub link' : 'Review repository'}</summary>`,
-            html`<p class="meta">Paste a GitHub repository — you will preview it before anything is downloaded. It goes into your saved projects folder and the builder connects automatically. Large-file (LFS) objects are not downloaded.</p>`,
-            onboard.record === null
-              ? postForm("/projects/onboard-preview", joinHtml([
-                  html`<label>Repository <input type="text" name="repo" placeholder="owner/name or https://github.com/owner/name"></label>`,
-                  onboard.roots.length > 1
-                    ? html`<label>Into <select name="root">${onboard.roots.map((one, index) => html`<option value="${index}">${one}</option>`)}</select></label>`
-                    : html`<input type="hidden" name="root" value="0"><p class="meta">Into ${onboard.roots[0] ?? ""}</p>`,
-                  html`<button type="submit">Preview</button>`,
-                ], "\n"), { attrs: { class: "card" } })
-              : joinHtml([
-                  html`<div class="card">`,
-                  html`<p><strong>${onboard.record[1].nameWithOwner}</strong> <span class="meta">${
-                    onboard.record[1].diskUsageKib === null ? "size unknown" : `${Math.max(1, Math.round(onboard.record[1].diskUsageKib / 1024))} MiB`
-                  } — will land at ${onboard.record[1].target}</span></p>`,
-                  postForm("/projects/onboard-confirm", joinHtml([
-                    onboard.record[1].large
-                      ? html`<label class="row"><input type="checkbox" name="big-ok" value="1"> this is a large repository (or its size is unknown) — clone it anyway</label>`
-                      : null,
-                    html`${reauth(html`<label>Your password, typed again <input type="password" name="token" autocomplete="current-password"></label>`)}`,
-                    html`<div class="sticky-actions"><button type="submit">Clone and open</button></div>`,
-                  ], "\n"), { hidden: { nonce: onboard.record[0] } }),
-                  html`</div>`,
-                ], "\n"),
-            html`</details>`,
-          ], "\n");
-  // Opening a project is a POST (the session's scope changes); a card's
-  // name and counts are the same form, returning to the screen that count
-  // names — so every number on this page is a road, not a fact to admire.
-  const openForm = (path: string, label: string, destination = returnTo, className?: string): Html =>
-    postForm(
-      "/projects/open",
-      html`<button type="submit"${className === undefined ? null : html` class="${className}"`}${className === "button-link" ? html` style="min-height:44px"` : null}>${label}</button>`,
-      { attrs: { class: "inline" }, returnTo: destination, hidden: { path } },
-    );
-
-  // A project switcher CARD (v30 UI): the name and path, an at-a-glance
-  // peek — what waits on a person, what is queued or running, what built
-  // in the last day — and the open action. A vertical stack that reads on
-  // a phone, not a dense row.
-  const peekChips = (path: string, peek: ProjectPeek | null): Html => {
-    if (peek === null) return html`<span class="meta">not scanned</span>`;
-    const isOpen = open !== null && open === path;
-    const chip = (text: string, href: string, cls: string): Html =>
-      isOpen ? html`<a class="badge ${cls}" href="${href}">${text}</a>` : openForm(path, text, href, `badge ${cls}`);
-    const bits: Html[] = [];
-    if (peek.waiting > 0) bits.push(chip(`${peek.waiting} waiting on you`, "/", "badge-open"));
-    if (peek.running > 0) bits.push(chip(`${peek.running} running`, "/runs", "badge-parked"));
-    if (peek.queued > 0) bits.push(chip(`${peek.queued} queued`, "/board?view=order", "badge-queued"));
-    if (peek.doneRecently > 0) bits.push(chip(`${peek.doneRecently} built today`, "/done", "badge-parked"));
-    return bits.length === 0 ? html`<span class="meta">quiet — nothing queued or waiting</span>` : joinHtml(bits, " ");
-  };
-  const projectCard = (one: { path: string; name: string; note: string; peek: ProjectPeek | null }): Html =>
-    joinHtml([
-      html`<div class="card project-card">`,
-      html`<div class="row">${
-        open !== null && open === one.path
-          ? html`<a class="project-name" href="${returnTo}"><strong>${one.name}</strong></a>`
-          : openForm(one.path, one.name, returnTo, "project-name")
-      }`,
-      html`<span class="right">${
-        open !== null && open === one.path ? html`<span class="badge badge-done">Open now</span>` : openForm(one.path, "Open", returnTo, "button-link")
-      }</span></div>`,
-      html`<p class="meta mono" style="overflow-wrap:anywhere;margin:.2rem 0">${one.path}</p>`,
-      html`<p class="row" style="gap:.35rem;flex-wrap:wrap">${peekChips(one.path, one.peek)}</p>`,
-      html`<p class="meta row" style="justify-content:space-between;margin-bottom:0"><span>${one.note}</span><a href="/settings/knowledge?repo=${encodeURIComponent(one.path)}" style="display:inline-flex;align-items:center;min-height:44px">Knowledge</a></p>`,
-      html`</div>`,
-    ], "\n");
-  const cards = (items: { path: string; name: string; note: string }[]): Html =>
-    joinHtml(items.map(one => projectCard({ ...one, peek: peeks[one.path] ?? null })), "\n");
-
-  const recentItems = recent.map(one => ({ path: one.path, name: one.name, note: `last opened ${when(one.lastOpenedAt)}` }));
-  const candidateItems = candidates.map(path => ({ path, name: projectName(path), note: "seen in the queue" }));
-  // The rebuilt page's rows (shadcn/ui): the same projects, peeks and roads.
-  const home = homedir();
-  const rowOf = (path: string, name: string, openedAt: string | null): BrowserProjectRow => {
-    const peek = peeks[path] ?? null;
-    return {
-      name, path, shortPath: path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path, open: open !== null && open === path, openedAt,
-      knowledgeHref: `/settings/knowledge?repo=${encodeURIComponent(path)}`,
-      ...(pullRequestsOn === undefined ? {} : { pullRequests: { href: `/settings/pull-requests?repo=${encodeURIComponent(path)}`, on: pullRequestsOn(path) } }),
-      ...(checkLevelOf === undefined ? {} : { checks: { href: `/settings/checks?repo=${encodeURIComponent(path)}`, level: CHECK_LEVEL_WORDS[checkLevelOf(path)] } }),
-      peek: peek === null ? null : [
-        ...(peek.waiting > 0 ? [{ label: `${peek.waiting} waiting on you`, href: "/", tone: "attention" as const }] : []),
-        ...(peek.running > 0 ? [{ label: `${peek.running} running`, href: "/runs", tone: "neutral" as const }] : []),
-        ...(peek.queued > 0 ? [{ label: `${peek.queued} queued`, href: "/board?view=order", tone: "neutral" as const }] : []),
-        ...(peek.doneRecently > 0 ? [{ label: `${peek.doneRecently} built today`, href: "/done", tone: "neutral" as const }] : []),
-      ],
-    };
-  };
-
-  // The two ways to ADD a project are the page's large, primary actions:
-  // browse this machine, or choose a GitHub repository. Manual path entry
-  // stays available as the clearly secondary expert road.
-  const addAction = (href: string, paths: Html, title: string, detail: string): Html =>
-    html`<a class="project-add-action" href="${href}"><span class="project-add-icon">${strokeIcon(paths)}</span><span class="project-add-copy"><strong>${title}</strong><small>${detail}</small></span><span class="project-add-arrow" aria-hidden="true">→</span></a>`;
-  const addForms = joinHtml([
-    browsable || onboard !== null && !onboard.enabled && onboard.why.includes('--project-root')
-      ? null
-      : html`<p class="meta">Choose a projects folder once with <code>toolroll up --project-root &lt;dir&gt;</code>. Toolroll remembers it after that.</p>`,
-    onboardCard === null ? null : html`<div style="margin-top:.5rem">${onboardCard}</div>`,
-    html`<details class="project-add-more"><summary>Enter an exact path instead</summary>`,
-    html`${postForm("/projects/open", joinHtml([
-      html`<label>Path on this server<input type="text" name="path" placeholder="/Users/you/code/your-repo"></label>`,
-      html`<button type="submit">Open project</button>`,
-    ], "\n"), { attrs: { class: "card" }, returnTo })}</details>`,
-  ], "\n");
-  const addCard = joinHtml([
-    html`<div class="card project-add-card">`,
-    html`<h2 class="project-add-title">Add a project</h2>`,
-    html`<div class="project-add-actions">`,
-    browsable
-      ? addAction("/projects/browse", FOLDER_PATHS, "Choose a local folder", "Browse the project folders on this machine")
-      : null,
-    onboard === null
-      ? null
-      : addAction(
-          "/projects/github",
-          html`<circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 9v6"/><path d="M18 9a9 9 0 0 1-9 9"/>`,
-          "Add from GitHub",
-          "Choose from repositories available to your GitHub login",
-        ),
-    html`</div>`,
-    addForms,
-    html`</div>`,
-  ], "\n");
-
-  // Arriving from New task with no project open: say what this step is for.
-  const choosing = returnTo.startsWith("/tasks/new");
-  return screen("projects", joinHtml([
-    choosing ? html`<h1>New task</h1><p class="meta">Choose the project it belongs to.</p>` : html`<h1>Projects</h1>`,
-    choosing ? null : html`<p class="meta">Add a folder or GitHub repository once. Its tasks and chat stay here.</p>`,
-    problem === null ? null : html`<div class="problem">${problem}</div>`,
-    recentItems.length === 0 && candidateItems.length === 0
-      ? html`<div class="card"><p><strong>Nothing to open yet.</strong></p><p class="meta">Add one below — opening it registers it here for next time.</p></div>`
-      : null,
-    activityHtml,
-    recentItems.length > 0 ? html`<h2>Recent</h2>${cards(recentItems)}` : null,
-    candidateItems.length > 0 ? html`<h2>Available</h2>${cards(candidateItems)}` : null,
-    addCard,
-  ], "\n"), { chrome, workspace: { view: {
-    kind: "projects", choosing, problem, returnTo, ...(activity === undefined ? {} : { activity }),
-    recent: recent.map(one => rowOf(one.path, one.name, one.lastOpenedAt)),
-    available: candidates.map(path => rowOf(path, projectName(path), null)),
-    add: { browse: browsable ? "/projects/browse" : null, github: onboard === null ? null : "/projects/github", html: htmlString(addForms) },
-  } satisfies BrowserProjectsView } });
 }
 
 /** The no-script "move to the front" sentinel: the form cannot name the

@@ -206,6 +206,10 @@ get("pages", "projects.browse", "/projects/browse", free);
 get("pages", "projects.github", "/projects/github", { ...free, callers: ["cookie"], callerRefusal: { status: 403, type: "text/plain; charset=utf-8", body: "listing repositories feeds a browser session's act" },
   ...anyApprover("your login can watch — adding projects is an approver's act") });
 get("pages", "projects.page", "/projects", { limited: "unscoped", ...free });
+// One project's reading page (/projects/<name>): reads only, like every GET (docs/plans/get-side-effects.md). It shows a
+// project this account can see and never switches the session's project; its Open project button posts to
+// /projects/select. The handler resolves the name among the account's visible projects; anything else is not found.
+get("pages", "projects.project", "^\\/projects\\/[^/]+$", { limited: "unscoped", ...free, sample: "/projects/payments-api" });
 get("pages", "home", "/", { limited: "collection", ...free });
 get("tasks", "inbox", "/inbox", { limited: "collection", ...free });
 get("tasks", "work", "/work", { limited: "collection", ...free });

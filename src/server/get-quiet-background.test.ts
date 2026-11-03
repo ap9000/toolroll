@@ -54,7 +54,7 @@ test("Check now posts: models, the newest release, storage, the GitHub list and 
   seen.length = 0;
   expect((await world.post("/projects/github", cookie, { csrf })).headers["location"]).toBe("/projects/github");
   expect(seen).toContain("gh list");
-  expect((await world.send("/projects/github", "GET", { cookie })).body).toContain("gh is not installed");
+  expect((await world.send("/projects/github", "GET", { cookie })).body).toContain("The GitHub CLI isn’t installed on this computer.");
   world.setSignedIn(true);
   seen.length = 0;
   expect((await world.post("/settings/connection/check", cookie, { csrf, provider: "claude", return: "/control?provider=claude" })).headers["location"]).toBe("/control?provider=claude");
