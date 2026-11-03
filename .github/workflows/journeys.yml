@@ -54,13 +54,21 @@ jobs:
       - timeout-minutes: 8
         run: npx -y playwright@1.64.1 install --with-deps chromium
       # Scripted failures are final (no retry hides one) and one failed group stops no other, as in the release check.
+      # The app's task, stop, mail and onboarding groups don't run on a hosted Linux runner yet (first run, PR #296: the
+      # build's commit step fails there, GreenMail in Docker isn't reachable, and onboarding drives macOS's `script`);
+      # they run in the release check on a Mac. Every other group with scripted journeys runs here.
       - name: Scripted journeys, groups side by side
-        run: node scripts/e2e-parallel.mjs scripts/${{ matrix.script }}-e2e.mjs --skip-build --journeys scripted --at-once 3 --output "$RUNNER_TEMP/journeys"
+        shell: bash
         env:
+          SCRIPT: ${{ matrix.script }}
           CI: "true"
           TOOLROLL_RELEASE_NO_RETRY: "1"
           TOOLROLL_CHECK_KEEP_GOING: "1"
           TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS: "90"
+        run: |
+          groups=()
+          if [ "$SCRIPT" = app ]; then groups=(--run-groups console,pages,maya,rosa,memory,flows); fi
+          node scripts/e2e-parallel.mjs "scripts/$SCRIPT-e2e.mjs" --skip-build --journeys scripted --at-once 3 "${groups[@]}" --output "$RUNNER_TEMP/journeys"
       - if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
