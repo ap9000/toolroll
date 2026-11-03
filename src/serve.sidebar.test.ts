@@ -140,7 +140,7 @@ describe("the sidebar's project states", () => {
     const retention = await page("/settings/retention", alex);
     expect(retention.sensitive).toBe(true);
     expect(retention.openProject).toBe(repoA);
-    expect(retention.crumbs).toEqual([{ label: "Settings", href: "/settings" }, { label: "Retention", href: null }]);
+    expect(retention.crumbs).toEqual([{ label: "Settings", href: "/settings" }, { label: "System", href: "/settings/system" }, { label: "Retention", href: null }]);
     expect(retention.projectStates).toBeUndefined();
     expect(retention.fresh).toBeUndefined();
     expect(retention.usage).toBeUndefined();

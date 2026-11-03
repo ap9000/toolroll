@@ -182,51 +182,6 @@ export type BrowserLimitTile = {
 export type BrowserLimits = { tiles: BrowserLimitTile[] };
 /** The sidebar's usage chip (limits-ui.ts usageChipOf): the most-used subscription window, stale when its reading is old. */
 export type BrowserUsageChip = { text: string; tone: BrowserLimitTile['tone']; stale: boolean; href: string; title: string };
-export type BrowserSettingsView = {
-  kind: 'settings';
-  said: string | null;
-  /** Using it from a phone, under Chat apps (approvers only). */
-  phone?: BrowserPhoneCard;
-  /** The settings destinations under short headings; a chat app's tile says whether it is connected and gets alerts. */
-  groups: BrowserSettingsGroup[];
-  theme: 'system' | 'light' | 'dark';
-  /** The signal colour chosen for this browser (Settings → Appearance), "#rrggbb"; chart magenta by default. */
-  accent: string;
-  accentPresets: { id: string; name: string; year: number | null; hex: string }[];
-  permission: { mode: string; canManage: boolean; changed: string | null } | null;
-  quality: { mode: string; canManage: boolean; changed: string | null } | null;
-  providers: {
-    provider: string; name: string; tone: 'ok' | 'warn' | 'off' | 'neutral'; words: string;
-    connection: { words: string; facts: string; checkAction: string } | null;
-    usage: string; envName: string; subscriptionCapable: boolean; mode: 'subscription' | 'api-key'; set: boolean;
-  }[] | null;
-  legacyWebhookWarning?: string;
-  services: { configured: string[]; channel: string | null; implicit: boolean } | null;
-  push: { available: boolean; devices: { id: number; words: string; state: string; removable: boolean }[] } | null;
-  /** Quiet chat: how chats reach this person, and their evening digest time (null: off). */
-  chat?: { mode: 'quiet' | 'all'; digestAt: string | null;
-    /** Whether a result's saved screenshots follow its chat message: off, the first one, or up to 4. */
-    screenshots?: 'off' | 'first' | 'all';
-    /** Each project this person can see; a muted one sends no pings but stays in Tasks and the digest. */
-    projects?: { repo: string; name: string; muted: boolean }[] } | null;
-  digest: { every: string; held: string | null } | null;
-  telegram: { state: string; current: string;
-    /** v98: how the bot's messages reach Toolroll (pushed, or asked for), in words. */
-    delivery?: string | null };
-  /** Each worker: how many tasks it runs at once, and what it is running now. */
-  workers?: { name: string; tone: 'ok' | 'warn' | 'off'; state: string; capacity: number; busy: number;
-    running: { taskId: string; title: string; href: string; project: string | null }[] }[] | null;
-  /** v87: the mail server Send email steps use (approvers only); the password is never shown back. */
-  email?: { set: boolean; host: string; port: number; secure: boolean; user: string; from: string;
-    /** v89: where Email inbox triggers read (IMAP), and a Google account connected instead of a mail server (`redirect`: the address to register with Google, when this page's address can take one). */
-    imapHost: string; imapPort: number; google: { connected: string | null; clientId: string; redirect: string | null } } | null;
-  /** The installation's first Ready result, in words ("first result in 7 min"); null before it arrives. */
-  firstResult?: string | null;
-  /** Settings → Updates: this version, the latest known one and its notes, how to update, the daily-check switch, and each worker's version. */
-  updates?: BrowserUpdates | null;
-};
-/** A tile's `brand` is a chat app's logo (brand-mark.ts), drawn in place of its icon. */
-export type BrowserSettingsGroup = { title: string; tiles: { href: string; label: string; brand?: BrandIconId; status?: { tone: 'ok' | 'warn' | 'off'; words: string } }[] };
 export type BrowserUpdates = {
   current: string;
   /** The latest release the last check found; null before any check has worked. */
@@ -705,7 +660,7 @@ export type BrowserAgentsView = {
   live?: boolean;
 };
 
-export type BrowserView = BrowserTasksView | BrowserSettingsView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView;
+export type BrowserView = BrowserTasksView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView;
 
 export type BrowserWorkspace = {
   version: 1; path: string; title: string; user: string; csrf: string; sensitive: boolean;

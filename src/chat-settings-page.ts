@@ -1,3 +1,4 @@
+import { settingsSubPage } from "./settings-groups-ui.js";
 import { loadPrimary } from "./webhooks.js";
 import type { Store } from "./store.js";
 import { html, postForm, type Html } from "./html.js";
@@ -83,5 +84,5 @@ export function chatSettingsHtml(
       ));
     parts.push(html`<details><summary>Connection settings</summary>${post("disconnect", html`${password}<button type="submit">Disconnect ${label}</button>`)}</details>`);
   }
-  return html`<section style="max-width:42rem;overflow-wrap:anywhere"><p><a href="/settings">Settings</a></p><h1>${label}</h1>${options.problem ? html`<p class="problem" role="alert">${options.problem}</p>` : ""}${parts}<details><summary>Access and setup</summary>${page.access}</details></section>`;
+  return settingsSubPage("alerts", label, html`<section style="overflow-wrap:anywhere">${options.problem ? html`<p class="problem" role="alert">${options.problem}</p>` : ""}${parts}<details><summary>Access and setup</summary>${page.access}</details></section>`);
 }

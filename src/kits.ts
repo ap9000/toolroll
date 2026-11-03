@@ -185,7 +185,7 @@ export function kitChecklist(store: Store, kit: Kit, repo: string, dir: string |
   if (kit.email === true) {
     // (flow-actions' sendingReady, without its imports: kits load beside the chat actions.)
     const ready = (googleConnected(dir) !== null || readEmailSettings(dir) !== null) && mailboxReady(dir);
-    steps.push({ id: "email", done: ready, said: ready ? "Email is connected" : "Connect your email so replies go out and answers come back", href: "/settings#email" });
+    steps.push({ id: "email", done: ready, said: ready ? "Email is connected" : "Connect your email so replies go out and answers come back", href: "/settings/alerts#email" });
   }
   if (kit.github === true) {
     const github = githubRepoOf(repo);

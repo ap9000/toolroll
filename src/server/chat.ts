@@ -522,17 +522,17 @@ export function createChatHandlers(runtime: ServerRuntime) {
     if (store.isDemo()) return refuse(response, who, 403, "the sandbox never pushes");
     const password = body.get("token") ?? "";
     if (password === "" || !authenticateApprover(who, password).ok) {
-      return redirect(response, `/settings?said=${encodeURIComponent("enrolling this device takes your password, typed again")}`);
+      return redirect(response, `/settings/alerts?said=${encodeURIComponent("enrolling this device takes your password, typed again")}#this-device`);
     }
     const endpoint = body.get("endpoint") ?? "";
     const p256dh = body.get("p256dh") ?? "";
     const auth = body.get("auth") ?? "";
     const checked = validatePushEndpoint(endpoint);
-    if (!checked.ok) return redirect(response, `/settings?said=${encodeURIComponent(checked.problem)}`);
+    if (!checked.ok) return redirect(response, `/settings/alerts?said=${encodeURIComponent(checked.problem)}#this-device`);
     const p256dhBytes = Buffer.from(p256dh, "base64url");
     const authBytes = Buffer.from(auth, "base64url");
     if (p256dhBytes.length !== 65 || p256dhBytes[0] !== 4 || authBytes.length !== 16) {
-      return redirect(response, `/settings?said=${encodeURIComponent("that subscription's keys are not the shape a browser mints")}`);
+      return redirect(response, `/settings/alerts?said=${encodeURIComponent("that subscription's keys are not the shape a browser mints")}#this-device`);
     }
     const keys = loadOrCreateVapidKeys(dirname(options.telegramTokenFile ?? "."));
     const generation = store.approverGeneration(who.name) ?? 1;
@@ -549,9 +549,9 @@ export function createChatHandlers(runtime: ServerRuntime) {
       clock(),
     );
     if (!enrolled.ok) {
-      return redirect(response, `/settings?said=${encodeURIComponent(enrolled.reason === "approver-cap" ? "five devices per person — remove one first" : "twenty devices per installation — remove one first")}`);
+      return redirect(response, `/settings/alerts?said=${encodeURIComponent(enrolled.reason === "approver-cap" ? "five devices per person — remove one first" : "twenty devices per installation — remove one first")}#this-device`);
     }
-    return redirect(response, `/settings?said=${encodeURIComponent("this device now gets a buzz when the plane needs a person")}`);
+    return redirect(response, `/settings/alerts?said=${encodeURIComponent("this device now gets a buzz when the plane needs a person")}#this-device`);
   }
   async function pushRemove(ctx: HandlerContext): Promise<void> {
     const { who, response, posted } = ctx;
@@ -559,9 +559,9 @@ export function createChatHandlers(runtime: ServerRuntime) {
     if (who.via !== "cookie") return refuse(response, who, 403, "push removal is a browser session's act");
     const id = Number(body.get("id") ?? "");
     const mine = store.listPushSubscriptions(who.name).find(one => one.id === id && one.retiredAt === null);
-    if (mine === undefined) return redirect(response, `/settings?said=${encodeURIComponent("that device is not yours to remove, or it is already gone")}`);
+    if (mine === undefined) return redirect(response, `/settings/alerts?said=${encodeURIComponent("that device is not yours to remove, or it is already gone")}#this-device`);
     store.retirePushSubscription(mine.id, `removed by ${who.name}`, clock());
-    return redirect(response, `/settings?said=${encodeURIComponent("removed — that device stops receiving pushes")}`);
+    return redirect(response, `/settings/alerts?said=${encodeURIComponent("removed — that device stops receiving pushes")}#this-device`);
   }
   async function phoneDismiss(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;

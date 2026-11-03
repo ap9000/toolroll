@@ -295,7 +295,7 @@ describe("the page and the command line", () => {
         .headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
       const cookie = await signIn("alex", alex.token);
       const page = await (await fetch(`${base}/settings/policy`, { headers: { cookie } })).text();
-      expect(page).toContain("<h1>Policy</h1>");
+      expect(page).toContain('<h2 class="k-same">Policy</h2>');
       const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
       const post = (fields: [string, string][], who = cookie) => fetch(`${base}/settings/policy`, { method: "POST", headers: { cookie: who, origin: base }, body: new URLSearchParams([["csrf", csrf], ...fields]), redirect: "manual" });
       const wanted: [string, string][] = [["provider", "claude"], ["provider", "codex"], ["models", "claude-sonnet-*\ngpt-6-astra"], ["tools", ""], ["ceiling", "standard"]];

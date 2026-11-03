@@ -4,7 +4,9 @@
  * the identity provider); everyone else reads them. Every change is in the
  * ledger, before → after.
  */
-import { html, postForm, type Html, reauth } from "./html.js";
+import { joinHtml, type Html } from "./html.js";
+import { formRow, note, radios, settingsSection, switchInput, textarea } from "./server/kit.js";
+import { kitSectionForm } from "./settings-kit.js";
 import type { ApprovalRules } from "./approval-policy.js";
 
 
@@ -38,28 +40,35 @@ export function rulesSummary(rules: ApprovalRules): string {
 /** Settings → Approval rules → Releases (docs/plans/auto-approve-green.md): who approves this project's releases. */
 export type ReleaseApprovalView = { repo: string; auto: boolean; setBy: string | null; at: string | null; canChange: boolean };
 
-export function releaseApprovalHtml(view: ReleaseApprovalView): Html {
-  const since = view.setBy === null ? "" : html` <span class="meta">Changed by ${view.setBy} on ${(view.at ?? "").slice(0, 10)}.</span>`;
-  const current = html`<p class="current">${view.auto ? "Releases approve themselves once the pull request's CI and the release check pass on the exact commit. Anything red still asks you." : "Every release waits for your approval."}${since}</p>`;
-  const heading = html`<h2>Release approval</h2>`;
-  if (!view.canChange) return html`<section class="release-approval">${heading}${current}<p class="meta">An approver of this project sets this.</p></section>`;
-  const choice = (value: "ask" | "auto", title: string, hint: string) => html`<label class="choice"><input type="radio" name="action" value="${value}"${(view.auto ? "auto" : "ask") === value ? html` checked` : ""}><span><strong>${title}</strong><small>${hint}</small></span></label>`;
-  return html`<section class="release-approval">${heading}${current}${postForm("/settings/release-approval", html`<fieldset aria-label="Release approval">${
-    choice("ask", "Ask me", "A release deploys only after you approve it.")}${
-    choice("auto", "Approve automatically when checks pass", "You're told when a release approves itself. A failed check, red CI or a CI failure after the deploy still stops and asks you.")}</fieldset><div class="step-up"><label>Your Toolroll password (to approve automatically)<input type="password" name="password" autocomplete="current-password"></label></div><button type="submit">Save</button>`, { hidden: { repo: view.repo } })}</section>`;
+export function releaseApprovalHtml(view: ReleaseApprovalView, notice: { said?: string | null; problem?: string | null } = {}): Html {
+  const since = view.setBy === null ? "" : ` · changed by ${view.setBy} on ${(view.at ?? "").slice(0, 10)}`;
+  const current = view.auto ? "Releases approve themselves once the pull request’s CI and the release check pass on the exact commit. Anything red still asks you." : "Every release waits for your approval.";
+  if (!view.canChange) return settingsSection({ id: "release-approval", title: "Releases", state: since, body: joinHtml([note(current), note("An approver of this project sets this.")]) });
+  return settingsSection({ id: "release-approval", title: "Releases", state: since, lead: current,
+    body: kitSectionForm({ proof: "release-approval", action: "/settings/release-approval", id: "release-form", gate: true, hidden: { repo: view.repo }, proofWhen: ["action", "auto"],
+      confirm: "Approve releases automatically", said: notice.said ?? null, problem: notice.problem ?? null,
+      body: formRow("Releases", "Turning this on asks for your password, every time, even with Passwordless on.", radios({ name: "action", legend: "Releases", current: view.auto ? "auto" : "ask", items: [
+        { value: "ask", label: "Ask me", text: "A release deploys only after you approve it." },
+        { value: "auto", label: "Approve automatically when checks pass", text: "You’re told when a release approves itself. A failed check, red CI or a CI failure after the deploy still stops and asks you." }] }), "wide") }) });
 }
 
 export function approvalRulesHtml(view: ApprovalRulesView, notice: { said?: string | null; problem?: string | null }): Html {
-  const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
-  const changed = view.rules.updatedBy === null ? "" : html` <span class="meta">Changed by ${view.rules.updatedBy} on ${(view.rules.updatedAt ?? "").slice(0, 10)}.</span>`;
-  const current = html`<p class="current">${rulesSummary(view.rules)}${changed}</p>`;
-  if (!view.canChange) return html`<section class="approval-rules">${note}${current}<p class="meta">An instance operator sets these.</p></section>`;
+  const changed = view.rules.updatedBy === null ? "" : ` · changed by ${view.rules.updatedBy} on ${(view.rules.updatedAt ?? "").slice(0, 10)}`;
+  const current = rulesSummary(view.rules);
+  if (!view.canChange) return settingsSection({ id: "rules", title: `Approval rules · ${view.name}`, state: changed, body: joinHtml([note(current), note("An instance operator sets these.")]) });
   const protect = view.rules.protectProject ? "project" : view.rules.protectedPaths.length > 0 ? "paths" : "none";
-  const radio = (value: string, title: string, hint: Html) => html`<label class="choice"><input type="radio" name="protect" value="${value}"${protect === value ? html` checked` : ""}><span><strong>${title}</strong><small>${hint}</small></span></label>`;
-  const few = view.approvers < 2 ? html`<p class="meta">Only ${view.approvers === 1 ? "one person" : "no one"} can approve on this project, so protected work would wait for a second approver. Add one in People first.</p>` : "";
-  return html`<section class="approval-rules">${note}${current}${postForm("/settings/approval", html`<fieldset><legend>Who approves</legend><label class="choice"><input type="checkbox" name="not_requester" value="1"${view.rules.notRequester ? html` checked` : ""}><span><strong>Someone other than the requester</strong><small>The person who filed a task, or asked for a revision, can't approve it. Operating modes stop approving their signer's own filings here.</small></span></label></fieldset><fieldset><legend>Protected work</legend>${
-    radio("none", "Nothing protected", html`One approval is enough.`)}${
-    radio("project", "The whole project", html`Every task needs two different people to approve the same scope.`)}${
-    radio("paths", "Only these paths", html`Tasks that touch them, or don't say what they touch, need two people.`)}<div class="paths"><label>Protected paths, one per line<textarea name="paths" spellcheck="false" placeholder="infra/**&#10;migrations/**">${view.rules.protectedPaths.join("\n")}</textarea></label></div>${
-    few}</fieldset><div class="step-up">${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label>`)}</div><button type="submit">Save rules</button>`, { hidden: { repo: view.repo } })}</section>`;
+  const few = view.approvers < 2 ? note(`Only ${view.approvers === 1 ? "one person" : "no one"} can approve on this project, so protected work would wait for a second approver. Add one in People first.`) : "";
+  return settingsSection({ id: "rules", title: `Approval rules · ${view.name}`, state: changed, lead: current,
+    body: kitSectionForm({ proof: "approval", action: "/settings/approval", id: "rules-form", gate: true, hidden: { repo: view.repo }, confirm: "Change approval rules",
+      said: notice.said ?? null, problem: notice.problem ?? null,
+      body: joinHtml([
+        formRow("Someone other than the requester", "The person who filed a task, or asked for a revision, can’t approve it. Operating modes stop approving their signer’s own filings here.",
+          switchInput({ id: "rules-not-requester", name: "not_requester", label: "Required", on: view.rules.notRequester, attrs: { value: "1", "aria-label": "Someone other than the requester" } }), "inline"),
+        formRow("Protected work", "Changes here always wait for two people, never a subagent or an operating mode.", radios({ name: "protect", legend: "Protected work", current: protect, items: [
+          { value: "none", label: "Nothing protected", text: "One approval is enough." },
+          { value: "project", label: "The whole project", text: "Every task needs two different people to approve the same scope." },
+          { value: "paths", label: "Only these paths", text: "Tasks that touch them, or don’t say what they touch, need two people." }] }), "wide"),
+        formRow("Protected paths", "One per line. Used when “Only these paths” is chosen.", textarea({ id: "rules-paths", name: "paths", value: view.rules.protectedPaths.join("\n"), rows: 3, attrs: { spellcheck: "false", placeholder: "infra/**\nmigrations/**", "aria-label": "Protected paths" } }), "top"),
+        few,
+      ]) }) });
 }

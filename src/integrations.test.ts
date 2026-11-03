@@ -73,7 +73,7 @@ createInterface({ input: process.stdin }).on("line", line => {
 }
 
 test("Telegram: Not set up, then Connected as its bot, then Broken with a fix in plain words, keeping the last success", async () => {
-  expect(one(integrationsNow(io()), "telegram")).toMatchObject({ state: "not-set-up", action: { kind: "setup", label: "Set up", href: "/settings#telegram-token" } });
+  expect(one(integrationsNow(io()), "telegram")).toMatchObject({ state: "not-set-up", action: { kind: "setup", label: "Set up", href: "/settings/alerts#telegram-token" } });
 
   writeFileSync(join(dir, "telegram-token"), `${BOT_TOKEN}\n`, { mode: 0o600 });
   // Configured but not yet checked: the page can say so without waiting.
@@ -83,7 +83,7 @@ test("Telegram: Not set up, then Connected as its bot, then Broken with a fix in
 
   now = at(5);
   const broken = one(await checkIntegrations(io({ fetch: telegramFetch(401, { ok: false, description: `Unauthorized ${BOT_TOKEN}` }) })), "telegram");
-  expect(broken).toMatchObject({ state: "broken", lastSuccessAt: T0.toISOString(), lastErrorAt: at(5).toISOString(), action: { kind: "fix", label: "Fix", href: "/settings#telegram-token" } });
+  expect(broken).toMatchObject({ state: "broken", lastSuccessAt: T0.toISOString(), lastErrorAt: at(5).toISOString(), action: { kind: "fix", label: "Fix", href: "/settings/alerts#telegram-token" } });
   expect(broken.action.kind === "fix" && broken.action.words).toMatch(/doesn't accept the saved bot token/);
 
   // A failed delivery since the last good check also counts, from notification_delivery.

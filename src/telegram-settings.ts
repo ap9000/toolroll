@@ -2,6 +2,7 @@
  * teammate with the installation's bot (v72). The bot token itself stays on
  * the settings page; this card only mints or revokes the signed-in person's
  * pairing, never anyone else's. */
+import { settingsSubPage } from "./settings-groups-ui.js";
 import type { Store } from "./store.js";
 import { html, joinHtml, postForm, type Html } from "./html.js";
 
@@ -44,5 +45,5 @@ export function telegramSettingsHtml(
     content = joinHtml(parts);
   }
   if (options.problem !== undefined) content = html`<p role="status">${options.problem}</p>${content}`;
-  return html`<h1>Telegram</h1>${content}<p class="meta">Each teammate pairs their own private chat. To connect a group, a conversation manager sends <code>/team</code> there and chooses a conversation. Everyone in the group can read its replies.</p>`;
+  return settingsSubPage("alerts", "Telegram", html`${content}<p class="meta">Each teammate pairs their own private chat. To connect a group, a conversation manager sends <code>/team</code> there and chooses a conversation. Everyone in the group can read its replies.</p>`);
 }

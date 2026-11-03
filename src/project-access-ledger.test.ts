@@ -95,7 +95,8 @@ describe("project access and the action ledger", () => {
     const knowledge = await get('/settings/knowledge?repo=' + encodeURIComponent(alpha));
     expect(knowledge.status).toBe(200);expect(await knowledge.text()).not.toContain('BETA PRIVATE WORK');
     const settings = await (await get("/settings")).text();
-    expect(settings).toContain('href="/settings/learning"');
+    expect(await (await get("/settings/agents")).text()).toContain('href="/settings/learning"');
+    expect(await (await get("/settings/approval")).text()).not.toContain('action="/settings/quality-default"');
     expect(settings).not.toContain('action="/settings/quality-default"');
     expect(settings).not.toContain('action="/settings/telegram"');
     const header = await fetch(base + "/work", { headers: { authorization: `Bearer member:${password}`, "x-standing-orders-project": beta } });

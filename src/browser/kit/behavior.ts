@@ -11,7 +11,9 @@
  *   A popover or menu becomes a bottom sheet on a phone. One at a time, except an approval asked from inside an
  *   open overlay, which stacks over it.
  * - A button switch (button.k-switch[role=switch][data-k-switch]) flips and says its new state.
+ * - Settings section forms (form.k-sform): ./section-forms.ts.
  */
+import { installSectionForms } from "./section-forms.js";
 
 const PHONE = "(max-width: 760px)";
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -306,5 +308,6 @@ export function installKitBehavior(): void {
   window.addEventListener("standing-orders:workspace-rendered", syncAll);
   window.visualViewport?.addEventListener("resize", trackKeyboard);
   window.visualViewport?.addEventListener("scroll", trackKeyboard);
+  installSectionForms();
   syncAll();
 }

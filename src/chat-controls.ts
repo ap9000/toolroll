@@ -21,7 +21,7 @@ export const CHAT_CONTROLS = {
   integrations: { label: "Set up integrations", href: "/settings/integrations" },
   settings: { label: "Open settings", href: "/settings" },
   permissions: { label: "Review permissions", href: "/settings" },
-  providers: { label: "Connect an agent", href: "/settings#providers" },
+  providers: { label: "Connect an agent", href: "/settings/agents#providers" },
   skills: { label: "Manage skills", href: "/settings/skills" },
   tools: { label: "Manage tools", href: "/settings/tools" },
   knowledge: { label: "Edit project knowledge", href: "/settings/knowledge" },

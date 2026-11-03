@@ -55,7 +55,7 @@ test("each teammate pairs and unpairs their own phone from the console; a code s
     const samPage = await (await fetch(`${base}/settings/telegram`, { headers: { cookie: samCookie } })).text();
     expect(samPage).toContain("Your phone is not paired.");
     const samCsrf = /name="csrf" value="([^"]+)"/.exec(samPage)![1]!;
-    const samSettings = await (await fetch(`${base}/settings`, { headers: { cookie: samCookie } })).text();
+    const samSettings = await (await fetch(`${base}/settings/alerts`, { headers: { cookie: samCookie } })).text();
     expect(samSettings).toContain('href="/settings/telegram"');
     expect((await post("/settings/telegram-token", { csrf: samCsrf, password: samPassword, token: BOT_TOKEN }, samCookie)).status).toBe(403);
     const samResponse = await post("/settings/telegram/pair", { csrf: samCsrf, password: samPassword }, samCookie);

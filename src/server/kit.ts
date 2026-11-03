@@ -10,7 +10,7 @@
  */
 import { attributes, html, joinHtml, passwordlessRendering, postForm, type AttributeValue, type Html, type HtmlValue, type PostFormOptions } from "../html.js";
 import {
-  KIT_ICONS, NOT_FOUND, SETTINGS_GROUPS, STATUS, TIMING_WORDS, approvalAsk, chipOfHeadline, dur, termsOf, timingBars,
+  KIT_ICONS, NOT_FOUND, SETTINGS_GROUPS, STATUS, needsWords, TIMING_WORDS, approvalAsk, chipOfHeadline, dur, termsOf, timingBars,
   type ApprovalFacts, type ApprovalKind, type ChipTone, type IconShape, type KitIcon, type StatusKey, type TimingRow,
 } from "../design/kit.js";
 import type { Headline } from "../task-status.js";
@@ -354,3 +354,39 @@ export function dock(primary: Html | null): Html {
 
 /** Several kit parts joined. */
 export const parts = (...values: HtmlValue[]): Html => joinHtml(values);
+
+// ---- settings pages (wave D) ------------------------------------------------------------------------------------
+
+/** A settings section: its heading (with an optional muted state after it), one muted lead line, then its rows.
+ * No nested wells. `id` is also the anchor other pages link to. */
+export function settingsSection(options: { id: string; title: string; state?: HtmlValue; lead?: HtmlValue; right?: Html; body: HtmlValue }): Html {
+  const head = `${options.id}-h`;
+  return html`<section class="k-ssec" id="${options.id}" aria-labelledby="${head}"><div class="k-secthead"><h3 id="${head}">${options.title}\
+${options.state ? html`<span class="k-ssec-state">${options.state}</span>` : ""}</h3>${options.right ?? ""}</div>\
+${options.lead ? html`<p class="k-ssec-lead">${options.lead}</p>` : ""}${options.body}</section>`;
+}
+
+/** One row that opens a settings page: icon, title (with "1 item needs you" when something waits), one status line,
+ * anything on the right, a chevron. The whole row is the link. */
+export function settingsLink(options: { href: string; title: string; status?: HtmlValue; icon?: KitIcon; needs?: number; right?: Html }): Html {
+  const flag = options.needs ? html`<span class="k-sflag">${needsWords(options.needs)}</span>` : "";
+  return html`<a class="${cls("k-slink", !options.icon && "noico")}" href="${options.href}">${options.icon ? icon(options.icon) : ""}\
+<span class="k-sl"><span class="k-sl-t"><span>${options.title}</span>${flag}</span>${options.status ? html`<span class="k-sl-h">${options.status}</span>` : ""}</span>\
+<span class="k-slink-r">${options.right ?? ""}</span><span class="k-chev" aria-hidden="true"></span></a>`;
+}
+
+/** A list of settings links under a section heading ("In this group"), or the overview's unlabelled list. */
+export function settingsLinks(title: string | null, links: readonly Html[], options: { label?: string } = {}): Html {
+  return html`<section class="k-ssec"${title === null ? html` aria-label="${options.label ?? "All settings"}"` : ""}>${title === null ? "" : html`<div class="k-secthead"><h3>${title}</h3></div>`}\
+<div class="k-slinks">${links}</div></section>`;
+}
+
+/** A record row (a session, a token, a person, a device, a provider): title and one muted line · when · one action,
+ * and anything opened under it (a form, a refusal). */
+export function settingsRecord(options: { title: HtmlValue; sub?: HtmlValue; when?: HtmlValue; action?: HtmlValue; more?: HtmlValue; attrs?: Attrs }): Html {
+  return html`<div class="k-srec"${attributes(options.attrs ?? {})}><div class="k-sl"><span class="k-sl-t">${options.title}</span>${options.sub ? html`<span class="k-sl-h">${options.sub}</span>` : ""}</div>\
+<span class="k-srec-when">${options.when ?? ""}</span><span class="k-srec-a">${options.action ?? ""}</span>${options.more ? html`<div class="k-srec-more">${options.more}</div>` : ""}</div>`;
+}
+
+/** A command or path to copy by hand: monospace, selectable. */
+export const codeLine = (text: string): Html => html`<code class="k-scode">${text}</code>`;

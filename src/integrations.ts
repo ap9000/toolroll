@@ -382,7 +382,7 @@ function targets(io: IntegrationIo): Target[] {
 
   list.push({
     key: "telegram", group: "chat", name: "Telegram", configured: telegram !== null, account: null,
-    setup: place("/settings#telegram-token"), fix: place("/settings#telegram-token"), usedBy: chatUses("telegram"), activity: telegramActivity(store),
+    setup: place("/settings/alerts#telegram-token"), fix: place("/settings/alerts#telegram-token"), usedBy: chatUses("telegram"), activity: telegramActivity(store),
     probe: telegram === null ? null : check => probeTelegram(check, telegram.token),
   });
   list.push({
@@ -429,7 +429,7 @@ function targets(io: IntegrationIo): Target[] {
     : { okAt: str(mailWatch["updated_at"]), error: null, errorAt: null, failing: false };
   list.push({
     key: "email", group: "mail", name: "Email", configured: email !== null || google !== null, account: email?.from ?? google?.address ?? null,
-    setup: place("/settings#email"), fix: place("/settings#email"), usedBy: [...flowWords(emailUses)], activity: merge(triggerActivity(emailUses), watchActivity),
+    setup: place("/settings/alerts#email"), fix: place("/settings/alerts#email"), usedBy: [...flowWords(emailUses)], activity: merge(triggerActivity(emailUses), watchActivity),
     probe: email === null ? null : check => probeEmail(check, { host: email.host, port: email.port, secure: email.secure }, email.imap),
   });
 
@@ -484,7 +484,7 @@ function targets(io: IntegrationIo): Target[] {
   for (const provider of AGENTS) {
     list.push({
       key: `agent:${provider}`, group: "agents", name: providerName(provider), configured: true, account: null,
-      setup: place("/settings#providers"), fix: place("/settings#providers"), usedBy: ["Tasks"], activity: NO_ACTIVITY,
+      setup: place("/settings/agents#providers"), fix: place("/settings/agents#providers"), usedBy: ["Tasks"], activity: NO_ACTIVITY,
       probe: check => probeAgent(check, provider),
     });
   }

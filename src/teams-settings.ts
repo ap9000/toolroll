@@ -2,6 +2,7 @@
  * teammate pairs their own Teams account. The messaging endpoint the bot
  * registration must point at is shown here; it has to be reachable from the
  * internet, which a tailnet-only address is not. */
+import { settingsSubPage } from "./settings-groups-ui.js";
 import type { Store } from "./store.js";
 import { html, joinHtml, postForm, type Html } from "./html.js";
 import { ChatState } from "./chat-delivery-state.js";
@@ -53,5 +54,5 @@ export function teamsSettingsHtml(store: Store, dir: string, options: { code?: s
     }
     parts.push(html`<details><summary>Connection settings</summary>${post("disconnect", html`${password}<button type="submit">Disconnect Teams</button>`)}</details>`);
   }
-  return html`<section style="max-width:42rem;overflow-wrap:anywhere"><p><a href="/settings">Settings</a></p><h1>Teams</h1>${options.problem ? html`<p class="problem" role="alert">${options.problem}</p>` : ""}${parts}</section>`;
+  return settingsSubPage("alerts", "Teams", html`<section style="overflow-wrap:anywhere">${options.problem ? html`<p class="problem" role="alert">${options.problem}</p>` : ""}${parts}</section>`);
 }

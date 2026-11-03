@@ -3,6 +3,7 @@
  * (remote-audit.ts). A token's name filters the actions to it (`token-name`: a `token` query is always refused). Read-only: making, revoking and rotating tokens stay
  * in Settings → Sessions & tokens. Never a token's secret or a ledger line's raw detail.
  */
+import { settingsSubPage } from "./settings-groups-ui.js";
 import { basename } from "node:path";
 import { tokenStatus, type AuditAction } from "./remote-audit.js";
 import type { ApiTokenRow } from "./store.js";
@@ -41,8 +42,8 @@ last used ${one.lastUsedAt === null ? "never" : stamp(one.lastUsedAt)}</p></div>
   const filtered = view.token === null ? "" : html`<p class="meta">With ${view.token}</p><p><a href="${personHref(view.name)}">All tokens</a></p>`;
   const actions = view.actions.length === 0 ? html`<p class="meta">No remote actions${view.token === null ? "" : " with this token"}.</p>` : html`<div class="rows">${view.actions.map(actionHtml)}</div>`;
   const older = view.nextCursor === null ? "" : html`<p><a href="${personHref(view.name, { ...(view.token === null ? {} : { "token-name": view.token }), before: view.nextCursor })}">Older actions</a></p>`;
-  return html`<p><a href="/people">People</a></p><h1>${view.name}</h1><section class="person-audit"><h2>API tokens</h2>${tokens}\
-<h2>Remote activity</h2>${filtered}${actions}${older}</section>`;
+  return settingsSubPage("access", view.name, html`<p class="k-note"><a class="k-link" href="/people">All people</a></p><section class="person-audit"><h2>API tokens</h2>${tokens}\
+<h2>Remote activity</h2>${filtered}${actions}${older}</section>`);
 }
 
 function actionHtml(action: AuditAction): Html {

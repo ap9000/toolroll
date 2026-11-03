@@ -194,10 +194,11 @@ describe("a Google account", () => {
       const cookie = (await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: password }), redirect: "manual" })).headers.get("set-cookie")!.split(";")[0]!;
       const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
       const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(settings)![1]!;
-      type Email = { google: { connected: string | null; redirect: string | null } };
-      const view = async () => ((await (await fetch(`${base}/settings?format=workspace`, { headers: { cookie } })).json()) as { view: { email: Email } }).view.email;
+      const alerts = async () => (await (await fetch(`${base}/settings/alerts`, { headers: { cookie } })).text()).replace(/<script[\s\S]*?<\/script>/g, "");
       // The address to register with Google is this page's own.
-      expect((await view()).google).toEqual({ connected: null, clientId: "", redirect: `${base}/settings/google/callback` });
+      const before = await alerts();
+      expect(before).toContain(`<code class="k-mono" data-google-redirect>${base}/settings/google/callback</code>`);
+      expect(before).toContain("Or sign in with a Google account");
       const connect = await fetch(`${base}/settings/google`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, clientId: CLIENT, clientSecret: secret() }), redirect: "manual" });
       // A page that moves on to Google by itself: a form answered with another site's address is stopped by form-action 'self'.
       expect(connect.status).toBe(200);
@@ -218,7 +219,7 @@ describe("a Google account", () => {
       expect(await back.text()).toContain("Connected alex@gmail.example. Send email steps and Email inbox triggers use it now.");
       expect(back.headers.get("set-cookie")).toBe("so-sign-in=; Path=/settings/google/callback; Max-Age=0; HttpOnly; SameSite=Lax");
       expect(await (await fetch(callback, { headers: here })).text()).toContain("That Google sign-in expired.");
-      expect((await view()).google).toMatchObject({ connected: "alex@gmail.example", clientId: CLIENT });
+      expect(await alerts()).toContain("Signed in with Google as <b>alex@gmail.example</b>");
       expect(JSON.stringify(readGoogleMail(dir))).toContain('"refreshToken":"rt"');
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
