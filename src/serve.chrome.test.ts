@@ -103,6 +103,12 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     expect(words).toContain('<a class="k-link" href="/settings/slack">Slack</a>');
     expect(words).toContain('<a class="k-link" href="/settings/discord">Discord</a>');
     expect(html).not.toContain("fixture.example");
+    // A save the page couldn't confirm: the server says so in that section, and only for one of its own forms.
+    const unconfirmed = await (await fetch(url("/settings/alerts?unconfirmed=reach-form"), { headers: { cookie } })).text();
+    expect(/<form[^>]*id="reach-form"[\s\S]*?<\/form>/.exec(unconfirmed)?.[0]).toContain("Couldn’t confirm whether this saved.");
+    const stranger = await (await fetch(url(`/settings/alerts?unconfirmed=${encodeURIComponent('<b id="x">')}`), { headers: { cookie } })).text();
+    expect(stranger).not.toContain("Couldn’t confirm whether this saved.");
+    expect(stranger).not.toContain('<b id="x">');
   });
 
   test("sensitivity is judged per response: /next with a step-up is sensitive, all-clear is not", async () => {

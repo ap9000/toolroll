@@ -6,7 +6,13 @@
  */
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { html, htmlString } from "../html.js";
-import { withFormToken } from "../server/request-context.js";
+import { requestContext, withFormToken } from "../server/request-context.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { createElement } from "react";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { GuardedHtml } from "./guarded-html.js";
 import { alertsGroup, approvalGroup, pushScriptOf, type SettingsFacts } from "../settings-groups-ui.js";
 import { installKitBehavior } from "./kit/behavior.js";
 
@@ -30,62 +36,83 @@ let reloads = 0, assigned: string[] = [];
 beforeAll(() => installKitBehavior());
 beforeEach(() => {
   reloads = 0; assigned = [];
-  sessionStorage.clear();
   vi.spyOn(window.location, "reload").mockImplementation(() => { reloads += 1; });
   vi.spyOn(window.location, "assign").mockImplementation((to: string | URL) => { assigned.push(String(to)); });
 });
 afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = ""; });
 
-test("#4: saving one section keeps another changed section's draft across the page that follows", async () => {
+test("r2 a: saving one section with another changed asks first, in place; Cancel posts nothing, Save this anyway posts once", async () => {
   render(alerts());
   pick('#reach-form input[name="mode"][value="all"]');
   const pings = document.querySelector<HTMLInputElement>('#mute--r-shop input[name="pings"]')!;
   pings.click();
   pings.dispatchEvent(new Event("change", { bubbles: true }));
-  expect(form("reach-form").hasAttribute("data-dirty")).toBe(true);
-  expect(form("mute--r-shop").hasAttribute("data-dirty")).toBe(true);
   const fetched = vi.fn(async () => ({ url: `${location.origin}/settings/alerts?said=x`, redirected: true, ok: true, status: 200, text: async () => "" }));
   vi.stubGlobal("fetch", fetched);
   save("mute--r-shop");
+  const ask = document.querySelector<HTMLElement>(".k-pop")!;
+  expect(ask.textContent).toContain("You have unsaved changes in What reaches you. Saving this will discard them.");
+  ask.querySelector<HTMLButtonElement>("[data-k-close]")!.click();
+  await tick();
+  expect(fetched).not.toHaveBeenCalled();
+  expect(document.querySelector(".k-pop")).toBeNull();
+  expect(form("reach-form").hasAttribute("data-dirty")).toBe(true);
+  save("mute--r-shop");
+  document.querySelector<HTMLButtonElement>(".k-pop [data-k-discard]")!.click();
   await tick();
   expect(fetched).toHaveBeenCalledTimes(1);
   expect(assigned).toHaveLength(1);
-  // The page comes back from the server (Chat messages still "quiet" there): the unsaved choice is back, still changed.
-  render(alerts());
-  expect(document.querySelector<HTMLInputElement>('#reach-form input[name="mode"][value="all"]')!.checked).toBe(true);
-  expect(form("reach-form").hasAttribute("data-dirty")).toBe(true);
-  // Kept once: another visit shows the stored values.
-  render(alerts());
-  expect(form("reach-form").hasAttribute("data-dirty")).toBe(false);
   vi.unstubAllGlobals();
 });
 
-test("#2: a post whose answer never arrives is unconfirmed, never 'nothing was saved': the page reloads and says so", async () => {
-  render(alerts());
-  pick('#reach-form input[name="mode"][value="all"]');
-  vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("network"); }));
-  save("reach-form");
-  await tick();
-  expect(reloads).toBe(1);
-  expect(document.body.textContent).not.toContain("nothing was saved");
-  render(alerts());
-  const note = form("reach-form").querySelector(".k-ssave-err")!.textContent!;
-  expect(note).toContain("Couldn’t confirm whether What reaches you saved");
-  // A server error after the post (the redirected page failing) is unconfirmed too.
-  pick('#reach-form input[name="mode"][value="all"]');
-  vi.stubGlobal("fetch", vi.fn(async () => ({ url: `${location.origin}/settings/alerts?said=x`, redirected: true, ok: false, status: 500, text: async () => "" })));
-  save("reach-form");
-  await tick();
-  expect(reloads).toBe(2);
-  // A handler's own refusal is a refusal: said in place, the edit kept, no reload.
+test("r2 c/d: an unconfirmed save opens the page again with ?unconfirmed=<form>; a /login landing is unconfirmed, a ?problem= is a refusal", async () => {
+  for (const answer of [
+    async () => { throw new TypeError("network"); },
+    async () => ({ url: `${location.origin}/settings/alerts?said=x`, redirected: true, ok: false, status: 500, text: async () => "" }),
+    async () => ({ url: `${location.origin}/login?return=%2Fsettings%2Falerts`, redirected: true, ok: true, status: 200, text: async () => "<h1>Sign in</h1>" }),
+  ]) {
+    assigned = [];
+    render(alerts());
+    pick('#reach-form input[name="mode"][value="all"]');
+    vi.stubGlobal("fetch", vi.fn(answer));
+    save("reach-form");
+    await tick();
+    expect(assigned).toEqual(["/?unconfirmed=reach-form#notifications"]);
+    expect(document.body.textContent).not.toContain("nothing was saved");
+    // Still pending: no retry from this page.
+    expect(document.querySelector<HTMLButtonElement>("#reach-form [data-k-save]")!.classList.contains("busy")).toBe(true);
+  }
   vi.stubGlobal("fetch", vi.fn(async () => ({ url: `${location.origin}/settings/alerts?problem=${encodeURIComponent("Choose a mode.")}`, redirected: true, ok: true, status: 200, text: async () => "" })));
   render(alerts());
   pick('#reach-form input[name="mode"][value="all"]');
   save("reach-form");
   await tick();
-  expect(reloads).toBe(2);
   expect(form("reach-form").querySelector(".k-ssave-err")!.textContent).toContain("Choose a mode. Your edits are still here.");
   expect(document.querySelector<HTMLInputElement>('#reach-form input[name="mode"][value="all"]')!.checked).toBe(true);
+  vi.unstubAllGlobals();
+});
+
+test("r2 c: the server draws the unconfirmed note, and it survives the workspace mounting the page after the kit installs", async () => {
+  const page = requestContext.run({ csrf: "c".repeat(64), returnTo: "/settings/alerts?unconfirmed=reach-form" }, () => htmlString(alertsGroup(FACTS, {})));
+  document.body.innerHTML = '<div id="root"></div>';
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => { root.render(createElement(GuardedHtml, { html: page })); });
+  window.dispatchEvent(new CustomEvent("standing-orders:workspace-rendered"));
+  expect(form("reach-form").querySelector(".k-ssave-err")!.textContent).toContain("Couldn’t confirm whether this saved.");
+  expect(form("mute--r-shop").querySelector(".k-ssave-err")!.textContent).toBe("");
+  await act(async () => { root.unmount(); });
+});
+
+test("r2: section forms never touch Web Storage", async () => {
+  expect(readFileSync(join(__dirname, "kit", "section-forms.ts"), "utf8")).not.toMatch(/sessionStorage|localStorage|indexedDB/);
+  const touched = [vi.spyOn(Storage.prototype, "setItem"), vi.spyOn(Storage.prototype, "getItem"), vi.spyOn(Storage.prototype, "removeItem")];
+  render(alerts());
+  pick('#reach-form input[name="mode"][value="all"]');
+  vi.stubGlobal("fetch", vi.fn(async () => ({ url: `${location.origin}/settings/alerts?said=x`, redirected: true, ok: true, status: 200, text: async () => "" })));
+  save("reach-form");
+  await tick();
+  render(alerts());
+  for (const spy of touched) expect(spy).not.toHaveBeenCalled();
   vi.unstubAllGlobals();
 });
 

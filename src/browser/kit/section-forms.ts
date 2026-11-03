@@ -11,9 +11,14 @@
  *   one: Passwordless, a CSRF-only act) and, for a conditional proof (`data-k-proof-if`), only when the snapshot posts
  *   that value. However the popover goes away it settles as cancelled and releases the form.
  * - One pending save per form: a second press does nothing until the first settles.
- * - The snapshot is posted with fetch (same origin, the form's own CSRF field). A refusal shows next to Save, the
- *   edits stay, and Save is free again; success opens the page the server answered with. A form whose answer is a
- *   page of its own (`data-k-native`: a one-time secret, a review) posts as a navigation instead.
+ * - The snapshot is posted with fetch (same origin, the form's own CSRF field). A handler's refusal shows next to Save,
+ *   the edits stay, and Save is free again; success opens the page the server answered with. Anything that proves
+ *   nothing (a network failure, a server error, a sign-in page) is unconfirmed: the form stays pending and the page
+ *   opens again with ?unconfirmed=<form id>, where the server says so in that section. A form whose answer is a page
+ *   of its own (`data-k-native`: a one-time secret, a review) posts as a navigation instead.
+ * - A save that opens a new page while other sections have unsaved changes asks first, in place ("Saving this will
+ *   discard them"); leaving the page any other way with changes asks through the browser. Nothing is kept in Web
+ *   Storage.
  *
  * Nothing here decides anything: the server proves the person, the freshness and the exact terms when the post arrives.
  */
@@ -235,85 +240,32 @@ function problemIn(page: string): string | null {
   } catch { return null; }
 }
 
-// ---- drafts kept across the page's own reloads ---------------------------------------------------------------------
-// Saving one section opens the page the server answered with. Every OTHER section with unsaved changes keeps them: its
-// visible, non-secret values are kept for this tab (sessionStorage) and put back when the page comes back, still
-// marked changed. Passwords, secrets and the proof are never kept. A section whose save could not be confirmed gets a
-// note instead of its draft: the page then shows what is stored.
-const DRAFTS = "k-sform-drafts";
-type Kept = { path: string; drafts: Record<string, [string, string][]>; notes: Record<string, string> };
-function readKept(): Kept | null {
-  try { const raw = window.sessionStorage.getItem(DRAFTS); return raw === null ? null : JSON.parse(raw) as Kept; } catch { return null; }
-}
-function writeKept(kept: Kept | null): void {
-  try { if (kept === null) window.sessionStorage.removeItem(DRAFTS); else window.sessionStorage.setItem(DRAFTS, JSON.stringify(kept)); } catch { /* a private window: nothing kept */ }
-}
-/** The values a draft may keep: the visible ones, never a password-type field or the proof. */
-function keepable(form: HTMLFormElement): [string, string][] {
-  const secret = new Set(Array.from(form.querySelectorAll<HTMLInputElement>('input[type="password"], [data-so-secret]')).map(input => input.name));
-  const visible = new Set(visibleNames(form));
-  return entriesOf(form).filter(([name]) => visible.has(name) && !secret.has(name));
-}
+// ---- leaving the page --------------------------------------------------------------------------------------------
+// Saving a section opens the page the server answered with, which drops every other section's unsaved changes. So a
+// save with other changed sections asks first, in place (discardFirst), and leaving the page any other way with
+// changes asks through the browser (beforeunload). Nothing is ever kept in Web Storage.
 let leaving = false;
-/** Before the page goes on to the server's answer: keep every other changed section, and a note for `unconfirmed`. */
-function keepOthers(saving: SForm, unconfirmed: string | null): void {
-  const drafts: Record<string, [string, string][]> = {};
-  for (const form of Array.from(document.querySelectorAll<SForm>(`${FORM}[data-k-gate][data-dirty]`))) {
-    if (form === saving || !form.id) continue;
-    drafts[form.id] = keepable(form);
-  }
-  const notes: Record<string, string> = unconfirmed !== null && saving.id ? { [saving.id]: unconfirmed } : {};
-  writeKept(Object.keys(drafts).length + Object.keys(notes).length === 0 ? null : { path: window.location.pathname, drafts, notes });
-  leaving = true;
-}
-function setValues(form: HTMLFormElement, entries: readonly [string, string][]): void {
-  const values = grouped(entries);
-  for (const name of visibleNames(form)) {
-    const wanted = values.get(name) ?? [];
-    for (const element of Array.from(form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name="${CSS.escape(name)}"]`))) {
-      if (element instanceof HTMLInputElement && (element.type === "radio" || element.type === "checkbox")) element.checked = wanted.includes(element.value);
-      else if (element instanceof HTMLInputElement && (element.type === "password" || element.hasAttribute("data-so-secret"))) continue;
-      else if (wanted.length > 0) element.value = wanted[0]!;
-    }
-  }
-}
-/** Put back what this tab kept for this page: drafts (still changed) and notes (said next to Save). Once. */
-function restoreKept(): void {
-  const kept = readKept();
-  if (kept === null || kept.path !== window.location.pathname) return;
-  writeKept(null);
-  for (const [id, entries] of Object.entries(kept.drafts)) {
-    const form = document.getElementById(id) as SForm | null;
-    if (!form || !form.matches(FORM)) continue;
-    prep(form);
-    setValues(form, entries);
-    sync(form, true);
-  }
-  for (const [id, words] of Object.entries(kept.notes)) {
-    const form = document.getElementById(id) as SForm | null;
-    if (form && form.matches(FORM)) showNote(form, words);
-  }
-}
-function showNote(form: SForm, message: string): void {
-  const slot = form.querySelector<HTMLElement>(".k-ssave-err");
-  if (!slot) return;
-  const line = document.createElement("p");
-  line.className = "k-notice info";
-  line.setAttribute("role", "status");
-  line.textContent = message;
-  slot.replaceChildren(line);
+const sectionName = (form: HTMLFormElement): string => clean(form.closest("section")?.querySelector("h3")?.childNodes[0]?.textContent ?? form.closest("section")?.querySelector("h3")?.textContent) || "a section";
+const otherChanged = (form: HTMLFormElement): SForm[] => Array.from(document.querySelectorAll<SForm>(`${FORM}[data-k-gate][data-dirty]`)).filter(one => one !== form);
+/** The same page again, saying the save of `form` couldn't be confirmed: the server draws that note in the section. */
+function unconfirmedHref(form: HTMLFormElement): string {
+  const here = new URL(window.location.href);
+  for (const key of ["said", "problem", "unconfirmed"]) here.searchParams.delete(key);
+  here.searchParams.set("unconfirmed", form.id);
+  const anchor = form.closest("section[id]")?.id;
+  return `${here.pathname}${here.search}${anchor ? `#${anchor}` : ""}`;
 }
 
 /** Where the post goes: the pressed button's own formaction (Check again, Remove), else the form's. */
 const actionOf = (form: HTMLFormElement, submitter: HTMLElement | null): string =>
   submitter instanceof HTMLButtonElement && submitter.form === form && submitter.hasAttribute("formaction") ? submitter.formAction : form.action;
 
-/** The post may have landed but its answer never arrived: say so, never "nothing was saved", and show what is stored
- * now (the page again, other drafts kept) so nobody retries a safety change blind. */
+/** The post may have landed but its answer never arrived (a network failure, a server error, the page after the
+ * redirect failing, a sign-in page): never "nothing was saved". The form stays pending and the same page opens again
+ * with ?unconfirmed=<form id>, where the server says so in this section and shows what is stored now. */
 function unconfirmed(form: SForm): void {
-  const what = clean(form.closest("section")?.querySelector("h3")?.textContent) || "this section";
-  keepOthers(form, `Couldn’t confirm whether ${what} saved. This page now shows what is stored; check it before saving again.`);
-  window.location.reload();
+  leaving = true;
+  window.location.assign(form.id ? unconfirmedHref(form) : window.location.href);
 }
 
 async function post(form: SForm, snapshot: readonly [string, string][], proof: readonly [string, string][], submitter: HTMLElement | null): Promise<void> {
@@ -329,12 +281,8 @@ async function post(form: SForm, snapshot: readonly [string, string][], proof: r
     return;
   }
   const landed = new URL(response.url || action, window.location.href);
-  // The sign-in gate answers before any handler runs: nothing was done.
-  if (landed.origin === window.location.origin && landed.pathname === "/login") {
-    refused(form, "Your sign-in ended, so nothing was saved. Sign in again in another tab; your edits are still here.");
-    return;
-  }
-  if (landed.origin !== window.location.origin) { unconfirmed(form); return; }
+  // Landing anywhere unexpected (another site, the sign-in page) proves nothing about the post: unconfirmed.
+  if (landed.origin !== window.location.origin || landed.pathname === "/login") { unconfirmed(form); return; }
   // A handler's own refusal: back with ?problem=, or a refusal page answered directly (4xx, no redirect).
   const problem = landed.searchParams.get("problem");
   if (problem) { refused(form, kept(problem)); return; }
@@ -345,17 +293,17 @@ async function post(form: SForm, snapshot: readonly [string, string][], proof: r
   }
   // Anything else that isn't a plain success (a server error, the page after a redirect failing) is unconfirmed.
   if (!response.ok) { unconfirmed(form); return; }
-  // Saved: open what the server answered with, so the page shows what is stored now; other drafts are kept.
+  // Saved: open what the server answered with, so the page shows what is stored now.
   const here = landed.pathname === window.location.pathname;
   const anchor = form.closest("section[id]")?.id;
-  keepOthers(form, null);
+  leaving = true;
   if (response.redirected) window.location.assign(`${landed.pathname}${landed.search}${here && anchor ? `#${anchor}` : ""}`);
   else window.location.reload();
 }
 
 function submitNative(form: SForm, submitter: HTMLElement | null): void {
   const download = form.hasAttribute("data-k-download");
-  if (!download) keepOthers(form, null);
+  if (!download) leaving = true;
   form.kGo = true;
   try { if (submitter instanceof HTMLButtonElement && submitter.form === form) form.requestSubmit(submitter); else form.requestSubmit(); } finally { form.kGo = false; }
   if (download) {
@@ -458,11 +406,55 @@ function confirmProof(form: SForm): void {
 function save(form: SForm, submitter: HTMLElement | null): void {
   if (form.kPending) return;
   prep(form);
+  if (form.hasAttribute("data-k-gate") && changedNames(form).length === 0 && !(submitter instanceof HTMLButtonElement && submitter.hasAttribute("formaction"))) return;
+  const others = form.hasAttribute("data-k-download") ? [] : otherChanged(form);
+  if (others.length > 0) { discardFirst(form, others, submitter); return; }
+  go(form, submitter);
+}
+
+/** Other sections have unsaved changes and this save opens a new page: say which, in place; Cancel posts nothing. */
+function discardFirst(form: SForm, others: readonly SForm[], submitter: HTMLElement | null): void {
+  const names = [...new Set(others.map(sectionName))];
+  const id = `${form.id || "k-sform"}-discard`;
+  const panel = document.createElement("div");
+  panel.className = "k-pop";
+  panel.id = id;
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", `${id}-h`);
+  panel.tabIndex = -1;
+  const head = document.createElement("div");
+  head.className = "k-pop-h";
+  const title = document.createElement("h3");
+  title.id = `${id}-h`;
+  title.textContent = "Unsaved changes";
+  head.append(title);
+  const words = document.createElement("p");
+  words.textContent = `You have unsaved changes in ${names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0]}. Saving this will discard them.`;
+  const acts = document.createElement("div");
+  acts.className = "k-acts";
+  const yes = button("Save this anyway", "primary", { "data-k-discard": "" });
+  acts.append(yes, button("Cancel", "ghost", { "data-k-close": "" }));
+  panel.append(head, words, acts);
+  form.append(panel);
+  form.kPending = true;
+  let go_ = false;
+  const close = openOverlay(panel, submitter ?? saveOf(form), {
+    onClose: () => {
+      panel.remove();
+      form.kPending = false;
+      if (go_) go(form, submitter);
+    },
+  });
+  yes.addEventListener("click", event => { event.preventDefault(); go_ = true; close(); });
+  yes.focus();
+}
+
+function go(form: SForm, submitter: HTMLElement | null): void {
   clearError(form);
   const snapshot = entriesOf(form, submitter);
   // A button with its own formaction (Check again) is its own act: no Save gate, no proof of the section's.
   if (submitter instanceof HTMLButtonElement && submitter.hasAttribute("formaction")) { send(form, snapshot, [], submitter); return; }
-  if (form.hasAttribute("data-k-gate") && changedNames(form).length === 0) return;
   const proof = proofOf(form);
   if (proof !== null && proofApplies(form, snapshot) && asksPassword(proof)) { openProof(form, snapshot, submitter); return; }
   // No password to ask: an identity-provider re-check already confirmed stays in the post as its empty field.
@@ -513,12 +505,11 @@ export function installSectionForms(): void {
     leaving = false;
     for (const form of Array.from(document.querySelectorAll<SForm>(FORM))) { form.kPending = false; form.kSent = false; busy(form, false); }
   });
-  window.addEventListener("standing-orders:workspace-rendered", () => { prepAll(); restoreKept(); });
+  window.addEventListener("standing-orders:workspace-rendered", prepAll);
   // Leaving with sections changed and not saved asks first (the page's own saves keep them instead).
   window.addEventListener("beforeunload", event => {
     if (leaving || document.querySelector(`${FORM}[data-k-gate][data-dirty]`) === null) return;
     event.preventDefault();
   });
   prepAll();
-  restoreKept();
 }

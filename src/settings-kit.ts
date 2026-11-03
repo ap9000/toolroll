@@ -15,6 +15,7 @@
  */
 import { attributes, html, htmlString, joinHtml, postForm, reauth, replaceMarkup, type Html, type HtmlValue } from "./html.js";
 import { isSettingsFrame } from "./settings-kit-script.js";
+import { requestContext } from "./server/request-context.js";
 import { contractReads, PROOF_INVENTORY, proofRow, type ProofRow } from "./settings-proofs.js";
 
 export { isSettingsFrame };
@@ -293,10 +294,19 @@ export function kitSectionForm(form: SectionForm): Html {
     form.body,
     asks ? html`<div class="k-sproof" data-k-proof>${proof}</div>` : "",
     html`<div class="k-ssave"><span class="k-ssave-said" aria-live="polite">${form.said ?? ""}</span>${button}</div>`,
-    html`<div class="k-ssave-err" id="${form.id}-err">${form.problem ? html`<p class="k-notice" role="alert"><span>${form.problem}</span></p>` : ""}</div>`,
+    html`<div class="k-ssave-err" id="${form.id}-err">${form.problem ? html`<p class="k-notice" role="alert"><span>${form.problem}</span></p>`
+      : unconfirmedHere(form.id) ? html`<p class="k-notice info" role="status">Couldn’t confirm whether this saved. This page shows what is stored now; check it before saving again.</p>` : ""}</div>`,
   ]), { hidden, attrs: {
     id: form.id, class: "k-sform", "data-k-sform": row.id, "data-k-gate": form.gate === true ? true : null, "data-k-native": form.native === true || form.download === true ? true : null, "data-k-download": form.download === true ? true : null,
     "data-k-proof-if": form.proofWhen === undefined ? null : `${form.proofWhen[0]}=${form.proofWhen[1]}`,
     "data-k-confirm": form.confirm ?? row.action, "data-k-note": note,
   } });
+}
+
+/** Whether this request is the page again after a save of form `id` couldn't be confirmed (section-forms.ts asks for it
+ * with ?unconfirmed=<id>). It only picks which of this page's own forms shows the fixed note; the value is never drawn. */
+function unconfirmedHere(id: string): boolean {
+  const at = requestContext.getStore()?.returnTo;
+  if (at === undefined) return false;
+  try { return new URL(at, "http://toolroll.local").searchParams.get("unconfirmed") === id; } catch { return false; }
 }

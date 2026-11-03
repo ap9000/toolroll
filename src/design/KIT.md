@@ -235,8 +235,12 @@ the proof field shows in place and Save posts. With the workspace's kit behaviou
 - Save takes one snapshot of the form; the password popover's terms and the posted values come from it.
 - The password is asked only when the server rendered a proof field (Passwordless and CSRF-only rows render none)
   and, with `proofWhen`, only when the snapshot posts that value (Full access, approve releases automatically).
-- One pending save per form. The snapshot posts with fetch; a refusal (`?problem=`, a refusal page, a sign-in
-  redirect) shows next to Save with the edits kept; success opens the page the server answered with.
+- One pending save per form. The snapshot posts with fetch; a handler's refusal (`?problem=`, a 4xx refusal page)
+  shows next to Save with the edits kept; success opens the page the server answered with. Anything that proves
+  nothing (a network failure, a server error, a sign-in page) is unconfirmed: the page opens again with
+  `?unconfirmed=<form id>` and `kitSectionForm` draws "Couldn't confirm whether this saved" in that section.
+- Saving while other sections have unsaved changes asks first, in place; leaving with changes asks through the
+  browser. Nothing is kept in Web Storage.
 - `native`: the answer is a page of its own (a one-time secret, a review, another site), so it posts as a navigation.
 
 ## Words
