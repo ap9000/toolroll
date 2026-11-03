@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.9.87 — 2026-11-03
+
+- **The whole app is redesigned.** Every page, from sign-in to Settings,
+  now has one calm look: the same buttons, forms, status words and phone
+  layout everywhere, and amber only for what needs you.
+- **A new Home.** One summary of where things stand and one Needs-you count,
+  the same count you see in the side rail, the phone dock and the tab title.
+- **A new task page.** One column with a five-step progress line (Plan ·
+  Approval · Build · Checks · Ready), then Plan or Result, Activity and
+  Attempts. Approving asks for a password only when one is needed: with
+  Passwordless or a remembered password it is one click, and an automatic
+  rule shows nothing to press. The box keeps the exact terms it showed you;
+  if they change, it offers Reload, never a yes.
+- **Tasks, as a list or a board.** Filter by project and by Needs you,
+  Running, Queued or Finished, each with its count; each waiting task says
+  what it asks for and offers one action.
+- **Ship shows how long each check took**, every pull request check on one
+  timeline.
+- **Release progress.** A release task shows every step in order, where it
+  stands ("Deploy to this Mac · Step 6 of 13") and why it stopped.
+- **A new lead chat**, plus **⌘K search** from anywhere and a `/search` page.
+- **Flows on the phone.** The flow canvas pans and pinch-zooms on a phone,
+  and the Flows list, templates, kits and starter flows are on the new look.
+- **Settings in eight groups**, with what needs you at the top. Each section
+  saves on its own. Spend and Models live in Settings too.
+- **A first-run guide at `/welcome`**: set a password, add a project, pick an
+  agent and models, turn on phone alerts, file a first task. The next step is
+  always the one highlighted.
+- **New task is one box**: pick the project, type, send. Everything else is
+  under More options.
+- **Some Settings saves work again.** Turning sign-in with a provider on or
+  off, turning Passwordless on, request limits and adding a tool no longer
+  fail with "Toolroll refused this (404)", and a save that stays on the same
+  page now shows what was saved.
+- **From the terminal:** `toolroll task ship <task>` shows a task's pull
+  request checks, `toolroll release status [<task>]` shows release progress,
+  `toolroll task list --view queued` lists queued work, and `toolroll release
+  --branch <name>` releases a branch named like one of the command's words.
+
+### Safety
+
+- **Approving a flow's script is bound to the exact version you read.** If
+  the script changes after you looked, the approval doesn't count.
+- **Changing a flow ends its "run on its own" approvals**; it waits for you
+  again.
+- **Password pages open no live connection** to the rest of the app.
+- **Project credential forms always show the password field**, even with
+  Passwordless on (Where builds write, Home folder, Check access, Network).
+  Before, they hid it and every save was refused.
+- **Choosing providers no longer widens by accident.** "Any provider" now
+  means every provider ticked; ticking some saves exactly those.
+- **Releases ignore the advisory youiyoux check**, so a design warning never
+  holds up a release.
+
+### For developers
+
+- **youiyoux enforces the kit in CI.** A pull request that adds design drift
+  against the shared kit (`src/design/KIT.md`) fails the youiyoux job.
+
 ## 0.9.86 — 2026-11-02
 
 - **Old tasks tidy themselves.** A routine's newer run puts away its older
