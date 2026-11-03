@@ -51,6 +51,9 @@ function RailProjects({ workspace, states, current }: { workspace: BrowserWorksp
     ? states.filter(one => one.path !== null && !one.others).map(one => ({ key: one.path!, name: one.name, href: one.href, needs: one.counts["needs-you"] }))
     : workspace.projects.map(one => ({ key: one.path, name: one.name, href: one.href, needs: 0 }));
   if (rows.length === 0) return null;
+  // Each project's figure is the one Needs-you count for that project, when the page carries it.
+  const counted = workspace.needsYouByProject;
+  if (counted) for (const row of rows) row.needs = counted.find(one => one.path === row.key)?.count ?? 0;
   return <nav aria-label="Projects" className="so-rail-projects" data-live data-sidebar-slot="projects">
     <p className="so-rail-h">Projects</p>
     {rows.map(row => <a key={row.key} className="so-nav so-nav-sub" href={row.href} aria-current={row.key === current ? "true" : undefined} title={row.name}>
@@ -147,6 +150,7 @@ export function PhoneHeader({ workspace, title, back, states, current, trailing 
 type SheetRow = { id: string; title: string; href: string; project: string | null; age: string; word: string; group: string };
 type SheetRead = { state: "loading" } | { state: "failed" } | { state: "ready"; rows: SheetRow[]; more: boolean };
 
+const ASK_WORD: Record<string, string> = { decide: "Decision", review: "Result", unblock: "Blocked" };
 /** What the Needs-you list holds, read from the Tasks list it opens (the same rows, in the same groups). */
 async function readNeeds(href: string): Promise<{ rows: SheetRow[]; more: boolean }> {
   const url = new URL(href, window.location.origin);
@@ -158,7 +162,9 @@ async function readNeeds(href: string): Promise<{ rows: SheetRow[]; more: boolea
   if (!view || view.kind !== "tasks") throw new Error("unavailable");
   const label = (group: string): string => group in ASK_LABEL ? ASK_LABEL[group as keyof typeof ASK_LABEL] : "Waiting on you";
   return {
-    rows: view.rows.map(row => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, word: row.chip ?? row.status.label, group: label(row.group) })),
+    rows: view.rows.map(row => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, group: label(row.group),
+      // The specific ask, never the list's own name again (the same words Home uses).
+      word: row.chip ?? (row.status.label === "Needs you" ? ASK_WORD[row.group] ?? row.status.label : row.status.label) })),
     more: view.pages.next !== null,
   };
 }

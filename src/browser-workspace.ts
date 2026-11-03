@@ -764,6 +764,8 @@ export type BrowserWorkspace = {
   /** The one Needs-you count (tasks only) with its scope: the Tasks list's own count for the project in view (`scope`,
    * a project path) or every project (null), its words ("5 need you in payments-api") and the list it opens. */
   needsYou?: { count: number; saturated: boolean; scope: string | null; label: string; href: string };
+  /** The same Needs-you count for each project (`path` null: work with no project), from the same work index totals. */
+  needsYouByProject?: { path: string | null; count: number }[];
   version: 1; path: string; title: string; user: string; csrf: string; sensitive: boolean;
   /** Passwordless is on for this signed-in browser: ceremony password fields are left out (docs/plans/passwordless.md). */
   passwordless?: boolean;
