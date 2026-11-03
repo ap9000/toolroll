@@ -14,6 +14,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { basename, resolve, sep } from "node:path";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
+import { folderAnswers } from "./folder-gate.js";
 
 export type ProjectExec = (
   file: string,
@@ -27,6 +28,8 @@ export type ProjectExec = (
  * fall back to raw equality for legacy rows written before this existed.
  */
 export function canonicalProject(path: string): string | null {
+  // In the console, a folder that hasn't answered a look lately is not read on its thread (folder-gate.ts): unavailable.
+  if (!folderAnswers(path)) return null;
   try {
     const real = realpathSync(resolve(path));
     return statSync(real).isDirectory() ? real : null;

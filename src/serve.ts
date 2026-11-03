@@ -1,6 +1,7 @@
 import { secretFolder } from "./tool-secret-store.js";
 import { acceptedIdentities, recoverLearning } from "./project-learning.js";
-import { syncProjectIdentities, type ProjectIdentities } from "./project-identity.js";
+import { consoleFolderGate, syncProjectIdentities, type ProjectIdentities } from "./project-identity.js";
+import { installFolderGate } from "./folder-gate.js";
 import { firstTasksOffThread, recoverLearningOffThread } from "./learning-look.js";
 import { loadOrCreateVapidKeys } from "./push.js";
 import { checkoutPlan } from "./checkout-cleanup.js";
@@ -730,6 +731,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const timer = setInterval(flushBudget, REQUEST_BUDGET_FLUSH_MS);
     timer.unref?.();
     server.on("close", () => { clearInterval(timer); flushBudget(); });
+    // With identities resolved off its thread (up and serve), the console never reads a person's folder synchronously
+    // unless it answered a look lately (folder-gate.ts): its own data, and only that, is read freely. Installed before
+    // the server listens; removed as it closes.
+    if (options.identities !== undefined) {
+      const databaseFile = store.databaseFile();
+      server.on("close", installFolderGate(consoleFolderGate(identities, [options.configDir, evidenceRoot, options.poolRoot, databaseFile === null ? undefined : dirname(databaseFile)])));
+    }
   }
   const servedPort = (): number | null => {
     const address = server.address();

@@ -40,17 +40,26 @@ const ADMISSION_GIT = {
 };
 
 export const PROJECT_ADDED = "project added";
+
+/** A folder's real path (a folder), null (not one), or "no-answer" (it didn't answer in time). */
+export type FolderResolver = (path: string) => Promise<string | null | "no-answer">;
 export const PROJECT_REMOVED = "project removed";
 
 /** The checkout root a folder belongs to, canonical; never a shell. */
-export async function proveProjectRoot(path: string, exec: ProjectExec = run): Promise<{ ok: true; repo: string } | AdmissionFailure> {
+export async function proveProjectRoot(path: string, exec: ProjectExec = run, resolveFolder?: FolderResolver): Promise<{ ok: true; repo: string } | AdmissionFailure> {
   if (path.trim() === "" || path.length > 4096 || /[\x00-\x1f]/.test(path)) {
     return { ok: false, reason: "unavailable", message: "Choose a valid project folder." };
   }
-  const canonical = canonicalProject(path);
+  // The console resolves both folders off its thread (project-identity.ts resolveNow): its thread never waits on one.
+  const canon = async (one: string): Promise<string | null | "no-answer"> => resolveFolder === undefined ? canonicalProject(one) : resolveFolder(one);
+  const didntAnswer = (one: string): AdmissionFailure => ({ ok: false, reason: "unavailable", message: `${one} didn't answer. It may be on a drive that's disconnected, or waiting on macOS; try again in a moment.` });
+  const canonical = await canon(path);
+  if (canonical === "no-answer") return didntAnswer(path);
   if (canonical === null) return { ok: false, reason: "unavailable", message: `${path} isn't a folder on this computer.` };
   const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: canonical, timeoutMs: 5_000, ...ADMISSION_GIT });
-  const repo = top.code === 0 ? canonicalProject(top.stdout.trim()) : null;
+  const topReal = top.code === 0 ? await canon(top.stdout.trim()) : null;
+  if (topReal === "no-answer") return didntAnswer(top.stdout.trim());
+  const repo = topReal;
   if (repo === null) return { ok: false, reason: "not-git", message: `${path} isn't a Git repository. Run git init there first, or choose a folder inside one.` };
   return { ok: true, repo };
 }
@@ -75,8 +84,11 @@ export async function admitProject(store: Store, input: {
   /** The caller's authority, asked again about the proved repo inside the locked registry update and inside the
    * database transaction (the console: nothing it proved before an await moved, and the repo is still visible). */
   stillAllowed?: (repo: string) => boolean;
+  /** How the folder and its checkout root are resolved (the console: off its thread, under a deadline). Absent:
+   * canonicalProject. */
+  resolveFolder?: FolderResolver;
 }): Promise<Admitted | AdmissionFailure> {
-  const proved = await proveProjectRoot(input.path, input.exec);
+  const proved = await proveProjectRoot(input.path, input.exec, input.resolveFolder);
   if (!proved.ok) return proved;
   const { repo } = proved;
   if (input.remoteUrl !== undefined && (input.actor.origin === "console" || remoteUrlProblem(input.remoteUrl) !== null)) {

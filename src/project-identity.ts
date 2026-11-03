@@ -18,6 +18,7 @@
  */
 
 import { resolve } from "node:path";
+import { insideFolder } from "./folder-gate.js";
 import { lookIdentities, type FolderLookOptions } from "./folder-look.js";
 import { canonicalProject } from "./project.js";
 
@@ -40,10 +41,17 @@ export type ProjectIdentities = {
   /** Moves whenever a known identity changes or goes: a decision made before an await is re-checked against it right
    * before its write. */
   generation: () => number;
+  /** Whether a synchronous read inside `path` may happen on the console's thread now (folder-gate.ts): the folder it is
+   * in answered a look within the last few minutes, and no look at it since went unanswered. Reads nothing. */
+  answering: (path: string) => boolean;
 };
 
 /** How long an answer stands before the background pass resolves the path again. */
 const STALE_MS = 60_000;
+
+/** How long an answer vouches that its folder answers, for `answering`: past it (the background pass every 30 s
+ * renews it each minute), a synchronous read waits for the next look. */
+const ANSWERING_MS = 3 * STALE_MS;
 
 /** How many folders a pass looks at side by side when they're looked at one by one (within FOLDER_LOOK_CHILDREN). */
 export const IDENTITY_LOOKS = 4;
@@ -143,6 +151,25 @@ export function projectIdentities(look: FolderLookOptions = {}, now: () => numbe
       passes = pass.then(() => undefined, () => undefined);
       return pass;
     },
+    answering: path => {
+      const at = resolve(path), when = now();
+      // A folder whose last look didn't answer holds back every read inside it, whatever older answer stands.
+      for (const key of suspect) {
+        const real = answers.get(key)?.real ?? null;
+        if (insideFolder(at, key) || (real !== null && insideFolder(at, real))) return false;
+      }
+      // Otherwise the nearest folder an answer names decides (a project, not a parent some request asked about), and
+      // "/" vouches for nothing below it.
+      let nearest: { folder: string; fresh: boolean } | null = null;
+      for (const [key, answer] of answers) {
+        if (answer.real === null) continue;
+        for (const folder of new Set([key, answer.real])) {
+          if (folder === "/" && at !== "/") continue;
+          if (insideFolder(at, folder) && (nearest === null || folder.length > nearest.folder.length)) nearest = { folder, fresh: when - answer.at < ANSWERING_MS };
+        }
+      }
+      return nearest?.fresh === true;
+    },
   };
 }
 
@@ -156,5 +183,13 @@ export function syncProjectIdentities(): ProjectIdentities {
     resolveNow: async path => canonicalProject(path),
     generation: () => 0,
     refresh: async () => true,
+    answering: () => true,
   };
+}
+
+/** The console's folder gate (folder-gate.ts): its own data folders (the database's, evidence, build checkouts) are read
+ * freely; anything else only while `answering` vouches for the folder it is in. */
+export function consoleFolderGate(identities: ProjectIdentities, own: readonly (string | undefined)[]): (path: string) => boolean {
+  const folders = [...new Set(own.filter((one): one is string => typeof one === "string" && one !== "").map(one => resolve(one)))];
+  return path => folders.some(folder => insideFolder(path, folder)) || identities.answering(path);
 }

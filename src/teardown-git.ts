@@ -20,6 +20,7 @@ import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:pa
 import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { WORKTREE_TIMEOUT_MS, type Runner } from "./worktree.js";
+import { FOLDER_DIDNT_ANSWER, folderAnswers } from "./folder-gate.js";
 
 export type Git = (cwd: string, args: readonly string[]) => Promise<ExecResult>;
 
@@ -331,6 +332,8 @@ function gitDirsOf(checkout: string): { gitdir: string; common: string } | null 
       gitdir = resolve(checkout, pointer);
     }
   } catch { return null; }
+  // A linked checkout's git folder is in its project's repository: read only while that folder answers (folder-gate.ts).
+  if (!folderAnswers(gitdir)) throw new Error(FOLDER_DIDNT_ANSWER);
   const named = regularFile(join(gitdir, "commondir"))?.trim();
   return { gitdir, common: named === undefined || named === "" ? gitdir : resolve(gitdir, named) };
 }
@@ -913,6 +916,8 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
   const limit: Limit | undefined = deadline === undefined ? undefined : () => deadline - Date.now();
   const expire = () => { if (limit !== undefined && limit() <= 0) throw new Error("the read's deadline passed"); };
   expire();
+  // In the console, a checkout whose folder hasn't answered a look lately is not read on its thread (folder-gate.ts).
+  if (!folderAnswers(cwd)) throw new Error(FOLDER_DIDNT_ANSWER);
   if (checkoutIncludes(cwd, gitFile, limit)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
   expire();
   if (lfsExtensionIn(cwd, gitFile, limit)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");

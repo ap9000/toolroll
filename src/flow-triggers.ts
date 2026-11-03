@@ -55,6 +55,7 @@ import { envValue } from "./names.js";
 import { recordBranchCheckRun, unprovenNoticeRuns } from "./tidy.js";
 import { linearLabelNames, readFormSubmission, readGithubEvent, readGithubIssue, readGithubIssueEventList, readGithubIssueList, readGithubRun, readGithubRunList, readInboundMail, readLinearAnswer, readLinearEvent, readLinearIssue, readWebhookPayload } from "./contracts/trigger-payloads.js";
 import { isRecord } from "./is-record.js";
+import { folderAnswers } from "./folder-gate.js";
 
 export { FLOW_TRIGGER_KINDS };
 export type { ChatApp, FlowTriggerKind, TriggerConfig, TriggerInput };
@@ -132,6 +133,8 @@ export function scheduleFromWords(text: string): string | null {
 
 /** A GitHub repository as owner/name, read from a project's origin remote when it is on GitHub. */
 export function githubRepoOf(path: string): string | null {
+  // In the console, a folder that hasn't answered a look lately is not read on its thread (folder-gate.ts).
+  if (!folderAnswers(path)) return null;
   try {
     const dot = join(path, ".git");
     const config = statSync(dot).isDirectory() ? readFileSync(join(dot, "config"), "utf8") : null;
