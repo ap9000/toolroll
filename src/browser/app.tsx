@@ -104,8 +104,8 @@ export function useWorkspace(initial: BrowserWorkspace) {
   // The Agents board follows the workspace too, and its opened agent's own room nudges it (agents-view.tsx).
   // Home follows the workspace the same way: its counts and rows move as work does, and an answer given in place re-reads it.
   const agentsBoard = (initial.view?.kind === "agents" || initial.view?.kind === "home") && !initial.sensitive;
-  // A sensitive page follows nothing live (live.ts setLiveQuiet): a refresh beat or a conversation never opens a stream there.
-  const followsWorkspace = !initial.sensitive && Boolean(initial.conversation || initial.refreshSeconds || agentsBoard);
+  // On a sensitive page no room opens at all (live.ts setLiveQuiet, set by WorkspaceApp), whatever this follows.
+  const followsWorkspace = Boolean(initial.conversation || initial.refreshSeconds || agentsBoard);
   const check = useCallback(async (force = true, retry = false): Promise<void> => {
     clearRefreshRetry();
     if (!mounted.current || state.current.stale || !(followsWorkspace || liveTask) || !canRefreshWorkspace()) return;
