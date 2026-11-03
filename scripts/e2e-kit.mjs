@@ -155,6 +155,36 @@ export async function waitFor(locator, what, { timeoutMs = 30_000, state = "visi
 }
 
 /**
+ * Save a kit settings section (form.k-sform, settings-kit.ts kitSectionForm) the way a person does: press its Save
+ * (or `button`), type the password in the popover when it asks for one, confirm, and wait for the page the server
+ * answered with. A settings section whose fields didn't change has nothing to save: answers false and posts nothing.
+ */
+export async function kitSave(page, form, { password = null, button = null, timeoutMs = 30_000 } = {}) {
+  await form.waitFor({ state: "attached", timeout: timeoutMs });
+  if (button === null && await form.evaluate(el => el.hasAttribute("data-k-gate") && !el.hasAttribute("data-dirty"))) return false;
+  const id = await form.getAttribute("id");
+  const press = button ?? form.locator("[data-k-save]").last();
+  const before = page.url();
+  // The new document's load: a save that lands on the page already open first sets its #anchor (a same-document
+  // navigation) and then loads the page again, so a navigation event alone can come before the page is there.
+  const landed = page.waitForEvent("load", { timeout: timeoutMs });
+  await press.click();
+  const pop = page.locator(`#${id}-pop`);
+  const asked = await pop.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false);
+  if (asked) {
+    if (password === null) throw new Error(`${id} asked for a password and none was given`);
+    await pop.locator('input[type="password"]').first().fill(password);
+    await pop.locator("[data-k-sconfirm]").click();
+  }
+  // The page the server answered with, or a refusal shown beside Save (the page stays).
+  const refusal = form.locator(".k-ssave-err [role=alert]");
+  const outcome = await Promise.race([landed.then(() => "landed"), refusal.waitFor({ state: "visible", timeout: timeoutMs }).then(() => "refused")]);
+  if (outcome === "refused") { landed.catch(() => undefined); throw new Error(`${id} was refused: ${await refusal.innerText()} (on ${before})`); }
+  await page.waitForLoadState("load");
+  return true;
+}
+
+/**
  * Make the world: a repository with a passing test, two approvers (alex and
  * sam), a registered runner, Claude as every phase, `npm test` as the
  * project's check; the console and the worker started; alex signed in.
@@ -293,7 +323,7 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
       throw new Error(`standing-orders ${argv.join(" ")}: ${(error.stdout ?? "") + (error.stderr ?? "")}`.slice(0, 2000));
     }
   };
-  const sql = query => execFileSync("sqlite3", ["-json", db, query], { encoding: "utf8" }).trim() || "[]";
+  const sql = query => execFileSync("sqlite3", ["-json", "-cmd", ".timeout 15000", db, query], { encoding: "utf8" }).trim() || "[]";
   const rows = query => JSON.parse(sql(query));
 
   const results = [];

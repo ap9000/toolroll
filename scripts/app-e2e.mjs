@@ -26,7 +26,7 @@ import { basename, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
-import { flag, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
+import { flag, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
 
 const skipBuild = flag("--skip-build");
@@ -211,8 +211,20 @@ async function newFlow(name, stages, start) {
 const zone = (x, y = 0) => ({ x, y, w: 260, h: 300, color: "blue" });
 const none = { instructions: null, planning: null, approver: null, message: null, close: null, script: null, sort: null };
 async function addCard(title, details) {
-  await page.click('button:has-text("New card")');
-  await page.fill('input[aria-label="Title"]', title);
+  // New card is the flow's primary until cards wait on you (then Review is); otherwise it is in the More menu.
+  // The primary can turn from New card into Review between looking and pressing (a subagent's card starts waiting on
+  // you, live): whatever opened then is closed and New card is asked for again.
+  const titleField = page.locator('[data-view="flow-drawer"] input[aria-label="Title"]');
+  for (let attempt = 1; ; attempt += 1) {
+    const primary = page.locator('[data-flow-new-card]:visible');
+    if (await primary.count() > 0) await primary.first().click();
+    else { await page.locator("[data-flow-menu]:visible").first().click(); await page.click('.k-menu button:has-text("New card")'); }
+    if (await titleField.waitFor({ timeout: 5_000 }).then(() => true, () => false)) break;
+    if (attempt === 3) throw new Error(`New card didn't open (tried ${attempt} times)`);
+    await page.keyboard.press("Escape");
+    await page.locator('[data-view="flow-drawer"]').waitFor({ state: "detached", timeout: 5_000 }).catch(() => undefined);
+  }
+  await titleField.fill(title);
   if (details) await page.fill('textarea[aria-label="Details"]', details);
   await page.click('button:has-text("Add card")');
   // The card is on the canvas before anything else happens: the canvas re-renders live as a subagent moves cards, and a
@@ -229,7 +241,7 @@ await journey("console", SCRIPTED, "A wrong password is refused, and a signed-ou
   await stranger.fill('input[name="name"]', "alex"); await stranger.fill('input[name="token"]', "not-the-password");
   await Promise.all([stranger.waitForLoadState("load"), stranger.press('input[name="token"]', "Enter")]);
   if (!stranger.url().includes("/login")) throw new Error(`a wrong password got in: ${stranger.url()}`);
-  if ((await stranger.locator(".login-brand .so-brand-mark").count()) !== 1) throw new Error("the sign-in page doesn't carry the brand");
+  if ((await stranger.locator(".k-out-brand .so-brand-mark").count()) !== 1) throw new Error("the sign-in page doesn't carry the brand");
   const text = (await stranger.locator("body").innerText()).toLowerCase();
   if (!/password|sign in|didn't|not/.test(text)) throw new Error(`no refusal shown: ${text.slice(0, 200)}`);
   const locked = await stranger.request.get(`${base}/flows`, { maxRedirects: 0 });
@@ -296,10 +308,10 @@ await journey("console", SCRIPTED, "Sign-in hardening and the audit trail: five 
     if (changed.status() !== 303) throw new Error(`the permission default refused ${mode}: ${changed.status()}`);
   }
   await page.goto(`${base}/ledger?source=sign-in`); await page.waitForSelector("[data-ledger-id]");
-  const signIns = (await page.locator(".ledger-list").innerText()).replace(/\s+/g, " ");
+  const signIns = (await page.locator(".h-audit-list").innerText()).replace(/\s+/g, " ");
   if (!signIns.includes(casey) || !/account locked/.test(signIns) || !/5 wrong passwords in a row; locked for 15 minutes/.test(signIns)) throw new Error(`the sign-in events: ${signIns.slice(0, 300)}`);
   await page.goto(`${base}/ledger?source=policy`); await page.waitForSelector("[data-ledger-id]");
-  const policy = (await page.locator(".ledger-list").innerText()).replace(/\s+/g, " ");
+  const policy = (await page.locator(".h-audit-list").innerText()).replace(/\s+/g, " ");
   if (!/permission default changed/.test(policy) || !policy.includes("Auto → Full access") || !policy.includes("Full access → Auto")) throw new Error(`the policy events: ${policy.slice(0, 300)}`);
   await shot("ledger-policy");
   const csv = await (await page.request.get(`${base}/ledger?format=csv&source=policy`)).text();
@@ -312,14 +324,13 @@ await journey("console", SCRIPTED, "Sign-in hardening and the audit trail: five 
 await journey("console", SCRIPTED, "Sessions and API tokens: a read token made in Settings is shown once on a page with no script, a script reads with it but can't file work, and once revoked it names no one; this browser is in the sessions list", [], async () => {
   await page.goto(`${base}/settings/sessions`);
   await page.waitForSelector("[data-session]");
-  if (!/This browser/.test(await page.locator(".credentials").innerText())) throw new Error("the sessions list doesn't mark this browser");
-  await page.evaluate(() => document.querySelectorAll(".credentials details").forEach(one => { one.open = true; }));
-  await page.fill('.create input[name="name"]', "e2e-dashboard");
-  await page.selectOption('.create select[name="access"]', "read");
-  await page.fill('.create input[name="password"]', w.passwords.alex);
-  await Promise.all([page.waitForNavigation(), page.click('.create button:has-text("Make the token")')]);
+  if (!/This browser/.test(await page.locator("#signed-in").innerText())) throw new Error("the sessions list doesn't mark this browser");
+  await page.locator("details.k-disclose:has(#token-form)").evaluate(one => { one.open = true; });
+  await page.fill('#token-form input[name="name"]', "e2e-dashboard");
+  await page.selectOption('#token-form select[name="access"]', "read");
+  await kitSave(page, page.locator("#token-form"), { password: w.passwords.alex });
   if ((await page.locator("script").count()) !== 0) throw new Error("the page showing the token carries a script");
-  const token = (await page.locator(".secret-value").innerText()).trim();
+  const token = (await page.locator(".k-secret-val").innerText()).trim();
   if (!/^so_[a-f0-9]{12}_[A-Za-z0-9_-]{43}$/.test(token)) throw new Error(`the token: ${token.slice(0, 12)}…`);
   await shot("api-token-shown");
   const headers = { authorization: `Bearer ${token}` };
@@ -339,10 +350,10 @@ await journey("console", SCRIPTED, "Sessions and API tokens: a read token made i
 const APPROVAL_RULES = "Approval rules: with 'someone other than the requester' on, the task alex filed can't be approved by alex; sam approves it, and the task says who filed it";
 await journey("console", SCRIPTED, APPROVAL_RULES, [], async () => {
   await page.goto(`${base}/settings/approval?repo=${encodeURIComponent(repo)}`);
-  await page.locator('.approval-rules input[name="not_requester"]').check();
-  await page.locator('.approval-rules input[name="password"]').fill(w.passwords.alex);
-  await Promise.all([page.waitForNavigation(), page.locator('.approval-rules button[type="submit"]').click()]);
-  if (!/Saved\./.test(await page.locator(".approval-rules").innerText())) throw new Error(`the rules weren't saved: ${(await page.locator("body").innerText()).slice(0, 300)}`);
+  await page.locator('#rules-form label.k-switch:has(input[name="not_requester"])').click();
+  if (!(await page.locator('#rules-form input[name="not_requester"]').isChecked())) throw new Error("the switch didn't turn on");
+  await kitSave(page, page.locator("#rules-form"), { password: w.passwords.alex });
+  if (!/Saved\./.test(await page.locator("#rules").innerText())) throw new Error(`the rules weren't saved: ${(await page.locator("body").innerText()).slice(0, 300)}`);
   const id = "e2e-rules";
   try {
     const filed = await post("/tasks/add", { id, title: "Rename the helper in src/math.js", repo, "planning-policy": "choice" });
@@ -351,14 +362,17 @@ await journey("console", SCRIPTED, APPROVAL_RULES, [], async () => {
     cli(["task", "hold", id, "--reason", "e2e: approval rules only", ...auth]);
     cli(["task", "scope", id, "--goal", "Rename the helper in src/math.js.", "--acceptance", "the helper is renamed|check", ...auth]);
     await page.goto(`${base}/t/${id}`);
-    // Held, the approval isn't the thing to do now: it heads the Plan tab (one page per task).
-    if (await page.locator("form#approve").isHidden() && await page.locator('[data-task-tab="plan"]').count() > 0) await page.locator('[data-task-tab="plan"]').click();
-    const review = page.locator("summary", { hasText: /Approve plan|Review plan|Updated approval terms/ }).first();
-    if (await review.count() > 0 && await review.isVisible()) await review.click();
-    const form = page.locator("form#approve");
+    // The plan's own approval box: its one primary, and the password in its popover when it asks for one.
+    const form = page.locator("form[data-task-approval]");
     await form.waitFor({ timeout: 15_000 });
-    await form.locator('input[name="token"]').fill(w.passwords.alex);
-    await Promise.all([page.waitForNavigation(), form.locator("button").first().click()]);
+    const navigated = page.waitForNavigation({ timeout: 30_000 });
+    await form.locator("button.k-btn-primary:visible").first().click();
+    const pop = page.getByRole("dialog", { name: "Confirm with your password" });
+    if (await pop.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false)) {
+      await pop.locator('input[name="token"]').fill(w.passwords.alex);
+      await pop.locator('button[type="submit"]').click();
+    }
+    await navigated;
     if (!/You filed this task/.test(await page.locator("body").innerText())) throw new Error(`alex's own approval wasn't refused: ${(await page.locator("body").innerText()).slice(0, 300)}`);
     if (rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0]?.approved_by) throw new Error("alex approved their own task");
     await shot("approval-rules-refused");
@@ -375,9 +389,9 @@ await journey("console", SCRIPTED, APPROVAL_RULES, [], async () => {
 // The evidence pack it reads is of the task the approval rules journey filed.
 await journey("console", SCRIPTED, "Audit: the ledger chain verifies, a checkpoint made on the ledger page verifies from the command line, and the task's evidence pack names who filed and who approved it", [APPROVAL_RULES], async () => {
   await page.goto(`${base}/ledger`);
-  if (await page.locator('[data-ledger-chain="ok"]').count() !== 1) throw new Error(`the chain: ${(await page.locator(".ledger-chain-panel").innerText()).slice(0, 200)}`);
-  await Promise.all([page.waitForNavigation(), page.locator('.ledger-checkpoint-form button').click()]);
-  const checkpoint = (await page.locator(".ledger-checkpoint-value").innerText()).trim();
+  if (await page.locator('[data-ledger-chain="ok"]').count() !== 1) throw new Error(`the chain: ${(await page.locator(".h-chain").innerText()).slice(0, 200)}`);
+  await Promise.all([page.waitForNavigation(), page.locator('.h-chain form[action="/ledger/checkpoint"] button').click()]);
+  const checkpoint = (await page.locator(".h-chain .h-select").innerText()).trim();
   if (!/^\d+:[0-9a-f]{64}$/.test(checkpoint)) throw new Error(`the checkpoint: ${checkpoint.slice(0, 80)}`);
   const verified = cli(["ledger", "verify", "--checkpoint", checkpoint]);
   if (verified.ok !== true || verified.outside?.ok !== true) throw new Error(`ledger verify: ${JSON.stringify(verified).slice(0, 300)}`);
@@ -415,11 +429,10 @@ await journey("console", SCRIPTED, "Monitoring: a webhook set in Settings gets t
   await new Promise(resolve => receiver.listen(port, "127.0.0.1", resolve));
   try {
     await page.goto(`${base}/settings/monitoring`);
-    await page.fill('.monitoring input[name="webhook"]', `http://127.0.0.1:${port}/audit`);
-    await page.fill('.monitoring input[name="password"]', w.passwords.alex);
-    await Promise.all([page.waitForNavigation(), page.locator('.monitoring button[type="submit"]').click()]);
+    await page.fill('#monitoring-form input[name="webhook"]', `http://127.0.0.1:${port}/audit`);
+    await kitSave(page, page.locator("#monitoring-form"), { password: w.passwords.alex });
     if ((await page.locator("script").count()) !== 0) throw new Error("the page showing the signing secret carries a script");
-    const secret = (await page.locator(".secret-value").innerText()).trim();
+    const secret = (await page.locator(".k-secret-val").innerText()).trim();
     if (!/^whsec_[A-Za-z0-9_-]{43}$/.test(secret)) throw new Error(`the signing secret: ${secret.slice(0, 12)}…`);
     await until("the webhook to receive the audit stream", () => got.length > 0, { timeoutMs: 30_000 });
     const [first] = got;
@@ -443,28 +456,29 @@ await journey("console", SCRIPTED, "Monitoring: a webhook set in Settings gets t
   } finally {
     // Turn it off again, so later checks don't stream.
     await page.goto(`${base}/settings/monitoring`);
-    await page.fill('.monitoring input[name="webhook"]', "");
-    await page.fill('.monitoring input[name="password"]', w.passwords.alex);
-    await Promise.all([page.waitForNavigation(), page.locator('.monitoring button[type="submit"]').click()]);
+    await page.fill('#monitoring-form input[name="webhook"]', "");
+    await kitSave(page, page.locator("#monitoring-form"), { password: w.passwords.alex }).catch(() => undefined);
     await new Promise(resolve => receiver.close(resolve));
   }
 });
 
 await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown cost show apart; a limit set on Settings → Spend is listed on the Spend page, and the month downloads as CSV", [], async () => {
   await page.goto(`${base}/spend`);
-  await page.locator('.spend-figure[data-amount-kind="api"]').waitFor({ timeout: 15_000 });
-  if (await page.locator(".spend-figure").count() !== 3) throw new Error("the Spend page doesn't show its three figures");
-  await page.goto(`${base}/settings`);
-  await Promise.all([page.waitForNavigation(), page.locator('nav[aria-label="Settings sections"] a[href="/settings/spend"]').click()]);
-  const add = page.locator("details", { hasText: "Add a limit" });
-  if (!(await add.evaluate(one => one.open))) await add.locator("summary").click();
-  await add.locator('select[name="target"]').selectOption({ label: "Everything" });
+  await page.locator('.spend-sum [data-amount-kind="api"]').waitFor({ timeout: 15_000 });
+  if (await page.locator(".spend-sum > [data-amount-kind]").count() !== 3) throw new Error("the Spend page doesn't show its three figures");
+  // Spend limits live on the Spend page now; the old Settings → Spend address lands there.
+  await page.goto(`${base}/settings/spend`);
+  if (new URL(page.url()).pathname !== "/spend") throw new Error(`Settings → Spend went to ${page.url()}`);
+  const everything = page.locator(".spend-lim", { has: page.locator(".spend-lim-t", { hasText: /^Everything/ }) }).first();
+  await Promise.all([page.waitForNavigation(), everything.locator(".spend-lim-a a").click()]);
+  const add = page.locator("form[data-spend-limit]");
+  await add.waitFor({ timeout: 15_000 });
   await add.locator('input[name="usd"]').fill("500");
-  await add.locator('input[name="password"]').fill(w.passwords.alex);
-  await Promise.all([page.waitForNavigation(), add.locator('button[type="submit"]').click()]);
+  if (await add.locator('input[name="password"]').count() > 0) await add.locator('input[name="password"]').fill(w.passwords.alex);
+  await Promise.all([page.waitForNavigation(), add.locator('button[value="save"]').first().click()]);
   await page.goto(`${base}/spend`);
-  const budget = page.locator(".budget").first();
-  if (!/Everything|whole installation/i.test(await budget.innerText()) || !/\$500/.test(await budget.innerText())) throw new Error(`the budget: ${(await page.locator(".spend").innerText()).slice(0, 400)}`);
+  const budget = page.locator(".spend-lim[data-budget]").first();
+  if (!/Everything/i.test(await budget.innerText()) || !/\$500/.test(await budget.innerText())) throw new Error(`the budget: ${(await page.locator("#limits, body").first().innerText()).slice(0, 400)}`);
   if (rows("SELECT 1 FROM budget WHERE scope_kind = 'installation' AND removed_at IS NULL").length !== 1) throw new Error("the budget isn't kept");
   await shot("spend");
   await page.setViewportSize({ width: 390, height: 844 });
@@ -473,10 +487,15 @@ await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown c
   await page.setViewportSize({ width: 1440, height: 900 });
   const csv = await page.request.get(`${base}/spend?format=csv`);
   if (csv.status() !== 200 || !(await csv.text()).includes("time_utc,source,role,project,person")) throw new Error(`the CSV: ${csv.status()}`);
-  // Tasks folds usage to one line on a desk; a click shows the budget as a tile, and, once Claude has run here, the plan's windows as Claude said them.
+  // Tasks folds usage (the limit, and the plan's windows once Claude has run here) to one line; its link opens Spend,
+  // where the limit has its meter and the plan's windows are tiles as Claude said them.
   await page.goto(`${base}/work`);
-  await page.locator('[data-usage-summary]').click({ timeout: 15_000 });
-  await page.locator('[data-limit^="budget:"]').first().waitFor({ timeout: 15_000 });
+  const usage = page.locator("[data-usage-summary]");
+  await usage.waitFor({ timeout: 15_000 });
+  if (!/\d+%/.test(await usage.innerText())) throw new Error(`the usage line: ${await usage.innerText()}`);
+  await Promise.all([page.waitForNavigation(), usage.locator("a").click()]);
+  if (new URL(page.url()).pathname !== "/spend") throw new Error(`the usage line opened ${page.url()}`);
+  await page.locator('.spend-lim[data-budget] [role="meter"]').first().waitFor({ timeout: 15_000 });
   const claudeRan = rows("SELECT 1 FROM run WHERE provider = 'claude' AND tokens_in IS NOT NULL LIMIT 1").length > 0;
   if (claudeRan && await page.locator('[data-limit^="claude:"]').count() === 0) throw new Error(`Claude ran but Tasks shows no Claude window: ${JSON.stringify(rows("SELECT * FROM provider_limit"))}`);
   await shot("limits");
@@ -504,9 +523,13 @@ await journey("console", SCRIPTED, "Put away old tasks: Needs you → Put away o
     sql(`UPDATE task SET state = 'done', updated_at = '2026-01-05T10:00:00.000Z' WHERE id = '${id}'`);
   }
   const archivedNow = () => rows("SELECT r.external_id id FROM task_archive a JOIN task_ref r ON r.id = a.task_ref ORDER BY id").map(one => one.id);
+  // A task's row in the Tasks list (the whole row is its link).
+  const taskRow = id => page.locator(`.k-row:has(a.k-row-t[href="/t/${id}"])`);
   await page.goto(`${base}/work?view=needs-you`);
-  await page.locator('[data-task="tidy-old-copy"]').first().waitFor({ timeout: 15_000 });
-  await Promise.all([page.waitForNavigation(), page.locator("a[data-put-away-old]").first().click()]);
+  await taskRow("tidy-old-copy").first().waitFor({ timeout: 15_000 });
+  // Put away old tasks is in the list's task tools menu.
+  await page.locator('button[aria-label="More task tools"]:visible').first().click();
+  await Promise.all([page.waitForNavigation(), page.locator(".k-pop-menu button", { hasText: "Put away old tasks" }).first().click()]);
   const preview = page.locator("form#put-away");
   await preview.waitFor({ timeout: 15_000 });
   const text = await page.locator("body").innerText();
@@ -519,13 +542,14 @@ await journey("console", SCRIPTED, "Put away old tasks: Needs you → Put away o
   await Promise.all([page.waitForNavigation(), preview.locator("button.kit-save").click()]);
   if (!page.url().endsWith("/work?view=archived")) throw new Error(`after putting away: ${page.url()} — ${(await page.locator("body").innerText()).slice(0, 300)}`);
   if (JSON.stringify(archivedNow()) !== JSON.stringify(["tidy-old-copy"])) throw new Error(`put away: ${JSON.stringify(archivedNow())}`);
-  await page.locator('[data-task="tidy-old-copy"]').first().waitFor({ timeout: 15_000 });
+  await taskRow("tidy-old-copy").first().waitFor({ timeout: 15_000 });
   if (!/Archived by alex: Finished/.test(await page.locator("body").innerText())) throw new Error("Archived doesn't say who put it away and why");
   await shot("put-away-archived");
   await page.goto(`${base}/work?view=needs-you`);
-  if (await page.locator('[data-task="tidy-old-copy"]').count() !== 0) throw new Error("a put-away task is still in Needs you");
+  await page.locator("[data-task-list], .k-empty").first().waitFor({ timeout: 15_000 });
+  if (await taskRow("tidy-old-copy").count() !== 0) throw new Error("a put-away task is still in Needs you");
   await page.goto(`${base}/work?view=archived`);
-  await Promise.all([page.waitForNavigation(), page.locator('[data-task="tidy-old-copy"] [data-tidy-act="restore"] button').first().click()]);
+  await Promise.all([page.waitForNavigation(), taskRow("tidy-old-copy").locator('[data-tidy-act="restore"] button').first().click()]);
   if (archivedNow().length !== 0) throw new Error(`Restore left: ${JSON.stringify(archivedNow())}`);
   // The same preview on a phone.
   const phone = await alexPhone();
@@ -557,15 +581,20 @@ async function plannerDrafted(id, what, ready = ref => ref?.plan === "drafted") 
     return null;
   }, { timeoutMs: PLANNER_MS, everyMs: 5000, seen: () => `plan ${refOf(id)?.plan ?? "missing"}; planner attempts: ${plannerRuns(id)}` });
 }
-/** Approve a task's scope on its page: open the plan, type the password again, approve. */
+/** Approve a task's scope on its page: the plan's approval box asks for the password only when the rules need it (a
+ * popover), one click when a password is remembered on this computer; either way the server proves alex again. */
 async function approveOnPage(id) {
   await page.goto(`${base}/t/${id}`);
-  const review = page.locator("summary", { hasText: /Approve plan|Review plan|Updated approval terms/ }).first();
-  if (await review.count() > 0) await review.click();
-  const form = page.locator("form#approve");
+  const form = page.locator("form[data-task-approval]");
   await form.waitFor({ timeout: 15_000 });
-  await form.locator('input[name="token"]').fill(w.passwords.alex);
-  await Promise.all([page.waitForNavigation(), form.locator("button").first().click()]);
+  const navigated = page.waitForNavigation({ timeout: 30_000 });
+  await form.locator(".k-slots button.k-btn-primary:visible, button.k-btn-primary:visible").first().click();
+  const pop = page.getByRole("dialog", { name: "Confirm with your password" });
+  if (await pop.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false)) {
+    await pop.locator('input[name="token"]').fill(w.passwords.alex);
+    await pop.locator('button[type="submit"]').click();
+  }
+  await navigated;
   const approved = rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0];
   if (approved?.approved_by !== "alex") throw new Error(`${id} wasn't approved: ${(await page.locator("body").innerText()).slice(0, 300)}`);
 }
@@ -597,7 +626,7 @@ await journey("task", SCRIPTED, "File a task in the console; the planner (Claude
   // carry random names (worktrees, digests), so each answer matches the exact words of its note.
   script({ role: "builder", when: [/subtract/], unless: [/subtract\(2, 5\) is -3/, /multiply\(a, b\)/], answer: { files: mathFiles(), conclusion: "Added subtract(a, b) to src/math.js, with a test." } });
   await page.goto(`${base}/chat`);
-  await page.click("a.so-new-task");
+  await page.click('a[href="/tasks/new"][aria-label="New task"]');
   await page.waitForSelector('form[action="/tasks/add"]');
   // Just the words, as a person types them; "plan first" (on by default) has the planner write the scope.
   await page.fill('form[action="/tasks/add"] textarea[name="title"]', "Add a subtract function to src/math.js, with a test");
@@ -620,12 +649,13 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   await page.goto(`${base}/t/${encodeURIComponent(firstTask)}`);
   const opened = page.url();
   await page.locator("[data-task-status] a[data-primary-action]").first().click();
-  await until("the Result tab", async () => await page.locator('[data-task-tab="result"][aria-selected="true"]').count() === 1, { timeoutMs: 10_000, everyMs: 200 });
+  // The first tab reads Result once there is one, and it is the one shown.
+  await until("the Result tab", async () => await page.locator('[role="tab"][data-k-tab="plan"][aria-selected="true"]', { hasText: "Result" }).count() === 1, { timeoutMs: 10_000, everyMs: 200 });
   if (new URL(page.url()).pathname !== new URL(opened).pathname) throw new Error(`the result left the task page: ${page.url()}`);
-  const panel = page.locator("[data-task-panel=\"result\"] [data-result-panel]").first();
+  const panel = page.locator("[data-task-panel=\"plan\"] [data-result-panel]").first();
   await panel.waitFor({ timeout: 20_000 });
   // How it ran: one line in the result's record — its time and tokens as recorded (docs/plans/run-efficiency.md).
-  const ran = await page.locator('[data-task-panel="result"] #how-it-ran summary').first().innerText();
+  const ran = await page.locator('[data-task-panel="plan"] #how-it-ran summary').first().innerText();
   if (!/tokens in/.test(ran) || !/ out/.test(ran)) throw new Error(`How it ran says: ${ran.slice(0, 200)}`);
   // What a person sees: checks passed (the task's header says it once), and the decision after the evidence says what
   // accepting does (plain Accept when every requirement is met; the planner may have left one for a person to check).
@@ -666,7 +696,15 @@ async function sendBack(id, note) {
   const child = new URL(page.url()).searchParams.get("version") ?? rows(`SELECT t.external_id AS id FROM task_ref t WHERE t.revision_of IS NOT NULL ORDER BY t.id DESC LIMIT 1`)[0]?.id;
   if (!child || child === id) throw new Error(`no revision was made: ${page.url()}`);
   if (refOf(child)?.plan !== "requested" && refOf(child)?.plan !== "drafted") throw new Error(`the revision wasn't sent to the planner: plan ${refOf(child)?.plan}`);
-  if (!/Updating the plan/.test(await page.locator("body").innerText())) throw new Error("the task page doesn't say the plan is being updated");
+  // The page the request lands on: the progress line is back at Plan, and (while the planner is still at it) the
+  // revision's Activity says the plan is being updated with the notes.
+  const step = await page.locator(".k-steps .k-step[aria-current]").first().getAttribute("aria-label", { timeout: 10_000 }).catch(() => null);
+  if (step === null || !/^Plan/.test(step)) throw new Error(`the revision's progress line isn't at Plan: ${step}`);
+  if (refOf(child)?.plan === "requested") {
+    await page.locator('[role="tab"][data-k-tab="activity"]').click();
+    const said = await page.locator('[data-task-panel="activity"]').innerText();
+    if (!/Updating the plan/.test(said) && refOf(child)?.plan === "requested") throw new Error(`the revision's Activity doesn't say the plan is being updated: ${said.slice(0, 300)}`);
+  }
   await plannerDrafted(child, "the planner's updated plan");
   return child;
 }
@@ -733,13 +771,16 @@ await journey("builds", REAL_MODEL, "A build stops to ask a question the plan le
   cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
   const asked = await until("the builder's question", async () => rows(`SELECT d.id, d.question, d.run FROM decision d JOIN run r ON r.id = d.run JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${id}' AND d.state = 'open'`)[0], { timeoutMs: 600_000, everyMs: 5000 });
   await page.goto(`${base}/d/${asked.id}`);
-  const options = page.locator(`form.option[action="/d/${asked.id}/answer"]`);
+  // The answer box: one choice per option (the recommended one picked), then Answer.
+  const form = page.locator(`form#answer-form[action="/d/${asked.id}/answer"]`);
+  const options = form.locator('label:has(input[name="choice"])');
   await options.first().waitFor({ timeout: 15_000 });
-  const labels = await options.locator('button[type="submit"]').allInnerTexts();
+  const labels = await options.allInnerTexts();
   const pick = labels.findIndex(one => /even/i.test(one));
   if (pick < 0) throw new Error(`no half-to-even option: ${labels.join(" | ")}`);
+  await options.nth(pick).locator('input[name="choice"]').check();
   await shot("decision");
-  await Promise.all([page.waitForNavigation(), options.nth(pick).locator('button[type="submit"]').click()]);
+  await Promise.all([page.waitForNavigation(), form.locator('button[type="submit"]:has-text("Answer")').first().click()]);
   const answered = rows(`SELECT state, answered_by, answered_via FROM decision WHERE id = ${asked.id}`)[0];
   if (answered?.state !== "answered" || answered.answered_by !== "alex" || answered.answered_via !== "web") throw new Error(`the answer wasn't recorded: ${JSON.stringify(answered)}`);
   // The answer admits a fresh build; the parked one stays in the history.
@@ -797,19 +838,20 @@ let leadChatOn = false;
 async function turnLeadChatOn() {
   // Onboarding turned the lead on by itself and moved its form to Settings → Lead → Advanced.
   await page.goto(`${base}/settings/lead`);
-  await page.locator("details[data-lead-advanced]").evaluate(el => { el.open = true; }).catch(() => undefined);
-  await page.selectOption('form[action="/chat/config"] select[name="provider"]', "claude-subscription");
-  await page.fill('form[action="/chat/config"] input[name="model"]', "sonnet");
-  await page.fill('form[action="/chat/config"] input[name="token"]', w.passwords.alex);
-  await Promise.all([page.waitForNavigation(), page.click('form[action="/chat/config"] button[type="submit"]')]);
+  await page.locator("details.k-disclose:has(#lead-config-form)").evaluate(el => { el.open = true; });
+  await page.selectOption("#lead-config-form select[name=provider]", "claude-subscription");
+  await page.fill("#lead-config-form input[name=model]", "sonnet");
+  await kitSave(page, page.locator("#lead-config-form"), { password: w.passwords.alex });
   await page.goto(`${base}/chat`);
   await page.waitForSelector("[data-workspace-composer] textarea", { timeout: 15_000 });
-  // The thread is the page: Home sits in the Work panel, never inside the conversation, and a desk opens ready to type.
-  await page.locator("[data-workspace-detail] [data-home]").waitFor({ timeout: 15_000 });
+  // The thread is the page: Home is a page of its own, never inside the conversation, and a desk opens ready to type.
   if (await page.locator("[data-workspace-chat] [data-home]").count() !== 0) throw new Error("Home is inside the conversation");
-  if (!(await page.evaluate(() => document.activeElement?.id === "lead-message"))) throw new Error("the composer isn't ready to type on a desk");
-  // Every link Home had still opens.
-  const links = await page.locator("[data-workspace-detail] [data-home] a[href]").evaluateAll(all => [...new Set(all.map(one => one.getAttribute("href")))]);
+  if (!(await until("the composer to be ready to type on a desk", async () => page.evaluate(() => document.activeElement?.id === "lead-message"), { timeoutMs: 5_000, everyMs: 250 }).catch(() => false))) throw new Error("the composer isn't ready to type on a desk");
+  // Every link Home has opens. Before the first task Home is Chat with its first-run checklist (pages.ts sends / there).
+  await page.goto(`${base}/`);
+  const home = new URL(page.url()).pathname === "/chat" ? "[data-first-run]" : "[data-home]";
+  await page.locator(home).waitFor({ timeout: 15_000 });
+  const links = await page.locator(`${home} a[href]`).evaluateAll(all => [...new Set(all.map(one => one.getAttribute("href")))]);
   for (const href of links) {
     const answer = await page.request.get(new URL(href, base).href);
     if (answer.status() >= 400) throw new Error(`Home's link ${href}: ${answer.status()}`);
@@ -864,12 +906,15 @@ await journey("lead", REAL_MODEL, "The lead draws a follow-up flow from plain wo
 
 await journey("console", SCRIPTED, "Projects: the project is listed and opens", [], async () => {
   await page.goto(`${base}/projects`);
-  const row = page.locator(`li[data-project="${repo}"]`);
+  // The project's row: its full path is its description's title.
+  const rowOf = () => page.locator(`.k-row:has(.k-row-d [title="${repo}"])`).first();
+  const row = rowOf();
   await row.waitFor({ timeout: 10_000 });
   // The project a person works in reads "Open now"; any other has an Open button.
   if (!/Open now/.test(await row.innerText())) await Promise.all([page.waitForNavigation(), row.locator('form[action="/projects/open"] button').click()]);
   await page.goto(`${base}/projects`);
-  if (!/Open now/.test(await page.locator(`li[data-project="${repo}"]`).innerText())) throw new Error("the project isn't the open one");
+  await rowOf().waitFor({ timeout: 10_000 });
+  if (!/Open now/.test(await rowOf().innerText())) throw new Error("the project isn't the open one");
 });
 
 await journey("console", SCRIPTED, "Network: a project's page says what its builds may reach; an approver turns local services on and adds a host with their password, and the ledger keeps it", [], async () => {
@@ -877,24 +922,29 @@ await journey("console", SCRIPTED, "Network: a project's page says what its buil
   const section = page.locator("section#network");
   await waitFor(section, "the Network section");
   if (!/no local services/.test(await section.innerText())) throw new Error(`a new project's network isn't the narrow default: ${await section.innerText()}`);
-  await section.locator("summary").click();
-  await section.locator('input[name="local"]').check();
-  await section.locator('textarea[name="hosts"]').fill("api.stripe.com");
+  const form = page.locator("#network-form");
+  const change = async ({ local, hosts }) => {
+    await section.locator("details.k-disclose:has(#network-form)").evaluate(one => { one.open = true; });
+    if (await form.locator('input[name="local"]').isChecked() !== local) await form.locator('label.k-switch:has(input[name="local"])').click();
+    await form.locator('textarea[name="hosts"]').fill(hosts);
+  };
+  // Saving, with the refusal it answered (or null when it saved, once the page it answered with has loaded).
+  const save = async password => {
+    const loaded = page.waitForEvent("load", { timeout: 30_000 });
+    const refusal = await kitSave(page, form, { password }).then(() => null, error => { if (!/was refused/.test(error.message)) throw error; return error.message; });
+    if (refusal === null) await loaded; else loaded.catch(() => undefined);
+    return refusal;
+  };
   // A wrong password changes nothing.
-  await section.locator('input[name="password"]').fill("not-the-password");
-  await Promise.all([page.waitForNavigation(), section.locator('button[type="submit"]').click()]);
+  await change({ local: true, hosts: "api.stripe.com" });
+  if (await save("not-the-password") === null) throw new Error("a wrong password was taken");
   if (rows(`SELECT 1 FROM project_network WHERE repo = '${repo}'`).length !== 0) throw new Error("a wrong password saved the network");
-  await section.locator("summary").click().catch(() => undefined);
-  await section.locator('input[name="local"]').check();
-  await section.locator('textarea[name="hosts"]').fill("api.stripe.com\nnot a host");
-  await section.locator('input[name="password"]').fill(w.passwords.alex);
-  await Promise.all([page.waitForNavigation(), section.locator('button[type="submit"]').click()]);
-  if (!/no address, port or path/.test(await page.locator('[role="alert"]').first().innerText())) throw new Error("a bad host wasn't refused in words");
-  await section.locator("summary").click().catch(() => undefined);
-  await section.locator('input[name="local"]').check();
-  await section.locator('textarea[name="hosts"]').fill("api.stripe.com");
-  await section.locator('input[name="password"]').fill(w.passwords.alex);
-  await Promise.all([page.waitForNavigation(), section.locator('button[type="submit"]').click()]);
+  await change({ local: true, hosts: "api.stripe.com\nnot a host" });
+  const bad = await save(w.passwords.alex);
+  if (!/no address, port or path/.test(bad ?? "")) throw new Error(`a bad host wasn't refused in words: ${bad}`);
+  await change({ local: true, hosts: "api.stripe.com" });
+  const refused = await save(w.passwords.alex);
+  if (refused !== null) throw new Error(`the network wasn't saved: ${refused}`);
   const saved = rows(`SELECT network_json FROM project_network WHERE repo = '${repo}'`)[0]?.network_json;
   if (saved !== JSON.stringify({ mode: "allowlist", hosts: ["api.stripe.com"], loopback: "any" })) throw new Error(`saved network: ${saved}`);
   const text = await page.locator("section#network").innerText();
@@ -902,11 +952,8 @@ await journey("console", SCRIPTED, "Network: a project's page says what its buil
   if (rows("SELECT 1 FROM action_ledger WHERE action LIKE '%network%' AND actor = 'alex'").length !== 1) throw new Error("the change isn't in the ledger");
   await shot("project-network");
   // Back to the narrow default, so later journeys see a fresh project.
-  await page.locator("section#network summary").click();
-  await page.locator('section#network input[name="local"]').uncheck();
-  await page.locator('section#network textarea[name="hosts"]').fill("");
-  await page.locator('section#network input[name="password"]').fill(w.passwords.alex);
-  await Promise.all([page.waitForNavigation(), page.locator('section#network button[type="submit"]').click()]);
+  await change({ local: false, hosts: "" });
+  await save(w.passwords.alex);
   return { saved };
 });
 
@@ -922,18 +969,20 @@ await journey("console", SCRIPTED, "Knowledge: instructions saved for a project 
 
 await journey("console", SCRIPTED, "Skills: a pasted skill joins the library and can be turned on", [], async () => {
   await page.goto(`${base}/settings/skills?repo=${encodeURIComponent(repo)}`);
-  await page.getByText("Add skill", { exact: true }).first().click();
+  await page.locator("summary", { hasText: "Add a skill" }).first().click();
   const form = page.locator("form[data-skill-import]");
   await form.waitFor({ timeout: 10_000 });
   await form.locator('select[name="method"]').selectOption("paste").catch(() => undefined);
   await form.locator('textarea[name="content"]').fill("---\nname: small-commits\ndescription: Keep each commit small and focused on one change.\n---\n\n# Small commits\n\nMake one small commit per change, with a clear message.\n");
-  await Promise.all([page.waitForNavigation(), form.locator("button").first().click()]);
-  const skill = page.locator("article[id^='skill-']").first();
-  await skill.waitFor({ timeout: 10_000 });
-  if (!/In library/.test(await skill.innerText())) throw new Error(`the skill reads: ${(await skill.innerText()).slice(0, 200)}`);
+  await Promise.all([page.waitForNavigation(), form.locator('button:has-text("Add to library")').click()]);
+  // The skill's record in the library (its id is skill-<sha>).
+  const skillCard = () => page.locator("[data-skill-group] .k-srec[id^='skill-']").first();
+  await skillCard().waitFor({ timeout: 10_000 });
+  if (!/In library/.test(await skillCard().innerText())) throw new Error(`the skill reads: ${(await skillCard().innerText()).slice(0, 200)}`);
   await page.evaluate(() => { for (const one of document.querySelectorAll("details")) one.open = true; });
   await Promise.all([page.waitForNavigation(), page.locator('form[action="/settings/skills/change"] button:has-text("Enable skill")').first().click()]);
-  if (!/Enabled/.test(await page.locator("article[id^='skill-']").first().innerText())) throw new Error("the skill didn't turn on");
+  await skillCard().waitFor({ timeout: 10_000 });
+  if (!/Enabled/.test(await skillCard().innerText())) throw new Error("the skill didn't turn on");
 });
 
 await journey("console", SCRIPTED, "Tools: a project's own MCP tool is added (with your password) and tested", [], async () => {
@@ -948,16 +997,17 @@ createInterface({ input: process.stdin }).on("line", line => {
 `);
   await page.goto(`${base}/settings/tools?repo=${encodeURIComponent(repo)}`);
   await page.evaluate(() => { for (const one of document.querySelectorAll("details")) one.open = true; });
-  const custom = page.locator('form:has(input[name="target"])').first();
+  const custom = page.locator("#tools-add-custom");
   await custom.locator('input[name="name"]').fill("echo");
   await custom.locator('select[name="transport"]').selectOption("stdio");
   await custom.locator('input[name="target"]').fill(`${process.execPath} ${echo}`);
-  await custom.locator('input[name="password"]').fill(w.passwords.alex);
-  await Promise.all([page.waitForNavigation(), custom.locator("button").last().click()]);
-  const added = await page.locator('p[role="status"], p.problem').first().innerText().catch(() => "");
+  await kitSave(page, custom, { password: w.passwords.alex });
+  // What the page said back: a confirmation line, or a refusal.
+  const answer = () => page.locator('.k-notice.info, [role="status"], .k-notice[role="alert"]').first().innerText().catch(() => "");
+  const added = await answer();
   if (!/Added/.test(added)) throw new Error(`adding said: ${added}`);
   await Promise.all([page.waitForNavigation(), page.locator('#tool-echo form button:has-text("Test")').click()]);
-  const tested = await page.locator('p[role="status"], p.problem').first().innerText().catch(() => "");
+  const tested = await answer();
   if (!/echo works: 1 tool/.test(tested)) throw new Error(`testing said: ${tested}`);
 });
 
@@ -978,28 +1028,35 @@ await journey("console", SCRIPTED, "Scheduled work: an old link to routines land
 });
 
 await journey("pages", SCRIPTED, "Settings: the theme switches to dark and the accent to Emerald, and both stay", [], async () => {
-  await page.goto(`${base}/settings`);
+  // Settings → General → Appearance: the theme is three buttons; Emerald is no longer one of the six listed accents,
+  // so it goes in as your own colour (the same stored accent).
+  await page.goto(`${base}/settings/general#appearance`);
   await Promise.all([page.waitForNavigation(), page.click('form[action="/settings/appearance"] button[value="dark"]')]);
-  await page.click('[data-accent-picker] button[data-preset="emerald"]');
-  await page.locator("[data-accent-status]", { hasText: "Saved" }).waitFor({ timeout: 10_000 });
+  await page.locator("details.k-disclose:has(#accent-own)").evaluate(el => { el.open = true; });
+  await page.fill("#accent-hex", "#009473");
+  if (!(await kitSave(page, page.locator("#accent-own")))) throw new Error("the accent had nothing to save");
   await page.goto(`${base}/chat`);
   if ((await page.locator("html").getAttribute("data-theme")) !== "dark") throw new Error("the theme didn't stay dark");
   if ((await page.locator('style[data-accent="#009473"]').count()) !== 1) throw new Error("the accent didn't stay Emerald");
-  await page.goto(`${base}/settings`);
+  await page.goto(`${base}/settings/general#appearance`);
   await Promise.all([page.waitForNavigation(), page.click('form[action="/settings/appearance"] button[value="system"]')]);
-  await page.click('[data-accent-picker] button[data-preset="chart-magenta"]');
-  await page.locator("[data-accent-status]", { hasText: "Saved" }).waitFor({ timeout: 10_000 });
+  await page.selectOption("#accent select[name=accent]", "#c0267e");
+  if (!(await kitSave(page, page.locator("#accent")))) throw new Error("the accent had nothing to save");
+  await page.goto(`${base}/chat`);
+  if ((await page.locator('style[data-accent="#c0267e"]').count()) !== 1) throw new Error("the accent didn't go back to Chart magenta");
 });
 
 await journey("pages", SCRIPTED, "Search finds the project and a task", [], async () => {
   // Search is left off pages that show a password field; Flows has none.
   await page.goto(`${base}/flows`);
-  await page.click("button.so-command-trigger");
-  const box = page.locator('[data-workspace-command] input[type="search"]');
+  // The rail's Search (⌘K) opens the panel in place.
+  await page.click("[data-rail-search]");
+  const box = page.locator('.so-cmdk input[type="search"]');
   await box.waitFor({ timeout: 5000 });
   await box.fill("shop");
-  await until("a result", async () => (await page.locator(".so-command-results li a").count()) > 0, { timeoutMs: 5000, everyMs: 300 });
+  await until("a project among the results", async () => (await page.locator(".so-cmdk-g", { hasText: "Projects" }).count()) > 0 && (await page.locator(".so-cmdk-i").count()) > 0, { timeoutMs: 5000, everyMs: 300 });
   await page.keyboard.press("Escape");
+  await page.locator(".so-cmdk").waitFor({ state: "detached", timeout: 5000 });
 });
 
 // ------------------------------------------------------------------ code in flows
@@ -1015,7 +1072,8 @@ await journey("flows", SCRIPTED, "Code steps: a Python file and a Node script ge
   ], "size");
   // The two scripts, made on the Scripts panel: a Python file already in the project, and a Node script written there.
   const saveScript = async ({ name, about, language, file, body }) => {
-    await page.click("[data-open-scripts]");
+    // The Scripts drawer stays open after a save (the page behind it is inert): open it only when it's closed.
+    if (!(await page.locator("[data-flow-scripts]").isVisible())) await page.click("[data-open-scripts]");
     // With no scripts yet the panel opens on a new one; otherwise "New script" does.
     if (!(await page.locator("[data-script-form]").isVisible())) await page.click('[data-flow-scripts] button:has-text("New script")');
     const form = page.locator("[data-script-form]");
@@ -1034,6 +1092,9 @@ await journey("flows", SCRIPTED, "Code steps: a Python file and a Node script ge
   };
   await saveScript({ name: "size", about: "Sizes up a lead", language: "python", file: "scripts/size.py" });
   await saveScript({ name: "note", about: "Writes the lead down", language: "node", body: "import { readFileSync } from 'node:fs';\nconst { card, outputs } = JSON.parse(readFileSync(0, 'utf8'));\nconsole.log(`Noted ${card.title} (${outputs.size.text}) with ${process.env.CRM_KEY}`);" });
+  // Close the drawer (Escape, as a person would) so the page behind is live again.
+  await page.keyboard.press("Escape");
+  await page.locator("[data-flow-scripts]").waitFor({ state: "hidden", timeout: 10_000 });
   // A card before the secret is saved: it waits, saying which.
   await addCard("Bakery down the road", "Two people");
   const waiting = await until("the card to wait for its secret", async () => (await flowView(codeFlow)).cards.find(one => one.title === "Bakery down the road" && one.stage === "note" && /CRM_KEY/.test(one.waiting ?? "")), { timeoutMs: 90_000, everyMs: 2000 });
@@ -1070,6 +1131,9 @@ await journey("flows", SCRIPTED, "A schedule runs a script and makes a card of e
   await form.locator("label").filter({ hasText: /^Script/ }).locator("textarea").fill("import json\nfor n in (1, 2):\n    print(json.dumps({'title': f'Lead {n} from the CRM', 'key': n}))");
   await form.locator('button:has-text("Save script")').click();
   await until("the new-leads script", async () => (await flowView(codeFlow)).scripts.some(one => one.name === "new-leads"), { timeoutMs: 15_000, everyMs: 500 });
+  // The Scripts drawer stays open after a save; close it so the Triggers button behind it is live.
+  await page.keyboard.press("Escape");
+  await page.locator("[data-flow-scripts]").waitFor({ state: "hidden", timeout: 10_000 });
   // The trigger, through the Triggers panel: a schedule that makes a card for each item the script prints.
   await page.click("[data-open-triggers]");
   if (!(await page.locator("[data-add-trigger] select").first().isVisible())) await page.getByText("Add a trigger", { exact: true }).click();
@@ -1083,7 +1147,7 @@ await journey("flows", SCRIPTED, "A schedule runs a script and makes a card of e
   for (let round = 0; round < 2; round++) {
     await Promise.all([
       page.waitForResponse(answer => answer.request().method() === "POST" && new URL(answer.url()).pathname === `/flows/${codeFlow}/triggers/${trigger.id}/check`, { timeout: 60_000 }),
-      page.locator(`[data-flow-drawer] button:has-text("Run now")`).first().click(),
+      page.locator(`[data-flow-triggers] [data-trigger-row="${trigger.id}"] button:has-text("Run now")`).first().click(),
     ]);
   }
   const made = await until("two cards from the script", async () => { const cards = (await flowView(codeFlow)).cards.filter(one => /from the CRM/.test(one.title)); return cards.length >= 2 ? cards : null; }, { timeoutMs: 60_000, everyMs: 2000 });
@@ -1140,13 +1204,13 @@ await journey("mail", SCRIPTED, "Email inbox: a real email becomes a card, Claud
   script({ role: "draft", when: [/Refund for order 42\?/], answer: { text: "Hi Priya,\n\nSorry about the double charge on order 42. We've refunded the second charge to your card; it can take up to 5 days to show.\n\nBest,\nSupport" } });
   try {
     // Settings → Email: the mail server, and where to read mail; "Check the inbox" signs in.
-    await page.goto(`${base}/settings#email`);
-    await page.waitForSelector("[data-email-settings]");
+    await page.goto(`${base}/settings/alerts#email`);
+    await page.waitForSelector("#email-form #email-host");
     await page.fill("#email-host", "127.0.0.1"); await page.fill("#email-port", "3025"); await page.fill("#email-from", "support@shop.example");
     await page.fill("#email-password", "mail-pass"); await page.fill("#email-imap", "127.0.0.1"); await page.fill("#email-imap-port", "993");
-    await Promise.all([page.waitForNavigation(), page.click('[data-email-settings] button:has-text("Save email")')]);
-    await page.click('#email button:has-text("Change")');
-    await Promise.all([page.waitForNavigation(), page.click('[data-email-settings] button:has-text("Check the inbox")')]);
+    if (!(await kitSave(page, page.locator("#email-form")))) throw new Error("Save email had nothing to save");
+    await page.locator("#email details.k-disclose:has(#email-form)").evaluate(el => { el.open = true; });
+    await Promise.all([page.waitForNavigation(), page.click('#email button:has-text("Check the inbox")')]);
     // What it said comes back on the page's address (and as a toast).
     const told = new URL(page.url()).searchParams.get("said") ?? "";
     if (told !== "Reading works: signed in to the inbox of support@shop.example.") throw new Error(`Check the inbox said: ${told}`);
@@ -1164,7 +1228,8 @@ await journey("mail", SCRIPTED, "Email inbox: a real email becomes a card, Claud
     await page.locator('[data-add-trigger] input[type="password"]').fill(w.passwords.alex);
     await page.locator('[data-add-trigger] button:has-text("Add trigger")').click();
     await until("the email trigger", async () => (await flowView(id)).triggers.some(one => one.kind === "email"), { timeoutMs: 15_000, everyMs: 500 });
-    const checkNow = () => page.locator('[data-flow-drawer] button:has-text("Check now")').first().click();
+    // The Triggers drawer (a kit drawer, portalled: data-view="flow-drawer").
+    const checkNow = () => page.locator('[data-view="flow-drawer"] button:has-text("Check now")').first().click();
     await checkNow();
     await until("the trigger to note where the inbox stands", async () => /Watching the inbox/.test((await flowView(id)).triggers.find(one => one.kind === "email")?.status ?? ""), { timeoutMs: 30_000, everyMs: 1000 });
     // Priya writes in, and so does her out-of-office.
@@ -1238,7 +1303,9 @@ await journey("mail", SCRIPTED, "Follow-ups: a card emails someone and waits; th
     if (!answered.comments.some(one => one.author === "priya@example.com")) throw new Error("the reply isn't in the card's discussion");
     // Nobody answers Sam: after the wait, a nudge goes out in the same thread and the card finishes.
     await page.reload(); await page.waitForSelector("[data-zone]");
-    await page.click('button:has-text("Edit flow")');
+    // Edit flow is in the flow's More menu.
+    await page.locator("[data-flow-menu]:visible").first().click();
+    await page.click('.k-menu button:has-text("Edit flow")');
     await page.locator('[data-zone="wait"]').click({ position: { x: 24, y: 14 } });
     await page.waitForSelector('[data-flow-zone-panel="wait"]');
     await shot("wait-zone-settings");
@@ -1374,26 +1441,26 @@ await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a quest
 await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settings → Lead lists Maya with one Add subagent action on desktop and phone, an old teammate link lands on her page, and “ask Maya …” in chat is a card that, confirmed, puts one card on her desk and brings her answer back (D5)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {
   const maya = rows("SELECT id FROM subagent WHERE handle = 'maya' AND state = 'active'")[0]?.id;
   if (!maya) throw new Error("Maya isn't on the team");
-  // Settings → Lead: the lead and its subagents in one place, with one action to add another.
+  // Settings → Lead: the lead and its subagents in one place (its Subagents section), with one action to add another.
   await page.goto(`${base}/settings/lead`);
-  await page.waitForSelector("[data-lead-subagents]");
-  const section = (await page.locator("[data-lead-subagents]").innerText()).replace(/\s+/g, " ");
+  await page.waitForSelector("#subagents");
+  const section = (await page.locator("#subagents").innerText()).replace(/\s+/g, " ");
   if (!/Maya · Support/.test(section)) throw new Error(`Settings → Lead's subagents: ${section}`);
-  if (await page.locator("[data-lead-subagents] [data-add-subagent]").count() !== 1) throw new Error("Settings → Lead doesn't have exactly one Add subagent action");
-  await page.locator("[data-lead-subagents]").scrollIntoViewIfNeeded();
+  if (await page.locator("#subagents [data-add-subagent]").count() !== 1) throw new Error("Settings → Lead doesn't have exactly one Add subagent action");
+  await page.locator("#subagents").scrollIntoViewIfNeeded();
   await shot("lead-subagents");
   const phone = await alexPhone("light");
-  await phone.goto(`${base}/settings/lead`); await phone.waitForSelector("[data-lead-subagents]");
-  await phone.locator("[data-lead-subagents]").scrollIntoViewIfNeeded(); await settle(phone);
+  await phone.goto(`${base}/settings/lead`); await phone.waitForSelector("#subagents");
+  await phone.locator("#subagents").scrollIntoViewIfNeeded(); await settle(phone);
   await phone.screenshot({ path: join(w.out, "lead-subagents-phone.png") });
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-  const add = await phone.locator("[data-lead-subagents] [data-add-subagent]").boundingBox();
-  const row = await phone.locator("[data-lead-subagents] li a").first().boundingBox();
+  const add = await phone.locator("#subagents [data-add-subagent]").boundingBox();
+  const row = await phone.locator("#subagents .k-slinks a").first().boundingBox();
   await putPhoneDown();
   if (wide) throw new Error("Settings → Lead scrolls sideways on a phone");
   if (add === null || add.height < 44 || row === null || row.height < 44) throw new Error(`tap targets on a phone: Add subagent ${add?.height}px, Maya's row ${row?.height}px`);
   // Add subagent opens the form on its page; a saved link to a teammate lands on the subagent's page.
-  await page.click("[data-lead-subagents] [data-add-subagent]");
+  await page.click("#subagents [data-add-subagent]");
   await page.waitForSelector("details#add[open] form[data-new-subagent]");
   await page.goto(`${base}/teammates/${maya}`);
   if (new URL(page.url()).pathname !== `/settings/lead/subagents/${maya}`) throw new Error(`/teammates/${maya} led to ${page.url()}`);
@@ -1414,7 +1481,7 @@ await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settin
   // A scripted lead's words are known; a real lead puts the ask in its own words, which must still carry the order.
   if (w.scripted ? !/Look up order #1204 and tell me when it ships\./.test(shownAsk) : !/1204/.test(shownAsk)) throw new Error(`the card asking Maya: ${shownAsk.slice(0, 300)}`);
   // The card's terms, one paragraph each: the first is exactly what goes to her.
-  const shownTerms = (await pending.locator(".so-card-body p").allInnerTexts()).map(one => one.replace(/\s+/g, " ").trim());
+  const shownTerms = (await pending.locator(".lc-card-body p, .so-card-body p").allInnerTexts()).map(one => one.replace(/\s+/g, " ").trim());
   // Her desk is made when the first card lands on it, so what was there before is counted across every flow.
   const deskBefore = rows("SELECT COALESCE(MAX(id), 0) AS id FROM flow_card")[0].id;
   await confirmCard(asked.reply, "Ask Maya");
@@ -1778,7 +1845,10 @@ await journey("memory", SCRIPTED, "Subagents remember and learn: Rosa keeps a cu
   await putPhoneDown();
   if (wide) throw new Error("the subagent page scrolls sideways on a phone");
   // Accepting a looser rule she suggested takes the password, on her page (a chat tap can't).
-  await offered.locator('input[name="password"]').fill(w.passwords.alex);
+  // (A password remembered on this computer stands in for it: then the field isn't drawn, and the server still checks.)
+  const typed = offered.locator('input[name="password"]');
+  if (await typed.isVisible()) await typed.fill(w.passwords.alex);
+  else if (await page.locator("text=Password remembered").count() === 0) throw new Error("accepting the looser rule asks for no password, and none is remembered");
   await Promise.all([page.waitForNavigation(), offered.locator('button:has-text("Yes, change it")').click()]);
   const rule = JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${mate} AND tool = 'store'`)[0]?.rules_json ?? "{}").refund_order;
   if (JSON.stringify(rule) !== suggestion.rule_json) throw new Error(`her refund rule is ${JSON.stringify(rule)}, not the suggested ${suggestion.rule_json}`);
@@ -1879,8 +1949,10 @@ await journey("flows", SCRIPTED, "Starter kits: the Support desk kit sets up May
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   await putPhoneDown();
   if (wide) throw new Error("the kits gallery scrolls sideways on a phone");
-  // One click sets it up; its page is the checklist.
-  await Promise.all([page.waitForNavigation(), page.locator('[data-kit="support-desk"] button:has-text("Set it up")').click()]);
+  // Set it up opens the kit's page; one press there sets it up, and the page becomes the checklist.
+  await Promise.all([page.waitForNavigation(), page.locator('[data-kit="support-desk"] a:has-text("Set it up")').click()]);
+  if (!/\/kits\/support-desk/.test(page.url())) throw new Error(`Set it up went to ${page.url()}`);
+  await Promise.all([page.waitForNavigation(), page.locator('#fl-kit-setup button[type="submit"]').click()]);
   if (!/\/kits\/support-desk/.test(page.url())) throw new Error(`setting it up went to ${page.url()}`);
   const done = async id => (await page.locator(`[data-step="${id}"]`).getAttribute("data-done")) === "true";
   if (!(await done("subagent")) || !(await done("flow")) || await done("sample")) throw new Error("the checklist doesn't read subagent and flow done, sample to try");
@@ -1917,8 +1989,12 @@ await journey("flows", SCRIPTED, "One-click connections: Connect Stripe on the k
     await page.goto(`${base}/kits/support-desk?repo=${encodeURIComponent(repo)}`);
     await Promise.all([page.waitForNavigation(), page.locator('[data-step="tool-stripe"] a:has-text("Connect")').click()]);
     if (!/\/settings\/tools\?.*kit=support-desk&connect=stripe#connect$/.test(page.url())) throw new Error(`Connect went to ${page.url()}`);
-    if ((await page.locator('#connect-stripe[data-state="open"]').count()) !== 1 || (await page.locator(".connect-tile").count()) < 15) throw new Error("the one-click services aren't offered");
-    if (!(await page.locator("#connect-heading").isVisible()) || (await page.locator("button.connect-wanted").innerText()) !== `Connect Stripe to ${basename(repo)}`) throw new Error("the page doesn't open on Connect and a Connect Stripe button naming the project");
+    if ((await page.locator('#connect-stripe[data-state="open"]').count()) !== 1 || (await page.locator("#connect .k-srec").count()) < 15) throw new Error("the one-click services aren't offered");
+    // The service the link asked for comes first, and its Connect is the page's one primary, confirming for this project.
+    const wanted = page.locator("#connect .k-srec").first();
+    if (!(await page.locator("#connect").isVisible()) || (await wanted.getAttribute("id")) !== "connect-stripe"
+      || (await page.locator("#connect-stripe-form").getAttribute("data-k-confirm")) !== `Connect Stripe to ${basename(repo)}`
+      || !(await page.locator("#connect-stripe-form [data-k-save]").evaluate(el => el.classList.contains("k-btn-primary")))) throw new Error("the page doesn't open on Connect and a Connect Stripe button naming the project");
     if ((await page.locator('select[name="catalog"] option[value="sentry"]').count()) !== 0) throw new Error("Sentry is still offered with a key as well as by signing in");
     await shot("connect-tiles");
     const phone = await alexPhone("light");
@@ -1928,15 +2004,19 @@ await journey("flows", SCRIPTED, "One-click connections: Connect Stripe on the k
     await putPhoneDown();
     if (wide) throw new Error("the connect tiles scroll sideways on a phone");
     // One click (with the password every new tool takes), then Stripe's own page.
-    await page.fill('.tool-connect input[name="password"]', w.passwords.alex);
-    await page.click("button.connect-wanted");
+    await page.click("#connect-stripe-form [data-k-save]");
+    const asked = page.locator("#connect-stripe-form-pop");
+    if (await asked.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false)) {
+      await asked.locator('input[type="password"]').fill(w.passwords.alex);
+      await asked.locator("[data-k-sconfirm]").click();
+    }
     await page.waitForURL(url => url.port === String(stand.port) && url.pathname === "/authorize", { timeout: 30_000 });
     if (stand.registered.at(-1)?.redirect_uris?.[0] !== `${base}/settings/tools/connected`) throw new Error(`registered with ${JSON.stringify(stand.registered.at(-1))}`);
     // Someone else finishing this sign-in (the link sent to them) lands nowhere: the return must come to this browser.
     const elsewhere = await (await fetch(`${base}/settings/tools/connected?state=${new URL(page.url()).searchParams.get("state")}&code=someone-elses`)).text();
     if (!/started in another browser/.test(elsewhere)) throw new Error(`a return from another browser: ${elsewhere.slice(0, 200)}`);
     await Promise.all([page.waitForURL(/\/kits\/support-desk/, { timeout: 30_000 }), page.click('button:has-text("Allow")')]);
-    const said = await page.locator('[role="status"]').first().innerText();
+    const said = await page.locator('.k-notice.info, [role="status"]').first().innerText();
     if (!new RegExp(`Stripe is connected to ${basename(repo)}, and Maya can use it`).test(said)) throw new Error(`back on the kit: ${said}`);
     if ((await page.locator('[data-step="tool-stripe"]').getAttribute("data-done")) !== "true") throw new Error("the checklist doesn't say Maya can use Stripe");
     await shot("kit-connected");
@@ -1954,7 +2034,7 @@ await journey("flows", SCRIPTED, "One-click connections: Connect Stripe on the k
     stand.live.delete(first.OAUTH_ACCESS_TOKEN);
     await page.goto(`${base}/settings/tools?repo=${encodeURIComponent(repo)}`);
     await Promise.all([page.waitForNavigation(), page.locator('#tool-stripe button:has-text("Test")').click()]);
-    const tested = await page.locator('[role="status"]').first().innerText();
+    const tested = await page.locator('.k-notice.info, [role="status"]').first().innerText();
     if (!/stripe works: 2 tools/.test(tested)) throw new Error(`the test after renewal: ${tested}`);
     return { grants: stand.grants.map(one => one.grant_type) };
   } finally {
@@ -1964,52 +2044,55 @@ await journey("flows", SCRIPTED, "One-click connections: Connect Stripe on the k
 
 await journey("pages", SCRIPTED, "Sign-in with an identity provider: turned on in Settings, a person signs in there and gets an account from their groups, their approvals are that sign-in (no password), and a group that may not enter is refused", [], async () => {
   await page.goto(`${base}/settings/sign-in`);
-  if (!(await page.locator(".redirect code").innerText()).endsWith("/login/sso/callback")) throw new Error("the page doesn't say which address to register");
-  await page.fill('input[name="issuer"]', idpBase); await page.fill('input[name="client-id"]', "so-e2e"); await page.fill('input[name="client-secret"]', `idp-${randomBytes(6).toString("hex")}`);
-  await page.locator("details:has(input[name=\"label\"]) > summary").click(); await page.fill('input[name="label"]', "Acme SSO");
-  await page.fill('input[name="group-0"]', "eng-leads"); await page.selectOption('select[name="role-0"]', "operator"); await page.selectOption('select[name="projects-0"]', ["all"]);
-  await page.fill('.sign-in form input[name="password"]', w.passwords.alex);
-  await Promise.all([page.waitForNavigation(), page.click('.sign-in form button:has-text("Turn on sign-in with the provider")')]);
-  const said = await page.locator('[role="status"]').first().innerText();
-  if (!/People can sign in with Acme SSO/.test(said)) throw new Error(`turning it on: ${said}`);
+  if (!(await page.locator("#provider code.k-scode").first().innerText()).endsWith("/login/sso/callback")) throw new Error("the page doesn't say which address to register");
+  const ssoForm = page.locator("#sign-in-form");
+  await ssoForm.locator('input[name="issuer"]').fill(idpBase); await ssoForm.locator('input[name="client-id"]').fill("so-e2e"); await ssoForm.locator('input[name="client-secret"]').fill(`idp-${randomBytes(6).toString("hex")}`);
+  await ssoForm.locator("details.k-disclose:has(input[name=\"label\"]) > summary").click(); await ssoForm.locator('input[name="label"]').fill("Acme SSO");
+  await ssoForm.locator('input[name="group-0"]').fill("eng-leads"); await ssoForm.locator('select[name="role-0"]').selectOption("operator"); await ssoForm.locator('input[name="projects-0"][value="all"]').check();
+  await kitSave(page, ssoForm, { password: w.passwords.alex });
+  const said = await page.locator(".k-notice", { hasText: "People can sign in" }).first().innerText({ timeout: 10_000 }).catch(() => page.locator("main").innerText());
+  if (!/People can sign in with Acme SSO/.test(said)) throw new Error(`turning it on: ${said.slice(0, 300)}`);
   await shot("sign-in-settings");
   const context = await w.browser.newContext();
   try {
     const priya = await context.newPage();
     await priya.goto(`${base}/login`);
     await settle(priya); await priya.screenshot({ path: join(w.out, "sign-in-with-provider.png") });
-    await Promise.all([priya.waitForURL(/127\.0\.0\.1:\d+\/authorize/), priya.click('a.login-sso:has-text("Sign in with Acme SSO")')]);
+    await Promise.all([priya.waitForURL(/127\.0\.0\.1:\d+\/authorize/), priya.click('a[href^="/login/sso"]:has-text("Sign in with Acme SSO")')]);
     await Promise.all([priya.waitForURL(url => url.port === new URL(base).port && !url.pathname.startsWith("/login"), { timeout: 30_000 }), priya.click('a:has-text("Sign in as priya")')]);
     await priya.waitForSelector("[data-workspace-shell]");
     if (rows("SELECT role FROM approver WHERE name = 'priya'")[0]?.role !== "approver") throw new Error("priya didn't get an operator account from the eng-leads group");
     // A step-up is that sign-in: no password field. The sign-in itself never counts as checked now (B2); one explicit
     // re-check with the provider does, for the next step-up, and adding a tool goes through.
     await priya.goto(`${base}/settings/tools?repo=${encodeURIComponent(repo)}`);
-    await priya.evaluate(() => document.querySelectorAll("details").forEach(one => { if (one.querySelector('select[name="catalog"]')) one.open = true; }));
-    const recheck = priya.locator('form:has(select[name="catalog"]) [data-sso-step-up="confirm"]');
-    if ((await recheck.count()) !== 1 || (await priya.locator('form:has(select[name="catalog"]) input[type="password"]').count()) !== 0) throw new Error("the step-up doesn't offer priya the provider's check");
+    // Add on the common tools: the confirmation popover offers the provider's check, never a password field.
+    const catalog = priya.locator("#tools-add-catalog");
+    await catalog.locator('select[name="catalog"]').selectOption("chrome-devtools");
+    await catalog.locator("[data-k-save]").click();
+    const pop = priya.locator("#tools-add-catalog-pop");
+    await pop.waitFor({ timeout: 10_000 });
+    const recheck = pop.locator('[data-sso-step-up="confirm"]');
+    if ((await recheck.count()) !== 1 || (await pop.locator('input[type="password"]').count()) !== 0) throw new Error("the step-up doesn't offer priya the provider's check");
     await Promise.all([priya.waitForURL(/127\.0\.0\.1:\d+\/authorize/), recheck.click()]);
     await Promise.all([priya.waitForURL(url => url.port === new URL(base).port && url.pathname.startsWith("/settings/tools"), { timeout: 30_000 }), priya.click('a:has-text("Sign in as priya")')]);
-    await priya.evaluate(() => document.querySelectorAll("details").forEach(one => { if (one.querySelector('select[name="catalog"]')) one.open = true; }));
-    if ((await priya.locator('form:has(select[name="catalog"]) [data-sso-step-up="confirmed"]').count()) !== 1 || (await priya.locator('form:has(select[name="catalog"]) input[type="password"]').count()) !== 0) throw new Error("the step-up still asks priya for a password");
-    await priya.selectOption('select[name="catalog"]', "chrome-devtools");
-    await Promise.all([priya.waitForNavigation(), priya.click('form:has(select[name="catalog"]) button:has-text("Add")')]);
-    if (!/Added Chrome DevTools/.test(await priya.locator('[role="status"]').first().innerText())) throw new Error("priya's tool wasn't added");
+    await catalog.waitFor({ timeout: 10_000 });
+    if ((await catalog.locator('[data-sso-step-up="confirmed"]').count()) !== 1 || (await catalog.locator('input[type="password"]').count()) !== 0) throw new Error("the step-up still asks priya for a password");
+    await catalog.locator('select[name="catalog"]').selectOption("chrome-devtools");
+    await kitSave(priya, catalog);
+    if (!/Added Chrome DevTools/.test(await priya.locator("main").innerText())) throw new Error("priya's tool wasn't added");
     await settle(priya); await priya.screenshot({ path: join(w.out, "sign-in-step-up.png") });
     // A group that may not enter.
     await priya.context().clearCookies();
     await priya.goto(`${base}/login`);
-    await Promise.all([priya.waitForURL(/\/authorize/), priya.click("a.login-sso")]);
+    await Promise.all([priya.waitForURL(/\/authorize/), priya.click('a[href^="/login/sso"]')]);
     await Promise.all([priya.waitForLoadState("load"), priya.click('a:has-text("Sign in as sam")')]);
-    await priya.waitForSelector(".problem");
-    if (!/isn.t in a group that may use Toolroll/.test(await priya.locator(".problem").innerText())) throw new Error("the sales group got in");
+    await priya.waitForSelector(".k-refusal [role=alert]");
+    if (!/isn.t in a group that may use Toolroll/.test(await priya.locator(".k-refusal [role=alert]").innerText())) throw new Error("the sales group got in");
   } finally {
     await context.close();
     // Off again: the other checks sign in with passwords on the plain sign-in page.
     await page.goto(`${base}/settings/sign-in`);
-    await page.locator("details.card:has(button.danger) > summary").click();
-    await page.fill('details.card:has(button.danger) input[name="password"]', w.passwords.alex);
-    await Promise.all([page.waitForNavigation(), page.click("button.danger")]);
+    await kitSave(page, page.locator("#sign-in-off"), { password: w.passwords.alex });
   }
   const history = rows("SELECT actor, action, outcome, detail FROM action_ledger WHERE source IN ('sign-in','access','policy') ORDER BY id").map(row => `${row.actor}|${row.action}|${row.outcome}`);
   for (const expected of ["alex|sign-in with a provider turned on|changed", "priya|joined|operator", "priya|signed in|Acme SSO", "unknown account|sign-in refused|no matching group", "alex|sign-in with a provider turned off|changed"]) {
@@ -2128,7 +2211,9 @@ await journey("pages", SCRIPTED, "The demo lead: type a request, approve, see it
 await journey("pages", SCRIPTED, "Signing out ends the session: pages ask to sign in again", [], async () => {
   const sam = await signIn("sam");
   await sam.goto(`${base}/chat`);
-  await Promise.all([sam.waitForNavigation(), sam.locator('.so-account form[action="/logout"] button').click()]);
+  // The rail's account menu → Sign out.
+  await sam.locator('.so-rail .so-acct button[aria-label="Account"]').click();
+  await Promise.all([sam.waitForNavigation(), sam.locator(".k-pop-menu .k-menu button", { hasText: "Sign out" }).click()]);
   if (!sam.url().includes("/login")) throw new Error(`signing out went to ${sam.url()}`);
   const answer = await sam.request.get(`${base}/flows`, { maxRedirects: 0 });
   w.openPages.splice(w.openPages.indexOf(sam), 1);
@@ -2300,7 +2385,8 @@ await journey("onboarding", SCRIPTED, "A fresh install with Claude Code signed i
   const lead = await on.locator("[data-lead-line]").innerText();
   if (lead !== "The lead uses your Claude Code sign-in · Change") throw new Error(`the lead line: ${lead}`);
   if (await on.locator('a[href="/settings/lead"]', { hasText: "Change" }).count() !== 1) throw new Error("no Change link to Settings → Lead");
-  const intro = await on.locator("[data-how-it-works]").innerText();
+  // How it works is the empty chat's own sentence now (lead-chat.tsx ChatEmpty), above the first tasks.
+  const intro = await on.locator("[data-chat-empty] > p").first().innerText();
   if (!intro.startsWith("Ask for a change. The lead writes a short plan; you approve it;")) throw new Error(`how it works: ${intro}`);
   const firstTasks = on.locator("[data-first-tasks] button");
   if (await firstTasks.count() !== 3) throw new Error(`${await firstTasks.count()} first tasks`);
@@ -2357,12 +2443,19 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   await capture("approve");
   // You approve: the saved password, from the file `up` printed the place of.
   const password = secret;
-  await on.goto(`${install.base}/t/${encodeURIComponent(install.task.id)}#approve`);
-  const approve = on.locator("form.approve-form").first();
-  await waitFor(approve, "the approval form");
-  await on.evaluate(() => { for (const one of document.querySelectorAll("details:not(.approval-edit)")) one.open = true; });
-  await approve.locator('input[name="token"]').fill(password);
-  await Promise.all([on.waitForNavigation(), approve.locator('button[type="submit"]').first().click()]);
+  await on.goto(`${install.base}/t/${encodeURIComponent(install.task.id)}`);
+  // The plan's own approval box (task-view.tsx ApprovalBox): its button asks for the password in a popover when the
+  // rules say so, and posts the form as a page navigation.
+  const approve = on.locator("form[data-task-approval]").first();
+  await waitFor(approve, "the approval box");
+  const navigated = on.waitForNavigation({ timeout: 30_000 });
+  await approve.locator(":scope > :not(.k-dock) .k-btn-primary").first().click();
+  const pop = on.locator('.k-pop[role="dialog"]:has(input[name="token"])');
+  if (await pop.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false)) {
+    await pop.locator('input[name="token"]').fill(password);
+    await pop.locator('button[type="submit"]').click();
+  }
+  await navigated.catch(() => undefined);
   const said = (await on.locator(".problem, [role=alert]").allInnerTexts().catch(() => [])).join(" | ");
   await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}`);
   await until("the approval to take", async () => (await stepNow()) !== "approve", { timeoutMs: 30_000, seen: async () => `step ${await stepNow()}; the approval page said: ${said.slice(0, 300)}` });
@@ -2382,10 +2475,13 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   await on.goto(`${install.base}/chat`);
   await waitFor(on.locator("[data-phone-notice]"), "the phone notice after the first Ready result", { timeoutMs: 30_000 });
   if (await on.locator("[data-phone-card]").count() !== 0) throw new Error("the phone card is still in Chat");
-  await on.goto(`${install.base}/settings`);
-  await waitFor(on.locator("[data-phone-card]"), "the phone card in Settings", { timeoutMs: 30_000 });
-  const phone = await on.locator("[data-phone-card]").innerText();
-  if (!/Pair Telegram/.test(phone) || !/Tailscale/.test(phone)) throw new Error(`the phone card: ${phone}`);
+  // The phone setup lives in Settings → Chat apps and alerts: Telegram among the chat apps, and Phone access (Tailscale).
+  await on.goto(`${install.base}/settings/alerts#chat-apps`);
+  await waitFor(on.locator("#chat-apps"), "Chat apps in Settings", { timeoutMs: 30_000 });
+  const apps = await on.locator("#chat-apps").innerText();
+  // Phone access names Tailscale until this computer has a tailnet address, then gives that address.
+  const reach = await on.locator("#phone [data-phone-tailnet]").innerText({ timeout: 5_000 }).catch(() => "");
+  if (!/Telegram/.test(apps) || !/Tailscale|on your phone open/.test(reach)) throw new Error(`the phone setup in Settings: ${apps} | ${reach}`);
   await bothSizes(on, "4-phone");
   // The Workbench: the result's change beside the chat; a comment on one of its lines goes to the lead as the
   // conversation's next message, naming the file, the line and the run.
