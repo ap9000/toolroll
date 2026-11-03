@@ -34,6 +34,7 @@ import { RECIPE_CSS } from "../recipe-ui.js";
 import { REQUEST_LIMITS_CSS } from "../request-budget-ui.js";
 import { RETENTION_CSS } from "../retention-ui.js";
 import { crumbsHtml, SETTINGS_KIT_CSS, type Crumb } from "../settings-kit.js";
+import { acts as kitActs, btn as kitBtn, doc as kitDoc, docHeader as kitDocHeader, notFound as kitNotFound, notice as kitNotice, outPage } from "./kit.js";
 import { SKILLS_CSS } from "../skills-ui.js";
 import { SPEND_CSS } from "../spend-ui.js";
 import { SSO_CSS } from "../sso-ui.js";
@@ -105,16 +106,22 @@ export function refuse(
   if (who === null || who.via === "bearer") {
     return respond(response, status, "text/plain; charset=utf-8", message);
   }
-  const body = joinHtml([
-    html`<h1>${status === 404 ? "Not found" : "Request refused"}</h1>`,
-    // A missing page is plain news, not an error.
-    status === 404 ? html`<p>${message}</p>` : html`<div class="problem">${message}</div>`,
-    html`<p class="meta refusal-back"><a href="${backHref}">\u2190 Back</a></p>`,
-  ], "\n");
+  // Kit pages (Wave E): a missing page is plain news, not an error, with two ways on; a refusal says what was refused
+  // where it happened and leads back.
+  const path = new URL(requestContext.getStore()?.returnTo ?? "/", "http://standing-orders.local").pathname;
+  const generic = /^there'?s no page at this address\.?$/i.test(message.replace("\u2019", "'"));
+  // The words are the caller's exactly (older callers wrote lower-case fragments; k-refusal capitalises the first letter).
+  const body = html`<div class="k-refusal">${status === 404
+    ? kitNotFound(path, generic ? {} : { title: message, text: "Home has what needs you; Tasks has every task." })
+    : kitDoc(kitDocHeader({ title: "Request refused", back: [backHref, "Back"] }), kitNotice(message), kitActs(kitBtn("Go back", { href: backHref })))}</div>`;
   // A signed-in browser keeps the workspace around it: the same navigation as every page.
   const framed = requestContext.getStore()?.refusal;
   if (framed !== undefined && who.via === "cookie") return framed(response, status, body);
-  return page(response, status, shell("refused", body));
+  return page(response, status, shell(status === 404 ? "Not found" : "Request refused", outPage({
+    brand: BRAND_HTML, title: status === 404 ? "Not found" : "Request refused",
+    body: html`<div class="k-refusal">${kitNotice(status === 404 && generic ? `There\u2019s no page at ${path}.` : message)}</div>`,
+    foot: html`<a class="k-link" href="${status === 404 ? "/" : backHref}">${status === 404 ? "Go to Home" : "Go back"}</a>`,
+  })));
 }
 
 /** The demo's one-line promise, on every page. */

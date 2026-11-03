@@ -521,6 +521,80 @@
 }
 @media (min-width: 761px) { .k-phone-only { display: none !important; } }
 
+/* ---------- Pages outside the shell: sign in, first account, invite, an error (Wave E) ---------- */
+/* One narrow column on paper: the brand, the one h1, the form or the facts, a foot line under a hairline. */
+body:has(.k-out) { background: var(--so-paper); }
+main:has(> .k-out) { max-width: none; margin: 0; padding: 0; }
+.k-out { box-sizing: border-box; min-height: 100dvh; display: grid; align-content: center; justify-items: center; gap: 20px; padding: 48px 16px 64px; }
+.k-out-c { box-sizing: border-box; width: 100%; max-width: 380px; display: grid; gap: 18px; min-width: 0; }
+.k-out-brand { display: inline-flex; align-items: center; gap: 8px; justify-self: start; margin: 0 0 10px; color: var(--so-ink); font: 600 14px/1 var(--so-font-sans); letter-spacing: -0.01em; text-decoration: none; }
+.k-out h1 { margin: 0; font: 600 24px/1.3 var(--so-font-sans); letter-spacing: -0.02em; color: var(--so-ink); }
+.k-out-sub { margin: -8px 0 0; color: var(--so-muted); font-size: 13px; line-height: 1.5; }
+.k-out-sub b { color: var(--so-ink); font-weight: 600; }
+.k-out-note { margin: -6px 0 0; padding: 8px 10px; border-radius: 7px; background: var(--so-raised); font-size: 13px; line-height: 1.5; color: var(--so-ink); }
+.k-out-f { box-sizing: border-box; width: 100%; max-width: 380px; margin: 0; padding-top: 14px; border-top: 1px solid var(--so-line); color: var(--so-muted); font-size: 12px; line-height: 1.6; }
+.k-out-f code, .k-out .k-mono { font-family: var(--so-font-mono); font-size: 12px; }
+.k-out .k-facts { padding: 12px 0; border-top: 1px solid var(--so-line); border-bottom: 1px solid var(--so-line); grid-template-columns: 96px minmax(0, 1fr); }
+.k-out .k-slots { padding: 16px; }
+.k-out .k-slot-acts:empty, .k-out .k-slot-terms:empty { display: none; }
+.k-form { display: grid; gap: 14px; margin: 0; min-width: 0; }
+.k-form .k-input.k-input { height: 36px; }
+.k-btn.k-wide { width: 100%; height: 36px; }
+.k-out .k-disclose > summary { min-height: 32px; }
+
+/* A refusal's words come from many callers; its first letter is always a capital. */
+.k-refusal .k-empty-t::first-letter, .k-refusal .k-notice > span::first-letter { text-transform: uppercase; }
+
+/* A composer's note can follow its switch: k-on-note while it is on, k-off-note while it is off (no script). */
+.k-composer .k-off-note { display: none; }
+.k-composer:has(.k-switch-input):not(:has(.k-switch-input:checked)) .k-on-note { display: none; }
+.k-composer:has(.k-switch-input):not(:has(.k-switch-input:checked)) .k-off-note { display: inline; }
+
+/* The composer's focus is the box's (KIT.md): the workspace's own :focus-visible ring never lands on its textarea. */
+.k-composer .k-composer-ta.k-composer-ta:focus-visible { outline: none; box-shadow: none; }
+
+/* An approval form that carries its terms fills the slots' actions row. */
+.k-slot-acts > form.k-approve.k-form { flex: 1 1 100%; min-width: 0; }
+
+/* ---------- Guided steps: the first run's checklist (Wave E) ---------- */
+.k-check { display: grid; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--so-line); }
+.k-check-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: 56px; margin: 0; padding: 10px 0; border-bottom: 1px solid var(--so-line); }
+.k-check-mark { box-sizing: border-box; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--so-field-line); display: grid; place-items: center; background: var(--so-paper); }
+.k-check-mark.ok { background: var(--so-success); border-color: var(--so-success); color: var(--so-paper); }
+.k-check-mark.ok .k-i { width: 11px; height: 11px; stroke-width: 3; }
+.k-check-mark.run { border-color: var(--so-info); background: color-mix(in srgb, var(--so-info) 22%, transparent); }
+.k-check-t { display: grid; gap: 2px; min-width: 0; }
+.k-check-t b { font-weight: 600; font-size: 13.5px; color: var(--so-ink); }
+.k-check-row.done .k-check-t b { font-weight: 500; color: var(--so-muted); }
+.k-check-t > span { font-size: 12.5px; line-height: 1.45; color: var(--so-muted); overflow-wrap: anywhere; }
+.k-check-a { display: flex; justify-content: flex-end; }
+.k-check-a .k-btn { min-width: 108px; }
+.k-hello { display: grid; gap: 6px; }
+.k-hello h1, .k-hello h2 { margin: 0; font: 600 20px/1.3 var(--so-font-sans); letter-spacing: -0.015em; color: var(--so-ink); }
+.k-hello p { margin: 0; font-size: 13px; color: var(--so-muted); }
+
+/* ---------- Ideas: one tap drafts the words into the composer above (Wave E) ---------- */
+.k-ideas { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; }
+.k-btn.k-idea { height: auto; min-height: 36px; padding: 6px 14px; border-radius: 999px; border-color: var(--so-line); font-weight: 400; white-space: normal; text-align: left; }
+@media (pointer: coarse) { .k-btn.k-idea { min-height: 44px; } }
+
+@media (max-width: 760px) {
+  .k-out { align-content: start; padding-top: 32px; }
+  .k-form .k-input.k-input, .k-btn.k-wide { height: 44px; }
+  .k-out-brand { min-height: 44px; margin-bottom: 0; }
+  .k-out .k-facts { grid-template-columns: 1fr; }
+  .k-out .k-disclose > summary { min-height: 44px; }
+  .k-check-row { grid-template-columns: 20px minmax(0, 1fr); }
+  .k-check-a { grid-column: 2; justify-content: flex-start; }
+  .k-check-a:empty, .k-check-a:not(:has(.k-btn:not(.k-docked))) { display: none; }
+  .k-btn.k-idea { min-height: 44px; padding: 10px 14px; font-size: 14px; }
+  /* The dock carries the screen's one primary: the step's copy of it hides, and the column clears the dock. */
+  .k-check-a .k-btn.k-docked { display: none; }
+  .k-doc:has(~ .k-dock) { padding-bottom: 96px; }
+  /* A form whose send the phone dock carries: the box keeps its words, the dock its one primary. */
+  .k-dock-send .k-composer .k-send-slot { display: none; }
+}
+
 /* ---------- Reduced motion changes presentation only ---------- */
 @media (prefers-reduced-motion: reduce) {
   .k-btn, .k-send, .k-composer, .k-composer-plus, .k-composer-chip, .k-trk, .k-trk::after, .k-tabs > *, .k-slots, .k-crow-bar { transition: none; }

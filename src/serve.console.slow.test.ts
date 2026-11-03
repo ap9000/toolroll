@@ -379,13 +379,13 @@ describe("the operations console", () => {
         expect(html).toContain(value.length > 8000 ? `${field === "goal" ? "Goal" : "Exclusions"} is ${value.length.toLocaleString("en-US")} characters; the limit is 8,000. Shorten it.` : "cannot contain control or hidden characters.");
         const window = new Window();
         window.document.body.innerHTML = html;
-        const form = window.document.querySelector(path === "/tasks/add" ? ".task-composer" : ".scope-editor")!;
+        const form = window.document.querySelector(path === "/tasks/add" ? "#nt-form" : ".scope-editor")!;
         // HTML parsers normalize CR and replace NUL; ordinary long Unicode drafts stay exact.
         if (!/[\r\u0000]/.test(value)) expect((form.querySelector(`[name="${field}"]`) as unknown as { value: string }).value).toBe(value);
         expect(form.querySelector('[name="acceptance"]')?.textContent).toBe("c1: Works | check");
         if (path !== "/tasks/add") expect(form.querySelector('[name="budget-usd"]')?.getAttribute("value")).toBe("12");
         // A refused filing comes back on the add page itself (the old task list is retired), its draft intact.
-        else expect(html).toContain("What should get done?");
+        else expect(html).toContain("New task");
         await window.happyDOM.close();
         expect(store.getScope("t-edit")).toEqual(original);
         expect(store.getTask("new-task")).toBeNull();
@@ -2257,9 +2257,11 @@ describe("/next — clearing the queue one thing at a time", () => {
     });
     expect(answered.status).toBe(303);
     expect(answered.headers.get("location")).toBe("/next");
+    // Without a remembered password the approval carries the step-up (a remembered one is one click).
+    expect((await fetch(url("/session/forget-password"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, return: "/next" }), redirect: "manual" })).status).toBe(303);
 
     const second = await (await fetch(url("/next"), { headers: { cookie } })).text();
-    expect(second).toContain("Approve exactly this:");
+    expect(second).toContain("Approve exactly this");
     expect(second).toContain("not the other thing");
     expect(second).toContain('type="password"');
     const nonce = /name="nonce" value="([0-9a-f]{32})"/.exec(second)?.[1] as string;

@@ -105,7 +105,7 @@ describe('the server', () => {
     for (const path of ['/nope', '/settings/nope', '/t/a/b/c', '/flows/0/live']) {
       for (const method of ['GET', 'POST']) {
         const answer = await send(path, method, browser, form);
-        expect([method, path, answer.status, answer.body]).toEqual([method, path, 404, expect.stringContaining("There&#39;s no page at this address.")]);
+        expect([method, path, answer.status, answer.body]).toEqual([method, path, 404, expect.stringContaining("no page at ")]);
       }
     }
     // A declared path asked with the other method is equally unknown; any other method is refused outright.

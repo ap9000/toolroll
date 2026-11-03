@@ -116,15 +116,18 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
       approvedAt: null, approvedBy: null, approvedDigest: null,
     });
     const cookie = await login();
+    // Without a remembered password the approval asks for it (a remembered one is one click: password-freshness.serve.test.ts).
+    const formCsrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/tasks/new"), { headers: { cookie } })).text())![1]!;
+    expect((await fetch(url("/session/forget-password"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf: formCsrf, return: "/next" }), redirect: "manual" })).status).toBe(303);
     const pending = await (await fetch(url("/next"), { headers: { cookie } })).text();
-    expect(pending).toContain("Approve this scope");
+    expect(pending).toContain("Approve and start");
     expect(workspaceOf(pending).sensitive).toBe(true);
     expect(pending).not.toContain('id="palette-index"');
 
     const granted = approve(store, "t-a", "alex", T0, store.getScope("t-a")?.digest as string, approverToken);
     expect(granted.ok).toBe(true);
     const clear = await (await fetch(url("/next"), { headers: { cookie } })).text();
-    expect(clear).not.toContain("Approve this scope");
+    expect(clear).not.toContain("Approve and start");
     expect(workspaceOf(clear).sensitive).toBe(false);
   });
 

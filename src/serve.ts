@@ -187,9 +187,11 @@ import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinne
 import { BODY_CAP,form,loginHref,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
 import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,NOT_STARTED_SESSION,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
 import { type ProjectPeek } from "./server/render-pages.js";
-import { ssoStepUps,wrongHostPage } from "./server/render-people.js";
+import { serverErrorPage,ssoStepUps,wrongHostPage } from "./server/render-people.js";
 import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,sessionWithinLifetime,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SsoIntent,type Who } from "./server/session.js";
 import { createTasksHandlers } from './server/tasks.js';
+import { KIT_BEHAVIOR_MARKUP, KIT_STANDALONE_SCRIPT } from './server/kit-standalone.js';
+import { createWelcomeHandlers } from './server/welcome.js';
 import { DEFAULT_GUARD_POLICY,passwordGuardOf,provenPasswordAccount,SourceBudget,withPasswordSource } from "./sign-in-guard.js";
 import { sourceKey } from "./source-key.js";
 import { readSsoSettings } from "./sso-settings.js";
@@ -666,12 +668,22 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // A GET or HEAD only reads (docs/plans/get-side-effects.md): store reads that would tidy up as they go don't.
     const answer = () => handle(request, response);
     void withPasswordSource(joinSourceOf(request), () => request.method === "GET" || request.method === "HEAD" ? asReadOnlyRequest(answer) : answer()).catch(error => {
-      // Every unhandled error is logged (v99): the path and the message, never the request's body or query.
-      logEvent("error", "serve.error", { method: request.method, path: redactedPath(new URL(request.url ?? "/", "http://placeholder").pathname), error: error instanceof Error ? error.message : String(error) });
+      // Every unhandled error is logged (v99): the path and the message, never the request's body or query. The reference
+      // is what a person's error page shows, so the log line can be found from it.
+      const reference = `err_${randomBytes(4).toString("hex")}`;
+      logEvent("error", "serve.error", { method: request.method, path: redactedPath(new URL(request.url ?? "/", "http://placeholder").pathname), error: error instanceof Error ? error.message : String(error), reference });
       if (envValue(process.env, "SERVE_DEBUG") === "1") console.error("SERVE ERROR:", error);
       if (!response.headersSent) {
         const updating = error instanceof Error && error.message.includes(UPDATE_PAUSED);
         if (updating) response.setHeader("Retry-After", "5");
+        // A browser asking for a page gets a page (Wave E): what happened, whether anything changed, the reference. It
+        // holds no error text. Everything else keeps the plain answer.
+        if (/\btext\/html\b/.test(String(request.headers.accept ?? "")) && (request.method === "GET" || request.method === "POST")) {
+          const read = request.method === "GET";
+          const at = new URL(request.url ?? "/", "http://placeholder");
+          try { return page(response, updating ? 503 : 500, serverErrorPage({ updating, read, reference, at: new Date(), retry: read ? at.pathname + at.search : null })); }
+          catch { /* the plain answer below */ }
+        }
         respond(response, updating ? 503 : 500, "text/plain; charset=utf-8", updating ? UPDATE_PAUSED : "something broke");
       } else {
         response.end();
@@ -1605,7 +1617,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const functional = s.functional?.script ?? "";
     // Sensitive pages strip the palette and keys but keep the sidebar toggle.
     const sensitiveChrome = sensitive && s.chrome !== undefined ? sidebarScript() : "";
-    const script = functional + (chromeLayer ? chromeScript() + WORKSPACE_MOTION_SCRIPT : sensitiveChrome);
+    // Kit markup the workspace bundle would have wired (a composer, an overlay, a switch, an idea) gets the kit's own small
+    // behaviour here (kit-standalone.ts); never on a sensitive page, which carries no chrome additions.
+    const kitBehavior = chromeLayer && KIT_BEHAVIOR_MARKUP.test(htmlString(s.body)) ? KIT_STANDALONE_SCRIPT : "";
+    const script = functional + (chromeLayer ? chromeScript() + WORKSPACE_MOTION_SCRIPT + kitBehavior : sensitiveChrome);
     const nonce = script === "" ? undefined : randomBytes(16).toString("base64");
     const body = chromeLayer
       ? html`${s.body}\n${paletteTagCached(s.chrome?.project ?? null)}\n${KBD_HELP}`
@@ -2227,6 +2242,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     ...tasksHandlers.registrations, ...flowsHandlers.registrations, ...chatHandlers.registrations,
     ...settingsHandlers.registrations, ...peopleHandlers.registrations, ...pagesHandlers.registrations,
     ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations, ...createSweepHandlers(handlerRuntime).registrations,
+    ...createWelcomeHandlers(handlerRuntime).registrations,
   ]);
   /** The row's role, after admission and before its one handler. */
   function dispatchConsole(route: RouteDeclaration, ctx: HandlerContext): Promise<void> {

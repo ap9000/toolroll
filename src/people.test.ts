@@ -366,11 +366,12 @@ describe("the join road and the People screen, over HTTP", () => {
     store.revokeInvite(minted.id, new Date());
     const revoked = await (await fetch(url(`/join/${minted.token}`))).text();
     expect(revoked).toBe(unknown);
-    expect(unknown).toContain("can't be used");
+    expect(unknown).toMatch(/can(&#39;|')t be used/);
 
     const live = store.mintInvite("viewer", "alex", new Date());
     const form = await (await fetch(url(`/join/${live.token}`))).text();
-    expect(form).toContain("Create my sign-in");
+    expect(form).toContain("Choose a username");
+    expect(form).toContain("Can view");
     // The GET spent nothing.
     const row = store.raw().prepare("SELECT attempts FROM invite WHERE id = ?").get(live.id);
     expect(row).toMatchObject({ attempts: 0 });
@@ -419,7 +420,7 @@ describe("the join road and the People screen, over HTTP", () => {
 
     // The link is spent: its page is the dead page now.
     const again = await (await fetch(url(`/join/${minted.token}`))).text();
-    expect(again).toContain("can't be used");
+    expect(again).toMatch(/can(&#39;|')t be used/);
 
     // The viewer sees themselves on /people — and only themselves.
     const people = await (await fetch(url("/people"), { headers: { cookie } })).text();

@@ -329,6 +329,8 @@ export function composer(options: {
   disabled?: boolean;
   line?: boolean;
   working?: boolean;
+  /** Extra attributes for the textarea (maxlength, required, autofocus). */
+  textAttrs?: Attrs;
 }): Html {
   const value = options.value ?? "";
   const textId = `${options.id}-text`;
@@ -341,7 +343,7 @@ export function composer(options: {
     : html``;
   return html`<div class="${cls("k-composer", options.line && "line", options.disabled && "off", value.trim() && "has-text", options.working && "working")}" data-k-composer="${options.id}">\
 <label class="k-sr" for="${textId}">${options.label}</label><div class="k-composer-files" data-k-files="${options.id}"></div>\
-<textarea class="k-composer-ta" id="${textId}" name="${options.name}" rows="${options.rows ?? 1}" data-min="${options.rows ?? 1}" data-max="${options.maxRows ?? 8}"${attributes({ placeholder: options.placeholder, disabled: options.disabled === true, "aria-invalid": options.error ? "true" : undefined, "aria-describedby": `${options.id}-err` })}>${value}</textarea>\
+<textarea class="k-composer-ta" id="${textId}" name="${options.name}" rows="${options.rows ?? 1}" data-min="${options.rows ?? 1}" data-max="${options.maxRows ?? 8}"${attributes({ placeholder: options.placeholder, disabled: options.disabled === true, "aria-invalid": options.error ? "true" : undefined, "aria-describedby": `${options.id}-err`, ...options.textAttrs })}>${value}</textarea>\
 <div class="k-composer-bar">${plus}${project}${options.before ?? ""}<span class="k-grow"></span>${options.send}</div>\
 ${options.note ? html`<p class="k-note k-composer-note">${options.note}</p>` : ""}<div class="k-composer-err k-err" id="${options.id}-err" role="alert">${options.error ?? ""}</div></div>`;
 }
@@ -379,3 +381,51 @@ export function dock(primary: Html | null): Html {
 
 /** Several kit parts joined. */
 export const parts = (...values: HtmlValue[]): Html => joinHtml(values);
+
+// ---- pages outside the shell (Wave E) ---------------------------------------------------------------------------
+
+/**
+ * A page outside the shell (sign in, the first account, an invite, signed out, an error): the brand, one narrow
+ * column with the one h1, then an optional foot line under a hairline. `brand` is the product mark (chrome.ts
+ * BRAND_HTML). These pages carry no script: everything on them works as plain HTML.
+ */
+export function outPage(options: { brand: Html; brandHref?: string; title: string; sub?: HtmlValue; note?: HtmlValue; body?: HtmlValue; foot?: HtmlValue }): Html {
+  return html`<div class="k-out"><div class="k-out-c"><a class="k-out-brand" href="${options.brandHref ?? "/"}">${options.brand}</a>\
+<h1>${options.title}</h1>${options.note ? html`<p class="k-out-note" role="status">${options.note}</p>` : ""}${options.sub ? html`<p class="k-out-sub">${options.sub}</p>` : ""}${options.body ?? ""}</div>\
+${options.foot ? html`<p class="k-out-f">${options.foot}</p>` : ""}</div>`;
+}
+
+/** A form field outside the shell: label, input, one hint line, and its error line (the field is aria-invalid, described
+ * by both and focused when the error is about it). The error is a server's refusal; nothing here validates. */
+export function outField(options: { id: string; label: string; name: string; type?: "text" | "password"; value?: string; hint?: string; error?: string | null; attrs?: Attrs }): Html {
+  const describedBy = [options.hint ? `${options.id}-hint` : null, options.error ? `${options.id}-err` : null].filter(Boolean).join(" ");
+  const control = html`<input class="k-input" id="${options.id}" name="${options.name}" type="${options.type ?? "text"}"${attributes({
+    value: options.value, "aria-invalid": options.error ? "true" : undefined, "aria-describedby": describedBy || undefined, ...(options.error ? { autofocus: true } : {}), ...options.attrs,
+  })}>`;
+  return html`<div class="k-field"><label class="k-label" for="${options.id}">${options.label}</label>${control}\
+${options.hint ? html`<p class="k-hint" id="${options.id}-hint">${options.hint}</p>` : ""}${options.error ? html`<p class="k-err" id="${options.id}-err" role="alert">${options.error}</p>` : ""}</div>`;
+}
+
+// ---- guided steps (Wave E) --------------------------------------------------------------------------------------
+
+export type CheckStep = { key: string; title: string; text: HtmlValue; state: "done" | "open" | "checking"; action?: Html | null };
+/** A short list of steps: a mark, the step and one line, its one action. Done steps read muted with a check; a step
+ * being checked shows a static ring (running state never animates). The state is also said in words. */
+export function checklist(steps: readonly CheckStep[], label = "Steps"): Html {
+  const word = { done: "Done", open: "Not done", checking: "Checking" } as const;
+  return html`<ol class="k-check" aria-label="${label}">${steps.map(step => html`<li class="${cls("k-check-row", step.state === "done" && "done")}" data-step="${step.key}">\
+<span class="${cls("k-check-mark", step.state === "done" && "ok", step.state === "checking" && "run")}" aria-hidden="true">${step.state === "done" ? icon("check", true) : ""}</span>\
+<span class="k-check-t"><b>${step.title}</b><span>${step.text}</span><span class="k-sr">${word[step.state]}</span></span>\
+<span class="k-check-a">${step.state === "done" ? "" : step.action ?? ""}</span></li>`)}</ol>`;
+}
+
+// ---- ideas (Wave E) ---------------------------------------------------------------------------------------------
+
+/** Ideas that draft words into a composer: each is a link that opens the page with the words in the box (no script),
+ * and with the kit behaviour it adds them to the box in place (`data-k-draft`, `data-k-into` = the composer id). */
+export function ideas(options: { label: HtmlValue; into: string; items: ReadonlyArray<{ label: string; draft: string; href: string }> }): Html {
+  if (options.items.length === 0) return html``;
+  return html`<section class="k-sec"><h3>${options.label}</h3><div class="k-ideas">${options.items.map(item =>
+    html`<a class="k-btn k-btn-outline k-idea" href="${item.href}" data-k-draft="${item.draft}" data-k-into="${options.into}">${item.label}</a>`)}</div></section>`;
+}
+

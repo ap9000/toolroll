@@ -601,7 +601,7 @@ await journey("task", SCRIPTED, "File a task in the console; the planner (Claude
   await page.waitForSelector('form[action="/tasks/add"]');
   // Just the words, as a person types them; "plan first" (on by default) has the planner write the scope.
   await page.fill('form[action="/tasks/add"] textarea[name="title"]', "Add a subtract function to src/math.js, with a test");
-  await Promise.all([page.waitForNavigation(), page.click('form[action="/tasks/add"] button.task-submit')]);
+  await Promise.all([page.waitForNavigation(), page.click('form[action="/tasks/add"] button.k-send')]);
   firstTask = /\/t\/([^/?#]+)/.exec(page.url())?.[1];
   if (!firstTask) throw new Error(`filing didn't open the task: ${page.url()}`);
   const planned = await plannerDrafted(firstTask, "the planner's scope", ref => ref?.plan === "drafted" && rows(`SELECT 1 FROM task_scope WHERE task_id = '${firstTask}'`).length > 0);

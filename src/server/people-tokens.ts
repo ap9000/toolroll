@@ -27,6 +27,7 @@ import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
 import { credentialProof,hashPassword,proveAccountNow } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
 import { joinDeadPage,joinFormPage,loginPage,SIGNUP_NAME,SIGNUP_PASSWORD_MIN,signupPage } from "./render-people.js";
+import { liveInviteTerms } from "../store.js";
 import { SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
 import { setupCodeMatches,signupCookie,signupFromHere } from "./signup-gate.js";
 
@@ -576,7 +577,8 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
   async function joinPage(ctx: EdgeContext): Promise<void> {
     const { url, response } = ctx;
     const joinToken = joinCodeOf(url);
-    return page(response, 200, store.inviteIsLive(joinToken, clock()) ? joinFormPage(joinToken, null, "") : joinDeadPage());
+    const terms = liveInviteTerms(store, joinToken, clock());
+    return page(response, 200, terms !== null ? joinFormPage(joinToken, null, "", terms) : joinDeadPage());
   }
 
   async function joinSend(ctx: EdgeContext): Promise<void> {
@@ -609,15 +611,15 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     // Possession of a LIVE token earns real words (D6's disclosure
     // ruling) — the attempt is already spent either way (E3).
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/.test(name)) {
-      return page(response, 400, joinFormPage(joinToken, "names are 1\u201340 characters \u2014 letters, digits, dots, dashes, underscores", name));
+      return page(response, 400, joinFormPage(joinToken, { field: "name", text: "Use 1\u201340 letters, digits, dots, dashes or underscores, starting with a letter or digit." }, name, liveInviteTerms(store, joinToken, clock())));
     }
     if (password.length < 8) {
-      return page(response, 400, joinFormPage(joinToken, "the password needs at least 8 characters", name));
+      return page(response, 400, joinFormPage(joinToken, { field: "password", text: "The password needs at least 8 characters." }, name, liveInviteTerms(store, joinToken, clock())));
     }
     const made = store.consumeInviteAndCreateAccount({ tokenValue: joinToken, name, credentialHash: hashPassword(password) }, clock());
     if (!made.ok) {
       if (made.reason === "name-taken") {
-        return page(response, 400, joinFormPage(joinToken, "that name is taken \u2014 pick another", name));
+        return page(response, 400, joinFormPage(joinToken, { field: "name", text: "That name is taken. Choose another." }, name, liveInviteTerms(store, joinToken, clock())));
       }
       return page(response, 200, joinDeadPage());
     }

@@ -1946,6 +1946,9 @@ describe("the phase route on the console (v47): one projection on the task page,
     };
     sheet(ceremonyOf(await page(cookie, "/t/payouts"), "\\/t\\/payouts\\/approve"));
     sheet(ceremonyOf(await page(cookie, "/chat?task=payouts"), "\\/t\\/payouts\\/approve"));
+    // /next asks what the rules ask: with the sign-in's remembered password forgotten, the password (a remembered one
+    // is one click there, password-freshness.serve.test.ts).
+    expect((await post(cookie, "/session/forget-password", { csrf: csrfOf(await page(cookie, "/t/payouts")), return: "/next" })).status).toBe(303);
     const next = await page(cookie, "/next");
     check(ceremonyOf(next, "\\/t\\/payouts\\/approve"));
     // Changing an agent invalidates the approval every surface signed under.
