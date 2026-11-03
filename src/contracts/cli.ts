@@ -200,6 +200,9 @@ export const COMMAND_OUTPUTS = {
   ]),
   "task list": taskListOutput,
   "task show": taskShowOutput,
+  // The task's pull request checks (store.ts ci_check, v146): each with its state and seconds (null: not started).
+  "task ship": answers("task ship", { task: str, pullRequest: int, githubRepo: str, head: str, observedAt: str,
+    checks: rows({ name: str, workflow: nullable(str), state: z.enum(["queued", "running", "passed", "failed", "skipped", "cancelled", "neutral"]), startedAt: nullable(str), completedAt: nullable(str), url: nullable(str), seconds: nullable(int) }) }),
   "task hold": answers("task hold", { id: str, reason: str, until: nullable(str) }),
   "task unhold": answers("task unhold", { id: str }),
   "task wait": answers("task wait", { task: str, outcome: str }),

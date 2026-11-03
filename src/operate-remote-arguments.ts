@@ -28,6 +28,7 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ['task add', args('title*', 'key report checks', { id: 'refused', replaces: 'task' })],
   ['task ask', args('id:task', 'person why')],
   ['task checks', args('task:task', 'level')],
+  ['task ship', args('task:task')],
   ['task add-tests', args('task:task')],
   ['task list', args('', 'state view limit cursor')],
   ['task show', args('id:task')],

@@ -28,7 +28,7 @@ import { join } from "node:path";
 import { run as execRun, type ExecResult, type RunOptions } from "./exec.js";
 import { summarizeChecks } from "./pulls.js";
 import type { Publication, PublicationGrant, Store } from "./store.js";
-import { releasePublication } from "./store.js";
+import { parseCiRollup, recordCiChecks, releasePublication } from "./store.js";
 import { headWithin } from "./names.js";
 
 export const BODY_TEMPLATE_VERSION = 2;
@@ -432,6 +432,8 @@ export async function observeChecks(
         );
         if (!settled.won) return;
         won = true;
+        // The checks' own timing (v146), only with the observation that won.
+        recordCiChecks(store, publication.githubRepo, publication.prNumber as number, headOid, parseCiRollup(payload.statusCheckRollup), clock());
         store.recordPublicationRemoteState(publication.id, remoteState, clock());
         report.resolved += store.resolveCiEpisodes(publication.githubRepo, publication.prNumber as number, null, clock());
         // A closed PR moots its merge blocker and supersedes its intent —
@@ -453,10 +455,9 @@ export async function observeChecks(
     }
 
     const state = summarizeChecks(payload.statusCheckRollup);
-    const settled = store.settleObservation(
-      { githubRepo: publication.githubRepo, prNumber: publication.prNumber, headSha: headOid, state, generation },
-      clock(),
-    );
+    // Settled and, when it won, the checks' own timing recorded (v146) in one transaction: a losing generation writes nothing.
+    const settled = settleWithChecks(store, { githubRepo: publication.githubRepo, prNumber: publication.prNumber, headSha: headOid, state, generation },
+      payload.statusCheckRollup, clock());
     if (!settled.won) {
       // An out-of-order response: a newer observation already spoke.
       // Nothing persists from this one (round-4 findings 24/25).
@@ -591,7 +592,7 @@ async function observeOne(
   if (String(payload.state ?? "").toUpperCase() === "MERGED") return { ok: false, why: "pr-merged" };
   if (String(payload.state ?? "").toUpperCase() !== "OPEN") return { ok: false, why: "pr-" + String(payload.state ?? "gone").toLowerCase() };
   const state = summarizeChecks(payload.statusCheckRollup);
-  const settled = store.settleObservation({ githubRepo, prNumber, headSha, state, generation }, clock());
+  const settled = settleWithChecks(store, { githubRepo, prNumber, headSha, state, generation }, payload.statusCheckRollup, clock());
   // A losing settle is NO observation (round-4 finding 24).
   if (!settled.won) return { ok: false, why: "stale-observation" };
   return { ok: true, state, headSha };
@@ -890,4 +891,19 @@ export async function sweepMerges(
     }
   }
   return report;
+}
+
+/** A conditional settle (store.settleObservation) and, only when it won, that head's checks' own timing (v146 ci_check),
+ * in one transaction: a stale, losing answer neither settles nor records a check. */
+export function settleWithChecks(
+  store: Store,
+  observation: { githubRepo: string; prNumber: number; headSha: string; state: "passing" | "failing" | "running" | "none"; generation: number },
+  rollup: unknown,
+  now: Date,
+): { won: boolean } {
+  return store.transact(() => {
+    const settled = store.settleObservation(observation, now);
+    if (settled.won) recordCiChecks(store, observation.githubRepo, observation.prNumber, observation.headSha, parseCiRollup(rollup), now);
+    return settled;
+  });
 }
