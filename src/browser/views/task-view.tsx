@@ -167,24 +167,46 @@ function ConfirmStopped({ form, label }: { form: NonNullable<BrowserTaskView["co
  * when the rules say so: a password popover when one is needed, one click with Passwordless on or a password
  * remembered on this computer, and nothing to press when a rule approves automatically. The approval covers exactly
  * what was shown: the box keeps the terms it first showed, and says so when newer ones arrive. */
+/** Whether the plan's in-place editor (#plan-editor, in the Plan tab) is open: while it is, what the page shows is not
+ * what an approval would sign, so nothing approves until Save or Cancel. */
+const editorOpen = (): boolean => document.getElementById("plan-editor") instanceof HTMLDetailsElement && (document.getElementById("plan-editor") as HTMLDetailsElement).open;
+function usePlanEditing(): boolean {
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    const read = () => setEditing(editorOpen());
+    read();
+    // A details element's toggle doesn't bubble: listen in the capture phase for the editor anywhere on the page.
+    const onToggle = (event: Event) => { if ((event.target as Element | null)?.id === "plan-editor") read(); };
+    document.addEventListener("toggle", onToggle, true);
+    return () => document.removeEventListener("toggle", onToggle, true);
+  }, []);
+  return editing;
+}
+
 function ApprovalBox({ approve, latest, onEdit }: { approve: NonNullable<BrowserTaskView["approve"]>; latest: BrowserTaskView["approve"]; onEdit: (() => void) | null }) {
   const ref = useRef<HTMLFormElement>(null);
+  const editing = usePlanEditing();
   const changed = latest == null || latest.fields["digest"] !== approve.fields["digest"];
   const until = approve.rememberedUntil === null ? null : new Date(approve.rememberedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const facts = { ...approve.facts, rememberedUntil: until };
   const terms = termsOf(approve.kind, facts);
-  return <PostForm ref={ref} action={approve.action} className="k-approve" data-approval-kind={approve.kind} data-task-approval>
+  // Belt and braces: a press that lands while the editor opened is refused in place, never sent.
+  const approveNow = (password: string | null) => editorOpen()
+    ? Promise.resolve("Save or cancel your edit first: approving now would sign the plan as it was. Nothing changed.")
+    : submitNative(ref.current, password);
+  const live = !changed && !editing;
+  return <PostForm ref={ref} action={approve.action} className="k-approve" data-approval-kind={approve.kind} data-task-approval data-editing={editing ? "" : undefined}>
     {Object.entries(approve.fields).map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />)}
     <input type="hidden" name="token" value="" />
     <KSlots wait status={<><KChip word="Needs you" tone="needs" /><h2>{approve.heading}</h2></>} text={approve.text}
       acts={changed ? <KButton variant="primary" label="Reload" onClick={() => window.location.reload()} />
-        : <><KApprove kind={approve.kind} facts={facts} label={approve.label} docked terms={terms} text={approve.text}
-            onApprove={password => submitNative(ref.current, password)} />
+        : editing ? <KButton label="Back to the edit" onClick={() => onEdit?.()} />
+        : <><KApprove kind={approve.kind} facts={facts} label={approve.label} docked terms={terms} text={approve.text} onApprove={approveNow} />
           {onEdit !== null && <KButton label="Edit plan" onClick={onEdit} />}</>}
-      terms={changed ? "The plan changed since this page loaded. Reload to see the version you would approve." : terms} />
+      terms={changed ? "The plan changed since this page loaded. Reload to see the version you would approve."
+        : editing ? "You’re editing the plan. Save it (it then asks for approval again) or cancel the edit to approve this version." : terms} />
     {/* On a phone the one primary lives in the dock: the same act, the same form. */}
-    {!changed && <KDock><KApprove kind={approve.kind} facts={facts} label={approve.label} terms={terms} text={approve.text}
-      onApprove={password => submitNative(ref.current, password)} /></KDock>}
+    {live && <KDock><KApprove kind={approve.kind} facts={facts} label={approve.label} terms={terms} text={approve.text} onApprove={approveNow} /></KDock>}
   </PostForm>;
 }
 

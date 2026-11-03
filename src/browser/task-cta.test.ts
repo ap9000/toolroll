@@ -81,6 +81,20 @@ test("the box keeps the terms it first showed: newer terms ask for a reload, nev
   expect([...host.querySelectorAll("[data-task-approval] button")].map(one => one.textContent)).toEqual(["Reload"]);
 });
 
+test("while the plan is being edited nothing approves: no Approve, no dock, until Save or Cancel", () => {
+  const approve = { ...approveOf({ passwordless: true, remembered: false }), planHtml: '<details id="plan-editor"><summary>Edit plan</summary><textarea name="touches"></textarea></details>' };
+  show(viewOf(cardOf("Needs you", null), { approve }));
+  const approves = () => [...document.querySelectorAll("button")].filter(one => one.textContent === "Approve and start");
+  expect(approves().length).toBeGreaterThan(0);
+  const editor = host.querySelector<HTMLDetailsElement>("#plan-editor")!;
+  act(() => { editor.open = true; editor.dispatchEvent(new Event("toggle")); });
+  expect(approves()).toHaveLength(0);
+  expect(host.textContent).toContain("You’re editing the plan.");
+  expect(submitted).toEqual([]);
+  act(() => { editor.open = false; editor.dispatchEvent(new Event("toggle")); });
+  expect(approves().length).toBeGreaterThan(0);
+});
+
 test("Confirm it stopped is a step-up: a password popover, or one click with Passwordless on", () => {
   const view = viewOf(cardOf("Needs you", { label: "Confirm it stopped", href: "#confirm-stopped" }), { confirmStopped: { action: "/t/t-1/confirm-stopped", run: 12 } });
   show(view);
