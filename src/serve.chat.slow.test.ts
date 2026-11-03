@@ -2282,10 +2282,10 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
   test("the digest card sets the cadence from a closed list; the choice lands in the store and says so", async () => {
     const cookie = await login();
     // The installation's cadence bundles Every step updates only; quiet chat has no routine messages to bundle.
-    let page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    let page = await (await fetch(`${base}/settings/alerts`, { headers: { cookie } })).text();
     expect(page).not.toContain("Telegram digest");
     store.setNotificationPreference("alex", { mode: "all" }, "alex", T0);
-    page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    page = await (await fetch(`${base}/settings/alerts`, { headers: { cookie } })).text();
     expect(page).toContain("Telegram digest");
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)?.[1] ?? "";
     const bad = await fetch(`${base}/settings/telegram-digest`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, every: "17" }), redirect: "manual" });
@@ -2307,27 +2307,30 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
     if (typeof address !== "object" || address === null) throw new Error("no address");
     const at = `http://127.0.0.1:${address.port}`;
     const cookie = await login(at);
+    // Settings → Chat apps and alerts: one row per chat app, each saying its state.
     const overview = async () => {
-      const data = await (await fetch(`${at}/settings?format=workspace`, { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
-      const view = data.view as import("./browser-workspace.js").BrowserSettingsView;
-      return { view, chat: Object.fromEntries(view.groups.flatMap(group => group.tiles).filter(tile => tile.status).map(tile => [tile.label, tile.status!.words])) };
+      const page = (await (await fetch(`${at}/settings/alerts`, { headers: { cookie } })).text()).replace(/<script[\s\S]*?<\/script>/g, "");
+      const chat = Object.fromEntries([...page.matchAll(/<a class="k-slink noico" href="\/settings\/(telegram|slack|discord|teams)">[\s\S]*?<span>([^<]+)<\/span>[\s\S]*?<span class="k-sl-h">([^<]+)<\/span>/g)].map(match => [match[2]!, match[3]!]));
+      return { page, chat };
     };
     try {
       // Only a Telegram token: it is the one service, so it gets the alerts.
-      let { view, chat } = await overview();
-      expect(chat).toEqual({ Telegram: "Gets alerts", Slack: "Not set up", Discord: "Not set up", Teams: "Not set up" });
+      let { page, chat } = await overview();
+      expect(chat).toEqual({ Telegram: "Alerts go here", Slack: "Not set up", Discord: "Not set up", Teams: "Not set up" });
 
       // Two services and no choice: neither claims the alerts.
       saveSlackCredentials(dir, { installation: "installation-test", team: "TTEST", app: "ATEST", bot: "UBOT", workspace: "Test workspace", appToken: "xapp-fixture", botToken: "xoxb-fixture" });
       ({ chat } = await overview());
       expect(chat).toMatchObject({ Telegram: "Connected", Slack: "Connected" });
 
-      // A saved delivery problem is a warning, never "Connected".
+      // A saved delivery problem waits on the person, never "Connected".
       store.acquireBridgeLease("777000", "bridge", 60_000, T0);
       store.setTelegramPush("777000", { url: "https://console.example/telegram", problem: "Telegram could not reach that address" }, T0);
-      ({ view, chat } = await overview());
+      ({ page, chat } = await overview());
       expect(chat.Telegram).toBe("Has a problem");
-      expect(view.groups.find(group => group.title === "Chat apps")?.tiles[0]?.status?.tone).toBe("warn");
+      expect(page).toContain('<span class="k-sflag">1 item needs you</span>');
+      const hub = await (await fetch(`${at}/settings`, { headers: { cookie } })).text();
+      expect(hub).toContain("Telegram isn’t delivering");
     } finally {
       await new Promise<void>(resolve => withApps.close(() => resolve()));
     }
@@ -2337,11 +2340,9 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
     store.createTask({ id: "existing-auto", title: "existing automatic task" }, T0);
     propose(store, { taskId: "existing-auto", goal: "keep the current permission profile", now: T0 });
     const cookie = await login();
-    let settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    let settings = await (await fetch(`${base}/settings/approval`, { headers: { cookie } })).text();
     expect(settings).toContain('name="permission-mode" value="auto" checked');
-    // The rebuilt Settings view reads the same defaults the fallback shows.
-    const settingsData = await (await fetch(`${base}/settings?format=workspace`, { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
-    expect(settingsData.view).toMatchObject({ kind: "settings", permission: { mode: "auto", canManage: true }, quality: { mode: "default", canManage: true } });
+    expect(settings).toContain('name="quality-mode" value="default" checked');
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(settings)?.[1] ?? "";
 
     // Widening to Full access takes the password (chat-management.md §0a.3): without it nothing changes.
@@ -2411,7 +2412,7 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
     expect(automatic?.digest).not.toBe(full?.digest);
     expect(store.refFor("built-in", taskId).permissionMode).toBe("auto");
     expect(automatic?.profile).toMatchObject({ provider: "claude", permissionArgv: "auto" });
-    settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    settings = await (await fetch(`${base}/settings/approval`, { headers: { cookie } })).text();
     expect(settings).toContain('name="permission-mode" value="bypassPermissions" checked');
 
     // A Codex task also keeps the profile it already filed if the global
@@ -2434,7 +2435,7 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
 
   test("Settings chooses the global quality default and a task can sign its own override", async () => {
     const cookie = await login();
-    let settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    let settings = await (await fetch(`${base}/settings/approval`, { headers: { cookie } })).text();
     expect(settings).toContain('name="quality-mode" value="default" checked');
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(settings)?.[1] ?? "";
 

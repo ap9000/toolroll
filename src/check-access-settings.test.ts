@@ -57,8 +57,8 @@ const save = async (cookie: string, fields: Record<string, string>) => {
 test("the section says the level and shows each wider level's warning before anyone chooses it", async () => {
   const html = await page(await signIn("alex"));
   expect(html, html.slice(-3000)).toContain(`id="check-access"`);
-  expect(html).toContain("<h2 id=\"check-access-title\">Check access</h2><p><strong>Sandboxed</strong></p>");
-  expect(html).toMatch(/<input type="radio" name="level" value="sign-ins"> Sandboxed, with model and GitHub sign-ins<\/label>/);
+  expect(html).toContain('<h3 id="check-access-h">Check access<span class="k-ssec-state"> · Sandboxed</span></h3>');
+  expect(html).toMatch(/<input type="radio" name="level" value="sign-ins"><span><b>Sandboxed, with model and GitHub sign-ins<\/b>/);
   expect(html).toContain('data-check-access-warning="sign-ins"');
   expect(html).toMatch(/data-check-access-warning="unsandboxed">This project(?:'|&#39;)s checks get your full access/);
   expect(html).toContain("Flow script steps always run sandboxed. Tasks already approved keep their level.");
@@ -115,7 +115,7 @@ test("on every platform an instance operator saves sign-ins with a password type
     expect((await save(alex, { level: "sign-ins", password: tokens["alex"]! })).said).toMatch(/Saved/);
     expect(store.projectCheckAccess(repo)).toBe("sign-ins");
     const html = await page(alex);
-    expect(html).toContain("<h2 id=\"check-access-title\">Check access</h2><p><strong>Sandboxed, with model and GitHub sign-ins</strong></p>");
+    expect(html).toContain('<h3 id="check-access-h">Check access<span class="k-ssec-state"> · Sandboxed, with model and GitHub sign-ins</span></h3>');
     expect(html).toContain("data-sign-in-hosts");
     store.setProjectCheckAccess(repo, "sandboxed", "alex", NOW, { may: "narrow" });
   }
@@ -126,7 +126,8 @@ test("with no OS sandbox here and unconfined running allowed, the page says Not 
   store.setUnfencedAgentsAllowed(true, "alex", NOW);
   await serveAs("linux", () => false);
   const html = await page(await signIn("alex"));
-  expect(html).toContain("<h2 id=\"check-access-title\">Check access</h2><p><strong>Not sandboxed</strong></p><p class=\"meta\" data-saved-level>Saved as Sandboxed, with model and GitHub sign-ins.</p>");
+  expect(html).toContain('<h3 id="check-access-h">Check access<span class="k-ssec-state"> · Not sandboxed</span></h3>');
+  expect(html).toContain('<p class="k-note" data-saved-level>Saved as Sandboxed, with model and GitHub sign-ins.</p>');
   expect(html).toContain("data-unconfined-here");
   expect(html).not.toContain("data-sign-ins-unavailable");
   expect(html).not.toMatch(/checks run sandboxed/);

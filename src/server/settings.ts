@@ -42,7 +42,8 @@ import { handlersOf } from './handler-registry.js';
 import type { ServerRuntime } from './runtime.js';
 import { refuse,screen,when } from "./chrome.js";
 import { requestContext } from "./request-context.js";
-import { approvalGroup,GROUP_PATHS,groupTitle,modeCeremonyHtml,modePageHtml,passwordlessHtml,HUB_ANCHOR_SCRIPT,pushScriptOf,settingsGroupPage,settingsSubPage,type SettingsFacts,type SettingsGroup } from "../settings-groups-ui.js";
+import { btn,empty,infoLine,settingsSection } from "./kit.js";
+import { approvalGroup,projectPicker,GROUP_PATHS,groupTitle,modeCeremonyHtml,modePageHtml,passwordlessHtml,HUB_ANCHOR_SCRIPT,pushScriptOf,settingsGroupPage,settingsSubPage,type SettingsFacts,type SettingsGroup } from "../settings-groups-ui.js";
 import { HANDOFF_STYLE,redirect,respond,safeReturn,sayTo,signInSpent,startedHere } from "./http.js";
 import { html, htmlString, joinHtml, postForm, type Html, reauth } from "../html.js";
 import { browserCaller,sessionWithinLifetime } from "./session.js";
@@ -280,7 +281,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const projects = consoleProjects();
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && !projects.includes(chosen)) return refuse(response,who,403,"That project is outside your access.","/projects");
-    const selector = projects.length > 1 ? html`<form class="skills" method="get"><label>Project<select name="repo">${projects.map(p=>html`<option value="${p}"${p===chosen?' selected':''}>${p.split('/').at(-1)??p}</option>`)}</select></label><button>Show project</button></form>` : '';
+    const selector = projectPicker("/settings/skills", projects.map(repo => ({ repo, name: projectName(repo) })), chosen);
     let content: Html = html`<p>Add a project to manage its skills.</p>`;
     if (chosen) {
       try { const agent=resolvePhaseAgent(store,'build',chosen,{});content = (skillsHtml(skillsView(store,chosen,who.name),who.via==='cookie'?who.session.csrf:'',who.role==='approver',{focus:url.searchParams.get('skill')??'',agent:agent.ok?`Report agent: ${agent.spec.provider} · ${agent.spec.model??'default'}. Change it on the test task before approval`:'Choose a report agent on the test task before approval'})); }
@@ -316,9 +317,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const asked = url.searchParams.get("repo");
     const chosen = asked ?? (project != null && projects.includes(project) ? project : projects[0] ?? "");
     if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
-    const selector = projects.length > 1 ? html`<form class="approval-project" method="get" action="/settings/project"><label>Project<select name="repo">${projects.map(p => html`<option value="${p}"${p === chosen ? " selected" : ""}>${projectName(p)}</option>`)}</select></label><button>Show</button></form>` : "";
+    const selector = projectPicker("/settings/project", projects.map(repo => ({ repo, name: projectName(repo) })), chosen);
     const notice = { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") };
-    const content = chosen === "" ? html`${notice.said ? html`<p role="status">${notice.said}</p>` : ""}<p>No projects yet.</p>` : (projectSettingsHtml({ ...projectViewOf(chosen, who), remoteUrl: store.projectRemote(chosen) }, notice));
+    const content = chosen === "" ? html`${notice.said ? infoLine(notice.said) : ""}${empty({ title: "No projects yet.", action: btn("Add a project", { sm: true, href: "/projects" }) })}` : (projectSettingsHtml({ ...projectViewOf(chosen, who), remoteUrl: store.projectRemote(chosen) }, notice));
     return sendScreen(response, 200, screen("Project", settingsSubPage("projects", "Project", html`${selector}${content}`), { chrome: chromeFor(chosen || null, "settings") }));
   }
   // v102: Settings → Approvals and safety: the defaults for new tasks, a project's separation of duties and release
@@ -427,14 +428,14 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     // The last measurement (docs/plans/get-side-effects.md): the background checks measure the checkouts, and so do
     // Check now and every clean-up; opening the page runs no du or git.
     const measured = lastChecks.known<CheckoutPlan>("storage");
-    const check = postForm("/settings/storage/check", html`<button type="submit" class="secondary">Check now</button>`, { attrs: { class: "inline" } });
+    const check = postForm("/settings/storage/check", btn("Check now", { sm: true, type: "submit" }));
     if (measured === null) {
-      return sendScreen(response, 200, screen("Storage", settingsSubPage("system", "Storage", html`<section class="storage"><div class="card storage-state"><h2>Checkouts not measured yet</h2>${check}</div></section>`),
+      return sendScreen(response, 200, screen("Storage", settingsSubPage("system", "Storage", settingsSection({ id: "storage", title: "Checkouts not measured yet", lead: "Toolroll measures the checkouts in the background. Check now measures them at once.", body: check })),
         { chrome: chromeFor(project, "settings") }));
     }
     const plan = { ...measured.value, cleanup: store.checkoutCleanup() };
     const sweep = { last: lastSweep(store), off: storageSweepOff(), schedule: sweepSchedule(store, now) };
-    return sendScreen(response, 200, screen("Storage", settingsSubPage("system", "Storage", html`${(storageHtml({ plan, csrf: who.session.csrf, sweep, landed: landedSummary(store), measured: html`<p class="meta">Measured ${new Date(measured.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })} ${check}</p>` }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
+    return sendScreen(response, 200, screen("Storage", settingsSubPage("system", "Storage", html`${(storageHtml({ plan, csrf: who.session.csrf, sweep, landed: landedSummary(store), measured: html`<div class="k-acts"><span class="k-note">Measured ${new Date(measured.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</span>${check}</div>` }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings") }));
   }
   // Settings → Projects → Pull requests: one project's setup. Off, the checks run on open, so the page says
@@ -527,7 +528,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const projects = consoleProjects();
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && (!projects.includes(chosen) || !visible(chosen))) return refuse(response, who, 403, "That project is outside your access.", "/settings/knowledge");
-    const selector = projects.length > 1 ? framedSection('Project', html`<form class="field-row" method="get" action="/settings/knowledge"><label><span class="visually-hidden">Project</span><select name="repo">${projects.map(p=>html`<option value="${p}"${p===chosen?' selected':''}>${p.split('/').at(-1)??p}</option>`)}</select></label><button>Show project</button></form>`) : '';
+    const selector = projectPicker("/settings/knowledge", projects.map(repo => ({ repo, name: projectName(repo) })), chosen);
     let content: Html = html`<p>Add a project to keep its knowledge here.</p>`;
     if (chosen) {
       try {
@@ -537,7 +538,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
           const revision=Number(url.searchParams.get('version'));
           const previous=knowledgeVersion(store,chosen,who.name,revision);
           const restore=csrf&&who.role==='approver'&&revision!==view.revision?postForm('/settings/knowledge/change',html`<p>Replaces knowledge for future tasks. Existing runs keep their saved context.</p><button>Restore version ${revision}</button>`,{attrs:{class:'knowledge'},hidden:{repo:chosen,identity:view.identity,revision:String(view.revision),action:'restore',restore:String(revision)}}):'';
-          return sendScreen(response,200,screen('Knowledge history',html`<p><a href="/settings/knowledge?repo=${encodeURIComponent(chosen)}">Current knowledge</a></p><h1>Version ${revision}</h1>${knowledgeHtml({...view,knowledge:previous,history:[],stale:null},'',false)}${restore}`,{chrome:chromeFor(chosen,'settings')}));
+          return sendScreen(response,200,screen('Knowledge history',settingsSubPage('agents',`Knowledge · version ${revision}`,html`<p class="k-note"><a class="k-link" href="/settings/knowledge?repo=${encodeURIComponent(chosen)}">Current knowledge</a></p>${knowledgeHtml({...view,knowledge:previous,history:[],stale:null},'',false)}${restore}`),{chrome:chromeFor(chosen,'settings')}));
         }
         const query = (url.searchParams.get('q') ?? '').slice(0, 1000);
         const result = query.trim() ? repositoryContextRead({ repo: chosen, query, mode: url.searchParams.get('mode') === 'impact' ? 'impact' : 'search', cacheRoot: join(dirname(evidenceRoot), 'repository-context') }) : null;
@@ -557,7 +558,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const projects = consoleProjects();
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && (!projects.includes(chosen) || !visible(chosen))) return refuse(response, who, 403, "That project is outside your access.", "/settings/learning");
-    const selector = html`<form method="get" action="/settings/learning"><label>Project<select name="repo">${projects.map(p => html`<option value="${p}"${p === chosen ? " selected" : ""}>${p.split("/").at(-1) ?? p}</option>`)}</select></label><button>Show project</button></form>`;
+    const selector = projectPicker("/settings/learning", projects.map(repo => ({ repo, name: projectName(repo) })), chosen);
     let content: Html = html`<p>No project is available.</p>`;
     if (chosen) {
       try { content = (learningHtml(learningView(store, evidenceRoot, chosen, who.name, Math.max(0, Number(url.searchParams.get("before")) || 0)), who.via === "cookie" ? who.session.csrf : "", who.role === "approver")); }
@@ -583,7 +584,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const signedIn = runtime.localSignIn?.states.claude === "connected" ? "Claude Code" : runtime.localSignIn?.states.codex === "connected" ? "Codex" : null;
     const promises = openCommitments(store, who.name, 50).map(one => ({ id: one.id, what: one.what, when: conditionWords(store, one.condition), until: one.expiresAt }));
     return sendScreen(response, 200, screen("Lead", leadSettingsHtml({ config, facts, words: leadWords(), signedIn, command: agentSignInCommand(),
-      said: url.searchParams.get("said"), saved: url.searchParams.get("saved") === "1", identity: leadIdentityOf(store, who.name), promises,
+      said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), saved: url.searchParams.get("saved") === "1", identity: leadIdentityOf(store, who.name), promises,
       about: aboutYouOf(store, who.name), aboutSaved: url.searchParams.get("saved") === "about",
       subagents: store.subagents(consoleProjects().filter(repo => store.accountCanAccess(who.name, repo))).map(one => ({ id: one.id, label: labelOf(one), project: projectName(one.repo), paused: one.state === "paused" })) }), { chrome: chromeFor(project, "settings") }));
   }
@@ -797,7 +798,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const message=error instanceof Error?error.message:'Skills could not be saved. Try again.';
       let content: Html=html`<p role="alert">${message}</p><a href="${back}">Reload Skills</a>`;
       try {content=(skillsHtml(skillsView(store,repo,who.name),who.session.csrf,true,{error:message,draft:Object.fromEntries((['method','content','url','sample','sha'] as const).map(k=>[k,body.get(k)??'']))}));}catch{/* Do not display unverified packages. */}
-      return sendScreen(response,409,screen('Skills',html`<h1>Skills</h1>${content}`,{chrome:chromeFor(repo,'settings'),functional:{script:skillsScript()}}));
+      return sendScreen(response,409,screen('Skills',settingsSubPage("agents", "Skills", html`${content}`),{chrome:chromeFor(repo,'settings'),functional:{script:skillsScript()}}));
     }
   };
   // v105: set or remove a monthly budget. An instance operator, with a step-up; the ledger keeps before → after.
@@ -888,7 +889,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const back = (key: "said" | "problem", words: string, to = repo) => redirect(response, `/settings/project?${to === "" ? "" : `repo=${encodeURIComponent(to)}&`}${key}=${encodeURIComponent(words)}`);
     const view = projectViewOf(repo, who);
     if ((body.get("name") ?? "").trim() !== view.name) return back("problem", `Type ${view.name} exactly to delete it.`);
-    const confirm = (problem: string | null) => sendScreen(response, 200, screen(`Delete ${view.name}?`, html`<p><a href="/settings/project?repo=${encodeURIComponent(repo)}">${view.name}</a></p><h1>Delete ${view.name}?</h1>${projectDeleteConfirmHtml(view, problem)}`,
+    const confirm = (problem: string | null) => sendScreen(response, 200, screen(`Delete ${view.name}?`, settingsSubPage("projects", `Delete ${view.name}?`, html`<p class="k-note"><a class="k-link" href="/settings/project?repo=${encodeURIComponent(repo)}">Back to ${view.name}, and delete nothing</a></p>${projectDeleteConfirmHtml(view, problem)}`),
       { chrome: chromeFor(repo, "settings"), forceSensitive: true }));
     if (view.running.length > 0) return back("problem", `Nothing was deleted: ${view.running.join(", ")}. Stop it, then try again.`);
     if (body.get("step") !== "delete") return confirm(null);
@@ -1236,7 +1237,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     setYouiyouxIntake(store, repo, on, who.name, clock());
     return back("said", on ? `youiyoux requests in ${basename(repo)} become tasks again.` : `youiyoux requests in ${basename(repo)} are off.`);
   }
-  // Settings → Integrations → Send test: one harmless read-only check of one integration, now.
+  // Settings → Integrations → Check connection: one harmless read-only check of one integration, now.
   async function integrationsTest(ctx: HandlerContext): Promise<void> {
     const { who, response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.integrationsTest);
@@ -1469,7 +1470,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const repo = body.get('repo') ?? '';
     if (!visible(repo) || !store.accountCanAccess(who.name, repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
     const refreshed = await repositoryContext({ repo, query: '', refresh: true, cacheRoot: join(dirname(evidenceRoot), 'repository-context') });
-    return sendScreen(response, refreshed.index.status === 'ready' ? 200 : 503, screen('Project context', html`<h1>Project context</h1><p>${refreshed.index.status === 'ready' ? 'Code index refreshed.' : 'The index is unavailable. Source search still works.'}</p><a class="button-link" href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Open knowledge</a>`, { chrome: chromeFor(repo, 'settings') }));
+    return sendScreen(response, refreshed.index.status === 'ready' ? 200 : 503, screen('Project context', settingsSubPage("agents", "Project context", html`<p>${refreshed.index.status === 'ready' ? 'Code index refreshed.' : 'The index is unavailable. Source search still works.'}</p><a class="button-link" href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Open knowledge</a>`), { chrome: chromeFor(repo, 'settings') }));
   }
   async function knowledgeProposal(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
@@ -1478,7 +1479,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
     if (!['accept', 'reject'].includes(decision) || !/^[0-9]{1,12}$/.test(body.get('proposal') ?? '')) return refuse(response, who, 400, 'Choose accept or reject for one proposal.', '/settings/knowledge');
     try { decideProposal(store, { repo, actor: who.name, id: Number(body.get('proposal')), decision: decision as 'accept' | 'reject' }, now); }
-    catch (error) { return sendScreen(response, 409, screen('Knowledge', html`<h1>Knowledge</h1><p role="alert">${error instanceof Error ? error.message : 'That proposal could not be decided.'}</p><p><a href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Back to knowledge</a></p>`, { chrome: chromeFor(repo, 'settings') })); }
+    catch (error) { return sendScreen(response, 409, screen('Knowledge', settingsSubPage("agents", "Knowledge", html`<p role="alert">${error instanceof Error ? error.message : 'That proposal could not be decided.'}</p><p><a href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Back to knowledge</a></p>`), { chrome: chromeFor(repo, 'settings') })); }
     return redirect(response, `/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
   }
   async function knowledgeDecision(ctx: HandlerContext): Promise<void> {
@@ -1495,7 +1496,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const draft = { claim: body.get('claim') ?? '', why: body.get('why') ?? '' };
       let content: Html = html``;
       try { content = (decisionsHtml(repo, listDecisions(store, repo, who.name, { limit: 50 }), who.session.csrf, true, draft, error instanceof Error ? error.message : 'Save failed. Your draft is below.')); } catch { content = html`<p role="alert">Project decisions are unavailable. Your unsaved draft is below.</p><pre class="knowledge">${JSON.stringify(draft, null, 2)}</pre>`; }
-      return sendScreen(response, 409, screen('Knowledge', html`<h1>Knowledge</h1>${content}`, { chrome: chromeFor(repo, 'settings') }));
+      return sendScreen(response, 409, screen('Knowledge', settingsSubPage("agents", "Knowledge", html`${content}`), { chrome: chromeFor(repo, 'settings') }));
     }
     return redirect(response, `/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
   }
@@ -1513,7 +1514,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     } catch (error) {
       let content: Html = html`<p role="alert">Project knowledge is unavailable. Your unsaved draft is below.</p><pre class="knowledge">${JSON.stringify(draft,null,2)}</pre>`;
       try { content=(knowledgeHtml(knowledgeView(store,repo,who.name),who.session.csrf,true,draft,error instanceof Error?error.message:'Save failed. Your draft is below.')); } catch { /* never render unverified saved context */ }
-      return sendScreen(response,409,screen('Knowledge',html`<h1>Knowledge</h1>${content}`,{chrome:chromeFor(repo,'settings')}));
+      return sendScreen(response,409,screen('Knowledge',settingsSubPage("agents", "Knowledge", html`${content}`),{chrome:chromeFor(repo,'settings')}));
     }
     return redirect(response,`/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
   }
@@ -1527,7 +1528,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     try {
       changeLearning(store, evidenceRoot, { repo, actor: who.name, identity: body.get("identity") ?? "", revision: Number(body.get("revision")), action: action as "adopt" | "disable" | "reset" | "enable" | "pause", lesson: Number(body.get("lesson")), version: Number(body.get("version")), sha: body.get("sha") ?? "" }, clock());
     } catch (error) {
-      return sendScreen(response, 409, screen("Learning", html`<section class="learning"><h1>Learning</h1><p class="problem" role="alert">${error instanceof Error ? error.message : "Learning could not be changed. Reload to retry."}</p><a class="button-link" href="/settings/learning?repo=${encodeURIComponent(repo)}">Reload Learning</a></section>`));
+      return sendScreen(response, 409, screen("Learning", settingsSubPage("agents", "Learning", html`<section class="learning"><p class="problem" role="alert">${error instanceof Error ? error.message : "Learning could not be changed. Reload to retry."}</p><a class="button-link" href="/settings/learning?repo=${encodeURIComponent(repo)}">Reload Learning</a></section>`)));
     }
     return redirect(response, `/settings/learning?repo=${encodeURIComponent(repo)}`);
   }
@@ -1544,7 +1545,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const nonceKey = `project-instructions:${project}`;
       if (step === "preview") {
         const nonce = mintApprovalNonce(who.name, nonceKey, preview.fingerprint);
-        return sendScreen(response, 200, screen("Review agent instructions", html`<h1>Review agent instructions</h1><p>${preview.plan.skillPath}</p><pre class="recap">${preview.content}</pre>${postForm("/control/instructions-approve", html`${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`)}<button>Add these instructions</button>`, { hidden: { repo: project, nonce, fingerprint: preview.fingerprint } })}`, { chrome: chromeFor(project, "settings") }));
+        return sendScreen(response, 200, screen("Review agent instructions", settingsSubPage("projects", "Review agent instructions", html`<p>${preview.plan.skillPath}</p><pre class="recap">${preview.content}</pre>${postForm("/control/instructions-approve", html`${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`)}<button>Add these instructions</button>`, { hidden: { repo: project, nonce, fingerprint: preview.fingerprint } })}`), { chrome: chromeFor(project, "settings") }));
       }
       if (who.via === "cookie" && !consumeApprovalNonce(body.get("nonce") ?? "", who.name, nonceKey, body.get("fingerprint") ?? "")) return refuse(response, who, 409, "This instruction preview expired. Review it again.", "/control");
       if (!authenticateApprover(who, body.get("token") ?? "").ok) return refuse(response, who, 403, "Your operator credential is required.", "/control");

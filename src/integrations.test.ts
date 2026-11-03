@@ -79,7 +79,7 @@ test("Telegram: Not set up, then Connected as its bot, then Broken with a fix in
   // Configured but not yet checked: the page can say so without waiting.
   expect(one(integrationsNow(io()), "telegram")).toMatchObject({ checked: false });
   const connected = one(await checkIntegrations(io()), "telegram");
-  expect(connected).toMatchObject({ state: "connected", account: "@shop_alerts_bot", checked: true, lastSuccessAt: T0.toISOString(), lastError: null, action: { kind: "test", label: "Send test" } });
+  expect(connected).toMatchObject({ state: "connected", account: "@shop_alerts_bot", checked: true, lastSuccessAt: T0.toISOString(), lastError: null, action: { kind: "test", label: "Check connection" } });
 
   now = at(5);
   const broken = one(await checkIntegrations(io({ fetch: telegramFetch(401, { ok: false, description: `Unauthorized ${BOT_TOKEN}` }) })), "telegram");
@@ -200,7 +200,7 @@ test("a render never waits on an integration check: the page answers while every
       expect(started).toBeGreaterThan(0);
       expect(page).toMatch(/data-integration="telegram" data-state="connected"/);
       expect(page).toContain("Checking");
-      expect(page).toMatch(/data-integration="slack" data-state="not-set-up"[\s\S]*?href="\/settings\/slack">Set up</);
+      expect(page).toMatch(/data-integration="slack" data-state="not-set-up"[\s\S]*?href="\/settings\/slack"><span class="k-face">Set up</);
       expect(page).not.toContain(BOT_TOKEN);
       // A second render while the checks still hang starts nothing and still answers at once.
       const again = started;

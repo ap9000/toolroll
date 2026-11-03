@@ -449,3 +449,9 @@ export async function form(request: IncomingMessage, cap = BODY_CAP): Promise<UR
   }
   return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
 }
+
+/** A refused chat setting (POST /chat/config): back on the lead's settings it is a ?problem=, which the page's section
+ * shows in place with the edits kept; elsewhere it stays the chat's said line. */
+export function chatRefusal(back: string, words: string): string {
+  return back === "/settings/lead" ? `/settings/lead?problem=${encodeURIComponent(words)}` : chatReturnWithSaid(back, words);
+}

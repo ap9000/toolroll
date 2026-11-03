@@ -43,7 +43,7 @@ export type IntegrationGroup = "chat" | "code" | "mail" | "tools" | "monitoring"
 export type IntegrationPlace = { href: string | null; command: string | null };
 export type IntegrationAction =
   | ({ kind: "setup"; label: "Set up" } & IntegrationPlace)
-  | { kind: "test"; label: "Send test" }
+  | { kind: "test"; label: "Check connection" }
   | ({ kind: "fix"; label: "Fix"; words: string } & IntegrationPlace)
   /** A project's youiyoux requests: one switch, and the problem to fix when it is Broken. */
   | { kind: "switch"; label: "Turn off" | "Turn on"; repo: string; on: boolean; words: string | null };
@@ -512,7 +512,7 @@ function combine(target: Target, row: CheckRow | undefined): Integration {
   if (failing !== null) {
     return { ...base, ...common, state: "broken", action: { kind: "fix", label: "Fix", words: scrubIntegrationText(failing ?? "The last check failed."), ...target.fix } };
   }
-  return { ...base, ...common, state: "connected", action: { kind: "test", label: "Send test" } };
+  return { ...base, ...common, state: "connected", action: { kind: "test", label: "Check connection" } };
 }
 
 /**
@@ -607,7 +607,7 @@ export function renderIntegrations(list: readonly Integration[], secrets: Secret
 export type IntegrationMonitor = {
   /** The list now, from the last answers saved. It only reads: a page calls it on every render (docs/plans/get-side-effects.md). */
   list(): Integration[];
-  /** Check now and wait (Send test, Check now, or the first answer in a test). */
+  /** Check now and wait (Check connection, Check now, or the first answer in a test). */
   check(keys?: readonly string[]): Promise<Integration[]>;
   /** The background pass: start a check when the last one is older than the cache. Never called from a page. */
   refreshIfDue(): void;

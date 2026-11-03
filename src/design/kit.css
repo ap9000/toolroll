@@ -529,3 +529,4 @@ html.k-js .k-sform[data-k-gate]:not([data-dirty]) .k-ssave:has(.k-ssave-said:emp
 .k-srec-a .k-sform { display: block; }
 .k-srec-a .k-ssave { min-height: 0; padding: 0; background: none; }
 .k-srec-a .k-ssave-said:empty { display: none; }
+pre.k-scode { white-space: pre-wrap; }

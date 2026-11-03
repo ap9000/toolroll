@@ -25,7 +25,7 @@ test("PostHog connected with write access stays Connected, says once why researc
   const html = toolsHtml({ ...view(null), tools: [{ tool: posthog, secretsSet: ["OAUTH_ACCESS_TOKEN"] }],
     connections: [{ id: "posthog", label: "PostHog", about: "Product analytics, funnels and events.", state: "connected", research: "PostHog is connected with write access, so research runs can't use it." }] }, "csrf", true);
   expect(html.split(said)).toHaveLength(2);
-  expect(html.match(/>Reconnect read-only</g)).toHaveLength(2);
+  expect(html.match(/>Reconnect read-only</g)).toHaveLength(1);
   // Someone who can't manage tools sees why, without a control they can't use.
   const viewer = toolsHtml({ ...view(null), tools: [{ tool: posthog, secretsSet: ["OAUTH_ACCESS_TOKEN"] }], connections: [{ id: "posthog", label: "PostHog", about: "", state: "connected", research: "PostHog is connected with write access, so research runs can't use it." }] }, "", false);
   expect(viewer).toContain(said);
@@ -45,19 +45,21 @@ test("each tool says in one line how its runs get credentials, explains it under
   ];
   const files = { words: "Secrets are protected by owner-only files on this computer.", filesOnly: true };
   const html = toolsHtml({ ...view(null), tools, storage: files }, "csrf", true);
-  const line = (name: string) => /<p class="tool-credential" data-credential="([a-z-]+)">([^<]+)<\/p>/.exec(html.slice(html.indexOf(`id="tool-${name}"`)).split("</article>")[0]!)?.slice(1) ?? null;
+  const card = (name: string) => html.slice(html.indexOf(`id="tool-${name}"`)).split('<div class="k-srec"')[0]!;
+  const line = (name: string) => /<span data-credential="([a-z-]+)">([^<]+)<\/span>/.exec(card(name))?.slice(1) ?? null;
   expect(line("linear")).toEqual(["run-token", "Short-lived token per run"]);
   expect(line("notion")).toEqual(["held-key", "Key held by Toolroll"]);
   expect(line("github")).toEqual(["held-key", "Key held by Toolroll"]);
   expect(line("playwright")).toEqual(["no-key", "No key needed"]);
   // A key not set yet: the state says what's missing, and no mode is claimed.
   expect(line("sentry")).toBeNull();
-  expect(html).toContain('<span class="tool-state" data-ready="false">Needs SENTRY_ACCESS_TOKEN</span>');
+  expect(card("sentry")).toContain('data-ready="false"');
+  expect(card("sentry")).toContain('<span class="k-chip">Needs SENTRY_ACCESS_TOKEN</span>');
   // A service connected by signing in renews by signing in again: none of its tokens is offered to paste.
-  expect(html.slice(html.indexOf('id="tool-linear"')).split("</article>")[0]).not.toMatch(/<summary>(Set|Replace) OAUTH_/);
+  expect(card("linear")).not.toMatch(/<summary>(Set|Replace) OAUTH_/);
   expect(html).toContain("<summary>Replace GITHUB_TOKEN</summary>");
   expect(html.split(files.words)).toHaveLength(2);
   // With a keychain, the note is gone and How tools work says where secrets are kept.
   const keychain = toolsHtml({ ...view(null), tools, storage: { words: "Secrets are kept in the macOS Keychain.", filesOnly: false } }, "csrf", true);
-  expect(keychain).not.toContain("tool-storage");
+  expect(keychain).not.toContain(files.words);
 });

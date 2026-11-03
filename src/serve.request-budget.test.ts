@@ -135,7 +135,7 @@ test("an instance operator overrides limits in the console with their password; 
   const signIn = async (name: string, secret: string) => sessionOf(await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name, token: secret }), redirect: "manual" }));
   const cookie = await signIn("alex", password);
   let page = await (await fetch(`${base}/settings/sessions`, { headers: { cookie } })).text();
-  expect(page).toContain("<summary>Request limits</summary>");
+  expect(page).toContain('<section class="k-ssec" id="request-limits"');
   const save = (fields: Record<string, string>, as = cookie) => fetch(`${base}/settings/request-limits`, { method: "POST", headers: { cookie: as, origin: base }, body: new URLSearchParams({ csrf: csrfOf(page), action: "save", ...fields }), redirect: "manual" });
   const said = (answer: Response) => decodeURIComponent(/[?&](?:said|problem)=([^&]*)/.exec(answer.headers.get("location") ?? "")?.[1] ?? "");
 
@@ -160,7 +160,7 @@ test("an instance operator overrides limits in the console with their password; 
   expect(store.setAccountProjects("sam", ["/repo/main"], "alex", new Date())).toEqual({ ok: true });
   const samCookie = await signIn("sam", sam.token);
   page = await (await fetch(`${base}/settings/sessions`, { headers: { cookie: samCookie } })).text();
-  expect(page).not.toContain("<summary>Request limits</summary>");
+  expect(page).not.toContain('id="request-limits"');
   expect((await save({ target: "*", "act-per-minute": "600", password: sam.token }, samCookie)).status).toBe(403);
   expect(store.handle.prepare("SELECT act_per_minute FROM request_budget_limit WHERE target = '*'").get()?.["act_per_minute"]).toBe(5);
 });

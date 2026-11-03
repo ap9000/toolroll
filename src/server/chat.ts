@@ -62,7 +62,7 @@ import type { ServerRuntime } from './runtime.js';
 import { html,htmlString,postForm,reauth } from "../html.js";
 import { requestContext } from "./request-context.js";
 import { refuse,screen,whenTime,type Screen } from "./chrome.js";
-import { chatResultHref,chatReturnWithLatest,chatReturnWithSaid,projectChatHref,redirect,respond,safeChatReturn,safeReturn,taskChatHref,taskHref } from "./http.js";
+import { chatResultHref,chatReturnWithLatest,chatRefusal,chatReturnWithSaid,projectChatHref,redirect,respond,safeChatReturn,safeReturn,taskChatHref,taskHref } from "./http.js";
 import { chatAckPage,chatPage,NOT_STARTED_SESSION,coordinatorProposalsSection,decisionsFor,leadAfterComposerHtml,leadChatVersion,leadMintCard,leadPage,leadThreadHtml,PHONE_CARD_FACT,TASK_COMPOSER_MODES,taskChatLiveRegion,teamProposalCardParts,type AssignmentChatSnapshot,type ChatEnablement,type LiveTurn,type TaskComposerMode } from "./render-chat.js";
 import { type ProjectPeek } from "./render-pages.js";
 import { completionForm,hardBlockerOf,homePhaseWords,owedAcceptanceOf,resultPanelHtml } from "./render-results.js";
@@ -581,7 +581,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const back = body.get("return") === "/settings/lead" ? "/settings/lead" : safeChatReturn(body.get("return"));
     const password = body.get("token") ?? "";
     if (password === "" || !authenticateApprover(who, password).ok) {
-      return redirect(response, chatReturnWithSaid(back, "configuring chat spend takes your password, typed again"));
+      return redirect(response, chatRefusal(back, "configuring chat spend takes your password, typed again"));
     }
     if (body.get("off") === "1") {
       store.clearChatConfig();
@@ -598,21 +598,21 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const weekly = Number(weeklyText);
     const daily = (body.get("daily-turns") ?? "").trim() === "" ? 50 : Number(body.get("daily-turns"));
     if (provider !== "anthropic-api" && provider !== "openrouter-api" && provider !== "claude-subscription" && provider !== "codex-subscription") {
-      return redirect(response, chatReturnWithSaid(back, "pick a chat provider"));
+      return redirect(response, chatRefusal(back, "pick a chat provider"));
     }
     const subscription = isSubscriptionChatProvider(provider);
     const model = requestedModel === "" && subscription ? "default" : requestedModel;
     if (!validModelId(model)) {
-      return redirect(response, chatReturnWithSaid(back, "the model id must be 1–128 letters, digits, dots, slashes, colons, underscores, or dashes"));
+      return redirect(response, chatRefusal(back, "the model id must be 1–128 letters, digits, dots, slashes, colons, underscores, or dashes"));
     }
     // The key, when pasted, is stored FIRST (0600 file, Telegram-token
     // precedent) so the catalog fetch below can already use it. It never
     // touches the database and is never echoed back.
     const pastedKey = (body.get("key") ?? "").trim();
     if (pastedKey !== "") {
-      if (subscription) return redirect(response, chatReturnWithSaid(back, "subscription chat uses the CLI's cached login — do not paste an API key"));
+      if (subscription) return redirect(response, chatRefusal(back, "subscription chat uses the CLI's cached login — do not paste an API key"));
       const stored = storeChatKey(provider as DirectChatProviderId, pastedKey);
-      if (!stored.ok) return redirect(response, chatReturnWithSaid(back, stored.message));
+      if (!stored.ok) return redirect(response, chatRefusal(back, stored.message));
     }
     // The pin: anthropic models come from the compiled table; openrouter
     // models come from OpenRouter's OWN catalog, priced by the authority
@@ -626,13 +626,13 @@ export function createChatHandlers(runtime: ServerRuntime) {
       if (hit !== undefined) pin = hit.price;
     }
     if (!subscription && pin === null) {
-      return redirect(response, chatReturnWithSaid(back, provider === "openrouter-api" ? "that model is not in OpenRouter's catalog (or the catalog is unreachable) — chat cannot reserve spend it cannot bound" : "that model has no pinned price — chat cannot reserve spend it cannot bound"));
+      return redirect(response, chatRefusal(back, provider === "openrouter-api" ? "that model is not in OpenRouter's catalog (or the catalog is unreachable) — chat cannot reserve spend it cannot bound" : "that model has no pinned price — chat cannot reserve spend it cannot bound"));
     }
     if (!subscription && (!Number.isFinite(weekly) || weekly <= 0)) {
-      return redirect(response, chatReturnWithSaid(back, "the weekly ceiling is a positive dollar amount — chat without one is unbounded, not configured"));
+      return redirect(response, chatRefusal(back, "the weekly ceiling is a positive dollar amount — chat without one is unbounded, not configured"));
     }
     if (!Number.isInteger(daily) || daily <= 0 || daily > 1_000) {
-      return redirect(response, chatReturnWithSaid(back, "daily turns is a whole number between 1 and 1000"));
+      return redirect(response, chatRefusal(back, "daily turns is a whole number between 1 and 1000"));
     }
     store.setChatConfig(
       {

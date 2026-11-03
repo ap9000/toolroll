@@ -222,14 +222,14 @@ test("the console asks for the project's name, then the password, and only an in
     const cookie = await signIn("alex", alex.token);
     const page = await (await fetch(`${base}/settings/project?repo=${encodeURIComponent(repo)}`, { headers: { cookie } })).text();
     expect(page).toContain("<summary>Delete project</summary>");
-    expect(page).toContain("Type <strong>shop</strong> to continue</span>");
+    expect(page).toContain('<span class="k-frow-t">Type shop to continue</span>');
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
     const post = (fields: Record<string, string>, who = cookie) => fetch(`${base}/settings/project/delete`, { method: "POST", headers: { cookie: who, origin: base }, body: new URLSearchParams({ csrf, repo, ...fields }), redirect: "manual" });
     // The wrong name goes back with nothing deleted.
     expect(decodeURIComponent((await post({ name: "shoe" })).headers.get("location")!)).toContain("Type shop exactly to delete it.");
     // The right name shows what goes, and asks for the password.
     const confirm = await (await post({ name: "shop" })).text();
-    expect(confirm).toContain("<h1>Delete shop?</h1>");
+    expect(confirm).toContain('<h2 class="k-same">Delete shop?</h2>');
     expect(confirm).toContain("1 task and 1 version, with 2 runs and their evidence");
     expect(confirm).toContain('name="password"');
     expect(confirm).toContain('name="step" value="delete"');

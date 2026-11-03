@@ -64,7 +64,7 @@ const login = async () => {
 const page = async (cookie: string, query = "") => (await fetch(`${base}/settings/tools${query}`, { headers: { cookie } })).text();
 /** The hidden fields of the first form posting to `action` on the page. */
 const formOf = (html: string, action: string) => {
-  const form = new RegExp(`<form method="post" action="${action}">[\\s\\S]*?</form>`).exec(html)?.[0] ?? "";
+  const form = new RegExp(`<form method="post" action="${action}"[^>]*>[\\s\\S]*?</form>`).exec(html)?.[0] ?? "";
   return Object.fromEntries([...form.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map(m => [m[1]!, m[2]!.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&")]));
 };
 const post = (cookie: string, path: string, fields: Record<string, string>) =>
@@ -109,7 +109,7 @@ test("a connected service is connected to another project with one action: a fre
   expect(addToolTo(store, BENTO, connectedSpec("stripe")!, "connected by signing in", "alex", T0, { home })).toMatchObject({ ok: true });
   const cookie = await login();
   const html = await page(cookie, `?repo=${encodeURIComponent(BENTO)}`);
-  const fields = formOf(html.slice(html.indexOf('class="tool-elsewhere"')), "/settings/tools/connect");
+  const fields = formOf(html.slice(html.indexOf('id="connect-elsewhere"')), "/settings/tools/connect");
   expect(fields).toMatchObject({ repo: BENTO, shown: BENTO });
   const started = await post(cookie, "/settings/tools/connect", { ...fields, also: `stripe:${ORDERS}`, password: token });
   expect(started.status).toBe(200);
@@ -175,7 +175,7 @@ test("PostHog connected with write access says why research can't use it, and Re
   setToolSecrets(BENTO, "posthog", { OAUTH_ACCESS_TOKEN: "ph-secret", OAUTH_GRANTED_SCOPE: "insight:read insight:write user:read" }, home);
   const cookie = await login();
   const html = await page(cookie, `?repo=${encodeURIComponent(BENTO)}`);
-  expect(html).toContain('<p class="tool-note" role="status">PostHog is connected with write access, so research runs can&#39;t use it.</p>');
+  expect(html).toContain('<p class="k-notice info">PostHog is connected with write access, so research runs can&#39;t use it.</p>');
   expect(html).not.toContain("ph-secret");
   const card = html.slice(html.indexOf('id="tool-posthog"'));
   const fields = formOf(card, "/settings/tools/connect");
@@ -188,14 +188,14 @@ test("PostHog connected with write access says why research can't use it, and Re
   // Read-only: the grant now reads only, the note goes, and the card is as before.
   setToolSecrets(BENTO, "posthog", { OAUTH_GRANTED_SCOPE: "insight:read openid user:read" }, home);
   const after = await page(cookie, `?repo=${encodeURIComponent(BENTO)}`);
-  expect(after).not.toContain("tool-note");
+  expect(after).not.toContain("connected with write access");
   expect(after).not.toContain("Reconnect read-only");
 });
 
 test("Settings → Project's Build access never shows a tool's secret", async () => {
   const cookie = await login();
   const projectPage = async () => (await fetch(`${base}/settings/project?repo=${encodeURIComponent(BENTO)}`, { headers: { cookie } })).text();
-  const section = (html: string) => /<section class="build-access"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
+  const section = (html: string) => /<section class="k-ssec" id="build-access"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
 
   // Named tools: one ready, one missing its secret (named on the page, never its value).
   const secret = ["lin", "api", "9c".repeat(16)].join("_");
@@ -204,6 +204,7 @@ test("Settings → Project's Build access never shows a tool's secret", async ()
   setToolSecrets(BENTO, "linear", { LINEAR_TOKEN: secret }, home);
   expect(addToolTo(store, BENTO, { name: long, transport: "stdio", command: "npx", args: ["docs-mcp"], url: null, secrets: [{ name: "DOCS_TOKEN", optional: false }], bearer: null, headerSecrets: {}, about: "Docs" }, "custom", "alex", T0, { home })).toMatchObject({ ok: true });
   const named = section(await projectPage());
+  expect(named).toContain("Build access");
   expect(named).not.toContain(secret);
 });
 
@@ -212,8 +213,8 @@ test("Build access says plainly when a project's tools can't be read", async () 
   const { htmlString } = await import("./html.js");
   const view = { repo: BENTO, name: "bentoportfolio", holdings: { tasks: 0, versions: 0, runs: 0, chats: 0, flows: 0, cards: 0, subagents: 0 }, running: [], canDelete: false };
   const failed = htmlString(projectSettingsHtml({ ...view, access: { problem: "Couldn't read this project's tools right now." } } as never, {}));
-  expect(failed).toContain('<p class="problem" role="alert">Couldn&#39;t read this project&#39;s tools right now.</p>');
-  expect(failed).toContain(">Manage tools</a>");
+  expect(failed).toMatch(/<p class="k-notice" role="alert">[\s\S]*?<span>Couldn&#39;t read this project&#39;s tools right now.<\/span><\/p>/);
+  expect(failed).toContain(">Manage tools</span></a>");
 });
 
 test.each(["revoked", "generation", "project access"] as const)("a Connect whose signer lost standing mid-visit (%s) connects nothing and grants nothing (0.9.73 review round 2, finding 2)", async lost => {

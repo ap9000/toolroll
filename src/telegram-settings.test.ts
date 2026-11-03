@@ -46,6 +46,10 @@ test("each teammate pairs and unpairs their own phone from the console; a code s
     expect(minted.status).toBe(200);
     const shown = await minted.text();
     const code = /\/pair ([0-9a-f]{32})/.exec(shown)![1]!;
+    // The code page is script-free, the code is selectable text, and it is in no address.
+    expect(shown).not.toContain("<script");
+    expect(shown).toContain(`<code class="k-scode">/pair ${code}</code>`);
+    expect(shown.match(/(?:href|action|src)="[^"]*"/g)?.filter(one => one.includes(code)) ?? []).toEqual([]);
     // The code pairs alex's own chat; sam's simultaneous code pairs sam's.
     expect(store.consumeTelegramPairing({ codeHash: hashPairingCode(code), botId: "777000", chatId: "4242", userId: "4242", updateId: 1 }, new Date())).toMatchObject({ ok: true });
     // A project-scoped subagent can manage their own phone without gaining

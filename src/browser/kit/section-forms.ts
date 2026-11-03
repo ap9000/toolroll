@@ -275,9 +275,16 @@ function send(form: SForm, snapshot: readonly [string, string][], proof: readonl
   if (form.hasAttribute("data-k-native")) {
     // The answer is a page of its own: post as a navigation. The page behind the popover was inert, so the form
     // holds exactly the snapshot, plus the proof just typed.
-    busy(form, true);
+    // A download leaves the page where it is: nothing stays pending or busy, and the typed password is cleared.
+    const download = form.hasAttribute("data-k-download");
+    if (!download) busy(form, true);
     form.kGo = true;
     try { if (submitter instanceof HTMLButtonElement && submitter.form === form) form.requestSubmit(submitter); else form.requestSubmit(); } finally { form.kGo = false; }
+    if (download) {
+      form.kPending = false;
+      form.kSent = false;
+      for (const input of Array.from(proofOf(form)?.querySelectorAll<HTMLInputElement>('input[type="password"]') ?? [])) input.value = "";
+    }
     return;
   }
   void post(form, snapshot, proof, submitter);

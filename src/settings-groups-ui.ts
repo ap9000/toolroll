@@ -699,3 +699,9 @@ export function passwordlessHtml(view: { on: boolean; since: string | null; trad
       body: joinHtml([note(view.trade), control]) }),
   ]), { lead: "Sign in once; most approvals then need no password." });
 }
+
+/** Which project a per-project settings page shows: a GET form (an address, not a save). */
+export function projectPicker(action: string, projects: readonly { repo: string; name: string }[], chosen: string): Html {
+  if (projects.length < 2) return html``;
+  return html`<form method="get" action="${action}" class="k-acts k-picker">${select({ name: "repo", label: "Project", current: chosen, items: projects.map(one => [one.repo, one.name] as const) })}${btn("Show", { sm: true, type: "submit" })}</form>`;
+}

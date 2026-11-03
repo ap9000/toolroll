@@ -6,15 +6,15 @@
 import type { ApiTokenRow, WebSessionRow } from "./store.js";
 import { daysLeft, expiryNoticeDue, TOKEN_DAYS, tokenLive } from "./api-tokens.js";
 import { projectName } from "./project.js";
-import { html, postForm, type Html } from "./html.js";
+import { html, joinHtml, postForm, type Html } from "./html.js";
+import { acts, btn, chip, disclose, formRow, infoLine, input, note, notice, select, settingsRecord, settingsSection } from "./server/kit.js";
+import { kitSectionForm } from "./settings-kit.js";
+import { settingsSubPage } from "./settings-groups-ui.js";
 
 
-export const CREDENTIALS_CSS = `.credentials{max-width:820px;min-width:0}.credentials .card{padding:14px 16px;margin:12px 0}.credentials h2{font-size:1.05rem;margin:0 0 8px}` +
-  `.credentials .rows{display:grid;gap:0;border:1px solid var(--so-line);border-radius:10px;overflow:hidden}.credentials .row-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid var(--so-line)}` +
-  `.credentials .row-item:last-child{border-bottom:0}.credentials .row-item p{margin:0}.credentials .row-item .meta{font-size:.85rem}.credentials form{margin:0}.credentials button{min-height:40px;white-space:nowrap}` +
-  `.credentials .create{display:grid;gap:10px}.credentials .create label{display:grid;gap:6px}.credentials .create input,.credentials .create select{box-sizing:border-box;width:100%}.credentials .badge-here{font-size:.75rem;padding:1px 6px;border-radius:999px;background:var(--so-success-soft);color:var(--so-success);margin-left:6px}` +
-  `.credentials .row-item>div{min-width:0}.credentials .row-item p{overflow-wrap:anywhere}.credentials .soon{color:var(--so-warning,#9a6700);font-weight:600}` +
-  `@media(max-width:600px){.credentials .row-item{flex-wrap:wrap}.credentials .create input,.credentials .create select{font-size:16px}}`;
+/** The old card look; the page is built from the kit now (src/server/kit.ts), so nothing is left to style. Kept for
+ * chrome.ts, which still concatenates it. */
+export const CREDENTIALS_CSS = "";
 
 /** "Chrome on macOS", from a user agent, for a person to recognise a session. */
 export function deviceWords(agent: string | null): string {
@@ -40,39 +40,65 @@ export type CredentialsView = {
   limits?: { note: (token: ApiTokenRow) => string; section: Html };
 };
 
-export function credentialsHtml(view: CredentialsView, notice: { said?: string | null; problem?: string | null }): Html {
-  const post = (fields: Record<string, string>, label: string, style = "secondary") => postForm("/settings/sessions", html`<button class="${style}">${label}</button>`, { hidden: { ...fields, ...(view.everyone ? { everyone: "1" } : {}) } });
-  const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
-  const toggle = view.canSeeEveryone ? html`<p class="meta"><a href="/settings/sessions${view.everyone ? "" : "?everyone=1"}">${view.everyone ? "Show only mine" : "Show everyone's"}</a></p>` : "";
-  const sessions = view.sessions.length === 0 ? html`<p class="meta">No one else is signed in.</p>` : html`<div class="rows">${view.sessions.map(one =>
-    html`<div class="row-item" data-session="${one.idHash.slice(0, 12)}"><div><p>${view.everyone ? html`<strong>${one.account}</strong> · ` : ""}${deviceWords(one.agent)}${one.here ? html`<span class="badge-here">This browser</span>` : ""}</p>\
-<p class="meta">${one.ssoAt === null ? "Password" : "Identity provider"} · ${one.address ?? "unknown address"} · active ${when(one.lastSeen, view.now)} · signed in ${when(one.createdAt, view.now)}</p></div>\
-${one.here ? "" : post({ action: "end-session", session: one.idHash }, "Sign out")}</div>`)}</div>`;
+export function credentialsHtml(view: CredentialsView, outcome: { said?: string | null; problem?: string | null }): Html {
+  // An act on this page (sign out, revoke): one button, nothing to prove (the proof row covers only making a token).
+  const act = (fields: Record<string, string>, label: string, variant: "outline" | "danger" = "outline") =>
+    postForm("/settings/sessions", btn(label, { sm: true, type: "submit", variant }), { hidden: { ...fields, ...(view.everyone ? { everyone: "1" } : {}) } });
+  const answer = outcome.problem ? notice(outcome.problem) : outcome.said ? infoLine(outcome.said) : "";
+  const toggle = view.canSeeEveryone ? btn(view.everyone ? "Show only mine" : "Show everyone’s", { sm: true, variant: "ghost", href: `/settings/sessions${view.everyone ? "" : "?everyone=1"}` }) : undefined;
   const others = view.sessions.filter(one => !one.here && one.account === view.who).length;
-  const endOthers = others > 0 && !view.everyone ? post({ action: "end-others" }, `Sign out everywhere else (${others})`) : "";
+  const endOthers = others > 0 && !view.everyone ? acts(act({ action: "end-others" }, `Sign out everywhere else (${others})`)) : "";
+  const sessions = settingsSection({ id: "signed-in", title: "Signed in", ...(toggle ? { right: toggle } : {}),
+    body: joinHtml([
+      view.sessions.length === 0 ? note("No one else is signed in.") : joinHtml(view.sessions.map(one => settingsRecord({
+        title: html`${view.everyone ? html`<b>${one.account}</b> · ` : ""}${deviceWords(one.agent)}${one.here ? html` ${chip("This browser", "")}` : ""}`,
+        sub: `${one.ssoAt === null ? "Password" : "Identity provider"} · ${one.address ?? "unknown address"} · signed in ${when(one.createdAt, view.now)}`,
+        when: `Active ${when(one.lastSeen, view.now)}`,
+        action: one.here ? "" : act({ action: "end-session", session: one.idHash }, "Sign out"),
+        attrs: { "data-session": one.idHash.slice(0, 12) },
+      }))),
+      endOthers,
+    ]) });
   const live = view.tokens.filter(one => tokenLive(one, view.now));
-  // v111: its projects, and one state: when it stops (soon, said once and marked) or, once replaced, when it ends.
-  const ends = (one: ApiTokenRow): Html => {
-    if (one.replacedBy !== null && one.overlapUntil !== null) return html`<span class="soon">Replaced · stops ${one.overlapUntil.slice(11, 16)} UTC</span>`;
-    if (expiryNoticeDue(one, view.now) === null) return html`Expires ${one.expiresAt.slice(0, 10)}`;
+  // v111: its projects, and one state: when it stops (soon, said once) or, once replaced, when it ends.
+  const ends = (one: ApiTokenRow): string => {
+    if (one.replacedBy !== null && one.overlapUntil !== null) return `Replaced · stops ${one.overlapUntil.slice(11, 16)} UTC`;
+    if (expiryNoticeDue(one, view.now) === null) return `Expires ${one.expiresAt.slice(0, 10)}`;
     const days = daysLeft(one.expiresAt, view.now);
-    return html`<span class="soon">Expires ${days <= 1 ? "within a day" : `in ${days} days`}</span>`;
+    return `Expires ${days <= 1 ? "within a day" : `in ${days} days`}`;
   };
   const scope = (one: ApiTokenRow) => one.projects === null ? "All projects" : one.projects.length === 0 ? "No projects" : one.projects.map(repo => projectName(repo)).join(", ");
-  const tokens = live.length === 0 ? html`<p class="meta">No API tokens.</p>` : html`<div class="rows">${live.map(one =>
-    html`<div class="row-item" data-token="${one.id}"><div><p>${view.everyone ? html`<strong>${one.account}</strong> · ` : ""}${one.name} · ${one.access === "act" ? "Can act" : "Read only"}</p>\
-<p class="meta">${scope(one)} · ${ends(one)} · last used ${when(one.lastUsedAt, view.now)}${view.limits === undefined ? "" : ` · ${view.limits.note(one)}`}</p></div>${post({ action: "revoke-token", token: one.id }, "Revoke")}</div>`)}</div>`;
-  const create = html`<details class="card"><summary>New API token</summary>${postForm("/settings/sessions", html`\
-<label>Name<input type="text" name="name" maxlength="60" required placeholder="for example: CI"></label>\
-<label>It can<select name="access"><option value="read">Read (tasks, results, the ledger)</option><option value="act">Act as you (file and manage work; never approve)</option></select></label>\
-<label>Expires in<select name="days">${TOKEN_DAYS.map(days => html`<option value="${days}"${days === 90 ? " selected" : ""}>${days} days</option>`)}</select></label>\
-<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button>Make the token</button>`, { attrs: { class: "create" }, hidden: { action: "create-token" } })}</details>`;
-  return html`<section class="credentials">${note}${toggle}<h2>Signed in</h2>${sessions}${endOthers}<h2 style="margin-top:1.5rem">API tokens</h2>\
-<p class="meta">For scripts and CI: send <code>Authorization: Bearer &lt;token&gt;</code>. A token can't approve anything.</p>${tokens}${view.everyone ? "" : create}${view.limits?.section ?? ""}</section>`;
+  const create = disclose("New API token", kitSectionForm({ proof: "sessions-token", action: "/settings/sessions", id: "token-form", native: true, hidden: { action: "create-token" },
+    save: { label: "Make the token" }, confirm: "Make an API token",
+    body: joinHtml([
+      formRow("Name", "So you can tell it apart later.", input({ id: "token-name", name: "name", attrs: { maxlength: 60, required: true, placeholder: "for example: CI", autocomplete: "off" } })),
+      formRow("It can", null, select({ id: "token-access", name: "access", label: "It can", current: "read",
+        items: [["read", "Read (tasks, results, the ledger)"], ["act", "Act as you (file and manage work; never approve)"]] })),
+      formRow("Expires in", null, select({ id: "token-days", name: "days", label: "Expires in", current: "90", items: TOKEN_DAYS.map(days => [String(days), `${days} days`] as const) })),
+      note("Making a token is a new way in, so it always asks for your password. The token is shown once, on the next page."),
+    ]) }), live.length === 0);
+  const tokens = settingsSection({ id: "api-tokens", title: "API tokens",
+    lead: html`For scripts and CI: send <code class="k-mono">Authorization: Bearer &lt;token&gt;</code>. A token can’t approve anything.`,
+    body: joinHtml([
+      live.length === 0 ? note("No API tokens.") : joinHtml(live.map(one => settingsRecord({
+        title: html`${view.everyone ? html`<b>${one.account}</b> · ` : ""}${one.name}`,
+        sub: `${one.access === "act" ? "Can act" : "Read only"} · ${scope(one)} · ${ends(one)}${view.limits === undefined ? "" : ` · ${view.limits.note(one)}`}`,
+        when: `Last used ${when(one.lastUsedAt, view.now)}`,
+        action: act({ action: "revoke-token", token: one.id }, "Revoke", "danger"),
+        attrs: { "data-token": one.id },
+      }))),
+      view.everyone ? "" : create,
+    ]) });
+  return joinHtml([answer, sessions, tokens, view.limits?.section ?? ""]);
 }
 
-/** The token, once: a focused page with no script. */
+/** The token, once, on a page with no script: selectable text, what it may do, and where to revoke it. */
 export function tokenShownHtml(name: string, token: string, access: "read" | "act", expiresAt: string): Html {
-  return html`<h1>${name}</h1><div class="card"><p>Your API token, shown once. Only a hash is kept, so copy it now.</p><p class="mono secret-value">${token}</p>\
-<p class="meta">${access === "act" ? "It acts as you (never approves)" : "It reads"} until ${expiresAt.slice(0, 10)}. Revoke it any time on Sessions &amp; tokens.</p></div><p class="meta"><a href="/settings/sessions">Back to Sessions &amp; tokens</a></p>`;
+  return settingsSubPage("access", "API token", settingsSection({ id: "token-shown", title: `${name} · shown once, so copy it now`,
+    lead: "Only a hash is kept, so this page is the only time you’ll see it.",
+    body: joinHtml([
+      html`<p class="k-secret-val">${token}</p>`,
+      note(`${access === "act" ? "It acts as you and never approves" : "It reads"} until ${expiresAt.slice(0, 10)}. Revoke it any time on Sessions and tokens.`),
+      acts(btn("Back to Sessions and tokens", { sm: true, href: "/settings/sessions" })),
+    ]) }));
 }

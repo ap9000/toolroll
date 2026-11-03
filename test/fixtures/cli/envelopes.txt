@@ -5764,7 +5764,7 @@ $ integrations --saved --json → 0
       "state": "connected",
       "action": {
         "kind": "test",
-        "label": "Send test"
+        "label": "Check connection"
       }
     },
     {
@@ -5884,7 +5884,7 @@ $ integrations --saved --json → 0
       "state": "connected",
       "action": {
         "kind": "test",
-        "label": "Send test"
+        "label": "Check connection"
       }
     },
     {
@@ -5904,7 +5904,7 @@ $ integrations --saved --json → 0
       "state": "connected",
       "action": {
         "kind": "test",
-        "label": "Send test"
+        "label": "Check connection"
       }
     }
   ],

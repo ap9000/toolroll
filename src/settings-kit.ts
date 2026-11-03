@@ -264,6 +264,8 @@ export type SectionForm = {
   proofWhen?: readonly [field: string, value: string];
   /** Post as a page navigation: the answer is a page of its own (a one-time secret, a review). */
   native?: boolean;
+  /** The answer is a file the browser saves (implies native): the page stays, so the button never stays busy. */
+  download?: boolean;
   /** What saying yes does, for the password popover (the row's own words by default). */
   confirm?: string;
   /** What the handler sent back for this section, in place: done, or refused (role=alert). */
@@ -293,7 +295,7 @@ export function kitSectionForm(form: SectionForm): Html {
     html`<div class="k-ssave"><span class="k-ssave-said" aria-live="polite">${form.said ?? ""}</span>${button}</div>`,
     html`<div class="k-ssave-err" id="${form.id}-err">${form.problem ? html`<p class="k-notice" role="alert"><span>${form.problem}</span></p>` : ""}</div>`,
   ]), { hidden, attrs: {
-    id: form.id, class: "k-sform", "data-k-sform": row.id, "data-k-gate": form.gate === true ? true : null, "data-k-native": form.native === true ? true : null,
+    id: form.id, class: "k-sform", "data-k-sform": row.id, "data-k-gate": form.gate === true ? true : null, "data-k-native": form.native === true || form.download === true ? true : null, "data-k-download": form.download === true ? true : null,
     "data-k-proof-if": form.proofWhen === undefined ? null : `${form.proofWhen[0]}=${form.proofWhen[1]}`,
     "data-k-confirm": form.confirm ?? row.action, "data-k-note": note,
   } });
