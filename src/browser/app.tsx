@@ -993,7 +993,10 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const pathname = new URL(workspace.path, window.location.origin).pathname;
   // The settings frame (docs/plans/settings-revamp.md §4): one column, no Crew sheet, the breadcrumb in the header.
   const settingsFrame = !workspace.team && !workspace.conversation && isSettingsFrame(pathname);
-  const hidePanel = settingsFrame || (pageOnly && !docked && !hasWork && (FULL_WIDTH_PAGES.has(pathname) || pathname.startsWith("/code/") || workspace.view?.kind === "flow"));
+  // A page built from the revamp kit (src/design/KIT.md) brings its own top bar and spacing: no page padding, no side
+  // panel (the task page's Details is its own drawer), and the shell's header stays the phone header.
+  const kitPage = !workspace.team && (workspace.view?.kind === "tasks" || workspace.view?.kind === "task" || (workspace.view == null && (workspace.pageHtml ?? "").includes("data-kit-page")));
+  const hidePanel = settingsFrame || kitPage || (pageOnly && !docked && !hasWork && (FULL_WIDTH_PAGES.has(pathname) || pathname.startsWith("/code/") || workspace.view?.kind === "flow"));
   const crumbs = settingsFrame ? (workspace.crumbs ?? []).filter(one => one.href === null || (one.href.startsWith("/") && !one.href.startsWith("//"))) : [];
   const [dismissedUpdate, setDismissedUpdate] = useState<string | null>(null);
   const update = workspace.update !== undefined && workspace.update.version !== dismissedUpdate ? workspace.update : null;
@@ -1020,7 +1023,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
     phone.addEventListener("change", sync);
     return () => { phone.removeEventListener("change", sync); column.removeAttribute("inert"); };
   }, [sheet]);
-  return <FormToken.Provider value={workspace.csrf}><Passwordless.Provider value={workspace.passwordless === true}><Toaster /><AttentionMarks workspace={workspace} /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${settingsFrame ? " so-workspace--settings" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
+  return <FormToken.Provider value={workspace.csrf}><Passwordless.Provider value={workspace.passwordless === true}><Toaster /><AttentionMarks workspace={workspace} /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${kitPage ? " so-workspace--kit" : ""}${settingsFrame ? " so-workspace--settings" : ""}${docked || (taskView !== null && !kitPage) ? " so-workspace--docked" : ""}${taskView !== null && !kitPage ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
     <a href="#workspace-main" className="so-skip-link">Skip to content</a>
     <aside className="so-sidebar"><Navigation workspace={workspace} /></aside>
     <div ref={mainColumn} className={`so-main-column${isChat ? " so-main-column--chat" : ""}`}>
@@ -1034,7 +1037,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
         <CommandMenu workspace={workspace} />
         {isChat && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden max-[901px]:h-11 max-[901px]:min-h-11" onClick={() => setPhoneView("work")}>{hasWork ? "Open work" : home !== null ? "Work" : "Crew"}</ViewButton>}
         {docked && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden max-[901px]:h-11 max-[901px]:min-h-11" onClick={() => { setPanelTab("chat"); setPhoneView("work"); }}><Icon name="chat" />Ask</ViewButton>}
-        {taskView !== null && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden max-[901px]:h-11 max-[901px]:min-h-11" data-open-details onClick={() => setPhoneView("work")}>Task details</ViewButton>}
+        {taskView !== null && !kitPage && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden max-[901px]:h-11 max-[901px]:min-h-11" data-open-details onClick={() => setPhoneView("work")}>Task details</ViewButton>}
       </header>
       {(workspace.notices.length > 0 || (workspace.signIn?.length ?? 0) > 0 || update !== null || phone !== null || (demo !== undefined && !pageScrolls)) && <div className="so-workspace-notices">
         {!pageScrolls && <DemoNotice demo={demo} />}
@@ -1083,7 +1086,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
       <div className="so-ask-body" hidden={panelTab !== "chat"}><LeadChat controller={controller} docked={workspace.view?.kind ?? "task"} /></div>
       {panelTab === "crew" && <Crew workspace={workspace} />}
     </aside>}
-    {taskView !== null && <aside className="so-supporting-panel so-details-panel" data-workspace-detail aria-label="Task details">
+    {taskView !== null && !kitPage && <aside className="so-supporting-panel so-details-panel" data-workspace-detail aria-label="Task details">
       <div className="so-details-header">
         <ViewButton variant="ghost" size="sm" className="so-phone-back min-[901px]:hidden max-[901px]:h-11 max-[901px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />Back</ViewButton>
         <h2>Task details</h2>

@@ -180,6 +180,10 @@ const GUIDE_ROWS: readonly GuideRow[] = [
     positionals: [{ name: "task", required: true, meaning: "any version of the task" }],
     flags: [jsonFlag, dbFlag, { name: "level", takesValue: true, meaning: "quick (default) or full" }],
     notableReasons: ["no-result", "no-check", "checks-failed"] },
+  { invocation: "task ship", synopsis: "the task's pull request checks as last observed for its head: each check's state and how long it took",
+    audience: "agent", agentMayInvoke: true, mutation: "none",
+    positionals: [{ name: "task", required: true, meaning: "any version of the task" }], flags: [jsonFlag, dbFlag],
+    notableReasons: ["unknown-task", "no-pull-request"] },
   { invocation: "task add-tests", synopsis: "file a small task to write tests for the task's latest change; it waits for approval like any task",
     audience: "agent", agentMayInvoke: true, mutation: "identity-idempotent",
     positionals: [{ name: "task", required: true, meaning: "any version of the task" }], flags: [jsonFlag, dbFlag],
@@ -492,7 +496,7 @@ const REMOTE_STEP_UP: readonly string[] = [
 ];
 const REMOTE_YES: readonly string[] = [
   "status", "integrations", "ready", "gaps", "grants", "sync", "audit",
-  "task add", "task ask", "task checks", "task add-tests", "task list", "task show", "check-progress", "task wait", "task complete", "task revise",
+  "task add", "task ask", "task checks", "task ship", "task add-tests", "task list", "task show", "check-progress", "task wait", "task complete", "task revise",
   "task state", "task block", "task unblock", "task next", "task steer", "task pause", "task continue", "task assign", "task scope", "task plan", "task hold", "task unhold", "task require",
   "task requeue", "task review", "task repair", "task route", "task reopen", "task stop", "task resume",
   "runner list", "coordinator list", "cap list", "cap add", "outbox list", "incident list", "incident resolve",

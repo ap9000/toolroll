@@ -134,6 +134,20 @@ export function timingBars(rows: readonly TimingRow[], scale?: number): Array<{ 
   return rows.map(row => row.st === "q" ? null : { left: (Math.max(0, row.start) / sc) * 100, width: (Math.max(row.dur, sc / 400) / sc) * 100 });
 }
 
+// ---- progress line -----------------------------------------------------------------------------------------------
+
+/** One step on a progress line: done (a check), now (waits on you: amber), live (running: blue), failed, or to do. */
+export type StepState = "done" | "now" | "live" | "failed" | "todo";
+export type StepItem = { label: string; state: StepState; sub?: string };
+/** The words a screen reader hears for a step's state. */
+export const STEP_WORDS: Readonly<Record<StepState, string>> = { done: "done", now: "waiting on you", live: "in progress", failed: "failed", todo: "not started" };
+/** How far the line is filled, 0–1: up to the current step (the first that isn't done), or all of it. */
+export function stepsFill(steps: readonly StepItem[]): number {
+  if (steps.length < 2) return steps.length === 1 && steps[0]!.state === "done" ? 1 : 0;
+  const at = steps.findIndex(step => step.state !== "done");
+  return at === -1 ? 1 : at / (steps.length - 1);
+}
+
 // ---- icons ------------------------------------------------------------------------------------------------------
 
 /** One shape of a 24×24 stroke icon: its element and attributes (data, so each side draws it with its own escaping). */
@@ -159,6 +173,9 @@ export const KIT_ICONS = {
   fit: [path("M15 3h6v6"), path("M9 21H3v-6"), path("M21 3l-7 7"), path("M3 21l7-7")],
   bolt: [path("M13 2 4 14h7l-1 8 9-12h-7z")],
   code: [path("m16 18 6-6-6-6"), path("m8 6-6 6 6 6")],
+  list: [path("M8 6h13"), path("M8 12h13"), path("M8 18h13"), path("M3 6h.01"), path("M3 12h.01"), path("M3 18h.01")],
+  board: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], path("M9 3v18"), path("M15 3v18")],
+  panel: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], path("M15 3v18")],
 } as const satisfies Record<string, readonly IconShape[]>;
 export type KitIcon = keyof typeof KIT_ICONS;
 

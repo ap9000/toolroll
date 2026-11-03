@@ -32,7 +32,10 @@
         "minus",
         "fit",
         "bolt",
-        "code"
+        "code",
+        "list",
+        "board",
+        "panel"
       ],
       "default": "plus"
     },

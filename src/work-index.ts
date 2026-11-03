@@ -69,10 +69,10 @@ export type WorkProjectCounts = { repo: string | null; totals: WorkIndexCounts; 
 export const WORK_INDEX_PAGE_LIMIT = 40;
 export const WORK_INDEX_MAX_LIMIT = 100;
 
-const EMPTY: WorkIndexCounts = { all: 0, 'needs-you': 0, running: 0, completed: 0, archived: 0 };
+const EMPTY: WorkIndexCounts = { all: 0, 'needs-you': 0, running: 0, queued: 0, completed: 0, archived: 0 };
 const NO_GROUPS: WorkIndexGroupCounts = { decide: 0, review: 0, unblock: 0, building: 0, rest: 0 };
 const FAMILY_PROBLEM = 'Task history is unavailable or incomplete. This task is shown separately.';
-const VIEWS: readonly WorkView[] = ['all', 'needs-you', 'running', 'completed', 'archived'];
+const VIEWS: readonly WorkView[] = ['all', 'needs-you', 'running', 'queued', 'completed', 'archived'];
 /** The family's current version is put away (v145): it waits on nobody and only the Archived view lists it. */
 const ARCHIVED = `EXISTS(SELECT 1 FROM task_archive ta WHERE ta.task_ref=c.ref_id)`;
 type Row = Record<string, unknown>;
@@ -373,11 +373,13 @@ function parameters(now: Date, access: WorkSummaryAccess, options: WorkIndexOpti
     $leadOf: access.principal === 'operator' && access.viewer != null && access.viewer !== '' ? `lead for ${access.viewer}` : null };
 }
 function counts(row: Row): WorkIndexCounts {
-  return { all: n(row, 'all_count'), 'needs-you': n(row, 'needs_count'), running: n(row, 'running_count'), completed: n(row, 'completed_count'), archived: n(row, 'archived_count') };
+  return { all: n(row, 'all_count'), 'needs-you': n(row, 'needs_count'), running: n(row, 'running_count'), queued: n(row, 'queued_count'), completed: n(row, 'completed_count'), archived: n(row, 'archived_count') };
 }
 // Put-away families (v145) count only as archived.
+// Queued: waits on someone or something else (rank 2), not a person and not a build of its own family.
+const QUEUED = `rank=2 AND family_running=0 AND archived=0`;
 const TOTALS = `COALESCE(SUM(archived=0),0) all_count,COALESCE(SUM(needs),0) needs_count,COALESCE(SUM(family_running AND archived=0),0) running_count,`
-  + `COALESCE(SUM(code='complete' AND archived=0),0) completed_count,COALESCE(SUM(archived),0) archived_count`;
+  + `COALESCE(SUM(${QUEUED}),0) queued_count,COALESCE(SUM(code='complete' AND archived=0),0) completed_count,COALESCE(SUM(archived),0) archived_count`;
 const GROUP_TOTALS = `COALESCE(SUM(rank=0 AND ask_rank=0 AND archived=0),0) decide_count,COALESCE(SUM(rank=0 AND ask_rank=1 AND archived=0),0) review_count,COALESCE(SUM(rank=0 AND ask_rank=2 AND archived=0),0) unblock_count,`
   + `COALESCE(SUM(rank=1 AND archived=0),0) building_count,COALESCE(SUM(rank>1 AND archived=0),0) rest_count`;
 function groupCounts(row: Row): WorkIndexGroupCounts {
@@ -430,7 +432,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   const view = VIEWS.includes(options.view ?? 'all') ? options.view ?? 'all' : 'all';
   const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(WORK_INDEX_MAX_LIMIT, Math.floor(options.limit!))) : WORK_INDEX_PAGE_LIMIT;
   const scope = cursorScope(access, options, view), cursor = readCursor(options.cursor, scope);
-  const filter = view === 'archived' ? 'archived=1' : view === 'needs-you' ? 'needs=1' : view === 'running' ? 'family_running=1 AND archived=0' : view === 'completed' ? "code='complete' AND archived=0" : 'archived=0';
+  const filter = view === 'archived' ? 'archived=1' : view === 'needs-you' ? 'needs=1' : view === 'running' ? 'family_running=1 AND archived=0' : view === 'queued' ? QUEUED : view === 'completed' ? "code='complete' AND archived=0" : 'archived=0';
   const rows = prepared(store, `${projection}, selected_page AS MATERIALIZED (
     SELECT * FROM ranked WHERE ($taskId IS NOT NULL OR ${filter}) AND ($taskId IS NULL OR root_ref IN (SELECT root_ref FROM members WHERE id=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
       ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot))))
@@ -440,8 +442,8 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
       SUM(state='done' AND family_running=0 AND archived=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo
   )
   SELECT 0 record_kind,totals.*,(SELECT json_group_array(json_object('repo',repo,'all_count',all_count,'needs_count',needs_count,
-    'running_count',running_count,'completed_count',completed_count,'archived_count',archived_count,'queued',queued,'done_recently',done_recently)) FROM project_totals) row_json FROM totals
-  UNION ALL SELECT 1,0,0,0,0,0,0,0,0,0,0,json_object('archived',archived,'archived_by',(SELECT by FROM task_archive WHERE task_ref=page.ref_id),
+    'running_count',running_count,'queued_count',queued_count,'completed_count',completed_count,'archived_count',archived_count,'queued',queued,'done_recently',done_recently)) FROM project_totals) row_json FROM totals
+  UNION ALL SELECT 1,0,0,0,0,0,0,0,0,0,0,0,json_object('archived',archived,'archived_by',(SELECT by FROM task_archive WHERE task_ref=page.ref_id),
     'archived_kind',(SELECT by_kind FROM task_archive WHERE task_ref=page.ref_id),'archived_reason',(SELECT reason FROM task_archive WHERE task_ref=page.ref_id),
     'archived_at',(SELECT at FROM task_archive WHERE task_ref=page.ref_id),'root_ref',root_ref,'root_id',root_id,'id',id,'root_title',root_title,'repo',repo,
     'state',state,'created_at',created_at,'family_updated',family_updated,'version_count',version_count,'earlier_active',earlier_active,
@@ -747,6 +749,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   const views: WorkView[] = archived !== null ? ['archived'] : ['all'];
   if (archived === null && need) views.push('needs-you');
   if (archived === null && running) views.push('running');
+  if (archived === null && !need && !running && n(row, 'rank') === 2) views.push('queued');
   if (archived === null && code === 'complete') views.push('completed');
   return { rootId: String(row['root_id']), activeTaskId: id, title: String(row['root_title']), repo: s(row, 'repo'),
     state: String(row['state']) as TaskState, assignmentState, createdAt: String(row['created_at']), updatedAt: String(row['sort_at']),

@@ -1,6 +1,9 @@
 import { feedbackImageProblem } from "../result-actions.js";
 import { parseFeedbackImage } from "../result-review.js";
 import { releaseViewOf } from "../release-view.js";
+import { RELEASE_STEPS } from "../release.js";
+import { releaseProgressFor, shipChecksForTask, type CiCheckRow, type ShipChecks } from "../store.js";
+import type { TimingRow } from "../design/kit.js";
 import { releaseCiRunningOf } from "../release-ci-hold.js";
 import { releaseObligationsOf } from "../release-recheck.js";
 import { approvalProofOf, freshlyApprovable, freshnessFor, withFreshness } from "../scope.js";
@@ -869,8 +872,12 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       ...(who.via === "cookie" ? { live: { room: `task:${encodeURIComponent(family?.root.id ?? taskId)}`, at: (() => { try { return taskFingerprint(runtime.store, family?.root.id ?? taskId, runtime.clock()); } catch { return null; } })() } } : {}) } : page.workspace?.view;
     // A refusal that keeps a draft (a scope edit, an armed cancel) or asks for the plan editor reopens on Plan, where the
     // draft and its error are; anything else on Activity unless the address named a tab.
-    const tab = extras.tab ?? (scopeDraft !== undefined || cancelDraft !== undefined || editPlan ? "plan" : "activity");
-    const oneTaskView = taskView?.kind === "task" ? onePageView(taskView, family, presentedData.family?.runs ?? data.runs.map(run => ({ ...run, taskId: data.task.id })), { ...extras, tab }) : taskView;
+    const tab = extras.tab ?? "plan";
+    const onePage = taskView?.kind === "task" ? onePageView(taskView, family, presentedData.family?.runs ?? data.runs.map(run => ({ ...run, taskId: data.task.id })), { ...extras, tab }) : taskView;
+    // Ship (its pull request's checks, each on one time axis) and a release's own steps, read from the store now.
+    const rootId = family?.root.id ?? taskId;
+    const oneTaskView = onePage?.kind === "task" ? { ...onePage, ship: shipViewOf(shipChecksForTask(runtime.store, rootId), runtime.clock()),
+      release: releaseStepsViewOf(releaseProgressFor(runtime.store, rootId), runtime.clock()) } : onePage;
     // The Result tab's no-script page, under the task's own (the same HTML its result page serves), and its script.
     if (extras.result != null) {
       page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result">${extras.result.html}</section>`;
@@ -1169,4 +1176,81 @@ function autoReleaseOf(scope: Scope | null): { kind: "checking" | "approved"; ca
   if (scope === null || scope.approvedDigest !== scope.digest || (scope.candidate ?? null) === null) return null;
   return scope.approvalBasis === "auto-green" ? { kind: "approved", candidate: scope.candidate! }
     : scope.approvalBasis === "auto-check" ? { kind: "checking", candidate: scope.candidate! } : null;
+}
+
+/** A pull request's checks as Ship shows them (src/design/KIT.md timing rows): each check on one elapsed-time axis
+ * from the first one's start, its state in the five words' tones, and one line for the whole. Null: no checks read. */
+export function shipViewOf(ship: ShipChecks | null, now: Date): NonNullable<BrowserTaskView["ship"]> | null {
+  if (ship === null || ship.checks.length === 0) return null;
+  const at = (iso: string | null): number | null => iso === null ? null : Date.parse(iso);
+  const observed = Date.parse(ship.observedAt);
+  const end = Number.isFinite(observed) ? observed : now.getTime();
+  const starts = ship.checks.map(one => at(one.startedAt)).filter((one): one is number => one !== null && Number.isFinite(one));
+  const origin = starts.length === 0 ? end : Math.min(...starts);
+  const st = (state: CiCheckRow["state"]): TimingRow["st"] => state === "passed" ? "ok" : state === "failed" || state === "cancelled" ? "bad" : state === "running" ? "run" : state === "queued" ? "q" : "ok";
+  const rows: TimingRow[] = ship.checks.map(one => {
+    const start = at(one.startedAt), done = at(one.completedAt);
+    const from = start ?? origin;
+    return { name: one.name, ...(one.workflow === null || one.workflow === one.name ? {} : { sub: one.workflow }),
+      ...(one.state === "skipped" ? { sub: "skipped" } : one.state === "neutral" ? { sub: "neutral" } : {}),
+      st: st(one.state), start: Math.max(0, (from - origin) / 1000), dur: start === null ? 0 : Math.max(0, ((done ?? end) - start) / 1000) };
+  });
+  const passed = ship.checks.filter(one => one.state === "passed" || one.state === "skipped" || one.state === "neutral").length;
+  const failed = ship.checks.filter(one => one.state === "failed" || one.state === "cancelled").length;
+  const running = ship.checks.length - passed - failed;
+  // The overall status is the observation's own (the one merges read); the rows only time each check.
+  // `none` (the pull request closed or merged, or GitHub reported no checks) is never painted as passed.
+  const state = ship.observed === "failing" ? "failed" as const : ship.observed === "passing" ? "passed" as const : ship.observed === "running" ? "running" as const : "none" as const;
+  return {
+    pr: ship.prNumber, head: ship.headSha.slice(0, 7), state, rows,
+    summary: state === "failed" ? (failed > 0 ? `${failed} of ${ship.checks.length} ${ship.checks.length === 1 ? "check" : "checks"} failed` : "Checks are failing on GitHub")
+      : state === "running" ? `${passed} of ${ship.checks.length} checks passed` : state === "passed" ? `All ${ship.checks.length} ${ship.checks.length === 1 ? "check" : "checks"} passed`
+      : "No current checks: the pull request is closed or merged, or GitHub reported none",
+    observedAt: ship.observedAt,
+  };
+}
+
+/** A release step's name in words (release.ts RELEASE_STEPS). */
+const RELEASE_STEP_WORDS: Readonly<Record<string, string>> = {
+  gate: "Release gate", approval: "Approval", check: "Release check", complete: "Complete the task", quiet: "Wait for quiet", deploy: "Deploy to this Mac",
+  link: "Point the CLI at it", ci: "Pull request checks", merge: "Merge into main", tree: "Verify the merged tree", tag: "Tag", publish: "Publish to npm", homebrew: "Homebrew",
+};
+
+/** A release's steps as its progress view shows them: every step in order on one time axis, the ones not reached
+ * queued, and where it stands in one line. Null: this task is no release. */
+export function releaseStepsViewOf(progress: ReturnType<typeof releaseProgressFor>, now: Date): NonNullable<BrowserTaskView["release"]> | null {
+  if (progress === null) return null;
+  const origin = Date.parse(progress.startedAt);
+  const recorded = new Map(progress.steps.map(one => [one.step, one]));
+  const all = RELEASE_STEPS.filter(step => step !== "done");
+  // A release that started part way (one carried under an earlier approval, or resumed from an older journal) shows
+  // the steps from where its own record starts; a step missing between two recorded ones is a write that was lost.
+  const firstAt = all.findIndex(step => recorded.has(step));
+  const lastAt = all.reduce((at, step, index) => recorded.has(step) ? index : at, -1);
+  const steps = firstAt <= 0 ? all : all.slice(firstAt);
+  const rows: TimingRow[] = steps.map(step => {
+    const one = recorded.get(step);
+    // A step with no record is never painted as done: between recorded ones it says so, after them it is queued.
+    if (one === undefined) return all.indexOf(step) < lastAt ? { name: RELEASE_STEP_WORDS[step] ?? step, sub: "not recorded", st: "q" as const, start: 0, dur: 0 }
+      : { name: RELEASE_STEP_WORDS[step] ?? step, st: "q" as const, start: 0, dur: 0 };
+    const start = Date.parse(one.startedAt), end = one.endedAt === null ? now.getTime() : Date.parse(one.endedAt);
+    const st: TimingRow["st"] = one.state === "done" ? "ok" : one.state === "failed" ? "bad" : one.state === "waiting" ? "wait" : "run";
+    return { name: RELEASE_STEP_WORDS[step] ?? step, ...(one.detail === null || one.state === "done" ? {} : { sub: one.detail.slice(0, 160) }), st,
+      start: Number.isFinite(start) && Number.isFinite(origin) ? Math.max(0, (start - origin) / 1000) : 0, dur: Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, (end - start) / 1000) : 0 };
+  });
+  const current = rows.findIndex(row => row.st === "run" || row.st === "wait" || row.st === "bad");
+  // Released only on its own evidence: the last step (Homebrew, after publication) recorded done. A merge (authority
+  // `merged`) is not a release: verifying the tree, the tag and publication still follow it.
+  const done = progress.stopped === null && recorded.get("homebrew")?.state === "done";
+  const at = current === -1 ? null : rows[current]!;
+  const last = lastAt === -1 ? null : RELEASE_STEP_WORDS[all[lastAt]!] ?? all[lastAt]!;
+  return {
+    tag: progress.tag, version: progress.version, pr: progress.pr,
+    rows,
+    state: progress.stopped !== null ? "failed" : done ? "done" : at?.st === "wait" ? "waiting" : "running",
+    headline: done ? `Released ${progress.version}` : progress.stopped !== null ? `Stopped at ${RELEASE_STEP_WORDS[progress.stopped.step] ?? progress.stopped.step}`
+      : at !== null ? `${at.name} · Step ${current + 1} of ${rows.length}` : last === null ? "Starting" : `${last} done · the next step starts on its own`,
+    stopped: progress.stopped === null ? null : { step: RELEASE_STEP_WORDS[progress.stopped.step] ?? progress.stopped.step, message: progress.stopped.message, at: progress.stopped.at },
+    startedAt: progress.startedAt,
+  };
 }
