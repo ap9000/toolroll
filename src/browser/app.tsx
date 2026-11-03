@@ -32,6 +32,7 @@ import { useLiveRoom } from "./live.js";
 import { chimeOn, createChime, setChime } from "./chime.js";
 import { ActivityLine, WORKSPACE_NUDGE } from "./live-task.js";
 import { isSettingsFrame } from "../settings-kit-script.js";
+import { installKitBehavior } from "./kit/behavior.js";
 import "./workspace.css";
 
 export { GuardedHtml, regionIsEditing };
@@ -1115,6 +1116,10 @@ const settleFade = (event: Event) => {
 };
 window.addEventListener("pageswap", settleFade);
 window.addEventListener("pagereveal", settleFade);
+
+// The revamp kit's behaviour (composer, keyboard, overlays, switches) for kit markup from React views and from
+// the server pages the workspace places (src/design/KIT.md).
+installKitBehavior();
 
 const mount = document.getElementById("standing-orders-workspace");
 const data = document.getElementById("standing-orders-workspace-data");

@@ -1,0 +1,61 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-seg",
+  "name": "KSeg",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "The segmented track: filters or views of one list (aria-pressed).",
+  "source": {
+    "file": "k-seg.tsx",
+    "export": "KSeg",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "label": {
+      "type": "string",
+      "required": true
+    },
+    "current": {
+      "type": "string",
+      "required": true
+    },
+    "items": {
+      "type": "string",
+      "required": true,
+      "description": "A structured value: see the component's TypeScript type."
+    },
+    "onChange": {
+      "type": "function",
+      "required": true
+    }
+  },
+  "tokens": {
+    "track": "youi:toolroll/token/color.raised",
+    "active": "youi:toolroll/token/color.paper"
+  },
+  "a11y": {
+    "role": "group",
+    "minTouchTarget": 44,
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "Use for a list's filters and views (List / Board)."
+    ],
+    "dont": [
+      "Never use for sections of one object."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

@@ -383,8 +383,9 @@ test("native initialization is delivered to window after all guarded fragments a
   expect(observations).toEqual([true]);
 });
 
-test("a changed approval preserves entered credentials but blocks stale consent", async () => {
-  const form = (digest: string) => `<section data-approval="${digest}"><form class="approve-form"><input type="password" name="token"><button type="submit">Approve and start</button></form></section>`;
+// The console's ceremony and the revamp kit's approval form (server/kit.ts approveForm) are both guarded.
+test.each(["approve-form", "k-approve"])("a changed approval preserves entered credentials but blocks stale consent (form.%s)", async formClass => {
+  const form = (digest: string) => `<section data-approval="${digest}"><form class="${formClass}"><input type="password" name="token"><button type="submit">Approve and start</button></form></section>`;
   await renderHtml(form("first"));
   const password = document.querySelector("input")!; password.value = "entered-password"; password.focus();
   await renderHtml(form("changed"));

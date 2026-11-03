@@ -1,0 +1,78 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-overlay",
+  "name": "KOverlay",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "Popover, drawer, sheet and menu: role=dialog, the app behind inert, Tab kept inside, Escape / Close / scrim close it, focus returns to the trigger. Bordered, never a shadow.",
+  "source": {
+    "file": "k-overlay.tsx",
+    "export": "KOverlay",
+    "also": [
+      "useKMenu"
+    ]
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "kind": {
+      "type": "enum",
+      "values": [
+        "popover",
+        "drawer",
+        "sheet",
+        "menu"
+      ],
+      "default": "popover",
+      "description": "A popover and a menu become a bottom sheet on a phone; sheets are a phone pattern."
+    },
+    "title": {
+      "type": "string",
+      "required": true
+    },
+    "sub": {
+      "type": "string"
+    },
+    "trigger": {
+      "type": "string",
+      "required": true,
+      "description": "A structured value: see the component's TypeScript type."
+    },
+    "onClose": {
+      "type": "function",
+      "description": "Runs however it closes: a removed approval settles as cancelled.",
+      "required": true
+    },
+    "children": {
+      "type": "node",
+      "required": true
+    }
+  },
+  "tokens": {
+    "border": "youi:toolroll/token/color.overlay-line",
+    "scrim": "youi:toolroll/token/color.kit-scrim"
+  },
+  "a11y": {
+    "role": "dialog",
+    "minTouchTarget": 44,
+    "notes": [
+      "One floating thing at a time, except an approval asked from inside one, which stacks over it."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": [
+      "Never a toast or an unlabelled close."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

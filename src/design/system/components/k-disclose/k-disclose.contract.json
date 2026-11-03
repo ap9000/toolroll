@@ -1,0 +1,50 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-disclose",
+  "name": "KDisclose",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "A disclosure for secondary detail (diagnostics, provenance, exact scope).",
+  "source": {
+    "file": "k-disclose.tsx",
+    "export": "KDisclose",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "summary": {
+      "type": "string",
+      "required": true
+    },
+    "children": {
+      "type": "node",
+      "required": true
+    },
+    "open": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "tokens": {},
+  "a11y": {
+    "minTouchTarget": 44,
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "Keep risks and full approval terms visible before consent; only secondary detail folds."
+    ],
+    "dont": []
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

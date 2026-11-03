@@ -1,0 +1,16 @@
+schema: youi.rule/v1
+id: youi:toolroll/rule/color.amber-means-waits
+title: Amber means "waits on you", only
+severity: warn
+statement: The needs tokens (--so-needs, --so-needs-soft, --so-needs-ink; the chip tone "needs") mark what waits on this person and nothing else. Never a warning, quota, caution, link, decoration or emphasis; something that waits on someone else is not amber.
+rationale: Attention is the currency. One colour that only ever means "you are needed" lets a person scan a screen and know.
+agent: Use the needs tone only for a wait on the viewer (a Needs-you chip, a waiting slots box, the needs panel). Warnings and caution use neutral or danger; resource states (Idle, Building, Offline) are never amber.
+check:
+  engine: advisory
+files:
+  - "**/*.{ts,tsx,css}"
+examples:
+  bad:
+    - <KChip word="Quota 83%" tone="needs" />
+  good:
+    - <KChip word="Plan" tone="ask" /> inside the Needs-you group

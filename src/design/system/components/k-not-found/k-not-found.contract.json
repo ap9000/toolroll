@@ -1,0 +1,45 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-not-found",
+  "name": "KNotFound",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "The not-found page inside the shell: what was asked for and two ways on.",
+  "source": {
+    "file": "k-not-found.tsx",
+    "export": "KNotFound",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "path": {
+      "type": "string",
+      "required": true
+    },
+    "title": {
+      "type": "string"
+    },
+    "text": {
+      "type": "string"
+    }
+  },
+  "tokens": {},
+  "a11y": {
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": []
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

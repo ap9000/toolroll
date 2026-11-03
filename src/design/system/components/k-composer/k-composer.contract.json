@@ -1,0 +1,105 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-composer",
+  "name": "KComposer",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "The message box: one soft rounded box, auto-growing textarea (rows → 8 lines), + menu, the project as a quiet chip, small controls, and the round send that becomes Stop while the work runs.",
+  "source": {
+    "file": "k-composer.tsx",
+    "export": "KComposer",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "id": {
+      "type": "string",
+      "required": true
+    },
+    "label": {
+      "type": "string",
+      "required": true
+    },
+    "value": {
+      "type": "string",
+      "required": true
+    },
+    "onChange": {
+      "type": "function",
+      "required": true
+    },
+    "onSend": {
+      "type": "function",
+      "required": true
+    },
+    "onStop": {
+      "type": "function"
+    },
+    "working": {
+      "type": "boolean",
+      "default": false
+    },
+    "rows": {
+      "type": "number",
+      "default": 1
+    },
+    "maxRows": {
+      "type": "number",
+      "default": 8
+    },
+    "project": {
+      "type": "string",
+      "description": "A structured value: see the component's TypeScript type."
+    },
+    "gate": {
+      "type": "boolean",
+      "default": true,
+      "description": "A message box: the send is aria-disabled while empty. A form's send stays pressable so an empty press says what's missing."
+    },
+    "line": {
+      "type": "boolean",
+      "default": false,
+      "description": "One line: the text and the send share a row."
+    },
+    "error": {
+      "type": "string",
+      "description": "A refusal: the words stay in the box."
+    }
+  },
+  "tokens": {
+    "border": "youi:toolroll/token/color.field-line",
+    "focus": "youi:toolroll/token/color.ink",
+    "send": "youi:toolroll/token/color.ink"
+  },
+  "a11y": {
+    "minTouchTarget": 44,
+    "notes": [
+      "Focus shows on the box, never the textarea.",
+      "On a phone the text is 16px and every control a 44px target; with the keyboard up a docked composer rides above it."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "A refused send keeps the words in the box with the reason under it."
+    ],
+    "dont": [
+      "No \"Enter sends\" hint."
+    ]
+  },
+  "examples": [
+    {
+      "title": "Ask the lead",
+      "code": "<KComposer id=\"ask\" label=\"Ask the lead\" value={text} onChange={setText} onSend={send} line />"
+    }
+  ],
+  "aliases": [],
+  "owners": []
+}

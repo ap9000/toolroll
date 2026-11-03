@@ -1,0 +1,56 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-doc-header",
+  "name": "KDocHeader",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "A reading page: the 760px column (KDoc), a back link, the one h1 and a meta line (KDocHeader).",
+  "source": {
+    "file": "k-doc-header.tsx",
+    "export": "KDocHeader",
+    "also": [
+      "KDoc"
+    ]
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "title": {
+      "type": "string",
+      "required": true
+    },
+    "back": {
+      "type": "string",
+      "description": "A structured value: see the component's TypeScript type."
+    },
+    "meta": {
+      "type": "node"
+    },
+    "right": {
+      "type": "node"
+    },
+    "same": {
+      "type": "boolean",
+      "default": false,
+      "description": "The phone header already shows the title: the h1 stays for assistive tech and is drawn once."
+    }
+  },
+  "tokens": {},
+  "a11y": {
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": []
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

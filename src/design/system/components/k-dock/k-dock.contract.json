@@ -1,0 +1,40 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-dock",
+  "name": "KDock",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "The phone dock: the screen's one primary (the same act its card hides on a phone).",
+  "source": {
+    "file": "k-dock.tsx",
+    "export": "KDock",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "children": {
+      "type": "node",
+      "required": true
+    }
+  },
+  "tokens": {},
+  "a11y": {
+    "minTouchTarget": 44,
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": []
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

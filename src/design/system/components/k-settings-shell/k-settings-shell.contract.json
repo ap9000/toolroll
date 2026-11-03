@@ -1,0 +1,63 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-settings-shell",
+  "name": "KSettingsShell",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "The Settings frame: Overview and the eight groups, a desk breadcrumb, a phone back header, one 760px column.",
+  "source": {
+    "file": "k-settings-shell.tsx",
+    "export": "KSettingsShell",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "group": {
+      "type": "string",
+      "required": true
+    },
+    "title": {
+      "type": "string",
+      "required": true
+    },
+    "lead": {
+      "type": "string"
+    },
+    "sub": {
+      "type": "boolean",
+      "default": false
+    },
+    "back": {
+      "type": "string"
+    },
+    "flags": {
+      "type": "string",
+      "description": "A structured value: see the component's TypeScript type."
+    },
+    "children": {
+      "type": "node",
+      "required": true
+    }
+  },
+  "tokens": {},
+  "a11y": {
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "A clean section shows no Save."
+    ],
+    "dont": []
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

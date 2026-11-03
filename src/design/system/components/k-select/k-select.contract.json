@@ -1,0 +1,54 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-select",
+  "name": "KSelect",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "A native select with the kit chevron: 32px, sm 28px in a toolbar, 44px and 16px on a phone.",
+  "source": {
+    "file": "k-select.tsx",
+    "export": "KSelect",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "items": {
+      "type": "string",
+      "required": true,
+      "description": "A structured value: see the component's TypeScript type."
+    },
+    "sm": {
+      "type": "boolean",
+      "default": false
+    },
+    "wide": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "tokens": {
+    "border": "youi:toolroll/token/color.field-line"
+  },
+  "a11y": {
+    "role": "combobox",
+    "minTouchTarget": 44,
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": [
+      "No native-arrow selects and no area variants."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

@@ -1,0 +1,18 @@
+schema: youi.rule/v1
+id: youi:toolroll/rule/components.canonical-import
+title: Render the kit component, not a lookalike
+severity: error
+statement: A component named like a kit element (KButton, KChip, KComposer, …) must resolve to the kit's implementation in src/browser/kit. A second implementation with the same name splits the system in two.
+rationale: "Two buttons drift apart: a fix to one never reaches the other, and the usage map cannot tell a reader which button a screen shows."
+agent: Import kit components only from src/browser/kit (index.js); never define or import another KButton, KChip or KComposer. Server pages use the same markup from src/server/kit.ts.
+check:
+  engine: youi
+  id: lookalike-component
+  options: {}
+files:
+  - "**/*.tsx"
+examples:
+  bad:
+    - import { KButton } from "./my-button.js"; // a second KButton implementation
+  good:
+    - import { KButton } from "../kit/index.js";

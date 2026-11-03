@@ -1,0 +1,36 @@
+{
+  "$schema": "https://www.designtokens.org/schemas/2025.10/resolver.json",
+  "name": "Toolroll",
+  "version": "2025.10",
+  "description": "Toolroll's tokens (Signal 1.0.0 plus the revamp kit's): one base set plus a theme modifier whose dark context overrides the values that change.",
+  "sets": {
+    "base": {
+      "sources": [
+        {
+          "$ref": "toolroll.tokens.json"
+        }
+      ]
+    }
+  },
+  "modifiers": {
+    "theme": {
+      "contexts": {
+        "light": [],
+        "dark": [
+          {
+            "$ref": "toolroll.dark.tokens.json"
+          }
+        ]
+      },
+      "default": "light"
+    }
+  },
+  "resolutionOrder": [
+    {
+      "$ref": "#/sets/base"
+    },
+    {
+      "$ref": "#/modifiers/theme"
+    }
+  ]
+}

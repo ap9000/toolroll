@@ -1,0 +1,62 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-slots",
+  "name": "KSlots",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "The approval box: status (chip + heading) · supporting text · actions · terms, and the error slot. The same slots in every state, so nothing moves.",
+  "source": {
+    "file": "k-slots.tsx",
+    "export": "KSlots",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "wait": {
+      "type": "boolean",
+      "default": false,
+      "description": "Waits on this person: the amber outline."
+    },
+    "status": {
+      "type": "node",
+      "required": true
+    },
+    "text": {
+      "type": "node",
+      "required": true
+    },
+    "acts": {
+      "type": "node",
+      "required": true
+    },
+    "terms": {
+      "type": "node",
+      "required": true
+    },
+    "err": {
+      "type": "node"
+    }
+  },
+  "tokens": {
+    "border.wait": "youi:toolroll/token/color.wait",
+    "radius": "youi:toolroll/token/radius.card"
+  },
+  "a11y": {
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": []
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

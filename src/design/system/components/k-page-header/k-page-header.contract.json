@@ -1,0 +1,63 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-page-header",
+  "name": "KPageHeader",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "A list page's header: the phone header (back · title · one trailing action) and the 48px desk top bar (title · muted context · tools).",
+  "source": {
+    "file": "k-page-header.tsx",
+    "export": "KPageHeader",
+    "also": [
+      "KPhoneHeader"
+    ]
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "title": {
+      "type": "string",
+      "required": true
+    },
+    "ctx": {
+      "type": "node"
+    },
+    "right": {
+      "type": "node"
+    },
+    "back": {
+      "type": "string"
+    },
+    "phoneTitle": {
+      "type": "string"
+    },
+    "trailing": {
+      "type": "node"
+    }
+  },
+  "tokens": {
+    "line": "youi:toolroll/token/color.line"
+  },
+  "a11y": {
+    "minTouchTarget": 44,
+    "notes": [
+      "One h1 per screen."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": [
+      "Never say the same title twice in a row."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

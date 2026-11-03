@@ -1,0 +1,59 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-form-row",
+  "name": "KFormRow",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "The two-column settings row: label and one muted line | the control; stacks on a phone.",
+  "source": {
+    "file": "k-form-row.tsx",
+    "export": "KFormRow",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "label": {
+      "type": "node",
+      "required": true
+    },
+    "hint": {
+      "type": "node"
+    },
+    "variant": {
+      "type": "enum",
+      "values": [
+        "",
+        "inline",
+        "top",
+        "wide"
+      ],
+      "default": "",
+      "description": "inline keeps the control beside the label on a phone; top aligns to the top; wide is one column."
+    },
+    "children": {
+      "type": "node",
+      "required": true
+    }
+  },
+  "tokens": {
+    "line": "youi:toolroll/token/color.line"
+  },
+  "a11y": {
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": []
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

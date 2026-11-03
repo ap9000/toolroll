@@ -1,0 +1,74 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-row",
+  "name": "KRow",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "A list row between hairlines under a group heading: chip · title (the whole row is the link) · one muted line · meta · one action in one column.",
+  "source": {
+    "file": "k-row.tsx",
+    "export": "KRow",
+    "also": [
+      "KGroup"
+    ]
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "href": {
+      "type": "string",
+      "required": true
+    },
+    "chip": {
+      "type": "node",
+      "required": true
+    },
+    "title": {
+      "type": "string",
+      "required": true
+    },
+    "desc": {
+      "type": "node"
+    },
+    "meta": {
+      "type": "node"
+    },
+    "action": {
+      "type": "node"
+    },
+    "wait": {
+      "type": "boolean",
+      "default": false,
+      "description": "Waits on this person: the title is 600."
+    },
+    "message": {
+      "type": "node",
+      "description": "A refusal under the row."
+    }
+  },
+  "tokens": {
+    "line": "youi:toolroll/token/color.line"
+  },
+  "a11y": {
+    "minTouchTarget": 48,
+    "notes": []
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "Lists are rows between hairlines under KGroup headings."
+    ],
+    "dont": [
+      "Never cards for a list."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

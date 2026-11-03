@@ -1,0 +1,62 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-timing",
+  "name": "KTiming",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "A run's steps on one elapsed-time axis (Release, a flow's run, a pull request's checks); a queued row has no bar until it starts.",
+  "source": {
+    "file": "k-timing.tsx",
+    "export": "KTiming",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "rows": {
+      "type": "string",
+      "required": true,
+      "description": "A structured value: see the component's TypeScript type."
+    },
+    "label": {
+      "type": "string"
+    },
+    "chip": {
+      "type": "node"
+    },
+    "scale": {
+      "type": "number"
+    },
+    "foot": {
+      "type": "node"
+    },
+    "head": {
+      "type": "string"
+    }
+  },
+  "tokens": {
+    "bar": "youi:toolroll/token/color.info",
+    "bar.ok": "youi:toolroll/token/color.success",
+    "bar.bad": "youi:toolroll/token/color.danger",
+    "bar.wait": "youi:toolroll/token/color.wait"
+  },
+  "a11y": {
+    "notes": [
+      "Nothing pulses while running: a static ring says running."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [],
+    "dont": []
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

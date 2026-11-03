@@ -1,0 +1,22 @@
+schema: youi.rule/v1
+id: youi:toolroll/rule/color.no-raw-color
+title: No raw colours
+severity: error
+statement: Colour comes from tokens. Never write a hex, rgb() or hsl() literal in a component, class name, inline style or stylesheet; only the token source may define colour values.
+rationale: Signal has exactly one light and one dark value per role. A literal colour cannot follow the theme, the person's chosen accent, or a token change, and it hides from every audit.
+agent: "Never hard-code a colour: use token utilities (bg-paper, text-muted-foreground, border-border) or var(--so-*), and look up the role with system_get_tokens."
+check:
+  engine: youi
+  id: raw-color
+  options: {}
+files:
+  - "**/*.{ts,tsx,css}"
+examples:
+  bad:
+    - <div className="bg-[#171717] text-white" />
+    - 'style={{ color: "#c4320a" }}'
+    - ".row { border-color: #e6e6e6; }"
+  good:
+    - <div className="bg-primary text-primary-foreground" />
+    - 'style={{ color: "var(--so-danger)" }}'
+    - ".row { border-color: var(--so-line); }"

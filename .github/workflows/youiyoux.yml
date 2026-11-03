@@ -1,9 +1,12 @@
 name: youiyoux
 
-# Every pull request: what its UI changes add that Toolroll already has (a hand-built copy of a
-# component, a hardcoded colour, spacing or radius a variable already holds), as notes on those
-# lines in Files changed. Advisory: it always passes and is not one of REQUIRED_PR_CHECKS, so a
-# release never waits for it. Pinned, so a youiyoux release never changes what it says.
+# Every pull request: what its UI changes add against Toolroll's design system, the kit (src/design/KIT.md,
+# youi.config.json): a hand-built copy of a kit component, a hardcoded colour, spacing or radius a token holds,
+# an import from another component library, or a broken kit rule on an added line. Each is a note on that line in
+# Files changed, and any of them fails this job (--strict), so new drift never merges unnoticed. Existing debt is
+# not counted (only what the pull request adds; youi.baseline.json records the rest). It is not one of
+# REQUIRED_PR_CHECKS, and the release verdict leaves it out by name and workflow (release.ts ADVISORY_PR_CHECKS),
+# so a release never waits for it or fails on it. Pinned, so a youiyoux release never changes what it says.
 
 on:
   pull_request:
@@ -23,4 +26,4 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - run: npx -y youiyoux@0.1.21 check --diff origin/${{ github.base_ref }} --format github
+      - run: npx -y youiyoux@0.1.21 check --diff origin/${{ github.base_ref }} --strict --format github

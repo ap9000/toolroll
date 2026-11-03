@@ -27,6 +27,8 @@ await copyFile(resolve(root, "src", "server", "console.css"), resolve(root, "dis
 // So is Signal's generated token sheet, which the server prepends to it.
 await mkdir(resolve(root, "dist", "design"), { recursive: true });
 await copyFile(resolve(root, "src", "design", "tokens.css"), resolve(root, "dist", "design", "tokens.css"));
+// And the revamp kit's sheet, which it appends (src/design/KIT.md).
+await copyFile(resolve(root, "src", "design", "kit.css"), resolve(root, "dist", "design", "kit.css"));
 
 if (process.platform !== "win32") {
   for (const name of ["bin.js", "cli.js"]) {
