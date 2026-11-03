@@ -112,8 +112,9 @@ import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
+import { dur } from "./design/kit.js";
 import {
-  openStore, openStoreNoMigrate, archiveTaskFamily, restoreTaskFamily, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
+  openStore, openStoreNoMigrate, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -493,6 +494,7 @@ export const OPERATE_HELP = `toolroll — operating the queue
       [--anyway]                        merge without waiting for the full check
   toolroll task checks <id> [--level quick|full]
                                         run checks on the result's exact commit now
+  toolroll task ship <id>            its pull request's checks, each with its state and how long it took
   toolroll task add-tests <id>       file a small task to write tests for that change
   toolroll task revise <id> --feedback "requested change"
   toolroll assignment show <task>    root, current work and exact handoff
@@ -828,7 +830,7 @@ export const TASK_ACTIONS = [
   "add", "list", "show", "wait", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign",
   "reopen", "scope", "approve", "hold", "unhold", "require", "requeue", "regate", "plan",
   "review", "accept", "repair", "route", "stop", "resume", "complete", "revise", "merge", "ask",
-  "checks", "add-tests", "archive", "restore", "tidy",
+  "checks", "add-tests", "archive", "restore", "tidy", "ship",
 ] as const;
 export const PUBLISH_ACTIONS = ["setup", "grant", "revoke", "status", "unblock", "rearm", "merge", "refire"] as const;
 export const CONFIG_ACTIONS = ["show", "set", "clear"] as const;
@@ -9110,6 +9112,8 @@ function taskAction(
       return addTask(rest, flags, context);
     case "checks":
       return runTaskChecks(rest, flags, context);
+    case "ship":
+      return taskShipCommand(rest, context);
     case "add-tests":
       return addTestsTask(rest, flags, context);
     case "list":
@@ -9565,9 +9569,9 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
   const rawLimit = text(flags, 'limit');
   const limit = rawLimit === undefined ? 40 : Number(rawLimit);
   if (wanted !== undefined && !STATES.includes(wanted as TaskState)) return fail(write, json, 'task list', 'usage', `--state takes one of ${STATES.join(', ')}`, EXIT.usage);
-  if (rawView !== undefined && !['all', 'needs-you', 'running', 'completed', 'archived'].includes(rawView) ||
+  if (rawView !== undefined && !['all', 'needs-you', 'running', 'queued', 'completed', 'archived'].includes(rawView) ||
       !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-    return fail(write, json, 'task list', 'usage', '--view takes all, needs-you, running, completed or archived; --limit takes 1–100', EXIT.usage);
+    return fail(write, json, 'task list', 'usage', '--view takes all, needs-you, running, queued, completed or archived; --limit takes 1–100', EXIT.usage);
   }
   // A remote person limited to some projects (remoteLensOf) pages and counts only theirs.
   const lens = context.principal?.lens ?? null;
@@ -13365,4 +13369,33 @@ async function tidyTasksCommand(positional: readonly string[], flags: Map<string
 function firstVisibleRepo(store: Store, name: string, ids: readonly string[]): string | null {
   for (const id of ids) { const repo = store.lookupRef(id)?.repo ?? null; if (repo !== null && store.accountCanAccess(name, repo)) return repo; }
   return store.accountCanAccess(name, null) ? null : store.knownRepos().find(repo => store.accountCanAccess(name, repo)) ?? null;
+}
+
+/** The check states as `task ship` says them. */
+const SHIP_CHECK_WORDS: Readonly<Record<string, string>> = { queued: "queued", running: "running", passed: "passed", failed: "failed", skipped: "skipped", cancelled: "cancelled", neutral: "neutral" };
+
+/**
+ * `toolroll task ship <task>` (read-only) — the task's pull request checks as the plane last observed them for that
+ * head (store.ts ci_check, v146): each check's state and how long it took, the Ship view's own facts.
+ */
+function taskShipCommand(positional: readonly string[], context: Context): number {
+  const { store, write, json } = context;
+  const command = "task ship";
+  const id = positional[0];
+  if (id === undefined || positional.length > 1) return fail(write, json, command, "usage", "`toolroll task ship <task>`", EXIT.usage);
+  const ref = store.lookupRef(id);
+  const lens = context.principal?.lens ?? null;
+  // A task outside the caller's projects is no task here, the same answer as one that doesn't exist.
+  if (ref === null || store.getTask(id) === null || (lens !== null && (ref.repo === null || !lens.includes(ref.repo)))) return fail(write, json, command, "unknown-task", `no task \`${id}\``, EXIT.refused);
+  const ship = shipChecksForTask(store, id);
+  if (ship === null) return fail(write, json, command, "no-pull-request", `${id} has no pull request with observed checks yet`, EXIT.refused);
+  const now = (context.clock ?? (() => context.now))();
+  const checks = ship.checks.map(one => ({ ...one, seconds: elapsedSeconds(one.startedAt, one.completedAt, now) }));
+  const passed = checks.filter(one => one.state === "passed").length;
+  // The overall answer is the observation's own (the one merges read), never a sum of the rows.
+  const overall = ship.observed === "failing" ? "failing" : ship.observed === "passing" ? "passing" : ship.observed === "running" ? "running" : "not read";
+  return succeed(write, json, command, { task: id, pullRequest: ship.prNumber, githubRepo: ship.githubRepo, head: ship.headSha, observedAt: ship.observedAt, status: ship.observed, checks }, () => [
+    `Pull request #${ship.prNumber} (${ship.githubRepo}) at ${ship.headSha.slice(0, 7)}: checks ${overall} · ${passed} of ${checks.length} passed`,
+    ...checks.map(one => `  ${(one.workflow === null ? one.name : `${one.workflow} / ${one.name}`).padEnd(32)} ${(SHIP_CHECK_WORDS[one.state] ?? one.state).padEnd(9)} ${one.seconds === null ? "–" : dur(one.seconds)}`),
+  ]);
 }

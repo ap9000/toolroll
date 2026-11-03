@@ -34,16 +34,18 @@ const render = (view: BrowserTaskView) => act(() => root!.render(createElement(T
 const panel = (key: string) => host.querySelector<HTMLElement>(`[data-task-panel="${key}"]`)!;
 
 test("the tab the address names is in front; switching keeps every panel mounted and the address follows", () => {
-  render(viewOf({ tab: "plan" }));
-  expect(panel("plan").hidden).toBe(false);
-  expect(panel("activity").hidden).toBe(true);
-  act(() => host.querySelector<HTMLButtonElement>('[data-task-tab="result"]')!.click());
-  expect(panel("result").hidden).toBe(false);
+  render(viewOf({ tab: "activity" }));
+  expect(panel("activity").hidden).toBe(false);
   expect(panel("plan").hidden).toBe(true);
+  act(() => host.querySelector<HTMLButtonElement>('[data-k-tab="attempts"]')!.click());
+  expect(panel("attempts").hidden).toBe(false);
+  expect(panel("activity").hidden).toBe(true);
   // Hidden, never unmounted: the Plan's content is still there.
   expect(host.querySelector("#scope-words")).not.toBeNull();
-  expect(new URL(location.href).searchParams.get("tab")).toBe("result");
-  act(() => host.querySelector<HTMLButtonElement>('[data-task-tab="activity"]')!.click());
+  expect(new URL(location.href).searchParams.get("tab")).toBe("attempts");
+  // The first tab (Plan, or Result once there is one) is the page's own address.
+  act(() => host.querySelector<HTMLButtonElement>('[data-k-tab="plan"]')!.click());
+  expect(panel("plan").hidden).toBe(false);
   expect(new URL(location.href).searchParams.has("tab")).toBe(false);
 });
 
@@ -61,8 +63,9 @@ test("the Result tab holds the result it loaded: an update or a newer run is ann
 });
 
 test("a first result arriving on a page opened before it is announced, not mounted", () => {
+  // No result yet: the first tab is the Plan, with no empty result in it.
   render(viewOf({ tab: "result", result: null }));
-  expect(host.querySelector('[data-task-result="none"]')).not.toBeNull();
+  expect(host.querySelector("[data-task-result]")).toBeNull();
   render(viewOf({ tab: "result", result: { selected: selectedOf(7), current: true, attempts: [], revision: "r1" } }));
   expect(host.querySelector("[data-shown]")).toBeNull();
   expect(host.querySelector("[data-result-newer]")?.textContent).toContain("A result is ready.");

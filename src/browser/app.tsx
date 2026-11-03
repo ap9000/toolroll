@@ -32,7 +32,7 @@ import { isSettingsFrame } from "../settings-kit-script.js";
 import { installKitBehavior } from "./kit/behavior.js";
 import { Icon } from "./icons.js";
 import { LeadChat, returnSends } from "./lead-chat.js";
-import { NeedsDock, PhoneHeader, Rail } from "./shell.js";
+import { NeedsDock, PhoneHeader, Rail, needsOf } from "./shell.js";
 import { SearchMenu } from "./search.js";
 import "./workspace.css";
 
@@ -471,7 +471,8 @@ export function titleWithCount(title: string, count: number): string {
 }
 function AttentionMarks({ workspace }: { workspace: BrowserWorkspace }) {
   const states = useProjectStates(workspace);
-  const count = needsYouTotal(states);
+  // The tab's "(N)" is the one Needs-you count the rail and the dock show (workspace.needsYou), never a second sum.
+  const count = needsOf(workspace).count;
   // The chime hears every snapshot this page sees (it plays only when this browser turned it on).
   const chime = useRef<ReturnType<typeof createChime> | null>(null);
   useEffect(() => {
@@ -635,7 +636,7 @@ function useWindowStaysPut() {
 }
 
 /** The views built from the revamp kit; a server page says so with `data-kit-page` on its root. */
-const KIT_VIEWS = new Set(["agents", "home", "search"]);
+const KIT_VIEWS = new Set(["tasks", "task", "agents", "home", "search"]);
 export function isKitPage(workspace: BrowserWorkspace): boolean {
   if (workspace.team) return false;
   if (workspace.view != null) return KIT_VIEWS.has(workspace.view.kind);
@@ -710,7 +711,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
     phone.addEventListener("change", sync);
     return () => { phone.removeEventListener("change", sync); column.removeAttribute("inert"); };
   }, [sheet]);
-  return <FormToken.Provider value={workspace.csrf}><Passwordless.Provider value={workspace.passwordless === true}><Toaster /><AttentionMarks workspace={workspace} /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${kitPage ? " so-workspace--kit" : ""}${settingsFrame ? " so-workspace--settings" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
+  return <FormToken.Provider value={workspace.csrf}><Passwordless.Provider value={workspace.passwordless === true}><Toaster /><AttentionMarks workspace={workspace} /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${kitPage ? " so-workspace--kit" : ""}${settingsFrame ? " so-workspace--settings" : ""}${docked || (taskView !== null && !kitPage) ? " so-workspace--docked" : ""}${taskView !== null && !kitPage ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
     <a href="#workspace-main" className="so-skip-link">Skip to content</a>
     <aside className="so-sidebar"><Rail workspace={workspace} states={states} current={current} /></aside>
     <div ref={mainColumn} className={`so-main-column${isChat ? " so-main-column--chat" : ""}`}>
@@ -774,7 +775,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
       <div className="so-ask-body" hidden={panelTab !== "chat"}><LeadChat controller={controller} docked={workspace.view?.kind ?? "task"} /></div>
       {panelTab === "crew" && <Crew workspace={workspace} />}
     </aside>}
-    {taskView !== null && <aside className="so-supporting-panel so-details-panel" data-workspace-detail aria-label="Task details">
+    {taskView !== null && !kitPage && <aside className="so-supporting-panel so-details-panel" data-workspace-detail aria-label="Task details">
       <div className="so-details-header">
         <ViewButton variant="ghost" size="sm" className="so-phone-back min-[761px]:hidden max-[761px]:h-11 max-[761px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />Back</ViewButton>
         <h2>Task details</h2>

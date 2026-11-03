@@ -36,7 +36,10 @@
         "projects",
         "settings",
         "pen",
-        "arrow"
+        "arrow",
+        "list",
+        "board",
+        "panel"
       ],
       "default": "plus"
     },

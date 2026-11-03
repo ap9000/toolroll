@@ -48,6 +48,32 @@ describe("toolroll release <branch>", () => {
     expect(JSON.parse(lines.join("\n"))).toMatchObject({ ok: false, command: "release", reason: "github-auth", step: "preflight", resume: "toolroll release toolroll/simplify-release --repo /rv" });
   });
 
+  test("a branch named like one of the command's words is released with --branch or after --, and resumes that way", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "so-release-cli-"));
+    for (const argv of [["--branch", "status"], ["--", "status"], ["--branch=nightly"]]) {
+      const lines: string[] = [];
+      expect(await runReleaseCommand(["--repo", "/rv", "--json", ...argv], line => lines.push(line), { adapters: signedOut, stateDir }), argv.join(" ")).toBe(3);
+      const branch = argv.at(-1)!.replace("--branch=", "");
+      expect(JSON.parse(lines.join("\n")), argv.join(" ")).toMatchObject({ ok: false, command: "release", step: "preflight", resume: `toolroll release --branch ${branch} --repo /rv` });
+    }
+    // Bare, the word is still the command's own; a branch is named once, one way, never a guess between two.
+    for (const argv of [["--branch", "a", "b"], ["--branch", "a", "--branch", "b"], ["--branch=a", "--", "b"], ["a", "--", "b"], ["--", "a", "b"]]) {
+      const lines: string[] = [];
+      expect(await runReleaseCommand(["--json", ...argv], line => lines.push(line), { adapters: signedOut, stateDir }), argv.join(" ")).toBe(2);
+      expect(JSON.parse(lines.join("\n")), argv.join(" ")).toMatchObject({ ok: false, reason: "usage" });
+    }
+  });
+
+  test("a trailing -- never turns the words before it into a branch: `release status --` is still the status read", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "so-release-cli-"));
+    const database = join(stateDir, "orders.db");
+    const read = async (argv: string[]) => { const lines: string[] = []; const code = await runReleaseCommand(argv, line => lines.push(line), { adapters: signedOut, stateDir, database }); return { code, out: lines.join("\n") }; };
+    const plain = await read(["--json", "status"]);
+    const trailing = await read(["--json", "status", "--"]);
+    expect(trailing).toEqual(plain);
+    expect(JSON.parse(trailing.out)).toMatchObject({ command: "release status" });
+  });
+
   test("--release-gate shows the proof, lifts only with --yes, and takes no release options", async () => {
     const lines: string[] = [];
     const world = { database: "/s/orders.db", stateDir: "/s", now: () => new Date(), open: () => { throw new Error("not opened in this test"); }, servicePlists: () => [], processes: () => [] };

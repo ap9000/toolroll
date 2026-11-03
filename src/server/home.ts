@@ -80,8 +80,8 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
   const needs = read("needs-you", HOME_NEEDS_SHOWN);
   const running = read("running", HOME_RUNNING_SHOWN);
   const totals = needs.totals;
-  // Queued: the Tasks list's own Queued count where the index keeps one; until then, the queued tasks per project.
-  const queued = (totals as Partial<Record<"queued", number>>).queued ?? needs.projects.reduce((sum, one) => sum + one.queued, 0);
+  // Queued: the Tasks list's own Queued count (the same predicate its view=queued filter lists).
+  const queued = totals.queued;
   const scopeQuery = project === null ? "" : `project=${encodeURIComponent(project)}&`;
   const counts: BrowserHomeView["counts"] = [
     { key: "needs", label: "Needs you", value: totals["needs-you"], href: `/work?${scopeQuery}view=needs-you` },

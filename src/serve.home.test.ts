@@ -2,12 +2,13 @@
  * its scope links stay inside the projects this person may see, a token keeps landing on Tasks, and search finds
  * tasks by title and every place by name. */
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
 import type { BrowserHomeView, BrowserSearchView, BrowserTasksView, BrowserWorkspace } from "./browser-workspace.js";
 import { addApprover } from "./scope.js";
+import { makeDemoRepos, seedDemo } from "./demo.js";
 import { createDecisionServer } from "./serve.js";
 import { openStore, type Store } from "./store.js";
 import { T0, workspaceOf } from "../test/serve-kit.js";
@@ -78,6 +79,41 @@ test("Home's four counts are the Tasks list's own counts, scoped the same way, a
   // A project outside this workspace is refused, never quietly widened.
   const outside = await fetch(url(`/?project=${encodeURIComponent("/somewhere/else")}`), { headers: { cookie } });
   expect(outside.status).toBe(404);
+});
+
+test("each of Home's counts equals the list its link opens (Queued included), on the demo's work", async () => {
+  // The demo seed has work in every state; a second server over it, presented as an ordinary install.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "so-home-demo-")));
+  const demoStore = openStore(join(root, "orders.db"));
+  const repos = makeDemoRepos(root);
+  mkdirSync(join(root, "evidence"), { recursive: true });
+  demoStore.recordInstallationFact("demo", "1", new Date());
+  const seed = seedDemo(demoStore, repos, join(root, "evidence"), new Date());
+  demoStore.isDemo = () => false;
+  const demo = createDecisionServer({ store: demoStore, evidenceRoot: join(root, "evidence"), repos: [repos.api, repos.web], clock: () => new Date() });
+  await new Promise<void>(resolve => demo.listen(0, "127.0.0.1", resolve));
+  const address = demo.address();
+  if (typeof address !== "object" || address === null) throw new Error("no address");
+  const at = `http://127.0.0.1:${address.port}`;
+  try {
+    const signed = await fetch(`${at}/login`, { method: "POST", body: new URLSearchParams({ name: seed.login.name, token: seed.login.password }), redirect: "manual" });
+    const cookie = (signed.headers.get("set-cookie") ?? "").split(";")[0] as string;
+    const read = async (path: string) => workspaceOf(await (await fetch(`${at}${path}`, { headers: { cookie } })).text());
+    const home = (await read("/")).view as BrowserHomeView;
+    // Each link opens its own filter (never All), whose count and rows are Home's figure.
+    const labels: Record<string, string> = { needs: "Needs you", running: "Running", queued: "Queued", finished: "Finished" };
+    for (const count of home.counts) {
+      const list = (await read(count.href)).view as BrowserTasksView;
+      expect(list.tabs.find(one => one.active)?.label, count.key).toBe(labels[count.key]);
+      expect(list.tabs.find(one => one.active)?.count, count.key).toBe(count.value);
+      expect(list.rows.length, count.key).toBe(Math.min(count.value, 40));
+    }
+  } finally {
+    demo.closeAllConnections?.();
+    await new Promise<void>(resolve => demo.close(() => resolve()));
+    demoStore.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("before anything is filed, Home is the first-run checklist in the chat; the chat itself stays where it was", async () => {

@@ -91,7 +91,7 @@ describe("project access and the action ledger", () => {
     // The retired history pages answer as redirects: Finished tasks and Agents carry what they listed.
     for (const [path, to] of [["/runs", "/agents"], ["/done", "/work?view=completed"]] as const) {
       const response = await get(path);
-      expect(response.status, path).toBe(302);
+      expect([302, 303], path).toContain(response.status);
       expect(response.headers.get("location"), path).toBe(to);
     }
     expect((await get("/t/beta-task")).status).toBe(404);

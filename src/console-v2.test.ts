@@ -163,8 +163,11 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     // A live build is a progress entry in the machine's words, never the model's.
     const live = (await workspace(cookie, "/t/live")).view as BrowserTaskView;
     expect(live.thread!.find(one => one.kind === "progress")).toMatchObject({ title: "Building", text: "Writing the change." });
-    // One page per task: Activity unless the address names a tab; the Result tab holds the result itself, its run exact.
-    expect(finished.tab).toBe("activity");
+    // One page per task: the first tab (Plan, or Result once there is one) unless the address names another; the Result
+    // tab holds the result itself, its run exact.
+    expect(finished.tab).toBe("plan");
+    expect(((await workspace(cookie, "/t/finished?tab=activity")).view as BrowserTaskView).tab).toBe("activity");
+    expect(((await workspace(cookie, "/t/finished?tab=attempts")).view as BrowserTaskView).tab).toBe("attempts");
     expect(finished.result).toMatchObject({ current: true, selected: { build: doneRun }, attempts: [{ href: `/t/finished?tab=result&run=${doneRun}`, current: true }] });
     expect(((await workspace(cookie, "/t/finished?tab=result")).view as BrowserTaskView).tab).toBe("result");
     expect(((await workspace(cookie, "/t/finished?tab=plan")).view as BrowserTaskView).tab).toBe("plan");

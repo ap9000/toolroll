@@ -106,7 +106,8 @@ Server builders are in `src/server/kit.ts`; React components in `src/browser/kit
 | Chip, status | `chip`, `status`, `headlineChip` | `KChip`, `KStatus`, `KHeadlineChip` | the five words |
 | Count | `count(n, { ink })` | `KCount` | ink only for a Needs-you count |
 | Tabs | `linkTabs` | `KLinkTabs`, `KTabs` | sections of one object; link tabs are addresses |
-| Filters | `segLinks` | `KSeg` | views and filters of one list |
+| Filters | `segLinks`, `iconSegLinks` | `KSeg`, `KLinkSeg` | views and filters of one list; as addresses when the server filters (List / Board as icons) |
+| Text filter | `filterInput` | `KFilter` | narrows the rows already on the page; site search is ⌘K |
 | Field | `field`, `input`, `textarea` | `KField`, `KInput`, `KTextarea` | the error sits next to the control, never a banner |
 | Select | `select` | `KSelect` | native, with the chevron |
 | Switch | `switchInput` | `KSwitch`, `KSwitchInput` | says its state in words |
@@ -123,6 +124,8 @@ Server builders are in `src/server/kit.ts`; React components in `src/browser/kit
 | Needs-you panel | `needsPanel` | `KNeedsPanel` | waits that aren't tasks, on their own page |
 | Overlays | `overlay` + `overlayTrigger` | `KOverlay`, `useKMenu` | popover, drawer, sheet, menu |
 | Timing rows | `timing` | `KTiming` | steps on one elapsed-time axis |
+| Progress line | `steps` | `KSteps` | a single object's fixed stages (a task: Plan · Approval · Build · Checks · Ready), the current one's reason under it |
+| Board | `board`, `boardCol`, `card` | `KBoard`, `KBoardCol`, `KCard` | a list's rows as columns, the optional view beside List; one column at a time on a phone |
 | Not found | `notFound(path)` | `KNotFound` | inside the shell |
 | Settings frame | `settingsShell` | `KSettingsShell` | Overview + the eight groups (`SETTINGS_GROUPS`) |
 | Phone dock | `dock(primary)` | `KDock` | the screen's one primary on a phone |
@@ -134,6 +137,11 @@ the whole row is the link) · one muted line · meta (project, age in `k-num`) �
 `sm`, 108px min, always visible, same place every row). A refusal sits under the row (`message`). Phone: title on
 top, chip under it, the line below, the action on the right, meta hidden. Lists are rows between hairlines under
 `group` headings, never cards.
+
+**List tools.** A list page's top bar holds, in order: the title, the project filter (`segLinks`, when there is more
+than one project), the status filters with their counts, then on the right the text filter, the List / Board switch
+and the page's one primary. On a phone they become one row under the header (`k-tbp`): selects for project and status,
+and the switch. A Needs-you count is ink only in its own filter; zero is muted.
 
 **Two page shapes.** List pages (Home, Tasks, Flows, Agents, Projects, Search, Chat, Settings) have the desk top
 bar. Reading pages (a task, a release, a run, a record, an agent, New task, a project, setup) have no desk top bar:

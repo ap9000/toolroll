@@ -1,26 +1,26 @@
 {
   "schema": "youi.baseline/v1",
   "project": "toolroll",
-  "recordedAt": "2026-11-03T08:59:15.785Z",
+  "recordedAt": "2026-11-03T10:56:48.462Z",
   "identity": {
     "tool": "youi-scanner/0.1.0",
     "system": {
       "id": "toolroll",
       "version": "1.0.0"
     },
-    "definitions": "f79f33e2a63e",
+    "definitions": "5099ad3076c0",
     "design": {
-      "commit": "27b3b4bbc023015fab1b5aa5740a1f446d5bf5cf",
-      "dirty": false
+      "commit": "aaaffeb3357f0889870b1f90479d9c18014504a7",
+      "dirty": true
     },
     "project": {
-      "commit": "27b3b4bbc023015fab1b5aa5740a1f446d5bf5cf",
-      "dirty": false
+      "commit": "aaaffeb3357f0889870b1f90479d9c18014504a7",
+      "dirty": true
     }
   },
   "totals": {
-    "errors": 43,
-    "warnings": 92
+    "errors": 40,
+    "warnings": 89
   },
   "entries": [
     {
@@ -30,8 +30,8 @@
       "severity": "warn",
       "count": 2,
       "lines": [
-        770,
-        771
+        771,
+        772
       ]
     },
     {
@@ -41,7 +41,7 @@
       "severity": "warn",
       "count": 1,
       "lines": [
-        587
+        588
       ]
     },
     {
@@ -506,48 +506,6 @@
       "count": 1,
       "lines": [
         53
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/components.no-native-controls",
-      "file": "src/browser/views/task-view.tsx",
-      "text": "<button>",
-      "severity": "warn",
-      "count": 1,
-      "lines": [
-        526
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/color.no-raw-color",
-      "file": "src/browser/views/tasks-view.tsx",
-      "text": "#000",
-      "severity": "error",
-      "count": 3,
-      "lines": [
-        199,
-        199,
-        199
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/components.no-native-controls",
-      "file": "src/browser/views/tasks-view.tsx",
-      "text": "<button>",
-      "severity": "warn",
-      "count": 1,
-      "lines": [
-        172
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
-      "file": "src/browser/views/tasks-view.tsx",
-      "text": "text-[12px]",
-      "severity": "warn",
-      "count": 1,
-      "lines": [
-        91
       ]
     },
     {
