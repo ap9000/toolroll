@@ -329,7 +329,7 @@ describe("the CI workflows", () => {
         const suite = (one.jobs[shard]?.steps ?? []).find(step => (step.run ?? "").startsWith("npm run test:all"));
         // macOS runs its lane (the nightly every file), and its join judges that lane.
         expect(suite?.env, `${file} ${shard}`).toEqual({ CI: "true", TOOLROLL_REQUIRE_NATIVE: platform, ...(platform === "darwin" ? { TOOLROLL_TEST_LANE: "${{ inputs.macos_lane || 'macos' }}" } : {}) });
-        expect(runsOf(one.jobs[join]!).at(-1)?.trimEnd(), `${file} ${join}`).toMatch(new RegExp(`--shards ${SHARDS[platform]} --native ${platform}${platform === "darwin" ? ' --lane "\\$LANE"' : ""}$`));
+        expect(runsOf(one.jobs[join]!).at(-1)?.trimEnd(), `${file} ${join}`).toMatch(new RegExp(`--shards ${SHARDS[platform]} --native ${platform}${platform === "darwin" ? ` --lane "\\$LANE" --linux-reports "\\$RUNNER_TEMP/linux-shards" --linux-shards ${SHARDS.linux}` : ""}$`));
       }
       expect(one.jobs["macos-shard"]?.["runs-on"]).toBe("macos-latest");
     }
@@ -396,7 +396,8 @@ describe("the CI workflows", () => {
         expect(shard.strategy?.matrix, file).toEqual({ ...(file === "ci.yml" ? { node: [node] } : {}), shard: Array.from({ length: count }, (_, at) => at + 1) });
         expect((shard.strategy as { "fail-fast"?: unknown })["fail-fast"]).toBe(false);
         expect(join.strategy?.matrix).toEqual(file === "ci.yml" ? { node: [node] } : undefined);
-        expect(join.needs).toBe(shardId);
+        // The macOS join reads the Linux shards' reports too: what Linux skipped must be in the macOS lane.
+        expect(join.needs).toEqual(os === "macos" ? ["macos-shard", "test-shard"] : shardId);
         expect(checks(join, joinId, pr([]), file).map(check => check.name)).toEqual([`node ${node} · ${os}-latest`]);
         for (const job of [shard, join]) {
           expect(job["continue-on-error"] ?? false).toBe(false);
@@ -465,7 +466,9 @@ describe("ci-speed: superseded runs, the macOS lane and the scripted journeys", 
       const verify = join.steps?.at(-1);
       expect(verify?.env, file).toEqual({ LANE: "${{ inputs.macos_lane || 'macos' }}" });
       // The lane's file list is the trusted base's verifier's; a base without one bootstraps on the candidate's, and says so.
-      expect(verify?.run).toContain(`if ! grep -q "export function laneFiles" "$verifier"; then echo "::warning::`);
+      expect(verify?.run).toContain(`if ! grep -q "export function linuxSkipsProblem" "$verifier"; then echo "::warning::`);
+      // The Linux shards' own reports, downloaded apart from the macOS ones.
+      expect(join.steps?.filter(step => step.uses?.startsWith("actions/download-artifact@")).map(step => step.with?.["path"])).toEqual(["${{ runner.temp }}/macos-downloads", "${{ runner.temp }}/linux-shards"]);
     }
     expect(workflow("ci.yml").on["workflow_call"]).toEqual({ inputs: { macos_lane: { type: "string", default: "macos" } } });
     const nightly = workflow("nightly.yml");

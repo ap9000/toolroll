@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { spawnSync } from "node:child_process";
-import { INCLUDE, inventory, laneFiles, LANES, NATIVE_PROBES, readReport, reportsIn, shardsProblem } from "../scripts/ci-shards.mjs";
+import { INCLUDE, inventory, laneFiles, LANES, linuxSkipsProblem, NATIVE_PROBES, readReport, reportsIn, shardsProblem } from "../scripts/ci-shards.mjs";
 import { planShards } from "../scripts/ci-timings.mjs";
 
 const scratch = mkdtempSync(join(tmpdir(), "ci-shards-"));
@@ -211,5 +211,64 @@ describe("ci-speed item 1: timing-balanced shards", () => {
     const all = inventory(REPO);
     // New files plan as typical ones until the next refresh; most of the suite must be timed.
     expect(all.filter(file => committed.linux[file] !== undefined).length).toBeGreaterThan(all.length * 0.9);
+  });
+});
+
+describe("Codex review round 1, P1: what Linux skips, the macOS lane runs", () => {
+  test("a capability probe, a conditional skip or needs() puts a file in the lane, whatever its name", () => {
+    const tree = join(scratch, "lane-probes");
+    write(tree, "src/a.test.ts", "describe.skipIf(!macosFenceAvailable())('fenced', () => {});\n");
+    write(tree, "src/b.test.ts", "const FENCED = macosFenceAvailable() || linuxFenceAvailable();\nif (FENCED) test('x', () => {});\n");
+    write(tree, "src/c.test.ts", "test.runIf(HAS_DOCKER)('mail', () => {});\n");
+    write(tree, "src/d.test.ts", "test('n', ctx => { needs(ctx, codexSandbox()); });\n");
+    write(tree, "src/e.test.ts", "if (os.platform() === 'darwin') {}\n");
+    // A skip spelled inside a fixture's text, unconditional, isn't a reason: such a file stays on Linux.
+    write(tree, "src/f.test.ts", "const fixture = \"test.skip('later', () => {});\";\ntest('f', () => {});\n");
+    expect(laneFiles(tree, "macos")).toEqual(["src/a.test.ts", "src/b.test.ts", "src/c.test.ts", "src/d.test.ts", "src/e.test.ts"]);
+  });
+
+  test("in this checkout: the fenced suites Codex found outside the lane are in it", () => {
+    const lane = laneFiles(REPO, "macos");
+    for (const file of ["src/console-instance.slow.test.ts", "src/acp-check.slow.test.ts", "src/eval-oracle.test.ts", "src/flow-code.test.ts"]) expect(lane, file).toContain(file);
+    // Every file whose text can skip or narrow by a capability is in, so the join's report check below never has to catch one.
+    const all = inventory(REPO);
+    const probed = all.filter(file => LANES.macos.probes.test(readFileSync(join(REPO, file), "utf8")));
+    expect(probed.filter(file => !lane.includes(file))).toEqual([]);
+  });
+
+  test("the macOS join fails when a file Linux skipped part of ran in no macOS shard, and when a Linux report is missing", () => {
+    const tree = join(scratch, "linux-skips");
+    const at = (name: string, statuses: string[]) => ({ name: join(tree, name), status: statuses.includes("passed") ? "passed" : "skipped", assertionResults: statuses.map(status => ({ status })) });
+    const linux = new Map<number, unknown>([
+      [1, report([at("src/fenced.test.ts", ["skipped", "skipped"]), at("src/plain.test.ts", ["passed"])])],
+      [2, report([at("src/partly.test.ts", ["passed", "skipped"])])],
+    ]);
+    expect(linuxSkipsProblem(linux, new Set(["src/fenced.test.ts", "src/partly.test.ts"]), { shards: 2, root: tree })).toBeNull();
+    // Wholly skipped on Linux and not run on the Mac: Codex's console-instance case.
+    expect(linuxSkipsProblem(linux, new Set(["src/partly.test.ts"]), { shards: 2, root: tree })).toMatch(/src\/fenced\.test\.ts.*must run them/);
+    // Partly skipped counts the same.
+    expect(linuxSkipsProblem(linux, new Set(["src/fenced.test.ts"]), { shards: 2, root: tree })).toMatch(/src\/partly\.test\.ts/);
+    // Fail closed: a Linux shard without a readable report.
+    expect(linuxSkipsProblem(new Map([[1, linux.get(1)]]), new Set(["src/fenced.test.ts", "src/partly.test.ts"]), { shards: 2, root: tree })).toMatch(/Linux shard 2\/2 gave no readable report/);
+    expect(linuxSkipsProblem(new Map([[1, null], [2, linux.get(2)]]), new Set(), { shards: 2, root: tree })).toMatch(/Linux shard 1\/2/);
+    expect(linuxSkipsProblem(linux, new Set(), { shards: 0, root: tree })).toMatch(/no Linux shard count/);
+  });
+
+  test("the command line refuses a lane without the Linux reports, and fails a lane that misses a Linux skip", () => {
+    const tree = join(scratch, "linux-skips-cli");
+    write(tree, "src/mac.test.ts", "test('m', () => { if (process.platform === 'darwin') {} });\n");
+    write(tree, "src/plain.test.ts", "test('p', () => {});\n");
+    const mac = join(scratch, "mac-reports"), lin = join(scratch, "linux-reports");
+    write(mac, "shard-24-1/shard-report.json", JSON.stringify(report([{ name: join(tree, "src/mac.test.ts"), status: "passed", assertionResults: [{ status: "passed" }] }])));
+    const cli = (extra: string[]) => spawnSync(process.execPath, [join(REPO, "scripts/ci-shards.mjs"), "verify", mac, "--root", tree, "--base", tree, "--sha", "a".repeat(40), "--node", "24", "--shards", "1", "--lane", "macos", ...extra], { encoding: "utf8" });
+    expect(cli([]).stderr).toMatch(/a lane needs --linux-reports/);
+    // Linux skipped part of plain.test.ts, which the lane doesn't hold: the join fails.
+    write(lin, "shard-24-1/shard-report.json", JSON.stringify(report([{ name: join(tree, "src/plain.test.ts"), status: "passed", assertionResults: [{ status: "passed" }, { status: "skipped" }] }])));
+    const failed = cli(["--linux-reports", lin, "--linux-shards", "1"]);
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toMatch(/src\/plain\.test\.ts.*must run them/);
+    write(lin, "shard-24-1/shard-report.json", JSON.stringify(report([{ name: join(tree, "src/plain.test.ts"), status: "passed", assertionResults: [{ status: "passed" }] }])));
+    const passed = cli(["--linux-reports", lin, "--linux-shards", "1"]);
+    expect(passed.status, passed.stderr).toBe(0);
   });
 });

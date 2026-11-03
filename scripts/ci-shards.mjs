@@ -7,12 +7,14 @@
  * elsewhere, every report's counts consistent and tests actually executed.
  *
  *   node <trusted copy>/scripts/ci-shards.mjs verify <shards-folder> --root <candidate checkout> --base <trusted checkout>
- *     --sha <sha> --node <n> --shards <K> [--native linux|darwin] [--lane all|macos]
+ *     --sha <sha> --node <n> --shards <K> [--native linux|darwin] [--lane all|macos --linux-reports <folder> --linux-shards <K>]
  *
  * `--lane macos` (docs/plans/ci-speed.md): the macOS shards ran the macOS lane, not the whole suite (`--lane all`, as the
  * nightly runs it, is the whole suite) — every file
  * LANES.macos selects in the tested commit (laneFiles), which Linux also runs with everything else. The selection is
- * this trusted copy's policy over the candidate's tree, so a candidate can't shrink what its macOS shards owe.
+ * this trusted copy's policy over the candidate's tree, so a candidate can't shrink what its macOS shards owe. With a
+ * lane, `--linux-reports` names the same run's Linux shard reports: every file Linux skipped any test of must be one the
+ * macOS shards ran (linuxSkipsProblem), so a native test the lane's words miss fails the join instead of running nowhere.
  *
  * `--native <platform>` (docs/plans/test-matrix.md): the shards ran with TOOLROLL_REQUIRE_NATIVE=<platform>, so that
  * platform's native fence attacks run or fail. The skip policy agrees: a file whose base copy can skip only through a
@@ -51,8 +53,9 @@ export const NATIVE_PROBES = {
  * The test lanes a shard set may run instead of the whole inventory (docs/plans/ci-speed.md, item 3). `macos`: what
  * can behave differently on a Mac — the fences and Seatbelt, launchd, TCC and the keychain, path handling, git on a Mac,
  * linking and installing, containment — plus a smoke set; Linux runs every file. A file is in when its path matches
- * `paths`, it is listed in `smoke`, or its text names something platform-specific (`markers`): a new test that touches
- * macOS-only code is in the lane without anyone listing it. vitest.config.ts runs exactly laneFiles() under
+ * `paths`, it is listed in `smoke`, its text names something platform-specific (`markers`), or it can skip or narrow a
+ * test by what the machine has (`probes`): a new test that touches macOS-only code is in the lane without anyone
+ * listing it. vitest.config.ts runs exactly laneFiles() under
  * TOOLROLL_TEST_LANE (src/ci-shards.test.ts holds the two equal and names the files that must stay in).
  */
 export const LANES = {
@@ -63,6 +66,11 @@ export const LANES = {
       /^src\/[^/]*(fence|sandbox|seatbelt|launchd|daemon|containment|keychain|desktop|install|link|worktree|teardown-git|git-floor|checkout|folder|home|paths|toolroll-update|update-safe)[^/]*\.test\.ts$/,
     ],
     markers: /darwin|process\.platform|seatbelt|sandbox-exec|launchctl|launchd|LaunchAgent|\bTCC\b|tccutil|needs\(\s*ctx\s*,\s*(?:seatbelt|osFence)\(\)|keychain|\/private\/(?:var|tmp)/i,
+    // Anything that can skip or narrow a test by what the machine has (Codex review round 1, P1: macosFenceAvailable()
+    // gated suites that neither platform ran): a conditional skip, a capability probe, the attack harness's needs(), the
+    // platform asked any other way. Linux may skip these; the Mac must run them. The macOS join also checks this from
+    // the Linux shards' own reports (linuxSkipsProblem), so a skip these words miss still fails.
+    probes: /\.(?:skipIf|runIf)\(|\b\w+Available\(\)|\bneeds\(\s*ctx\b|\bos\.platform\(\)|\bplatform\(\)/,
     smoke: [
       "src/cli.test.ts", "src/cli-fast.test.ts", "src/contracts/cli.test.ts", "src/fake-pid.test.ts", "src/password-freshness.test.ts",
       "src/store.test.ts", "src/serve.console.slow.test.ts", "src/up-processes.test.ts", "src/up-split.slow.test.ts",
@@ -80,7 +88,8 @@ export function laneFiles(root, lane, listed = inventory(root)) {
     try {
       const at = join(root, file);
       if (!lstatSync(at).isFile()) return true;
-      return policy.markers.test(readFileSync(at, "utf8"));
+      const text = readFileSync(at, "utf8");
+      return policy.markers.test(text) || policy.probes.test(text);
     } catch { return true; }
   });
 }
@@ -187,6 +196,29 @@ export function shardsProblem(reports, listed, { shards, root, base, native }) {
   return null;
 }
 
+/**
+ * Why the macOS lane doesn't cover what Linux skipped, or null when it does (Codex review round 1, P1): every file a
+ * Linux shard's own report shows with a test that didn't run — skipped for a platform or a capability Linux lacks —
+ * must be among the files the macOS shards ran. Fail closed: Linux's shards 1..`shards` must each give a readable
+ * report. `macRan` is the set of files (relative) the macOS shards' reports hold.
+ */
+export function linuxSkipsProblem(linuxReports, macRan, { shards, root }) {
+  if (!Number.isSafeInteger(shards) || shards < 1) return "no Linux shard count";
+  for (let at = 1; at <= shards; at++) if (!linuxReports.has(at) || linuxReports.get(at) === null) return `Linux shard ${at}/${shards} gave no readable report`;
+  const missed = [];
+  for (const report of linuxReports.values()) {
+    if (!Array.isArray(report?.testResults)) return "a Linux shard's report isn't a Vitest JSON report";
+    for (const one of report.testResults) {
+      const name = typeof one?.name === "string" ? one.name : "";
+      const file = relative(root, name).split(sep).join("/");
+      const notRun = !Array.isArray(one?.assertionResults) || one.assertionResults.some(test => NOT_RUN.has(test?.status)) || one.status === "skipped";
+      if (notRun && !macRan.has(file)) missed.push(file);
+    }
+  }
+  if (missed.length === 0) return null;
+  return `${missed.length} file${missed.length === 1 ? "" : "s"} Linux skipped part of ran in no macOS shard (${missed.slice(0, 3).join(", ")}${missed.length > 3 ? ", …" : ""}): the macOS lane must run them`;
+}
+
 const flag = (args, name) => { const at = args.indexOf(`--${name}`); return at === -1 ? undefined : args[at + 1]; };
 
 /**
@@ -210,7 +242,7 @@ export function reportsIn(folder, node) {
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const [command, folder, ...args] = process.argv.slice(2);
   try {
-    if (command !== "verify") { console.error("usage: ci-shards.mjs verify <shards-folder> --root <checkout> --base <trusted checkout> --sha <sha> --node <n> --shards <K> [--native linux|darwin] [--lane all|macos]"); process.exit(2); }
+    if (command !== "verify") { console.error("usage: ci-shards.mjs verify <shards-folder> --root <checkout> --base <trusted checkout> --sha <sha> --node <n> --shards <K> [--native linux|darwin] [--lane all|macos --linux-reports <folder> --linux-shards <K>]"); process.exit(2); }
     const shards = Number(flag(args, "shards")), sha = flag(args, "sha"), node = flag(args, "node"), root = flag(args, "root"), base = flag(args, "base"), native = flag(args, "native"), lane = flag(args, "lane");
     if (!SHA.test(sha ?? "")) throw new Error("no tested commit");
     if (typeof root !== "string" || typeof base !== "string") throw new Error("--root and --base are required");
@@ -220,6 +252,14 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     if (args.includes("--native") && !Object.hasOwn(NATIVE_PROBES, native ?? "")) throw new Error(`--native takes ${Object.keys(NATIVE_PROBES).join(" or ")}`);
     const problem = shardsProblem(reports, listed, { shards, root, base, native });
     if (problem !== null) { console.error(`node ${node}: ${problem}`); process.exit(1); }
+    // A lane, not the suite: what Linux skipped must be in it (--linux-reports <folder> --linux-shards <K>).
+    const linuxFolder = flag(args, "linux-reports");
+    if (lane !== undefined && lane !== "all" && linuxFolder === undefined) throw new Error("a lane needs --linux-reports: what Linux skipped must be in it");
+    if (linuxFolder !== undefined) {
+      const ran = new Set([...reports.values()].flatMap(one => readReport(one, { root, base, native }).files ?? []));
+      const skips = linuxSkipsProblem(reportsIn(linuxFolder, node), ran, { shards: Number(flag(args, "linux-shards")), root });
+      if (skips !== null) { console.error(`node ${node}: ${skips}`); process.exit(1); }
+    }
     const executed = [...reports.values()].reduce((n, one) => n + one.numPassedTests, 0);
     console.log(`node ${node}: ${shards} shards passed on ${sha}, ${listed.length} test files${lane === undefined || lane === "all" ? "" : ` (the ${lane} lane)`}, ${executed} tests executed`);
   } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }

@@ -186,7 +186,8 @@ jobs:
   # protection doesn't require it.
   macos:
     name: node 22 · macos-latest
-    needs: macos-shard
+    # The Linux shards too: what they skipped must be among the files the macOS lane ran (ci-shards.mjs linuxSkipsProblem).
+    needs: [macos-shard, test-shard]
     if: ${{ always() && (github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -218,6 +219,10 @@ jobs:
         with:
           pattern: macos-shard-22-*
           path: ${{ runner.temp }}/macos-downloads
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shard-22-*
+          path: ${{ runner.temp }}/linux-shards
       # The verifier reads shard-<node>-<i> folders; macOS artifacts carry a prefix so their names differ from Linux's.
       - name: The macOS shards' reports, under the verifier's names
         shell: bash
@@ -240,5 +245,5 @@ jobs:
         run: |
           verifier=.trusted-base/scripts/ci-shards.mjs
           if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          if ! grep -q "export function laneFiles" "$verifier"; then echo "::warning::the base revision's shard verifier has no macOS lane yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node 22 --shards 3 --native darwin --lane "$LANE"
+          if ! grep -q "export function linuxSkipsProblem" "$verifier"; then echo "::warning::the base revision's shard verifier has no macOS lane yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node 22 --shards 3 --native darwin --lane "$LANE" --linux-reports "$RUNNER_TEMP/linux-shards" --linux-shards 6
