@@ -2229,7 +2229,7 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
     const revision = /name="projectRevision" value="(\d+)"/.exec(form)?.[1] ?? "0";
     await fetch(`${base}/tasks/add`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ acceptance: "c1: ok | manual-review", csrf, projectRevision: revision, title: "scout me", goal: "find out", repo: "/repo/main", scout: "1" }), redirect: "manual" });
     const next = await (await fetch(`${base}/next`, { headers: { cookie } })).text();
-    expect(next).toContain("Approve exactly this:");
+    expect(next).toContain("Approve exactly this");
     expect(next).toContain("a read-only session investigates this goal and delivers a report");
   });
 
@@ -2448,7 +2448,7 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
     expect(store.qualityDefault()).toMatchObject({ mode: "strict", updatedBy: "alex" });
 
     const fresh = await (await fetch(`${base}/tasks/new`, { headers: { cookie } })).text();
-    expect(fresh).toContain('<option value="strict" selected>Strict / release</option>');
+    expect(fresh).toContain('<option value="strict" selected>Strict (release)</option>');
     const revision = /name="projectRevision" value="(\d+)"/.exec(fresh)?.[1] ?? "0";
     const filed = await fetch(`${base}/tasks/add`, {
       method: "POST",

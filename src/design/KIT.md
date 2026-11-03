@@ -15,6 +15,7 @@ always there: copy what an existing kit page does, invent nothing the kit alread
 | Server pages | `src/server/kit.ts` (`Html` builders) | `sendScreen` pages and fragments `GuardedHtml` places |
 | React views | `src/browser/kit/` (`KButton`, `KComposer`, …; import from `kit/index.js`) | the workspace views |
 | Behaviour | `src/browser/kit/behavior.ts` | React kit components, and any kit markup the workspace places (`installKitBehavior` in `app.tsx`) |
+| Behaviour off the workspace | `src/server/kit-standalone.ts` | a chromed server page answered without the workspace bundle: `sendScreen` adds it to the page's one nonce'd script when the page has kit behaviour markup, never on a sensitive page |
 | Contracts | `src/design/system/components/*/…contract.json`, rules in `src/design/system/rules/` | youiyoux |
 
 Both kits write the same markup for the same piece, so a server page and a React view never have two looks. Every
@@ -127,6 +128,9 @@ Server builders are in `src/server/kit.ts`; React components in `src/browser/kit
 | Settings frame | `settingsShell` | `KSettingsShell` | Overview + the eight groups (`SETTINGS_GROUPS`) |
 | Phone dock | `dock(primary)` | `KDock` | the screen's one primary on a phone |
 | Composer | `composer`, `sendButton` | `KComposer` | see [Composer](#composer) |
+| Page outside the shell | `outPage`, `outField` | — | sign in, first account, invite, an error; see [Outside the shell](#outside-the-shell) |
+| Guided steps | `checklist` | — | the first run's steps: mark, step and one line, its one action |
+| Ideas | `ideas` | — | words a tap drafts into a composer (`data-k-draft`); a link without script |
 
 **Row anatomy** (`k-row`, 48px min, hairline below): chip column (96px) · title (500; 600 when it waits on you;
 the whole row is the link) · one muted line · meta (project, age in `k-num`) · one action (124px column, outline
@@ -159,7 +163,20 @@ empty; a form's send stays pressable so an empty press says what is missing next
 its twin: the box's `working` class swaps them and the icon morphs (160ms, none under reduced motion). No "Enter
 sends" hint. On a phone the text is 16px; with the keyboard up (`visualViewport` → `html.kb-open`, `--kb`) a
 docked composer (`k-composer-dock`) rides just above it and the dock steps aside. A refused send keeps the words in
-the box with the reason under it (`composerError`).
+the box with the reason under it (`composerError`). A note can follow the box's switch without script (`k-on-note`,
+`k-off-note`). A form whose send the phone dock carries (`k-dock-send`, as New task) hides the round send on a phone.
+
+## Outside the shell
+
+Sign in, the first account, an invite, signed out and the error page stand alone (`outPage`): the brand, one 380px
+column on paper with the one h1, an optional muted line, the form or the facts, and a foot line under a hairline. They
+carry no script and no session; every control is plain HTML. A refusal sits under the field it is about (`outField`
+`error`: the field is aria-invalid, described by the hint and the error, and focused); a refusal about the whole form is
+a `notice` above it. The submit is the one primary, full width (`k-wide`). A refusal's words come from many callers, so
+the `k-refusal` wrapper capitalises their first letter.
+
+A page with steps (the first run) uses `checklist`: done steps read muted with a check, a step being checked shows a
+static ring, and the next required step's action is the screen's one primary (`docked`, so the phone dock carries it).
 
 ## Motion
 

@@ -237,6 +237,8 @@ get("pages", "agents.live", "/agents/live", { limited: "unscoped", callers: ["co
 get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/1" });
 get("pages", "fleet", "/fleet", free);
 get("tasks", "tasks.new", "/tasks/new", { limited: "collection", ...free });
+// The first run's own page (Wave E): five guided steps, reads only; it leads Home once the first run is over.
+get("tasks", "welcome", "/welcome", { limited: "collection", ...free });
 get("tasks", "task.page", `^\\/t\\/${TASK}$`, { project: "task", limited: "resource", ...free, sample: "/t/one" });
 get("tasks", "task.evidence", `^\\/t\\/${TASK}\\/evidence$`, { project: "task", limited: "resource", ...free, sample: "/t/one/evidence" });
 get("pages", "ledger.export", "/ledger/export", { limited: "unscoped", ...free });

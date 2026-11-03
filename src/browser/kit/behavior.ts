@@ -263,6 +263,24 @@ function composerMenus(event: MouseEvent): boolean {
   return true;
 }
 
+// ---- ideas ------------------------------------------------------------------------------------------------------
+
+/** An idea (`[data-k-draft]`, server kit `ideas`) adds its words to its composer in place, after anything already typed,
+ * never instead of it. Without its composer on the page the idea stays a link (it opens the page with the words). */
+export function draftIdea(target: Element, event: Event): boolean {
+  const idea = target.closest<HTMLElement>("[data-k-draft]");
+  if (idea === null) return false;
+  const box = document.getElementById(`${idea.dataset["kInto"] ?? ""}-text`);
+  if (!(box instanceof HTMLTextAreaElement) || box.disabled) return true;
+  event.preventDefault();
+  const words = idea.dataset["kDraft"] ?? "";
+  const typed = box.value;
+  box.value = typed.trim() === "" ? words : typed.includes(words) ? typed : `${typed.trimEnd()}\n${words}`;
+  composerSync(box);
+  box.focus();
+  return true;
+}
+
 // ---- install ----------------------------------------------------------------------------------------------------
 
 let installed = false;
@@ -279,6 +297,7 @@ export function installKitBehavior(): void {
     if (target === null) return;
     const gated = target.closest<HTMLButtonElement>('.k-send[data-gate][aria-disabled="true"]');
     if (gated) { event.preventDefault(); return; }
+    if (draftIdea(target, event)) return;
     if (composerMenus(event)) return;
     const opener = target.closest<HTMLElement>("[data-k-open]");
     if (opener) {

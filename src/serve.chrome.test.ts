@@ -117,14 +117,14 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     });
     const cookie = await login();
     const pending = await (await fetch(url("/next"), { headers: { cookie } })).text();
-    expect(pending).toContain("Approve this scope");
+    expect(pending).toContain("Approve and start");
     expect(workspaceOf(pending).sensitive).toBe(true);
     expect(pending).not.toContain('id="palette-index"');
 
     const granted = approve(store, "t-a", "alex", T0, store.getScope("t-a")?.digest as string, approverToken);
     expect(granted.ok).toBe(true);
     const clear = await (await fetch(url("/next"), { headers: { cookie } })).text();
-    expect(clear).not.toContain("Approve this scope");
+    expect(clear).not.toContain("Approve and start");
     expect(workspaceOf(clear).sensitive).toBe(false);
   });
 

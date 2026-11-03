@@ -25729,3 +25729,16 @@ export function restoreTaskFamily(store: Store, taskId: string, by: string, now:
     return { ok: true as const, refs };
   });
 }
+
+/**
+ * What a LIVE invite grants, for its own join page (Wave E, "Your access"): the role, who invited, the projects and
+ * when it expires. Read without spending an attempt and under exactly inviteIsLive's predicate, so every dead shape
+ * reads as null and still gets the one indistinguishable page (D6). Only a holder of the live token sees it.
+ */
+export function liveInviteTerms(store: Store, tokenValue: string, now: Date): { role: "approver" | "viewer"; mintedBy: string; expiresAt: string; projects: ProjectAccess } | null {
+  const row = store.handle
+    .prepare("SELECT role, minted_by, expires_at, projects_json FROM invite WHERE token_hash = ? AND revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ? AND attempts < 10")
+    .get(createHash("sha256").update(tokenValue, "utf8").digest("hex"), now.toISOString());
+  if (row === undefined) return null;
+  return { role: String(row["role"]) === "approver" ? "approver" : "viewer", mintedBy: String(row["minted_by"]), expiresAt: String(row["expires_at"]), projects: readProjectAccess(row["projects_json"]) };
+}

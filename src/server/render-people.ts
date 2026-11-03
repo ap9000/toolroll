@@ -1,36 +1,48 @@
-/** Sign-in, sign-up, join and wrong-host pages. */
+/** Sign-in, sign-up, join and wrong-host pages: pages outside the shell, built from the kit (server/kit.ts outPage).
+ * They carry no script and no session; every refusal names the field it is about. */
 import { BRAND_HTML,shell } from "./chrome.js";
 import { html, joinHtml, postForm, replaceMarkup, type Html } from "../html.js";
+import { btn, disclose, facts, notice, outField, outPage } from "./kit.js";
+import { projectName } from "../project.js";
 
-/** The invite's front door: cookie-free, script-free, sensitive by shape.
- * Rendered only for a LIVE token — everything dead gets joinDeadPage. */
-export function joinFormPage(token: string, problem: string | null, name: string): Html {
-  return shell("Join Toolroll", joinHtml([
-    html`<div class="login-viewport"><div class="login-shell">`,
-    html`<h1 class="so-wordmark login-brand">${BRAND_HTML}</h1>`,
-    html`<p class="meta hint">You were invited. Pick a name and a password to sign in.</p>`,
-    html`<div class="login-card">`,
-    problem === null ? "" : html`<div class="problem" role="alert">${problem}</div>`,
-    postForm(`/join/${token}`, joinHtml([
-      html`<label>Username<input type="text" name="name" autocomplete="username" autocapitalize="none" spellcheck="false" required value="${name}" autofocus></label>`,
-      html`<label>Password<input type="password" name="password" autocomplete="new-password"></label>`,
-      html`<button type="submit">Create my sign-in</button>`,
-    ], "\n"), { signedOut: true }),
-    html`</div>`,
-    html`<p class="login-foot">This link works once, for you.</p>`,
-    html`</div></div>`,
-  ], "\n"), { nav: false });
+/** What a live invite grants, said on its join page ("Your access"). Project names only, never paths. */
+export type InviteTerms = { role: "approver" | "viewer"; mintedBy: string; expiresAt: string; projects: readonly string[] | null };
+/** Which join field a refusal is about. */
+export type JoinProblem = { field: "name" | "password"; text: string };
+
+const ACCESS_WORDS = { approver: ["Can manage and approve", "Create, manage and approve work."], viewer: ["Can view", "Read work and results."] } as const;
+
+/** The invite's front door: cookie-free, script-free, sensitive by shape. Rendered only for a LIVE token — everything
+ * dead gets joinDeadPage. A live token's holder reads what it grants before choosing a name and a password. */
+export function joinFormPage(token: string, problem: JoinProblem | null, name: string, terms: InviteTerms | null = null): Html {
+  const [access, accessLine] = terms === null ? [null, null] : ACCESS_WORDS[terms.role];
+  const grants = terms === null ? "" : facts([
+    ["Your access", html`${access} · <span class="k-muted">${accessLine}</span>`],
+    ["Projects", terms.projects === null ? "Every project" : terms.projects.length === 0 ? "None yet" : terms.projects.map(one => projectName(one)).join(", ")],
+    ["Expires", `${expiryWords(terms.expiresAt)} · works once`],
+  ]);
+  const form = postForm(`/join/${token}`, joinHtml([
+    outField({ id: "join-name", label: "Choose a username", name: "name", value: name, error: problem?.field === "name" ? problem.text : null,
+      attrs: { autocomplete: "username", autocapitalize: "none", spellcheck: "false", required: true, ...(problem === null ? { autofocus: true } : {}) } }),
+    outField({ id: "join-password", label: "Choose a password", name: "password", type: "password", hint: "At least 8 characters.", error: problem?.field === "password" ? problem.text : null,
+      attrs: { autocomplete: "new-password" } }),
+    btn("Join", { variant: "primary", type: "submit", className: "k-wide" }),
+  ]), { signedOut: true, attrs: { class: "k-form" } });
+  return shell("Join Toolroll", outPage({
+    brand: BRAND_HTML, brandHref: "/login", title: "Join Toolroll",
+    sub: terms === null ? "You were invited. Choose a username and a password to sign in." : html`<b>${terms.mintedBy}</b> invited you. This is what the invite grants:`,
+    body: joinHtml([grants, form]),
+    foot: "This link works once, for you. Joining creates your own account; whoever runs this Toolroll can change what it can do later.",
+  }), { nav: false });
 }
 
 /** Unknown, expired, revoked, consumed, attempts spent: ONE page (D6). */
 export function joinDeadPage(): Html {
-  return shell("Join Toolroll", html`<div class="login-viewport"><div class="login-shell">
-<h1 class="so-wordmark login-brand">${BRAND_HTML}</h1>
-<div class="login-card">
-<p>This invite link can't be used.</p>
-<p class="meta">Links work once and expire. Ask the person who invited you for a fresh one.</p>
-</div>
-</div></div>`, { nav: false });
+  return shell("Join Toolroll", outPage({
+    brand: BRAND_HTML, brandHref: "/login", title: "This invite link can't be used",
+    sub: "Links work once and expire. Ask the person who invited you for a fresh one.",
+    body: html`<div class="k-acts">${btn("Sign in instead", { href: "/login" })}</div>`,
+  }), { nav: false });
 }
 
 /**
@@ -52,27 +64,31 @@ export function ssoStepUps(page: Html, sso: { label: string; fresh: boolean }, r
   return replaceMarkup(labelled, /<input\b([^>]*)>/g, (_whole, attributes) => stepUp(attributes) ? swap(attributes) : null);
 }
 
+/** An expiry as a person reads it: "Thu 5 Nov, 10:42". */
+function expiryWords(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso.slice(0, 16).replace("T", " ");
+  return at.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
 export function loginPage(problem: string | null, returnTo = "/", sso: { label: string; operatorsOnly: boolean } | null = null): Html {
+  const form = postForm("/login", joinHtml([
+    outField({ id: "login-name", label: "Username", name: "name", attrs: { autocomplete: "username", autocapitalize: "none", spellcheck: "false", required: true, ...(sso === null ? { autofocus: true } : {}) } }),
+    outField({ id: "login-password", label: "Password", name: "token", type: "password", attrs: { autocomplete: "current-password" } }),
+    btn("Sign in", { variant: sso === null ? "primary" : "outline", type: "submit", className: "k-wide" }),
+  ]), { signedOut: true, returnTo: returnTo === "/" ? null : returnTo, attrs: { class: "k-form" } });
   // v100: with an identity provider, its button comes first and passwords wait behind "Use a password".
-  const provider = sso === null ? "" : html`<a class="button-link login-sso" href="/login/sso${returnTo === "/" ? "" : `?return=${encodeURIComponent(returnTo)}`}">Sign in with ${sso.label}</a>`;
-  return shell("Toolroll", joinHtml([
-    html`<div class="login-viewport"><div class="login-shell">`,
-    html`<h1 class="so-wordmark login-brand">${BRAND_HTML}</h1>`,
-    problem === null || sso === null ? "" : html`<div class="problem" role="alert">${problem}</div>`,
-    provider,
-    sso === null ? "" : html`<details class="login-password"><summary>${sso.operatorsOnly ? "Instance operators: use a password" : "Use a password"}</summary>`,
-    html`<div class="login-card">`,
-    problem === null || sso !== null ? "" : html`<div class="problem" role="alert">${problem}</div>`,
-    postForm("/login", joinHtml([
-      html`<label>Username<input type="text" name="name" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></label>`,
-      html`<label>Password<input type="password" name="token" autocomplete="current-password"></label>`,
-      html`<button type="submit">Sign in</button>`,
-    ], "\n"), { signedOut: true, returnTo: returnTo === "/" ? null : returnTo }),
-    html`</div>`,
-    sso === null ? "" : html`</details>`,
-    html`<p class="login-foot">${sso === null ? html`Your login was shown when Toolroll first started, and saved beside its database as <code>up-login.txt</code>.<br>` : ""}No account? Ask whoever runs it for an invite link.</p>`,
-    html`</div></div>`,
-  ], "\n"), { nav: false });
+  const body = sso === null
+    ? joinHtml([problem === null ? "" : html`<div class="k-refusal">${notice(problem)}</div>`, form])
+    : joinHtml([
+        problem === null ? "" : html`<div class="k-refusal">${notice(problem)}</div>`,
+        btn(`Sign in with ${sso.label}`, { variant: "primary", href: `/login/sso${returnTo === "/" ? "" : `?return=${encodeURIComponent(returnTo)}`}`, className: "k-wide" }),
+        disclose(sso.operatorsOnly ? "Instance operators: use a password" : "Use a password", form),
+      ]);
+  return shell("Sign in · Toolroll", outPage({
+    brand: BRAND_HTML, brandHref: "/login", title: "Sign in", body,
+    foot: html`${sso === null ? html`Forgot it? Your first login was shown when Toolroll started, and saved beside its database as <code>up-login.txt</code> on the computer running it.<br>` : ""}No account? Ask whoever runs this Toolroll for an invite link.`,
+  }), { nav: false });
 }
 
 /**
@@ -124,34 +140,44 @@ export function signupPage(problem: SignupProblem | string | null, attemptsLeft:
   const said: SignupProblem | null = typeof problem === "string" ? { field: null, text: problem }
     : problem ?? (open ? null : { field: null, text: "Too many wrong setup codes. Restart Toolroll to get a new code." });
   const field = open ? said?.field ?? null : null;
-  const error = (which: SignupProblem["field"]) =>
-    field === which && said !== null ? html`<p class="problem signup-problem" id="signup-problem" role="alert">${said.text}</p>` : "";
-  const describe = (which: SignupProblem["field"], hint: string) =>
-    field === which ? html` aria-invalid="true" aria-describedby="${hint} signup-problem" autofocus` : html` aria-describedby="${hint}"`;
+  const error = (which: SignupProblem["field"]): string | null => field === which && said !== null ? said.text : null;
   const tries = attemptsLeft === 1 ? "1 try left" : `${attemptsLeft} tries left`;
-  return shell("Create the first account · Toolroll", joinHtml([
-    // Inputs on this page reach a 44px target; the console's shared input rule stops at 36px.
-    html`<style>.signup h1{margin-bottom:1rem}.signup input{min-height:2.75rem}.signup .field-note{margin:.375rem 0 0;font-size:.75rem;line-height:1.45;color:var(--muted-foreground)}.signup .signup-problem{margin:.5rem 0 0}</style>`,
-    html`<div class="login-viewport"><div class="login-shell signup">`,
-    html`<p class="so-wordmark login-brand">${BRAND_HTML}</p>`,
-    html`<h1>Create the first account</h1>`,
-    html`<div class="login-card">`,
-    !open || field === null ? (said === null ? "" : html`<div class="problem" role="alert">${said.text}</div>`) : "",
-    !open
-      ? ""
-      : postForm("/signup", joinHtml([
-          html`<label>Setup code<input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" required${describe("code", "signup-code-note")}${field === null ? " autofocus" : ""}></label>`,
-          html`<p class="field-note" id="signup-code-note">Printed in the terminal that started Toolroll. ${tries}.</p>`,
-          error("code"),
-          html`<label>Username<input type="text" name="name" value="${typedName}" autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="64" pattern="${SIGNUP_NAME_PATTERN}"${describe("name", "signup-name-note")}></label>`,
-          html`<p class="field-note" id="signup-name-note">Letters, digits, dots, dashes or underscores, starting with a letter or digit. Up to 64.</p>`,
-          error("name"),
-          html`<label>Password<input type="password" name="password" autocomplete="new-password" required minlength="${SIGNUP_PASSWORD_MIN}"${describe("password", "signup-password-note")}></label>`,
-          html`<p class="field-note" id="signup-password-note">At least ${SIGNUP_PASSWORD_MIN} characters.</p>`,
-          error("password"),
-          html`<button type="submit">Create account and sign in</button>`,
-        ], "\n"), { signedOut: true }),
-    html`</div>`,
-    html`</div></div>`,
-  ], "\n"), { nav: false });
+  const pageProblem = !open || field === null ? (said === null ? "" : notice(said.text)) : "";
+  const form = !open ? "" : postForm("/signup", joinHtml([
+    outField({ id: "signup-code", label: "Setup code", name: "code", hint: `Printed in the terminal that started Toolroll. ${tries}.`, error: error("code"),
+      attrs: { inputmode: "numeric", autocomplete: "one-time-code", autocapitalize: "none", spellcheck: "false", required: true, ...(field === null ? { autofocus: true } : {}) } }),
+    outField({ id: "signup-name", label: "Username", name: "name", value: typedName, hint: "Letters, digits, dots, dashes or underscores, starting with a letter or digit. Up to 64.", error: error("name"),
+      attrs: { autocomplete: "username", autocapitalize: "none", spellcheck: "false", required: true, maxlength: 64, pattern: SIGNUP_NAME_PATTERN } }),
+    outField({ id: "signup-password", label: "Password", name: "password", type: "password", hint: `At least ${SIGNUP_PASSWORD_MIN} characters. You'll type it again to approve work.`, error: error("password"),
+      attrs: { autocomplete: "new-password", required: true, minlength: SIGNUP_PASSWORD_MIN } }),
+    btn("Create account", { variant: "primary", type: "submit", className: "k-wide" }),
+  ]), { signedOut: true, attrs: { class: "k-form" } });
+  return shell("Create the first account · Toolroll", outPage({
+    brand: BRAND_HTML, brandHref: "/login", title: "Create the first account",
+    sub: "This Toolroll has no accounts yet. The first one can approve work and invite others.",
+    body: joinHtml([pageProblem, form]),
+    foot: "Lost the code? Restart Toolroll and it prints a new one.",
+  }), { nav: false });
+}
+
+/** The page a browser sees when answering broke (Wave E): what happened, whether anything changed, a reference for the
+ * log, and two ways on. `read`: the request only read, so nothing can have changed. Holds no error text. */
+export function serverErrorPage(options: { updating: boolean; read: boolean; reference: string; at: Date; retry: string | null }): Html {
+  if (options.updating) {
+    return shell("Toolroll is updating", outPage({
+      brand: BRAND_HTML, title: "Toolroll is updating",
+      sub: "Work that is running can finish. New work starts again after the update, usually within two minutes.",
+      body: html`<div class="k-acts">${options.retry === null ? "" : btn("Try again", { variant: "primary", href: options.retry })}${btn("Go to Home", { href: "/" })}</div>`,
+    }), { nav: false });
+  }
+  return shell("Something went wrong", outPage({
+    brand: BRAND_HTML, title: "Something went wrong on our side",
+    sub: options.read ? "Toolroll couldn't load this page. Nothing you did was lost, and nothing was approved or sent."
+      : "Toolroll couldn't finish that. Open the page again to see what changed before you try again.",
+    body: joinHtml([
+      facts([["Reference", html`<span class="k-mono">${options.reference}</span>`], ["When", options.at.toISOString().slice(0, 16).replace("T", " ")]]),
+      html`<div class="k-acts">${options.retry === null ? "" : btn("Try again", { variant: "primary", href: options.retry })}${btn("Go to Home", { href: "/" })}</div>`,
+    ]),
+    foot: "If it keeps happening, the reference helps whoever runs this Toolroll find it in the log.",
+  }), { nav: false });
 }

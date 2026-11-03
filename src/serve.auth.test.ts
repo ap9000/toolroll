@@ -1401,9 +1401,9 @@ describe("the first account (setup review): sign up on the login page with the p
     expect(inputOf(page, "password")).not.toContain("value=");
     expect(page).not.toContain("987654");
     expect(page).not.toContain("correct horse battery");
-    expect(inputOf(page, "code")).toMatch(/aria-invalid="true" aria-describedby="signup-code-note signup-problem" autofocus/);
+    expect(inputOf(page, "code")).toMatch(/aria-invalid="true" aria-describedby="signup-code-hint signup-code-err" autofocus/);
     expect(inputOf(page, "name")).not.toContain("aria-invalid");
-    expect(page).toMatch(/<p class="problem signup-problem" id="signup-problem" role="alert">/);
+    expect(page).toMatch(/<p class="k-err" id="signup-code-err" role="alert">/);
     expect(page).toContain("4 tries left");
     expect(store.listApprovers()).toHaveLength(0);
   });
@@ -1421,7 +1421,7 @@ describe("the first account (setup review): sign up on the login page with the p
     const short = await post({ code: "424242", name: "alex", password: "short12" });
     expect(short.status).toBe(400);
     const shortPage = await short.text();
-    expect(inputOf(shortPage, "password")).toMatch(/aria-invalid="true" aria-describedby="signup-password-note signup-problem"/);
+    expect(inputOf(shortPage, "password")).toMatch(/aria-invalid="true" aria-describedby="signup-password-hint signup-password-err"/);
     expect(inputOf(shortPage, "password")).not.toContain("value=");
     expect(inputOf(shortPage, "name")).toContain('value="alex"');
     expect(shortPage).not.toContain("short12");
@@ -1514,7 +1514,7 @@ describe("the first account (setup review): sign up on the login page with the p
     expect(reopened.headers.get("set-cookie")).toBeNull();
     const page = await reopened.text();
     expect(page).not.toContain('action="/signup"');
-    expect(page).toMatch(/role="alert">Too many wrong setup codes\. Restart Toolroll to get a new code\./);
+    expect(page).toMatch(/role="alert">(<svg[^]*?<\/svg>)?<span>Too many wrong setup codes\. Restart Toolroll to get a new code\./);
   });
 
   test("a server started without a setup code never offers sign-up", async () => {

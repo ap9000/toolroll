@@ -2,7 +2,6 @@ import { activityMetrics, activityScope, activityLimit } from '../project-activi
 /** Everyday console pages: home, inbox, board, work, projects, fleet and the queue. */
 import { archivedWords, tidyGroups, TIDY_DEFAULT_DAYS, type TidyItem } from "../tidy.js";
 import { stepUpForm } from "../settings-kit.js";
-import { originNote, type TaskOrigin } from "../task-source.js";
 import { type Html, html, type HtmlValue, htmlString, joinHtml, postForm, replaceMarkup, reauth } from "../html.js";
 import { type AssignmentSnapshot } from "../assignment.js";
 import { type BoardCard } from "../board.js";
@@ -17,10 +16,8 @@ import { type ListOutcome } from "../onboard.js";
 import { type parseBaseTreeSnapshot } from "../peek.js";
 import { projectName } from "../project.js";
 import { type CriterionMatrixRow } from "../proof.js";
-import { type QualityMode } from "../quality.js";
 import { type Runner,isAlive as runnerAlive } from "../runner.js";
 import { agentModelName,modelName } from "../model-names.js";
-import { type Scope,type UnattendedPermissionMode } from "../scope.js";
 import { type Decision,type Incident,type RepairChainRow,type Run,type Store,type Task,type TaskState,type WorktreeRow } from "../store.js";
 import { runCostWords,spendLine,tally } from "../summary.js";
 import { type WorkIndexGroup,type WorkIndexItem,type WorkIndexPage } from "../work-index.js";
@@ -31,7 +28,7 @@ import { join } from "node:path";
 import { buildsViews,CHEVRON_ICON,type Chrome,consoleSpend,FOLDER_PATHS,GRIP_HANDLE,isOverdue,projectChip,relativeAge,safePrUrl,screen,type Screen,sentenceCase,strokeIcon,TO_FRONT_ICON,when,whenTime } from "./chrome.js";
 import { reviewHref,taskHref } from "./http.js";
 import { criterionMatrixSummary,incidentWords,PHASE_WORDS,phaseWords } from "./render-results.js";
-import { acceptanceCeremonyHtml,agentsCeremonyHtml,consentClosedHtml,type ConsentDoor,consentDoorOf,decisionAnswerCard,decisionAnswerScript,decisionOptionForms,dispatchHeadline,executionPlanHtml,permissionModeChoices,planContractHtml,type PlanContractView,profileWords,type RouteView,runtimeDetailsHtml,statusLineHtml,workDiagnosticsHtml } from "./render-tasks.js";
+import { decisionAnswerCard,decisionAnswerScript,dispatchHeadline,statusLineHtml,workDiagnosticsHtml } from "./render-tasks.js";
 
 export const TASK_STATES: readonly TaskState[] = ["queued", "running", "done", "failed", "cancelled"];
 
@@ -803,82 +800,6 @@ export function homePage(chrome: Chrome, data: {
     gaps,
     fleet,
   ], "\n"), { chrome, refreshSeconds: refresh });
-}
-
-export type TaskComposerPrefill = { title: string; goal: string; not: string; touches: string; acceptance: string; values?: URLSearchParams };
-
-/** The one front door for new work. The common path is one prompt and one
- * button; the detailed contract remains available in-place for templates,
- * experts, and the rare task that should skip repository-aware planning. */
-/** Where new work goes when no project is open: a choice from the projects
- * this person already has, never a typed path; a new project is one link
- * away. Same-named checkouts show their parent folder to tell them apart. */
-export function projectPickerHtml(projects: { path: string; name: string }[], chosen: string): Html {
-  if (projects.length === 0) {
-    return html`<label class="task-repo">Project folder <span class="meta">— no project is open, so the task must say where it belongs</span><input type="text" name="repo" value="${chosen}" required placeholder="/path/to/repository"></label><p class="meta task-repo-add">No projects yet. <a href="/projects?return=%2Ftasks%2Fnew">Add a project</a> to pick it here next time.</p>`;
-  }
-  const counts = new Map<string, number>();
-  for (const one of projects) counts.set(one.name, (counts.get(one.name) ?? 0) + 1);
-  const label = (one: { path: string; name: string }): string => {
-    if ((counts.get(one.name) ?? 0) < 2) return one.name;
-    const parent = one.path.split(/[\\/]/).filter(Boolean).slice(-2, -1)[0] ?? one.path;
-    return `${one.name} (${parent})`;
-  };
-  const selected = projects.some(one => one.path === chosen) ? chosen : projects[0]!.path;
-  return html`<label class="task-repo">Project<select name="repo" required>${projects.map(one => html`<option value="${one.path}" title="${one.path}"${one.path === selected ? html` selected` : null}>${label(one)}</option>`)}</select></label><p class="meta task-repo-add"><a href="/projects?return=%2Ftasks%2Fnew">Add a project</a></p>`;
-}
-
-export function taskComposerHtml(data: {
-  project: string | null;
-  projectRevision?: number;
-  prefill?: TaskComposerPrefill | null;
-  candidates?: { id: string; title: string }[];
-  permissionDefault: UnattendedPermissionMode;
-  qualityDefault: QualityMode;
-  /** Projects this person may place work in, most recently opened first. */
-  projects?: { path: string; name: string }[];
-}): Html {
-  const prefill = data.prefill ?? null;
-  const values = prefill?.values;
-  const after = values?.get("after") ?? "";
-  const candidates = data.candidates ?? (after === "" ? [] : [{ id: after, title: after }]);
-  const projectLabel = data.project === null ? "repository required" : projectName(data.project);
-  const showPicker = data.project === null || (data.projects !== undefined && data.projects.length > 1);
-  const quality = values?.get("quality-mode") ?? data.qualityDefault;
-  return postForm("/tasks/add", joinHtml([
-    prefill === null || values !== undefined
-      ? null
-      : html`<p class="meta" style="margin:.35rem .75rem .15rem">pre-filled from a template. Change anything; it still waits for your approval.</p>`,
-    html`<label class="task-prompt"><span class="visually-hidden">What should get done?</span><textarea name="title" rows="4" maxlength="200" required autofocus placeholder="Describe the outcome you want. The planner will inspect the repository and work out the implementation details.">${prefill === null ? "" : prefill.title}</textarea></label>`,
-    // The project is always a visible, changeable choice when the page knows
-    // the person's projects; the open project is simply preselected.
-    showPicker ? projectPickerHtml(data.projects ?? [], values?.get("repo") ?? data.project ?? "") : null,
-    html`<div class="task-composer-footer">`,
-    html`<div class="task-context">${showPicker || data.project === null ? null : html`<span class="task-context-chip" title="${data.project}">${projectLabel}</span>`}<span class="task-context-chip">planner inspects first</span></div>`,
-    html`<label class="task-quality"><span class="visually-hidden">quality mode</span><select name="quality-mode" aria-label="quality mode"><option value="default"${quality === "default" ? html` selected` : null}>Default quality</option><option value="strict"${quality === "strict" ? html` selected` : null}>Strict / release</option></select></label>`,
-    html`<button type="submit" class="task-submit">${prefill === null ? "Plan task" : "Continue"} →</button>`,
-    html`</div>`,
-    html`<details class="task-options"${prefill === null ? null : html` open`}>`,
-    html`<summary><span>Edit details</span><small>optional · defaults are remembered</small></summary>`,
-    html`<div class="task-options-grid">`,
-    html`<label class="wide">Goal <span class="meta">— provide upfront for automatic approval of an unchanged plan</span><textarea name="goal" rows="3" placeholder="What success looks like">${prefill === null ? "" : prefill.goal}</textarea></label>`,
-    html`<label class="wide">Acceptance <span class="meta">— required with a goal; one per line: <code>statement | evidence,kinds | how</code></span><textarea name="acceptance" rows="3" placeholder="Requests over the limit return 429 | check">${prefill === null ? "" : prefill.acceptance}</textarea></label>`,
-    html`<label>Not this <span class="meta">— optional boundary</span><input type="text" name="not" value="${prefill === null ? "" : prefill.not}"></label>`,
-    html`<label>Likely touches <span class="meta">— paths, comma-separated</span><input type="text" name="touches" value="${prefill === null ? "" : prefill.touches}"></label>`,
-    html`<label class="wide task-check"><input type="checkbox" name="plan-first" value="1"${values === undefined || values.get("plan-first") === "1" ? html` checked` : null}><span><strong>Let the planner inspect first</strong><small class="meta">Recommended. It drafts the goal, acceptance criteria, and implementation approach, and asks only when a missing answer materially changes the work.</small></span></label>`,
-    html`<label class="wide task-check"><input type="checkbox" name="scout" value="1"${values?.get("scout") === "1" ? html` checked` : null}><span><strong>Research only</strong><small class="meta">Deliver a read-only report instead of changing the repository.</small></span></label>`,
-    html`<label>Task id <span class="meta">— optional</span><input type="text" name="id" value="${values?.get("id") ?? ""}" placeholder="made from the request"></label>`,
-    candidates.length === 0
-      ? null
-      : html`<label>Starts after <span class="meta">— optional</span><select name="after"><option value="">right away</option>${candidates.map(one => html`<option value="${one.id}"${one.id === after ? html` selected` : null}>${one.id} — ${one.title}</option>`)}</select></label>`,
-    html`<fieldset class="permission-field"><legend>Agent permissions</legend>${permissionModeChoices("permission-mode", values?.get("permission-mode") === "bypassPermissions" ? "bypassPermissions" : values?.get("permission-mode") === "auto" ? "auto" : data.permissionDefault)}<p class="meta permission-note">Inherited from Settings. You can still change it on the proposed scope before approval.</p></fieldset>`,
-    html`</div>`,
-    html`</details>`,
-  ], "\n"), {
-    attrs: { class: "card task-composer" },
-    projectRevision: data.projectRevision === undefined && values?.get("projectRevision") == null ? null : String(data.projectRevision ?? values?.get("projectRevision") ?? ""),
-    hidden: { "planning-policy": "choice" },
-  });
 }
 
 export type WorkRow = WorkFacts & { assignment?: AssignmentSnapshot | null; assignmentProblem?: boolean; executionId?: string; familyNotice?: string | null; status: WorkStatus; resultRunId: number | null };
@@ -1749,130 +1670,6 @@ export function queueScript(): string {
     `.then(function(){tell();});});` +
     `})();`
   );
-}
-
-export function newTaskPage(
-  chrome: Chrome,
-  project: string | null,
-  /** undefined: keep the revision the refused form posted (its draft), so a project switch since still refuses. */
-  projectRevision: number | undefined,
-  problem: string | null,
-  candidates: { id: string; title: string }[] = [],
-  permissionDefault: UnattendedPermissionMode = "auto",
-  qualityDefault: QualityMode = "default",
-  projects: { path: string; name: string }[] = [],
-  /** A shipped template's fields, or a refused filing's own words, back in the form. */
-  prefill: TaskComposerPrefill | null = null,
-): Screen {
-  return screen("New task", joinHtml([
-    html`<section class="task-intake">`,
-    html`<div class="task-intake-hero"><h1>What should get done?</h1></div>`,
-    html`<p class="meta">Work you do often? <a href="/recipes">Use a saved recipe</a> or <a href="/recipes/new">create one</a>.</p>`,
-    problem === null ? null : html`<div class="problem">${problem}</div>`,
-    taskComposerHtml({
-      project,
-      ...(projectRevision === undefined ? {} : { projectRevision }),
-      prefill,
-      candidates,
-      permissionDefault,
-      qualityDefault,
-      projects,
-    }),
-    html`<p class="meta task-agent-note">Nothing builds until you approve the plan. <a href="/chat">Or start in chat.</a></p>`,
-    html`</section>`,
-  ], "\n"), { chrome });
-}
-
-/**
- * The triage flow: everything waiting on a person, one card at a time.
- * Full context ON the card, the act inline, and every act lands back here
- * — clearing the queue is taps, not navigation. Read state travels in the
- * URL (the bounded skip cursor), never in the session: two tabs cannot
- * fight, and a shared link shows the same queue.
- */
-export function nextPage(chrome: Chrome, data: {
-  item:
-    | { key: string; kind: "decision"; decision: Decision & { taskId: string } }
-    | { key: string; kind: "approval"; approval: { taskId: string; title: string; goal: string; digest: string; proposedAt: string } }
-    | { key: string; kind: "requeue"; stalled: { taskId: string; title: string; strikes: number; incidentCount: number } }
-    | { key: string; kind: "gap"; gap: Gap }
-    | null;
-  scope: Scope | null;
-  planDocument: string | null;
-  planContract?: PlanContractView | null;
-  approvalDigest: string | null;
-  /** v34: said inside the ceremony when the yes buys a report, not a branch. */
-  deliverable?: "branch" | "report";
-  /** v48: the agents the yes freezes — the one block every ceremony shows. */
-  route: RouteView | null;
-  /** v126: where the work came from (an outside event's line of context, never a term agreed to). */
-  origin?: TaskOrigin | null;
-  csrf: string;
-  nonce: string;
-  remaining: number;
-  skipped: string[];
-  now: Date;
-}): Screen {
-  const { item } = data;
-  if (item === null) {
-    const held = data.skipped.length;
-    return screen("next", joinHtml([
-      html`<h1>All clear</h1>`,
-      held > 0
-        ? html`<p>Nothing left except the ${held} you set aside. <a href="/next">Look at those again</a>, or come back later.</p>`
-        : html`<p>Nothing needs you. The machine is either working or waiting on its own clocks.</p>`,
-      html`<p class="meta"><a href="/board">the board</a> shows what is moving · <a href="/inbox">the inbox</a> lists everything at once</p>`,
-    ], "\n"), { chrome });
-  }
-
-  const skipHref = `/next?skip=${encodeURIComponent([...data.skipped, item.key].join(","))}`;
-  const header =
-    html`<p class="meta next-pager"><span>${data.remaining === 1 ? "the last thing waiting on you" : `1 of ${data.remaining} waiting on you`}</span><a class="skip" href="${skipHref}">not now — next →</a></p>`;
-
-  let card: Html;
-  if (item.kind === "decision") {
-    const { decision } = item;
-    card =
-      html`<h1>${decision.taskId} <span class="meta">asked ${whenTime(decision.createdAt)}</span></h1><div class="recap">${decision.recap}</div><div class="question">${decision.question}</div>${decisionOptionForms(decision, "next")}`;
-  } else if (item.kind === "approval" && !consentDoorOf(data.scope, data.route).open) {
-    const door = consentDoorOf(data.scope, data.route) as ConsentDoor & { open: false };
-    card =
-      html`<h1>${item.approval.taskId}</h1><p>${item.approval.title}</p>${consentClosedHtml(item.approval.taskId, door, "next")}<p class="meta"><a href="${taskHref(item.approval.taskId)}">open the full task</a></p>`;
-  } else if (item.kind === "approval") {
-    const scope = data.scope;
-    card =
-      html`<h1>${item.approval.taskId}</h1><p>${item.approval.title}</p>${
-        data.planDocument === null
-          ? null
-          : html`<div class="card"><p><strong>The plan</strong> <span class="meta">drafted by a planning session</span></p>${executionPlanHtml(data.planDocument, true)}${planContractHtml(data.planContract ?? null, "ceremony")}</div>`
-      }${postForm(
-        `${taskHref(item.approval.taskId)}/approve`,
-        html`<p><strong>Approve exactly this:</strong></p>${
-          data.deliverable === "report" ? html`<p class="meta"><span class="badge">Scout</span> a read-only session investigates this goal and delivers a report — no branch, nothing changes in the repository</p>` : null
-        }${scope === null || scope.profileState !== "unresolved" ? null : profileWords(scope)}${originNote(data.origin) === null ? null : html`<p class="meta" data-approval-origin>${originNote(data.origin)!}</p>`}<p class="meta">Goal</p><p class="recap" style="margin-top:0">${scope?.goal ?? item.approval.goal}</p><p class="meta">Not this</p><p class="recap" style="margin-top:0">${scope?.outOfScope == null ? html`<em>no exclusions</em>` : scope.outOfScope}</p><p class="meta">Touches · ${scope === null || scope.touches.length === 0 ? "anything" : joinHtml(scope.touches, ", ")}</p>${
-          scope === null ? null : acceptanceCeremonyHtml(scope.acceptance)
-        }${
-          // The AGENTS the yes freezes (v48): the same concise block the task
-          // page and chat sign under, before the password — runtime limits one
-          // tap away, never in the way.
-          agentsCeremonyHtml(data.route)
-        }${scope === null ? null : runtimeDetailsHtml(scope)}${reauth(html`<label>Your password, typed again — a signed-in session alone cannot agree to work<input type="password" name="token" autocomplete="current-password"></label>`)}<div class="sticky-actions"><button type="submit">Approve this scope</button></div>`,
-        { attrs: { class: "card approve-form" }, returnTo: "next", hidden: { nonce: data.nonce, digest: data.approvalDigest ?? item.approval.digest } },
-      )}<p class="meta"><a href="${taskHref(item.approval.taskId)}">open the full task</a> to edit the scope first</p>`;
-  } else if (item.kind === "requeue") {
-    card =
-      html`<h1>${item.stalled.taskId}</h1><p>${item.stalled.title}</p><p class="meta">Stopped — ${item.stalled.incidentCount} incident(s)${item.stalled.strikes > 0 ? html` after ${item.stalled.strikes} attempt(s)` : null}</p>${postForm(
-        `${taskHref(item.stalled.taskId)}/requeue`,
-        html`<p class="meta">Requeue resolves the incidents, clears the failed attempts, and puts it back in line</p><button type="submit">Retry this work</button>`,
-        { attrs: { class: "card" }, returnTo: "next" },
-      )}<p class="meta"><a href="${taskHref(item.stalled.taskId)}">open the full task</a> to read the runs first</p>`;
-  } else {
-    const { gap } = item;
-    card =
-      html`<h1>Supply ${gap.key}</h1><p class="meta">${gap.state}</p><p>Filling this starts ${gap.unblocks.length} task(s): ${joinHtml(gap.unblocks.map(one => html`<span class="mono">${one}</span>`), ", ")}</p><div class="card"><p class="meta">Prove it filled from the terminal:</p><pre class="recap">${gap.verify}</pre></div>`;
-  }
-
-  return screen("next", joinHtml([header, card], "\n"), { chrome });
 }
 
   export type PeekAdmission = {

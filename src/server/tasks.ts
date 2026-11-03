@@ -31,7 +31,9 @@ import { CodingActionError } from '../coding-workspace.js';
 import { checkResponse, CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
 import { hasForbiddenControls,validateNote } from "../decision.js";
 import { builderReadyFor,diagnoseTaskDispatch,firstRunBuilderRepo } from "../dispatch.js";
-import { withBuilderStep } from "../first-run.js";
+import { firstTaskSuggestions,withBuilderStep } from "../first-run.js";
+import { newTaskPage,type TaskComposerPrefill } from "./render-new-task.js";
+import { nextPage } from "./render-next.js";
 import { evidencePack,evidencePackHtml } from "../evidence-pack.js";
 import { readVerifiedArtifact,readVerifiedReport,writeEvidenceFile } from "../evidence.js";
 import { computeGaps } from "../gaps.js";
@@ -96,7 +98,7 @@ import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
 import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
 import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
-import { putAwayPage,type TaskComposerPrefill,boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
+import { putAwayPage,boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
 import { timingFor } from "../latency-timeline.js";
 import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
@@ -668,7 +670,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const prefill = picked !== null && picked.kind === "task"
       ? { title: picked.title, goal: picked.goal, not: picked.outOfScope ?? "", touches: picked.touches.join(", "), acceptance: acceptanceToLines(picked.acceptance).join("\n") }
       : null;
-    return newTaskScreen(ctx, 200, null, prefill);
+    // An idea's link (or any ?text=) puts words in the box: bounded to what the box takes, nothing filed.
+    const text = ctx.url.searchParams.get("text");
+    return newTaskScreen(ctx, 200, null, prefill, text === null ? null : text.slice(0, 200));
   }
 
   async function showTask(ctx: HandlerContext): Promise<void> {
@@ -3125,7 +3129,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
   });
   /** The add page, once more: blank, from a shipped template (`?template=`, as the old task list did), or with a refused
    * filing's own words and status (the draft keeps the project revision it was written against). */
-  function newTaskScreen(ctx: HandlerContext, status: number, problem: string | null, draft: TaskComposerPrefill | null): Promise<void> | void {
+  function newTaskScreen(ctx: HandlerContext, status: number, problem: string | null, draft: TaskComposerPrefill | null, text: string | null = null): Promise<void> | void {
     const { who, response, project } = ctx;
     const chainable = store
       .listTasksScoped(project, undefined, 100, null)
@@ -3136,7 +3140,12 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (after !== "" && !chainable.some(one => one.id === after)) chainable.unshift({ id: after, title: "(as submitted)" });
     const chrome = chromeFor(project, "tasks");
     const revision = draft?.values !== undefined ? undefined : who.via === "cookie" ? who.session.projectRevision : 0;
-    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft));
+    // Ideas for the project the box starts on: what the first run found there (issues, TODOs), else the safe generic
+    // ones while the first run is open; none once someone has filed work and nothing was found.
+    const startsOn = draft?.values?.get("repo") ?? project ?? chrome.projects?.[0]?.path ?? null;
+    const found = startsOn === null ? null : runtime.firstTasks.get(startsOn)?.found ?? null;
+    const ideas = found ?? (runtime.firstRunStepsNow(ctx.now) !== null && !store.hasAnyWork() ? firstTaskSuggestions({ issues: [], todos: [] }) : []);
+    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft, text, ideas));
   }
   return { registrations, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, peekGuards, liveRunIds };
 }
