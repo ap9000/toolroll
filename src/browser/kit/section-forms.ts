@@ -39,6 +39,8 @@ const FORM = "form.k-sform";
 /** A form's own id and action, read from its attributes: a field named "id" or "action" (an invite's id, a settings
  * act) shadows the form's properties of that name. */
 const idOf = (form: HTMLFormElement): string => HTMLFormElement.prototype.getAttribute.call(form, "id") ?? "";
+/** The form's controls, through the prototype's getter: a field named "elements" shadows `form.elements`. */
+const elementsOf = (form: HTMLFormElement): HTMLFormControlsCollection => Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, "elements")!.get!.call(form) as HTMLFormControlsCollection;
 const SVG = "http://www.w3.org/2000/svg";
 
 const proofOf = (form: HTMLFormElement): HTMLElement | null => form.querySelector<HTMLElement>("[data-k-proof]");
@@ -64,7 +66,7 @@ function grouped(entries: readonly [string, string][]): Map<string, string[]> {
 function visibleNames(form: HTMLFormElement): string[] {
   const skip = proofNames(form);
   const names: string[] = [];
-  for (const element of Array.from(form.elements) as HTMLInputElement[]) {
+  for (const element of Array.from(elementsOf(form)) as HTMLInputElement[]) {
     if (!element.name || element.type === "hidden" || element.type === "submit" || element.type === "button" || skip.has(element.name)) continue;
     if (!names.includes(element.name)) names.push(element.name);
   }
@@ -261,7 +263,7 @@ function unconfirmedHref(form: HTMLFormElement): string {
 
 /** Where the post goes: the pressed button's own formaction (Check again, Remove), else the form's. Read from the
  * attribute: a form with a field named "action" (many settings forms post one) shadows `form.action` with that field. */
-const actionOf = (form: HTMLFormElement, submitter: HTMLElement | null): string =>
+export const actionOf = (form: HTMLFormElement, submitter: HTMLElement | null): string =>
   submitter instanceof HTMLButtonElement && submitter.form === form && submitter.hasAttribute("formaction") ? submitter.formAction
     : new URL(HTMLFormElement.prototype.getAttribute.call(form, "action") ?? "", window.location.href).href;
 

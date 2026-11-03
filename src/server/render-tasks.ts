@@ -1218,8 +1218,10 @@ export function decisionAnswerScript(): string {
     `var f=e.target;if(!f||!f.classList||!f.classList.contains("decide-inline"))return;` +
     `e.preventDefault();` +
     `var card=f.closest("[data-decision-id]");` +
-    `var page=f.action.replace(/\\/answer$/,"");` +
-    `fetch(f.action,{method:"POST",credentials:"same-origin",` +
+    // The action attribute, not f.action: a field named "action" would shadow that property (DOM clobbering).
+    `var to=new URL(HTMLFormElement.prototype.getAttribute.call(f,"action")||"",location.href).href;` +
+    `var page=to.replace(/\\/answer$/,"");` +
+    `fetch(to,{method:"POST",credentials:"same-origin",` +
     `headers:{"content-type":"application/x-www-form-urlencoded"},` +
     `body:new URLSearchParams(new FormData(f)).toString()})` +
     `.then(function(r){return r.text().then(function(t){return{r:r,t:t}})})` +
