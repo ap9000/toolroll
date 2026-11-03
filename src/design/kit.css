@@ -172,6 +172,8 @@
 .k-row.wait .k-row-t { font-weight: 600; }
 /* The title link stretches over the row, so the whole row is one target; the action sits above it. */
 .k-row-t::before { content: ""; position: absolute; inset: 0; }
+/* A row with no page of its own (a computer): the title is text, the action is the way in. */
+.k-row.k-row-static .k-row-t::before { content: none; }
 .k-row-d { color: var(--so-muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .k-row-m { display: flex; gap: 12px; color: var(--so-muted); font-size: 12px; white-space: nowrap; }
 .k-row-a { display: flex; justify-content: flex-end; }
@@ -373,6 +375,7 @@
   .k-switch:hover { background: transparent; }
   .k-opt:hover { border-color: var(--so-ink); }
   .k-row:hover { background: color-mix(in srgb, var(--so-raised) 60%, transparent); }
+  .k-row.k-row-static:hover { background: transparent; }
   .k-backlink:hover { color: var(--so-ink); }
   .k-menu > button:hover, .k-menu > a:hover { background: var(--so-soft); }
   .k-composer-plus:hover { background: var(--so-raised); color: var(--so-ink); }
@@ -380,6 +383,9 @@
   .k-nav:hover { background: var(--so-nav-hover); color: var(--so-ink); }
   .k-crumbs a:hover { color: var(--so-ink); }
 }
+
+/* ---------- Code to copy: a command or a one-time secret, selected whole with one click ---------- */
+.k-code { display: inline-block; max-width: 100%; box-sizing: border-box; margin: 0; padding: 6px 10px; border-radius: 7px; background: var(--so-raised); color: var(--so-ink); font: 12.5px/1.45 var(--so-font-mono); overflow-wrap: anywhere; user-select: all; }
 
 /* ---------- Phone dock: the Needs-you button and the screen's one primary ---------- */
 .k-dock { display: none; }

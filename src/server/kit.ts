@@ -138,11 +138,14 @@ export const disclose = (summary: string, body: HtmlValue, open = false): Html =
 
 // ---- lists ------------------------------------------------------------------------------------------------------
 
-export const group = (label: string, n?: Html): Html => html`<h2 class="k-grp">${label}${n ?? ""}</h2>`;
+/** A group heading with its count; `right` puts one quiet tool at its end. */
+export const group = (label: string, n?: Html, right?: Html): Html => html`<h2 class="k-grp">${label}${n ?? ""}${right ? html`<span class="k-grow"></span>${right}` : ""}</h2>`;
 /** A list row: chip · title (the whole row is the link) · one muted line · meta · one action, always in one column. */
-export function row(options: { href: string; chip: Html; title: string; desc?: HtmlValue; meta?: HtmlValue; action?: Html; wait?: boolean; message?: Html; attrs?: Attrs }): Html {
-  return html`<div class="${cls("k-row", options.wait && "wait")}"${attributes(options.attrs ?? {})}><span class="k-row-c">${options.chip}</span>\
-<a class="k-row-t" href="${options.href}">${options.title}</a><span class="k-row-d">${options.desc ?? ""}</span>\
+export function row(options: { href?: string; chip: Html; title: string; desc?: HtmlValue; meta?: HtmlValue; action?: Html; wait?: boolean; message?: Html; attrs?: Attrs }): Html {
+  // No href: a thing with no page of its own (a computer); its title is text and its action is the way in.
+  const title = options.href === undefined ? html`<span class="k-row-t">${options.title}</span>` : html`<a class="k-row-t" href="${options.href}">${options.title}</a>`;
+  return html`<div class="${cls("k-row", options.wait && "wait", options.href === undefined && "k-row-static")}"${attributes(options.attrs ?? {})}><span class="k-row-c">${options.chip}</span>\
+${title}<span class="k-row-d">${options.desc ?? ""}</span>\
 <span class="k-row-m">${options.meta ?? ""}</span><span class="k-row-a">${options.action ?? ""}</span>${options.message ? html`<div class="k-row-msg">${options.message}</div>` : ""}</div>`;
 }
 

@@ -225,7 +225,7 @@ get("pages", "activity", "/activity", { limited: "collection", ...free }); // a 
 get("tasks", "done", "/done", { limited: "collection", ...free }); // a redirect to the Tasks list's Finished view now
 get("settings", "mode", "/mode");
 get("people", "people.page", "/people", { limited: "unscoped", ...free });
-get("pages", "system", "/system");
+get("pages", "system", "/system", free);
 // Where every "Connect a builder" leads: read-only, open to a project-limited person (the handler shows only a visible project).
 get("pages", "start-builder", "/start-builder", { limited: "unscoped", ...free });
 get("tasks", "tasks", "/tasks", { limited: "collection", ...free }); // a redirect to /work now: never sent to the project opener first
@@ -236,6 +236,9 @@ get("pages", "agents", "/agents", { limited: "unscoped", ...free });
 // Browser sessions only, like the transcript and the peek: no token (a lead's, a runner's, a remote one) reads live output.
 get("pages", "agents.live", "/agents/live", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/1" });
+// Terminals' address in the Agents area: a 302 to /term, admitted exactly as /term is (an operator's browser session).
+get("pages", "agents.terminals", "/agents/terminals", TERM);
+// Fleet and System are parts of Agents now: GET aliases to /agents#computers and /agents#models.
 get("pages", "fleet", "/fleet", free);
 get("tasks", "tasks.new", "/tasks/new", { limited: "collection", ...free });
 get("tasks", "task.page", `^\\/t\\/${TASK}$`, { project: "task", limited: "resource", ...free, sample: "/t/one" });

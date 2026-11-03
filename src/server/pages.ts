@@ -4,6 +4,7 @@ import { canReveal, cdCommandOf, localCheckoutOf } from "../checkout-proof.js";
 import { instanceHttpAnswer } from "../console-instance.js";
 import { handlersOf } from './handler-registry.js';
 import { html, joinHtml, postForm, type Html, reauth } from "../html.js";
+import * as kit from "./kit.js";
 /** pages handlers, moved without changing their route bodies. */
 import { createHmac,randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -15,7 +16,6 @@ import { listFolder,localOrigins } from "../folder-look.js";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
-import { INSTALLATION_SCOPE,resolvePhaseAgent } from "../agentconfig.js";
 import { parseApiToken,tokenLive } from "../api-tokens.js";
 import { classify } from "../board.js";
 import { serveBrowserAsset } from '../browser-shell.js';
@@ -27,7 +27,8 @@ import { run as execRun } from "../exec.js";
 import { computeGaps } from "../gaps.js";
 import { LEDGER_CSV_HEADER,ledgerCsvRows } from "../ledger-csv.js";
 import { ledgerBody } from "../ledger-view.js";
-import { agentLanesOf, agentRowOf, agentsBoardOf, agentFactsFor, laneWindowOf, sealedDiffOf } from "../agents-board.js";
+import { agentRowOf, agentsBoardOf, agentFactsFor, sealedDiffOf } from "../agents-board.js";
+import { computersOf, phasesOf, systemOf } from "./agents-computers.js";
 import { markAgentSeen } from "../agent-board.js";
 import { agentsLiveOf } from "../agents-live.js";
 import { readChildWindow } from "../live-children-read.js";
@@ -61,7 +62,7 @@ import { refuse, regionScript, relativeAge as relativeAgeOf, screen, settingsRow
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
 import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
-import { browsePage,fleetBody,fleetScript,githubIdentityOf,githubReposPage,homePage,portfolioOverview,projectsPage,startBuilderHtml,systemPage,workbenchRail } from "./render-pages.js";
+import { browsePage,githubIdentityOf,githubReposPage,homePage,portfolioOverview,projectsPage,startBuilderHtml,workbenchRail } from "./render-pages.js";
 import { capsPage } from "./render-settings.js";
 import { decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
@@ -377,50 +378,15 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return;
   }
 
-  async function systemScreen(ctx: HandlerContext): Promise<void> {
-    const { response, now, project } = ctx;
-    const since = new Date(now.getTime() - 24 * 60 * 60_000).toISOString();
-    void since;
-    return sendScreen(
-      response,
-      200,
-      systemPage(chromeFor(project, "system"), {
-        agents: (["plan", "build", "repair", "review"] as const).map(phase => {
-          const answer = resolvePhaseAgent(store, phase, project, {});
-          const row =
-            (project === null ? null : store.phaseConfig(project, phase)) ??
-            store.phaseConfig(INSTALLATION_SCOPE, phase);
-          return {
-            phase,
-            ...(answer.ok
-              ? { provider: answer.spec.provider, model: answer.spec.model, source: answer.source }
-              : { problem: answer.problem }),
-            setBy: row?.updatedBy ?? null,
-          };
-        }),
-        building: store.liveClaims(project, now),
-        runners: store.listRunners(),
-        worktrees: store.listWorktrees().filter(one => project === null || one.repo === project || identities.hot(one.repo) === identities.hot(project)),
-        episode: project === null ? null : store.latestWatchEpisode(project),
-        outboxPending: store.pendingForAttention().length,
-        // External work at a glance (arc 3 finding 24): every dispatch
-        // grant with its blocked state, plus any open sync episode — the
-        // page a sync-failed push deep-links to now shows the fact.
-        externalWork: store
-          .listGrants()
-          .filter(one => one.dispatch === true && one.remoteRepo != null && visible(one.repo))
-          .map(one => ({
-            remoteRepo: String(one.remoteRepo),
-            blocked: one.dispatchBlocked ?? null,
-            openEpisode:
-              store
-                .listNotifications("all")
-                .find(n => n.kind === "sync-failed" && n.resolvedAt === null && n.dedupeKey.startsWith(`sync:${one.remoteRepo}:`))?.subject ?? null,
-          })),
-        now,
-      }),
-    );
-  }
+  // A GET-only alias, a plain 302 (like morningAlias): an old address lands on the part of Agents that took it over.
+  const aliasTo = (location: string) => async (ctx: HandlerContext): Promise<void> => {
+    ctx.response.writeHead(302, { ...SAFETY, Location: location });
+    ctx.response.end();
+  };
+  // System became part of Agents (UI revamp wave B): the model per phase and the computers that build.
+  const systemScreen = aliasTo("/agents#models");
+  // Terminals live on their own page (/term, its own bundle); the Agents area's address for them leads there.
+  const agentsTerminals = aliasTo("/term");
 
   // Peek became the Agents board: one place to check on every running agent (agents-board.ts).
   async function peekPage(ctx: HandlerContext): Promise<void> {
@@ -480,6 +446,13 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return { task, open };
   }
 
+  /** After a retire: fixed words naming a computer the store knows as retired (never text from the address). */
+  function retiredSaid(name: string | null): NonNullable<BrowserAgentsView["computerSaid"]> | null {
+    if (name === null) return null;
+    const known = store.listRunners().find(one => one.name === name && one.retiredAt !== null);
+    return known === undefined ? null : { tone: "info", text: `${known.name} is retired. It takes no more work; tasks reserved for it wait until you move them.` };
+  }
+
   // The Agents board (one place to check on running agents): rows by state, and the opened agent's live view.
   async function agentsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
@@ -536,10 +509,20 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return sendScreen(response, 200, screen("Agents", html`<h1>Agents</h1><p class="meta">Live needs JavaScript.</p>`, { chrome: chromeFor(project, "runs"), workspace: { view } }));
     }
     const groups = agentsBoardOf(store, now, access, who.name, evidenceRoot);
-    const lanes = selected === null ? agentLanesOf(store, now, access, who.name, laneWindowOf(url.searchParams.get("window"))) : null;
-    const view: BrowserAgentsView = { kind: "agents", groups, selected, lanes,
-      // Empty only when nothing ran at all: a planner or review on the timeline is activity too.
-      empty: groups.length === 0 && (lanes === null || lanes === undefined) ? "No agents in the last day. They show here the moment one starts." : null };
+    // The installation's parts (what /fleet and /system showed) are for a person with access to all of it, as those
+    // pages were; a project-limited person sees their own agents only.
+    const installation = !restricted();
+    const windowAsked = url.searchParams.get("window");
+    const view: BrowserAgentsView = { kind: "agents", groups, selected, lanes: null,
+      empty: groups.length === 0 ? "No agents in the last day. They show here the moment one starts." : null,
+      window: windowAsked === "30m" || windowAsked === "2h" ? windowAsked : "24h",
+      ...(selected !== null || !installation ? {} : {
+        computers: computersOf(store, now, visible, who.via === "cookie" && who.role === "approver" && !store.isDemo()),
+        phases: phasesOf(store, project),
+        system: systemOf(store, project, one => project === null || one.repo === project || identities.hot(one.repo) === identities.hot(project), visible),
+        computerSaid: retiredSaid(url.searchParams.get("retired")),
+      }),
+      terminals: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.isInstanceOperator(who.name) };
     const fallback = joinHtml([
       html`<h1>Agents</h1>`,
       groups.length === 0 ? html`<p class="meta">${view.empty ?? ""}</p>` : joinHtml(groups.map(group => joinHtml([
@@ -547,44 +530,15 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         ...group.rows.map(row => html`<p class="row"><a href="${row.href}"><strong>${row.title}</strong></a> <span class="meta">${[row.label, row.line].filter(Boolean).join(" \u00b7 ")}</span></p>`),
       ], "\n")), "\n"),
     ], "\n");
-    return sendScreen(response, 200, screen("Agents", fallback, { chrome: chromeFor(project, "runs"), workspace: { view } }));
+    // The list reads itself while something builds, as /system did (forms being edited are kept); an opened agent
+    // follows its own room instead.
+    const refreshSeconds = selected !== null ? undefined : store.liveClaims(null, now).length > 0 ? 10 : installation ? 60 : undefined;
+    return sendScreen(response, 200, screen("Agents", fallback, { chrome: chromeFor(project, "runs"), workspace: { view }, ...(refreshSeconds === undefined ? {} : { refreshSeconds }) }));
   }
 
-  async function fleetPage(ctx: HandlerContext): Promise<void> {
-    const { url, response, project } = ctx;
-    // Cross-project by design: which agent is on which project is the
-    // question, so this screen is a survey — reads are still filtered
-    // through the ceiling before a card renders. No project needed.
-    const queued = store.fleetQueue(clock());
-    const building = store.liveClaims(null, clock());
-    const owned = new Set(queued.map(one => one.assignedRunner).filter((one): one is string => one !== null));
-    const runners = store.listRunners().filter(one => one.retiredAt === null || owned.has(one.name));
-    const body = fleetBody(queued, building, runners, store.queueRevision(), visible);
-    if (url.searchParams.get("fragment") === "1") {
-      return respond(response, 200, "text/html; charset=utf-8", body);
-    }
-    const said = url.searchParams.get("said");
-    const fleetScreen = screen(
-      "fleet",
-      joinHtml([
-        html`<h1>Fleet</h1>`,
-        html`<p class="hint">one lane per worker — drag a queued card onto another worker to re-reserve it</p>`,
-        ...(said === null ? [] : [html`<p class="meta">${said}</p>`]),
-        html`<div id="fleet-region">${body}</div>`,
-        html`<p class="meta" id="fleet-region-stamp"></p>`,
-        html`<h2>Register a worker</h2>`,
-        postForm("/fleet/runner/register", html`<label>Name<input type="text" name="name" placeholder="builder-2" maxlength="60" required></label><label>Capacity<input type="text" name="capacity" inputmode="numeric" value="1" aria-label="capacity"></label><label>Your password, typed again<input type="password" name="token" autocomplete="current-password" required></label><button type="submit">Register — its token is shown once</button>`, { attrs: { class: "card" } }),
-        html`<details class="arm-danger"><summary>Retire a worker</summary>${postForm("/fleet/runner/retire", html`<label>Which worker<input type="text" name="name" placeholder="builder-1" required></label>${reauth(html`<label>Your password, typed again<input type="password" name="token" autocomplete="current-password" required></label>`)}<button type="submit" class="danger">Retire it</button>`, { attrs: { class: "card" } })}</details>`,
-      ], "\n"),
-      // The password fields make this screen sensitive: sendScreen strips
-      // the chrome additions and keeps the reorder poller — the named
-      // functional exception (it never reads the fields).
-      { chrome: chromeFor(project, "fleet", undefined, "all"), functional: { script: fleetScript(), fetches: true } },
-    );
-    return sendScreen(response, 200, fleetScreen);
-  }
+  // Fleet became the computers on Agents (UI revamp wave B): register, retire, reserved work and notes are there.
+  const fleetPage = aliasTo("/agents#computers");
 
-  // v103: every ledger entry in a date range, sealed, with an evidence pack for each task it names.
   async function ledgerExport(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response, now } = ctx;
     const from = exportDay(url.searchParams.get("from")), last = exportDay(url.searchParams.get("to"));
@@ -787,28 +741,31 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const token = body.get("token") ?? "";
     // A worker credential is minted here: a credential act, a password typed now even with Passwordless on.
     if (!authenticateCredential(who, token).ok) {
-      return refuse(response, who, 403, "registering a worker takes your password, typed again", "/fleet");
+      return refuse(response, who, 403, "registering a worker takes your password, typed again", "/agents#computers");
     }
     const name = (body.get("name") ?? "").trim();
     if (name === "" || name.length > 60 || /[\r\n\t]/.test(name) || hasForbiddenControls(name)) {
-      return refuse(response, who, 400, "a worker's name is one short line, no control characters", "/fleet");
+      return refuse(response, who, 400, "a worker's name is one short line, no control characters", "/agents#computers");
     }
     const capacity = Number((body.get("capacity") ?? "1").trim() || "1");
     if (!Number.isInteger(capacity) || capacity < 1 || capacity > 64) {
-      return refuse(response, who, 400, "capacity is a whole number of tasks, 1 to 64", "/fleet");
+      return refuse(response, who, 400, "capacity is a whole number of tasks, 1 to 64", "/agents#computers");
     }
     const { token: minted } = registerRunner(store, { name, host: hostname(), capacity, now });
+    // A kit reading page (UI revamp wave B), back to the computers on Agents. The token is text to select: a Copy
+    // button would need a script, and this page carries none.
     const tokenScreen = screen(
       "fleet",
-      joinHtml([
-        html`<h1>${name} is registered</h1>`,
-        html`<div class="card">`,
-        html`<p>Its token, shown once. Only a hash is kept, so copy it now.</p>`,
-        html`<p class="mono secret-value">${minted}</p>`,
-        html`<p class="meta">Keep it beside the worker, in a file only you can read (0600) or a secrets manager. If it's lost, register the name again; its old claims are taken back.</p>`,
-        html`</div>`,
-        html`<p class="meta"><a href="/fleet">Back to Fleet</a></p>`,
-      ], "\n"),
+      html`<div data-kit-page>${kit.phoneHeader("Computer registered", { back: "/agents#computers" })}${kit.doc(
+        kit.docHeader({ title: `${name} is registered`, back: ["/agents#computers", "Agents"], same: true, meta: html`Takes up to ${capacity} ${capacity === 1 ? "task" : "tasks"} at a time` }),
+        kit.slots({
+          status: html`<h2>Its token, shown once</h2>`,
+          text: "Only a hash is kept, so copy it now.",
+          acts: html`<code class="k-code" data-runner-token>${minted}</code>`,
+          terms: "Keep it beside the computer, in a file only you can read (0600) or a secrets manager. If it's lost, register the name again; its old claims are taken back.",
+        }),
+        kit.acts(kit.btn("Back to Agents", { href: "/agents#computers" })),
+      )}</div>`,
       // A one-time secret on screen: no script of any kind rides along.
       { chrome: chromeFor(projectOf(who, request) ?? null, "fleet"), forceSensitive: true },
     );
@@ -821,12 +778,13 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     if (who.via !== "cookie") return refuse(response, who, 403, "runner retirement is a browser surface");
     const token = body.get("token") ?? "";
     if (!authenticateApprover(who, token).ok) {
-      return refuse(response, who, 403, "retiring a worker takes your password, typed again", "/fleet");
+      return refuse(response, who, 403, "retiring a worker takes your password, typed again", "/agents#computers");
     }
     const name = (body.get("name") ?? "").trim();
     const retired = store.retireRunner(name, now);
-    if (!retired) return refuse(response, who, 404, `no worker \`${name}\``, "/fleet");
-    return redirect(response, `/fleet?said=${encodeURIComponent(`${name} is retired — its queued work is still here, drag it elsewhere`)}`);
+    if (!retired) return refuse(response, who, 404, `no worker \`${name}\``, "/agents#computers");
+    // Agents says it in fixed words, naming the computer only once the store knows it as retired (retiredSaid).
+    return redirect(response, `/agents?retired=${encodeURIComponent(name)}#computers`);
   }
 
   async function onboardPreview(ctx: HandlerContext): Promise<void> {
@@ -1158,6 +1116,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "agents": agentsPage,
     "agents.live": agentsLive,
     "agents.live.read": agentsLiveRead,
+    "agents.terminals": agentsTerminals,
     "fleet": fleetPage,
     "ledger.export": ledgerExport,
     "menu": menuPage,

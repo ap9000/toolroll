@@ -358,10 +358,8 @@ describe("composer receipts and reach (cockpit §4, round 2)", () => {
     const view = workspaceOf(await (await fetch(url("/t/t-rev"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTaskView;
     expect(view.steering).toMatchObject({ steer: null, controls: { send: null, words: "This reviewer can't take notes; stop it to change its course.", stop: { run: Number(review) } } });
     expect(view.steerRecent).toContain(build);
-    const lanes = (await board("/agents", cookie)).lanes;
-    const hrefs = (lanes?.lanes ?? []).flatMap(lane => lane.segments.map(one => one.href));
-    expect(hrefs.length).toBeGreaterThan(0);
-    expect(hrefs.every(href => href.startsWith("/agents?run="))).toBe(true);
+    // The Agents page lists builds; any running role (this review too) still opens in the agent view by its run.
+    expect((await board(`/agents?run=${review}`, cookie)).selected).toMatchObject({ runId: Number(review), live: true });
   });
 });
 

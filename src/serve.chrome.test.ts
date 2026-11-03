@@ -65,12 +65,11 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
 
   test("a password on screen strips the chrome additions but keeps the page's own behavior", async () => {
     const cookie = await login();
-    // /fleet: register/retire take passwords; the reorder poller stays.
-    const fleet = await (await fetch(url("/fleet"), { headers: { cookie } })).text();
-    expect(fleet).not.toContain('id="palette-index"');
-    expect(fleet).not.toContain('aria-label="keyboard shortcuts"');
-    expect((fleet.match(/<script nonce=/g) ?? []).length).toBe(1);
-    expect(fleet).toContain("fleet-region");
+    // /fleet became the computers on Agents (UI revamp wave B): a plain 302, its password forms gone from the page
+    // (register and retire ask in place on Agents, and the token page carries no script at all).
+    const fleet = await fetch(url("/fleet"), { headers: { cookie }, redirect: "manual" });
+    expect(fleet.status).toBe(302);
+    expect(fleet.headers.get("location")).toBe("/agents#computers");
     // /settings: token forms beside the push enrollment script — exactly
     // one composed script, no palette.
     const settings = await fetch(url("/settings"), { headers: { cookie } });

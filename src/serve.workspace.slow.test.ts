@@ -431,7 +431,9 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
       expect(shown, path).toMatch(new RegExp(`<a [^>]*href="/start-builder\\?task=${id}"[^>]*>Connect a builder`));
       expect(shown, path).not.toMatch(/<a [^>]*href="[^"]*#run-status"[^>]*>Connect a builder/);
     }
-    expect(await page(cookie, "/system")).toMatch(/<section id="builder"[^>]*><h2 id="builder-heading">Start a builder<\/h2>[\s\S]*>toolroll up<\/code>/);
+    // System is part of Agents now (a 302 to its models); Start a builder keeps the command.
+    expect((await fetch(url("/system"), { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe("/agents#models");
+    expect(await page(cookie, "/start-builder")).toMatch(/<section id="builder"[^>]*><h1 id="builder-heading">Start a builder<\/h1>[\s\S]*>toolroll up<\/code>/);
     // A live builder bound to another project doesn't connect this one: not on Start a builder, not in the first-run
     // steps (dispatch's own answer, buildersFor).
     register(store, { name: "beta-worker", host: "here", capacity: 1, repos: [beta], now, newToken: () => "beta-token" });

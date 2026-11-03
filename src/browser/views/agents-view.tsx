@@ -1,34 +1,25 @@
-/** The Agents board: every agent in one place, grouped Needs you, Working,
- * Stuck, Done and Idle, each row with its task, project, last line, elapsed
- * time and diff size. A row opens that agent's live view beside the list (a
- * full-screen view on a phone): its question, transcript and changes, with
- * one composer at the bottom — Reply while it asks, otherwise a note that
- * steers it. The page follows the workspace and the opened agent's own room,
- * so it updates in place; forms keep what is being typed. */
-import { ArrowLeft, ArrowUpRight } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import type { AgentGroupKey, BrowserAgentDetail, BrowserAgentLane, BrowserAgentLanes, BrowserAgentRow, BrowserAgentsView, BrowserLaneSegment } from "../../browser-workspace.js";
-import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
-import { Button, Textarea, cn } from "../components/ui/index.js";
+/** Agents (UI revamp wave B, on the kit): who is working, in one list — Needs you, Working, Finished in a window you
+ * pick — then, for a person with access to the whole installation, the computers that build (register, details,
+ * retire, reserved work) and which model runs each phase. A row opens that agent's own reading page (/agents?run=N):
+ * where it stands with Pause and Stop, its conversation and changes, and one composer — Reply while it asks,
+ * otherwise a note that steers it. The page follows the workspace and the opened agent's own room, so it updates in
+ * place; forms keep what is being typed. Every act posts to the handler it always had; the server proves it again. */
+import { useContext, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import type { AgentLaneWindow, BrowserAgentDetail, BrowserAgentRow, BrowserAgentsView, BrowserComputer, BrowserComputers } from "../../browser-workspace.js";
+import { RESOURCE, termsOf, type ChipTone } from "../../design/kit.js";
 import { GuardedHtml } from "../guarded-html.js";
-import { ConversationPane } from "./agent-conversation.js";
+import {
+  KActs, KApprove, KButton, KChip, KComposer, KCount, KDisclose, KDoc, KDocHeader, KEmpty, KFacts, KField, KGroup, KInfoLine, KInput,
+  KLinkButton, KNote, KNotice, KOverlay, KPageHeader, KPhoneHeader, KRow, KSeg, KSelect, KSlots, KTabs,
+} from "../kit/index.js";
 import { useLiveRoom } from "../live.js";
 import { useNow, WORKSPACE_NUDGE } from "../live-task.js";
-import { Alert, PostForm } from "../ui/index.js";
-import { freshDraft, loadDraft, saveDraft, SteerControls, type SteerDraft } from "./steer-composer.js";
+import { FormToken, Passwordless, PostForm } from "../ui/index.js";
+import { ConversationPane } from "./agent-conversation.js";
 import { LiveGrid } from "./agents-live-view.js";
-
-const CHIP: Record<AgentGroupKey, string> = {
-  // A list row's badge stays the ink attention badge: amber marks the thing that waits (the live tile, the task head),
-  // never every row of a list (DESIGN.md, Badges).
-  "needs-you": "bg-attention-soft text-attention",
-  working: "bg-info-soft text-info",
-  stuck: "bg-warning-soft text-foreground", // ink words on the amber wash: warning text alone reads 4.21:1
-  done: "bg-success-soft text-success",
-  idle: "bg-neutral-soft text-neutral-ink",
-};
-const PROBLEM = new Set(["Failed", "Stopped unexpectedly", "Not started"]);
-const GROUP_LABEL: Record<AgentGroupKey, string> = { "needs-you": "Needs you", working: "Working", stuck: "Stuck", done: "Done", idle: "Idle" };
+import { freshDraft, loadDraft, saveDraft, type SteerDraft } from "./steer-composer.js";
+import "./agents.css";
 
 /** "38 s", "4 min", "1 h 12 min". */
 export function elapsedWords(fromIso: string, to: number): string {
@@ -41,11 +32,6 @@ export function elapsedWords(fromIso: string, to: number): string {
   return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
 }
 
-function StateChip({ row, className }: { row: Pick<BrowserAgentRow, "group" | "label">; className?: string }) {
-  return <span data-agent-state={row.label} className={cn("inline-flex w-fit shrink-0 items-center whitespace-nowrap rounded-badge px-1.5 py-px text-badge",
-    PROBLEM.has(row.label) ? "bg-danger-soft text-danger" : CHIP[row.group], className)}>{row.label}</span>;
-}
-
 /** "Running 4 min", or "Ran 25 min · finished 45 min ago": how long it ran, and when it ended, each labelled. */
 export function timeWords(row: Pick<BrowserAgentRow, "startedAt" | "endedAt">, now: number): string {
   if (row.endedAt === null) return `Running ${elapsedWords(row.startedAt, now)}`;
@@ -53,42 +39,298 @@ export function timeWords(row: Pick<BrowserAgentRow, "startedAt" | "endedAt">, n
   return `Ran ${elapsedWords(row.startedAt, Date.parse(row.endedAt))} · finished ${since < 60_000 ? "just now" : `${elapsedWords(row.endedAt, now)} ago`}`;
 }
 
+const clock = (iso: string): string => {
+  const at = Date.parse(iso);
+  return Number.isNaN(at) ? "" : new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+};
+/** A time today as its clock, an older one with its day. */
+const when = (iso: string, now: number): string => {
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return "";
+  return new Date(at).toDateString() === new Date(now).toDateString() ? clock(iso) : new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+};
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** A row's chip: its own word in the kit's tone. Inside Needs you it names the ask; a running build is Building. */
+function chipOf(row: Pick<BrowserAgentRow, "group" | "label">): { word: string; tone: ChipTone } {
+  if (row.group === "needs-you") return { word: row.label, tone: "ask" };
+  if (row.group === "stuck") return { word: "Stuck", tone: "" };
+  if (row.group === "working") return { word: "Building", tone: "live" };
+  if (row.label === "Done") return { word: "Finished", tone: "done" };
+  if (row.label === "No changes") return { word: "No changes", tone: "done" };
+  if (row.label === "Failed") return { word: "Failed", tone: "failed" };
+  return { word: row.label, tone: "" };
+}
+function StateChip({ row }: { row: Pick<BrowserAgentRow, "group" | "label"> }) {
+  const { word, tone } = chipOf(row);
+  return <span className="agents-chip" data-agent-state={row.label}><KChip word={word} tone={tone} /></span>;
+}
+
 function Elapsed({ row }: { row: Pick<BrowserAgentRow, "startedAt" | "endedAt"> }) {
   const now = useNow();
-  return <time dateTime={row.endedAt ?? row.startedAt} className="tabular-nums" data-agent-time>{timeWords(row, now)}</time>;
+  return <time dateTime={row.endedAt ?? row.startedAt} className="k-num" data-agent-time>{timeWords(row, now)}</time>;
 }
 
-function AgentRow({ row, selected }: { row: BrowserAgentRow; selected: boolean }) {
-  // A row's chip says what its group heading doesn't: the heading already says Working, so a working row wears none.
-  const chip = row.label !== GROUP_LABEL[row.group];
-  return <li data-agent-row={row.runId} data-agent-group={row.group}>
-    <a href={row.href} aria-current={selected ? "page" : undefined}
-      className={cn("grid min-h-11 grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 rounded-md px-2.5 py-2.5 outline-none transition-colors hover:bg-raised focus-visible:ring-2 focus-visible:ring-ring",
-        selected && "bg-card shadow-pill")}>
-      <span className="flex min-w-0 items-center gap-2">
-        {chip && <StateChip row={row} />}
-        <span className={cn("truncate text-[13.5px] leading-snug", row.group === "needs-you" ? "font-semibold" : "font-medium")}>{row.title}</span>
-      </span>
-      {row.diff !== null && <span className="text-right text-caption whitespace-nowrap text-muted-foreground tabular-nums" data-agent-diff>{row.diff}</span>}
-      {row.line !== null && <span className={cn("col-span-2 min-w-0 truncate text-[12.5px]", row.quiet || row.group === "stuck" ? "text-warning" : row.group === "needs-you" ? "text-foreground" : "text-muted-foreground")}
-        data-agent-line title={row.line}>{row.line}</span>}
-      <span className="col-span-2 min-w-0 truncate text-caption text-muted-foreground">{[row.project, row.agent].filter(Boolean).join(" · ")} · <Elapsed row={row} /></span>
-    </a>
-  </li>;
+/** A command to run, selected whole with one click, and Copy beside it. A refused clipboard says so. */
+function CopyLine({ text }: { text: string }) {
+  const [copied, setCopied] = useState<"no" | "yes" | "failed">("no");
+  const copy = () => {
+    if (navigator.clipboard?.writeText === undefined) { setCopied("failed"); return; }
+    void navigator.clipboard.writeText(text).then(() => setCopied("yes"), () => setCopied("failed"));
+  };
+  return <span className="agents-copy"><code className="k-code">{text}</code><KButton sm label={copied === "yes" ? "Copied" : "Copy"} onClick={copy} />
+    {copied === "failed" && <span className="k-note" role="status">Couldn't copy. Select it and copy it yourself.</span>}</span>;
 }
 
-function Board({ view, selected }: { view: BrowserAgentsView; selected: number | null }) {
-  if (view.groups.length === 0 && view.empty === null) return null;
-  if (view.groups.length === 0) return <p className="rounded-card border border-border bg-card px-4 py-10 text-body text-muted-foreground" data-agents-empty>{view.empty}</p>;
-  return <div className="flex flex-col gap-5 phone:gap-4">
-    {view.groups.map(group => <section key={group.key} data-agent-group-section={group.key} aria-labelledby={`agents-${group.key}`}>
-      <h2 id={`agents-${group.key}`} className="flex items-baseline gap-2 border-b border-border px-2.5 pb-1.5 text-body font-semibold leading-5">
-        {group.label}<span className="font-mono text-mono font-medium tabular-nums text-muted-foreground">{group.rows.length}</span>
-      </h2>
-      <ul className="mt-1 flex flex-col gap-0.5">{group.rows.map(row => <AgentRow key={row.runId} row={row} selected={row.runId === selected} />)}</ul>
-    </section>)}
+// ---- the list ------------------------------------------------------------------------------------------------------
+
+const WINDOW_MS: Record<AgentLaneWindow, number> = { "30m": 30 * 60_000, "2h": 2 * 60 * 60_000, "24h": 24 * 60 * 60_000 };
+const WINDOW_WORDS: Record<AgentLaneWindow, string> = { "30m": "the last 30 minutes", "2h": "the last 2 hours", "24h": "the last 24 hours" };
+
+function AgentListRow({ row }: { row: BrowserAgentRow }) {
+  const finished = row.endedAt !== null && row.group !== "needs-you";
+  const action = row.group === "needs-you"
+    ? row.label === "Question" ? <KLinkButton sm href={row.href} label="Answer" /> : <KLinkButton sm href={`/t/${encodeURIComponent(row.taskId)}`} label="Open task" />
+    : finished ? <KLinkButton sm href={`/r/${row.runId}`} label="Open record" /> : <KLinkButton sm href={row.href} label="Watch" />;
+  const line = [row.line ?? (finished ? row.diff : null), row.agent].filter(Boolean).join(" · ");
+  return <div data-agent-row={row.runId} data-agent-group={row.group}>
+    <KRow href={row.href} wait={row.group === "needs-you"} chip={<StateChip row={row} />} title={row.title}
+      desc={<span data-agent-line title={row.line ?? undefined}>{line}</span>}
+      meta={<>{row.project && <span>{row.project}</span>}<Elapsed row={row} />{row.diff !== null && !finished && <span className="k-num" data-agent-diff>{row.diff}</span>}</>}
+      action={action} />
   </div>;
 }
+
+function Group({ id, label, rows, ink, right }: { id: string; label: ReactNode; rows: readonly BrowserAgentRow[]; ink?: boolean; right?: ReactNode }) {
+  return <section data-agent-group-section={id} aria-labelledby={`agents-${id}`}>
+    <KGroup id={`agents-${id}`} label={label} count={<KCount n={rows.length} ink={ink === true} />} right={right} />
+    {rows.map(row => <AgentListRow key={row.runId} row={row} />)}
+  </section>;
+}
+
+/** Why a computer is in the state it is, in one line. */
+function computerLine(one: BrowserComputer, now: number): string {
+  const heard = `heard ${elapsedWords(one.heardAt, now)} ago`;
+  const reserved = one.reserved.length > 0 ? ` · ${one.reserved.length} reserved` : "";
+  if (one.retired) return `Retired${reserved}`;
+  if (one.state === "offline") return `Stopped answering at ${when(one.heardAt, now)} · ${elapsedWords(one.heardAt, now)} ago${reserved}`;
+  const busy = one.building.length + one.hidden;
+  if (one.state === "building") return `${busy} of ${one.capacity} building · ${heard}${reserved}`;
+  return `Free · ${plural(one.capacity, "slot", "slots")} · ${heard}${reserved}`;
+}
+const computerChip = (one: BrowserComputer) => one.retired ? <KChip word="Retired" /> : <KChip word={RESOURCE[one.state].word} tone={RESOURCE[one.state].tone} />;
+
+/** A computer stopped answering: what that means and the one command that brings it back. */
+function OfflineBox({ one, others }: { one: BrowserComputer; others: boolean }) {
+  const now = useNow(30_000);
+  return <div data-computer-offline={one.name}><KSlots status={<>{computerChip(one)}<h2>{one.name} is offline</h2></>}
+    text={`It stopped answering at ${when(one.heardAt, now)}. Nothing is lost: work it would take waits in the queue${others ? ", and the other computers keep building" : ""}. To bring it back, open a terminal on ${one.host}, go to the project's folder and run:`}
+    acts={<CopyLine text="toolroll up" />}
+    terms={`Keep it running; it picks up queued work on its own. If ${one.name} is gone for good, retire it below.`} /></div>;
+}
+
+/** No computer builds yet: approved tasks wait until one is connected. */
+function StartBox() {
+  return <div data-computer-none><KSlots status={<h2>No computer is building yet</h2>}
+    text="Approved tasks wait until one is connected. On the computer where the project lives, open the project's folder in a terminal and run:"
+    acts={<CopyLine text="toolroll up" />} terms="Keep it running. The console alone (toolroll serve) doesn't build." /></div>;
+}
+
+/** A computer's details, in a drawer: its facts, reserved work (move it), its note, and Retire (step-up). */
+function ComputerDrawer({ one, computers, trigger, onClose }: { one: BrowserComputer; computers: BrowserComputers; trigger: HTMLElement; onClose: () => void }) {
+  const now = useNow(30_000);
+  const passwordless = useContext(Passwordless);
+  const csrf = useContext(FormToken);
+  const facts = { passwordless, remembered: false };
+  const status = one.retired ? "Retired" : one.state === "offline" ? `Offline since ${when(one.heardAt, now)}` : one.state === "building" ? "Online, building" : "Online";
+  // The same handler /fleet posted to; the server proves the password (or Passwordless) again.
+  const retire = async (password: string | null): Promise<string | null> => {
+    try {
+      const answer = await fetch("/fleet/runner/retire", { method: "POST", credentials: "same-origin", redirect: "manual",
+        body: new URLSearchParams({ csrf, name: one.name, token: password ?? "" }) });
+      if (answer.type === "opaqueredirect" || (answer.status >= 300 && answer.status < 400)) { location.assign(`/agents?retired=${encodeURIComponent(one.name)}#computers`); return null; }
+      if (answer.status === 404) return "There's no computer by that name any more. Nothing changed.";
+      return password === null ? "Retiring needs your password now. Nothing changed." : "That password didn't match. Nothing changed.";
+    } catch { return "The console didn't answer. Nothing changed; try again."; }
+  };
+  return <KOverlay kind="drawer" title={one.name} trigger={trigger} onClose={onClose}>
+    <div className="agents-cpanel" data-computer-panel={one.name}>
+      <KFacts rows={[
+        ["Status", status], ["Computer", one.host],
+        ["Takes work from", one.projects.length > 0 ? one.projects.join(", ") : "No projects yet"],
+        ["Building now", one.building.length === 0 && one.hidden === 0 ? "Nothing"
+          : <>{one.building.map(build => <span key={build.taskId} className="agents-fact-line"><a href={build.href}>{build.title}</a></span>)}
+            {one.hidden > 0 && <span className="agents-fact-line">{plural(one.hidden, "task", "tasks")} in projects you can't see</span>}</>],
+        ["At a time", plural(one.capacity, "task", "tasks")],
+        ["Last heard", `${when(one.heardAt, now)} (${elapsedWords(one.heardAt, now)} ago)`],
+        ["Registered", when(one.registeredAt, now)],
+      ]} />
+      <section className="k-sec" aria-label="Reserved for it">
+        <h3>Reserved for it</h3>
+        {one.reserved.length === 0 ? <KNote>Nothing. It takes from the shared queue, top first.</KNote>
+          : <ul className="agents-list">{one.reserved.map(task => <li key={task.id} data-reserved={task.id}>
+            <span className="agents-list-t"><a href={task.href}>{task.title}</a>{task.project && <span className="k-muted"> · {task.project}</span>}</span>
+            {computers.manage && !task.taken && <PostForm action="/queue/move" className="agents-move">
+              <input type="hidden" name="queueRevision" value={String(computers.queueRevision)} />
+              <input type="hidden" name="task" value={task.id} /><input type="hidden" name="before" value="" />
+              <KSelect sm name="column" aria-label={`Move ${task.title} to`} defaultValue="anyone"
+                items={[["anyone", "Shared queue"], ...computers.list.filter(other => other.name !== one.name && !other.retired).map(other => [other.name, other.name] as const)]} />
+              <KButton sm type="submit" label="Move" />
+            </PostForm>}
+            {task.taken && <span className="k-note">Being taken</span>}
+          </li>)}</ul>}
+      </section>
+      {computers.manage && !one.retired && <PostForm action="/queue/note" className="k-sec">
+        <input type="hidden" name="runner" value={one.name} /><input type="hidden" name="from" value="fleet" />
+        <KField label="Note on its queue" hint="What it is working through, for whoever looks next.">
+          {ids => <KInput id={ids.id} name="note" maxLength={200} defaultValue={one.note ?? ""} aria-describedby={ids.describedBy} />}
+        </KField>
+        <KActs><KButton sm type="submit" label="Save note" /></KActs>
+      </PostForm>}
+      {!computers.manage && one.note && <KFacts rows={[["Note", one.note]]} />}
+      {computers.manage && !one.retired && <div className="k-sec" data-computer-retire={one.name}>
+        <KActs><KApprove kind="step-up" facts={facts} label="Retire computer" primary={false} terms={`Retire ${one.name}: it takes no more work.`} onApprove={retire} /></KActs>
+        <KNote>{`Retiring stops it taking work. Tasks reserved for it wait until you move them. ${termsOf("step-up", facts)}`}</KNote>
+      </div>}
+    </div>
+  </KOverlay>;
+}
+
+/** A name a computer can have: one short line, no control or format characters (as the handler checks). */
+const nameProblem = (name: string): string | null =>
+  name === "" ? "Name the computer first." : name.length > 60 || /[\p{Cc}\p{Cf}]/u.test(name) ? "Use one short line: up to 60 characters, no control characters." : null;
+
+/** Register a computer: its name and how many tasks at a time; always the password typed now (it makes a token). */
+function RegisterForm({ onCancel }: { onCancel: () => void }) {
+  const csrf = useContext(FormToken);
+  const passwordless = useContext(Passwordless);
+  const [name, setName] = useState("");
+  const [capacity, setCapacity] = useState("1");
+  const [error, setError] = useState<string | null>(null);
+  const field = useRef<HTMLInputElement>(null);
+  const trimmed = name.trim();
+  const facts = { passwordless, remembered: false };
+  // The token page is the handler's own (shown once, no script on it): the form goes there natively.
+  const register = async (password: string | null): Promise<string | null> => {
+    const form = document.createElement("form");
+    form.method = "post"; form.action = "/fleet/runner/register"; form.hidden = true;
+    for (const [key, value] of Object.entries({ csrf, name: trimmed, capacity, token: password ?? "" })) {
+      const input = document.createElement("input");
+      input.type = "hidden"; input.name = key; input.value = value;
+      form.append(input);
+    }
+    document.body.append(form);
+    form.submit();
+    return null;
+  };
+  // Invalid values are refused next to their field before any password is asked for.
+  const refuse = () => { setError(nameProblem(trimmed)); field.current?.focus(); };
+  return <div className="k-sec agents-reg" id="agents-register" data-computer-register>
+    <h3>Add a computer</h3>
+    <KField label="Computer name" error={error}>
+      {ids => <KInput ref={field} id={ids.id} value={name} autoComplete="off" spellCheck={false} maxLength={60} aria-describedby={ids.describedBy} aria-invalid={ids.invalid || undefined}
+        onChange={event => { setName(event.target.value); setError(null); }} />}
+    </KField>
+    <KField label="Tasks at a time">
+      {ids => <KSelect id={ids.id} wide value={capacity} onChange={event => setCapacity(event.target.value)} items={["1", "2", "3", "4", "6", "8"]} />}
+    </KField>
+    <p className="agents-terms">{trimmed || "New computer"} · up to {capacity} at a time · takes from the shared queue</p>
+    <KActs>
+      {nameProblem(trimmed) === null
+        ? <KApprove kind="way-in" facts={facts} label="Register computer" terms={`Register ${trimmed}: up to ${capacity} at a time.`} onApprove={register} />
+        : <KButton variant="primary" label="Register computer" onClick={refuse} />}
+      <KButton variant="ghost" label="Cancel" onClick={onCancel} />
+    </KActs>
+    <KNote>{`${termsOf("way-in", facts)} Registering makes a token that lets the computer take work; it is shown once.`}</KNote>
+  </div>;
+}
+
+function Computers({ computers, terminals }: { computers: BrowserComputers; terminals: boolean }) {
+  const now = useNow(30_000);
+  const [adding, setAdding] = useState(false);
+  const [open, setOpen] = useState<{ name: string; trigger: HTMLElement } | null>(null);
+  const shown = open === null ? null : computers.list.find(one => one.name === open.name) ?? null;
+  const add = computers.manage && !adding ? <KButton variant="ghost" sm lead="plus" label="Add a computer" onClick={() => setAdding(true)} /> : undefined;
+  return <section id="computers" className="agents-sec" aria-labelledby="agents-computers" data-computers>
+    <KGroup id="agents-computers" label="Computers that build" count={<KCount n={computers.list.length} />} right={add} />
+    {computers.list.length === 0 && <div className="agents-pad"><StartBox /></div>}
+    {computers.list.map(one => <div key={one.name} data-computer={one.name}>
+      <KRow chip={computerChip(one)} title={one.name} desc={`${one.host} · ${computerLine(one, now)}`}
+        meta={<span>{one.projects.length > 0 ? one.projects.join(", ") : "No projects yet"}</span>}
+        action={<KButton sm label="Details" aria-haspopup="dialog" onClick={event => setOpen({ name: one.name, trigger: event.currentTarget })} />} />
+    </div>)}
+    {computers.shared > 0 && <p className="agents-line">{plural(computers.shared, "task waits", "tasks wait")} in the shared queue for any free computer. <a className="k-link" href="/board?view=order">Reserve one for a computer</a></p>}
+    {adding && <RegisterForm onCancel={() => setAdding(false)} />}
+    {terminals && <p className="agents-line k-phone-only"><a className="k-link" href="/agents/terminals">Terminals on these computers</a></p>}
+    {open !== null && shown !== null && <ComputerDrawer one={shown} computers={computers} trigger={open.trigger} onClose={() => setOpen(null)} />}
+  </section>;
+}
+
+const PHASE_WORDS: Record<string, readonly [string, string]> = {
+  plan: ["Plan", "Writes the plan you approve"], build: ["Build", "Does the work inside the approved plan"],
+  repair: ["Repair", "Fixes a malformed handoff in the same session"], review: ["Review", "Reads the result against the requirements"],
+};
+
+function Models({ view }: { view: BrowserAgentsView }) {
+  const [open] = useState(() => typeof location !== "undefined" && location.hash === "#models");
+  const system = view.system ?? null;
+  const more = system !== null && (system.workspaces.length > 0 || system.service !== null || system.outbox > 0 || system.external.length > 0);
+  return <section id="models" className="agents-sec agents-models" data-agent-phases>
+    <KDisclose summary="Model per phase" open={open}>
+      <div className="agents-phases">
+        {(view.phases ?? []).map(one => <div key={one.phase} className="agents-phase" data-phase={one.phase}>
+          <b>{PHASE_WORDS[one.phase]?.[0] ?? one.phase}</b><span className="k-muted">{PHASE_WORDS[one.phase]?.[1] ?? ""}</span>
+          {one.model === null ? <span>{one.problem}</span> : <span>{one.model}{one.noDollars && <span className="k-muted"> · reports tokens, not dollars</span>}</span>}
+          <span className="k-muted">{one.source}</span>
+        </div>)}
+        <KNote>Repair always stays on the provider that built; only its model can differ. <a className="k-link" href="/settings/agents">Change in Settings → Agents and models</a></KNote>
+      </div>
+    </KDisclose>
+    {more && system !== null && <KDisclose summary="Workspaces and sync">
+      <div className="agents-phases">
+        {system.service !== null && <p>{system.service.running ? `The background service is running, since ${clock(system.service.at)}.` : `The background service last ran: ${system.service.built} built, ${system.service.broke} broke · ended ${clock(system.service.at)}.`}</p>}
+        {system.workspaces.length > 0 && <ul className="agents-list">{system.workspaces.map(one => <li key={one.name}><span className="k-mono">{one.name}</span><span className="k-muted">{one.branch} · {one.state}</span></li>)}</ul>}
+        {system.outbox > 0 && <p>{plural(system.outbox, "notification waits", "notifications wait")} to be delivered.</p>}
+        {system.external.map(one => <p key={one.repo}><span className="k-mono">{one.repo}</span> · {one.state}</p>)}
+      </div>
+    </KDisclose>}
+  </section>;
+}
+
+function AgentsList({ view }: { view: BrowserAgentsView }) {
+  const now = useNow(30_000);
+  const [range, setRange] = useState<AgentLaneWindow>(view.window ?? "24h");
+  const choose = (next: string) => {
+    const key: AgentLaneWindow = next === "30m" || next === "2h" ? next : "24h";
+    setRange(key);
+    try { const url = new URL(location.href); if (key === "24h") url.searchParams.delete("window"); else url.searchParams.set("window", key); history.replaceState(history.state, "", url); } catch { /* the address is a convenience */ }
+  };
+  const rows = view.groups.flatMap(group => group.rows);
+  const needs = rows.filter(row => row.group === "needs-you");
+  const working = rows.filter(row => row.endedAt === null && row.group !== "needs-you");
+  const finished = rows.filter(row => row.endedAt !== null && row.group !== "needs-you" && now - Date.parse(row.endedAt) <= WINDOW_MS[range]);
+  const offline = (view.computers?.list ?? []).filter(one => one.state === "offline" && !one.retired);
+  const alive = (view.computers?.list ?? []).some(one => one.state !== "offline");
+  const seg = <KSeg label="Finished in" current={range} onChange={choose} items={[{ key: "30m", label: "30 min" }, { key: "2h", label: "2 h" }, { key: "24h", label: "24 h" }]} />;
+  const right = <>{seg}<KLinkButton sm variant="ghost" href="/agents?view=live" label="Live view" />{view.terminals === true && <KLinkButton sm href="/agents/terminals" label="Terminals" />}</>;
+  return <div className="agents-page" id="agents-view" data-agents-board>
+    <KPageHeader title="Agents" ctx={`All projects · ${plural(working.length, "agent", "agents")} building`} right={right} />
+    {view.computerSaid && <div className="agents-pad" data-computer-said>{view.computerSaid.tone === "error" ? <KNotice>{view.computerSaid.text}</KNotice> : <KInfoLine>{view.computerSaid.text}</KInfoLine>}</div>}
+    {offline.map(one => <div key={one.name} className="agents-pad"><OfflineBox one={one} others={alive} /></div>)}
+    {needs.length === 0 && working.length === 0 && <div data-agents-empty><KEmpty title="No agents are working." text="An agent starts when you approve a plan. What finished in the window you pick shows below."
+      action={<KLinkButton sm href="/work" label="Open Tasks" />} /></div>}
+    {needs.length > 0 && <Group id="needs-you" label="Needs you" rows={needs} ink />}
+    {working.length > 0 && <Group id="working" label="Working" rows={working} />}
+    <Group id="finished" label={<><span className="k-desk-only">Finished in {WINDOW_WORDS[range]}</span><span className="k-phone-only">Finished</span></>} rows={finished}
+      right={<span className="k-phone-only"><KSelect sm aria-label="Finished in" value={range} onChange={event => choose(event.target.value)} items={[["30m", "Last 30 min"], ["2h", "Last 2 h"], ["24h", "Last 24 h"]]} /></span>} />
+    {finished.length === 0 && <p className="agents-none">Nothing finished in {WINDOW_WORDS[range]}.</p>}
+    {view.computers != null && <Computers computers={view.computers} terminals={view.terminals === true} />}
+    {view.phases != null && <Models view={view} />}
+    {view.computers == null && view.terminals === true && <p className="agents-line k-phone-only"><a className="k-link" href="/agents/terminals">Terminals</a></p>}
+  </div>;
+}
+
+// ---- one agent -----------------------------------------------------------------------------------------------------
 
 /** The changes so far while it runs: the run page's live look at its checkout, every 10 s while open. */
 function useLiveChanges(url: string | null, open: boolean): string | null {
@@ -110,19 +352,19 @@ function useLiveChanges(url: string | null, open: boolean): string | null {
 }
 
 function ChangesPane({ detail, open }: { detail: BrowserAgentDetail; open: boolean }) {
-  // Its own tab now: the live look at the checkout is read only while the tab is in front.
+  // Its own tab: the live look at the checkout is read only while the tab is in front.
   const fragment = useLiveChanges(detail.peek, open);
-  return <div data-agent-changes>
+  return <div data-agent-changes className="agents-changes">
     {detail.live
-      ? detail.peek === null ? <p className="text-body text-muted-foreground">Output from other computers isn't shown yet.</p>
-        : fragment === null ? <p className="text-body text-muted-foreground">Looking at the checkout…</p>
-        : <GuardedHtml html={fragment} className="so-native-region text-body" />
-      : detail.files.length === 0 ? <p className="text-body text-muted-foreground">No saved changes.</p>
-      : <ul className="flex flex-col gap-1 font-mono text-mono">
-        {detail.files.map(file => <li key={file.path} className="flex min-w-0 gap-3"><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span>
-          <span className="shrink-0 tabular-nums text-success">{file.added === null ? "" : `+${file.added}`}</span>
-          <span className="shrink-0 tabular-nums text-danger">{file.removed === null ? "" : `−${file.removed}`}</span></li>)}
-        {detail.filesMore > 0 && <li className="text-muted-foreground">{detail.filesMore} more in the result</li>}
+      ? detail.peek === null ? <KNote>Output from other computers isn't shown yet.</KNote>
+        : fragment === null ? <KNote>Looking at the checkout…</KNote>
+        : <><GuardedHtml html={fragment} className="so-native-region" /><KNote>A live look at its working copy, refreshed every 10 seconds. Not yet a result: the record is sealed when the build ends.</KNote></>
+      : detail.files.length === 0 ? <KNote>No saved changes.</KNote>
+      : <ul className="agents-files">
+        {detail.files.map(file => <li key={file.path}><span className="k-mono" title={file.path}>{file.path}</span>
+          <span className="k-num agents-add">{file.added === null ? "" : `+${file.added}`}</span>
+          <span className="k-num agents-del">{file.removed === null ? "" : `−${file.removed}`}</span></li>)}
+        {detail.filesMore > 0 && <li className="k-muted">{detail.filesMore} more in the result</li>}
       </ul>}
   </div>;
 }
@@ -136,24 +378,83 @@ export function CheckoutActions({ checkout }: { checkout: NonNullable<BrowserAge
     if (navigator.clipboard?.writeText === undefined) { setCopied("failed"); return; }
     void navigator.clipboard.writeText(checkout.cd).then(() => setCopied("yes"), () => setCopied("failed"));
   };
-  return <section aria-label="Its files" className="flex flex-col gap-1.5" data-agent-checkout>
-    <p className="text-caption font-medium text-muted-foreground">Its files</p>
-    <p className="text-caption text-muted-foreground">These files were written by an agent. Your shell's startup scripts and prompt tools (git status in the prompt, direnv, .envrc) can run code from them when you open a terminal there.</p>
-    <code className="block break-all rounded-md border border-border bg-muted px-2 py-1 font-mono text-mono" data-agent-checkout-path>{checkout.path}</code>
-    <div className="flex flex-wrap gap-2 phone:hidden">
-      <Button type="button" variant="outline" size="sm" onClick={copy} data-agent-copy-cd>{copied === "yes" ? "Copied" : "Copy the command"}</Button>
-      {checkout.reveal !== null && <PostForm action={checkout.reveal} data-agent-reveal><input type="hidden" name="return" value="agents" /><Button type="submit" variant="outline" size="sm">Show in Finder</Button></PostForm>}
+  return <section aria-label="Its files" className="k-sec agents-checkout" data-agent-checkout>
+    <h3>Its files</h3>
+    <KNote>These files were written by an agent. Your shell's startup scripts and prompt tools (git status in the prompt, direnv, .envrc) can run code from them when you open a terminal there.</KNote>
+    <code className="k-code" data-agent-checkout-path>{checkout.path}</code>
+    <div className="k-acts k-desk-only">
+      <KButton sm onClick={copy} data-agent-copy-cd label={copied === "yes" ? "Copied" : "Copy the command"} />
+      {checkout.reveal !== null && <PostForm action={checkout.reveal} data-agent-reveal><input type="hidden" name="return" value="agents" /><KButton sm type="submit" label="Show in Finder" /></PostForm>}
     </div>
-    {copied === "failed" && <div className="flex flex-col gap-1" role="status" data-agent-copy-failed>
-      <p className="text-caption text-danger">Couldn't copy. Select the command and copy it yourself:</p>
-      <code className="block select-all break-all rounded-md border border-border bg-muted px-2 py-1 font-mono text-mono">{checkout.cd}</code>
+    {copied === "failed" && <div role="status" className="agents-checkout" data-agent-copy-failed>
+      <KNote>Couldn't copy. Select the command and copy it yourself:</KNote>
+      <code className="k-code">{checkout.cd}</code>
     </div>}
   </section>;
 }
 
-/** One composer at the bottom: Reply while the agent asks, otherwise a note that steers it. */
+/** Pause or Resume, and Stop behind its confirm, for the exact run each names. None asks for a password. */
+function Controls({ controls }: { controls: NonNullable<BrowserAgentDetail["controls"]> }) {
+  const pause = controls.pause;
+  const stop = controls.stop;
+  const [stopping, setStopping] = useState<HTMLElement | null>(null);
+  return <>
+    {pause !== null && (pause.state === "paused"
+      ? <PostForm action={pause.action} data-agent-resume>
+          <input type="hidden" name="run" value={String(pause.run)} /><input type="hidden" name="request" value={pause.requests[2]} />
+          <input type="hidden" name="mode" value="resume" /><input type="hidden" name="return" value="agents" />
+          <KButton type="submit" label="Resume" />
+        </PostForm>
+      : <PostForm action={pause.action} data-agent-pause>
+          <input type="hidden" name="run" value={String(pause.run)} /><input type="hidden" name="request" value={pause.requests[0]} />
+          <input type="hidden" name="return" value="agents" />
+          <KButton type="submit" label="Pause" busy={pause.state === "pausing" ? "Pausing…" : false} disabled={pause.state === "pausing"} />
+        </PostForm>)}
+    {stop !== null && <>
+      <KButton variant="ghost" label={stop.label} aria-haspopup="dialog" data-agent-stop-open={stop.run} onClick={event => setStopping(event.currentTarget)} />
+      {stopping !== null && <KOverlay kind="popover" title={`${stop.label}?`} trigger={stopping} onClose={() => setStopping(null)}>
+        <p className="k-pop-terms">It ends now and keeps the work so far. The task waits for you: retry it, or change the plan.</p>
+        <PostForm action={stop.action} data-agent-stop={stop.run}>
+          <input type="hidden" name="run" value={String(stop.run)} /><input type="hidden" name="return" value="agents" />
+          <KActs><KButton type="submit" variant="danger" label={stop.label} /><KButton variant="ghost" label="Cancel" data-k-close="" /></KActs>
+        </PostForm>
+      </KOverlay>}
+    </>}
+  </>;
+}
+
+/** Where the agent stands: the slots box, the same four slots in every state. */
+function StatusBox({ detail }: { detail: BrowserAgentDetail }) {
+  const now = useNow();
+  const controls = detail.canAct && detail.controls != null ? detail.controls : null;
+  const acts = controls !== null ? <div className="k-acts" data-agent-controls={controls.send ?? "none"}><Controls controls={controls} /></div> : null;
+  if (detail.question !== null) {
+    return <KSlots wait status={<><KChip word="Question" tone="ask" /><h2>{detail.agent} asks</h2></>}
+      text={<span data-agent-question={detail.question.key}>{detail.question.text}</span>} acts={acts}
+      terms={detail.canAct ? "Answer below. It reads your reply at its next check." : "An approver answers it."} />;
+  }
+  if (detail.live) {
+    const paused = controls?.pause?.state === "paused";
+    const { word, tone } = paused ? { word: "Paused", tone: "" as const } : chipOf(detail);
+    return <KSlots status={<><KChip word={word} tone={tone} /><h2>{timeWords(detail, now)}</h2></>}
+      text={<span data-agent-line>{detail.line ?? "Working."}</span>} acts={acts}
+      terms={controls === null ? "" : <span data-agent-capability>{controls.words}</span>} />;
+  }
+  const { word, tone } = chipOf(detail);
+  return <KSlots status={<><KChip word={word} tone={tone} /><h2>{timeWords(detail, now)}</h2></>}
+    text={<span data-agent-line>{detail.line ?? detail.diff ?? "It has finished."}</span>}
+    acts={<KLinkButton href={detail.open?.href ?? detail.taskHref} label={detail.open ? `Open ${detail.open.label.toLowerCase()}` : "Open task"} />}
+    terms={detail.diff ?? ""} />;
+}
+
+/** Whether the composer box shows for this agent (so a refusal is said under it, not twice). */
+const composes = (detail: BrowserAgentDetail): boolean => detail.canAct
+  && (detail.question !== null || (detail.steer !== null && !(detail.live && detail.controls != null && detail.controls.send === null)));
+
+/** The one composer: Reply while the agent asks, otherwise a note that steers it. Neither asks for a password. */
 function Composer({ detail }: { detail: BrowserAgentDetail }) {
   const question = detail.question;
+  const form = useRef<HTMLFormElement>(null);
   // A steering note's draft survives a refused send (live-conversation.md §6): kept for this run in this tab with its
   // own key, so a double submit files it once. Only that draft's own successful send clears it; editing after a send
   // makes it a new draft with a new key.
@@ -164,71 +465,54 @@ function Composer({ detail }: { detail: BrowserAgentDetail }) {
     saveDraft(detail.runId, next);
     return next;
   });
-  if (!detail.canAct) return null;
-  // A running attempt that takes no notes: Controls above says why, and nothing here pretends otherwise.
+  if (!detail.canAct) {
+    if (!detail.live) return null;
+    return <section className="k-sec agents-steer" aria-label="Send a note"><h3>Send a note</h3>
+      <KNote>Your sign-in can watch this agent. Sending it a note takes an approver; ask an operator to change your role in Settings → People and sign-in.</KNote></section>;
+  }
+  // A running attempt that takes no notes: the box above says why, and nothing here pretends otherwise.
   if (question === null && detail.live && detail.controls != null && detail.controls.send === null) return null;
   // The attempt ended with a note still unsent: it is shown, and can go to the task's next attempt instead.
   if (question === null && detail.steer === null) {
     if (text.trim() === "") return null;
     const discard = () => { saveDraft(detail.runId, { ...freshDraft(), text: "" }); setDraft(freshDraft()); };
     // Kept until the page comes back saying this very draft was sent (loadDraft): a refusal loses nothing.
-    return <PostForm action={`${detail.taskHref}/steer`} data-agent-unsent
-      className="flex flex-col gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background phone:shrink-0 phone:px-4 phone:pb-[max(12px,var(--safe-bottom))]">
-      <p className="text-caption font-medium text-muted-foreground">Your note wasn't sent: this attempt ended first.</p>
-      <p className="rounded-md border border-border bg-muted px-3 py-2 text-body whitespace-pre-wrap break-words" data-agent-unsent-text>{text}</p>
+    return <PostForm action={`${detail.taskHref}/steer`} data-agent-unsent className="k-sec agents-steer">
+      <h3>Your note wasn't sent: this attempt ended first</h3>
+      <p className="agents-unsent" data-agent-unsent-text>{text}</p>
       <input type="hidden" name="note" value={text} /><input type="hidden" name="after" value={String(detail.runId)} /><input type="hidden" name="key" value={draft.key} />
-      <div className="flex flex-wrap gap-2">
-        <Button type="submit" className="h-11 w-auto">Send to the next attempt</Button>
-        <Button type="button" variant="ghost" className="h-11 w-auto" onClick={discard}>Discard</Button>
-      </div>
+      <KActs><KButton type="submit" variant="primary" label="Send to the next attempt" /><KButton variant="ghost" label="Discard" onClick={discard} /></KActs>
+      <KNote>The task's next attempt reads it before starting. No password needed.</KNote>
     </PostForm>;
   }
   const reply = question !== null;
   // A live agent that is not paused: the note can also stop its turn first and go at once (one request, atomic).
   const pauseAndSend = detail.controls?.pause != null && detail.controls.pause.state === null ? detail.controls.pause : null;
-  return <PostForm action={reply ? question.action : detail.steer!.action} data-agent-composer={reply ? "reply" : "steer"}
-    onSubmit={() => { if (!reply) setDraft(previous => { const sent = { ...previous, submitted: true }; saveDraft(detail.runId, sent); return sent; }); }}
-    className="flex items-end gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background desk:pb-1 phone:shrink-0 phone:px-4 phone:pb-[max(12px,var(--safe-bottom))]">
+  const words = reply ? "It reads your reply at its next check." : "Notes reach the agent; it answers in the conversation above.";
+  return <PostForm ref={form} action={reply ? question.action : detail.steer!.action} data-agent-composer={reply ? "reply" : "steer"} className="k-sec agents-steer"
+    onSubmit={event => { if (text.trim() === "") { event.preventDefault(); return; } if (!reply) setDraft(previous => { const sent = { ...previous, submitted: true }; saveDraft(detail.runId, sent); return sent; }); }}>
+    <h3>{reply ? `Reply to ${detail.agent}` : `Send a note to ${detail.agent}`}</h3>
     {reply ? <input type="hidden" name="question" value={String(question.id)} />
       : <><input type="hidden" name="return" value="agents" /><input type="hidden" name="run" value={String(detail.steer!.run)} /><input type="hidden" name="key" value={draft.key} />
         {pauseAndSend !== null && <input type="hidden" name="request" value={`steer-${draft.key}`} />}</>}
-    <label className="sr-only" htmlFor="agent-composer">{reply ? `Reply to: ${question.text}` : "A note for the agent"}</label>
-    <Textarea id="agent-composer" name={reply ? "answer" : "note"} rows={1} required maxLength={reply ? 1500 : 4000} value={text} onChange={event => { if (reply) setDraft(previous => ({ ...previous, text: event.target.value })); else setText(event.target.value); }}
-      placeholder={reply ? "Your answer" : "Tell the agent something"} className="min-h-11 min-w-0 flex-1 resize-none phone:min-h-11"
-      onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) event.currentTarget.form?.requestSubmit(); }} />
-    {!reply && pauseAndSend !== null && <Button type="submit" formAction={pauseAndSend.action} variant="outline" className="h-11 w-auto shrink-0" disabled={text.trim() === ""} data-agent-pause-send>Pause and send</Button>}
-    <Button type="submit" variant={reply ? "attention" : "default"} className="h-11 w-auto shrink-0" disabled={text.trim() === ""}>{reply ? "Reply" : "Send"}</Button>
+    <KComposer id={`agent-composer-${detail.runId}`} label={reply ? `Reply to: ${question.text}` : `Send a note to ${detail.agent}`} name={reply ? "answer" : "note"} maxLength={reply ? 1500 : 4000} rows={3}
+      value={text} onChange={value => { if (reply) setDraft(previous => ({ ...previous, text: value })); else setText(value); }}
+      placeholder={reply ? "Your answer" : "For example: keep the flag off in staging until Wednesday."}
+      sendLabel={reply ? "Reply" : "Send note"} onSend={() => form.current?.requestSubmit()} error={detail.said?.tone === "error" ? detail.said.text : null}
+      before={!reply && pauseAndSend !== null ? <KButton sm type="submit" formAction={pauseAndSend.action} label="Pause and send" disabled={text.trim() === ""} data-agent-pause-send /> : undefined}
+      note={`${words} No password needed.`} />
   </PostForm>;
 }
 
-/** The task this agent works on, as its page heads it: where it stands, and its one action — a way to the task page,
- * whose own form acts (docs/plans/one-page-task-and-agent.md). The same words on both pages. */
-function TaskHead({ task }: { task: NonNullable<BrowserAgentDetail["task"]> }) {
-  const attention = task.headline === "Needs you";
-  return <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-2 rounded-card border px-3.5 py-3", attention ? "border-warning bg-card" : "border-border bg-card")} data-agent-task={task.headline}>
-    <div className="min-w-0 flex-1 basis-56">
-      <p className="text-caption font-medium text-muted-foreground">Task · <span className={cn(attention ? "text-needs" : task.headline === "Failed" ? "text-destructive" : "text-foreground")}>{task.headline}</span></p>
-      <p className="mt-0.5 text-body break-words">{task.sentence}</p>
-    </div>
-    <Button asChild variant={attention ? "attention" : "outline"} className="h-10 shrink-0 phone:h-11 phone:w-full"><a href={task.action.href} data-agent-task-action>{task.action.label}<ArrowUpRight /></a></Button>
-  </div>;
-}
-
-/** The agent's own tabs: Activity (its conversation, with the terminal view inside it) and its changes, both kept mounted. */
+/** The agent's own tabs: its conversation (with the terminal view inside it) and its changes, both kept mounted. */
 function AgentTabs({ detail }: { detail: BrowserAgentDetail }) {
   const [tab, setTab] = useState<"conversation" | "changes">("conversation");
-  const keys = [{ key: "conversation" as const, label: "Activity" }, { key: "changes" as const, label: detail.diff === null ? "Changes" : `Changes · ${detail.diff}` }];
-  return <div className="flex min-w-0 flex-col gap-3">
-    <div role="tablist" aria-label="Agent" className="flex gap-1 border-b border-border" data-agent-tabs>
-      {keys.map(one => <button key={one.key} type="button" role="tab" id={`agent-tab-${one.key}`} aria-controls={`agent-panel-${one.key}`} aria-selected={tab === one.key} tabIndex={tab === one.key ? 0 : -1}
-        onClick={() => setTab(one.key)} data-agent-tab={one.key}
-        onKeyDown={event => { if (event.key === "ArrowRight" || event.key === "ArrowLeft") { event.preventDefault(); const next = one.key === "conversation" ? "changes" : "conversation"; setTab(next); document.getElementById(`agent-tab-${next}`)?.focus(); } }}
-        className="-mb-px inline-flex min-h-10 items-center border-b-2 border-transparent px-3 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground aria-selected:border-primary aria-selected:text-foreground phone:min-h-11">{one.label}</button>)}
-    </div>
-    <div role="tabpanel" id="agent-panel-conversation" aria-labelledby="agent-tab-conversation" hidden={tab !== "conversation"}><ConversationPane url={detail.transcript} live={detail.live} /></div>
-    {/* The panel itself carries no layout class: `hidden` must win (a display class would show it). */}
-    <div role="tabpanel" id="agent-panel-changes" aria-labelledby="agent-tab-changes" hidden={tab !== "changes"}>
-      <div className="flex flex-col gap-4">
+  return <div className="agents-tabs" data-agent-tabs>
+    <KTabs label="Agent" current={tab} onChange={key => setTab(key === "changes" ? "changes" : "conversation")}
+      items={[{ key: "conversation", label: "Conversation" }, { key: "changes", label: detail.diff === null ? "Changes" : `Changes · ${detail.diff}` }]} />
+    <div role="tabpanel" aria-label="Conversation" hidden={tab !== "conversation"}><ConversationPane url={detail.transcript} live={detail.live} agent={detail.agent} /></div>
+    <div role="tabpanel" aria-label="Changes" hidden={tab !== "changes"}>
+      <div className="agents-changes-wrap">
         <ChangesPane detail={detail} open={tab === "changes"} />
         {detail.checkout != null && detail.canAct && <CheckoutActions checkout={detail.checkout} />}
       </div>
@@ -236,139 +520,38 @@ function AgentTabs({ detail }: { detail: BrowserAgentDetail }) {
   </div>;
 }
 
-function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
-  return <section aria-labelledby="agent-title" data-agent-detail={detail.runId}
-    className="flex min-w-0 flex-col gap-4 desk:sticky desk:top-4 phone:fixed phone:inset-0 phone:z-40 phone:gap-0 phone:bg-background">
-    <header className="flex min-w-0 flex-col gap-1.5 phone:shrink-0 phone:border-b phone:border-border phone:px-2 phone:pt-[max(4px,env(safe-area-inset-top))] phone:pb-2.5">
-      <div className="flex min-w-0 items-center gap-1">
-        <Button asChild variant="ghost" size="icon" className="desk:hidden"><a href="/agents" aria-label="Back to all agents"><ArrowLeft /></a></Button>
-        <h2 id="agent-title" className="min-w-0 flex-1 truncate text-headline font-semibold tracking-[-0.01em] phone:text-title">{detail.title}</h2>
-        <Button asChild variant="ghost" size="sm" className="shrink-0"><a href={detail.open?.href ?? detail.taskHref} data-agent-open={detail.open?.label ?? "Task"}>{detail.open?.label ?? "Task"}<ArrowUpRight /></a></Button>
-      </div>
-      <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-caption text-muted-foreground phone:px-2.5">
-        <StateChip row={detail} />
-        {detail.project && <><span>{detail.project}</span><span aria-hidden="true">·</span></>}
-        <span>{detail.agent}</span><span aria-hidden="true">·</span><Elapsed row={detail} />
-        {detail.diff && <><span aria-hidden="true">·</span><span className="tabular-nums">{detail.diff}</span></>}
-      </p>
-    </header>
-    <div data-agent-scroll className="flex min-w-0 flex-col gap-4 phone:min-h-0 phone:flex-1 phone:overflow-y-auto phone:overscroll-contain phone:px-4 phone:py-3">
-      {detail.said && <Alert tone={detail.said.tone} data-agent-said>{detail.said.text}</Alert>}
-      {detail.task != null && <TaskHead task={detail.task} />}
-      {detail.question !== null ? <div className="rounded-card border border-border bg-attention-soft px-3.5 py-3" data-agent-question={detail.question.key}>
-        <p className="text-caption font-medium text-attention">The agent asks</p>
-        <p className="mt-1 text-body-reading break-words text-foreground">{detail.question.text}</p>
-      </div> : detail.line !== null && <p className={cn("text-body break-words", detail.group === "stuck" ? "text-warning" : "text-muted-foreground")} data-agent-line>{detail.line}</p>}
+function AgentPage({ detail }: { detail: BrowserAgentDetail }) {
+  // The opened agent's own room: a change reads the page again in place; while open, this person is watching it.
+  useLiveRoom(detail.room, event => { if (event === "change" || event === "reload") window.dispatchEvent(new Event(WORKSPACE_NUDGE)); });
+  const meta = [detail.project, `run ${detail.runId}`, detail.agent].filter(Boolean).join(" · ");
+  const task = detail.task ?? null;
+  return <div className="agents-agent" id="agents-view" data-agent-detail={detail.runId}>
+    <KPhoneHeader title={detail.project ?? "Agent"} back="/agents" />
+    <KDoc>
+      <KDocHeader back={["/agents", "Agents"]} title={detail.title} meta={meta}
+        right={<KLinkButton variant="ghost" sm href={detail.taskHref} label="Open task" data-agent-open="Task" />} />
+      {detail.said && detail.said.tone === "info" && <div data-agent-said><KInfoLine>{detail.said.text}</KInfoLine></div>}
+      {/* A refused send says so under the box that kept the words; anything else, here. */}
+      {detail.said && detail.said.tone === "error" && !composes(detail) && <div data-agent-said><KNotice>{detail.said.text}</KNotice></div>}
+      <div id="agents-box"><StatusBox detail={detail} /></div>
+      {task !== null && <p className="agents-task" data-agent-task={task.headline}>The task: <b>{task.headline}</b>. {task.sentence} <a className="k-link" href={task.action.href} data-agent-task-action>{task.action.label}</a></p>}
       <AgentTabs detail={detail} />
-    </div>
-    {/* One footer, pinned on a desk: what the agent takes and its controls, then the composer (never one over the other). */}
-    <div className="flex flex-col desk:sticky desk:bottom-0 desk:bg-card phone:shrink-0" data-agent-footer>
-      {detail.canAct && detail.controls != null && <SteerControls controls={detail.controls} back="agents" />}
       <Composer key={`${detail.runId}:${detail.question?.id ?? "steer"}`} detail={detail} />
-    </div>
-  </section>;
+    </KDoc>
+  </div>;
 }
 
+// ---- the Live grid -------------------------------------------------------------------------------------------------
 
-/** Each task's place on the timeline as the glyph the rest of the console wears for it. */
-const LANE_GLYPH: Record<BrowserAgentLane["group"], GlyphKind> = { "needs-you": "decide", stuck: "unblock", working: "building", planning: "building", done: "done", idle: "idle" };
-const LANE_STATE: Record<BrowserAgentLane["group"], string> = { "needs-you": "Needs you", stuck: "Stuck", working: "Working", planning: "Planning", done: "Done", idle: "Idle" };
-const ROLE_WORD: Record<BrowserLaneSegment["role"], string> = { planner: "Plan", builder: "Build", reviewer: "Review", scout: "Scout" };
-const FAILED = new Set(["failed", "refused"]);
-/** A run's look: the role sets the fill (plan quiet, build solid, review outlined), the outcome only tints a failure. */
-function segmentClass(one: BrowserLaneSegment): string {
-  if (one.outcome !== null && FAILED.has(one.outcome)) return "border-destructive/40 bg-destructive-soft text-destructive";
-  if (one.outcome === "parked") return "border-attention/50 bg-attention-soft text-attention";
-  if (one.role === "builder") return "border-foreground/25 bg-foreground/10 text-foreground";
-  if (one.role === "reviewer") return "border-dashed border-foreground/35 bg-transparent text-foreground";
-  return "border-border bg-neutral-soft text-muted-foreground";
-}
-/** "-1 h 30 min" for an axis tick. */
-function tickWords(ms: number): string {
-  // Round to a step that reads at a glance: whole hours past three hours, quarter hours past one, else minutes.
-  const raw = ms / 60_000;
-  const minutes = raw >= 180 ? Math.round(raw / 60) * 60 : raw >= 60 ? Math.round(raw / 15) * 15 : Math.round(raw);
-  return minutes < 60 ? `-${minutes} min` : `-${Math.floor(minutes / 60)} h${minutes % 60 === 0 ? "" : ` ${minutes % 60} min`}`;
-}
-
-/** The agent timeline (after the "Agent lanes" pattern): one row per task over the window, its plan, build and review
- * runs as segments from start to end, a running one reaching the now edge. Twelve rows at most, needs-you first; the
- * rest are a count. Only the now edge moves: no pulsing segments, however many run. */
-export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
-  const start = Date.parse(lanes.since), end = Date.parse(lanes.now), span = Math.max(1, end - start);
-  const at = (iso: string) => Math.min(100, Math.max(0, ((Date.parse(iso) - start) / span) * 100));
-  const { running } = lanes;
-  const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  const ticks = [0.2, 0.4, 0.6, 0.8].map(f => ({ left: f * 100, words: tickWords((1 - f) * span) }));
-  return <section aria-labelledby="agent-lanes-title" className="rounded-card border border-border bg-card px-4 pb-3 pt-3 phone:px-3" data-agent-lanes>
-    <div className="flex items-center gap-3">
-      <h2 id="agent-lanes-title" className="text-[14px] font-semibold">Timeline</h2>
-      <span className="text-[12.5px] text-muted-foreground tabular-nums">{running} running</span>
-      <nav aria-label="Timeline window" className="ml-auto flex rounded-md bg-raised p-0.5 text-[12px]">
-        {lanes.windows.map(one => <a key={one.key} href={one.href} aria-current={one.active ? "true" : undefined}
-          className={cn("inline-flex items-center rounded px-2 py-0.5 text-muted-foreground hover:text-foreground phone:min-h-11 phone:px-3", one.active && "bg-card text-foreground shadow-pill")}>{one.label}</a>)}
-      </nav>
-    </div>
-    <div className="mt-2 grid grid-cols-[minmax(0,210px)_minmax(0,1fr)] gap-x-3 phone:grid-cols-[minmax(0,110px)_minmax(0,1fr)] phone:gap-x-2">
-      <span />
-      <div className="relative h-5 text-[11px] text-muted-foreground tabular-nums" aria-hidden="true">
-        {ticks.map((tick, index) => <span key={tick.left} className={cn("absolute -translate-x-1/2", index % 2 === 0 && "phone:hidden")} style={{ left: `${tick.left}%` }}>{tick.words}</span>)}
-        <span className="absolute right-0 rounded bg-raised px-1 text-foreground">now</span>
-      </div>
-      {lanes.lanes.map(lane => <div key={lane.taskId} className="contents" data-lane={lane.taskId} data-lane-group={lane.group}>
-        <a href={lane.href} className="flex min-w-0 items-center gap-2 py-1.5 text-[13px] hover:underline hover:underline-offset-4 phone:min-h-11">
-          <StatusGlyph kind={LANE_GLYPH[lane.group]} /><span className="sr-only">{LANE_STATE[lane.group]}: </span>
-          <span className="truncate font-medium" title={lane.project ? `${lane.title} · ${lane.project}` : lane.title}>{lane.title}</span>
-        </a>
-        <div className="relative my-1 h-6 self-center border-b border-border/60">
-          {lane.segments.map((one, index) => {
-            // At least a sliver wide, and never past the now edge: a just-started run sits against it.
-            const width = Math.max(0.8, at(one.endedAt ?? lanes.now) - at(one.startedAt));
-            const left = Math.min(at(one.startedAt), 100 - width), right = left + width;
-            const next = lane.segments[index + 1];
-            const gapTo = next === undefined || one.endedAt === null ? null : at(next.startedAt);
-            const words = `${ROLE_WORD[one.role]} · ${one.agent} · ${elapsedWords(one.startedAt, Date.parse(one.endedAt ?? lanes.now))} from ${clock(one.startedAt)}${one.outcome === null ? " · running" : ` · ${one.outcome}`}`;
-            return <span key={one.runId} className="contents">
-              <a href={one.href} title={words} aria-label={`${lane.title}: ${words}`} data-segment={one.role}
-                className={cn("absolute top-0.5 box-border flex h-5 min-w-0 phone:after:absolute phone:after:-inset-y-3 phone:after:-inset-x-1 phone:after:content-[''] items-center whitespace-nowrap rounded-[5px] border text-[11px] font-medium", width >= 7 ? "px-1.5" : "px-0", segmentClass(one), one.endedAt === null && "border-r-2 border-r-foreground")}
-                style={{ left: `${left}%`, width: `${width}%` }}><span className="min-w-0 overflow-hidden">{width >= 7 ? ROLE_WORD[one.role] : ""}</span></a>
-              {gapTo !== null && gapTo > right && <span aria-hidden="true" className="absolute top-1/2 border-t border-dotted border-foreground/30" style={{ left: `${right}%`, width: `${gapTo - right}%` }} />}
-            </span>;
-          })}
-        </div>
-      </div>)}
-    </div>
-    {lanes.lanes.length === 0 && <p className="py-3 text-[12.5px] text-muted-foreground">Nothing ran in the last {lanes.windows.find(one => one.active)?.label ?? "window"}.</p>}
-    {lanes.more > 0 && <p className="mt-1 text-[12.5px] text-muted-foreground">{lanes.more} more {lanes.more === 1 ? "task" : "tasks"} in this window, below the twelve most recent.</p>}
-  </section>;
-}
-
-/** List | Live: the board, or every running agent's output at once. */
-function ViewSwitch({ live }: { live: boolean }) {
-  return <nav aria-label="Agents view" className="flex w-fit rounded-md bg-raised p-0.5 text-[12.5px]">
-    {([["List", "/agents", !live], ["Live", "/agents?view=live", live]] as const).map(([words, href, on]) =>
-      <a key={words} href={href} aria-current={on ? "page" : undefined} className={cn("inline-flex items-center rounded px-3 py-1 text-muted-foreground hover:text-foreground phone:min-h-11", on && "bg-card text-foreground shadow-pill")}>{words}</a>)}
-  </nav>;
+function LivePage() {
+  return <div className="agents-page" id="agents-view" data-agents-board>
+    <KPageHeader title="Live" back="/agents" ctx="Every running agent's output, watching only" right={<KLinkButton sm variant="ghost" href="/agents" label="Back to Agents" />} />
+    <div className="agents-live"><LiveGrid /></div>
+  </div>;
 }
 
 export function AgentsView({ view }: { view: BrowserAgentsView }) {
-  if (view.live === true) return <div className="flex w-full flex-col gap-4" data-agents-board>
-    <div className="flex flex-wrap items-center gap-3"><h1 className="text-[22px] font-semibold leading-tight tracking-[-0.02em]">Agents</h1><ViewSwitch live /></div>
-    <LiveGrid />
-  </div>;
-  return <AgentsBoard view={view} />;
-}
-
-function AgentsBoard({ view }: { view: BrowserAgentsView }) {
-  const selected = view.selected;
-  // The opened agent's own room: a change reads the page again in place; while open, this person is watching it.
-  useLiveRoom(selected?.room ?? null, event => { if (event === "change" || event === "reload") window.dispatchEvent(new Event(WORKSPACE_NUDGE)); });
-  return <div className={cn("w-full", selected === null ? "max-w-[860px]" : "desk:grid desk:grid-cols-[minmax(300px,400px)_minmax(0,1fr)] desk:items-start desk:gap-6")} data-agents-board>
-    <div className={cn("flex min-w-0 flex-col gap-4", selected !== null && "phone:hidden")}>
-      <div className="flex flex-wrap items-center gap-3"><h1 className="text-[22px] font-semibold leading-tight tracking-[-0.02em]">Agents</h1>{selected === null && <ViewSwitch live={false} />}</div>
-      {selected === null && view.lanes && <AgentLanes lanes={view.lanes} />}
-      <Board view={view} selected={selected?.runId ?? null} />
-    </div>
-    {selected !== null && <AgentDetail key={selected.runId} detail={selected} />}
-  </div>;
+  if (view.live === true) return <LivePage />;
+  if (view.selected !== null) return <AgentPage key={view.selected.runId} detail={view.selected} />;
+  return <AgentsList view={view} />;
 }

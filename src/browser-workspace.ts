@@ -703,6 +703,59 @@ export type BrowserAgentsView = {
   empty: string | null;
   /** The Live grid (?view=live): every running agent's live output, watching only. */
   live?: boolean;
+  /** The Finished group's window (?window=), 24 hours unless the address says otherwise. */
+  window?: AgentLaneWindow;
+  /** The computers that build (what /fleet showed), for a person with access to the whole installation; null otherwise. */
+  computers?: BrowserComputers | null;
+  /** Which model runs each phase (what /system showed), for a person with access to the whole installation. */
+  phases?: BrowserAgentPhase[] | null;
+  /** The rest of what /system showed: workspaces, the background service, notifications and external work. */
+  system?: BrowserAgentsSystem | null;
+  /** This person may open terminals (an installation-wide operator in a browser). */
+  terminals?: boolean;
+  /** What a computer act said, in fixed words (a retired computer, by the name the store knows). */
+  computerSaid?: { tone: 'info' | 'error'; text: string } | null;
+};
+
+/** One computer that builds (a registered runner): what it is doing and what waits for it. */
+export type BrowserComputer = {
+  name: string; host: string; state: 'building' | 'idle' | 'offline'; capacity: number;
+  /** Retired, listed only while tasks are still reserved for it. */
+  retired: boolean;
+  /** Its live builds this person may see; `hidden` counts the ones in projects they can't. */
+  building: { taskId: string; title: string; href: string; project: string | null }[]; hidden: number;
+  heardAt: string; registeredAt: string;
+  /** The projects it takes work from, that this person may see. */
+  projects: string[];
+  /** The operator's note on its queue (display only). */
+  note: string | null;
+  /** Queued tasks reserved for it, that this person may see. */
+  reserved: { id: string; title: string; href: string; project: string | null; taken: boolean }[];
+};
+export type BrowserComputers = {
+  list: BrowserComputer[];
+  /** Register, retire, move reserved work and notes: an approver in a browser session. */
+  manage: boolean;
+  /** The queue's revision, for a move (POST /queue/move). */
+  queueRevision: number;
+  /** Queued tasks no computer is reserved for. */
+  shared: number;
+};
+export type BrowserAgentPhase = {
+  phase: 'plan' | 'build' | 'repair' | 'review';
+  /** The provider and model in words; null when it can't be worked out (`problem` says why). */
+  model: string | null; problem: string | null;
+  /** Where the choice comes from, in words ("Set for the whole installation by alex"). */
+  source: string;
+  /** This provider reports tokens, not dollars. */
+  noDollars: boolean;
+};
+export type BrowserAgentsSystem = {
+  workspaces: { name: string; branch: string; state: 'building' | 'free' | 'needs review' }[];
+  /** The background service's latest run on the open project: running since `at`, or ended at `at`. */
+  service: { running: boolean; at: string; built: number; broke: number } | null;
+  outbox: number;
+  external: { repo: string; state: string }[];
 };
 
 export type BrowserView = BrowserTasksView | BrowserSettingsView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView | BrowserHomeView | BrowserSearchView;
