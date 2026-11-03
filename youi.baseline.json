@@ -820,18 +820,6 @@
       ]
     },
     {
-      "rule": "youi:toolroll/rule/components.no-native-controls",
-      "file": "src/browser/views/projects-view.tsx",
-      "text": "<button>",
-      "severity": "warn",
-      "count": 3,
-      "lines": [
-        64,
-        84,
-        90
-      ]
-    },
-    {
       "rule": "youi:toolroll/rule/color.no-raw-color",
       "file": "src/browser/views/settings-view.tsx",
       "text": "#000",

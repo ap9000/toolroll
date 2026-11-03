@@ -955,8 +955,8 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     await boot({ projectRoots: [root], ghList });
     const cookie = await login();
     const page = await githubPage(cookie);
-    // The on-disk clone is offered as add + open, with its path said plainly.
-    expect(page).toContain("add + open");
+    // The on-disk clone is offered as Add and open, with its path said plainly.
+    expect(page).toContain("Add and open");
     expect(page).toContain(cloned);
     // The absent one pre-fills the EXISTING clone ceremony — preview,
     // password, and size check all still stand behind that form.
@@ -995,7 +995,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     const cookie = await login();
     const page = await githubPage(cookie);
     // Neither local directory mapped: both rows offer the clone ceremony.
-    expect(page).not.toContain("add + open");
+    expect(page).not.toContain("Add and open");
     expect((renderedHtmlOf(page).match(/Clone here/g) ?? []).length).toBe(2);
     expect((workspaceOf(page).pageHtml!.match(/Clone here/g) ?? []).length).toBe(2);
     // The hostile description reached the page dead, not live.
@@ -1027,7 +1027,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     await boot({ projectRoots: [root], ghList: async () => ({ ok: false as const, reason: "gh-auth" as const, message: "gh is not signed in — run `gh auth login --hostname github.com` where serve runs" }) });
     const cookie = await login();
     const page = await githubPage(cookie);
-    expect(page).toContain("gh is not signed in");
+    expect(page).toContain("The GitHub CLI isn’t signed in.");
   });
 
   test("preview mints a single-use record; confirm takes the password, clones, enrolls, opens; replay refuses", async () => {

@@ -336,28 +336,32 @@ export type BrowserTaskMore = { group: "work" | "share" | "danger"; label: strin
   | { kind: "goto"; tab: BrowserTaskTab; target: string });
 /** One project on the Projects page; opening it is a POST to /projects/open. */
 export type BrowserProjectRow = {
-  name: string; path: string; shortPath: string; open: boolean;
+  name: string; path: string; shortPath: string;
+  /** The project's own page (/projects/<name>). */
+  href: string;
+  /** The session's open project. */
+  open: boolean;
   /** When it was last opened here; null for a project only seen in the queue. */
   openedAt: string | null;
-  knowledgeHref: string;
-  /** Settings → Projects → Pull requests for this project, and whether they are on. */
-  pullRequests?: { href: string; on: boolean };
-  /** Settings → Projects → Checks for this project, and its level in words. */
-  checks?: { href: string; level: string };
-  /** What waits, runs, queues or finished today; null when not scanned. */
-  peek: { label: string; href: string; tone: 'attention' | 'info' | 'neutral' | 'success' }[] | null;
+  /** The row's chip: something waits on this person, or runs; null for neither. */
+  status: 'needs' | 'running' | null;
+  /** Its counts in words ("2 need you · 1 running"); null when not scanned. */
+  summary: string | null;
 };
 export type BrowserProjectsView = {
   kind: 'projects';
-  activity?: { project: string; report: import('./project-outcomes.js').ProjectOutcomes | null };
   /** Arrived from New task: choosing where the task belongs. */
   choosing: boolean;
+  /** A refusal that belongs to the page, not to one form (already says what didn't change). */
   problem: string | null;
+  /** A neutral line (a finished clone). */
+  said: string | null;
   returnTo: string;
   recent: BrowserProjectRow[];
   available: BrowserProjectRow[];
-  /** The add roads; `html` carries the server's GitHub-link and exact-path forms. */
-  add: { browse: string | null; github: string | null; html: string };
+  /** The add ways (the server's forms), the clone review a preview minted, and whether the drawer opens at once
+   * (a refused GitHub link, shown next to its field). */
+  add: { html: string; review: string | null; openOnLoad: boolean };
 };
 export type BrowserResultTab = 'summary' | 'changes' | 'checks';
 /** The shared result panel in parts. Each tab's content, the feedback

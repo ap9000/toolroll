@@ -1359,6 +1359,13 @@ describe("console v2: projects, the ceiling, and the workspace", () => {
 
     const denied = await post("/projects/open", cookie, { csrf, path: repoB });
     expect(denied.status).toBe(403);
+    // A project's page reads only: outside the ceiling it doesn't exist; inside, reading it switches nothing.
+    const nameA = encodeURIComponent(repoA.split("/").pop()!);
+    expect((await fetch(url(`/projects/${encodeURIComponent(repoB.split("/").pop()!)}`), { headers: { cookie } })).status).toBe(404);
+    const before = await fetch(url(`/projects/${nameA}`), { headers: { cookie } });
+    expect(before.status).toBe(200);
+    expect(await before.text()).toContain('action="/projects/select"');
+    expect(store.listProjects()).toHaveLength(0);
 
     const ghost = await post("/projects/open", cookie, { csrf, path: "/no/such/place" });
     expect(ghost.status).toBe(400);
@@ -1396,6 +1403,7 @@ describe("console v2: projects, the ceiling, and the workspace", () => {
     const robinCookie = (robinIn.headers.get("set-cookie") ?? "").split(";")[0] as string;
     expect((await post("/projects/open", robinCookie, { csrf: await csrfFrom(robinCookie), path: repoA })).status).toBe(403);
     expect(store.listProjects()).toHaveLength(0);
+    expect((await fetch(url(`/projects/${encodeURIComponent(repoA.split("/").pop()!)}`), { headers: { cookie: robinCookie } })).status).toBe(404);
 
     expect((await post("/projects/open", cookie, { csrf, path: repoA })).status).toBe(303);
     expect((await post("/projects/open", cookie, { csrf, path: repoA })).status).toBe(303);
