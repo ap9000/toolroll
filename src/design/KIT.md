@@ -126,6 +126,7 @@ Server builders are in `src/server/kit.ts`; React components in `src/browser/kit
 | Not found | `notFound(path)` | `KNotFound` | inside the shell |
 | Settings frame | `settingsShell` | `KSettingsShell` | Overview + the eight groups (`SETTINGS_GROUPS`) |
 | Phone dock | `dock(primary)` | `KDock` | the screen's one primary on a phone |
+| Dock's Needs-you button | — (the app shell draws it) | `KDockNeeds` | the one Needs-you count beside the primary; opens the Needs-you list |
 | Composer | `composer`, `sendButton` | `KComposer` | see [Composer](#composer) |
 
 **Row anatomy** (`k-row`, 48px min, hairline below): chip column (96px) · title (500; 600 when it waits on you;
