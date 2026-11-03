@@ -67,9 +67,7 @@ import { dataExportHtml } from "../export-ui.js";
 import { buildExport,exportZip } from "../export.js";
 import { firstResultWords } from "../first-run.js";
 import { readEmailSettings,saveEmailSettings,sendingAccount,sendThroughServer } from "../flow-actions.js";
-import { galleryHtml } from "../flow-gallery-ui.js";
-import { startersHtml } from "../flow-starters-ui.js";
-import { starterOf,startersFor,switchOnStarter } from "../flow-starters.js";
+import { starterOf,switchOnStarter } from "../flow-starters.js";
 import { disconnectGoogle,googleConnected,googleConsent,readGoogleMail,saveGoogleClient } from "../google-mail.js";
 import { integrationsHtml } from "../integrations-ui.js";
 import { setYouiyouxIntake } from "../youiyoux-intake.js";
@@ -416,20 +414,17 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     return sendScreen(response, 200, screen("Policy", html`<p><a href="/settings">Settings</a></p><h1>Policy</h1>${(policyHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
       { chrome: chromeFor(project, "settings") }));
   }
-  // Settings → Flows: the starter flows, each switched on with one yes. ?starter= marks the one a task's
-  // "Do this every time…" asked about.
+  // Settings → Flows: the starter flows live under New flow → Starter flows now. This address (and a task's "Do this
+  // every time…", ?starter=) lands there with the project, the starter asked about and how a switch went.
   async function flowsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
     const projects = consoleProjects();
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings");
-    // Every template, beside the starters: Use this opens its page for this project.
-    const content = chosen === "" ? html`<p>Add a project to switch on starter flows.</p>` : html`${(startersHtml({
-      repo: chosen, projects: projects.map(path => ({ path, name: projectName(path) })), starters: startersFor(store, chosen), csrf: who.via === "cookie" ? who.session.csrf : "",
-      canSwitch: who.via === "cookie" && who.role === "approver" && !store.isDemo(), suggested: starterOf(url.searchParams.get("starter") ?? "")?.id ?? null,
-      said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}\
-<h2 class="gallery-heading">Templates</h2>${(galleryHtml({ repo: chosen, canUse: who.via === "cookie" && who.role === "approver" && !store.isDemo(), connections: connectionsOf(store, chosen) }))}`;
-    return sendScreen(response, 200, screen("Flows", html`<p><a href="/settings">Settings</a></p><h1>Flows</h1>${content}`, { chrome: chromeFor(chosen || project, "settings") }));
+    const query = new URLSearchParams({ group: "starters" });
+    if (chosen) query.set("repo", chosen);
+    for (const key of ["starter", "said", "problem"]) { const value = url.searchParams.get(key); if (value !== null) query.set(key, value.slice(0, 400)); }
+    return redirect(response, `/flows/new?${query.toString()}`);
   }
   // Settings → Integrations: which integrations work. The list is the last checks; a render never waits on one.
   async function integrationsPage(ctx: HandlerContext): Promise<void> {

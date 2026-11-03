@@ -307,7 +307,7 @@ describe("the console", () => {
       expect(document).not.toContain("priya");
 
       const list = await (await fetch(`${base}/flows`, { headers: { cookie } })).text();
-      expect(list).toContain("Or import a flow file");
+      expect(list).toContain("Import a flow file");
       const csrf = /name="csrf" value="([^"]+)"/.exec(list)![1]!;
       const bad = await post(cookie, { csrf, repo, document: "{ nope" });
       expect(bad.status).toBe(303);
@@ -332,7 +332,7 @@ describe("the console", () => {
       expect(words).toContain("It can&#39;t run until you approve it on the Scripts panel.");
       const previewed = /name="previewed" value="([^"]+)"/.exec(words)![1]!;
       // The preview's own fields, defaults filled in, confirm what was shown (the first preview posted none of them).
-      expect(words).toContain('name="param.decider-review" value="owner"');
+      expect(words).toContain('name="param.decider-review" type="text" value="owner"');
       // Changed after the preview: shown again, not made.
       expect((await post(cookie, { csrf, repo, document, "param.email-to-ping": "ops@example.com", previewed, confirm: "yes" })).status).toBe(409);
       expect(store.listFlows([repo])).toHaveLength(1);
