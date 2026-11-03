@@ -166,7 +166,7 @@ describe("one headline on every surface", () => {
     const view = workspace.view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>;
     expect(Object.fromEntries(view.rows.map(row => [row.id, row.status.label]))).toEqual(EXPECTED);
     for (const row of view.rows) expect(row.status.tone === "problem", row.id).toBe(row.status.label === "Failed");
-    expect(view.tabs.map(tab => tab.label)).toEqual(["All", "Needs you", "Building", "Complete", "Archived"]);
+    expect(view.tabs.map(tab => tab.label)).toEqual(["All", "Needs you", "Running", "Queued", "Finished"]);
     for (const item of workspace.crew) {
       expect(HEADLINES, item.id).toContain(item.label);
       expect(item.label).toBe(EXPECTED[item.id]);

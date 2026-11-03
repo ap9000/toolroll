@@ -1029,6 +1029,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
       project = wanted;
     }
+    // All projects, asked for by name on Tasks (its project filter): the rolled-up list, admission-bound as ever.
+    if (route.id === 'work' && url.searchParams.get('all') === '1' && !url.searchParams.has('project') && url.searchParams.getAll('all').length === 1) project = null;
     // Every page's Tasks count covers this one project view, whatever project the page itself shows.
     const facts = requestContext.getStore();
     if (facts !== undefined) facts.lens = project;

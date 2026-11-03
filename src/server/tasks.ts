@@ -266,7 +266,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // the database alone: a row reads no check log. A live build's row says which step it is on, or the step it is
     // stuck on, from that live attempt's own progress only, never a stopped attempt's; the step's words come from its
     // current plan (one saved file, for live rows only), and without it the row names the step by number.
-    work = { ...work, items: work.items.map((item): WorkIndexItem & { progress?: string } => {
+    const enrich = (page: WorkIndexPage): WorkIndexPage => ({ ...page, items: page.items.map((item): WorkIndexItem & { progress?: string } => {
       if (item.liveRunId !== null) {
         const ref = store.lookupRef(item.activeTaskId);
         const recorded = ref === null ? null : store.latestCheckpointForRun(item.liveRunId);
@@ -282,9 +282,19 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       if (family === null || family.problem !== null) return item;
       const failure = failureOf(family.versions.flatMap(version => store.runsFor(version.refId)), null, false);
       return failure.kind === "reason" ? item : { ...item, status: { ...item.status, detail: failure.line } };
-    }) };
+    }) });
+    work = enrich(work);
+    // The Board view: the same index as four columns (needs you, queued, running, finished), never a second classifier.
+    const board = url.searchParams.get("layout") !== "board" ? null : (() => {
+      const column = (view: "needs-you" | "queued" | "running" | "completed"): WorkIndexPage =>
+        enrich(workIndexPage(store, now, workAccess(), { view, limit: 40, project, root: evidenceRoot }));
+      return { needs: column("needs-you"), queued: column("queued"), running: column("running"), finished: column("completed") };
+    })();
     const page = workPage(chromeFor(project, "work", undefined, rollup ? "all" : undefined), {
       view,
+      lens: project,
+      all: url.searchParams.get("all") === "1",
+      board,
       ...(url.searchParams.has('project') && project !== null ? { projectFilter: project } : {}),
       work,
       previous: url.searchParams.has('cursor'),
@@ -689,7 +699,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // One page per task (docs/plans/one-page-task-and-agent.md): the tab named, and the Result tab's result — the shown
     // version's own, or the exact run `run=` names, which must be a result of that very version.
     const tabWord = url.searchParams.get("tab");
-    const tab = tabWord === "result" || tabWord === "plan" ? tabWord : "activity";
+    // The first tab (Plan, or Result once there is one) unless the address names Activity or Attempts.
+    const tab = tabWord === "result" || tabWord === "activity" || tabWord === "attempts" ? tabWord : "plan";
     const runWord = url.searchParams.get("run");
     const named = runWord === null ? null : /^[1-9][0-9]{0,14}$/.test(runWord) ? Number(runWord) : -1;
     if (named === -1) return refuse(response, who, 404, "No such result for this task.", taskHref(family.root.id));

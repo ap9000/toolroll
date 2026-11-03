@@ -1,62 +1,21 @@
-/** Tasks, rebuilt with shadcn/ui: a visible title with what needs you, link
- * tabs with counts, then one row per task. What needs a person comes first,
- * grouped by what it asks (Decide, Review, Unblock), and wears a solid ink
- * chip naming the ask; every other row keeps a quiet neutral chip. The next
- * step is one quiet button. Filtering and paging stay server-side (real
- * URLs), so Back and bookmarks work. Usage folds to one line on a desk and
- * sits below the list on a phone, so the first task is near the top. */
-import { Archive, ArchiveRestore, ArrowRight, ChevronDown, ChevronRight, Ellipsis, Inbox, LayoutGrid, Plus, Sparkles, Code2, ListOrdered, Briefcase } from "lucide-react";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import type { BrowserLimits, BrowserLimitTile, BrowserTasksView } from "../../browser-workspace.js";
-import { Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, cn } from "../components/ui/index.js";
-import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
+/** Tasks (src/design/KIT.md): one list with filters and two views. The top bar holds the title, the project and
+ * status filters with their counts, the text filter, the List / Board switch and New task; on a phone they become one
+ * row of selects under the header. Rows are quiet one-liners between hairlines: what needs you first, grouped by what
+ * it asks (Decide, Review, Unblock), each with its one action; then Running, Queued and Finished. The Board view is
+ * the same index as columns. Filters and paging stay server-side (real addresses), so Back and bookmarks work; the
+ * text filter narrows the rows already on the page. */
+import { useMemo, useState, type ReactNode } from "react";
+import type { BrowserLimits, BrowserTaskRow, BrowserTasksView } from "../../browser-workspace.js";
+import {
+  KBoard, KBoardCol, KButton, KCard, KChip, KCount, KEmpty, KFilter, KGroup, KIcon, KLinkButton, KLinkSeg, KPageHeader, KRow, KSeg, KSelect, useKMenu,
+} from "../kit/index.js";
 import { PostForm } from "../ui/post-form.js";
 
-const TOOL_ICONS: Record<string, ReactNode> = {
-  "/inbox": <Inbox />, "/code": <Code2 />, "/board": <LayoutGrid />, "/board?view=order": <ListOrdered />,
-  "/recipes": <Sparkles />, "/workbench": <Briefcase />,
-};
-
-const LIMIT_FILL: Record<BrowserLimitTile["tone"], string> = { neutral: "bg-foreground", warning: "bg-warning", danger: "bg-destructive" };
-const LIMIT_TEXT: Record<BrowserLimitTile["tone"], string> = { neutral: "", warning: "text-warning", danger: "text-destructive" };
-
-/** One limit: whose and which window, the figure, a bar (with the 50/80 % alert marks on a budget), and when it resets. */
-function LimitTile({ tile }: { tile: BrowserLimitTile }) {
-  const body = <>
-    <p className="flex min-w-0 items-baseline gap-1.5 text-caption leading-4 font-normal">
-      <span className="truncate font-medium text-foreground">{tile.name}</span>
-      <span className="shrink-0 text-muted-foreground">{tile.window}</span>
-    </p>
-    <p className={cn("mt-2.5 flex items-baseline tabular-nums phone:mt-1.5", tile.unit === "%" ? "gap-px" : "gap-1")}>
-      <span className={cn("text-[22px] font-semibold leading-none tracking-[-0.02em]", tile.tone === "danger" && "text-destructive")}>{tile.value}</span>
-      <span className="text-caption text-muted-foreground font-normal">{tile.unit}</span>
-    </p>
-    <div className="relative mt-3 h-1.5 phone:mt-2 overflow-hidden rounded-full bg-muted" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(100, tile.percent))}
-      aria-label={`${tile.name} ${tile.window}`}>
-      <div className={cn("h-full rounded-full motion-safe:transition-[width] motion-safe:duration-500 motion-safe:ease-out", LIMIT_FILL[tile.tone])} style={{ width: `${Math.min(100, Math.max(0, tile.percent))}%` }} />
-      {tile.marks.map(mark => <span key={mark} aria-hidden="true" className="absolute inset-y-0 w-0.5 bg-card" style={{ left: `calc(${mark}% - 1px)` }} />)}
-    </div>
-    <p className={cn("mt-2 truncate text-caption leading-4 phone:mt-1.5 font-normal", tile.tone === "neutral" ? "text-muted-foreground" : LIMIT_TEXT[tile.tone])}>{tile.detail}</p>
-  </>;
-  const frame = "block min-w-0 rounded-card border border-border bg-card px-3.5 py-3 phone:w-[152px] phone:px-3 phone:py-2.5 phone:shrink-0 phone:snap-start";
-  return <li data-limit={tile.key} title={tile.title ?? undefined} className="min-w-0 phone:shrink-0">
-    {tile.href === null ? <div className={frame}>{body}</div>
-      : <a href={tile.href} className={cn(frame, "transition-colors hover:border-input hover:bg-raised")}>{body}</a>}
-  </li>;
-}
-
-/** Plans' usage windows and monthly budgets: one row of tiles, scrolling sideways on a phone. */
-function LimitTiles({ limits, id, className }: { limits: BrowserLimits; id?: string; className?: string }) {
-  return <section aria-label="Usage" id={id} className={className}>
-    <ul className="grid grid-cols-[repeat(auto-fill,minmax(176px,1fr))] gap-2 phone:-mx-4 phone:flex phone:snap-x phone:snap-mandatory phone:scroll-px-4 phone:overflow-x-auto phone:px-4 phone:pb-1 phone:[scrollbar-width:none]">
-      {limits.tiles.map(tile => <LimitTile key={tile.key} tile={tile} />)}
-    </ul>
-  </section>;
-}
+const go = (href: string): void => { window.location.assign(href); };
 
 /** Each limit as a word and a percentage: the plan's name for its first window, the window's name after it
  * ("Claude 48% · Weekly 83% · Codex 12%"). */
-export function usageSummary(limits: BrowserLimits): { key: string; text: string; tone: BrowserLimitTile["tone"]; percent: number }[] {
+export function usageSummary(limits: BrowserLimits): { key: string; text: string; tone: BrowserLimits["tiles"][number]["tone"]; percent: number }[] {
   const named = new Set<string>();
   return limits.tiles.map(tile => {
     const word = named.has(tile.name) ? tile.window : tile.name;
@@ -66,201 +25,104 @@ export function usageSummary(limits: BrowserLimits): { key: string; text: string
   });
 }
 
-/** A hairline meter (the same fill as the limit tiles' bars, at 4px), so the windows compare at a glance. */
-function Meter({ percent, tone }: { percent: number; tone: BrowserLimitTile["tone"] }) {
-  return <span aria-hidden="true" className="relative inline-block h-1 w-7 shrink-0 overflow-hidden rounded-full bg-neutral-soft">
-    <span className={cn("absolute inset-y-0 left-0 rounded-full", LIMIT_FILL[tone])} style={{ width: `${Math.min(100, percent)}%` }} />
-  </span>;
+/** A row's meta: the project (when the list spans several) and its age. */
+function Meta({ row }: { row: BrowserTaskRow }) {
+  return <>{row.project !== null && <span>{row.project}</span>}<span className="k-num">{row.age}</span></>;
 }
 
-/** A row's chip. A waiting row sits under its group heading (Decide, Review, Unblock), so its chip names the
- * specific ask in ink (Plan, Result, Mismatch, Failed, Builder offline), never the heading again; with no
- * specific ask it wears none, and its state stays one tap away in the row's own words. Outside a group (an
- * ungrouped list, or a row no heading covers) such a row wears its headline in the same ink chip, so every row
- * shows a state word and every waiting row reads alike.
- * Every other row wears its headline, the same words as the task page, the result and Crew. */
-function glyphOf(row: BrowserTasksView["rows"][number]): GlyphKind {
-  if (row.ask === "decide") return "decide";
-  if (row.ask === "review") return "review";
-  if (row.ask === "unblock") return row.chip === "Failed" ? "failed" : "unblock";
-  const tone = row.status.tone;
-  return tone === "live" ? "building" : tone === "done" || tone === "ready" ? "done" : tone === "problem" ? "failed" : "idle";
-}
-
-function TaskChip({ row, grouped }: { row: BrowserTasksView["rows"][number]; grouped: boolean }) {
-  const place = "inline-flex w-fit shrink-0 items-center gap-1.5 whitespace-nowrap text-[12px] leading-[18px] desk:col-start-1 desk:row-start-1 desk:justify-self-start phone:col-start-1 phone:row-start-2 phone:self-center";
-  const glyph = <StatusGlyph kind={glyphOf(row)} />;
-  if (row.ask === null) return <span data-headline={row.status.label} className={cn(place, "text-muted-foreground")}>{glyph}{row.status.label}</span>;
-  if (row.chip === null && grouped) return <span className={place}>{glyph}<span className="sr-only" data-headline={row.status.label}>{row.status.label}</span></span>;
-  // Outside a group, a chip-less waiting row shows its headline as the word.
-  return <span data-ask={row.ask} {...(row.chip === null ? {} : { "data-chip": row.chip })} data-headline={row.status.label} title={row.status.label}
-    className={cn(place, "font-medium text-foreground")}>
-    {glyph}{row.chip === null ? row.status.label : <><span className="sr-only">{row.status.label}: </span>{row.chip}</>}
-  </span>;
-}
-
-function TaskRow({ row, grouped = false }: { row: BrowserTasksView["rows"][number]; grouped?: boolean }) {
-  // On a phone the row is a small grid: the title with its action on the right, then the chip beside the
-  // project and age, then any detail. The title block and the chip cluster dissolve into it (contents).
-  const waiting = row.ask !== null;
-  return <li data-task={row.id} data-work-status={row.status.token} data-group={row.group}
-    className="grid grid-cols-1 gap-y-2 border-b border-border px-2 py-3 transition-colors hover:bg-raised desk:col-span-3 desk:grid-cols-subgrid desk:items-center desk:gap-x-4 phone:grid-cols-[auto_minmax(0,1fr)_auto] phone:gap-x-2 phone:gap-y-0.5 phone:py-1.5">
-    <div className="min-w-0 desk:col-start-2 desk:row-start-1 phone:contents">
-      <a href={row.href} className={cn("block text-[13.5px] leading-snug hover:underline hover:underline-offset-4 phone:col-[1/3] phone:row-start-1 phone:flex phone:min-h-11 phone:items-center",
-        waiting ? "font-semibold" : "font-medium")}>{row.title}</a>
-      <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12.5px] text-muted-foreground phone:col-[2/4] phone:row-start-2 phone:mt-0 phone:min-w-0 phone:leading-[1.35]">
-        {row.project && <span className="text-foreground/80">{row.project}</span>}
-        {row.project && <span aria-hidden="true">·</span>}
-        <span className="tabular-nums">{row.age}</span>
-        <span aria-hidden="true">·</span>
-        <span className="min-w-0 font-mono text-mono [overflow-wrap:anywhere]" data-task-id>{row.id}</span>
-      </p>
-      {/* A failed row's problem line is vermilion; every other detail stays muted. */}
-      {row.detail && <p className={cn("mt-1 text-[12.5px] phone:col-span-full phone:leading-[1.35]", row.status.label === "Failed" ? "text-destructive" : "text-muted-foreground")}
-        {...(row.status.label === "Failed" ? { "data-problem-line": "" } : {})}>{row.detail}</p>}
-      {row.problem && <p className="mt-1 text-[12.5px] text-muted-foreground phone:col-span-full phone:leading-[1.35]">{row.problem}</p>}
-      {row.notes.map(note => <p key={note} className="mt-1 text-[12.5px] text-muted-foreground phone:col-span-full phone:leading-[1.35]">{note}</p>)}
-    </div>
-    <div className="flex items-center gap-3 phone:contents desk:contents">
-      <TaskChip row={row} grouped={grouped} />
-      {(row.action || row.tidy) && <div className="flex items-center gap-1 desk:col-start-3 desk:row-start-1 desk:justify-self-end phone:col-start-3 phone:row-start-1 phone:self-start">
-        {row.action && <Button asChild variant="outline" size="sm"><a href={row.action.href} data-primary-action>{row.action.label}<ArrowRight /></a></Button>}
-        {row.tidy && <TidyAct tidy={row.tidy} />}
-      </div>}
-    </div>
-  </li>;
-}
-
-/** Put away (or Restore): one quiet button posting to the task's own route. On a phone beside another action it is
- * its icon alone, named for screen readers. */
-function TidyAct({ tidy }: { tidy: NonNullable<BrowserTasksView["rows"][number]["tidy"]> }) {
-  const restore = tidy.label === "Restore";
-  return <PostForm action={tidy.action} className="contents" data-tidy-act={restore ? "restore" : "put-away"}>
+/** Restore, on an archived row: a POST to the task's own route, back to this list. */
+function RestoreAct({ tidy }: { tidy: NonNullable<BrowserTaskRow["tidy"]> }) {
+  return <PostForm action={tidy.action} data-tidy-act="restore">
     <input type="hidden" name="return" value={tidy.returnTo} />
-    {/* A form's lone submit is full width on a phone (console.css); this one keeps its own width beside the row's action. */}
-    <Button type="submit" variant={restore ? "outline" : "ghost"} size="sm" aria-label={tidy.label} className={cn("w-auto!", !restore && "text-muted-foreground")}>
-      {restore ? <ArchiveRestore aria-hidden="true" /> : <Archive aria-hidden="true" />}
-      <span className={restore ? undefined : "phone:sr-only"}>{tidy.label}</span>
-    </Button>
+    <KButton type="submit" sm label="Restore" />
   </PostForm>;
 }
 
-/** The rows in the view's groups, in order, each under a small heading with its count; a plain list otherwise.
- * On a desk every group shares one grid (chip, title, action), so chips and actions line up down the page. */
-const GROUP_GLYPH: Record<BrowserTasksView["rows"][number]["group"], GlyphKind> = { decide: "decide", review: "review", unblock: "unblock", building: "building", rest: "idle" };
+function TaskRow({ row }: { row: BrowserTaskRow }) {
+  const restore = row.tidy?.label === "Restore" ? row.tidy : null;
+  const action = row.action !== null ? <KLinkButton sm label={row.action.label} href={row.action.href} data-primary-action="" />
+    : restore !== null ? <RestoreAct tidy={restore} /> : undefined;
+  return <KRow href={row.href} chip={<KChip word={row.word.word} tone={row.word.tone} />} title={row.title}
+    desc={row.detail ?? row.problem ?? ""} meta={<Meta row={row} />} wait={row.ask !== null} {...(action === undefined ? {} : { action })} />;
+}
 
-function TaskList({ view }: { view: BrowserTasksView }) {
-  const grid = "desk:grid desk:grid-cols-[auto_minmax(0,1fr)_auto]";
-  if (view.groups === null) return <ul className={cn(grid, "border-t border-border")}>{view.rows.map(row => <TaskRow key={row.id} row={row} />)}</ul>;
-  const sections = view.groups.map(group => ({ ...group, rows: view.rows.filter(row => row.group === group.key) })).filter(one => one.rows.length > 0);
-  const placed = new Set(sections.map(one => one.key));
-  const loose = view.rows.filter(row => !placed.has(row.group));
-  return <div className={cn(grid, "flex flex-col gap-5 phone:gap-3.5 desk:gap-0")}>
-    {sections.map((section, index) => <section key={section.key} data-task-group={section.key} aria-labelledby={`task-group-${section.key}`} className="desk:contents">
-      <h2 id={`task-group-${section.key}`} className={cn("flex items-center gap-2 rounded-md bg-raised px-2.5 py-2 text-body leading-5 desk:col-span-3 font-semibold", index > 0 && "desk:mt-5")}>
-        <StatusGlyph kind={GROUP_GLYPH[section.key]} />{section.label}<span className="font-mono text-mono tabular-nums text-muted-foreground font-medium">{section.count}</span>
-      </h2>
-      <ul className="desk:contents">{section.rows.map(row => <TaskRow key={row.id} row={row} grouped />)}</ul>
+/** Where a row sits below the Needs-you groups: running, queued, finished or stopped (by its status rank). */
+const REST: readonly { key: string; label: string; ranks: readonly number[] }[] = [
+  { key: "running", label: "Running", ranks: [0, 1] }, { key: "queued", label: "Queued", ranks: [2] },
+  { key: "finished", label: "Finished", ranks: [3] }, { key: "stopped", label: "Stopped", ranks: [4] },
+];
+
+/** The rows in their groups: Needs you by its ask, then Running, Queued, Finished; one plain list in a narrower filter. */
+function TaskList({ view, rows }: { view: BrowserTasksView; rows: BrowserTaskRow[] }) {
+  if (view.groups === null) return <div data-task-list>{rows.map(row => <TaskRow key={row.id} row={row} />)}</div>;
+  const asks = view.groups.filter(group => group.key === "decide" || group.key === "review" || group.key === "unblock")
+    .map(group => ({ key: group.key as string, label: group.label, rows: rows.filter(row => row.ask !== null && row.group === group.key) }));
+  const rest = REST.map(one => ({ key: one.key, label: one.label, rows: rows.filter(row => row.ask === null && one.ranks.includes(row.rank)) }));
+  return <div data-task-list>
+    {[...asks, ...rest].filter(section => section.rows.length > 0).map(section => <section key={section.key} data-task-group={section.key} aria-label={section.label}>
+      <KGroup label={section.label} count={<KCount n={section.rows.length} />} />
+      {section.rows.map(row => <TaskRow key={row.id} row={row} />)}
     </section>)}
-    {loose.length > 0 && <ul className="desk:contents">{loose.map(row => <TaskRow key={row.id} row={row} />)}</ul>}
   </div>;
 }
 
-/** On a desk the usage tiles fold to one line beside the title; a click shows them. */
-function UsageToggle({ limits, open, onToggle, controls }: { limits: BrowserLimits; open: boolean; onToggle: () => void; controls: string }) {
-  const parts = usageSummary(limits);
-  return <button type="button" aria-expanded={open} aria-controls={controls} onClick={onToggle} data-usage-summary
-    className="ml-auto inline-flex min-h-8 min-w-0 items-center gap-1.5 rounded-md px-2 text-[12.5px] text-muted-foreground transition-colors hover:bg-raised hover:text-foreground phone:hidden">
-    <span className="sr-only">Usage: </span>
-    <span className="flex min-w-0 items-center gap-3 truncate tabular-nums">{parts.map(part => <span key={part.key} className="inline-flex items-center gap-1.5"><span className={LIMIT_TEXT[part.tone]}>{part.text}</span><Meter percent={part.percent} tone={part.tone} /></span>)}</span>
-    <ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0 motion-safe:transition-transform", open && "rotate-90")} />
-  </button>;
+/** The Board view: the same index as columns; one column at a time on a phone, chosen above it. */
+function TaskBoard({ view, match }: { view: BrowserTasksView; match: (row: BrowserTaskRow) => boolean }) {
+  const columns = view.board ?? [];
+  const [column, setColumn] = useState<string>(() => columns.find(one => one.rows.length > 0)?.key ?? "needs");
+  return <>
+    <div className="k-colpager"><KSeg label="Column" current={column} onChange={setColumn}
+      items={columns.map(one => ({ key: one.key, label: one.label, count: <KCount n={one.count} ink={one.key === "needs"} /> }))} /></div>
+    <KBoard label="Tasks by status">{columns.map(one => <KBoardCol key={one.key} label={one.label} count={<KCount n={one.count} ink={one.key === "needs"} />}
+      needs={one.key === "needs"} on={column === one.key} empty={one.empty}>
+      {one.rows.filter(match).map(row => <KCard key={row.id} href={row.href} title={row.title} meta={<><KChip word={row.word.word} tone={row.word.tone} /><Meta row={row} /></>} />)}
+    </KBoardCol>)}</KBoard>
+  </>;
 }
 
-/** A strip that scrolls sideways (the view tabs on a phone): the edge that has more fades out,
- * so a cut-off tab reads as "scroll for more" rather than clipped. */
-function ScrollStrip({ label, className, children }: { label: string; className: string; children: ReactNode }) {
-  const ref = useRef<HTMLElement>(null);
-  const [more, setMore] = useState({ before: false, after: false });
-  useEffect(() => {
-    const strip = ref.current;
-    if (strip === null) return;
-    const measure = () => setMore(was => {
-      const now = { before: strip.scrollLeft > 1, after: strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1 };
-      return now.before === was.before && now.after === was.after ? was : now;
-    });
-    measure();
-    strip.addEventListener("scroll", measure, { passive: true });
-    const resized = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
-    resized?.observe(strip);
-    return () => { strip.removeEventListener("scroll", measure); resized?.disconnect(); };
-  }, []);
-  const fade = more.before || more.after
-    ? `linear-gradient(to right, ${more.before ? "transparent, #000 28px" : "#000"}, ${more.after ? "#000 calc(100% - 40px), transparent" : "#000"})` : undefined;
-  return <nav ref={ref} aria-label={label} className={cn("[scrollbar-width:none] [&::-webkit-scrollbar]:hidden", className)}
-    data-scrolls={more.before || more.after ? (more.after ? "more" : "end") : undefined}
-    style={fade === undefined ? undefined : { maskImage: fade, WebkitMaskImage: fade }}>{children}</nav>;
-}
-
-/** The stored-state filter (the old task list's): a menu of real links, so Back and bookmarks keep it. */
-function StateFilter({ states }: { states: NonNullable<BrowserTasksView["states"]> }) {
-  const current = states.find(one => one.active) ?? states[0];
-  return <DropdownMenu>
-    <DropdownMenuTrigger asChild><Button variant="ghost" size="sm" className="ml-2 shrink-0" aria-label={`State: ${current?.label ?? "Any state"}`} data-state-filter>
-      {current?.label ?? "Any state"}<ChevronDown /></Button></DropdownMenuTrigger>
-    <DropdownMenuContent align="start">
-      {states.map(one => <DropdownMenuItem key={one.href} asChild><a href={one.href} aria-current={one.active ? "page" : undefined}>{one.label}</a></DropdownMenuItem>)}
-    </DropdownMenuContent>
-  </DropdownMenu>;
+/** The list's other places (Order the queue, Recipes, the action ledger, Put away old tasks), in one menu. */
+function ToolsMenu({ view }: { view: BrowserTasksView }) {
+  const menu = useKMenu();
+  const items = [...view.tools, ...(view.putAway ? [view.putAway] : [])];
+  if (items.length === 0) return null;
+  return <KButton variant="ghost" sm iconOnly="more" label="More task tools" aria-haspopup="dialog"
+    onClick={event => menu(event.currentTarget, "Task tools", items.map(item => ({ label: item.label, act: () => go(item.href) })))} />;
 }
 
 export function TasksView({ view }: { view: BrowserTasksView }) {
-  const [usageOpen, setUsageOpen] = useState(false);
-  const usageId = useId();
-  const limits = view.limits !== null && view.limits.tiles.length > 0 ? view.limits : null;
-  return <div className="flex w-full max-w-[960px] flex-col gap-5 phone:gap-3 phone:px-0.5">
-    <div className="flex min-w-0 items-baseline gap-x-3 gap-y-1">
-      <h1 className="text-[22px] font-semibold leading-tight tracking-[-0.02em]">Tasks</h1>
-      {view.needsYou > 0 && <p className="whitespace-nowrap text-body text-muted-foreground" data-needs-you-count>
-        <span className="font-semibold tabular-nums text-foreground">{view.needsYou}</span> {view.needsYou === 1 ? "needs" : "need"} you</p>}
-      {limits && <UsageToggle limits={limits} open={usageOpen} onToggle={() => setUsageOpen(open => !open)} controls={usageId} />}
-      <div className={cn("flex shrink-0 items-center gap-2 self-center", !limits && "ml-auto", "phone:ml-auto")}>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild><Button variant="outline" size="sm" aria-label="Work tools"><span className="phone:hidden">Work tools</span><ChevronDown className="phone:hidden" /><Ellipsis className="desk:hidden" /></Button></DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {view.tools.map(tool => <DropdownMenuItem key={tool.href} asChild><a href={tool.href}>{TOOL_ICONS[tool.href]}{tool.label}</a></DropdownMenuItem>)}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {view.putAway && <Button asChild variant="outline" size="sm"><a href={view.putAway.href} data-put-away-old><Archive aria-hidden="true" /><span className="phone:hidden">{view.putAway.label}</span><span className="sr-only desk:hidden">{view.putAway.label}</span></a></Button>}
-        <Button asChild size="sm" className="desk:hidden"><a href={view.newTask.href}><Plus />{view.newTask.label}</a></Button>
-      </div>
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const match = useMemo(() => (row: BrowserTaskRow) => needle === "" || `${row.title} ${row.id}`.toLowerCase().includes(needle), [needle]);
+  const rows = view.rows.filter(match);
+  const current = view.tabs.find(tab => tab.active)?.key ?? (view.archived?.active ? "archived" : "all");
+  const project = view.projects?.find(one => one.active)?.key ?? "";
+  const statusItems = view.tabs.map(tab => ({ key: tab.key ?? tab.label, label: tab.label, href: tab.href, count: <KCount n={tab.count} ink={tab.key === "needs-you"} /> }));
+  const statusChoices = [...view.tabs.map(tab => ({ key: tab.key ?? tab.label, label: tab.label, href: tab.href, count: tab.count })),
+    ...(view.archived ? [{ key: "archived", label: view.archived.label, href: view.archived.href, count: view.archived.count }] : [])];
+  const layouts = [{ key: "list", label: "List", href: view.layouts.list, icon: <KIcon name="list" /> }, { key: "board", label: "Board", href: view.layouts.board, icon: <KIcon name="board" /> }];
+  const usage = view.limits !== null && view.limits.tiles.length > 0 ? usageSummary(view.limits).map(one => one.text).join(" · ") : null;
+  const empty: ReactNode = view.empty !== null
+    ? <KEmpty title={view.empty.text} {...(view.empty.action ? { action: <KLinkButton sm label={view.empty.action.label} href={view.empty.action.href} /> } : {})} />
+    : rows.length === 0 ? <KEmpty title="Nothing on this page matches." action={<KButton sm variant="ghost" label="Clear the filter" onClick={() => setQuery("")} />} /> : null;
+  return <div data-kit-page data-tasks-layout={view.layout}>
+    <KPageHeader title="Tasks"
+      ctx={<>{view.projects && <KLinkSeg label="Project" current={project} items={view.projects.map(one => ({ key: one.key, label: one.label, href: one.href }))} />}
+        <KLinkSeg label="Status" current={current} items={statusItems} /></>}
+      right={<><KFilter label="Filter tasks" value={query} onChange={setQuery} /><KLinkSeg icons label="View" current={view.layout} items={layouts} /><ToolsMenu view={view} />
+        <KLinkButton variant="primary" sm lead="plus" label={view.newTask.label} href={view.newTask.href} /></>} />
+    <div className="k-tbp">
+      {view.projects && <KSelect aria-label="Project" value={project} onChange={event => { const to = view.projects!.find(one => one.key === event.target.value); if (to) go(to.href); }}
+        items={view.projects.map(one => [one.key, one.key === "" ? "All projects" : one.label] as const)} />}
+      {view.layout === "list" && <KSelect aria-label="Status" value={current} onChange={event => { const to = statusChoices.find(one => one.key === event.target.value); if (to) go(to.href); }}
+        items={statusChoices.map(one => [one.key, `${one.label} (${one.count})`] as const)} />}
+      <KLinkSeg icons label="View" current={view.layout} items={layouts} />
     </div>
-    {limits && usageOpen && <LimitTiles limits={limits} id={usageId} className="phone:hidden" />}
-    <div className="flex min-w-0 items-center">
-      <ScrollStrip label="Task views" className="-mx-1 min-w-0 max-w-full overflow-x-auto px-1 phone:-mr-4 phone:max-w-none phone:pr-4">
-        <ul className="inline-flex h-8 items-center gap-0.5 rounded-lg bg-muted p-0.5 phone:h-12">
-          {view.tabs.map(tab => <li key={tab.href} className="h-full">
-            <a href={tab.href} aria-current={tab.active ? "page" : undefined}
-              className={cn("inline-flex h-full items-center gap-1.5 rounded-md px-2.5 text-label whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground",
-                tab.active && "bg-card text-foreground shadow-pill")}>
-              {tab.label}
-              <span className={cn("min-w-[18px] rounded-full px-1.5 text-center font-mono text-mono font-medium leading-[18px] tabular-nums", tab.label === "Needs you" && tab.count > 0 ? "bg-attention text-on-attention" : "text-muted-foreground")}>{tab.count}</span>
-            </a>
-          </li>)}
-        </ul>
-      </ScrollStrip>
-      {view.states !== undefined && <StateFilter states={view.states} />}
-    </div>
-
-    {view.empty !== null ? <Card className="items-start py-10">
-      <p className="text-base text-muted-foreground">{view.empty.text}</p>
-      {view.empty.action && <Button asChild variant="outline"><a href={view.empty.action.href}>{view.empty.action.label}</a></Button>}
-    </Card> : <TaskList view={view} />}
-
-    {(view.pages.first || view.pages.next) && <nav aria-label="Task pages" className="flex gap-2">
-      {view.pages.first && <Button asChild variant="outline" size="sm"><a href={view.pages.first}>First page</a></Button>}
-      {view.pages.next && <Button asChild variant="outline" size="sm"><a href={view.pages.next} rel="next">Next page</a></Button>}
-    </nav>}
-    {limits && <LimitTiles limits={limits} className="desk:hidden" />}
+    <p className="k-sr" data-needs-you-count>{view.needsYou} {view.needsYou === 1 ? "needs" : "need"} you {view.scope ?? ""}</p>
+    {view.layout === "board" ? <TaskBoard view={view} match={match} /> : empty ?? <TaskList view={view} rows={rows} />}
+    {view.layout === "list" && view.archived && !view.archived.active && <p className="k-foot"><a href={view.archived.href}>Archived tasks · {view.archived.count}</a></p>}
+    {view.layout === "list" && (view.pages.first || view.pages.next) && <p className="k-foot">
+      {view.pages.first && <a href={view.pages.first}>First page</a>}{view.pages.first && view.pages.next && " · "}{view.pages.next && <a href={view.pages.next} rel="next">Next page</a>}
+    </p>}
+    {usage && <p className="k-foot" data-usage-summary>Usage: <a href="/spend">{usage}</a></p>}
   </div>;
 }

@@ -2057,3 +2057,10 @@ export function releaseApprovalOf(store: Store, taskId: string, _now: Date = new
   const auto = autoReleaseApprovalOf(store, taskId, "auto-green");
   return auto.ok ? { ok: true, by: auto.by, at: auto.at, method: "auto-green" } : auto;
 }
+
+/** When a password typed at `at` (ISO) stops standing in, for a page's words (ISO); null when `at` isn't a time. Words
+ * only: freshnessFor decides whether it stands in, at the moment of use. */
+export function freshUntil(at: string): string | null {
+  const ms = Date.parse(at);
+  return Number.isFinite(ms) ? new Date(ms + FRESH_WINDOW_MS).toISOString() : null;
+}

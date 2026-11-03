@@ -1,35 +1,37 @@
-/** One task (console v2): the status and its one action first, then one
- * thread in time order (the plan, the agent's notes and results, its
- * questions, the person's replies) ending in the composer, and the metadata
- * in a Details panel beside it (a Details sheet on a phone). Forms,
- * ceremonies and ledgers stay the server's own HTML (same ids, same page
- * scripts); this page only frames them. */
+/** One task (src/design/KIT.md): a reading page in one centred column. The title and its meta, Full record and
+ * Details; the progress line (Plan · Approval · Build · Checks · Ready); the status box with its one act (the
+ * approval asks for a password only when the real rules say so); then the tabs: Plan (Result once there is one),
+ * Activity (one thread in time order, ending in the composer) and Attempts. Details opens as a drawer. Forms,
+ * ceremonies and ledgers stay the server's own HTML (same ids, same page scripts); this page only frames them. */
+import { useContext, useEffect, useRef, useState, type MouseEvent, type ReactNode, type SyntheticEvent } from "react";
 import { freshDraft, loadDraft, saveDraft, SteerNote, UnsentNote, type SteerDraft } from "./steer-composer.js";
-import { HEADLINES, HEADLINE_TONE } from "../../task-status.js";
-import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
-import { PostForm } from "../ui/index.js";
-import { AlertTriangle, ArrowRight, Check, ChevronDown, ChevronRight, CircleDot, FilePlus2, ListChecks, MessageCircleQuestion, MoreHorizontal, X } from "lucide-react";
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode, type SyntheticEvent } from "react";
+import { HEADLINE_TONE, HEADLINES, type Headline } from "../../task-status.js";
+import { FormToken, Passwordless, PostForm } from "../ui/post-form.js";
 import type { AssignmentCard } from "../../assignment-ui.js";
 import type { BrowserTaskDetailGroup, BrowserTaskFact, BrowserTaskMore, BrowserTaskSection, BrowserTaskTab, BrowserTaskThreadItem, BrowserTaskView } from "../../browser-workspace.js";
+import { termsOf, type StepItem } from "../../design/kit.js";
+import type { JourneyStep } from "../../first-run.js";
 import { GuardedHtml } from "../guarded-html.js";
-import { Journey } from "../first-run.js";
-import { Badge, Button, Card, Timeline, TimelineItem, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, Textarea, cn } from "../components/ui/index.js";
-import { ConfirmStoppedForm, HEADLINE_GLYPH, RebuildForm, StatusDetails, StatusHeadline, StatusWhy } from "./status-summary.js";
+import {
+  KApprove, KButton, KChip, KCount, KDisclose, KDocHeader, KDock, KEmpty, KFacts, KHeadlineChip, KInfoLine, KLinkButton, KNote, KOverlay, KRow, KSelect,
+  KSlots, KSteps, KTabs, KTextarea, useKMenu,
+} from "../kit/index.js";
 import { RETRY_NOTE_LIMIT } from "../../needs-you.js";
 import { TEXT_LIMITS } from "../../text-limits.js";
 import { pausedWords } from "../../steer-status.js";
 import { fullWhen, shortWhen, viewerZone } from "../../when-html.js";
 import { ActivityLine, AlsoViewing, useLiveTask } from "../live-task.js";
+import { HEADLINE_GLYPH, statusWhyLines } from "./status-summary.js";
+import type { GlyphKind } from "../components/ui/status-glyph.js";
 
 /** Bring an element of this page into view: switch to the tab that holds it (panels stay mounted, so it is always
- * found), show the Details sheet when it is there (phones), open every fold around it, then scroll and focus its first
- * field when asked. The one road for hash links (#scope, #holds, #cancel-task…) and ⋯ go-to items alike. */
-function revealTarget(id: string, showTab: (tab: BrowserTaskTab) => void, focus = false): boolean {
+ * found), open the Details drawer when it is there, open every fold around it, then scroll and focus its first field
+ * when asked. The one road for hash links (#scope, #holds, #cancel-task…) and ⋯ go-to items alike. */
+function revealTarget(id: string, showTab: (tab: PageTab) => void, focus = false): boolean {
   const target = id === "" ? null : document.getElementById(id);
   if (target === null) return false;
   const panel = target.closest<HTMLElement>("[data-task-panel]");
-  if (panel !== null) showTab(panel.dataset["taskPanel"] as BrowserTaskTab);
+  if (panel !== null) showTab(panel.dataset["taskPanel"] as PageTab);
   if (target.closest("[data-task-details]") !== null) window.dispatchEvent(new CustomEvent("so:show-details"));
   // After the tab is shown: open the folds, then scroll (a hidden panel has no layout to scroll to).
   requestAnimationFrame(() => {
@@ -44,7 +46,7 @@ function revealTarget(id: string, showTab: (tab: BrowserTaskTab) => void, focus 
 }
 
 /** A link to a fold (#scope, #holds, #cancel-task) shows its tab and opens it, on arrival and on in-page links alike. */
-function useRevealHashTarget(showTab: (tab: BrowserTaskTab) => void) {
+function useRevealHashTarget(showTab: (tab: PageTab) => void) {
   useEffect(() => {
     const reveal = () => { revealTarget(decodeURIComponent(window.location.hash.slice(1)), showTab); };
     reveal();
@@ -58,35 +60,31 @@ export function Html({ html, className }: { html: string; className?: string }) 
   return <GuardedHtml html={html} immutable {...(className === undefined ? {} : { className })} />;
 }
 
-/** Retry itself, on the failed card: the task page's requeue (branch and workspace kept), its note for the next
+/** Retry itself, on the failed box: the task page's requeue (branch and workspace kept), its note for the next
  * attempt starting with the one suggestion of what to change, ready to edit. */
-export function RetryForm({ action, csrf, note, variant = "default" }: { action: string; csrf: string; note?: string | undefined; variant?: "default" | "attention" }) {
-  return <PostForm action={action} data-retry className="flex w-full flex-col gap-1.5">
-    <label htmlFor="retry-note" className="text-body font-medium">What to change next time</label>
-    {/* The whole suggestion shows, and grows with what the person adds (a single-line field cut it off on a phone). */}
-    <div className="flex flex-wrap items-end gap-2 phone:flex-col phone:items-stretch">
-      <Textarea id="retry-note" name="note" maxLength={RETRY_NOTE_LIMIT} rows={1} defaultValue={note ?? ""} placeholder="Note for the next attempt (optional)" data-retry-note
-        className="min-h-9 min-w-0 flex-1 basis-72 resize-none [field-sizing:content] max-h-40 phone:min-h-11 phone:basis-auto" />
-      <Button type="submit" variant={variant} className="phone:w-full" data-primary-action title="Keeps the branch and workspace">Retry</Button>
-    </div>
+export function RetryForm({ action, note }: { action: string; csrf?: string; note?: string | undefined; variant?: "default" | "attention" }) {
+  return <PostForm action={action} data-retry className="k-field">
+    <label htmlFor="retry-note" className="k-label">What to change next time</label>
+    <KTextarea id="retry-note" name="note" maxLength={RETRY_NOTE_LIMIT} rows={2} defaultValue={note ?? ""} placeholder="Note for the next attempt (optional)" data-retry-note="" />
+    <div className="k-acts"><KButton type="submit" variant="primary" label="Retry" data-primary-action="" title="Keeps the branch and workspace" /></div>
   </PostForm>;
 }
 
 /** What a failed attempt missed: the evidence line behind it, and where to see the build (or that exact log line). */
 function FailureEvidence({ failure }: { failure: NonNullable<BrowserTaskView["failure"]> }) {
   if (failure.evidence === null && failure.link === null) return null;
-  return <p className="mt-1 text-body text-muted-foreground phone:leading-[1.35]" data-failure-evidence>
-    {failure.evidence !== null && <span className="[overflow-wrap:anywhere]">{failure.evidence}</span>}
-    {failure.link !== null && <>{failure.evidence !== null && " "}<a href={failure.link.href} data-failure-log className="whitespace-nowrap font-medium text-foreground/80 underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:-my-3 phone:inline-block phone:py-3">{failure.link.label}</a></>}
-  </p>;
+  return <span className="so-task-evidence" data-failure-evidence>
+    {failure.evidence !== null && <span>{failure.evidence}</span>}
+    {failure.link !== null && <>{failure.evidence !== null && " "}<a className="k-link" href={failure.link.href} data-failure-log>{failure.link.label}</a></>}
+  </span>;
 }
 
-/** Stop, on the Building card: the same exact-run stop form the control card posts. */
-function StopForm({ stop, csrf }: { stop: NonNullable<BrowserTaskView["stop"]>; csrf: string }) {
-  return <PostForm action={stop.action} className="task-stop-form phone:w-full" data-task-control="stop" data-control-run={stop.run}>
+/** Stop, on the Building box: the same exact-run stop form the control card posts. */
+function StopForm({ stop }: { stop: NonNullable<BrowserTaskView["stop"]> }) {
+  return <PostForm action={stop.action} className="task-stop-form" data-task-control="stop" data-control-run={stop.run}>
     <input type="hidden" name="run" value={stop.run} />
     <input type="hidden" name="return" value="task" />
-    <Button type="submit" variant="destructive" className="phone:w-full" data-stop-build>Stop</Button>
+    <KButton type="submit" variant="danger" label="Stop" data-stop-build="" />
   </PostForm>;
 }
 
@@ -94,27 +92,27 @@ type LivePause = NonNullable<BrowserTaskView["pause"]>;
 
 /** Pause, beside Stop: stops the current turn of the same live Claude build and keeps it. Hidden once a pause is asked. */
 function PauseForm({ pause }: { pause: LivePause }) {
-  return <PostForm action={pause.action} className="phone:w-full" data-task-control="pause" data-control-run={pause.run}>
+  return <PostForm action={pause.action} data-task-control="pause" data-control-run={pause.run}>
     <input type="hidden" name="run" value={pause.run} />
     <input type="hidden" name="request" value={pause.requests[0]} />
     <input type="hidden" name="return" value="task" />
-    <Button type="submit" variant="outline" className="phone:w-full" data-pause-build>Pause</Button>
+    <KButton type="submit" label="Pause" data-pause-build="" />
   </PostForm>;
 }
 
 /** Resume, on a paused build: it goes on where it stopped, with no note. */
 function ResumeForm({ pause }: { pause: LivePause }) {
-  return <PostForm action={pause.action} className="phone:w-full" data-task-control="resume" data-control-run={pause.run}>
+  return <PostForm action={pause.action} data-task-control="resume" data-control-run={pause.run}>
     <input type="hidden" name="run" value={pause.run} />
     <input type="hidden" name="request" value={pause.requests[2]} />
     <input type="hidden" name="mode" value="resume" />
     <input type="hidden" name="return" value="task" />
-    <Button type="submit" className="phone:w-full" data-resume-build>Resume</Button>
+    <KButton type="submit" variant="primary" label="Resume" data-resume-build="" />
   </PostForm>;
 }
 
-/** Pause and steer's note, under the card's row: the turn stops first, then the agent gets the note. A paused build
- * only needs the note, so the same form reads Continue there. */
+/** Pause and steer's note, under the box: the turn stops first, then the agent gets the note. A paused build only
+ * needs the note, so the same form reads Continue there. */
 function PauseSteerForm({ pause, onCancel }: { pause: LivePause; onCancel: () => void }) {
   const paused = pause.state === "paused";
   // The note is this attempt's draft (the note box's too): kept through a refusal, cleared only by its own send.
@@ -124,33 +122,97 @@ function PauseSteerForm({ pause, onCancel }: { pause: LivePause; onCancel: () =>
     saveDraft(pause.run, next);
     return next;
   });
-  return <PostForm action={pause.action} className="flex w-full flex-col gap-1.5" data-task-control="pause-and-steer" data-control-run={pause.run}
+  return <PostForm action={pause.action} className="k-field" data-task-control="pause-and-steer" data-control-run={pause.run}
     onSubmit={() => setDraft(previous => { const sent = { ...previous, submitted: true }; saveDraft(pause.run, sent); return sent; })}>
     <input type="hidden" name="run" value={pause.run} />
     {/* The draft's own request: an edited draft is a new request, never a repeat of the last. */}
     <input type="hidden" name="request" value={`steer-${draft.key}`} />
     <input type="hidden" name="key" value={draft.key} />
     <input type="hidden" name="return" value="task" />
-    <label htmlFor="pause-steer-note" className="text-body font-medium">{paused ? "Note to continue with" : "Note for the agent"}</label>
-    <div className="flex flex-wrap items-end gap-2 phone:flex-col phone:items-stretch">
-      <Textarea id="pause-steer-note" name="note" required autoFocus maxLength={TEXT_LIMITS.note} rows={1} placeholder="What should it do instead?" data-pause-steer-note
-        value={draft.text} onChange={event => setText(event.target.value)}
-        className="min-h-9 min-w-0 flex-1 basis-72 resize-none [field-sizing:content] max-h-40 phone:min-h-11 phone:basis-auto" />
-      <Button type="submit" className="phone:w-full" data-pause-steer-send>{paused ? "Continue" : "Pause and send"}</Button>
-      <Button type="button" variant="ghost" className="phone:w-full" onClick={onCancel}>Cancel</Button>
-    </div>
+    <label htmlFor="pause-steer-note" className="k-label">{paused ? "Note to continue with" : "Note for the agent"}</label>
+    <KTextarea id="pause-steer-note" name="note" required autoFocus maxLength={TEXT_LIMITS.note} rows={2} placeholder="What should it do instead?" data-pause-steer-note=""
+      value={draft.text} onChange={event => setText(event.target.value)} />
+    <div className="k-acts"><KButton type="submit" variant="primary" label={paused ? "Continue" : "Pause and send"} data-pause-steer-send="" />
+      <KButton variant="ghost" label="Cancel" onClick={onCancel} /></div>
   </PostForm>;
 }
 
-/** One headline, one sentence and one action; the details sit quietly
- * underneath (task-status.ts). Only Failed wears vermilion: its dot and, at
- * half strength, its border; its sentence is what it missed, the evidence
- * one line under it, and Retry's note starts with what to change. A live
- * build says the step it is on; a stuck step takes that line's place, with
- * its act beside it, its record is one quiet link under it, and Stop sits
- * in the same card; the attempts that
- * stopped before it are one quiet line at the bottom. */
-function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: AssignmentCard; csrf: string }) {
+/** Submit a native approval form with the password the kit control collected (or none): the page goes on to the
+ * route's answer, and the control keeps its busy face until it does. The server proves the person again. */
+function submitNative(form: HTMLFormElement | null, password: string | null): Promise<string | null> {
+  if (form === null) return Promise.resolve("This form is no longer on the page. Nothing changed.");
+  if (!form.checkValidity()) { form.reportValidity(); return Promise.resolve("Fill in what the form asks for first. Nothing changed."); }
+  const token = form.querySelector<HTMLInputElement>('input[name="token"]');
+  if (token !== null) token.value = password ?? "";
+  form.requestSubmit();
+  return new Promise(() => {});
+}
+
+/** Confirm it stopped: an approver's act (the same record as `toolroll run settle`), a step-up: the password is asked
+ * in a popover by the button unless Passwordless stands in. `checked`: Toolroll can't check the build, so the approver
+ * says they did. */
+function ConfirmStopped({ form, label }: { form: NonNullable<BrowserTaskView["confirmStopped"]>; label: string }) {
+  const ref = useRef<HTMLFormElement>(null);
+  const passwordless = useContext(Passwordless);
+  return <PostForm ref={ref} action={form.action} id="confirm-stopped" data-confirm-stopped={form.run} className="k-acts">
+    <input type="hidden" name="run" value={String(form.run)} />
+    <input type="hidden" name="token" value="" />
+    {form.checked === true && <label className="k-switch"><input type="checkbox" name="checked" value="yes" required />Nothing from build #{form.run} is running</label>}
+    <KApprove kind="step-up" facts={{ passwordless, remembered: false }} label={label} busy="Confirming…" terms={`Confirms that nothing from build #${form.run} is running.`}
+      onApprove={password => submitNative(ref.current, password)} />
+  </PostForm>;
+}
+
+/** The plan's approval (src/design/KIT.md "Approval"): four fixed slots, waiting. The act asks for a password only
+ * when the rules say so: a password popover when one is needed, one click with Passwordless on or a password
+ * remembered on this computer, and nothing to press when a rule approves automatically. The approval covers exactly
+ * what was shown: the box keeps the terms it first showed, and says so when newer ones arrive. */
+function ApprovalBox({ approve, latest, onEdit }: { approve: NonNullable<BrowserTaskView["approve"]>; latest: BrowserTaskView["approve"]; onEdit: (() => void) | null }) {
+  const ref = useRef<HTMLFormElement>(null);
+  const changed = latest == null || latest.fields["digest"] !== approve.fields["digest"];
+  const until = approve.rememberedUntil === null ? null : new Date(approve.rememberedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const facts = { ...approve.facts, rememberedUntil: until };
+  const terms = termsOf(approve.kind, facts);
+  return <PostForm ref={ref} action={approve.action} className="k-approve" data-approval-kind={approve.kind} data-task-approval>
+    {Object.entries(approve.fields).map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />)}
+    <input type="hidden" name="token" value="" />
+    <KSlots wait status={<><KChip word="Needs you" tone="needs" /><h2>{approve.heading}</h2></>} text={approve.text}
+      acts={changed ? <KButton variant="primary" label="Reload" onClick={() => window.location.reload()} />
+        : <><KApprove kind={approve.kind} facts={facts} label={approve.label} docked terms={terms} text={approve.text}
+            onApprove={password => submitNative(ref.current, password)} />
+          {onEdit !== null && <KButton label="Edit plan" onClick={onEdit} />}</>}
+      terms={changed ? "The plan changed since this page loaded. Reload to see the version you would approve." : terms} />
+  </PostForm>;
+}
+
+/** The status box's heading: the specific thing it is about, the chip already saying its status. */
+function headingOf(card: AssignmentCard): string {
+  const need = card.status.need?.key ?? null;
+  switch (card.status.headline) {
+    case "Needs you":
+      return need === "approval" ? "Plan ready" : need === "answer" || need === "questions" ? "A question for you" : need === "hold" ? "On hold"
+        : need === "confirm-stopped" || need === "check-stopped" || need === "vanished" ? "The build stopped" : need === "sign-in" ? "Sign in again"
+        : need === "start-builder" || need === "connect-builder" ? "No builder is running" : need === "rebuild" || need === "replan" ? "The plan changed"
+        : need === "review-result" ? "Ready for your review" : "Waiting on you";
+    case "Ready for review": return "Ready for your review";
+    case "Failed": return "A requirement was missed";
+    case "Complete": return "Finished";
+    default: return card.status.headline;
+  }
+}
+
+/** How the plan was approved, in one line: by whom, when and how, or the rule that approved it automatically. */
+function approvedWords(approved: NonNullable<BrowserTaskView["approved"]>): string {
+  const at = shortWhen(approved.at, new Date(), viewerZone());
+  return approved.automatic ? `Approved automatically by ${approved.rule ?? "a rule"} · ${at} · plan version ${approved.version}`
+    : `Approved by ${approved.by} · ${at}${approved.how === "" ? "" : ` · ${approved.how}`} · plan version ${approved.version}`;
+}
+
+/** The status box: chip and heading, one sentence, the one act, and a terms line (src/design/KIT.md "Approval"
+ * slots). A live build says the step it is on, or the step it is stuck on with the act that helps; Pause, Resume and
+ * Stop sit beside it. A failed task says what it missed and offers Retry with its note. The recorded reasons sit
+ * under More. */
+function StatusBox({ view, card, csrf, approved }: { view: BrowserTaskView; card: AssignmentCard; csrf: string; approved: BrowserTaskView["approved"] }) {
   const failed = card.status.headline === "Failed";
   const confirm = view.confirmStopped ?? null, rebuild = view.rebuild ?? null, retry = view.retry ?? null, failure = view.failure ?? null;
   const stuck = view.progress?.stuck ?? null;
@@ -159,91 +221,76 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
   const [steering, setSteering] = useState(false);
   const pausedLine = pause?.state == null || stuck !== null ? null : pause.state === "pausing" ? "Pausing…"
     : pausedWords({ until: pause.until ?? null, limitMs: pause.limitMs ?? null }, iso => shortWhen(iso, new Date(), viewerZone(), true));
-  return <Card data-task-status data-work-status={card.token} data-headline={card.status.headline} aria-label="Task status" className={cn(failed && "border-destructive/50", card.status.headline === "Needs you" && "border-warning")}>
-    {view.journey != null && <Journey steps={view.journey} />}
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-3 phone:gap-y-2.5">
-      <div className="min-w-0 flex-1 basis-64">
-        <StatusHeadline status={card.status} />
-        {/* A stuck step is the one thing a person may help with: it replaces the step line, said plainly, its act beside it. */}
-        <p className={cn("mt-1.5 text-sm phone:mt-1 phone:leading-[1.35]", failed || stuck !== null ? "text-foreground" : "text-muted-foreground", stuck !== null && "flex gap-2")}
-          {...(failed ? { "data-failure-reason": "" } : {})} {...(view.progress != null ? { "data-build-progress": "" } : {})} {...(stuck !== null ? { "data-build-stuck": stuck.step } : {})}>
-          {stuck !== null && <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />}
-          {/* A pause replaces the step line: the build is waiting, not working. */}
-          {pausedLine !== null ? <span className="font-medium text-foreground" role="status" data-live-pause={pause!.state}>{pausedLine}</span>
-            : <span className="[overflow-wrap:anywhere]">{card.status.sentence}</span>}
-        </p>
-        {view.activity != null && <ActivityLine activity={view.activity} className="mt-1" />}
-        {view.record != null && <p className="mt-1 text-body">
-          <a href={view.record.href} data-build-record className="text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground hover:decoration-muted-foreground phone:inline-flex phone:min-h-11 phone:items-center">{view.record.label}</a>
-        </p>}
+  const waits = card.status.headline === "Needs you" || card.status.headline === "Ready for review";
+  const acts: ReactNode = confirm != null && csrf !== "" ? <ConfirmStopped form={confirm} label={card.action?.label ?? "Confirm it stopped"} />
+    : rebuild != null && csrf !== "" ? <PostForm action={rebuild.action} data-rebuild><KButton type="submit" variant="primary" label={card.action?.label ?? "Build again"} data-primary-action="" /></PostForm>
+    : retrying ? <RetryForm action={retry.action} note={retry.note ?? failure?.suggestion} />
+    : <>
+      {stuck?.action != null ? <KLinkButton label={stuck.action.label} href={stuck.action.href} data-stuck-action="" />
+        : card.action !== null && <KLinkButton variant={waits ? "primary" : "outline"} label={card.action.label} href={card.action.href} data-primary-action=""
+          {...(card.action.openResult ? { "data-open-result": "" } : {})} />}
+      {pause !== null && pause.state === null && <PauseForm pause={pause} />}
+      {pause !== null && pause.state === "paused" && <ResumeForm pause={pause} />}
+      {pause !== null && !steering && <KButton label={pause.state === "paused" ? "Continue with a note" : "Pause and steer"} onClick={() => setSteering(true)} data-pause-steer="" />}
+      {view.stop != null && csrf !== "" && <StopForm stop={view.stop} />}
+    </>;
+  const terms: ReactNode = failed && failure != null && !retrying ? <span data-failure-suggestion>What to change: {failure.suggestion}</span>
+    : view.record != null ? <a className="k-link" href={view.record.href} data-build-record>{view.record.label}</a>
+    : approved != null ? approvedWords(approved) : "";
+  const why = statusWhyLines(card.status, [...card.reasons, ...card.diagnostics.map(one => `${one.label} · ${one.detail}`), ...(card.notices?.lines ?? [])]);
+  return <div className="k-sec" data-task-status data-work-status={card.token} data-headline={card.status.headline} aria-label="Task status">
+    <KSlots wait={waits} status={<><KHeadlineChip headline={card.status.headline} /><h2>{headingOf(card)}</h2></>}
+      text={<>
+        <span {...(failed ? { "data-failure-reason": "" } : {})} {...(view.progress != null ? { "data-build-progress": "" } : {})} {...(stuck !== null ? { "data-build-stuck": stuck.step } : {})}>
+          {pausedLine !== null ? <span role="status" data-live-pause={pause!.state}>{pausedLine}</span> : card.status.sentence}
+        </span>
+        {view.activity != null && <ActivityLine activity={view.activity} />}
         {failed && failure != null && <FailureEvidence failure={failure} />}
-        {failed && failure != null && !retrying && <p className="mt-1 text-body text-muted-foreground" data-failure-suggestion>What to change: {failure.suggestion}</p>}
-      </div>
-      {/* Confirm it stopped asks for the password right here, in place of a link. */}
-      {confirm != null && csrf !== "" ? <ConfirmStoppedForm form={confirm} csrf={csrf} label={card.action?.label ?? "Confirm it stopped"} />
-        : rebuild != null && csrf !== "" ? <RebuildForm action={rebuild.action} csrf={csrf} label={card.action?.label ?? "Build again"} />
-        : retrying ? null
-        : stuck?.action != null || view.stop != null ? <div className="flex flex-wrap items-center gap-2 phone:w-full phone:flex-col phone:items-stretch">
-            {stuck?.action != null ? <Button asChild variant="outline" className="phone:w-full"><a href={stuck.action.href} data-stuck-action>{stuck.action.label}</a></Button>
-              : card.action !== null && <Button asChild variant="outline" className="phone:w-full"><a href={card.action.href} data-primary-action>{card.action.label}<ArrowRight /></a></Button>}
-            {pause !== null && pause.state === null && <PauseForm pause={pause} />}
-            {pause !== null && pause.state === "paused" && <ResumeForm pause={pause} />}
-            {pause !== null && !steering && <Button type="button" variant="outline" className="phone:w-full"
-              onClick={() => setSteering(true)} data-pause-steer>{pause.state === "paused" ? "Continue with a note" : "Pause and steer"}</Button>}
-            {view.stop != null && csrf !== "" && <StopForm stop={view.stop} csrf={csrf} />}
-          </div>
-        : card.action !== null && <Button asChild variant={card.status.headline === "Needs you" ? "attention" : "default"} className="phone:w-full">
-        <a href={card.action.href} data-primary-action {...(card.action.openResult ? { "data-open-result": "" } : {})}>{card.action.label}<ArrowRight /></a>
-      </Button>}
-    </div>
-    {retrying && <RetryForm action={retry.action} csrf={csrf} note={retry.note ?? failure?.suggestion} />}
+      </>}
+      acts={acts} terms={terms} />
     {pause !== null && steering && <PauseSteerForm key={pause.run} pause={pause} onCancel={() => setSteering(false)} />}
-    {/* The running attempt: what it takes, said plainly, and a note box when it takes notes (Pause and steer sits above). */}
     {/* A note written for an attempt that ended before it went: shown, with a way to send it to the next one. */}
     {csrf !== "" && (view.steerRecent?.length ?? 0) > 0 && <UnsentNote key={view.steerRecent!.join(",")} runs={view.steerRecent!.filter(run => run !== view.steering?.steer?.run && run !== pause?.run)} action={`/t/${encodeURIComponent(view.id)}/steer`} back="task" />}
-    {view.steering != null && csrf !== "" && <div id="steering" className="flex flex-col gap-1 border-t border-border pt-3" data-task-steering>
-      <p className="text-caption text-muted-foreground" data-agent-capability>{view.steering.controls.words}</p>
+    {view.steering != null && csrf !== "" && <div id="steering" className="k-sec" data-task-steering>
+      <KNote>{view.steering.controls.words}</KNote>
       {view.steering.steer !== null && <SteerNote key={view.steering.steer.run} steer={view.steering.steer} controls={{ ...view.steering.controls, pause: null }} back="task" />}
     </div>}
-    <StatusDetails status={card.status} runChecks={view.runChecks ?? null} csrf={csrf} />
-    {(card.notices !== null || card.reasons.length > 0 || card.diagnostics.length > 0 || card.status.why.length > 0 || card.status.details.some(one => one.why !== null)) &&
-      <div className="flex flex-col gap-1 border-t border-border pt-3 text-body phone:pt-2 phone:leading-[1.35]">
-      {/* One fold, never a stack of them: the notices' lines join the recorded reasons under More (their row above
-          already says what they are about). */}
-      <StatusWhy status={card.status} extra={[...card.reasons, ...card.diagnostics.map(one => `${one.label} · ${one.detail}`), ...(card.notices?.lines ?? [])]} />
-    </div>}
-    {view.earlier != null && <div className="border-t border-border pt-1 text-body" data-earlier-attempts={view.earlier.attempts.length}>
-      <Fold summary={view.earlier.summary} quiet>
-        <ul className="flex flex-col gap-1.5">{view.earlier.attempts.map(one => <li key={one.href} className="text-muted-foreground">
-          <a href={one.href} className="font-medium text-foreground/80 underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:inline-flex phone:min-h-11 phone:items-center">{one.label}</a>
-          {one.text !== null && <> · {one.text}</>}
-        </li>)}</ul>
-      </Fold>
-    </div>}
-  </Card>;
+    <StatusFacts card={card} runChecks={view.runChecks ?? null} />
+    {why.length > 0 && <KDisclose summary="More">{why.map(one => <KNote key={one}>{one}</KNote>)}</KDisclose>}
+  </div>;
 }
 
-/** A quiet in-card disclosure (native details: content stays in the page). */
-function Fold({ summary, quiet, flatten, children }: { summary: ReactNode; quiet?: boolean; flatten?: boolean; children: ReactNode }) {
-  // `flatten`: never a fold inside a fold; opening this one opens every fold in it, so one tap shows it all.
-  return <details className="group" {...(flatten ? { onToggle: (event: SyntheticEvent<HTMLDetailsElement>) => {
+/** The status's detail rows (Project checks, Requirements, Pull request…) as facts; Run checks runs in place. */
+function StatusFacts({ card, runChecks }: { card: AssignmentCard; runChecks: BrowserTaskView["runChecks"] }) {
+  if (card.status.details.length === 0) return null;
+  return <KFacts rows={card.status.details.map(detail => {
+    const inPlace = runChecks != null && detail.action?.href === runChecks.action;
+    const text = detail.href === null ? detail.text : <a className="k-link" href={detail.href}>{detail.text}</a>;
+    const act = detail.action === null ? null : inPlace
+      ? <PostForm action={runChecks!.action} data-run-checks className="so-inline-form"><input type="hidden" name="level" value={runChecks!.level} /><input type="hidden" name="return" value={runChecks!.returnTo} />
+          <KButton type="submit" variant="ghost" sm label={detail.action.label} data-detail-action="" /></PostForm>
+      : detail.action.href === null ? <span>{detail.action.label}</span>
+      : <a className="k-link" href={detail.action.href} data-detail-action>{detail.action.label}</a>;
+    return [detail.label, <span key={detail.key} data-status-detail={detail.key} data-mark={detail.mark}>{text}{act !== null && <> · {act}</>}</span>] as const;
+  })} />;
+}
+
+/** A quiet in-page disclosure (native details: content stays in the page). `flatten`: opening it opens every fold in
+ * it, so one tap shows it all (never a fold inside a fold). */
+function Fold({ summary, flatten, children }: { summary: string; flatten?: boolean; children: ReactNode }) {
+  return <details className="k-disclose" {...(flatten ? { onToggle: (event: SyntheticEvent<HTMLDetailsElement>) => {
     if (event.currentTarget.open) event.currentTarget.querySelectorAll("details").forEach(one => { one.open = true; });
-  } } : {})}>
-    <summary className={cn("flex cursor-pointer list-none items-center gap-1.5 py-1.5 font-medium phone:min-h-11 [&::-webkit-details-marker]:hidden", quiet && "text-muted-foreground hover:text-foreground")}>
-      <ChevronRight className="size-4 transition-transform group-open:rotate-90" aria-hidden="true" />{summary}
-    </summary>
-    <div className="pb-2 pl-5.5 pt-1">{children}</div>
-  </details>;
+  } } : {})}><summary>{summary}</summary>{children}</details>;
 }
 
 function FactValue({ fact }: { fact: BrowserTaskFact }) {
   return <>{fact.parts.map((part, index) => typeof part === "string"
     ? <span key={index}>{part}</span>
     : "at" in part
-      ? <time key={index} dateTime={part.at} title={whenTitle(part.at)} className="tabular-nums">{threadWhen(part.at)}</time>
+      ? <time key={index} dateTime={part.at} title={whenTitle(part.at)} className="k-num">{threadWhen(part.at)}</time>
     : "seal" in part
-      ? <code key={index} className="mr-1 rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{part.seal}</code>
-      : <a key={index} href={part.href} className="font-medium underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:relative phone:z-[1] phone:-my-3 phone:inline-flex phone:min-h-11 phone:items-center">{part.label}</a>)}</>;
+      ? <code key={index} className="k-mono">{part.seal}</code>
+      : <a key={index} href={part.href}>{part.label}</a>)}</>;
 }
 
 /** "16:39" today, "Yesterday 16:39", else "Sep 28", in the viewer's zone: the one formatter every time on every
@@ -253,35 +300,16 @@ export function threadWhen(iso: string, now = new Date()): string {
 }
 export const whenTitle = (iso: string): string => fullWhen(iso, viewerZone());
 
-/** A thread entry's mark: neutral, except the status hues on a live step (blue), a result (green) and a failure (red). */
-function ThreadMark({ item }: { item: BrowserTaskThreadItem }) {
-  const failed = item.kind === "result" && /failed|refused|never finished/i.test(item.title);
-  const icon = item.kind === "filed" ? <FilePlus2 className="size-3.5 text-muted-foreground" />
-    : item.kind === "plan" ? <ListChecks className="size-3.5 text-muted-foreground" />
-    : item.kind === "progress" ? <CircleDot className="size-3.5 text-info" />
-    : item.kind === "question" ? <MessageCircleQuestion className="size-3.5 text-muted-foreground" />
-    : item.kind === "result" ? (failed ? <X className="size-3.5 text-destructive" /> : <Check className="size-3.5 text-success" />)
-    : <span className="size-1.5 rounded-full bg-muted-foreground" />;
-  return <span aria-hidden="true" className="relative z-[1] flex size-6 shrink-0 items-center justify-center rounded-full border border-border bg-card">{icon}</span>;
-}
-
-/** One server-side thread entry: who, what, when, then its words, link and card. */
+/** One server-side thread entry: when, who and what, then its words, link and card. */
 function ThreadEntry({ item }: { item: BrowserTaskThreadItem }) {
-  return <li data-thread-entry={item.key} data-thread-kind={item.kind} className="so-thread-entry relative flex gap-3">
-    <ThreadMark item={item} />
-    <div className="min-w-0 flex-1 pb-5 phone:pb-4">
-      <p className="flex min-h-6 flex-wrap items-baseline gap-x-2 text-body leading-6">
-        <span className="font-medium text-foreground">{item.title}</span>
-        {item.author !== "" && <span className="text-muted-foreground">{item.author}</span>}
-        <time dateTime={item.at} title={whenTitle(item.at)} className="ml-auto text-xs tabular-nums text-muted-foreground">{threadWhen(item.at)}</time>
-      </p>
-      {/* An entry with no words shows none: never an empty bubble. */}
-      {item.text !== null && item.text.trim() !== "" && <p className={cn("mt-1 whitespace-pre-line text-sm leading-relaxed [overflow-wrap:anywhere]",
-        item.who === "person" && "w-fit max-w-full rounded-xl bg-user-bubble px-3 py-2")}>{item.text}</p>}
-      {item.link !== null && <a href={item.link.href} className="mt-1 inline-flex text-body underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:min-h-11 phone:items-center font-medium">{item.link.label}</a>}
-      {item.html !== "" && <div className="mt-2"><Html html={item.html} className="so-thread-card" /></div>}
-      {item.more !== null && <div className="mt-1 text-body"><Fold summary={item.more.summary} quiet flatten><Html html={item.more.html} className="so-thread-card" /></Fold></div>}
-    </div>
+  return <li data-thread-entry={item.key} data-thread-kind={item.kind} className="so-thread-entry">
+    <p className="so-thread-line"><time className="k-num" dateTime={item.at} title={whenTitle(item.at)}>{threadWhen(item.at)}</time>
+      <span><b>{item.title}</b>{item.author !== "" && <> <span className="k-muted">{item.author}</span></>}</span></p>
+    {/* An entry with no words shows none: never an empty bubble. */}
+    {item.text !== null && item.text.trim() !== "" && <p className={item.who === "person" ? "so-thread-text so-thread-quote" : "so-thread-text"}>{item.text}</p>}
+    {item.link !== null && <p className="so-thread-text"><a className="k-link" href={item.link.href}>{item.link.label}</a></p>}
+    {item.html !== "" && <div className="so-thread-text"><Html html={item.html} className="so-thread-card" /></div>}
+    {item.more !== null && <div className="so-thread-text"><Fold summary={item.more.summary} flatten><Html html={item.more.html} className="so-thread-card" /></Fold></div>}
   </li>;
 }
 
@@ -294,117 +322,82 @@ function Thread({ items, chat, chatHref }: { items: BrowserTaskThreadItem[]; cha
     ...items.map(item => ({ key: `item-${item.key}`, at: item.at, node: <ThreadEntry key={`item-${item.key}`} item={item} /> })),
     ...(chat?.entries ?? []),
   ].sort((a, b) => a.at === b.at ? 0 : a.at < b.at ? -1 : 1);
-  return <section aria-label="Thread" data-task-thread {...(chat === null ? {} : { "data-workspace-chat": "" })} className="flex flex-col">
-    <ol className="so-thread relative flex flex-col">{entries.map(one => one.node)}</ol>
+  return <section aria-label="Activity" data-task-thread {...(chat === null ? {} : { "data-workspace-chat": "" })} className="k-sec">
+    {entries.length === 0 && <KEmpty title="Nothing has happened yet." />}
+    <ol className="so-thread">{entries.map(one => one.node)}</ol>
     {chat !== null ? chat.footer
-      : chatHref !== null && <p className="border-t border-border pt-3 text-body text-muted-foreground">
-        <a href={chatHref} className="font-medium text-foreground underline decoration-border underline-offset-4 phone:inline-flex phone:min-h-11 phone:items-center">Message the agent</a> from Chat.
-      </p>}
+      : chatHref !== null && <KNote><a className="k-link" href={chatHref}>Message the agent</a> from Chat.</KNote>}
   </section>;
 }
 
-function FactRows({ facts }: { facts: BrowserTaskFact[] }) {
-  return <dl className="grid grid-cols-[8.25rem_minmax(0,1fr)] gap-x-3 gap-y-2.5 text-body phone:gap-y-2">
-    {facts.map(fact => <div key={fact.label} className="contents" data-detail-fact={fact.label}>
-      <dt className="text-muted-foreground">{fact.label}</dt>
-      <dd className="min-w-0 leading-snug [overflow-wrap:anywhere]"><FactValue fact={fact} /></dd>
-    </div>)}
-  </dl>;
-}
-
 /** An attempt's glyph: its label ends with the task's headline ("Correction 1 · Needs you"), and a headline's glyph
- * is the one HeadlineBadge wears for it (the headline's tone), so the timeline and every list agree. */
+ * is the one every list wears for it, so the timeline and every list agree. */
 export function attemptGlyph(label: string): GlyphKind {
   const word = label.split(" · ").at(-1) ?? "";
   const headline = HEADLINES.find(one => one === word);
   return headline === undefined ? "idle" : HEADLINE_GLYPH[HEADLINE_TONE[headline]];
 }
 
-/** The Details panel (desk) and sheet (phone): the task's properties grouped Work, Links, Review and About, then its
- * attempts. Read-only facts: every form lives in a tab (docs/plans/one-page-task-and-agent.md). */
+/** The Details drawer: the task's properties grouped Work, Links, Review and About. Read-only facts: every form lives
+ * in a tab (docs/plans/one-page-task-and-agent.md). */
 export function TaskDetails({ view }: { view: BrowserTaskView }) {
   const groups: BrowserTaskDetailGroup[] = (view.details ?? []).filter(group => group.facts.length > 0);
-  const card = view.status;
-  const attempts = card !== null && (card.attempts.length > 1 || card.lead !== null) ? card : null;
-  return <div className="flex flex-col gap-5 px-5 py-4 phone:gap-4 phone:px-4" data-task-details>
-    {groups.map(group => <section key={group.title} aria-labelledby={`details-${group.title}`} className="flex flex-col gap-2.5" data-detail-group={group.title}>
-      <h2 id={`details-${group.title}`} className="text-caption text-muted-foreground">{group.title}</h2>
-      <FactRows facts={group.facts} />
+  return <div className="k-sec" data-task-details>
+    {groups.map(group => <section key={group.title} className="k-sec" aria-label={group.title} data-detail-group={group.title}>
+      <h3>{group.title}</h3>
+      <KFacts rows={group.facts.map(fact => [fact.label, <span key={fact.label} data-detail-fact={fact.label}><FactValue fact={fact} /></span>] as const)} />
     </section>)}
-    {attempts !== null && <section aria-labelledby="details-attempts" className="flex flex-col gap-2 border-t border-border pt-4 text-body">
-      <h2 id="details-attempts" className="flex items-center gap-1.5 text-caption text-muted-foreground">Attempts <Badge>{attempts.attempts.length}</Badge></h2>
-      {/* A timeline (after Linear's activity log): one status glyph per attempt on a hairline, oldest first. */}
-      <Timeline data-attempt-timeline>
-        {attempts.attempts.map(attempt => <TimelineItem key={attempt.taskId} data-attempt-task={attempt.taskId} indicator={<StatusGlyph kind={attemptGlyph(attempt.label)} />}>
-          <a href={attempt.href} className="font-medium hover:underline hover:underline-offset-4 phone:inline-flex phone:min-h-11 phone:items-center">{attempt.label}</a>
-          {attempt.runId !== null && <> · <a href={`/r/${attempt.runId}`} className="text-muted-foreground hover:underline">Run #{attempt.runId}</a></>}
-          {attempt.detail !== null && <p className="text-muted-foreground">{attempt.detail}</p>}
-        </TimelineItem>)}
-      </Timeline>
-      {attempts.lead !== null && <p className="text-muted-foreground">Lead: {attempts.lead.label}{attempts.lead.active ? "" : " · access ended"}</p>}
-    </section>}
   </div>;
 }
 
-/** One section of the Plan tab, flat: its heading and its content, open, never a fold (page → tab → section). */
-function PlanSection({ section }: { section: BrowserTaskSection }) {
-  return <section id={section.id} aria-labelledby={`plan-${section.id}`} className="scroll-mt-4 flex flex-col gap-2 px-5 py-4 phone:px-3.5 phone:py-3" data-task-section={section.id}>
-    <h2 id={`plan-${section.id}`} className="flex items-center gap-2 text-title">{section.title}{section.count !== null && section.count > 0 && <Badge>{section.count}</Badge>}</h2>
-    <Html html={section.html} className="so-task-fold" />
-  </section>;
-}
-
-/** The Plan tab: the approval when it isn't the thing to do now, the scope and agents, dependencies and holds, the
- * records (build activity, usage, report), the task's options, and Cancel — armed behind one deliberate tap, last. */
 /** The Plan tab's order: what the work is and what it waits on first, then its options, then the records. */
 const PLAN_ORDER = ["scope", "waits-for", "holds", "steering", "task-diagnostics"];
 const planRank = (id: string): number => { const at = PLAN_ORDER.indexOf(id); return at === -1 ? PLAN_ORDER.length : at; };
 
-function PlanPanel({ view, approval }: { view: BrowserTaskView; approval: boolean }) {
+/** One section of the Plan tab, flat: its heading and its content, open, never a fold (page → tab → section). */
+function PlanSection({ section }: { section: BrowserTaskSection }) {
+  return <section id={section.id} aria-labelledby={`plan-${section.id}`} className="k-sec so-plan-sec" data-task-section={section.id}>
+    <h3 id={`plan-${section.id}`}>{section.title}{section.count !== null && section.count > 0 && <> <KCount n={section.count} /></>}</h3>
+    <Html html={section.html} className="so-task-fold" />
+  </section>;
+}
+
+/** The Plan tab: what the approval signs (its rows), then the scope and agents, dependencies and holds, the records,
+ * the task's options, and Cancel — armed behind one deliberate tap, last. */
+function PlanPanel({ view, planHtml, approval }: { view: BrowserTaskView; planHtml: string | null; approval: boolean }) {
   const sections = [...view.sections, ...view.manage].map((one, index) => ({ one, index })).sort((a, b) => planRank(a.one.id) - planRank(b.one.id) || a.index - b.index).map(({ one }) => one);
-  return <div className="flex flex-col gap-4">
+  return <div className="k-sec">
+    {planHtml !== null && <Html html={planHtml} className="so-task-approval so-task-plan" />}
     {approval && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
-    {sections.length > 0 && <Card aria-label="Plan" className="gap-0 divide-y divide-border overflow-hidden p-0 phone:p-0">{sections.map(one => <PlanSection key={one.id} section={one} />)}</Card>}
-    {view.cancel !== null && <details id="cancel-task" open={view.cancel.open} className="group scroll-mt-4 rounded-lg border border-destructive/30 bg-card" data-task-section="cancel">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-title-sm text-destructive phone:min-h-11 phone:px-3.5 phone:py-2 [&::-webkit-details-marker]:hidden">
-        <ChevronRight className="size-4 transition-transform group-open:rotate-90" aria-hidden="true" />Cancel task
-      </summary>
-      <div className="px-4 pb-4 pt-1 phone:px-3.5 phone:pb-3.5 phone:pt-0"><Html html={view.cancel.html} className="so-task-cancel" /></div>
+    {sections.map(one => <PlanSection key={one.id} section={one} />)}
+    {view.cancel !== null && <details id="cancel-task" open={view.cancel.open} className="k-disclose so-cancel" data-task-section="cancel">
+      <summary>Cancel task</summary>
+      <Html html={view.cancel.html} className="so-task-cancel" />
     </details>}
   </div>;
 }
 
-/** The Result tab: the chosen attempt's result as its result page shows it — evidence, your checks, the decision — with
- * the attempts to pick from. Nothing yet: one line saying so. */
-function ResultPanel({ view, csrf, result }: { view: BrowserTaskView; csrf: string; result: ResultSlot | undefined }) {
+/** The Result tab: the chosen attempt's result as its result page shows it — evidence, your checks, the decision —
+ * with the attempts to pick from. Nothing yet: one line saying so. */
+function ResultPanel({ view, loaded, csrf, result }: { view: BrowserTaskView; loaded: BrowserTaskView["result"]; csrf: string; result: ResultSlot | undefined }) {
   // The result this page loaded stays as it was: its evidence, its checks and its decision always agree, and the
   // result's own script stays bound to the forms it found. A newer one (another run, the same run's checks finishing,
   // a first result) is announced with Reload; never swapped in under the person's hands.
-  const loaded = useRef(view.result ?? null);
-  const shown = loaded.current;
+  const shown = loaded ?? null;
   const now = view.result ?? null;
   const newer = now !== null && (shown === null || now.selected.build !== shown.selected.build || now.revision !== shown.revision);
-  const notice = newer && <div role="status" className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-card border border-info/40 bg-info-soft px-3.5 py-2.5 text-body text-info" data-result-newer>
-    <span className="min-w-0 flex-1">{shown === null ? "A result is ready." : now.selected.build !== shown.selected.build ? "A newer result is ready." : "This result was updated."}</span>
-    <Button type="button" variant="outline" size="sm" onClick={() => window.location.reload()}>Reload</Button>
+  const notice = newer && <div role="status" className="k-acts" data-result-newer>
+    <KInfoLine>{shown === null ? "A result is ready." : now.selected.build !== shown.selected.build ? "A newer result is ready." : "This result was updated."}</KInfoLine>
+    <KButton sm label="Reload" onClick={() => window.location.reload()} />
   </div>;
-  if (shown === null || result === undefined) return <div className="flex flex-col gap-3">
-    {notice}
-    <Card className="items-start py-8" data-task-result="none">
-      <p className="text-body text-muted-foreground">No result yet. It shows here once a build finishes.</p>
-    </Card>
-  </div>;
+  if (shown === null || result === undefined) return <div className="k-sec" data-task-result="none">{notice || <KEmpty title="No result yet." text="It shows here once a build finishes." />}</div>;
   const picked = shown.attempts.find(one => one.current) ?? null;
-  return <div className="flex flex-col gap-4" data-task-result={shown.selected.build ?? "none"}>
+  return <div className="k-sec" data-task-result={shown.selected.build ?? "none"}>
     {notice}
-    {shown.attempts.length > 1 && <div className="flex flex-wrap items-center gap-2 text-body text-muted-foreground" data-result-attempts={shown.attempts.length}>
-      <span>{shown.current ? "Latest result" : "An earlier attempt"}</span>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button variant="outline" size="sm" data-result-attempt-picker>{picked?.label ?? "Pick an attempt"}<ChevronDown /></Button></DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="max-h-[60vh] w-72 overflow-y-auto">
-          {shown.attempts.map(one => <DropdownMenuItem key={one.href} asChild><a href={one.href} aria-current={one.current ? "true" : undefined} className={cn(one.current && "bg-accent")}>{one.label}</a></DropdownMenuItem>)}
-        </DropdownMenuContent>
-      </DropdownMenu>
+    {shown.attempts.length > 1 && <div className="k-acts" data-result-attempts={shown.attempts.length}>
+      <span className="k-muted">{shown.current ? "Latest result" : "An earlier attempt"}</span>
+      <KSelect sm aria-label="Result of attempt" value={picked?.href ?? ""} onChange={event => { if (event.target.value !== "") window.location.assign(event.target.value); }}
+        items={[...(picked === null ? [["", "Pick an attempt"] as const] : []), ...shown.attempts.map(one => [one.href, one.label] as const)]} data-result-attempt-picker="" />
     </div>}
     {result(shown.selected, csrf, shown.current)}
   </div>;
@@ -413,41 +406,48 @@ function ResultPanel({ view, csrf, result }: { view: BrowserTaskView; csrf: stri
 /** The Result tab's body, given by the page that hosts it (the result view's own component, kept out of this module). */
 export type ResultSlot = (selected: NonNullable<BrowserTaskView["result"]>["selected"], csrf: string, current: boolean) => ReactNode;
 
-/** ⋯ More actions: the task's secondary acts in one menu, the same order everywhere — Work, Share & reuse, Danger last.
- * A one-click POST submits its own small form (outside the menu, so closing the menu never drops it); a go-to shows
- * the tab that holds the item's one form, opens it and focuses it. */
-function MoreMenu({ items, showTab }: { items: BrowserTaskMore[]; showTab: (tab: BrowserTaskTab) => void }) {
+/** The Attempts tab: every version of the task and the builds that stopped before this one. */
+function AttemptsPanel({ view }: { view: BrowserTaskView }) {
+  const card = view.status;
+  const versions = card?.attempts ?? [];
+  const earlier = view.earlier?.attempts ?? [];
+  if (versions.length <= 1 && earlier.length === 0) return <KEmpty title="One attempt so far." text="Each new build or revision of this task shows here." />;
+  return <div className="k-sec" data-attempts>
+    {versions.length > 1 && <section aria-label="Versions" data-attempt-timeline>
+      {versions.map(attempt => {
+        const parts = attempt.label.split(" · ");
+        const word = parts.at(-1) ?? "";
+        const headline = HEADLINES.find(one => one === word) as Headline | undefined;
+        return <KRow key={attempt.taskId} href={attempt.href} chip={headline === undefined ? <KChip word={word} /> : <KHeadlineChip headline={headline} />}
+          title={parts.length > 1 ? parts.slice(0, -1).join(" · ") : attempt.label} desc={attempt.detail ?? ""}
+          meta={attempt.runId === null ? undefined : <span className="k-num">Run #{attempt.runId}</span>} />;
+      })}
+    </section>}
+    {earlier.length > 0 && <section aria-label="Earlier builds" data-earlier-attempts={earlier.length}>
+      {earlier.map(one => <KRow key={one.href} href={one.href} chip={<KChip word="Stopped" />} title={one.label} desc={one.text ?? ""} />)}
+    </section>}
+    {card?.lead != null && <KNote>Lead: {card.lead.label}{card.lead.active ? "" : " · access ended"}</KNote>}
+  </div>;
+}
+
+/** ⋯ More actions: the task's secondary acts in one menu, the same order everywhere — Work, Share & reuse, Danger
+ * last. A one-click POST submits its own small form (outside the menu, so closing the menu never drops it); a go-to
+ * shows the tab that holds the item's one form, opens it and focuses it. */
+function MoreMenu({ items, showTab }: { items: BrowserTaskMore[]; showTab: (tab: PageTab) => void }) {
   const forms = useRef(new Map<number, HTMLFormElement | null>());
-  const [copied, setCopied] = useState(false);
+  const menu = useKMenu();
   if (items.length === 0) return null;
-  const groups: { key: BrowserTaskMore["group"]; label: string }[] = [{ key: "work", label: "Work" }, { key: "share", label: "Share & reuse" }, { key: "danger", label: "Danger" }];
+  const order = { work: 0, share: 1, danger: 2 } as const;
+  const sorted = items.map((item, index) => ({ item, index })).sort((a, b) => order[a.item.group] - order[b.item.group] || a.index - b.index);
   const select = (item: BrowserTaskMore, index: number) => {
     if (item.kind === "post") forms.current.get(index)?.requestSubmit();
-    else if (item.kind === "goto") { showTab(item.tab); revealTarget(item.target, showTab, true); }
-    else if (item.kind === "copy") {
-      void navigator.clipboard?.writeText(window.location.href).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(() => {});
-    }
+    else if (item.kind === "goto") { showTab(pageTabOf(item.tab)); revealTarget(item.target, showTab, true); }
+    else if (item.kind === "link") window.location.assign(item.href);
+    else void navigator.clipboard?.writeText(window.location.href).catch(() => {});
   };
   return <>
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="icon" aria-label="More actions" data-task-more className="phone:size-11"><MoreHorizontal /></Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-60">
-        {groups.map((group, at) => {
-          const mine = items.map((item, index) => ({ item, index })).filter(one => one.item.group === group.key);
-          if (mine.length === 0) return null;
-          return <div key={group.key} role="group" aria-label={group.label}>
-            {at > 0 && <DropdownMenuSeparator />}
-            <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">{group.label}</DropdownMenuLabel>
-            {mine.map(({ item, index }) => item.kind === "link"
-              ? <DropdownMenuItem key={index} asChild><a href={item.href} data-more-item={item.label}>{item.label}</a></DropdownMenuItem>
-              : <DropdownMenuItem key={index} data-more-item={item.label} className={cn(item.group === "danger" && "text-destructive focus:text-destructive")}
-                  onSelect={() => select(item, index)}>{item.kind === "copy" && copied ? "Link copied" : item.label}</DropdownMenuItem>)}
-          </div>;
-        })}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <KButton variant="ghost" sm iconOnly="more" label="More actions" aria-haspopup="dialog" data-task-more=""
+      onClick={event => menu(event.currentTarget, "More actions", sorted.map(({ item, index }) => ({ label: item.label, act: () => select(item, index) })))} />
     {items.map((item, index) => item.kind !== "post" ? null : <PostForm key={index} action={item.action} hidden ref={form => { forms.current.set(index, form); }} data-more-form={item.label}>
       {Object.entries(item.fields).map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />)}
     </PostForm>)}
@@ -464,91 +464,55 @@ export function approvalIdentity(approval: string): string {
   return `${folded ? "folded" : "open"}:${digest}`;
 }
 
-/** Where the one thing that waits on a person lives: the status card's action (Confirm it stopped, Build again, Retry
- * and the rest), or the approval under it. A button inside a closed fold is never the one action. */
-const PRIMARY_ACTION = "[data-task-status] [data-primary-action], .so-task-approval [data-primary-action]";
-const primaryActionNow = (): HTMLElement | null =>
-  [...document.querySelectorAll<HTMLElement>(PRIMARY_ACTION)].find(one => one.closest("details:not([open])") === null && one.closest("[hidden]") === null && (one.textContent?.trim() ?? "") !== "") ?? null;
-
-/** The one action, never out of reach: while something waits on the person and its button has scrolled out of
- * view, a bar pinned to the foot of the page names it. A tap brings the button back into view (opening any fold
- * around it) and puts the cursor where it starts (its password, when it asks for one); it never acts by itself.
- * The button is found again after every render, so a live update that swaps it (Retry appearing, a new approval)
- * is followed. */
-function PinnedAction({ headline }: { headline: "Needs you" | "Failed" | null }) {
-  const waiting = headline !== null;
-  const [action, setAction] = useState<{ element: HTMLElement; label: string } | null>(null);
-  const [hidden, setHidden] = useState(true);
-  const tracked = useRef<{ element: HTMLElement | null; label: string; observer: IntersectionObserver | null }>({ element: null, label: "", observer: null });
-  useEffect(() => {
-    const element = waiting ? primaryActionNow() : null;
-    const label = element?.textContent?.trim() ?? "";
-    const now = tracked.current;
-    if (element === now.element && label === now.label) return;
-    now.observer?.disconnect();
-    now.element = element; now.label = label; now.observer = null;
-    setHidden(true);
-    if (element === null || typeof IntersectionObserver === "undefined") { setAction(null); return; }
-    now.observer = new IntersectionObserver(entries => setHidden(entries.some(one => one.isIntersecting)));
-    now.observer.observe(element);
-    setAction({ element, label });
+/** The task's road (first-run.ts taskRoad) as the kit's progress line: Plan · Approval · Build · Checks · Ready, the
+ * step that waits on you amber, a running one blue, one that stopped red, and why under its name. */
+export function stepsOf(road: readonly JourneyStep[]): StepItem[] {
+  const LABEL: Record<JourneyStep["key"], string> = { plan: "Plan", approve: "Approval", build: "Build", checks: "Checks", ready: "Ready" };
+  return road.map(step => {
+    const variant = step.label !== LABEL[step.key] && step.label.startsWith(LABEL[step.key]) ? step.label.slice(LABEL[step.key].length).trim() : "";
+    const state: StepItem["state"] = step.state === "done" || step.state === "skipped" ? "done"
+      : step.state === "current" ? (step.needsYou ? "now" : "live") : step.state === "stuck" ? (step.needsYou ? "now" : "failed") : "todo";
+    const sub = step.state === "skipped" ? (variant === "" ? "skipped" : variant)
+      : step.needsYou && (step.state === "current" || step.state === "stuck") ? (step.key === "ready" ? "your review" : "needs you")
+      : variant;
+    return { label: LABEL[step.key], state, ...(sub === "" ? {} : { sub }) };
   });
-  useEffect(() => () => tracked.current.observer?.disconnect(), []);
-  if (action === null || hidden) return null;
-  const reach = () => {
-    for (let node = action.element.parentElement; node !== null; node = node.parentElement) if (node instanceof HTMLDetailsElement) node.open = true;
-    const still = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    action.element.scrollIntoView({ block: "center", behavior: still ? "auto" : "smooth" });
-    const field = action.element.closest("form")?.querySelector<HTMLInputElement>("input[type=password], textarea, input[type=text]:not([tabindex='-1'])");
-    (field ?? action.element).focus({ preventScroll: true });
-  };
-  return <div data-pinned-action role="region" aria-label="What this task needs from you"
-    className="sticky bottom-0 z-20 -mx-1 mt-2 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 shadow-lg phone:-mx-4 phone:rounded-none phone:border-x-0 phone:border-b-0 phone:pb-[max(12px,var(--safe-bottom))]">
-    <span className="flex min-w-0 flex-1 items-center">{headline === "Failed" ? <Badge tone="danger" size="chip" dot>Failed</Badge> : <Badge tone="needs" size="chip" dot>Needs you</Badge>}</span>
-    <Button type="button" variant="attention" onClick={reach} className="shrink-0">{action.label}<ArrowRight /></Button>
-  </div>;
 }
 
-const TAB_LABEL: Record<BrowserTaskTab, string> = { activity: "Activity", result: "Result", plan: "Plan" };
+type PageTab = "plan" | "activity" | "attempts";
+/** The address's tab (`tab=`) as this page's three: Plan and Result are the first tab, then Activity and Attempts. */
+const pageTabOf = (tab: string | undefined | null): PageTab => tab === "activity" ? "activity" : tab === "attempts" ? "attempts" : "plan";
 
-/** The page's tabs: plain buttons over panels that all stay mounted (an inactive one is only hidden), so a form or a
- * ceremony inside one is the same instance whichever tab is in front. The address keeps the tab (`tab=`). */
-function TaskTabs({ tab, showTab, counts }: { tab: BrowserTaskTab; showTab: (tab: BrowserTaskTab) => void; counts: Partial<Record<BrowserTaskTab, number>> }) {
-  const keys: BrowserTaskTab[] = ["activity", "result", "plan"];
-  const move = (event: KeyboardEvent<HTMLButtonElement>, at: number) => {
-    const next = event.key === "ArrowRight" ? (at + 1) % keys.length : event.key === "ArrowLeft" ? (at + keys.length - 1) % keys.length : event.key === "Home" ? 0 : event.key === "End" ? keys.length - 1 : null;
-    if (next === null) return;
-    event.preventDefault();
-    showTab(keys[next]!);
-    document.getElementById(`task-tab-${keys[next]}`)?.focus();
-  };
-  return <div role="tablist" aria-label="Task" className="flex gap-1 border-b border-border" data-task-tabs>
-    {keys.map((key, at) => <button key={key} type="button" role="tab" id={`task-tab-${key}`} aria-controls={`task-panel-${key}`} aria-selected={tab === key} tabIndex={tab === key ? 0 : -1}
-      onClick={() => showTab(key)} onKeyDown={event => move(event, at)} data-task-tab={key}
-      className="-mb-px inline-flex min-h-10 items-center gap-1.5 border-b-2 border-transparent px-3 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground aria-selected:border-primary aria-selected:text-foreground phone:min-h-11">
-      {TAB_LABEL[key]}{(counts[key] ?? 0) > 0 && <span className="rounded-full bg-muted px-1.5 text-xs font-medium tabular-nums">{counts[key]}</span>}
-    </button>)}
-  </div>;
-}
-
-/** The page (docs/plans/one-page-task-and-agent.md): one header — title, status with its one action, ⋯ — then
- * Activity (the thread and the composer), Result (the chosen attempt's result and its decision) and Plan (scope,
- * dependencies, holds, options, Cancel), all on this page. With `details` (no Details panel beside it), the task's
- * properties follow the tabs. */
-export function TaskView({ view, chat = null, details = true, csrf = "", result }: { view: BrowserTaskView; chat?: ThreadChat | null; details?: boolean; csrf?: string; result?: ResultSlot }) {
-  const [tab, setTab] = useState<BrowserTaskTab>(view.tab ?? "activity");
-  const showTab = (next: BrowserTaskTab) => {
+/** The page (docs/plans/one-page-task-and-agent.md): one header, the progress line, the status and its one act, then
+ * Plan (Result once there is one), Activity and Attempts, all on this page; Details opens as a drawer. */
+export function TaskView({ view, chat = null, csrf = "", result }: { view: BrowserTaskView; chat?: ThreadChat | null; details?: boolean; csrf?: string; result?: ResultSlot }) {
+  // The result the page loaded with (a later one is announced in its panel, never swapped in).
+  const loadedResult = useRef(view.result ?? null);
+  const hasResult = loadedResult.current !== null;
+  const [tab, setTab] = useState<PageTab>(pageTabOf(view.tab));
+  const [details, setDetails] = useState<HTMLElement | null>(null);
+  const detailsButton = useRef<HTMLButtonElement>(null);
+  // The approval keeps the terms it first showed (src/design/KIT.md): a refresh never swaps them under a person's hands.
+  const shownApproval = useRef(view.approve ?? null);
+  if (shownApproval.current === null && view.approve != null) shownApproval.current = view.approve;
+  const approve = view.approve != null ? shownApproval.current : null;
+  const showTab = (next: PageTab) => {
     setTab(next);
     try {
       const url = new URL(window.location.href);
-      if (next === "activity") url.searchParams.delete("tab"); else url.searchParams.set("tab", next);
-      if (next !== "result") url.searchParams.delete("section");
+      if (next === "plan") url.searchParams.delete("tab"); else url.searchParams.set("tab", next);
+      if (next !== "plan") url.searchParams.delete("section");
       history.replaceState(history.state, "", url.pathname + url.search + url.hash);
     } catch { /* the address is a convenience; the tab is shown either way */ }
   };
   useRevealHashTarget(showTab);
+  useEffect(() => {
+    const open = () => setDetails(detailsButton.current ?? document.body);
+    window.addEventListener("so:show-details", open);
+    return () => window.removeEventListener("so:show-details", open);
+  }, []);
   const people = useLiveTask(view.live);
-  const approvalHere = view.approval !== "" && (view.approvalPlacement ?? "lead") === "lead";
+  const approvalHere = view.approval !== "" && (view.approvalPlacement ?? "lead") === "lead" && approve === null;
   // A link to this very page's other tab (the status's Review result, a build in the thread) switches in place.
   const inPage = (event: MouseEvent<HTMLDivElement>) => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -556,70 +520,67 @@ export function TaskView({ view, chat = null, details = true, csrf = "", result 
     if (!(anchor instanceof HTMLAnchorElement)) return;
     const to = new URL(anchor.href, window.location.href), here = new URL(window.location.href);
     const wanted = to.searchParams.get("tab");
-    if (to.origin !== here.origin || to.pathname !== here.pathname || (wanted !== "result" && wanted !== "plan" && wanted !== "activity")) return;
+    if (to.origin !== here.origin || to.pathname !== here.pathname || (wanted !== "result" && wanted !== "plan" && wanted !== "activity" && wanted !== "attempts")) return;
     if ((to.searchParams.get("version") ?? "") !== (here.searchParams.get("version") ?? "")) return;
     const run = to.searchParams.get("run");
     if (wanted === "result" && run !== null && String(view.result?.selected.build ?? "") !== run) return;
     if (to.searchParams.get("section") !== null && to.searchParams.get("section") !== here.searchParams.get("section")) return;
     event.preventDefault();
-    showTab(wanted);
+    showTab(pageTabOf(wanted));
     if (to.hash !== "") revealTarget(decodeURIComponent(to.hash.slice(1)), showTab);
   };
-  const threadCount = (view.thread ?? []).length;
-  return <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 phone:gap-3" onClick={inPage}>
-    <header className="flex flex-col gap-3 pb-1 phone:gap-2 phone:pb-0">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <h1 className="text-display tracking-tight phone:text-[22px]">{view.title}</h1>
-          <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-body text-muted-foreground phone:mt-0.5">
-            {view.project !== null && <><span className="font-medium text-foreground/80">{view.project}</span><span aria-hidden="true">·</span></>}
-            <span className="min-w-0 truncate font-mono text-xs">{view.id}</span>
-            {view.scout && <Badge tone="info">Scout</Badge>}
-            {people.length > 0 && <><span aria-hidden="true">·</span><AlsoViewing people={people} /></>}
-          </p>
-        </div>
-        <MoreMenu items={[...(view.more ?? []), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} showTab={showTab} />
-      </div>
-      {view.version !== null && <p className="rounded-md bg-info-soft px-3 py-2 text-body text-info">
-        {view.version.label} · <a href={view.version.current.href} className="font-semibold underline underline-offset-4">{view.version.current.label}</a>
-      </p>}
-      {view.archived != null && <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-md bg-raised px-3 py-2" data-archived>
-        <p className="text-body">{view.archived.words} · <time dateTime={view.archived.at} title={fullWhen(view.archived.at, viewerZone())} className="tabular-nums text-muted-foreground">{shortWhen(view.archived.at, new Date(), viewerZone())}</time></p>
-        {view.archived.restore !== null && <PostForm action={view.archived.restore.action}>
+  const editPlan = approve === null ? null : () => { showTab("plan"); revealTarget("plan-editor", showTab, true); };
+  const attempts = Math.max(view.status?.attempts.length ?? 0, 1) + (view.earlier?.attempts.length ?? 0);
+  const first = hasResult ? "Result" : view.scout ? "Investigation" : "Plan";
+  const meta = <>{view.project !== null && <>{view.project} · </>}<span className="k-mono">{view.id}</span>{view.scout && <> · research only</>}
+    {people.length > 0 && <> · <AlsoViewing people={people} /></>}</>;
+  const record = view.more?.find(one => one.kind === "link" && one.label === "Evidence pack");
+  const needs = view.status?.status.headline === "Needs you" || view.status?.status.headline === "Ready for review";
+  const primary = approve === null && needs && view.status?.action != null && view.confirmStopped == null && view.rebuild == null && view.retry == null
+    ? <KLinkButton variant="primary" label={view.status.action.label} href={view.status.action.href} /> : null;
+  return <div data-kit-page data-task-page={view.id}>
+    <div className="k-doc" onClick={inPage}>
+      <KDocHeader back={["/work", "Tasks"]} title={view.title} meta={meta}
+        right={<nav className="k-acts so-task-tools" aria-label="Task tools">
+          {record !== undefined && record.kind === "link" && <KLinkButton variant="ghost" sm label="Full record" href={record.href} />}
+          <KButton ref={detailsButton} variant="ghost" sm lead="panel" label="Details" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} data-open-details="" />
+          <MoreMenu items={[...(view.more ?? []).filter(one => one !== record), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} showTab={showTab} />
+        </nav>} />
+      {view.version !== null && <KInfoLine>{view.version.label} · <a className="k-link" href={view.version.current.href}>{view.version.current.label}</a></KInfoLine>}
+      {view.archived != null && <KSlots status={<><KChip word="Archived" /><h2>Put away</h2></>}
+        text={<>{view.archived.words} · <time dateTime={view.archived.at} title={fullWhen(view.archived.at, viewerZone())}>{shortWhen(view.archived.at, new Date(), viewerZone())}</time></>}
+        acts={view.archived.restore !== null ? <PostForm action={view.archived.restore.action}>
           <input type="hidden" name="return" value={view.archived.restore.returnTo} />
-          <Button type="submit" variant="outline" size="sm">Restore</Button>
-        </PostForm>}
-      </div>}
-    </header>
-
-    {view.journey != null && view.status === null && <Journey steps={view.journey} />}
-
-    {view.status !== null
-      ? <StatusCard view={view} card={view.status} csrf={csrf} />
-      : <Html html={view.statusHtml} />}
-
-    {/* The approval is its own section under the status when it is the thing to do now; otherwise it heads Plan. */}
-    {/* Installed once (a refresh's new nonce never wipes a password being typed), but a new region when what it is
-        changes: folded under Updated approval terms or leading open, and the exact plan it signs. */}
-    {approvalHere && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
-
-    {view.lead.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />)}
-
-    {view.questions !== "" && <Card><Html html={view.questions} className="so-task-questions" /></Card>}
-
-    <TaskTabs tab={tab} showTab={showTab} counts={{ activity: threadCount > 0 ? 0 : 0 }} />
-    <div role="tabpanel" id="task-panel-activity" aria-labelledby="task-tab-activity" hidden={tab !== "activity"} data-task-panel="activity">
-      <Thread items={view.thread ?? []} chat={chat} chatHref={chat === null ? view.chatHref ?? null : null} />
+          <KButton type="submit" variant="primary" label="Restore" data-restore="" />
+        </PostForm> : null}
+        terms={view.archived.restore !== null ? "Restoring puts it back in Tasks. Its history and results were kept." : "An approver can restore it."} />}
+      {view.journey != null && <KSteps steps={stepsOf(view.journey)} />}
+      {approve !== null && <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} />}
+      {/* The approval box is the status while the plan waits on this person: never a second box saying the same. */}
+      {approve !== null ? null : view.status !== null ? <StatusBox view={view} card={view.status} csrf={csrf} approved={view.approved ?? null} /> : <Html html={view.statusHtml} />}
+      {/* The older approval region (a blocked or closed approval, a fold of updated terms): installed once, and a new
+          region when what it is changes (folded or open, and the exact plan it signs). */}
+      {approvalHere && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
+      {view.lead.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />)}
+      {view.questions !== "" && <Html html={view.questions} className="so-task-questions" />}
+      <KTabs label="Task" current={tab} onChange={key => showTab(key as PageTab)}
+        items={[{ key: "plan", label: first }, { key: "activity", label: "Activity" }, { key: "attempts", label: "Attempts", count: <KCount n={attempts} /> }]} />
+      <div role="tabpanel" aria-label={first} hidden={tab !== "plan"} data-task-panel="plan" className="k-sec">
+        {(hasResult || view.result != null) && <ResultPanel view={view} loaded={loadedResult.current} csrf={csrf} result={result} />}
+        {hasResult ? <KDisclose summary="Plan and settings"><PlanPanel view={view} planHtml={approve?.planHtml ?? null} approval={view.approval !== "" && !approvalHere && approve === null} /></KDisclose>
+          : <PlanPanel view={view} planHtml={approve?.planHtml ?? null} approval={view.approval !== "" && !approvalHere && approve === null} />}
+      </div>
+      <div role="tabpanel" aria-label="Activity" hidden={tab !== "activity"} data-task-panel="activity">
+        <Thread items={view.thread ?? []} chat={chat} chatHref={chat === null ? view.chatHref ?? null : null} />
+      </div>
+      <div role="tabpanel" aria-label="Attempts" hidden={tab !== "attempts"} data-task-panel="attempts">
+        <AttemptsPanel view={view} />
+      </div>
     </div>
-    <div role="tabpanel" id="task-panel-result" aria-labelledby="task-tab-result" hidden={tab !== "result"} data-task-panel="result">
-      <ResultPanel view={view} csrf={csrf} result={result} />
-    </div>
-    <div role="tabpanel" id="task-panel-plan" aria-labelledby="task-tab-plan" hidden={tab !== "plan"} data-task-panel="plan">
-      <PlanPanel view={view} approval={view.approval !== "" && !approvalHere} />
-    </div>
-
-    {details && <div className="border-t border-border pt-2"><TaskDetails view={view} /></div>}
-
-    <PinnedAction headline={view.status?.status.headline === "Needs you" || view.status?.status.headline === "Failed" ? view.status.status.headline : null} />
+    {details !== null && <KOverlay kind="drawer" title="Details" trigger={details} onClose={() => setDetails(null)}><TaskDetails view={view} /></KOverlay>}
+    {primary !== null && <KDock>{primary}</KDock>}
   </div>;
 }
+
+/** The form token React builds into its own forms (PostForm adds it); exported for the result view's native forms. */
+export const useFormToken = (): string => useContext(FormToken);

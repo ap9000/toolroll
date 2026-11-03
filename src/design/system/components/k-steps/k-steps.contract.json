@@ -4,7 +4,7 @@
   "name": "KSteps",
   "version": "1.0.0",
   "status": "stable",
-  "summary": "A few named steps on one line (a task's Plan \u00b7 Approval \u00b7 Build \u00b7 Checks \u00b7 Ready), filled up to where the work is; the current step says why under its name.",
+  "summary": "A few named steps on one line (a task's Plan · Approval · Build · Checks · Ready), filled up to where the work is; the current step says why under its name.",
   "source": {
     "file": "k-steps.tsx",
     "export": "KSteps",

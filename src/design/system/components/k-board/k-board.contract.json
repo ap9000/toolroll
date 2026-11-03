@@ -4,7 +4,7 @@
   "name": "KBoard",
   "version": "1.0.0",
   "status": "stable",
-  "summary": "A list's rows as columns (Needs you \u00b7 Queued \u00b7 Running \u00b7 Finished), hairlines only; on a phone one column at a time with a pager above.",
+  "summary": "A list's rows as columns (Needs you · Queued · Running · Finished), hairlines only; on a phone one column at a time with a pager above.",
   "source": {
     "file": "k-board.tsx",
     "export": "KBoard",

@@ -145,23 +145,25 @@ export type BrowserConversation = {
 export type BrowserLink = { label: string; href: string };
 export type BrowserTasksView = {
   kind: 'tasks';
-  tabs: (BrowserLink & { count: number; active: boolean })[];
-  /** Tasks waiting on a person in this view's scope ("3 need you" beside the title). */
+  /** List (rows under group headings) or Board (the same index as columns). */
+  layout: 'list' | 'board';
+  /** The status filters (All, Needs you, Running, Queued, Finished), as addresses with their counts. */
+  tabs: (BrowserLink & { key?: string; count: number; active: boolean })[];
+  /** The project filter: All and each project in view (null with one project). */
+  projects?: { key: string; label: string; href: string; active: boolean }[] | null;
+  /** The List and Board addresses for this same filter. */
+  layouts: { list: string; board: string };
+  /** The scope the counts cover, in words ("in payments-api", "across all your projects"). */
+  scope?: string;
+  /** Tasks waiting on a person in this view's scope. */
   needsYou: number;
   /** All and Needs you list their rows in these groups, in this order (empty ones left out); null: one plain list. */
   groups: { key: BrowserTaskGroup; label: string; count: number }[] | null;
-  rows: {
-    id: string; title: string; href: string; project: string | null; age: string;
-    status: { label: string; tone: StatusTone; token: string };
-    /** What a Needs you row asks: its group. */
-    ask: Ask | null;
-    /** The row's chip under its group: the specific ask (Plan, Result, Mismatch, Plan changed, Failed, Builder offline), or none. */
-    chip: AskChip | null;
-    group: BrowserTaskGroup;
-    action: BrowserLink | null; detail: string | null; problem: string | null; notes: string[];
-    /** Put away, or Restore in Archived (task-tidy.md): a POST to the task's own route; null for a viewer or live work. */
-    tidy?: { action: string; label: 'Put away' | 'Restore'; returnTo: string } | null;
-  }[];
+  rows: BrowserTaskRow[];
+  /** The Board view's columns (Needs you, Queued, Running, Finished); null in the List view. */
+  board?: { key: 'needs' | 'queued' | 'running' | 'finished'; label: string; count: number; href: string; empty: string; rows: BrowserTaskRow[] }[] | null;
+  /** Archived tasks, offered at the foot of Finished (and current in Archived). */
+  archived?: (BrowserLink & { count: number; active: boolean }) | null;
   empty: { text: string; action: BrowserLink | null } | null;
   pages: { first: string | null; next: string | null };
   tools: BrowserLink[];
@@ -172,6 +174,22 @@ export type BrowserTasksView = {
   limits: BrowserLimits | null;
   /** The stored-state filter (Any state, Queued, Running, Done, Failed, Cancelled), each a real link starting on page one. */
   states?: (BrowserLink & { active: boolean })[];
+};
+export type BrowserTaskRow = {
+  id: string; title: string; href: string; project: string | null; age: string;
+  status: { label: string; tone: StatusTone; token: string };
+  /** The row's chip word and tone (src/design/KIT.md): the ask under Needs you, else the headline. */
+  word: { word: string; tone: '' | 'needs' | 'ask' | 'live' | 'done' | 'failed' };
+  /** What a Needs you row asks: its group. */
+  ask: Ask | null;
+  /** The row's chip under its group: the specific ask (Plan, Result, Mismatch, Plan changed, Failed, Builder offline), or none. */
+  chip: AskChip | null;
+  group: BrowserTaskGroup;
+  /** The status rank: 0 waits on a person, 1 runs, 2 queued or waiting, 3 finished, 4 stopped or put away. */
+  rank: number;
+  action: BrowserLink | null; detail: string | null; problem: string | null; notes: string[];
+  /** Put away, or Restore in Archived (task-tidy.md): a POST to the task's own route; null for a viewer or live work. */
+  tidy?: { action: string; label: 'Put away' | 'Restore'; returnTo: string } | null;
 };
 /** One limit: a plan's usage window ("Claude · 5-hour, 48%") or a monthly budget ("shop · Budget, $4.20 of $10"). */
 export type BrowserTaskGroup = WorkIndexGroup;
@@ -323,10 +341,18 @@ export type BrowserTaskView = {
     revision: string } | null;
   /** Where the approval sits: under the header when it is the thing to do now, else at the top of the Plan tab. */
   approvalPlacement?: "lead" | "plan";
+  /** The kit approval box (src/design/KIT.md): the act's form and the facts that decide password, one click or none;
+   * `planHtml` is what it signs, for the Plan tab. Null when nothing waits on this person's approval here. */
+  approve?: { action: string; fields: Record<string, string>; label: string; heading: string; text: string;
+    kind: import("./design/kit.js").ApprovalKind; facts: { passwordless: boolean; remembered: boolean; automatic?: boolean };
+    /** When a remembered password stops counting (ISO); the page words it in the viewer's zone. */
+    rememberedUntil: string | null; planHtml: string } | null;
+  /** How the plan was approved: by whom and how, or the rule that approved it automatically. */
+  approved?: { by: string; at: string; automatic: boolean; rule: string | null; how: string; version: string } | null;
   /** ⋯ More actions: the task's secondary acts, the same order on the task and agent pages, destructive last. */
   more?: BrowserTaskMore[];
 };
-export type BrowserTaskTab = "activity" | "result" | "plan";
+export type BrowserTaskTab = "activity" | "result" | "plan" | "attempts";
 /** One ⋯ item: a plain link, a copy of this page's address, a one-click POST (never a ceremony), or a go-to that switches
  * to the tab holding the item's own form, opens it and focuses it (`target`: that element's id). */
 export type BrowserTaskMore = { group: "work" | "share" | "danger"; label: string } & (

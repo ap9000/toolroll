@@ -9565,9 +9565,9 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
   const rawLimit = text(flags, 'limit');
   const limit = rawLimit === undefined ? 40 : Number(rawLimit);
   if (wanted !== undefined && !STATES.includes(wanted as TaskState)) return fail(write, json, 'task list', 'usage', `--state takes one of ${STATES.join(', ')}`, EXIT.usage);
-  if (rawView !== undefined && !['all', 'needs-you', 'running', 'completed', 'archived'].includes(rawView) ||
+  if (rawView !== undefined && !['all', 'needs-you', 'running', 'queued', 'completed', 'archived'].includes(rawView) ||
       !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-    return fail(write, json, 'task list', 'usage', '--view takes all, needs-you, running, completed or archived; --limit takes 1–100', EXIT.usage);
+    return fail(write, json, 'task list', 'usage', '--view takes all, needs-you, running, queued, completed or archived; --limit takes 1–100', EXIT.usage);
   }
   // A remote person limited to some projects (remoteLensOf) pages and counts only theirs.
   const lens = context.principal?.lens ?? null;

@@ -5285,6 +5285,7 @@ $ task list --json → 0
     "all": 2,
     "needs-you": 2,
     "running": 0,
+    "queued": 0,
     "completed": 0,
     "archived": 0
   },
@@ -5536,6 +5537,7 @@ $ task list --view archived --json → 0
     "all": 2,
     "needs-you": 2,
     "running": 0,
+    "queued": 0,
     "completed": 0,
     "archived": 0
   },

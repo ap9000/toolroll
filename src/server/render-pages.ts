@@ -24,6 +24,9 @@ import { type Scope,type UnattendedPermissionMode } from "../scope.js";
 import { type Decision,type Incident,type RepairChainRow,type Run,type Store,type Task,type TaskState,type WorktreeRow } from "../store.js";
 import { runCostWords,spendLine,tally } from "../summary.js";
 import { type WorkIndexGroup,type WorkIndexItem,type WorkIndexPage } from "../work-index.js";
+import { HEADLINES, type Headline } from "../task-status.js";
+import { chipOfHeadline, type ChipTone } from "../design/kit.js";
+import { btn as kitBtn, chip as kitChip, count as kitCount, empty as kitEmpty, iconSegLinks as kitIconSegLinks, pageHeader as kitPageHeader, parts as kitParts, row as kitRow, segLinks as kitSegLinks } from "./kit.js";
 import { WORK_VIEWS,type WorkFacts,type WorkStatus,type WorkView } from "../workspace-ui.js";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -885,107 +888,143 @@ export type WorkRow = WorkFacts & { assignment?: AssignmentSnapshot | null; assi
 
 export const TASK_GROUP_LABEL: Readonly<Record<WorkIndexGroup, string>> = { ...ASK_LABEL, building: 'Building', rest: 'Recent' };
 
+/** A list row's chip (src/design/KIT.md): a waiting row names its ask ("Plan", "Result") in the ask tone, or says
+ * Needs you; every other row wears its headline in the tone of the status it belongs to. */
+export function workRowChip(row: Pick<WorkIndexItem, 'ask' | 'chip' | 'status' | 'archived'>): { word: string; tone: ChipTone } {
+  if (row.archived !== undefined) return { word: 'Archived', tone: '' };
+  if (row.ask !== null) return row.chip === null ? { word: 'Needs you', tone: 'needs' } : { word: row.chip, tone: 'ask' };
+  const label = row.status.label;
+  if ((HEADLINES as readonly string[]).includes(label)) { const chip = chipOfHeadline(label as Headline); return { word: chip.word, tone: chip.tone }; }
+  const tone = row.status.tone;
+  return { word: label, tone: tone === 'live' ? 'live' : tone === 'done' ? 'done' : tone === 'problem' ? 'failed' : '' };
+}
+
+/** Where a row's one action goes: a result opens on its task's Result tab (the review page is the task page now). */
+function workActionHref(row: WorkIndexItem): string | null {
+  const target = row.primaryAction?.target;
+  if (row.primaryAction?.code === 'open-result' && target?.runId != null) return `${taskHref(target.taskId)}?tab=result&run=${target.runId}`;
+  return browserWorkActionHref(row);
+}
+
+/** The board's four columns: what needs you, what will start on its own, what runs, what finished. */
+export type WorkBoard = { needs: WorkIndexPage; queued: WorkIndexPage; running: WorkIndexPage; finished: WorkIndexPage };
+
 export function workPage(
   chrome: Chrome,
   data: { view: WorkView; projectFilter?: string; work: WorkIndexPage; previous: boolean; multiProject: boolean; now: Date; limits?: BrowserLimits | null; state?: TaskState | null;
     /** An approver in a browser session: rows offer Put away (or Restore, archived), and the page offers Put away old tasks. */
-    canPutAway?: boolean },
+    canPutAway?: boolean;
+    /** The project this list shows (null: every project in view) and whether All was asked for by name (`all=1`). */
+    lens?: string | null; all?: boolean;
+    /** The Board view's columns, read from the same index as the list; absent for the List view. */
+    board?: WorkBoard | null },
 ): Screen {
-  // The stored-state filter (the old task list's) rides every link but a change of state, which starts on page one.
-  const href = (view: WorkView, cursor?: string, state: TaskState | null = data.state ?? null): string => {
-    const query = new URLSearchParams();
-    if (data.projectFilter !== undefined) query.set('project', data.projectFilter);
-    if (view !== 'all') query.set('view', view);
-    if (state !== null) query.set('state', state);
-    if (cursor !== undefined) query.set('cursor', cursor);
-    return `/work${query.size ? `?${query}` : ''}`;
+  const layout = data.board != null ? 'board' as const : 'list' as const;
+  // The project and the stored-state filter ride every link; a change of filter starts on page one.
+  const query = (over: { view?: WorkView; cursor?: string; state?: TaskState | null; layout?: 'list' | 'board'; project?: string | null | 'all' } = {}): string => {
+    const q = new URLSearchParams();
+    const project = over.project === undefined ? (data.projectFilter ?? (data.all === true ? 'all' : null)) : over.project;
+    if (project === 'all') q.set('all', '1'); else if (project !== null) q.set('project', project);
+    const view = over.view ?? data.view;
+    if (view !== 'all') q.set('view', view);
+    const state = over.state === undefined ? data.state ?? null : over.state;
+    if (state !== null) q.set('state', state);
+    if (over.cursor !== undefined) q.set('cursor', over.cursor);
+    if ((over.layout ?? layout) === 'board') q.set('layout', 'board');
+    return `/work${q.size ? `?${q}` : ''}`;
   };
-  const tabs = html`<nav class="work-views" aria-label="Task views">${WORK_VIEWS.map(one =>
-    html`<a href="${href(one.key)}"${one.key === data.view ? html` class="active" aria-current="page"` : null}>${one.label}<span class="count">${data.work.totals[one.key]}</span></a>`
-  )}</nav>`;
+  const href = (view: WorkView, cursor?: string, state: TaskState | null = data.state ?? null): string => query({ view, ...(cursor === undefined ? {} : { cursor }), state });
   // Put away (or Restore, in Archived): one quiet act per row, never on a task with work going on.
   const tidyAct = (row: WorkIndexItem): { action: string; label: 'Put away' | 'Restore' } | null =>
     data.canPutAway !== true ? null : row.archived !== undefined ? { action: `${taskHref(row.rootId)}/restore`, label: 'Restore' }
       : row.liveRunId !== null || row.unfinishedRunId !== null || row.status.views.includes('running') ? null : { action: `${taskHref(row.rootId)}/archive`, label: 'Put away' };
   const returnTo = href(data.view, undefined);
-  const rowHtml = (row: WorkIndexItem): Html => {
-    if (row.archived !== undefined) {
-      const act = tidyAct(row);
-      const project = data.multiProject || row.repo === null ? html`<span class="project-label">${row.repo === null ? 'Unplaced' : projectName(row.repo)}</span>` : null;
-      return html`<article class="work-row" data-task="${row.rootId}" data-work-status="archived" data-work-views="archived"><div class="work-row-main"><a class="work-title" href="${taskHref(row.rootId)}">${row.title}</a><p class="work-meta">${project}<span>${relativeAge(row.archived.at, data.now)}</span><span class="mono">${row.rootId}</span></p><p class="work-detail" data-archived-by>${archivedWords(row.archived)}</p></div><div class="work-row-status">${act === null ? null : postForm(act.action, html`<button type="submit" class="secondary">${act.label}</button>`, { hidden: { return: returnTo }, attrs: { class: 'inline', 'data-tidy-act': 'restore' } })}</div></article>`;
-    }
-    const target = row.primaryAction?.target;
-    const actionHref = row.primaryAction?.code === 'open-result' && target?.runId != null
-      ? `/review?result=${encodeURIComponent(target.taskId)}&run=${target.runId}`
-      : browserWorkActionHref(row);
-    const action = actionHref === null || row.primaryAction === null ? null : html`<a class="work-action" data-primary-action href="${actionHref}">${row.primaryAction.label} →</a>`;
-    const project = data.multiProject || row.repo === null ? html`<span class="project-label">${row.repo === null ? 'Unplaced' : projectName(row.repo)}</span>` : null;
-    const act = tidyAct(row);
-    const putAway = act === null ? null : postForm(act.action, html`<button type="submit" class="quiet">${act.label}</button>`, { hidden: { return: returnTo }, attrs: { class: 'inline', 'data-tidy-act': 'put-away' } });
-    return html`<article class="work-row" data-task="${row.rootId}" data-work-status="${row.status.token}" data-work-views="${row.status.views.join(' ')}"><div class="work-row-main"><a class="work-title" href="${taskHref(row.rootId)}">${row.title}</a><p class="work-meta">${project}<span>${relativeAge(row.updatedAt, data.now)}</span><span class="mono">${row.rootId}</span></p></div><div class="work-row-status">${statusLineHtml(row.status)}${action}${putAway}${row.familyProblem === null ? null : html`<p class="problem">${row.familyProblem}</p>`}${row.status.views.includes('needs-you') && !['write-scope', 'approve-scope'].includes(row.primaryAction?.code ?? '') && row.status.detail !== row.status.label && row.status.detail !== row.familyProblem ? html`<p class="work-detail">${row.status.detail}</p>` : null}${workDiagnosticsHtml(row.status.diagnostics)}</div></article>`;
-  };
   const current = WORK_VIEWS.find(one => one.key === data.view)!;
   const filtered = (data.state ?? null) !== null;
-  // The state filter, as real links (the old task list's), so a page without the React view can still change it.
-  const stateLinks = html`<nav class="work-states" aria-label="Task state"><span class="meta">State:</span> ${joinHtml([html`<a href="${href(data.view, undefined, null)}"${filtered ? null : html` aria-current="page"`}>Any</a>`,
-    ...TASK_STATES.map(one => html`<a href="${href(data.view, undefined, one)}"${data.state === one ? html` aria-current="page"` : null}>${one}</a>`)], html` · `)}</nav>`;
-  const list = data.work.items.length === 0 && filtered && !data.previous
-    ? html`<div class="work-empty" data-work-empty="${data.view}"><p>No tasks are ${data.state} in this view.</p><a href="${href(data.view, undefined, null)}">Show every state →</a></div>`
-    : data.work.items.length === 0
-    ? html`<div class="work-empty" data-work-empty="${data.view}"><p>${data.previous ? 'There are no more tasks on this page.' : current.empty}</p>${data.view === 'all' && !data.previous ? html`<p><a class="button-link" href="${chrome.chat === true ? '/chat' : '/tasks/new'}">${chrome.chat === true ? 'Start in chat' : 'Add a task'}</a></p>` : html`<a href="${href('all')}">See all tasks →</a>`}</div>`
-    : html`<div class="work-list">${data.work.items.map(rowHtml)}</div>`;
-  const pages = !data.previous && data.work.nextCursor === null ? null : html`<nav class="row work-pagination" aria-label="Task pages">${data.previous ? html`<a class="button-link" href="${href(data.view)}">First page</a>` : null}${data.work.nextCursor === null ? null : html`<a class="button-link" rel="next" href="${href(data.view, data.work.nextCursor)}">Next page</a>`}</nav>`;
-  const tools = html`<details class="work-tools"><summary>Work tools${CHEVRON_ICON}</summary><nav class="work-tools-menu">${[['/inbox', 'Inbox'], ['/board', 'Board'], ['/board?view=order', 'Order'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']]), ['/ledger', 'Action ledger']]
-      .map(([path, label]) => html`<a href="${path}">${label}</a>`)}</nav></details>`;
+  const projectOf = (row: WorkIndexItem): string | null => data.multiProject || row.repo === null ? (row.repo === null ? 'Unplaced' : projectName(row.repo)) : null;
+  // The status filters, as addresses, each with its count; Archived sits at the foot of Finished, not in the track.
+  const tabs = WORK_VIEWS.filter(one => one.key !== 'archived').map(one => ({ key: one.key, label: one.label, href: href(one.key, undefined, null), count: data.work.totals[one.key], active: one.key === data.view }));
+  // The project filter: All and each project in view, when there is more than one.
+  const known = chrome.projects ?? [];
+  const lens = data.lens === undefined ? chrome.project : data.lens;
+  const projects = known.length < 2 ? null : [
+    { key: '', label: 'All', href: query({ project: 'all' }), active: lens === null },
+    ...known.map(one => ({ key: one.path, label: one.name, href: query({ project: one.path }), active: lens === one.path })),
+  ];
+  const rowOf = (row: WorkIndexItem): BrowserTasksView['rows'][number] => {
+    const act = tidyAct(row);
+    const tidy = act === null ? null : { action: act.action, label: act.label, returnTo };
+    const chip = workRowChip(row);
+    if (row.archived !== undefined) return {
+      id: row.rootId, title: row.title, href: taskHref(row.rootId), project: projectOf(row), age: relativeAge(row.archived.at, data.now),
+      status: { label: 'Archived', tone: 'muted' as const, token: 'archived' }, chip: null, word: chip,
+      ask: null, group: 'rest' as const, rank: 4, action: null, detail: archivedWords(row.archived), problem: null, notes: [], tidy,
+    };
+    const actionHref = workActionHref(row);
+    const needsYouDetail = (row.status.views.includes('needs-you') || row.status.label === 'Failed') && !['write-scope', 'approve-scope'].includes(row.primaryAction?.code ?? '') && row.status.label !== 'Ready for review' && row.status.detail !== row.status.label && row.status.detail !== row.familyProblem;
+    return {
+      id: row.rootId, title: row.title, href: taskHref(row.rootId), project: projectOf(row), age: relativeAge(row.updatedAt, data.now),
+      status: { label: row.status.label, tone: row.status.tone, token: row.status.token }, chip: row.chip, word: chip,
+      ask: row.ask, group: row.ask ?? (row.status.rank === 1 ? 'building' : 'rest'), rank: row.status.rank,
+      // One quiet action, on a row that waits on you; every other row is its own link.
+      action: actionHref === null || row.primaryAction === null || row.ask === null ? null : { label: row.primaryAction.label, href: actionHref },
+      detail: needsYouDetail ? row.status.detail : (row as { progress?: string }).progress ?? (row.ask === null && row.status.detail !== row.status.label ? row.status.detail : null),
+      problem: row.familyProblem,
+      notes: (row.status.diagnostics ?? []).map(one => `${one.label} · ${one.detail}`),
+      tidy,
+    };
+  };
+  const rows = data.work.items.map(rowOf);
+  const board = data.board == null ? null : ([
+    ['needs', 'Needs you', data.board.needs, 'needs-you', 'Nothing needs you.'],
+    ['queued', 'Queued', data.board.queued, 'queued', 'Nothing queued.'],
+    ['running', 'Running', data.board.running, 'running', 'Nothing running.'],
+    ['finished', 'Finished', data.board.finished, 'completed', 'Nothing has finished yet.'],
+  ] as const).map(([key, label, page, view, empty]) => ({ key, label, count: page.totals[view], href: query({ view, layout: 'list' }), empty, rows: page.items.map(rowOf) }));
   const putAwayLink = data.canPutAway === true && data.view !== 'archived' ? { label: 'Put away old tasks', href: '/work/put-away' } : null;
-  const toolLinks = [['/inbox', 'Inbox'], ['/board', 'Board'], ['/board?view=order', 'Order'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']])];
+  const toolLinks = [['/board?view=order', 'Order the queue'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']]), ['/ledger', 'Action ledger']];
+  const newTaskHref = lens === null ? '/tasks/new' : `/tasks/new?project=${encodeURIComponent(lens)}`;
+  const emptyNow = data.work.items.length > 0 ? null : filtered && !data.previous ? { text: `No tasks are ${data.state} in this view.`, action: { label: 'Show every state', href: href(data.view, undefined, null) } } : {
+    text: data.previous ? 'There are no more tasks on this page.' : current.empty,
+    action: data.view === 'all' && !data.previous ? { label: chrome.chat === true ? 'Start in chat' : 'Add a task', href: chrome.chat === true ? '/chat' : newTaskHref } : data.view === 'all' ? null : { label: 'Show all tasks', href: href('all') },
+  };
   const view: BrowserTasksView = {
     kind: 'tasks',
-    tabs: WORK_VIEWS.map(one => ({ label: one.label, href: href(one.key), count: data.work.totals[one.key], active: one.key === data.view })),
+    layout,
+    tabs,
+    projects,
+    layouts: { list: query({ layout: 'list' }), board: query({ layout: 'board', view: 'all' }) },
+    scope: lens === null ? 'across all your projects' : `in ${known.find(one => one.path === lens)?.name ?? projectName(lens)}`,
     needsYou: data.work.totals['needs-you'],
     groups: data.view !== 'all' && data.view !== 'needs-you' ? null
       : ([...ASKS, ...(data.view === 'all' ? ['building', 'rest'] as const : [])] as WorkIndexGroup[])
         .map(key => ({ key, label: TASK_GROUP_LABEL[key], count: data.work.groups[key] })).filter(one => one.count > 0),
-    rows: data.work.items.map(row => {
-      const target = row.primaryAction?.target;
-      const actionHref = row.primaryAction?.code === 'open-result' && target?.runId != null
-        ? `/review?result=${encodeURIComponent(target.taskId)}&run=${target.runId}`
-        : browserWorkActionHref(row);
-      const act = tidyAct(row);
-      const tidy = act === null ? null : { action: act.action, label: act.label, returnTo };
-      if (row.archived !== undefined) return {
-        id: row.rootId, title: row.title, href: taskHref(row.rootId),
-        project: data.multiProject || row.repo === null ? (row.repo === null ? 'Unplaced' : projectName(row.repo)) : null,
-        age: relativeAge(row.archived.at, data.now), status: { label: 'Archived', tone: 'muted' as const, token: 'archived' },
-        ask: null, chip: null, group: 'rest' as const, action: null, detail: archivedWords(row.archived), problem: null, notes: [], tidy,
-      };
-      const needsYouDetail = (row.status.views.includes('needs-you') || row.status.label === 'Failed') && !['write-scope', 'approve-scope'].includes(row.primaryAction?.code ?? '') && row.status.label !== 'Ready for review' && row.status.detail !== row.status.label && row.status.detail !== row.familyProblem;
-      return {
-        id: row.rootId, title: row.title, href: taskHref(row.rootId),
-        project: data.multiProject || row.repo === null ? (row.repo === null ? 'Unplaced' : projectName(row.repo)) : null,
-        age: relativeAge(row.updatedAt, data.now),
-        status: { label: row.status.label, tone: row.status.tone, token: row.status.token },
-        ask: row.ask, chip: row.chip, group: row.ask ?? (row.status.rank === 1 ? 'building' : 'rest'),
-        action: actionHref === null || row.primaryAction === null ? null : { label: row.primaryAction.label, href: actionHref },
-        detail: needsYouDetail ? row.status.detail : (row as { progress?: string }).progress ?? null,
-        problem: row.familyProblem,
-        notes: (row.status.diagnostics ?? []).map(one => `${one.label} · ${one.detail}`),
-        tidy,
-      };
-    }),
-    empty: data.work.items.length > 0 ? null : filtered && !data.previous ? { text: `No tasks are ${data.state} in this view.`, action: { label: "Show every state", href: href(data.view, undefined, null) } } : {
-      text: data.previous ? 'There are no more tasks on this page.' : current.empty,
-      action: data.view === 'all' && !data.previous ? { label: chrome.chat === true ? 'Start in chat' : 'Add a task', href: chrome.chat === true ? '/chat' : '/tasks/new' } : { label: 'See all tasks', href: href('all') },
-    },
+    rows,
+    board,
+    archived: data.view === 'completed' || data.view === 'archived' ? { label: 'Archived', href: href('archived', undefined, null), count: data.work.totals.archived, active: data.view === 'archived' } : null,
+    empty: emptyNow,
     pages: { first: data.previous ? href(data.view) : null, next: data.work.nextCursor === null ? null : href(data.view, data.work.nextCursor) },
     tools: toolLinks.map(([path, label]) => ({ label: label!, href: path! })),
-    newTask: { label: 'New task', href: '/tasks/new' },
+    newTask: { label: 'New task', href: newTaskHref },
     putAway: putAwayLink,
     limits: data.limits ?? null,
     states: [{ label: 'Any state', href: href(data.view, undefined, null), active: (data.state ?? null) === null },
       ...TASK_STATES.map(one => ({ label: one.charAt(0).toUpperCase() + one.slice(1), href: href(data.view, undefined, one), active: data.state === one }))],
   };
-  return screen('work', html`<div class="work-head"><h1>Tasks</h1>${putAwayLink === null ? null : html`<a class="button-link" href="${putAwayLink.href}" data-put-away-old>${putAwayLink.label}</a>`}${tools}</div>${limitsHtml(data.limits ?? null)}${tabs}${stateLinks}${list}${pages}`, { chrome, workspace: { view } });
+  // The page without the workspace (and the first paint): the same top bar and rows from the server kit.
+  const countOf = (tab: typeof tabs[number]): Html => kitCount(tab.count, { ink: tab.key === 'needs-you' });
+  const header = kitPageHeader('Tasks', { right: kitParts(
+    projects === null ? html`` : kitSegLinks('Project', projects.find(one => one.active)?.key ?? '', projects.map(one => ({ key: one.key, label: one.label, href: one.href }))),
+    kitSegLinks('Status', data.view, tabs.map(one => ({ key: one.key, label: one.label, href: one.href, count: countOf(one) }))),
+    kitIconSegLinks('View', layout, [{ key: 'list', label: 'List', href: view.layouts.list, icon: 'list' }, { key: 'board', label: 'Board', href: view.layouts.board, icon: 'board' }]),
+    kitBtn('New task', { variant: 'primary', sm: true, lead: 'plus', href: view.newTask.href })) });
+  const fallbackRow = (row: BrowserTasksView['rows'][number]): Html => kitRow({ href: row.href, chip: kitChip(row.word.word, row.word.tone), title: row.title, desc: row.detail ?? '',
+    meta: html`${row.project === null ? '' : html`<span>${row.project}</span>`}<span class="k-num">${row.age}</span>`, wait: row.ask !== null,
+    ...(row.action === null ? {} : { action: kitBtn(row.action.label, { sm: true, href: row.action.href }) }) });
+  const list = rows.length === 0 ? kitEmpty({ title: emptyNow?.text ?? current.empty, ...(emptyNow?.action ? { action: kitBtn(emptyNow.action.label, { sm: true, href: emptyNow.action.href }) } : {}) })
+    : joinHtml(rows.map(fallbackRow));
+  const pages = !data.previous && data.work.nextCursor === null ? null : html`<p class="k-foot">${data.previous ? html`<a href="${href(data.view)}">First page</a> ` : null}${data.work.nextCursor === null ? null : html`<a rel="next" href="${href(data.view, data.work.nextCursor)}">Next page</a>`}</p>`;
+  return screen('work', html`<div data-kit-page>${header}${list}${pages}</div>`, { chrome, workspace: { view } });
 }
 
 export function browsePage(chrome: Chrome, data: {
