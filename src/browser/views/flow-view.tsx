@@ -9,16 +9,18 @@
 import { SteerControls, SteerNote } from "./steer-composer.js";
 import { roomName, useLiveRoom } from "../live.js";
 import { NEEDS } from "../../needs-you.js";
-import { Background, BackgroundVariant, BaseEdge, Controls, EdgeLabelRenderer, Handle, MarkerType, NodeResizer, Position, ReactFlow, ReactFlowProvider, applyNodeChanges, getSmoothStepPath, useReactFlow, type Connection, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
+import { Background, BackgroundVariant, BaseEdge, EdgeLabelRenderer, Handle, MarkerType, NodeResizer, Position, ReactFlow, ReactFlowProvider, applyNodeChanges, getSmoothStepPath, useReactFlow, useViewport, type Connection, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import "./flow-view.css";
 import { Bell, BellOff, Bot, CalendarClock, Download, Ellipsis, Hourglass, LineChart, ListChecks, MessageSquareReply, Copy, Flag, GitPullRequest, Hammer, Inbox, Megaphone, MessageSquare, MousePointerClick, Pencil, PenLine, Plus, Search, Send, Signpost, Split, Globe, Mail, Wrench, SquareKanban, UserCheck, Webhook, Workflow, X, Zap } from "lucide-react";
 import { threadWhen } from "./task-view.js";
 import { deadlineWords, shortWhen, viewerZone } from "../../when-html.js";
-import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { BrowserFlowCard, BrowserFlowSentItem, BrowserFlowStage, BrowserFlowTrigger, BrowserFlowView } from "../../browser-workspace.js";
-import { unattendedCoverWords, unattendedEndAfterWords, unattendedLimitWords, untilDayWords } from "../../flow-unattended-words.js";
+import { unattendedBudgetOf, unattendedCoverWords, unattendedEndAfterWords, unattendedLimitWords, unattendedRunsOf, untilDayWords } from "../../flow-unattended-words.js";
 import { Passwordless } from "../ui/post-form.js";
-import { Badge, Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Input, Label, Textarea, cn, toast } from "../components/ui/index.js";
+import { Badge, Button, Input, Label, Textarea, cn } from "../components/ui/index.js";
+import { KActs, KApprove, KButton, KIcon, KChip, KCount, KDisclose, KDock, KEmpty, KField, KGroup, KInput, KLinkButton, KNotice, KOverlay, KPageHeader, KRow, KSeg, KSelect, KSlots, KStatus, useKMenu } from "../kit/index.js";
 
 /** A person's initials in a small circle, the same colour for the same name everywhere. */
 function Face({ name, size = "sm" }: { name: string; size?: "sm" | "md" }) {
@@ -132,91 +134,83 @@ type ZoneData = {
   stage: BrowserFlowStage; kindLabel: string; owner: string; cards: BrowserFlowCard[]; editing: boolean; canMove: boolean; start: boolean;
   /** v92: the subagent who decides or handles this zone, by name. */
   subagent: string | null;
-  selectedCard: number | null; onCard: (id: number) => void; onDrop: (card: number, stage: string) => void; hidden: number;
+  selectedCard: number | null; onCard: (id: number, from: HTMLElement | null) => void; onDrop: (card: number, stage: string) => void; hidden: number;
   /** Who else has each card open right now. */
   lookers: Record<number, string[]>;
   onResize: (stage: string, box: { x: number; y: number; width: number; height: number }) => void;
-  /** A script zone that starts a browser: its browser status line, drawn by the canvas (null elsewhere). */
+  /** A script zone that starts a browser and may not yet: one quiet line (the decision itself is on the page). */
   browserLine: ReactNode;
 };
 
+/** One zone: its step (icon, name, what it is, who), the cards in it now, and the dots that connect it while editing. */
 function ZoneNode({ data, selected }: NodeProps<Node<ZoneData, "zone">>) {
   const { stage, cards, editing, canMove } = data;
-  const color = COLORS[stage.zone.color] ?? COLORS["slate"]!;
   const [over, setOver] = useState(false);
-  const handle = cn("!size-2.5 !border-2 !border-card", !editing && "!opacity-0");
+  const handle = cn("fl-handle", !editing && "off");
   return <div
-    // Zones are plain surfaces in both themes; a zone's colour is said once, on its icon (a tint that reads as pastel on white turns muddy on dark).
-    className={cn("flex h-full flex-col overflow-hidden rounded-xl border bg-muted/40 shadow-sm", selected && editing ? "ring-2 ring-primary" : "", over && "ring-2 ring-primary/60")}
+    // Zones are paper sheets in both themes; a zone's colour is said once, on its icon.
+    className={cn("fl-zone-n", selected && editing && "selected", over && "over")}
     onDragOver={event => { if (!canMove || editing) return; event.preventDefault(); setOver(true); }}
     onDragLeave={() => setOver(false)}
     onDrop={event => { setOver(false); const id = Number(event.dataTransfer.getData("text/so-card")); if (id > 0) data.onDrop(id, stage.id); }}
     data-zone={stage.id}>
-    {editing && <NodeResizer isVisible={selected} minWidth={220} minHeight={160} lineClassName="!border-primary" handleClassName="!size-2 !bg-primary" onResizeEnd={(_event, box) => data.onResize(stage.id, box)} />}
+    {editing && <NodeResizer isVisible={selected} minWidth={220} minHeight={160} lineClassName="fl-resize-line" handleClassName="fl-resize-handle" onResizeEnd={(_event, box) => data.onResize(stage.id, box)} />}
     {/* Drawing handles: the right dot makes a "then" arrow, the bottom dot an "if sent back" arrow; any side receives. */}
-    <Handle type="source" position={Position.Right} id="next" className={cn(handle, "!bg-primary")} isConnectable={editing} />
-    <Handle type="source" position={Position.Bottom} id="fail" className={cn(handle, "!bg-destructive")} style={{ left: "75%" }} isConnectable={editing} />
-    {(["Left", "Right", "Top", "Bottom"] as const).map(side => <Handle key={`t-${side}`} type="target" position={Position[side]} id={`t-${side}`} className={handle} isConnectable={editing}
-/>)}
+    <Handle type="source" position={Position.Right} id="next" className={cn(handle, "next")} isConnectable={editing} />
+    <Handle type="source" position={Position.Bottom} id="fail" className={cn(handle, "fail")} style={{ left: "75%" }} isConnectable={editing} />
+    {(["Left", "Right", "Top", "Bottom"] as const).map(side => <Handle key={`t-${side}`} type="target" position={Position[side]} id={`t-${side}`} className={handle} isConnectable={editing} />)}
     {/* Routing handles: arrows leave from whichever side faces their target. Never drawn from. */}
-    {(["Left", "Right", "Top", "Bottom"] as const).map(side => <Handle key={`s-${side}`} type="source" position={Position[side]} id={`s-${side}`} className="!opacity-0 !pointer-events-none" isConnectable={false}
-/>)}
-    <header className="flex items-center gap-2 border-b px-3 py-2">
-      <span className="inline-flex size-6 items-center justify-center rounded-md text-white" style={{ background: color }}>{KIND_ICONS[stage.kind]}</span>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-body font-semibold">{stage.title}</div>
-        <div className="truncate text-[11px] text-muted-foreground">{data.kindLabel}{data.start ? " · new cards start here" : ""}{data.subagent !== null ? ` · ${data.subagent}` : stage.toOwner === true ? ` · ${data.owner}` : stage.approver ? ` · ${stage.approver}` : ""}</div>
-      </div>
-      {cards.length > 0 && <span className="rounded-full bg-muted px-1.5 text-[11px] font-semibold text-muted-foreground">{cards.length}</span>}
+    {(["Left", "Right", "Top", "Bottom"] as const).map(side => <Handle key={`s-${side}`} type="source" position={Position[side]} id={`s-${side}`} className="fl-handle route" isConnectable={false} />)}
+    <header className="fl-zone-h">
+      <span className="fl-ico" style={{ color: COLORS[stage.zone.color] ?? COLORS["slate"] }}>{KIND_ICONS[stage.kind]}</span>
+      <span className="fl-zone-t"><b>{stage.title}</b><span>{data.kindLabel}{data.start ? " · new cards start here" : ""}{data.subagent !== null ? ` · ${data.subagent}` : stage.toOwner === true ? ` · ${data.owner}` : stage.approver ? ` · ${stage.approver}` : ""}</span></span>
+      {cards.length > 0 && <KCount n={cards.length} ink={cards.some(card => card.canDecide)} />}
     </header>
-    {data.browserLine !== null && stage.kind === "check" && stage.browser === true && !editing && <div className="nodrag nopan border-b px-3 py-1.5" data-zone-browser>{data.browserLine}</div>}
-    <ul className="nowheel flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
+    {data.browserLine !== null && stage.kind === "check" && stage.browser === true && !editing && <p className="fl-zone-br" data-zone-browser>{data.browserLine}</p>}
+    <ul className="nowheel fl-zone-cards">
       {cards.map(card => <li key={card.id}>
         <button type="button" draggable={canMove && !editing}
           onDragStart={event => { event.dataTransfer.setData("text/so-card", String(card.id)); event.dataTransfer.effectAllowed = "move"; }}
-          onClick={() => data.onCard(card.id)}
-          className={cn("nodrag nopan w-full cursor-pointer rounded-lg border bg-card px-2.5 py-2 text-left shadow-xs transition-colors hover:border-primary/50",
-            data.selectedCard === card.id && "border-primary ring-1 ring-primary", card.canDecide && "border-attention/60")}
+          onClick={event => data.onCard(card.id, event.currentTarget)}
+          className={cn("nodrag nopan fl-card", data.selectedCard === card.id && "selected", card.canDecide && "wait")}
           data-card={card.id}>
-          <div className="flex items-start gap-1.5">
-            <div className="line-clamp-2 min-w-0 flex-1 text-[12.5px] font-medium leading-snug">{card.title}</div>
-            {(data.lookers[card.id]?.length ?? 0) > 0 && <span className="flex shrink-0 -space-x-1" data-card-lookers title={`${data.lookers[card.id]!.join(" and ")} ${data.lookers[card.id]!.length === 1 ? "is" : "are"} looking at this`}>
-              {data.lookers[card.id]!.slice(0, 2).map(name => <span key={name} className="rounded-full ring-2 ring-primary/70"><Face name={name} /></span>)}</span>}
-          </div>
-          {card.sorted !== null && <div className="mt-1 flex"><SortChip sorted={card.sorted} /></div>}
-          {card.waiting !== null && <div className={cn("mt-1 text-[11px] leading-snug", card.task !== null && (stage.kind === "task" || stage.kind === "report") ? "truncate" : "line-clamp-2", card.canDecide || card.question?.mine ? "font-semibold text-attention" : "text-muted-foreground")}>{card.canDecide ? NEEDS.card.sentence({}) : card.question?.mine ? `${card.question.from.split(" · ")[0]} asks you` : card.waiting}</div>}
-          {card.deadline != null && <div className="mt-0.5 text-[11px] text-muted-foreground" data-card-deadline>{deadlineWords(card.deadline)}</div>}
-          {(card.owner !== null || card.comments.length > 0) && <div className="mt-1.5 flex items-center gap-1.5">
+          <span className="fl-card-top">
+            <span className="fl-card-t">{card.title}</span>
+            {(data.lookers[card.id]?.length ?? 0) > 0 && <span className="fl-faces" data-card-lookers title={`${data.lookers[card.id]!.join(" and ")} ${data.lookers[card.id]!.length === 1 ? "is" : "are"} looking at this`}>
+              {data.lookers[card.id]!.slice(0, 2).map(name => <Face key={name} name={name} />)}</span>}
+          </span>
+          {card.sorted !== null && <span className="fl-card-l"><SortChip sorted={card.sorted} /></span>}
+          {card.waiting !== null && <span className={cn("fl-card-l", card.canDecide || card.question?.mine ? "mine" : "")}><span>{card.canDecide ? NEEDS.card.sentence({}) : card.question?.mine ? `${card.question.from.split(" · ")[0]} asks you` : card.waiting}</span></span>}
+          {card.deadline != null && <span className="fl-card-l" data-card-deadline>{deadlineWords(card.deadline)}</span>}
+          {(card.owner !== null || card.comments.length > 0) && <span className="fl-card-foot">
             {card.owner !== null && <Face name={card.owner} />}
-            <span className="flex-1" />
-            {card.comments.length > 0 && <span className="inline-flex items-center gap-0.5 text-[11px] text-muted-foreground"><MessageSquare className="size-3" aria-hidden="true" />{card.comments.length}</span>}
-          </div>}
+            <span className="k-grow" />
+            {card.comments.length > 0 && <span className="fl-card-c"><MessageSquare className="size-3" aria-hidden="true" />{card.comments.length}</span>}
+          </span>}
         </button>
       </li>)}
-      {cards.length === 0 && <li className="px-1 py-2 text-[11px] text-muted-foreground">{editing ? stage.kind === "done" ? "" : "Drag the dots to connect zones." : data.hidden > 0 ? "" : "No cards here."}</li>}
-      {data.hidden > 0 && <li className="px-1 py-1 text-[11px] text-muted-foreground">{data.hidden} other card{data.hidden === 1 ? "" : "s"}</li>}
+      {cards.length === 0 && <li className="fl-zone-empty">{editing ? stage.kind === "done" ? "" : "Drag the dots to connect zones." : data.hidden > 0 ? "" : "No cards here."}</li>}
+      {data.hidden > 0 && <li className="fl-zone-empty">{data.hidden} other card{data.hidden === 1 ? "" : "s"}</li>}
     </ul>
   </div>;
 }
 
-type TriggerData = { triggers: BrowserFlowTrigger[]; onOpen: (id: number) => void; onPress: (id: number) => void };
-const TRIGGER_ROW = 44, TRIGGER_HEAD = 30;
+type TriggerData = { triggers: BrowserFlowTrigger[]; onOpen: (id: number, from: HTMLElement | null) => void; onPress: (id: number, from: HTMLElement | null) => void };
+const TRIGGER_ROW = 48, TRIGGER_HEAD = 30;
 
 /** What starts cards in one zone, beside it: each trigger in a line, whether it is well, and Start for a button. One arrow into the zone. */
 function TriggerNode({ data }: NodeProps<Node<TriggerData, "trigger">>) {
-  return <div className="flex h-full flex-col overflow-hidden rounded-lg border bg-card shadow-sm" data-trigger-group>
-    <Handle type="source" position={Position.Right} id="out" className="!opacity-0 !pointer-events-none" isConnectable={false} />
-    <div className="flex items-center gap-1.5 px-2.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground" style={{ height: TRIGGER_HEAD }}><Zap className="size-3" aria-hidden="true" />Starts cards</div>
+  return <div className="fl-trig-n" data-trigger-group>
+    <Handle type="source" position={Position.Right} id="out" className="fl-handle route" isConnectable={false} />
+    <div className="fl-trig-h" style={{ height: TRIGGER_HEAD }}><KIcon name="bolt" small />Starts cards</div>
     {data.triggers.map(trigger => {
       const attention = trigger.failing || (trigger.hook !== null && !trigger.hook.ready);
       const line = trigger.state === "paused" ? "Paused" : trigger.failing ? "Needs attention" : trigger.hook !== null && !trigger.hook.ready ? "Needs its secret" : trigger.detail;
-      return <div key={trigger.id} className={cn("flex items-center gap-2 border-t px-2.5", trigger.state === "paused" && "opacity-60")} style={{ height: TRIGGER_ROW }} data-trigger={trigger.id}>
-        <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">{TRIGGER_ICONS[trigger.kind] ?? <Zap className="size-3.5" aria-hidden="true" />}</span>
-        <button type="button" className="nodrag nopan min-w-0 flex-1 cursor-pointer text-left" onClick={() => data.onOpen(trigger.id)} aria-label={`Trigger: ${trigger.words}`}>
-          <div className="truncate text-caption font-semibold">{trigger.name}</div>
-          <div className={cn("truncate text-[11px]", attention ? "text-warning" : "text-muted-foreground")}>{line}</div>
-        </button>
-        {trigger.button !== null && trigger.state === "active" && <Button size="sm" className="nodrag nopan h-7 px-2.5" onClick={() => data.onPress(trigger.id)}>Start</Button>}
+      return <div key={trigger.id} className={cn("fl-trig", trigger.state === "paused" && "paused")} style={{ height: TRIGGER_ROW }} data-trigger={trigger.id}>
+        <span className="fl-ico">{TRIGGER_ICONS[trigger.kind] ?? <Zap className="size-3.5" aria-hidden="true" />}</span>
+        <span className="fl-trig-b"><KButton variant="ghost" sm label={trigger.name} className="nodrag nopan" aria-label={`Trigger: ${trigger.words}`} onClick={event => data.onOpen(trigger.id, event.currentTarget)} />
+          <span className={attention ? "bad" : ""}>{line}</span></span>
+        {trigger.button !== null && trigger.state === "active" && <KButton sm label="Start" className="nodrag nopan" onClick={event => data.onPress(trigger.id, event.currentTarget)} />}
       </div>;
     })}
   </div>;
@@ -435,7 +429,7 @@ function ChooseBox({ choose, base, csrf, apply }: { choose: NonNullable<BrowserF
   </div>;
 }
 
-function CardPanel({ card, view, csrf, apply, onClose, onAllowBrowser }: { card: BrowserFlowCard; view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onClose: () => void; onAllowBrowser?: () => void }) {
+function CardPanel({ card, view, csrf, apply, onAllowBrowser }: { card: BrowserFlowCard; view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onAllowBrowser?: () => void }) {
   const [note, setNote] = useState("");
   const [draftText, setDraftText] = useState(card.draft?.text ?? "");
   useEffect(() => { setDraftText(card.draft?.text ?? ""); }, [card.id, card.draft?.text]);
@@ -450,13 +444,9 @@ function CardPanel({ card, view, csrf, apply, onClose, onAllowBrowser }: { card:
   };
   const base = `${view.flow.href}/cards/${card.id}`;
   return <div className="flex flex-col gap-4" data-flow-card-panel={card.id}>
-    <div className="flex items-start gap-2">
-      <div className="min-w-0 flex-1">
-        <h2 className="text-title leading-snug">{card.title}</h2>
-        <p className="mt-0.5 text-caption text-muted-foreground font-normal">{card.state === "active" ? `In ${stage?.title ?? card.stage}` : card.state === "done" ? "Done" : card.waiting === "Ignored" ? "Ignored" : "Cancelled"} · added by {card.createdBy}</p>
-        {card.sorted !== null && <div className="mt-1.5 flex"><SortChip sorted={card.sorted} /></div>}
-      </div>
-      <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button>
+    <div className="min-w-0">
+      <p className="text-caption text-muted-foreground font-normal">{card.state === "active" ? `In ${stage?.title ?? card.stage}` : card.state === "done" ? "Done" : card.waiting === "Ignored" ? "Ignored" : "Cancelled"} · added by {card.createdBy}</p>
+      {card.sorted !== null && <div className="mt-1.5 flex"><SortChip sorted={card.sorted} /></div>}
     </div>
     {card.source !== null && (card.source.shown != null && card.source.url !== null
       // v126: an outside event's card says how it was proved, and its link shows where it goes (host and path).
@@ -918,7 +908,7 @@ function TimeLimit({ stage, others, update }: { stage: BrowserFlowStage; others:
   </div>;
 }
 
-function NewCard({ view, csrf, apply, onClose }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onClose?: () => void }) {
+function NewCard({ view, csrf, apply }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
@@ -931,11 +921,10 @@ function NewCard({ view, csrf, apply, onClose }: { view: BrowserFlowView; csrf: 
     apply(result);
     if (result.ok) { setTitle(""); setDescription(""); }
   }}>
-    <div className="flex items-center gap-2"><h2 className="flex-1 text-title">New card</h2>{onClose !== undefined && <Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button>}</div>
     <p className="text-caption text-muted-foreground font-normal">It starts in {start?.title ?? "the first zone"}.</p>
     <Input value={title} onChange={event => setTitle(event.target.value)} placeholder="What needs doing?" maxLength={200} required aria-label="Title" />
     <Textarea value={description} onChange={event => setDescription(event.target.value)} placeholder="Details (optional)" rows={4} aria-label="Details" />
-    <Button type="submit" size="sm" className="self-start" disabled={busy || title.trim() === ""}><Plus className="size-4" />Add card</Button>
+    <KActs><KButton type="submit" variant="primary" label="Add card" busy={busy ? "Adding…" : false} disabled={title.trim() === ""} /></KActs>
   </form>;
 }
 
@@ -946,10 +935,12 @@ const ago = (at: string | null): string => {
 };
 
 function CopyLine({ label, value }: { label: string; value: string }) {
-  const copy = () => { void navigator.clipboard?.writeText(value).then(() => toast.success(`${label} copied.`), () => toast.error("Select it and copy it by hand.")); };
+  const [said, setSaid] = useState<string | null>(null);
+  const copy = () => { void navigator.clipboard?.writeText(value).then(() => setSaid(`${label} copied.`), () => setSaid("Select it and copy it by hand.")); };
   return <div className="grid gap-1"><span className="text-caption">{label}</span>
     <div className="flex gap-2"><Input readOnly value={value} className="h-8 font-mono text-mono" onFocus={event => event.target.select()} aria-label={label} />
-      <Button type="button" size="sm" variant="outline" onClick={copy} aria-label={`Copy ${label.toLowerCase()}`}><Copy className="size-3.5" /></Button></div></div>;
+      <Button type="button" size="sm" variant="outline" onClick={copy} aria-label={`Copy ${label.toLowerCase()}`}><Copy className="size-3.5" /></Button></div>
+    {said !== null && <p className="k-note" role="status">{said}</p>}</div>;
 }
 
 /** A new webhook address (and GitHub's secret), shown once. */
@@ -1225,142 +1216,172 @@ function LinearSecret({ trigger, view, csrf, apply }: { trigger: BrowserFlowTrig
   </form>;
 }
 
-/** "Runs on its own", live: one line with its end (the exact time on hover), and Revoke (one click, no password). */
-function UnattendedStatus({ view, csrf, apply }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void }) {
-  const [busy, setBusy] = useState(false);
-  const own = view.unattended.active;
-  if (own === null) return null;
-  return <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 text-caption font-normal" data-flow-unattended="on">
-    <Badge tone="success" className="whitespace-normal" title={`Ends ${own.untilWords} · covers ${own.covers.join("; ")}`}>Runs on its own until {untilDayWords(own.until)}</Badge>
-    {view.canEdit && <button type="button" className="min-h-8 rounded px-1 text-caption text-muted-foreground underline hover:text-foreground disabled:opacity-50 phone:min-h-11" disabled={busy}
-      onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/unattended-off`, {}, csrf)); setBusy(false); }} data-flow-unattended-revoke>Revoke</button>}
-  </span>;
-}
-
-/** Signing "Runs on its own": every term visible before the password, the limits chosen here said as they'll be signed. */
-function UnattendedPanel({ view, csrf, apply, onClose }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onClose?: () => void }) {
+/**
+ * A step-up act: Toolroll's own password in a popover only when the rules ask for it (KApprove: Passwordless shows one
+ * click), or, signed in with the identity provider, that sign-in, confirmed (a link to confirm it when it isn't).
+ * `check` takes and validates the snapshot the act will carry before anything opens; `act` posts it with the password
+ * typed (empty when none was asked) and answers a refusal to show, or null. The server proves the person again.
+ */
+function StepUpAct({ view, label, busyLabel, terms, text, docked, check, act }: { view: BrowserFlowView; label: string; busyLabel: string; terms: ReactNode; text?: ReactNode; docked?: boolean; check?: () => boolean; act: (password: string) => Promise<string | null> }) {
   const passwordless = useContext(Passwordless);
-  const [days, setDays] = useState(1);
-  const [budget, setBudget] = useState("");
-  const [runs, setRuns] = useState("");
-  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-  const [include, setInclude] = useState<number[]>([]);
-  const terms = view.unattended.terms;
-  const schedules = view.unattended.schedules;
-  const covered = schedules.filter(one => one.optional === null || include.includes(one.id));
-  const budgetMicro = /^\d+(\.\d{1,2})?$/.test(budget.trim().replace(/^\$/, "")) && Number(budget.trim().replace(/^\$/, "")) > 0 ? Math.round(Number(budget.trim().replace(/^\$/, "")) * 1_000_000) : null;
-  const runCap = /^\d+$/.test(runs.trim()) && Number(runs.trim()) > 0 ? Number(runs.trim()) : null;
-  return <div className="flex flex-col gap-3" data-flow-unattended-panel>
-    {onClose !== undefined && <div className="flex items-center gap-2"><h2 className="flex-1 text-title">Run on its own</h2>
-      <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>}
-    {!view.unattended.canSign
-      ? <p className="text-body text-muted-foreground" data-flow-unattended-problem>{view.unattended.problem}</p>
-      : <form className="flex flex-col gap-3" onSubmit={async event => {
-          event.preventDefault(); setBusy(true); setProblem(null);
-          const result = await send(`${view.flow.href}/unattended`, { days: String(days), budget, runs, include: include.join(","), schedules: view.unattended.schedulesDigest, password, revision: String(view.flow.revision) }, csrf);
-          setBusy(false);
-          // A refusal is said once, beside the password; only a signature changes the page.
-          if (!result.ok) { setProblem(result.said); return; }
-          apply(result);
-          setPassword(""); onClose?.();
-        }}>
-          <Field label="Lasts"><select className={SELECT} value={days} onChange={event => setDays(Number(event.target.value))} data-flow-unattended-days>
-            {Array.from({ length: view.unattended.maxDays }, (_, index) => index + 1).map(n => <option key={n} value={n}>{n} day{n === 1 ? "" : "s"}</option>)}</select></Field>
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="Budget per attempt ($)"><Input inputMode="decimal" placeholder="No cap" value={budget} onChange={event => setBudget(event.target.value)} data-flow-unattended-budget /></Field>
-            <Field label="Runs a day"><Input inputMode="numeric" placeholder="No limit" value={runs} onChange={event => setRuns(event.target.value)} data-flow-unattended-runs /></Field>
-          </div>
-          {schedules.some(one => one.optional !== null) && <fieldset className="flex flex-col gap-2" data-flow-unattended-schedules>
-            <legend className="mb-1 text-body font-medium">Also cover</legend>
-            {schedules.filter(one => one.optional !== null).map(one => <label key={one.id} className="flex items-start gap-2 text-body">
-              <input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={include.includes(one.id)} onChange={event => setInclude(event.target.checked ? [...include, one.id] : include.filter(id => id !== one.id))} />
-              <span className="min-w-0 break-words">{one.words}<span className="block text-caption text-muted-foreground font-normal">{one.optional}</span></span></label>)}
-          </fieldset>}
-          <div className="rounded-md border p-3" data-flow-unattended-terms>
-            <p className="text-body font-medium">Your password signs exactly this</p>
-            <ul className="mt-1.5 flex list-disc flex-col gap-1 pl-4 text-caption font-normal">
-              {[...terms.head, ...(covered.length === 0 ? [] : [unattendedCoverWords(covered)]), ...unattendedLimitWords(budgetMicro, runCap), ...terms.rules, unattendedEndAfterWords(days)].map((line, index) => <li key={index} className="break-words">{line}</li>)}
-            </ul>
-          </div>
-          <StepUp view={view} password={password} setPassword={setPassword} />
-          {covered.length === 0 && <p className="text-body text-muted-foreground" data-flow-unattended-none>Pick a schedule above to sign.</p>}
-          {problem !== null && <p className="text-body text-destructive" role="alert">{problem}</p>}
-          <Button type="submit" className="self-start" disabled={busy || covered.length === 0 || !stepUpReady(view, password, passwordless)}>{busy ? "Signing…" : "Sign"}</Button>
-        </form>}
-  </div>;
+  const [refused, setRefused] = useState<string | null>(null);
+  if (view.stepUp !== undefined) {
+    if (!stepUpReady(view, "")) return <KLinkButton variant="primary" href={view.stepUp.confirmHref} label={`Confirm with ${view.stepUp.label}`} data-sso-step-up="confirm" />;
+    return <>
+      <KButton variant="primary" label={label} docked={docked === true} busy={busy ? busyLabel : false} data-sso-step-up="confirmed"
+        onClick={async () => { if (busy || (check !== undefined && !check())) return; setBusy(true); setRefused(null); try { setRefused(await act("")); } finally { setBusy(false); } }} />
+      {refused !== null && <KNotice>{refused}</KNotice>}
+    </>;
+  }
+  return <KApprove kind="step-up" facts={{ passwordless, remembered: false }} label={label} terms={terms} {...(text === undefined ? {} : { text })} {...(docked ? { docked: true } : {})} {...(check === undefined ? {} : { check })}
+    onApprove={password => act(password ?? "")} />;
 }
 
-/** Browser use for the flow's script zones, in one line: its status, and Allow browser or Turn off for an approver. */
-function BrowserStatus({ view, csrf, apply, onAllow, className }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onAllow: () => void; className?: string }) {
+/** "Runs on its own", in the flow's facts line: until when (the exact time on hover) and Revoke (one click, no
+ * password); or, when a change ended it early, that it no longer does and why. */
+function UnattendedLine({ view, csrf, apply }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void }) {
+  const [busy, setBusy] = useState(false);
+  const own = view.unattended.active, ended = view.unattended.ended ?? null;
+  if (own !== null) return <span className="fl-meta-item" data-flow-unattended="on">
+    <span title={`Ends ${own.untilWords} · covers ${own.covers.join("; ")}`}>Runs on its own until {untilDayWords(own.until)}</span>
+    {view.canEdit && <KButton variant="ghost" sm label="Revoke" busy={busy ? "Revoking…" : false} data-flow-unattended-revoke
+      onClick={async () => { if (busy) return; setBusy(true); apply(await send(`${view.flow.href}/unattended-off`, {}, csrf)); setBusy(false); }} />}
+  </span>;
+  if (ended !== null) return <span className="fl-meta-item" data-flow-unattended-ended>No longer runs on its own: {ended.why} ({untilDayWords(ended.at)}), so steps wait for you again</span>;
+  return null;
+}
+
+/** Browser use, once allowed: routine, so one quiet line in the facts, with Turn off (one click). */
+function BrowserLine({ view, csrf, apply }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void }) {
   const [busy, setBusy] = useState(false);
   const browser = view.browser;
-  if (browser == null) return null;
-  return <span className={cn("inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-caption font-normal", className)} data-flow-browser={browser.status}>
-    <span className={cn("break-words", browser.status === "allowed" ? "text-muted-foreground" : "text-foreground")}>{browser.words}</span>
-    {view.canEdit && browser.canApprove !== false && browser.status !== "allowed" && <button type="button" className="min-h-8 rounded px-1 text-caption font-medium text-primary underline-offset-4 hover:underline phone:min-h-11"
-      onClick={onAllow} data-flow-browser-allow>Allow browser</button>}
-    {view.canEdit && browser.status === "allowed" && <button type="button" className="min-h-8 rounded px-1 text-caption text-muted-foreground underline hover:text-foreground disabled:opacity-50 phone:min-h-11" disabled={busy}
-      onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/browser-off`, {}, csrf)); setBusy(false); }} data-flow-browser-off>Turn off</button>}
+  if (browser == null || browser.status !== "allowed") return null;
+  return <span className="fl-meta-item" data-flow-browser="allowed"><span>{browser.words}</span>
+    {view.canEdit && <KButton variant="ghost" sm label="Turn off" busy={busy ? "Turning off…" : false} data-flow-browser-off
+      onClick={async () => { if (busy) return; setBusy(true); apply(await send(`${view.flow.href}/browser-off`, {}, csrf)); setBusy(false); }} />}
   </span>;
 }
 
-/** Allowing browser use: every term the CLI's preview shows, visible before the password; the digest rides back so a
- * flow or script changed meanwhile is refused, never approved unseen. */
-function BrowserPanel({ view, csrf, apply, onClose }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onClose?: () => void }) {
-  const passwordless = useContext(Passwordless);
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-  // The terms the person is reading are frozen when the panel opens: a live update never swaps what the password
-  // approves. When the flow's terms move on, the panel says so and the person reads the new ones before approving.
-  const [browser, setShown] = useState(view.browser);
-  const moved = browser != null && view.browser != null && view.browser.digest !== browser.digest && view.browser.status !== "allowed";
-  return <div className="flex flex-col gap-3" data-flow-browser-panel>
-    {onClose !== undefined && <div className="flex items-center gap-2"><h2 className="flex-1 text-title">Allow browser</h2>
-      <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>}
-    {browser == null ? <p className="text-body text-muted-foreground">No zone in this flow starts a browser.</p>
-      : view.browser?.status === "allowed" ? <p className="text-body" data-flow-browser-panel-allowed>{view.browser.words}.</p>
-      : moved ? <div className="flex flex-col gap-2" data-flow-browser-moved><p className="text-body">This flow or its scripts changed while you were reading.</p>
-          <Button size="sm" variant="outline" className="self-start phone:min-h-11" onClick={() => { setShown(view.browser); setPassword(""); setProblem(null); }}>Read the new terms</Button></div>
-      : !view.canEdit || browser.canApprove === false ? <p className="text-body text-muted-foreground">Only an approver with access to every project can allow browser use.</p>
-      : browser.problem !== null || browser.digest === null ? <p className="text-body text-muted-foreground" data-flow-browser-problem>{browser.problem}</p>
-      : <form className="flex flex-col gap-3" onSubmit={async event => {
-          event.preventDefault(); setBusy(true); setProblem(null);
-          const result = await send(`${view.flow.href}/browser`, { digest: browser.digest!, password }, csrf);
-          setBusy(false);
-          // A refusal is said once, beside the password; only an approval changes the page.
-          if (!result.ok) { setProblem(result.said); return; }
-          apply(result);
-          setPassword(""); onClose?.();
-        }}>
-          <p className="text-body text-muted-foreground">{browser.words}</p>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-body">
-            <dt className="text-muted-foreground">Flow</dt><dd className="min-w-0 break-words">{view.flow.name}</dd>
-            <dt className="text-muted-foreground">Project</dt><dd className="min-w-0 break-words">{view.flow.project}</dd>
-          </dl>
-          <ul className="flex flex-col gap-1.5" data-flow-browser-zones>
-            {browser.zones.map(zone => <li key={zone.zone} className="rounded-md border px-3 py-2 text-body">
-              <span className="font-medium">{zone.title}</span> runs <span className="font-medium">{zone.script}</span> v{zone.version}
-              <span className="block break-all font-mono text-[11.5px] text-muted-foreground">{zone.digest}</span></li>)}
-          </ul>
-          <div className="rounded-md border p-3" data-flow-browser-terms>
-            <p className="text-body font-medium">Your password approves exactly this</p>
-            <ul className="mt-1.5 flex list-disc flex-col gap-1 pl-4 text-caption font-normal">
-              <li className="break-words">Each run of these zones starts a headless Chromium.</li>
-              {browser.terms.map((line, index) => <li key={index} className="break-words">{line}</li>)}
-            </ul>
-            <p className="mt-1.5 break-all text-caption text-muted-foreground font-normal">Approval digest <span className="font-mono">{browser.digest}</span></p>
-          </div>
-          <StepUp view={view} password={password} setPassword={setPassword} />
-          {problem !== null && <p className="text-body text-destructive" role="alert">{problem}</p>}
-          <Button type="submit" className="self-start" disabled={busy || !stepUpReady(view, password, passwordless)}>{busy ? "Allowing…" : "Allow browser"}</Button>
-        </form>}
+/**
+ * Browser use not allowed, or its approval expired: the decision frame (amber: the next run waits on a person), the
+ * reason in one line, the scope you'd approve visible before you consent, and Allow browser as the screen's primary.
+ * The terms are frozen when the frame is first read: a live update never swaps what the password approves; when the
+ * flow's terms move on, it says so and the person reads the new ones first. The digest shown rides back.
+ */
+type BrowserNow = NonNullable<BrowserFlowView["browser"]>;
+/** The browser terms a person is reading, frozen when they first see them (the frame and the dock share it). */
+function useFrozenBrowser(browser: BrowserFlowView["browser"]): { frozen: BrowserNow | null; moved: boolean; reread: () => void } {
+  const [shown, setShown] = useState(browser);
+  // Allowed (or gone) and back: the next frame reads the terms as they are then.
+  useEffect(() => { if (browser == null || browser.status === "allowed") setShown(browser); }, [browser]);
+  if (browser == null || browser.status === "allowed") return { frozen: null, moved: false, reread: () => setShown(browser) };
+  const frozen = shown != null && shown.status !== "allowed" ? shown : browser;
+  return { frozen, moved: frozen.digest !== browser.digest, reread: () => setShown(browser) };
+}
+
+function BrowserFrame({ view, csrf, apply, phone, frozen, moved, reread }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; phone: boolean; frozen: BrowserNow | null; moved: boolean; reread: () => void }) {
+  const browser = view.browser;
+  if (browser == null || browser.status === "allowed" || frozen === null) return null;
+  const ended = browser.status === "ended";
+  const zone = frozen.zones[0]?.title ?? view.stages.find(one => one.kind === "check" && one.browser === true)?.title ?? "A step";
+  const why = browser.words.replace(/^Browser approval ended: /, "");
+  const canAllow = view.canEdit && browser.canApprove !== false;
+  const allow = canAllow && browser.problem === null && frozen.digest !== null && !moved
+    ? <StepUpAct view={view} label="Allow browser" busyLabel="Allowing…" docked={phone}
+        terms={`${view.flow.name} · ${frozen.zones.map(one => `${one.title} runs ${one.script} v${one.version}`).join("; ")} · digest ${frozen.digest.slice(0, 12)}`}
+        act={async password => { const result = await send(`${view.flow.href}/browser`, { digest: frozen.digest!, password }, csrf); if (!result.ok) return result.said; apply(result); return null; }} />
+    : null;
+  return <div className="fl-browser" id="fl-browser" data-flow-browser-panel data-flow-browser={browser.status}>
+    <KSlots wait status={<><KChip word="Needs you" tone="needs" /><h2>{ended ? "Browser approval expired" : `Allow browser for ${zone}?`}</h2></>}
+      text={<>{ended ? `It ended because ${why}. The next run waits at ${zone} until someone allows it again.` : `${zone} starts a browser. The next run waits there until someone allows it.`}
+        {frozen.zones.length > 0 && <span className="fl-zones" data-flow-browser-zones>{frozen.zones.map(one => <span key={one.zone} className="fl-zone"><b>{one.title}</b> runs <span className="k-mono">{one.script}</span> v{one.version}<span className="k-mono fl-dig">{one.digest}</span></span>)}</span>}</>}
+      acts={moved
+        ? <span data-flow-browser-moved><KButton label="Read the new terms" onClick={reread} /></span>
+        : allow}
+      terms={!canAllow ? "Only an approver with access to every project can allow browser use."
+        : browser.problem !== null ? browser.problem
+        : moved ? "This flow or its scripts changed while you were reading."
+        : view.stepUp !== undefined ? `Asks you to confirm with ${view.stepUp.label}.` : "Allowing it is a step-up: it asks for your password unless Passwordless is on."} />
+    {frozen.terms.length > 0 && <KDisclose summary="What else allowing means"><div className="fl-terms" data-flow-browser-terms>
+      <ul>{["Each run of these steps starts a headless Chromium.", ...frozen.terms].map((line, index) => <li key={index}>{line}</li>)}</ul>
+      <p className="k-note">Approval digest <span className="k-mono">{frozen.digest}</span></p></div></KDisclose>}
   </div>;
 }
 
-function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; focus: number | null; onPress: (id: number) => void; onClose: () => void }) {
+/** One validated reading of the "Run on its own" form: what a signature would cover, or why it can't yet. */
+type OwnSnapshot = { days: number; budgetMicrousd: number | null; dailyRunCap: number | null; include: number[]; covered: { id: number; words: string }[]; schedulesDigest: string; revision: number };
+function readOwn(view: BrowserFlowView, draft: { days: string; budget: string; runs: string; include: number[] }): { errors: { budget?: string; runs?: string }; snapshot: OwnSnapshot | null } {
+  const budget = unattendedBudgetOf(draft.budget), runs = unattendedRunsOf(draft.runs);
+  const errors = { ...(budget.ok ? {} : { budget: budget.message }), ...(runs.ok ? {} : { runs: runs.message }) };
+  if (!budget.ok || !runs.ok) return { errors, snapshot: null };
+  const days = Math.min(view.unattended.maxDays, Math.max(1, Math.round(Number(draft.days)) || 1));
+  const optional = new Set(view.unattended.schedules.filter(one => one.optional !== null).map(one => one.id));
+  const include = draft.include.filter(id => optional.has(id));
+  const covered = view.unattended.schedules.filter(one => one.optional === null || include.includes(one.id)).map(one => ({ id: one.id, words: one.words }));
+  return { errors, snapshot: { days, budgetMicrousd: budget.value, dailyRunCap: runs.value, include, covered, schedulesDigest: view.unattended.schedulesDigest, revision: view.flow.revision } };
+}
+const ownTerms = (view: BrowserFlowView, own: OwnSnapshot): string[] =>
+  [...view.unattended.terms.head, ...(own.covered.length === 0 ? [] : [unattendedCoverWords(own.covered)]), ...unattendedLimitWords(own.budgetMicrousd, own.dailyRunCap), ...view.unattended.terms.rules, unattendedEndAfterWords(own.days)];
+
+/**
+ * Signing "Runs on its own": the fields are a draft; the terms list, the password popover's terms and the values sent
+ * all come from ONE validated snapshot of them (readOwn), so what is signed is exactly what is stored. An invalid
+ * field is refused next to itself before any password is asked; the terms list follows the last valid reading.
+ */
+function UnattendedPanel({ view, csrf, apply, onSigned }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onSigned: () => void }) {
+  const passwordless = useContext(Passwordless);
+  const [draft, setDraft] = useState({ days: "1", budget: "", runs: "", include: [] as number[] });
+  const [missing, setMissing] = useState<string | null>(null);
+  const [signing, setSigning] = useState<OwnSnapshot | null>(null);
+  const read = readOwn(view, draft);
+  const lastValid = useRef<OwnSnapshot | null>(read.snapshot);
+  if (read.snapshot !== null) lastValid.current = read.snapshot;
+  const shown = read.snapshot ?? lastValid.current;
+  const pending = useRef<OwnSnapshot | null>(null);
+  if (!view.unattended.canSign) return <div data-flow-unattended-panel><p className="k-note" data-flow-unattended-problem>{view.unattended.problem}</p></div>;
+  const set = (key: "days" | "budget" | "runs") => (event: { target: { value: string } }) => { setMissing(null); setDraft(current => ({ ...current, [key]: event.target.value })); };
+  const check = (): boolean => {
+    const now = readOwn(view, draft);
+    if (now.snapshot === null) { document.getElementById(now.errors.budget !== undefined ? "fl-own-budget" : "fl-own-runs")?.focus(); return false; }
+    if (now.snapshot.covered.length === 0) { setMissing("Pick a schedule above to sign."); return false; }
+    pending.current = now.snapshot; setSigning(now.snapshot);
+    return true;
+  };
+  const optional = view.unattended.schedules.filter(one => one.optional !== null);
+  return <div className="fl-form" data-flow-unattended-panel>
+    <p className="k-note">While it runs on its own, cards its schedule adds move past steps that would wait for you, within the limits you set here. It never merges or ships anything.</p>
+    <KField label="Lasts">{ids => <KSelect id={ids.id} value={draft.days} onChange={set("days")} data-flow-unattended-days wide
+      items={Array.from({ length: view.unattended.maxDays }, (_, index) => [String(index + 1), `${index + 1} day${index === 0 ? "" : "s"}`] as const)} />}</KField>
+    <div className="fl-two">
+      <KField label="Budget per attempt ($)" error={read.errors.budget ?? null}>{ids => <KInput id="fl-own-budget" inputMode="decimal" placeholder="No cap" value={draft.budget} onChange={set("budget")} aria-invalid={ids.invalid || undefined} aria-describedby={ids.describedBy} data-flow-unattended-budget />}</KField>
+      <KField label="Runs a day" error={read.errors.runs ?? null}>{ids => <KInput id="fl-own-runs" inputMode="numeric" placeholder="No limit" value={draft.runs} onChange={set("runs")} aria-invalid={ids.invalid || undefined} aria-describedby={ids.describedBy} data-flow-unattended-runs />}</KField>
+    </div>
+    {optional.length > 0 && <fieldset className="fl-checks" data-flow-unattended-schedules>
+      <legend>Also cover</legend>
+      {optional.map(one => <label key={one.id} className="fl-check">
+        <input type="checkbox" checked={draft.include.includes(one.id)} onChange={event => { setMissing(null); setDraft(current => ({ ...current, include: event.target.checked ? [...current.include, one.id] : current.include.filter(id => id !== one.id) })); }} />
+        <span>{one.words}<span className="k-note">{one.optional}</span></span></label>)}
+    </fieldset>}
+    {shown !== null && <div className="fl-signs" data-flow-unattended-terms>
+      <b>{view.stepUp === undefined && !passwordless ? "Your password signs exactly this" : "Signing covers exactly this"}</b>
+      <ul aria-live="polite">{ownTerms(view, shown).map((line, index) => <li key={index}>{line}</li>)}</ul>
+    </div>}
+    {missing !== null && <KNotice>{missing}</KNotice>}
+    <KActs><StepUpAct view={view} label="Sign" busyLabel="Signing…" check={check}
+      terms={signing === null ? "" : `${view.flow.name} · ${signing.days} day${signing.days === 1 ? "" : "s"} · ${unattendedLimitWords(signing.budgetMicrousd, signing.dailyRunCap).join(" ")}`}
+      act={async password => {
+        const own = pending.current;
+        if (own === null) return "Read the terms again. Nothing was signed.";
+        const result = await send(`${view.flow.href}/unattended`, { days: String(own.days), budget: own.budgetMicrousd === null ? "" : (own.budgetMicrousd / 1_000_000).toFixed(2), runs: own.dailyRunCap === null ? "" : String(own.dailyRunCap),
+          include: own.include.join(","), schedules: own.schedulesDigest, password, revision: String(own.revision) }, csrf);
+        if (!result.ok) return result.said;
+        apply(result); onSigned(); return null;
+      }} /></KActs>
+  </div>;
+}
+
+function TriggersPanel({ view, csrf, apply, focus, onPress }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; focus: number | null; onPress: (id: number) => void }) {
   const [reveal, setReveal] = useState<{ kind: string; reveal: Reveal } | null>(null);
   const [busy, setBusy] = useState(false);
   const base = `${view.flow.href}/triggers`;
@@ -1375,7 +1396,6 @@ function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: B
   const live = view.triggers.filter(one => one.state !== "removed");
   useEffect(() => { if (focus !== null) document.querySelector(`[data-trigger-row="${focus}"]`)?.scrollIntoView({ block: "nearest" }); }, [focus]);
   return <div className="flex flex-col gap-4" data-flow-triggers>
-    <div className="flex items-center gap-2"><h2 className="flex-1 text-title">Triggers</h2><Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
     {/* A schedule's standing order says its own approval terms beside it (one may build without asking). */}
     <p className="text-body text-muted-foreground">Triggers add cards to this flow on their own.{live.some(one => one.order !== undefined) ? "" : " The work they start still waits for your usual approvals."}</p>
     {reveal !== null && <RevealBox kind={reveal.kind} reveal={reveal.reveal} onDone={() => setReveal(null)} />}
@@ -1417,7 +1437,7 @@ function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: B
 }
 
 /** Pressing a button trigger: its questions, the first answer as the card's title. */
-function PressPanel({ trigger, view, csrf, apply, onClose }: { trigger: BrowserFlowTrigger; view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onClose: () => void }) {
+function PressPanel({ trigger, view, csrf, apply, onDone }: { trigger: BrowserFlowTrigger; view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onDone: () => void }) {
   const questions = trigger.button?.questions ?? [];
   const [answers, setAnswers] = useState<string[]>(questions.map(() => ""));
   const [busy, setBusy] = useState(false);
@@ -1425,19 +1445,18 @@ function PressPanel({ trigger, view, csrf, apply, onClose }: { trigger: BrowserF
   return <form className="flex flex-col gap-3" data-flow-press={trigger.id} onSubmit={async event => {
     event.preventDefault(); setBusy(true);
     const result = await send(`${view.flow.href}/triggers/${trigger.id}/press`, { answers: JSON.stringify(answers) }, csrf);
-    setBusy(false); apply(result); if (result.ok) onClose();
+    setBusy(false); apply(result); if (result.ok) onDone();
   }}>
-    <div className="flex items-center gap-2"><h2 className="flex-1 text-title leading-normal">{trigger.button?.label}</h2><Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
     <p className="text-caption text-muted-foreground font-normal">The card starts in {trigger.zone}.</p>
     {questions.map((question, index) => <Field key={index} label={question}>
       {index === 0 ? <Input value={answers[index] ?? ""} onChange={answer(index)} maxLength={200} required autoFocus /> : <Textarea rows={3} value={answers[index] ?? ""} onChange={answer(index)} />}
     </Field>)}
-    <Button type="submit" size="sm" className="self-start" disabled={busy || (answers[0] ?? "").trim() === ""}><Plus className="size-4" />Add card</Button>
+    <KActs><KButton type="submit" variant="primary" label="Add card" busy={busy ? "Adding…" : false} disabled={(answers[0] ?? "").trim() === ""} /></KActs>
   </form>;
 }
 
 /** The project's script library: reusable steps with no AI that any of its flows can run. */
-function ScriptsPanel({ view, csrf, apply, onClose }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onClose: () => void }) {
+function ScriptsPanel({ view, csrf, apply }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void }) {
   const blank = { name: "", about: "", body: "", timeoutMinutes: "15", language: "python", file: "" };
   const [draft, setDraft] = useState<typeof blank | null>(view.scripts.length === 0 ? blank : null);
   const [busy, setBusy] = useState(false);
@@ -1450,7 +1469,6 @@ function ScriptsPanel({ view, csrf, apply, onClose }: { view: BrowserFlowView; c
   const set = (key: keyof typeof blank) => (event: { target: { value: string } }) => setDraft(current => current === null ? current : { ...current, [key]: event.target.value });
   const [runsFile, setRunsFile] = useState(false);
   return <div className="flex flex-col gap-4" data-flow-scripts>
-    <div className="flex items-center gap-2"><h2 className="flex-1 text-title">Scripts</h2><Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
     <p className="text-body text-muted-foreground">Reusable steps with no AI, in shell, Python or Node. A “Run a script” zone runs one with the card, and a schedule can run one to make cards. Any flow in {view.flow.project} can use them.</p>
     {view.scripts.length > 0 && <ul className="flex flex-col gap-2">{view.scripts.map(script => <li key={script.name} className="rounded-lg border p-3" data-script={script.name}>
       <div className="flex items-start gap-2">
@@ -1501,7 +1519,7 @@ type Insights = {
 const duration = (minutes: number | null) => minutes === null ? "—" : minutes < 1 ? "under a minute" : minutes < 90 ? `${Math.round(minutes)} min` : minutes < 2880 ? `${Math.round(minutes / 60)} h` : `${Math.round(minutes / 1440)} days`;
 
 /** How work moves through this flow and where it breaks, and every script and update run with its log. */
-function InsightsPanel({ view, onClose }: { view: BrowserFlowView; onClose: () => void }) {
+function InsightsPanel({ view }: { view: BrowserFlowView }) {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<Insights | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -1524,10 +1542,8 @@ function InsightsPanel({ view, onClose }: { view: BrowserFlowView; onClose: () =
     } catch { setLog({ key, text: "The log couldn't load." }); }
   };
   return <div className="flex flex-col gap-4" data-flow-insights>
-    <div className="flex items-center gap-2"><h2 className="flex-1 text-title">Insights</h2>
-      <select className="h-8 rounded-md border bg-transparent px-2 text-caption font-normal" value={days} onChange={event => setDays(Number(event.target.value))} aria-label="Period">
-        <option value={7}>Last 7 days</option><option value={30}>Last 30 days</option><option value={90}>Last 90 days</option></select>
-      <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
+    <div className="fl-secthead"><h3>How it went</h3>
+      <KSelect sm value={String(days)} onChange={event => setDays(Number(event.target.value))} aria-label="Period" items={[["7", "Last 7 days"], ["30", "Last 30 days"], ["90", "Last 90 days"]]} /></div>
     {problem !== null && <p className="text-body text-destructive">{problem}</p>}
     {data === null && problem === null && <p className="text-body text-muted-foreground">Loading…</p>}
     {data !== null && <>
@@ -1582,60 +1598,93 @@ function InsightsPanel({ view, onClose }: { view: BrowserFlowView; onClose: () =
   </div>;
 }
 
-function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }) {
-  const [view, setView] = useState(initial);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<{ name: string; start: string; stages: BrowserFlowStage[]; owner: string } | null>(null);
-  const [selected, setSelected] = useState<{ card: number } | { zone: string } | { triggers: number | null } | { press: number } | { scripts: true } | { insights: true } | { unattended: true } | { browser: true } | null>(
-    initial.selectedCard !== null ? { card: initial.selectedCard } : initial.startTrigger !== null && initial.triggers.some(one => one.id === initial.startTrigger && one.button !== null) ? { press: initial.startTrigger }
-      : initial.browser != null && browserAsked() ? { browser: true } : null);
-  const [saving, setSaving] = useState(false);
-  const [adding, setAdding] = useState(false);
-  const [mineOnly, setMineOnly] = useState(() => { try { return window.localStorage.getItem("so-flows-mine") === "1"; } catch { return false; } });
-  useEffect(() => { try { window.localStorage.setItem("so-flows-mine", mineOnly ? "1" : "0"); } catch { /* a private window keeps it for this visit */ } }, [mineOnly]);
-  const flow = useReactFlow();
-  const stages = draft?.stages ?? view.stages;
-  const start = draft?.start ?? view.start;
-  const dirty = draft !== null && JSON.stringify({ name: draft.name, start: draft.start, stages: draft.stages, owner: draft.owner }) !== JSON.stringify({ name: view.flow.name, start: view.start, stages: view.stages, owner: view.flow.owner });
-
-  const apply = useCallback((result: Said) => {
-    (result.ok ? toast.success : toast.error)(result.said);
-    if (result.view !== undefined) setView(result.view);
+const PHONE_QUERY = "(max-width: 760px)";
+/** The console's one breakpoint (src/design/KIT.md): a phone gets the list, a one-column canvas and the dock. */
+function usePhone(): boolean {
+  const [phone, setPhone] = useState(() => typeof window !== "undefined" && window.matchMedia(PHONE_QUERY).matches);
+  useEffect(() => {
+    const query = window.matchMedia(PHONE_QUERY);
+    const change = () => setPhone(query.matches);
+    query.addEventListener("change", change);
+    return () => query.removeEventListener("change", change);
   }, []);
+  return phone;
+}
 
-  // Everyone sees everyone's moves the moment they happen, and who else is here.
-  const others = useLiveFlow(view, setView, { card: selected !== null && "card" in selected ? selected.card : null, editing });
-  const lookers = useMemo(() => {
-    const byCard: Record<number, string[]> = {};
-    for (const one of others) if (!one.editing) for (const card of one.cards) (byCard[card] ??= []).push(one.name);
-    return byCard;
-  }, [others]);
+type Draft = { name: string; start: string; stages: BrowserFlowStage[]; owner: string };
+const ZOOM = { min: 0.4, max: 2.5 } as const;
+const PHONE_ZONE_WIDTH = 300;
 
-  const move = useCallback(async (card: number, stage: string) => {
-    const current = view.cards.find(one => one.id === card);
-    if (current === undefined || current.stage === stage) return;
-    apply(await send(`${view.flow.href}/cards/${card}/move`, { stage }, csrf));
-  }, [view, csrf, apply]);
+/** A phone's canvas: one column in the order work meets the zones, each as tall as its cards (a narrow screen can't
+ * hold zones side by side at a readable size). Arrows follow from the positions: next runs down, a send-back loops
+ * up the left side. */
+function columnOf(stages: BrowserFlowStage[], start: string, cardsIn: (id: string) => number): BrowserFlowStage[] {
+  let y = 0;
+  return flowOrder(stages, start).map(stage => {
+    const h = Math.min(360, 64 + Math.max(1, cardsIn(stage.id)) * 64);
+    const placed = { ...stage, zone: { ...stage.zone, x: 0, y, w: PHONE_ZONE_WIDTH, h } };
+    y += h + 64;
+    return placed;
+  });
+}
+
+/** − / % / + / Fit (and Expand on a phone): the canvas's zoom bar. Keys when the canvas has focus: + − 0 and arrows. */
+function ZoomBar({ onExpand }: { onExpand?: (from: HTMLElement) => void }) {
+  const flow = useReactFlow();
+  const { zoom } = useViewport();
+  return <div className="fl-zoom nodrag nopan" role="toolbar" aria-label="Zoom">
+    <KButton variant="outline" sm iconOnly="minus" label="Zoom out (−)" onClick={() => void flow.zoomOut({ duration: 160 })} disabled={zoom <= ZOOM.min + 0.001} />
+    <span className="fl-zoom-n k-num" aria-live="polite">{Math.round(zoom * 100)}%</span>
+    <KButton variant="outline" sm iconOnly="plus" label="Zoom in (+)" onClick={() => void flow.zoomIn({ duration: 160 })} disabled={zoom >= ZOOM.max - 0.001} />
+    <KButton variant="outline" sm lead="fit" label="Fit" title="Fit (0)" onClick={() => void flow.fitView({ padding: 0.12, maxZoom: 1, duration: 160 })} />
+    {onExpand !== undefined && <KButton variant="outline" sm label="Expand" aria-label="Expand the canvas to the full screen" data-flow-expand onClick={event => onExpand(event.currentTarget)} />}
+  </div>;
+}
+
+type CanvasProps = {
+  view: BrowserFlowView; stages: BrowserFlowStage[]; start: string; owner: string; editing: boolean; vertical: boolean; expanded: boolean;
+  mineOnly: boolean; selectedCard: number | null; lookers: Record<number, string[]>;
+  onCard: (id: number, from: HTMLElement | null) => void; onDrop: (card: number, stage: string) => void;
+  onTriggers: (id: number, from: HTMLElement | null) => void; onPress: (id: number, from: HTMLElement | null) => void;
+  onZone: (id: string | null) => void; setDraft: (change: (current: Draft | null) => Draft | null) => void;
+  onExpand?: (from: HTMLElement) => void; onCollapse?: () => void; name: string;
+};
+
+/**
+ * The flow as a surface you move: drag to pan (a tap still opens a card), pinch, ctrl or ⌘ + wheel or a trackpad pinch
+ * to zoom (0.4× to 2.5×), the zoom bar's − / + / Fit, and + − 0 and the arrows when it has focus. Up and down on a wheel
+ * still scroll the page. At a desk it starts fitted, never above 100%; a phone's starts at 100% with the first zone in
+ * view, and Expand gives it the whole screen (Done, or Escape, comes back).
+ */
+function FlowCanvas(props: CanvasProps) {
+  const { view, editing, vertical, expanded } = props;
+  const flow = useReactFlow();
+  const box = useRef<HTMLDivElement>(null);
+  const cardsIn = useCallback((id: string) => view.cards.filter(card => card.stage === id && card.state === "active" && (!props.mineOnly || card.mine)).length, [view.cards, props.mineOnly]);
+  const stages = useMemo(() => vertical ? columnOf(props.stages, props.start, cardsIn) : props.stages, [vertical, props.stages, props.start, cardsIn]);
+  const start = props.start;
+  const updateStage = (id: string, change: Partial<BrowserFlowStage>) =>
+    props.setDraft(current => current === null ? current : { ...current, stages: current.stages.map(one => one.id === id ? { ...one, ...change } : one) });
 
   const zoneNodes: Node<ZoneData, "zone">[] = useMemo(() => stages.map(stage => ({
     id: stage.id, type: "zone" as const, position: { x: stage.zone.x, y: stage.zone.y }, width: stage.zone.w, height: stage.zone.h,
     style: { width: stage.zone.w, height: stage.zone.h }, draggable: editing, selectable: editing,
     data: {
-      stage, kindLabel: view.kinds.find(one => one.kind === stage.kind)?.label ?? stage.kind, owner: draft?.owner ?? view.flow.owner,
+      stage, kindLabel: view.kinds.find(one => one.kind === stage.kind)?.label ?? stage.kind, owner: props.owner,
       subagent: stage.subagent === undefined ? null : view.subagents?.find(one => one.handle === stage.subagent)?.name ?? stage.subagent,
-      cards: view.cards.filter(card => card.stage === stage.id && card.state === "active" && (!mineOnly || card.mine)),
-      hidden: mineOnly ? view.cards.filter(card => card.stage === stage.id && card.state === "active" && !card.mine).length : 0, lookers,
-      editing, canMove: view.canEdit, start: stage.id === start, selectedCard: selected !== null && "card" in selected ? selected.card : null,
-      onCard: (id: number) => { setAdding(false); setSelected({ card: id }); }, onDrop: (card: number, to: string) => void move(card, to),
-      onResize: (id: string, box: { x: number; y: number; width: number; height: number }) => setDraft(current => current === null ? current : { ...current, stages: current.stages.map(one => one.id === id
-        ? { ...one, zone: { ...one.zone, x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) } } : one) }),
-      browserLine: stage.kind === "check" && stage.browser === true && view.browser != null
-        ? <BrowserStatus view={view} csrf={csrf} apply={apply} onAllow={() => { setAdding(false); setSelected({ browser: true }); }} /> : null,
+      cards: view.cards.filter(card => card.stage === stage.id && card.state === "active" && (!props.mineOnly || card.mine)),
+      hidden: props.mineOnly ? view.cards.filter(card => card.stage === stage.id && card.state === "active" && !card.mine).length : 0, lookers: props.lookers,
+      editing, canMove: view.canEdit && !vertical, start: stage.id === start, selectedCard: props.selectedCard,
+      onCard: props.onCard, onDrop: props.onDrop,
+      onResize: (id: string, next: { x: number; y: number; width: number; height: number }) => props.setDraft(current => current === null ? current : { ...current, stages: current.stages.map(one => one.id === id
+        ? { ...one, zone: { ...one.zone, x: Math.round(next.x), y: Math.round(next.y), w: Math.round(next.width), h: Math.round(next.height) } } : one) }),
+      browserLine: stage.kind === "check" && stage.browser === true && view.browser != null && view.browser.status !== "allowed" ? "Starts a browser · not allowed" : null,
     },
-  })), [stages, view, editing, selected, start, move, mineOnly, lookers, csrf, apply]);
-  // Triggers sit to the left of the zone they start cards in, stacked when several share one.
+  })), [stages, view, editing, start, props.mineOnly, props.lookers, props.selectedCard, props.owner, props.onCard, props.onDrop, props.setDraft, vertical]);
+  // Triggers sit to the left of the zone they start cards in (a desk's canvas; a phone's lists them under Triggers).
   const liveTriggers = useMemo(() => view.triggers.filter(one => one.state !== "removed"), [view.triggers]);
   const triggerNodes: Node<TriggerData, "trigger">[] = useMemo(() => {
+    if (vertical) return [];
     const byZone = new Map<string, BrowserFlowTrigger[]>();
     for (const trigger of liveTriggers) {
       const zone = stages.some(one => one.id === trigger.zoneId) ? trigger.zoneId : start;
@@ -1646,22 +1695,12 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
       if (zone === undefined) return [];
       const height = TRIGGER_HEAD + triggers.length * TRIGGER_ROW;
       return [{ id: `trigger-${zoneId}`, type: "trigger" as const, position: { x: zone.zone.x - 272, y: zone.zone.y + Math.max(0, (zone.zone.h - height) / 2) }, width: 236, height, style: { width: 236, height },
-        draggable: false, selectable: false, data: { triggers, onOpen: (id: number) => setSelected({ triggers: id }), onPress: (id: number) => setSelected({ press: id }) } }];
+        draggable: false, selectable: false, data: { triggers, onOpen: props.onTriggers, onPress: props.onPress } }];
     });
-  }, [liveTriggers, stages, start]);
-  // New or removed triggers change what the canvas holds: fit it again so nothing sits off the edge.
-  const triggerKey = liveTriggers.map(one => `${one.id}:${one.zoneId}`).join(",");
-  const fitted = useRef(triggerKey);
-  useEffect(() => {
-    if (fitted.current === triggerKey) return;
-    fitted.current = triggerKey;
-    const frame = requestAnimationFrame(() => { void flow.fitView({ padding: 0.12, minZoom: 0.55, maxZoom: 1, duration: 250 }); });
-    return () => cancelAnimationFrame(frame);
-  }, [triggerKey, flow]);
+  }, [liveTriggers, stages, start, vertical, props.onTriggers, props.onPress]);
   const computed: FlowNode[] = useMemo(() => [...zoneNodes, ...triggerNodes], [zoneNodes, triggerNodes]);
-  // React Flow keeps its own node state (measurements, selection, a drag in
-  // progress); ours changes only when a drag or resize ends, so the two never
-  // chase each other.
+  // React Flow keeps its own node state (measurements, selection, a drag in progress); ours changes only when a drag
+  // or resize ends, so the two never chase each other.
   const [nodes, setNodes] = useState<FlowNode[]>(computed);
   useEffect(() => {
     setNodes(previous => computed.map(node => {
@@ -1686,8 +1725,10 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
       if (horizontal) return dx >= 0 ? { source: "s-Right", target: "t-Left" } : { source: "s-Left", target: "t-Right" };
       return dy >= 0 ? { source: "s-Bottom", target: "t-Top" } : { source: "s-Top", target: "t-Bottom" };
     };
+    const label = { labelStyle: { fontSize: 11, fontWeight: 600, fill: "var(--so-ink)" }, labelBgStyle: { fill: "var(--so-paper)" } };
+    const quiet = { labelStyle: { fontSize: 11, fill: "var(--so-muted)" }, labelBgStyle: { fill: "var(--so-paper)" } };
     const fromTriggers: Edge[] = triggerNodes.map(node => ({ id: `${node.id}->zone`, source: node.id, sourceHandle: "out", target: node.id.slice("trigger-".length), targetHandle: "t-Left",
-      type: "smoothstep", animated: node.data.triggers.some(one => one.state === "active"), deletable: false, markerEnd: { type: MarkerType.ArrowClosed }, style: { strokeWidth: 1.5 } }));
+      type: "smoothstep", deletable: false, markerEnd: { type: MarkerType.ArrowClosed }, style: { strokeWidth: 1.5 } }));
     return spreadLabels([...fromTriggers, ...stages.flatMap(stage => {
       const next = stage.next === null ? undefined : stages.find(one => one.id === stage.next);
       const fail = stage.onFail === null ? undefined : stages.find(one => one.id === stage.onFail);
@@ -1700,42 +1741,35 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
         if (target === undefined) return [];
         const handles = target.zone.x > stage.zone.x + stage.zone.w ? { source: "s-Right", target: "t-Left" } : sides(stage, target, false);
         return [{ id: `${stage.id}->answer-${to}`, source: stage.id, target: to, sourceHandle: handles.source, targetHandle: handles.target,
-          type: "smoothstep", label: picks.filter(one => one.to === to).map(one => one.answer).join(", "), labelStyle: { fontSize: 11, fontWeight: 600, fill: "var(--color-foreground)" },
-          labelBgStyle: { fill: "var(--color-card)" }, markerEnd: { type: MarkerType.ArrowClosed }, style: { strokeWidth: 2 }, deletable: false }];
+          type: "smoothstep", label: picks.filter(one => one.to === to).map(one => one.answer).join(", "), ...label, markerEnd: { type: MarkerType.ArrowClosed }, style: { strokeWidth: 2 }, deletable: false }];
       }) : [];
       return [
         ...answers,
         ...(next === undefined ? [] : [{ id: `${stage.id}->next`, source: stage.id, target: next.id, sourceHandle: sides(stage, next, false).source, targetHandle: sides(stage, next, false).target,
           type: "smoothstep", markerEnd: { type: MarkerType.ArrowClosed }, style: { strokeWidth: 2 }, deletable: editing,
-          ...(stage.kind === "wait" && stage.wait?.for === "reply" ? { label: "replied", labelStyle: { fontSize: 11, fontWeight: 600, fill: "var(--color-foreground)" }, labelBgStyle: { fill: "var(--color-card)" } } : {}) }]),
+          ...(stage.kind === "wait" && stage.wait?.for === "reply" ? { label: "replied", ...label } : {}) }]),
         // Outside editing, a failure that lands where one of its answers already goes is that arrow, not a second one crossing the canvas.
         ...(fail === undefined || (!editing && answers.some(one => one.target === fail.id)) ? [] : [{ id: `${stage.id}->fail`, source: stage.id, target: fail.id, sourceHandle: sides(stage, fail, true).source, targetHandle: sides(stage, fail, true).target,
-          type: "smoothstep", pathOptions: { offset: 28, borderRadius: 10 }, label: stage.kind === "approval" ? "sent back" : stage.kind === "sort" ? "not sure" : stage.kind === "wait" ? "no reply" : stage.kind === "choose" ? "reply" : "fails", labelStyle: { fontSize: 11, fill: stage.kind === "wait" ? "var(--color-muted-foreground)" : "var(--color-muted-foreground)" },
-          labelBgStyle: { fill: "var(--color-card)" }, markerEnd: { type: MarkerType.ArrowClosed, color: stage.kind === "wait" ? "var(--color-muted-foreground)" : "var(--color-muted-foreground)" },
-          style: { strokeWidth: 1.5, strokeDasharray: "6 4", stroke: stage.kind === "wait" ? "var(--color-muted-foreground)" : "var(--color-muted-foreground)" }, deletable: editing }]),
+          type: "smoothstep", pathOptions: { offset: 28, borderRadius: 10 }, label: stage.kind === "approval" ? "sent back" : stage.kind === "sort" ? "not sure" : stage.kind === "wait" ? "no reply" : stage.kind === "choose" ? "reply" : "fails", ...quiet,
+          markerEnd: { type: MarkerType.ArrowClosed, color: "var(--so-muted)" }, style: { strokeWidth: 1.5, strokeDasharray: "6 4", stroke: "var(--so-muted)" }, deletable: editing }]),
         // A time limit that moves the card on (v91): a dashed arrow named by the time.
         ...(limitTo === undefined || stage.limit === undefined ? [] : [{ id: `${stage.id}->limit`, source: stage.id, target: limitTo.id, sourceHandle: sides(stage, limitTo, true).source, targetHandle: sides(stage, limitTo, true).target,
-          type: "smoothstep", pathOptions: { offset: 36, borderRadius: 10 }, label: `after ${minutesWords(stage.limit.minutes)}`, labelStyle: { fontSize: 11, fill: "var(--color-muted-foreground)" },
-          labelBgStyle: { fill: "var(--color-card)" }, markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-muted-foreground)" },
-          style: { strokeWidth: 1.5, strokeDasharray: "2 4", stroke: "var(--color-muted-foreground)" }, deletable: editing }]),
+          type: "smoothstep", pathOptions: { offset: 36, borderRadius: 10 }, label: `after ${minutesWords(stage.limit.minutes)}`, ...quiet,
+          markerEnd: { type: MarkerType.ArrowClosed, color: "var(--so-muted)" }, style: { strokeWidth: 1.5, strokeDasharray: "2 4", stroke: "var(--so-muted)" }, deletable: editing }]),
       ];
     })], stages);
-  }, [stages, editing, triggerNodes, start]);
-
-  const updateStage = (id: string, change: Partial<BrowserFlowStage>) =>
-    setDraft(current => current === null ? current : { ...current, stages: current.stages.map(one => one.id === id ? { ...one, ...change } : one) });
+  }, [stages, editing, triggerNodes]);
 
   const onNodesChange = (changes: NodeChange<FlowNode>[]) => {
     setNodes(current => applyNodeChanges(changes, current));
     if (!editing) return;
-    for (const change of changes) if (change.type === "select" && change.selected && !change.id.startsWith("trigger-")) setSelected({ zone: change.id });
+    for (const change of changes) if (change.type === "select" && change.selected && !change.id.startsWith("trigger-")) props.onZone(change.id);
   };
   const onNodeDragStop = (_event: unknown, node: FlowNode) => {
     if (!editing || node.type !== "zone") return;
-    setDraft(current => current === null ? current : { ...current, stages: current.stages.map(one => one.id === node.id
+    props.setDraft(current => current === null ? current : { ...current, stages: current.stages.map(one => one.id === node.id
       ? { ...one, zone: { ...one.zone, x: Math.round(node.position.x), y: Math.round(node.position.y) } } : one) });
   };
-
   const onConnect = (connection: Connection) => {
     if (!editing || connection.source === connection.target) return;
     const from = stages.find(one => one.id === connection.source);
@@ -1743,221 +1777,353 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
       // From a sort zone, a new arrow is a new answer, named after where it goes until it's renamed.
       const target = stages.find(one => one.id === connection.target);
       if (target !== undefined && from.sort.answers.length < 12) updateStage(from.id, { sort: { ...from.sort, answers: [...from.sort.answers, { answer: target.title.slice(0, 40), means: target.title, to: target.id }] } });
-      setSelected({ zone: from.id });
+      props.onZone(from.id);
       return;
     }
     if (from?.kind === "choose" && connection.sourceHandle !== "fail") {
       // From a "Person chooses" zone, a new arrow is a new button, named after where it goes until it's renamed.
       const target = stages.find(one => one.id === connection.target);
       if (target !== undefined && (from.options ?? []).length < 4) updateStage(from.id, { options: [...from.options ?? [], { label: target.title.slice(0, 40), to: target.id }] });
-      setSelected({ zone: from.id });
+      props.onZone(from.id);
       return;
     }
     updateStage(connection.source, connection.sourceHandle === "fail" ? { onFail: connection.target } : { next: connection.target });
   };
 
-  const startEditing = () => { setDraft({ name: view.flow.name, start: view.start, stages: view.stages, owner: view.flow.owner }); setEditing(true); setSelected(null); };
-  const stopEditing = () => { setDraft(null); setEditing(false); setSelected(null); };
+  // Where it starts: a desk fits the drawing (never above 100%); a phone shows the first zone at 100%, and expanding
+  // keeps where you were (Fit is one tap away).
+  const placed = useRef<string | null>(null);
+  const placing = vertical ? "v" : "d";
+  useEffect(() => {
+    if (placed.current === placing) return;
+    placed.current = placing;
+    const frame = requestAnimationFrame(() => {
+      if (!vertical) { void flow.fitView({ padding: 0.12, maxZoom: 1 }); return; }
+      const width = box.current?.querySelector(".fl-vp")?.clientWidth ?? 360;
+      void flow.setViewport({ x: Math.max(8, (width - PHONE_ZONE_WIDTH) / 2), y: 16, zoom: 1 });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [placing, vertical, flow]);
+  // Expanding or coming back changes the canvas's width: keep the zoom and the height you were at, centred again.
+  const wasExpanded = useRef(expanded);
+  useEffect(() => {
+    if (!vertical || wasExpanded.current === expanded) return;
+    wasExpanded.current = expanded;
+    const timer = window.setTimeout(() => {
+      const { y, zoom } = flow.getViewport();
+      const width = box.current?.querySelector(".fl-vp")?.clientWidth ?? 360;
+      void flow.setViewport({ x: Math.max(8, (width - PHONE_ZONE_WIDTH * zoom) / 2), y, zoom });
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [expanded, vertical, flow]);
+  // New or removed triggers change what a desk's canvas holds: fit it again so nothing sits off the edge.
+  const triggerKey = vertical ? "" : liveTriggers.map(one => `${one.id}:${one.zoneId}`).join(",");
+  const fitted = useRef(triggerKey);
+  useEffect(() => {
+    if (fitted.current === triggerKey) return;
+    fitted.current = triggerKey;
+    const frame = requestAnimationFrame(() => { void flow.fitView({ padding: 0.12, maxZoom: 1, duration: 160 }); });
+    return () => cancelAnimationFrame(frame);
+  }, [triggerKey, flow]);
+
+  const keys = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    const step = 48;
+    const { x, y, zoom } = flow.getViewport();
+    if (event.key === "+" || event.key === "=") void flow.zoomIn({ duration: 160 });
+    else if (event.key === "-" || event.key === "_") void flow.zoomOut({ duration: 160 });
+    else if (event.key === "0") void flow.fitView({ padding: 0.12, maxZoom: 1, duration: 160 });
+    else if (event.key.startsWith("Arrow")) void flow.setViewport({ x: x + (event.key === "ArrowLeft" ? step : event.key === "ArrowRight" ? -step : 0), y: y + (event.key === "ArrowUp" ? step : event.key === "ArrowDown" ? -step : 0), zoom });
+    else if (event.key === "Escape" && expanded) props.onCollapse?.();
+    else return;
+    event.preventDefault();
+  };
+
+  return <div ref={box} className={cn("fl-canvas", vertical && "column", expanded && "expanded", editing && "editing")} data-flow-canvas>
+    {expanded && <div className="fl-xbar"><b>{props.name}</b><span className="k-note">Drag to move · pinch to zoom</span><span className="k-grow" />
+      <KButton variant="primary" label="Done" data-flow-collapse onClick={() => props.onCollapse?.()} /></div>}
+    <div className="fl-vp" tabIndex={0} role="group" aria-roledescription="canvas" onKeyDown={keys}
+      aria-label={`${props.name}: its zones and cards. Drag to move, pinch or press + and − to zoom, 0 to fit.`}>
+      <ReactFlow nodes={nodes} edges={edges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES} onNodesChange={onNodesChange} onNodeDragStop={onNodeDragStop} onConnect={onConnect}
+        onEdgesDelete={deleted => { for (const edge of deleted) updateStage(edge.source, edge.id.endsWith("->fail") ? { onFail: null } : edge.id.endsWith("->limit") ? { limit: { ...(stages.find(one => one.id === edge.source)?.limit ?? { minutes: 1440 }), to: null } } : { next: null }); }}
+        onPaneClick={() => { if (editing) props.onZone(null); }}
+        // A node with a click handler keeps its pointer events outside edit mode: cards are clicked and dragged.
+        onNodeClick={() => undefined}
+        nodesDraggable={editing} nodesConnectable={editing} elementsSelectable={editing} minZoom={ZOOM.min} maxZoom={ZOOM.max}
+        zoomOnScroll={false} zoomActivationKeyCode={["Meta", "Control"]} zoomOnPinch zoomOnDoubleClick={!editing} panOnDrag preventScrolling={false}
+        proOptions={{ hideAttribution: true }} deleteKeyCode={editing ? ["Backspace", "Delete"] : null}>
+        <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--so-line)" />
+      </ReactFlow>
+      <ZoomBar {...(vertical && !expanded && props.onExpand !== undefined ? { onExpand: props.onExpand } : {})} />
+    </div>
+    {editing && <p className="fl-hint k-note">Drag zones to arrange them. Drag from a zone's right dot to say where work goes next, from its bottom dot for where it goes if sent back.</p>}
+  </div>;
+}
+
+/** Where a card stands, as one of the kit's words: waiting on you, running, waiting on someone else, or ended. */
+function cardChip(card: BrowserFlowCard): ReactNode {
+  if (card.state === "done") return <KStatus status="finished" />;
+  if (card.state === "cancelled") return <KChip word={card.waiting === "Ignored" ? "Ignored" : "Cancelled"} dot={false} />;
+  if (card.canDecide || card.question?.mine === true || card.choose?.mine === true) return <KChip word="Needs you" tone="needs" />;
+  return card.waiting !== null ? <KChip word="Waiting" dot={false} /> : <KStatus status="running" />;
+}
+const waitsOnMe = (card: BrowserFlowCard) => card.state === "active" && (card.canDecide || card.question?.mine === true || card.choose?.mine === true);
+
+type Overlay = { card: number } | { triggers: number | null } | { press: number } | { scripts: true } | { unattended: true } | { newCard: true };
+
+/** An act's outcome, in place: a refusal says what didn't change; a success is one quiet line. No toasts. */
+function Outcome({ outcome }: { outcome: { ok: boolean; said: string } | null }) {
+  if (outcome === null) return null;
+  return outcome.ok ? <p className="k-note fl-outcome" role="status" data-flow-outcome>{outcome.said}</p> : <KNotice>{outcome.said}</KNotice>;
+}
+
+/**
+ * One flow's page: what it's doing in one line, the browser decision when it waits on one, the canvas (a list on a
+ * phone, with the canvas a tap away) with its recent cards beneath, and the runs with how they went. Triggers, scripts,
+ * a card, a new card and "Run on its own" open in drawers; editing the drawing keeps its panel beside the canvas.
+ */
+export function FlowView({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }) {
+  const phone = usePhone();
+  const [view, setView] = useState(initial);
+  const [outcome, setOutcome] = useState<{ ok: boolean; said: string } | null>(null);
+  const apply = useCallback((result: Said) => {
+    setOutcome({ ok: result.ok, said: result.said });
+    if (result.view !== undefined) setView(result.view);
+  }, []);
+  const [overlay, setOverlayState] = useState<{ open: Overlay; from: HTMLElement | null } | null>(() =>
+    initial.selectedCard !== null ? { open: { card: initial.selectedCard }, from: null }
+      : initial.startTrigger !== null && initial.triggers.some(one => one.id === initial.startTrigger && one.button !== null) ? { open: { press: initial.startTrigger }, from: null } : null);
+  const open = useCallback((next: Overlay, from: HTMLElement | null) => { setOutcome(null); setOverlayState({ open: next, from }); }, []);
+  const close = useCallback(() => setOverlayState(null), []);
+  const [tab, setTab] = useState<"steps" | "runs">("steps");
+  const [layout, setLayout] = useState<"list" | "canvas">("list");
+  const [expanded, setExpanded] = useState(false);
+  const expandFrom = useRef<HTMLElement | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [zone, setZone] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [mineOnly, setMineOnly] = useState(() => { try { return window.localStorage.getItem("so-flows-mine") === "1"; } catch { return false; } });
+  useEffect(() => { try { window.localStorage.setItem("so-flows-mine", mineOnly ? "1" : "0"); } catch { /* a private window keeps it for this visit */ } }, [mineOnly]);
+  const menu = useKMenu();
+  const browserTerms = useFrozenBrowser(view.browser);
+
+  const openCard = overlay !== null && "card" in overlay.open ? overlay.open.card : null;
+  const others = useLiveFlow(view, setView, { card: openCard, editing });
+  const lookers = useMemo(() => {
+    const byCard: Record<number, string[]> = {};
+    for (const one of others) if (!one.editing) for (const card of one.cards) (byCard[card] ??= []).push(one.name);
+    return byCard;
+  }, [others]);
+
+  const move = useCallback(async (card: number, stage: string) => {
+    const current = view.cards.find(one => one.id === card);
+    if (current === undefined || current.stage === stage) return;
+    apply(await send(`${view.flow.href}/cards/${card}/move`, { stage }, csrf));
+  }, [view, csrf, apply]);
+  const onCard = useCallback((id: number, from: HTMLElement | null) => open({ card: id }, from), [open]);
+  const onTriggers = useCallback((id: number, from: HTMLElement | null) => open({ triggers: id }, from), [open]);
+  const onPress = useCallback((id: number, from: HTMLElement | null) => open({ press: id }, from), [open]);
+  const setDraftFn = useCallback((change: (current: Draft | null) => Draft | null) => setDraft(change), []);
+
+  // The page was opened to allow browser use (?browser=1, the link a waiting card and chat give): bring the decision up.
+  useEffect(() => { if (initial.browser != null && browserAsked()) document.getElementById("fl-browser")?.scrollIntoView({ block: "center" }); }, [initial.browser]);
+  // Expanded on a phone: the canvas has the screen; the page behind doesn't scroll.
+  useEffect(() => {
+    document.documentElement.classList.toggle("fl-locked", expanded);
+    return () => document.documentElement.classList.remove("fl-locked");
+  }, [expanded]);
+  useEffect(() => { if (!phone) { setExpanded(false); } }, [phone]);
+  const collapse = useCallback(() => { setExpanded(false); requestAnimationFrame(() => (document.querySelector<HTMLElement>("[data-flow-expand]") ?? expandFrom.current)?.focus({ preventScroll: true })); }, []);
+
+  const live = view.triggers.filter(one => one.state !== "removed");
+  const stages = draft?.stages ?? view.stages;
+  const start = draft?.start ?? view.start;
+  const dirty = draft !== null && JSON.stringify({ name: draft.name, start: draft.start, stages: draft.stages, owner: draft.owner }) !== JSON.stringify({ name: view.flow.name, start: view.start, stages: view.stages, owner: view.flow.owner });
+  const startEditing = () => { setDraft({ name: view.flow.name, start: view.start, stages: view.stages, owner: view.flow.owner }); setEditing(true); setZone(null); close(); setTab("steps"); };
+  const stopEditing = () => { setDraft(null); setEditing(false); setZone(null); };
   const save = async () => {
-    if (draft === null) return;
+    if (draft === null || saving) return;
     setSaving(true);
     const result = await send(`${view.flow.href}/save`, { name: draft.name, owner: draft.owner, revision: String(view.flow.revision), definition: JSON.stringify({ version: 1, start: draft.start, stages: draft.stages }) }, csrf);
     setSaving(false);
     apply(result);
-    if (result.ok) { setDraft(null); setEditing(false); setSelected(null); }
+    if (result.ok) stopEditing();
   };
+  const flowApi = useRef<{ center: () => { x: number; y: number } } | null>(null);
   const addZone = () => {
     if (draft === null) return;
     const taken = new Set(draft.stages.map(one => one.id));
-    const center = flow.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
-    const stage: BrowserFlowStage = { id: slug("New zone", taken), title: "New zone", kind: "inbox", zone: { x: Math.round(center.x - 140), y: Math.round(center.y - 120), w: 280, h: 300, color: "slate" },
+    const at = flowApi.current?.center() ?? { x: 0, y: 0 };
+    const stage: BrowserFlowStage = { id: slug("New zone", taken), title: "New zone", kind: "inbox", zone: { x: Math.round(at.x - 140), y: Math.round(at.y - 120), w: 280, h: 300, color: "slate" },
       instructions: null, planning: null, approver: null, message: null, close: null, script: null, sort: null, next: null, onFail: null };
     setDraft({ ...draft, stages: [...draft.stages, stage] });
-    setSelected({ zone: stage.id });
+    setZone(stage.id);
   };
+  const updateStage = (id: string, change: Partial<BrowserFlowStage>) => setDraft(current => current === null ? current : { ...current, stages: current.stages.map(one => one.id === id ? { ...one, ...change } : one) });
 
-  const selectedCard = selected !== null && "card" in selected ? view.cards.find(one => one.id === selected.card) ?? null : null;
-  const pressing = selected !== null && "press" in selected ? view.triggers.find(one => one.id === selected.press && one.button !== null) ?? null : null;
-  const triggersOpen = selected !== null && "triggers" in selected && !editing;
-  const scriptsOpen = selected !== null && "scripts" in selected;
-  const insightsOpen = selected !== null && "insights" in selected && !editing;
-  const unattendedOpen = selected !== null && "unattended" in selected && !editing;
-  const browserOpen = selected !== null && "browser" in selected && !editing;
-  const selectedZone = selected !== null && "zone" in selected ? stages.find(one => one.id === selected.zone) ?? null : null;
-  const waitingOnYou = view.cards.filter(card => card.canDecide).length;
+  // What the flow is doing, in one line, then the latest card and the facts.
+  const active = view.cards.filter(card => card.state === "active");
+  const mine = active.filter(waitsOnMe);
+  const latest = [...view.cards].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+  const titleOf = (id: string) => view.stages.find(one => one.id === id)?.title ?? id;
+  const lead = mine.length > 0 ? (mine.length === 1 ? `A card waits for you in ${titleOf(mine[0]!.stage)}` : `${mine.length} cards wait for you`)
+    : active.length > 0 ? `${active.length} card${active.length === 1 ? "" : "s"} in progress` : view.cards.length > 0 ? "Nothing in progress" : "No cards yet";
+  const browserBlocked = view.browser != null && view.browser.status !== "allowed";
+  const button = live.find(one => one.button !== null && one.state === "active");
+  const schedule = live.find(one => one.kind === "schedule" && one.checkable && one.state === "active");
+  const [running, setRunning] = useState(false);
+  const runNow = async () => { if (schedule === undefined || running) return; setRunning(true); apply(await send(`${view.flow.href}/triggers/${schedule.id}/check`, {}, csrf)); setRunning(false); };
+  /** The screen's one primary: what resolves a wait on you first, then the act that starts work. */
+  const primary: { label: string; busy?: string | false; act: (from: HTMLElement) => void; data?: Record<string, string> } | null = editing ? null
+    : mine.length > 0 ? { label: mine.length === 1 ? "Review" : `Review ${mine.length}`, act: from => open({ card: mine[0]!.id }, from), data: { "data-flow-review": "" } }
+    : browserBlocked && view.canEdit && view.browser?.canApprove !== false ? null
+    : button !== undefined ? { label: button.button!.label, act: from => open({ press: button.id }, from), data: { "data-flow-press": String(button.id) } }
+    : schedule !== undefined && view.canEdit ? { label: "Run now", busy: running ? "Starting…" : false, act: () => void runNow(), data: { "data-flow-run-now": "" } }
+    : view.canEdit ? { label: "New card", act: from => open({ newCard: true }, from), data: { "data-flow-new-card": "" } } : null;
+  const primaryButton = (sm: boolean) => primary === null ? null
+    : <KButton variant="primary" sm={sm} label={primary.label} busy={primary.busy ?? false} {...primary.data} {...(primary.label === "New card" ? { lead: "plus" as const } : {})} onClick={event => primary.act(event.currentTarget)} />;
+  const more = (from: HTMLElement) => menu(from, phone ? view.flow.name : "More", [
+    ...(phone ? [{ label: "Triggers", act: () => open({ triggers: null }, from) }, { label: "Scripts", act: () => open({ scripts: true }, from) }] : []),
+    ...(view.canEdit && !phone ? [{ label: "Edit flow", act: startEditing }] : []),
+    ...(view.canEdit && primary?.label !== "New card" ? [{ label: "New card", act: () => open({ newCard: true }, from) }] : []),
+    ...(view.canEdit && view.unattended.scheduled && view.unattended.active === null ? [{ label: "Run on its own…", act: () => open({ unattended: true }, from) }] : []),
+    ...(view.canEdit ? [{ label: "Change it in chat", act: () => { window.location.assign(view.chatHref); } }] : []),
+    { label: "Export as a file", act: () => { window.location.assign(`${view.flow.href}/export`); } },
+  ]);
+  const tabs = <KSeg label="View" current={tab} onChange={key => setTab(key as "steps" | "runs")} items={[{ key: "steps", label: "Steps" }, { key: "runs", label: "Runs", count: <KCount n={view.cards.length} /> }]} />;
+  const moreButton = (props: { sm?: boolean } = {}) => <KButton variant="ghost" iconOnly="more" label="More" sm={props.sm === true} aria-haspopup="dialog" data-flow-menu onClick={event => more(event.currentTarget)} />;
 
-  return <div className="flex h-[calc(100dvh-7.5rem)] min-h-[560px] flex-col overflow-hidden rounded-xl border bg-card" data-flow={view.flow.id}>
-    <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
-      {editing && draft !== null
-        ? <Input value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} maxLength={80} className="h-8 max-w-64 font-semibold" aria-label="Flow name" />
-        : <h1 className="text-title">{view.flow.name}</h1>}
-      <span className="text-caption text-muted-foreground font-normal">{view.flow.project}</span>
-      <AlsoHere others={others} cards={view.cards} />
-      {!editing && <UnattendedStatus view={view} csrf={csrf} apply={apply} />}
-      {editing && draft !== null && <label className="inline-flex items-center gap-1.5 text-caption text-muted-foreground font-normal">Owner
-        <select className="h-8 rounded-md border bg-transparent px-2 text-caption text-foreground font-normal" value={draft.owner} onChange={event => setDraft({ ...draft, owner: event.target.value })} aria-label="Flow owner">
-          {[...new Set([draft.owner, ...view.approvers])].map(name => <option key={name} value={name}>{name === view.me ? `${name} (you)` : name}</option>)}
-        </select></label>}
-      {waitingOnYou > 0 && !editing && <Badge tone="attention">{waitingOnYou} waiting for you</Badge>}
-      {!editing && <div className="ml-1 inline-flex rounded-md border p-0.5" role="group" aria-label="Which cards">
-        {([["All cards", false], ["Mine", true]] as const).map(([label, value]) => <button key={label} type="button" aria-pressed={mineOnly === value} onClick={() => setMineOnly(value)}
-          className={cn("rounded px-2 py-1 text-caption", mineOnly === value ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}
-      </div>}
-      <span className="flex-1" />
-      {editing
-        ? <>
-            <Button size="sm" variant="ghost" onClick={() => setSelected({ scripts: true })}><ListChecks className="size-4" />Scripts</Button>
-            <Button size="sm" variant="outline" onClick={addZone}><Plus className="size-4" />Add zone</Button>
-            <Button size="sm" variant="ghost" onClick={stopEditing}>Discard</Button>
-            <Button size="sm" onClick={() => void save()} disabled={!dirty || saving}>{saving ? "Saving…" : "Save flow"}</Button>
-          </>
-        : <>
-            <Button size="sm" variant="ghost" onClick={() => { setAdding(false); setSelected({ insights: true }); }} data-open-insights><LineChart className="size-4" />Insights</Button>
-            <Button size="sm" variant="ghost" onClick={() => { setAdding(false); setSelected({ scripts: true }); }} data-open-scripts><ListChecks className="size-4" />Scripts</Button>
-            {view.canEdit && <Button size="sm" variant="ghost" onClick={() => { setAdding(false); setSelected({ triggers: null }); }} data-open-triggers><Zap className="size-4" />Triggers{liveTriggers.length > 0 ? ` · ${liveTriggers.length}` : ""}</Button>}
-            {view.canEdit && <Button size="sm" variant="ghost" asChild><a href={view.chatHref}><MessageSquare className="size-4" />Change in chat</a></Button>}
-            {view.canEdit && <Button size="sm" variant="outline" onClick={startEditing}><Pencil className="size-4" />Edit flow</Button>}
-            {view.canEdit && <Button size="sm" onClick={() => { setSelected(null); setAdding(true); }}><Plus className="size-4" />New card</Button>}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild><Button size="sm" variant="ghost" aria-label="More" data-flow-menu><Ellipsis className="size-4" /></Button></DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem asChild><a href={`${view.flow.href}/export`} download data-export-flow><Download className="size-4" />Export as a file</a></DropdownMenuItem>
-                {view.canEdit && view.unattended.scheduled && view.unattended.active === null &&
-                  <DropdownMenuItem onSelect={() => { setAdding(false); setSelected({ unattended: true }); }} data-flow-unattended="off"><CalendarClock className="size-4" />Run on its own…</DropdownMenuItem>}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </>}
-    </div>
-    <div className="relative flex min-h-0 flex-1">
-      <div className="relative min-w-0 flex-1" data-flow-canvas>
-        <ReactFlow nodes={nodes} edges={edges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES} onNodesChange={onNodesChange} onNodeDragStop={onNodeDragStop} onConnect={onConnect}
-          onEdgesDelete={deleted => { for (const edge of deleted) updateStage(edge.source, edge.id.endsWith("->fail") ? { onFail: null } : edge.id.endsWith("->limit") ? { limit: { ...(draft?.stages.find(one => one.id === edge.source)?.limit ?? { minutes: 1440 }), to: null } } : { next: null }); }}
-          onPaneClick={() => { if (editing) setSelected(null); }}
-          // A node with a click handler keeps its pointer events outside edit mode: cards are clicked and dragged.
-          onNodeClick={() => undefined}
-          nodesDraggable={editing} nodesConnectable={editing} elementsSelectable={editing} fitView fitViewOptions={{ padding: 0.12, minZoom: 0.55, maxZoom: 1 }} minZoom={0.3} maxZoom={1.5}
-          proOptions={{ hideAttribution: true }} deleteKeyCode={editing ? ["Backspace", "Delete"] : null}>
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-          <Controls showInteractive={false} />
-        </ReactFlow>
-        {editing && <p className="pointer-events-none absolute bottom-3 left-14 max-w-md rounded-lg bg-foreground/85 px-3 py-1.5 text-caption text-background font-normal">Drag zones to arrange them. Drag from a zone's right dot to say where work goes next, from its bottom dot for where it goes if sent back.</p>}
+  const header = editing && draft !== null
+    ? <div className="k-tb fl-edit-tb">
+        <KInput value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} maxLength={80} aria-label="Flow name" className="fl-name" />
+        <label className="fl-owner"><span className="k-note">Owner</span>
+          <KSelect sm value={draft.owner} onChange={event => setDraft({ ...draft, owner: event.target.value })} aria-label="Flow owner"
+            items={[...new Set([draft.owner, ...view.approvers])].map(name => [name, name === view.me ? `${name} (you)` : name] as const)} /></label>
+        <span className="k-grow" />
+        <KButton variant="ghost" sm lead="code" label="Scripts" onClick={event => open({ scripts: true }, event.currentTarget)} />
+        <KButton sm lead="plus" label="Add zone" onClick={addZone} />
+        <KButton variant="ghost" sm label="Discard" onClick={stopEditing} />
+        <KButton variant="primary" sm label="Save flow" busy={saving ? "Saving…" : false} disabled={!dirty} onClick={() => void save()} />
       </div>
-      {(selectedZone !== null && editing) || selectedCard !== null || (adding && !editing) || triggersOpen || pressing !== null || scriptsOpen || insightsOpen || unattendedOpen || browserOpen ? <aside className="absolute inset-y-0 right-0 z-10 w-[360px] max-w-full overflow-y-auto border-l bg-card p-4 shadow-xl" data-flow-drawer>
-        {selectedZone !== null && editing
-          ? <ZonePanel stage={selectedZone} stages={stages} view={view} csrf={csrf} apply={apply} update={change => updateStage(selectedZone.id, change)}
-              remove={() => { setDraft(current => current === null ? current : { ...current, start: current.start === selectedZone.id ? current.stages.find(one => one.id !== selectedZone.id)!.id : current.start,
-                stages: current.stages.filter(one => one.id !== selectedZone.id).map(one => ({ ...one, next: one.next === selectedZone.id ? null : one.next, onFail: one.onFail === selectedZone.id ? null : one.onFail })) }); setSelected(null); }}
-              makeStart={() => setDraft(current => current === null ? current : { ...current, start: selectedZone.id })} onClose={() => setSelected(null)} />
-          : scriptsOpen
-            ? <ScriptsPanel view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} />
-          : insightsOpen
-            ? <InsightsPanel view={view} onClose={() => setSelected(null)} />
-          : unattendedOpen
-            ? <UnattendedPanel view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} />
-          : browserOpen
-            ? <BrowserPanel view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} />
-          : pressing !== null
-            ? <PressPanel key={pressing.id} trigger={pressing} view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} />
-          : triggersOpen
-            ? <TriggersPanel view={view} csrf={csrf} apply={apply} focus={selected !== null && "triggers" in selected ? selected.triggers : null} onPress={id => setSelected({ press: id })} onClose={() => setSelected(null)} />
-          : selectedCard !== null
-            ? <CardPanel card={selectedCard} view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} onAllowBrowser={() => setSelected({ browser: true })} />
-            : <NewCard view={view} csrf={csrf} apply={result => { apply(result); if (result.ok) setAdding(false); }} onClose={() => setAdding(false)} />}
-      </aside> : null}
-    </div>
-  </div>;
-}
+    : <KPageHeader title={view.flow.name} back="/flows" ctx={view.flow.project}
+        right={<>{tabs}{view.canEdit && <KButton variant="ghost" sm lead="bolt" label={live.length > 0 ? `Triggers · ${live.length}` : "Triggers"} data-open-triggers onClick={event => open({ triggers: null }, event.currentTarget)} />}
+          <KButton variant="ghost" sm lead="code" label="Scripts" data-open-scripts onClick={event => open({ scripts: true }, event.currentTarget)} />{moreButton({ sm: true })}{primaryButton(true)}</>}
+        trailing={moreButton()} />;
 
-/** Phones: the zones in order, each with its cards; a card opens its panel. Editing needs a larger screen. */
-function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }) {
-  const [view, setView] = useState(initial);
-  const [open, setOpen] = useState<number | null>(initial.selectedCard);
-  const [pressing, setPressing] = useState<number | null>(initial.startTrigger);
-  const [browserOpen, setBrowserOpen] = useState(() => initial.browser != null && browserAsked());
-  const apply = (result: Said) => { (result.ok ? toast.success : toast.error)(result.said); if (result.view !== undefined) setView(result.view); };
-  const others = useLiveFlow(view, setView, { card: open, editing: false });
-  const card = open === null ? null : view.cards.find(one => one.id === open) ?? null;
-  const button = pressing === null ? null : view.triggers.find(one => one.id === pressing && one.button !== null && one.state === "active") ?? null;
-  const live = view.triggers.filter(one => one.state !== "removed");
-  const [busy, setBusy] = useState(false);
-  // v126: what a webhook's set-up or new address shows once, on the phone too.
-  const [reveal, setReveal] = useState<{ kind: string; reveal: Reveal } | null>(null);
-  const renew = async (trigger: BrowserFlowTrigger, password: string) => {
-    setBusy(true);
-    const result = await send(`${view.flow.href}/triggers/${trigger.id}/renew`, { password }, csrf);
-    setBusy(false); apply(result);
-    if (result.reveal !== undefined) setReveal({ kind: trigger.hook?.sender ?? trigger.kind, reveal: result.reveal });
-    return result.ok;
-  };
-  const toggle = async (trigger: BrowserFlowTrigger) => {
-    setBusy(true);
-    apply(await send(`${view.flow.href}/triggers/${trigger.id}/${trigger.state === "paused" ? "resume" : "pause"}`, {}, csrf));
-    setBusy(false);
-  };
-  if (button !== null) return <div className="p-4"><PressPanel trigger={button} view={view} csrf={csrf} apply={apply} onClose={() => setPressing(null)} /></div>;
-  if (card !== null) return <div className="p-4"><CardPanel card={card} view={view} csrf={csrf} apply={apply} onClose={() => setOpen(null)} onAllowBrowser={() => { setOpen(null); setBrowserOpen(true); }} /></div>;
-  if (browserOpen) return <div className="p-4"><BrowserPanel view={view} csrf={csrf} apply={apply} onClose={() => setBrowserOpen(false)} /></div>;
-  return <div className="flex flex-col gap-3 p-4" data-flow={view.flow.id}>
-    <div><h1 className="text-[17px] font-semibold">{view.flow.name}</h1><p className="text-caption text-muted-foreground font-normal">{view.flow.project}{view.canEdit ? <> · <a className="underline" href={view.chatHref}>change it in chat</a>, or edit it on a larger screen</> : null} · <a className="underline" href={`${view.flow.href}/export`} download data-export-flow>Export</a></p>
-      {others.length > 0 && <div className="mt-1.5"><AlsoHere others={others} cards={view.cards} /></div>}
-      {view.unattended.active !== null && <div className="mt-1.5"><UnattendedStatus view={view} csrf={csrf} apply={apply} /></div>}
-      {view.browser != null && <div className="mt-1.5"><BrowserStatus view={view} csrf={csrf} apply={apply} onAllow={() => setBrowserOpen(true)} /></div>}</div>
-    {view.unattended.active === null && view.canEdit && view.unattended.scheduled && <details className="rounded-lg border p-3" data-flow-unattended="off">
-      <summary className="cursor-pointer text-title-sm">Run on its own</summary><div className="pt-3"><UnattendedPanel view={view} csrf={csrf} apply={apply} /></div></details>}
-    {view.canEdit && live.some(one => one.button !== null && one.state === "active") && <div className="flex flex-wrap gap-2">
-      {live.filter(one => one.button !== null && one.state === "active").map(one => <Button key={one.id} size="sm" onClick={() => setPressing(one.id)}><MousePointerClick className="size-4" />{one.button!.label}</Button>)}</div>}
-    {view.canEdit && <details className="rounded-lg border p-3"><summary className="cursor-pointer text-title-sm">New card</summary><div className="pt-3"><NewCard view={view} csrf={csrf} apply={apply} /></div></details>}
+  const latestLine = latest === undefined ? null : <p className="fl-latest"><span className={cn("fl-dot", waitsOnMe(latest) ? "wait" : latest.state === "done" ? "ok" : latest.state === "active" && latest.waiting === null ? "run" : "idle")} aria-hidden="true" />
+    <span>{latest.title} · {latest.state === "active" ? `in ${titleOf(latest.stage)}${latest.waiting !== null ? `: ${latest.waiting}` : ""}` : latest.state === "done" ? "done" : "cancelled"}</span><span className="fl-when k-num">{when(latest.updatedAt)}</span></p>;
+  const firstTrigger = live.find(one => one.state === "active") ?? live[0];
+  const head = <div className="fl-head">
+    <h2 className="fl-lead">{lead}</h2>
+    {latestLine}
+    <p className="fl-meta">
+      <span className="fl-meta-item">{firstTrigger === undefined ? "Cards are added by hand" : firstTrigger.words}</span>
+      <span className="fl-meta-item">owner {view.flow.owner}</span>
+      <UnattendedLine view={view} csrf={csrf} apply={apply} />
+      <BrowserLine view={view} csrf={csrf} apply={apply} />
+      <AlsoHere others={others} cards={view.cards} />
+    </p>
+    {overlay === null && <Outcome outcome={outcome} />}
+  </div>;
+
+  const recent = [...view.cards].sort((a, b) => Number(waitsOnMe(b)) - Number(waitsOnMe(a)) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const cardRow = (card: BrowserFlowCard) => <div key={card.id} className="fl-rowwrap" data-card-row={card.id}
+    onClick={event => { const link = (event.target as HTMLElement).closest("a.k-row-t"); if (link === null) return; event.preventDefault(); open({ card: card.id }, link as HTMLElement); }}>
+    <KRow href={`${view.flow.href}?card=${card.id}`} chip={cardChip(card)} title={card.title} wait={waitsOnMe(card)}
+      desc={card.state === "active" ? `In ${titleOf(card.stage)}${card.waiting !== null ? ` · ${card.waiting}` : ""}` : card.history.at(-1)?.text ?? (card.state === "done" ? "Finished" : "Cancelled")}
+      meta={<span className="k-num">{when(card.updatedAt)}</span>}
+      action={waitsOnMe(card) ? <KButton sm label="Review" onClick={event => open({ card: card.id }, event.currentTarget)} /> : undefined} />
+  </div>;
+  const recentRuns = recent.length === 0 ? null : <div className="fl-recent" aria-label="Recent runs">
+    <KGroup label="Recent runs" count={<KCount n={recent.length} />} />
+    {recent.slice(0, 3).map(cardRow)}
+    {recent.length > 3 && <p className="fl-more-runs"><KButton variant="ghost" sm label={`See all ${recent.length} runs`} onClick={() => setTab("runs")} /></p>}
+  </div>;
+
+  const phoneList = <div className="fl-list" data-flow-list>
     {flowOrder(view.stages, view.start).map(stage => {
       const cards = view.cards.filter(one => one.stage === stage.id && one.state === "active");
-      return <section key={stage.id} className="rounded-lg border bg-muted/40">
-        <header className="flex items-center gap-2 px-3 py-2"><span className="inline-flex size-6 items-center justify-center rounded-md text-white" style={{ background: COLORS[stage.zone.color] ?? "#64748b" }}>{KIND_ICONS[stage.kind]}</span><span className="flex-1 text-title-sm leading-normal">{stage.title}</span>{cards.length > 0 && <span className="text-caption text-muted-foreground font-normal">{cards.length}</span>}</header>
-        {cards.length > 0 && <ul className="flex flex-col gap-2 px-3 pb-3">{cards.map(one => <li key={one.id}><button type="button" onClick={() => setOpen(one.id)} className={cn("min-h-11 w-full rounded-lg border bg-card px-3 py-2 text-left", one.canDecide && "border-attention/60")}>
-          <div className="flex items-start gap-2"><div className="min-w-0 flex-1 text-title-sm font-medium leading-normal">{one.title}</div>{one.owner !== null && <Face name={one.owner} />}</div>
-          {one.sorted !== null && <div className="mt-1 flex"><SortChip sorted={one.sorted} /></div>}
-          {one.waiting !== null && <div className={cn("text-caption font-normal", one.task !== null && (stage.kind === "task" || stage.kind === "report") && "truncate", one.canDecide ? "font-semibold text-attention" : "text-muted-foreground")}>{one.canDecide ? NEEDS.card.sentence({}) : one.waiting}</div>}
-          {one.comments.length > 0 && <div className="mt-0.5 inline-flex items-center gap-1 text-caption text-muted-foreground font-normal"><MessageSquare className="size-3" aria-hidden="true" />{one.comments.length}</div>}
-        </button></li>)}</ul>}
+      return <section key={stage.id} className="fl-step" data-step={stage.id} aria-label={stage.title}>
+        <header className="fl-step-h"><span className="fl-ico" style={{ color: COLORS[stage.zone.color] ?? COLORS["slate"] }}>{KIND_ICONS[stage.kind]}</span>
+          <span className="fl-step-t"><b>{stage.title}</b><span className="k-note">{view.kinds.find(one => one.kind === stage.kind)?.label ?? stage.kind}{stage.id === view.start ? " · new cards start here" : ""}</span></span>
+          {cards.length > 0 && <KCount n={cards.length} ink={cards.some(waitsOnMe)} />}</header>
+        {stage.kind === "check" && stage.browser === true && browserBlocked && <p className="fl-step-br k-note">Starts a browser · not allowed</p>}
+        {cards.length > 0 && <ul className="fl-cards">{cards.map(one => <li key={one.id}><a href={`${view.flow.href}?card=${one.id}`} className={cn("fl-card", waitsOnMe(one) && "wait")} data-card={one.id} onClick={event => { event.preventDefault(); onCard(one.id, event.currentTarget); }}>
+          <span className="fl-card-t">{one.title}</span>
+          {one.sorted !== null && <span className="fl-card-l"><SortChip sorted={one.sorted} /></span>}
+          {one.waiting !== null && <span className={cn("fl-card-l", waitsOnMe(one) && "mine")}>{one.canDecide ? NEEDS.card.sentence({}) : one.question?.mine ? `${one.question.from.split(" · ")[0]} asks you` : one.waiting}</span>}
+        </a></li>)}</ul>}
       </section>;
     })}
-    {live.length > 0 && <section className="rounded-lg border p-3" data-flow-triggers>
-      <h2 className="text-title-sm">Triggers</h2>
-      {reveal !== null && <div className="mt-2"><RevealBox kind={reveal.kind} reveal={reveal.reveal} onDone={() => setReveal(null)} /></div>}
-      <ul className="mt-2 flex flex-col gap-2">{live.map(one => <li key={one.id} className="text-body" data-trigger-row={one.id}><span className="font-medium">{one.name}</span> · {one.detail}
-        <div className={cn("text-caption font-normal", one.failing ? "text-warning" : "text-muted-foreground")}>{one.state === "paused" ? "Paused" : one.status === null ? `Starts in ${one.zone}` : <>{ago(one.statusAt)}: {one.status}<StatusLink link={one.statusLink} /></>}</div>
-        {/* v126: what a webhook needs, said here too; its secrets are managed on the full panel. */}
-        {one.hook?.warning != null && <p className={cn("mt-1 text-caption font-normal", one.hook.sender === "none" || !one.hook.ready ? "text-warning" : "text-muted-foreground")} data-trigger-signing-warning>{one.hook.warning}</p>}
-        {one.hook?.readerNote != null && <p className="mt-1 text-caption text-muted-foreground font-normal" data-trigger-reader-note>{one.hook.readerNote}</p>}
-        {one.hook?.dropped != null && <div className="mt-1.5 flex flex-col gap-1 rounded-md border border-attention/50 p-2" data-trigger-dropped>
-          <p className="text-body font-medium">{one.hook.dropped.count === 1 ? "1 delivery was" : `${one.hook.dropped.count} deliveries were`} turned away since {ago(one.hook.dropped.since)}: too many were already waiting.</p>
-          <p className="text-caption text-muted-foreground font-normal">{one.hook.dropped.resend}</p>
-          {view.canEdit && <Button size="sm" variant="outline" className="min-h-11 self-start" disabled={busy} onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/triggers/${one.id}/dropped`, {}, csrf)); setBusy(false); }}>Clear</Button>}
-        </div>}
-        {/* v126: the whole set-up on the phone as well: who signs it, its secret, its project, and a new address. */}
-        {view.canEdit && one.hook?.sender != null && <WebhookSigning trigger={one} view={view} csrf={csrf} apply={apply} onReveal={revealed => setReveal({ kind: one.hook?.sender ?? one.kind, reveal: revealed })} />}
-        {view.canEdit && one.hook?.sender == null && one.hook?.needsSecret === true && !one.hook.ready && <LinearSecret trigger={one} view={view} csrf={csrf} apply={apply} />}
-        {view.canEdit && one.hook != null && <span data-trigger-renew><CredentialAction view={view} busy={busy} className="mt-1.5 min-h-11" label="New address" onConfirm={password => renew(one, password)} /></span>}
-        {/* A schedule's standing order (what a routine was): its approval in view, its terms on demand, and on or off here. */}
-        {one.order !== undefined && <>
-          <p className="mt-1 text-caption break-words font-normal" data-trigger-approval>{one.order.at(-1)}</p>
-          <details className="mt-1.5 rounded-md border px-3 py-2" data-trigger-order>
-            <summary className="flex min-h-11 cursor-pointer items-center text-body font-medium">What each run files</summary>
-            <ul className="flex flex-col gap-1 pb-1 text-caption text-muted-foreground font-normal">{one.order.slice(0, -1).map((line, index) => <li key={index} className="break-words">{line}</li>)}</ul>
-          </details>
-          {view.canEdit && <Button size="sm" variant="outline" className="mt-1.5 min-h-11" disabled={busy} onClick={() => void toggle(one)}>{one.state === "paused" ? "Turn on" : "Pause"}</Button>}
-        </>}</li>)}</ul>
-    </section>}
+  </div>;
+
+  const canvas = <FlowCanvas view={view} stages={stages} start={start} owner={draft?.owner ?? view.flow.owner} editing={editing} vertical={phone} expanded={expanded}
+    mineOnly={mineOnly} selectedCard={openCard} lookers={lookers} onCard={onCard} onDrop={(card, to) => void move(card, to)} onTriggers={onTriggers} onPress={onPress}
+    onZone={setZone} setDraft={setDraftFn} name={view.flow.name} onExpand={from => { expandFrom.current = from; setExpanded(true); }} onCollapse={collapse} />;
+  const hasOthers = view.cards.some(card => card.state === "active" && !card.mine);
+  const steps = <>
+    {phone && <div className="fl-viewsw"><KSeg label="Layout" current={layout} onChange={key => { setLayout(key as "list" | "canvas"); setExpanded(false); }} items={[{ key: "list", label: "List" }, { key: "canvas", label: "Canvas" }]} /></div>}
+    {!phone && !editing && hasOthers && <div className="fl-filter"><KSeg label="Which cards" current={mineOnly ? "mine" : "all"} onChange={key => setMineOnly(key === "mine")} items={[{ key: "all", label: "All cards" }, { key: "mine", label: "Mine" }]} /></div>}
+    <div className={cn("fl-stage", editing && zone !== null && "with-aside")}>
+      {phone && layout === "list" ? phoneList : <ReactFlowProvider><CanvasApi api={flowApi} />{canvas}</ReactFlowProvider>}
+      {editing && zone !== null && draft !== null && (() => {
+        const selected = draft.stages.find(one => one.id === zone);
+        return selected === undefined ? null : <aside className="fl-aside" data-flow-drawer>
+          <ZonePanel stage={selected} stages={draft.stages} view={view} csrf={csrf} apply={apply} update={change => updateStage(selected.id, change)}
+            remove={() => { setDraft(current => current === null ? current : { ...current, start: current.start === selected.id ? current.stages.find(one => one.id !== selected.id)!.id : current.start,
+              stages: current.stages.filter(one => one.id !== selected.id).map(one => ({ ...one, next: one.next === selected.id ? null : one.next, onFail: one.onFail === selected.id ? null : one.onFail })) }); setZone(null); }}
+            makeStart={() => setDraft(current => current === null ? current : { ...current, start: selected.id })} onClose={() => setZone(null)} />
+        </aside>;
+      })()}
+    </div>
+    {!editing && recentRuns}
+  </>;
+  const runs = <div className="fl-runs">
+    {view.cards.length === 0 ? <KEmpty title="This flow hasn't run yet." text={button !== undefined ? `It runs when someone presses ${button.button!.label}.` : schedule !== undefined ? `It runs ${schedule.words.replace(/^./, char => char.toLowerCase())}, or press Run now.` : "It runs when its trigger fires, or add a card by hand."} />
+      : <><KGroup label="Runs" count={<KCount n={view.cards.length} />} />{recent.map(cardRow)}</>}
+    <section className="fl-insights"><InsightsPanel view={view} /></section>
+  </div>;
+
+  const overlayCard = overlay !== null && "card" in overlay.open ? view.cards.find(one => one.id === (overlay.open as { card: number }).card) ?? null : null;
+  const pressing = overlay !== null && "press" in overlay.open ? view.triggers.find(one => one.id === (overlay.open as { press: number }).press && one.button !== null) ?? null : null;
+  const drawer = overlay === null ? null
+    : overlayCard !== null ? { title: overlayCard.title, body: <CardPanel card={overlayCard} view={view} csrf={csrf} apply={apply}
+        onAllowBrowser={() => { close(); requestAnimationFrame(() => { const frame = document.getElementById("fl-browser"); frame?.scrollIntoView({ block: "center" }); frame?.querySelector<HTMLElement>(".k-btn-primary")?.focus({ preventScroll: true }); }); }} /> }
+    : pressing !== null ? { title: pressing.button!.label, body: <PressPanel key={pressing.id} trigger={pressing} view={view} csrf={csrf} apply={apply} onDone={close} /> }
+    : "triggers" in overlay.open ? { title: "Triggers", body: <TriggersPanel view={view} csrf={csrf} apply={apply} focus={overlay.open.triggers} onPress={id => open({ press: id }, overlay.from)} /> }
+    : "scripts" in overlay.open ? { title: "Scripts", body: <ScriptsPanel view={view} csrf={csrf} apply={apply} /> }
+    : "unattended" in overlay.open ? { title: "Run on its own", body: <UnattendedPanel view={view} csrf={csrf} apply={apply} onSigned={close} /> }
+    : "newCard" in overlay.open ? { title: "New card", body: <NewCard view={view} csrf={csrf} apply={result => { apply(result); if (result.ok) close(); }} /> }
+    : null;
+
+  return <div className="fl-page" data-flow={view.flow.id}>
+    {header}
+    {phone && !editing && <div className="fl-phonebar">{tabs}</div>}
+    {!editing && head}
+    {editing && <Outcome outcome={outcome} />}
+    {!editing && <BrowserFrame view={view} csrf={csrf} apply={apply} phone={phone} {...browserTerms} />}
+    <div className="fl-body">{tab === "runs" && !editing ? runs : steps}</div>
+    {phone && !editing && primary !== null && !(browserBlocked && view.canEdit) && <KDock>{primaryButton(false)}</KDock>}
+    {phone && !editing && browserBlocked && view.canEdit && view.browser?.canApprove !== false && !browserTerms.moved && browserTerms.frozen !== null && <BrowserDock view={view} csrf={csrf} apply={apply} frozen={browserTerms.frozen} />}
+    {drawer !== null && <KOverlay kind="drawer" title={drawer.title} trigger={overlay!.from} onClose={close}>
+      {/* The drawer is portalled to <body>: it keeps the flow view's own ground (its scoped reset and the fl- rules). */}
+      <div data-view="flow-drawer" className="fl-drawer-body"><Outcome outcome={outcome} />{drawer.body}</div></KOverlay>}
   </div>;
 }
 
-export function FlowView({ view, csrf }: { view: BrowserFlowView; csrf: string }) {
-  const narrow = useRef(typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
-  const [phone, setPhone] = useState(narrow.current);
-  useEffect(() => {
-    const query = window.matchMedia("(max-width: 767px)");
-    const change = () => setPhone(query.matches);
-    query.addEventListener("change", change);
-    return () => query.removeEventListener("change", change);
-  }, []);
-  if (phone) return <PhoneFlow view={view} csrf={csrf} />;
-  return <ReactFlowProvider><Canvas view={view} csrf={csrf} /></ReactFlowProvider>;
+/** The phone dock's copy of Allow browser (the frame's own is hidden on a phone): the same terms, from the same view. */
+function BrowserDock({ view, csrf, apply, frozen: browser }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; frozen: BrowserNow }) {
+  if (browser.problem !== null || browser.digest === null) return null;
+  const digest = browser.digest;
+  return <KDock><StepUpAct view={view} label="Allow browser" busyLabel="Allowing…"
+    terms={`${view.flow.name} · ${browser.zones.map(one => `${one.title} runs ${one.script} v${one.version}`).join("; ")} · digest ${digest.slice(0, 12)}`}
+    act={async password => { const result = await send(`${view.flow.href}/browser`, { digest, password }, csrf); if (!result.ok) return result.said; apply(result); return null; }} /></KDock>;
+}
+
+/** Lets the page ask the canvas where its middle is (a new zone lands there). */
+function CanvasApi({ api }: { api: { current: { center: () => { x: number; y: number } } | null } }) {
+  const flow = useReactFlow();
+  useEffect(() => { api.current = { center: () => flow.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) }; return () => { api.current = null; }; }, [flow, api]);
+  return null;
 }

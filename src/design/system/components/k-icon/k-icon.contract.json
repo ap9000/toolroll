@@ -28,7 +28,11 @@
         "check",
         "alert",
         "more",
-        "file"
+        "file",
+        "minus",
+        "fit",
+        "bolt",
+        "code"
       ],
       "default": "plus"
     },

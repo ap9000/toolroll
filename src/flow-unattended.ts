@@ -33,7 +33,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type ts from "typescript-parser";
 import { isProtectedWork } from "./approval-policy.js";
 import type { AcceptanceCriterion } from "./contracts/scope.js";
-import { dollarWords as dollars, scheduleWords, UNATTENDED_RULE_WORDS, unattendedCoverWords, unattendedEndWords, unattendedHeadWords, unattendedLimitWords, untilWords } from "./flow-unattended-words.js";
+import { dollarWords as dollars, scheduleWords, unattendedBudgetOf, unattendedRunsOf, UNATTENDED_RULE_WORDS, unattendedCoverWords, unattendedEndWords, unattendedHeadWords, unattendedLimitWords, untilWords } from "./flow-unattended-words.js";
 import { MODE_MAX_DAYS } from "./modes.js";
 import { accountReachesSql } from "./project-access.js";
 import type { FlowRow, FlowTriggerRow, Store } from "./store.js";
@@ -76,10 +76,8 @@ export const FLOW_ACCEPTANCE: { report: AcceptanceCriterion[]; task: AcceptanceC
   task: [{ id: "c1", statement: "The requested change is made and the project's existing checks still pass", how: null, evidence: ["manual-review"] }],
 };
 
-/** The most runs a day a grant may allow. */
-export const UNATTENDED_MAX_RUNS = 50;
-/** The largest per-attempt budget a grant may name: $100. */
-export const UNATTENDED_MAX_BUDGET_MICROUSD = 100_000_000;
+/** The limits a grant may name, and their one parser, live with its words (the flow page validates with them too). */
+export { UNATTENDED_MAX_BUDGET_MICROUSD, UNATTENDED_MAX_RUNS } from "./flow-unattended-words.js";
 
 /** The code a script schedule runs, as signed: the script's version and content digest, and for one that runs a project
  * file, that file's path and, sorted by path, the digest of its bytes and of every project file it statically imports. */
@@ -216,7 +214,7 @@ function readGrant(row: Record<string, unknown>): UnattendedGrant | null {
 }
 
 /** Why a grant ended, as its row and ledger line say it. A renewal's ledger line is the new signature's. */
-export type UnattendedEnd = "expired" | "revoked" | "renewed" | "schedule changed" | "script changed" | "project protected" | "access changed";
+export type UnattendedEnd = "expired" | "revoked" | "renewed" | "flow changed" | "schedule changed" | "script changed" | "project protected" | "access changed";
 
 /** Close a grant: the row, its ledger line, and the undispatched work it sealed or pre-authorized falls back to a person. */
 function closeGrant(store: Store, row: Record<string, unknown>, by: string, reason: UnattendedEnd, now: Date): void {
@@ -563,20 +561,11 @@ export function parseUnattendedAsk(input: { days: unknown; budget?: unknown; run
   const text = (v: unknown) => typeof v === "string" ? v.trim() : typeof v === "number" ? String(v) : "";
   const days = Number(text(input.days));
   if (!Number.isInteger(days) || days < 1 || days > MODE_MAX_DAYS) return { ok: false, message: `Choose 1 to ${MODE_MAX_DAYS} days: it always ends.` };
-  const budgetText = text(input.budget).replace(/^\$/, "");
-  let budgetMicrousd: number | null = null;
-  if (budgetText !== "") {
-    const value = Number(budgetText);
-    if (!/^\d+(\.\d{1,2})?$/.test(budgetText) || value <= 0 || Math.round(value * 1_000_000) > UNATTENDED_MAX_BUDGET_MICROUSD) return { ok: false, message: `Give the budget in dollars, up to ${dollars(UNATTENDED_MAX_BUDGET_MICROUSD)}, or leave it empty.` };
-    budgetMicrousd = Math.round(value * 1_000_000);
-  }
-  const runsText = text(input.runs);
-  let dailyRunCap: number | null = null;
-  if (runsText !== "") {
-    const value = Number(runsText);
-    if (!Number.isInteger(value) || value < 1 || value > UNATTENDED_MAX_RUNS) return { ok: false, message: `Give runs a day as 1 to ${UNATTENDED_MAX_RUNS}, or leave it empty.` };
-    dailyRunCap = value;
-  }
+  const budget = unattendedBudgetOf(text(input.budget));
+  if (!budget.ok) return budget;
+  const runs = unattendedRunsOf(text(input.runs));
+  if (!runs.ok) return runs;
+  const budgetMicrousd = budget.value, dailyRunCap = runs.value;
   const includeText = Array.isArray(input.include) ? input.include.map(text).join(",") : text(input.include);
   const include = includeText === "" ? [] : includeText.split(/[\s,]+/).filter(one => one !== "").map(Number);
   if (include.some(id => !Number.isSafeInteger(id) || id < 1)) return { ok: false, message: "Name the schedules to include by their trigger ids, like 12,14." };
@@ -716,6 +705,9 @@ export type UnattendedView = {
   /** The schedules it could cover (optional ones only when picked), and their digest, which the form sends back. */
   schedules: { id: number; words: string; optional: string | null }[];
   schedulesDigest: string;
+  /** No live grant, and the latest one was ended by a change (the flow, a script, a schedule, the project's rules or
+   * the signer's access) before it would have run out: why, and when, so the page says it no longer runs on its own. */
+  ended: { why: string; at: string } | null;
 };
 
 export function unattendedViewOf(store: Store, flow: FlowRow, viewer: { name: string; approver: boolean }, now: Date): UnattendedView {
@@ -734,5 +726,18 @@ export function unattendedViewOf(store: Store, flow: FlowRow, viewer: { name: st
     terms: { head: unattendedHeadWords(viewer.name, FLOW_ACCEPTANCE), rules: [...UNATTENDED_RULE_WORDS] },
     schedules: candidates.map(one => ({ id: one.id, words: one.words, optional: one.optional })),
     schedulesDigest: candidatesDigestOf(candidates),
+    ended: live === null ? unattendedEndedOf(store, flow.id, now) : null,
   };
+}
+
+/** Why the flow's latest grant ended early, in words, when a change ended it while it would still have run. */
+const ENDED_WORDS: Readonly<Partial<Record<UnattendedEnd, string>>> = {
+  "flow changed": "the flow changed", "script changed": "a script it runs changed", "schedule changed": "a schedule changed",
+  "project protected": "the project's approval rules changed", "access changed": "its signer's access changed",
+};
+function unattendedEndedOf(store: Store, flowId: number, now: Date): { why: string; at: string } | null {
+  const row = store.handle.prepare("SELECT revoked_at, revoke_reason, absolute_expiry FROM flow_unattended_grant WHERE flow = ? ORDER BY id DESC LIMIT 1").get(flowId);
+  if (row === undefined || row["revoked_at"] == null) return null;
+  const why = ENDED_WORDS[String(row["revoke_reason"]) as UnattendedEnd];
+  return why === undefined || Date.parse(String(row["absolute_expiry"])) <= now.getTime() ? null : { why, at: String(row["revoked_at"]) };
 }

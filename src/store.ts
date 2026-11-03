@@ -110,6 +110,7 @@ import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installL
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
 import { CONSOLE_INSTANCE_SCHEMA } from "./console-instance.js";
 import { endUnattendedGrants, FLOW_UNATTENDED_SCHEMA, grantStandsSql } from "./flow-unattended.js";
+import { flowChanged } from "./flow-changed.js";
 import { FLOW_BROWSER_SCHEMA } from "./flow-browser.js";
 import { RECIPE_SCHEMA } from "./recipes.js";
 import type { LimitReading, LimitWindow } from "./provider-limits.js";
@@ -19035,9 +19036,12 @@ export class Store {
 
   /** Save a new drawing of the flow only over the revision the editor saw (two editors never overwrite each other silently). */
   saveFlow(id: number, change: { name: string; definitionJson: string; sawRevision: number; by: string }, now: Date): boolean {
-    const { changes } = this.db.prepare("UPDATE flow SET name = ?, definition_json = ?, revision = revision + 1, updated_by = ?, updated_at = ? WHERE id = ? AND revision = ? AND state = 'active'")
-      .run(change.name, flowDefinitionForStore(change.definitionJson), change.by, now.toISOString(), id, change.sawRevision);
-    return Number(changes) === 1;
+    // The one road for a changed flow (flow-changed.ts): what a person approved for the flow as it was ends with it.
+    return flowChanged(this, { flow: id }, change.by, now, () => {
+      const { changes } = this.db.prepare("UPDATE flow SET name = ?, definition_json = ?, revision = revision + 1, updated_by = ?, updated_at = ? WHERE id = ? AND revision = ? AND state = 'active'")
+        .run(change.name, flowDefinitionForStore(change.definitionJson), change.by, now.toISOString(), id, change.sawRevision);
+      return Number(changes) === 1;
+    });
   }
 
   archiveFlow(id: number, by: string, now: Date): boolean {
@@ -19528,12 +19532,14 @@ export class Store {
     return this.transact(() => {
       const current = this.flowScript(script.repo, script.name);
       const version = (current?.version ?? Number(this.db.prepare("SELECT COALESCE(MAX(version), 0) AS v FROM flow_script WHERE repo = ? AND name = ?").get(script.repo, script.name)?.["v"] ?? 0)) + 1;
-      if (current !== null) this.db.prepare("UPDATE flow_script SET state = 'removed' WHERE id = ?").run(current.id);
-      // A "runs on its own" grant signed this script's code: a new version ends it (flow-unattended.ts).
-      endUnattendedGrants(this, { script: { repo: script.repo, name: script.name } }, script.by, "script changed", now);
-      this.db.prepare(`INSERT INTO flow_script (repo, name, about, body, timeout_minutes, version, digest, saved_by, saved_at, state, language, file, held)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`).run(script.repo, script.name, script.about, script.body, script.timeoutMinutes, version, script.digest, script.by, now.toISOString(), script.language ?? "shell", script.file ?? null, script.held ?? null);
-      return version;
+      // A new version ends what was approved for the flows that run this script (flow-changed.ts): "runs on its own"
+      // grants that signed its code, and browser use that sealed it.
+      return flowChanged(this, { script: { repo: script.repo, name: script.name } }, script.by, now, () => {
+        if (current !== null) this.db.prepare("UPDATE flow_script SET state = 'removed' WHERE id = ?").run(current.id);
+        this.db.prepare(`INSERT INTO flow_script (repo, name, about, body, timeout_minutes, version, digest, saved_by, saved_at, state, language, file, held)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`).run(script.repo, script.name, script.about, script.body, script.timeoutMinutes, version, script.digest, script.by, now.toISOString(), script.language ?? "shell", script.file ?? null, script.held ?? null);
+        return version;
+      }, () => true);
     });
   }
 
@@ -19544,10 +19550,9 @@ export class Store {
   }
 
   removeFlowScript(repo: string, name: string, by = "flow", now = new Date()): boolean {
-    return this.transact(() => {
+    // A grant that signed this script's code covers nothing without it: it ends, as does browser use that sealed it (flow-changed.ts).
+    return flowChanged(this, { script: { repo, name } }, by, now, () => {
       const { changes } = this.db.prepare("UPDATE flow_script SET state = 'removed' WHERE repo = ? AND name = ? AND state = 'active'").run(repo, name);
-      // A grant that signed this script's code covers nothing without it: it ends (flow-unattended.ts).
-      if (Number(changes) === 1) endUnattendedGrants(this, { script: { repo, name } }, by, "script changed", now);
       return Number(changes) === 1;
     });
   }

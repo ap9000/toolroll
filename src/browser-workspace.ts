@@ -610,6 +610,8 @@ export type BrowserFlowView = {
     canSign: boolean; problem: string | null; maxDays: number; scheduled: boolean; terms: { head: string[]; rules: string[] };
     /** The schedules a signature could cover: plain ones always, `optional` ones (outside content, said why) only when picked. */
     schedules: { id: number; words: string; optional: string | null }[]; schedulesDigest: string;
+    /** The latest grant a change ended early (flow-unattended.ts unattendedViewOf): why and when. */
+    ended?: { why: string; at: string } | null;
   };
   /** Browser use (flow-browser.ts browserViewOf): null when no zone says it starts a browser. */
   browser: {

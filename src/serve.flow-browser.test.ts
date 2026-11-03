@@ -92,6 +92,11 @@ test("the page says each status; allowing takes the step-up and the digest shown
   // The script changes: the approval ends, and the page says why.
   save("node journeys.mjs --all");
   expect((await view(cookie)).browser).toMatchObject({ status: "ended", words: "Browser approval ended: the script changed" });
+  // Said once in the ledger, by the one road for a changed flow (flow-changed.ts); a second change adds no second line.
+  const endedLines = () => store.actionLedger({ repos: [REPO] }).filter(one => one.action === "flow browser use: ended");
+  expect(endedLines()).toEqual([expect.objectContaining({ actor: "alex", outcome: "ended", detail: `Nightly journeys (flow #${flow}) · the journeys script changed` })]);
+  save("node journeys.mjs --all --again");
+  expect(endedLines()).toHaveLength(1);
 
   const ended = flowFingerprint(store, flow);
   const off = await post(cookie, `/flows/${flow}/browser-off`, { csrf });

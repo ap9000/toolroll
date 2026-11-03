@@ -15,9 +15,12 @@ import { KOverlay } from "./k-overlay.js";
  * The approval covers exactly what was shown: pass `terms` from the snapshot you will submit, never live fields.
  * The server proves the person again when the act arrives.
  */
-export function KApprove({ kind, facts, label, terms, text, primary = true, docked, onApprove }: {
+export function KApprove({ kind, facts, label, terms, text, primary = true, docked, onApprove, check }: {
   kind: ApprovalKind; facts: ApprovalFacts; label: string; terms: ReactNode; text?: ReactNode; primary?: boolean; docked?: boolean;
   onApprove: (password: string | null, how: ReturnType<typeof approvalHow>) => Promise<string | null>;
+  /** Runs first on a press: take and validate the snapshot the approval will cover. False opens nothing and posts
+   * nothing (the page says why next to its fields). */
+  check?: () => boolean;
 }) {
   const ask = approvalAsk(kind, facts);
   const [trigger, setTrigger] = useState<HTMLElement | null>(null);
@@ -45,7 +48,7 @@ export function KApprove({ kind, facts, label, terms, text, primary = true, dock
   return <>
     <KButton variant={primary ? "primary" : "outline"} label={label} docked={docked === true} busy={busy && trigger === null ? "Starting…" : false}
       aria-haspopup={ask === "password" ? "dialog" : undefined}
-      onClick={event => { if (ask === "password") setTrigger(event.currentTarget); else void run(null); }} />
+      onClick={event => { if (pending.current || (check !== undefined && !check())) return; if (ask === "password") setTrigger(event.currentTarget); else void run(null); }} />
     {ask === "click" && refusal && <KNotice>{refusal}</KNotice>}
     {trigger && <KOverlay kind="popover" title="Confirm with your password" trigger={trigger} onClose={() => { setTrigger(null); setRefusal(null); }}>
       {text && <p>{text}</p>}

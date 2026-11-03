@@ -41,11 +41,15 @@ const add = (settings: Record<string, unknown>) => {
   return made.id;
 };
 async function open(phone: boolean) {
-  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: phone && query === "(max-width: 767px)", media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: phone && query === "(max-width: 760px)", media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
   const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   await act(async () => root!.render(createElement(FlowView, { view: flowView(store, store.getFlow(flow)!, { name: "alex", approver: true }, null, { dir, repos: [REPO] }), csrf: "fixture" })));
-  // A desktop opens the Triggers panel; a phone lists its triggers on the page.
+  // A desktop opens the Triggers drawer from the top bar; a phone from the ⋯ menu.
   if (!phone) await act(async () => document.querySelector<HTMLButtonElement>("[data-open-triggers]")!.click());
+  else {
+    await act(async () => document.querySelector<HTMLButtonElement>("[data-flow-menu]")!.click());
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>(".k-menu button")].find(one => one.textContent === "Triggers")!.click());
+  }
 }
 const row = (id: number) => document.querySelector(`[data-trigger-row="${id}"]`)!;
 
@@ -106,10 +110,10 @@ test.each([false, true])("a card from a signed webhook says how it was proved an
   const url = `https://acme.sentry.io/organizations/acme/issues/1170820242/events/${"e".repeat(1800)}/`;
   store.addFlowCard({ flow, title: "TypeError in roundTotal", description: null, stage: JSON.parse(store.getFlow(flow)!.definitionJson).start, by: "Webhook", byKind: "automation",
     source: { kind: "sentry", label: "Sentry issue", url, verified: "sentry", external: { id: "1170820242", url }, receipt: "v3:sentry:id:1170820242" } }, T0);
-  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: phone && query === "(max-width: 767px)", media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: phone && query === "(max-width: 760px)", media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
   const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   await act(async () => root!.render(createElement(FlowView, { view: flowView(store, store.getFlow(flow)!, { name: "alex", approver: true }, null, { dir, repos: [REPO] }), csrf: "fixture" })));
-  const card = [...document.querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent?.startsWith("TypeError in roundTotal"))!;
+  const card = [...document.querySelectorAll<HTMLElement>("[data-card]")].find(one => one.textContent?.startsWith("TypeError in roundTotal"))!;
   await act(async () => card.click());
   const line = [...document.querySelectorAll("p")].find(one => one.textContent?.startsWith("From Sentry issue"))!;
   // The link shows where it goes — host and path, its middle elided when long — beside what it is.

@@ -182,6 +182,14 @@ describe("a scheduled card", () => {
     const next = await fire(trigger, at(2 * HOUR));
     expect(store.scopeSealed(next.task!)).toBe(false);
     expect(unattendedViewOf(store, store.getFlow(flow)!, { name: "alex", approver: true }, at(2 * HOUR)).active).toBeNull();
+    // The one road for a changed flow (flow-changed.ts) ended it durably, in the ledger and on the page, with why.
+    expect(store.handle.prepare("SELECT revoke_reason FROM flow_unattended_grant WHERE flow = ?").get(flow)).toEqual({ revoke_reason: "flow changed" });
+    expect(unattendedViewOf(store, store.getFlow(flow)!, { name: "alex", approver: true }, at(2 * HOUR)).ended).toEqual({ why: "the flow changed", at: at(HOUR).toISOString() });
+    // A save that changed nothing (another editor's revision won) ends nothing.
+    await sign(flow, {}, "alex", at(3 * HOUR));
+    const now = store.getFlow(flow)!;
+    expect(store.saveFlow(flow, { name: now.name, definitionJson: now.definitionJson, sawRevision: now.revision - 1, by: "alex" }, at(4 * HOUR))).toBe(false);
+    expect(activeUnattendedGrant(store, flow, at(4 * HOUR))).not.toBeNull();
   });
 
   test("the daily run cap admits that many a UTC day, then cards wait", async () => {

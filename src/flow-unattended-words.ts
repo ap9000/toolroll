@@ -3,6 +3,29 @@
 
 export const dollarWords = (micro: number) => `$${(micro / 1_000_000).toFixed(2)}`;
 
+/** The most runs a day a grant may allow. */
+export const UNATTENDED_MAX_RUNS = 50;
+/** The largest per-attempt budget a grant may name: $100. */
+export const UNATTENDED_MAX_BUDGET_MICROUSD = 100_000_000;
+
+/** A per-attempt budget as typed ("5", "$7.50", "" for no cap), the one way the server and the flow page read it. */
+export function unattendedBudgetOf(typed: string): { ok: true; value: number | null } | { ok: false; message: string } {
+  const text = typed.trim().replace(/^\$/, "");
+  if (text === "") return { ok: true, value: null };
+  const value = Number(text);
+  if (!/^\d+(\.\d{1,2})?$/.test(text) || value <= 0 || Math.round(value * 1_000_000) > UNATTENDED_MAX_BUDGET_MICROUSD) return { ok: false, message: `Give the budget in dollars, up to ${dollarWords(UNATTENDED_MAX_BUDGET_MICROUSD)}, or leave it empty.` };
+  return { ok: true, value: Math.round(value * 1_000_000) };
+}
+
+/** Runs a day as typed ("3", "" for no limit), the one way the server and the flow page read it. */
+export function unattendedRunsOf(typed: string): { ok: true; value: number | null } | { ok: false; message: string } {
+  const text = typed.trim();
+  if (text === "") return { ok: true, value: null };
+  const value = Number(text);
+  if (!/^\d+$/.test(text) || !Number.isInteger(value) || value < 1 || value > UNATTENDED_MAX_RUNS) return { ok: false, message: `Give runs a day as 1 to ${UNATTENDED_MAX_RUNS}, or leave it empty.` };
+  return { ok: true, value };
+}
+
 /** "Oct 19": the end's day, where space is short (the exact time goes beside it, on hover). */
 export const untilDayWords = (iso: string) => new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(new Date(iso));
 

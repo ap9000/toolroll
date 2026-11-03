@@ -42,6 +42,10 @@
     "onApprove": {
       "type": "function",
       "required": true
+    },
+    "check": {
+      "type": "function",
+      "description": "Runs first on a press: take and validate the snapshot here. False opens nothing and posts nothing (show why next to the fields)."
     }
   },
   "tokens": {},
