@@ -32,7 +32,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { flag, groupList, mailSink, option, REAL_MODEL, SCRIPTED, Skip, sleep, world } from "./e2e-kit.mjs";
+import { flag, kitSave, groupList, mailSink, option, REAL_MODEL, SCRIPTED, Skip, sleep, world } from "./e2e-kit.mjs";
 
 /** The groups, in the order they're listed, with how many journeys each has (the first-run setup included), how many of
  * those are real-model, and how many scripted ones every group shares (checked at the end of every run). */
@@ -78,11 +78,10 @@ const signIn = async (name, password) => ({ page: await w.signIn(name) });
 await journey(EVERY, SCRIPTED, "Sign in and turn the lead chat on (first-run setup)", [], async () => {
   // Onboarding turned the lead on by itself and moved its form to Settings → Lead → Advanced.
   await page.goto(`${base}/settings/lead`);
-  await page.locator("details[data-lead-advanced]").evaluate(el => { el.open = true; }).catch(() => undefined);
-  await page.selectOption('form[action="/chat/config"] select[name="provider"]', "claude-subscription");
-  await page.fill('form[action="/chat/config"] input[name="model"]', "sonnet");
-  await page.fill('form[action="/chat/config"] input[name="token"]', alexPassword);
-  await Promise.all([page.waitForNavigation(), page.click('form[action="/chat/config"] button[type="submit"]')]);
+  await page.locator("details.k-disclose:has(#lead-config-form)").evaluate(el => { el.open = true; });
+  await page.selectOption("#lead-config-form select[name=provider]", "claude-subscription");
+  await page.fill("#lead-config-form input[name=model]", "sonnet");
+  await kitSave(page, page.locator("#lead-config-form"), { password: alexPassword });
   await page.goto(`${base}/chat`);
   await page.waitForSelector("[data-workspace-composer] textarea", { timeout: 15_000 });
 });
@@ -176,7 +175,7 @@ await journey("steps", REAL_MODEL, "Jev sorts real cards through OpenRouter (Exc
   const chip = await page.locator(`[data-card="${sorted.find(one => one.title.startsWith("Charged twice")).id}"] [data-sort-chip]`).innerText();
   if (!/Invoice problem/.test(chip)) throw new Error(`the card's chip says ${chip}`);
   await shot("sort-canvas");
-  await page.click("[data-open-insights]");
+  await page.click('.k-seg[aria-label="View"] button:has-text("Runs")'); // Insights live under the flow's Runs view
   const summary = await page.locator('[data-insights-sort="sort"]').innerText({ timeout: 15_000 });
   if (!/4 sorted/.test(summary)) throw new Error(`Insights says: ${summary}`);
   await shot("sort-insights");
@@ -275,12 +274,12 @@ createInterface({ input: process.stdin }).on("line", line => {
 `);
   try {
     // Settings → Email, through the page, and its test email.
-    await page.goto(`${base}/settings#email`);
-    await page.waitForSelector("[data-email-settings]");
+    await page.goto(`${base}/settings/alerts#email`);
+    await page.waitForSelector("#email-form #email-host");
     await page.fill("#email-host", "127.0.0.1"); await page.fill("#email-port", String(mail.port)); await page.fill("#email-from", "team@shop.example");
-    await Promise.all([page.waitForNavigation(), page.click('[data-email-settings] button:has-text("Save email")')]);
-    await page.click('#email button:has-text("Change")');
-    await Promise.all([page.waitForNavigation(), page.click('[data-email-settings] button:has-text("Send a test email")')]);
+    if (!(await kitSave(page, page.locator("#email-form")))) throw new Error("Save email had nothing to save");
+    await page.locator("#email details.k-disclose:has(#email-form)").evaluate(el => { el.open = true; });
+    await Promise.all([page.waitForNavigation(), page.click('#email button:has-text("Send a test email")')]);
     await until("the test email", async () => mail.received.length === 1, { timeoutMs: 15_000, everyMs: 500 });
     await shot("settings-email");
     // A project tool, added the way the Tools page adds one, and tested.
@@ -422,7 +421,7 @@ await journey("triggers", SCRIPTED, "A failing script sends the card back, and I
   if (!/lint failed \(exit 1\)/.test(note) || !/2 problems found/.test(note)) throw new Error(`the card's note doesn't say why: ${note}`);
   // Insights, in the browser.
   await page.reload(); await page.waitForSelector("[data-zone]");
-  await page.click("[data-open-insights]");
+  await page.click('.k-seg[aria-label="View"] button:has-text("Runs")'); // Insights live under the flow's Runs view
   await page.waitForSelector("[data-flow-insights] table");
   const breaks = await page.locator("[data-flow-insights] section", { hasText: "Where it breaks" }).innerText();
   if (!/Lint/.test(breaks)) throw new Error(`Insights don't name Lint: ${breaks}`);
@@ -447,9 +446,12 @@ await journey("triggers", SCRIPTED, "A script that starts a browser waits until 
   const saved = await page.request.post(`${base}/flows/${checksFlow}/save`, { form: { csrf: token, name: view.flow.name, revision: String(view.flow.revision), definition: JSON.stringify(drawing) }, headers: { accept: "application/json", origin: base } });
   if (!saved.ok()) throw new Error(`saving the drawing answered ${saved.status()}: ${await saved.text()}`);
   await page.goto(`${base}/flows/${checksFlow}`); await page.waitForSelector('[data-zone="smoke"]');
-  if (!/Browser: not allowed — runs will wait/.test(await page.locator('[data-zone="smoke"] [data-flow-browser]').innerText())) throw new Error("the browser zone doesn't say it isn't allowed");
-  // A card moved into it waits, saying why, and offers Allow browser.
-  await page.click('button:has-text("New card")');
+  if (!/Starts a browser · not allowed/.test(await page.locator('[data-zone="smoke"] [data-zone-browser]').innerText())) throw new Error("the browser zone doesn't say it isn't allowed");
+  if (!/Allow browser for Smoke test\?/.test(await page.locator("[data-flow-browser-panel]").innerText())) throw new Error("the flow page doesn't ask to allow browser use");
+  // A card moved into it waits, saying why, and offers Allow browser. Allow browser is the page's one primary now, so
+  // New card is in More.
+  await page.locator("[data-flow-menu]:visible").first().click();
+  await page.locator(".k-pop-menu").getByText("New card", { exact: true }).click();
   await page.fill('input[aria-label="Title"]', "Smoke test tonight's build");
   await page.click('button:has-text("Add card")');
   const card = await until("the card", async () => (await flowView(checksFlow)).cards.find(one => one.title === "Smoke test tonight's build"));
@@ -461,16 +463,22 @@ await journey("triggers", SCRIPTED, "A script that starts a browser waits until 
   await page.click("[data-card-allow-browser]");
   const panel = page.locator("[data-flow-browser-panel]");
   await panel.waitFor();
-  const terms = await panel.innerText();
+  // What else allowing means is folded under the terms; open it to read them all.
+  await panel.locator("details.k-disclose").evaluate(node => { node.open = true; });
+  const terms = (await panel.innerText()).replace(/\s+/g, " ");
   for (const want of ["Smoke test runs smoke v1", "headless Chromium", "Approval digest"]) if (!terms.includes(want)) throw new Error(`the preview doesn't say "${want}": ${terms.slice(0, 400)}`);
   await shot("browser-preview");
-  const asks = panel.locator('input[type="password"]');
-  if (await asks.count()) await asks.first().fill(alexPassword);
   await panel.locator('button:has-text("Allow browser")').click();
+  // A step-up: the password popover, unless Passwordless is on.
+  const pop = page.locator(".k-pop", { hasText: "Confirm with your password" });
+  if (await pop.waitFor({ timeout: 3_000 }).then(() => true, () => false)) {
+    await pop.locator('input[type="password"]').fill(alexPassword);
+    await pop.locator('button[type="submit"]').click();
+  }
   await until("the approval to be recorded", async () => rows(`SELECT signed_by FROM flow_browser_grant WHERE flow = ${checksFlow} AND revoked_at IS NULL`).length === 1);
   await until("the worker to run the smoke script and move the card on", async () => (await flowView(checksFlow)).cards.find(one => one.id === card.id)?.stage === "done");
   await page.reload(); await page.waitForSelector('[data-zone="smoke"]');
-  const status = await page.locator('[data-zone="smoke"] [data-flow-browser="allowed"]').innerText();
+  const status = await page.locator('[data-flow-browser="allowed"]').innerText();
   if (!/Browser: allowed by alex/.test(status)) throw new Error(`the zone doesn't say it's allowed: ${status}`);
   await shot("browser-allowed");
   return { status };
