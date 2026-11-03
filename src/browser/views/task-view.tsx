@@ -182,6 +182,9 @@ function ApprovalBox({ approve, latest, onEdit }: { approve: NonNullable<Browser
             onApprove={password => submitNative(ref.current, password)} />
           {onEdit !== null && <KButton label="Edit plan" onClick={onEdit} />}</>}
       terms={changed ? "The plan changed since this page loaded. Reload to see the version you would approve." : terms} />
+    {/* On a phone the one primary lives in the dock: the same act, the same form. */}
+    {!changed && <KDock><KApprove kind={approve.kind} facts={facts} label={approve.label} terms={terms} text={approve.text}
+      onApprove={password => submitNative(ref.current, password)} /></KDock>}
   </PostForm>;
 }
 
@@ -250,7 +253,7 @@ function StatusBox({ view, card, csrf, approved }: { view: BrowserTaskView; card
     : retrying ? <RetryForm action={retry.action} note={retry.note ?? failure?.suggestion} />
     : <>
       {stuck?.action != null ? <KLinkButton label={stuck.action.label} href={stuck.action.href} data-stuck-action="" />
-        : card.action !== null && <KLinkButton variant={waits ? "primary" : "outline"} label={card.action.label} href={card.action.href} data-primary-action=""
+        : card.action !== null && <KLinkButton variant={waits ? "primary" : "outline"} className={waits ? "k-docked" : undefined} label={card.action.label} href={card.action.href} data-primary-action=""
           {...(card.action.openResult ? { "data-open-result": "" } : {})} />}
       {pause !== null && pause.state === null && <PauseForm pause={pause} />}
       {pause !== null && pause.state === "paused" && <ResumeForm pause={pause} />}
@@ -565,9 +568,10 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     <div className="k-doc" onClick={inPage}>
       <KDocHeader back={["/work", "Tasks"]} title={view.title} meta={meta}
         right={<nav className="k-acts so-task-tools" aria-label="Task tools">
-          {record !== undefined && record.kind === "link" && <KLinkButton variant="ghost" sm label="Full record" href={record.href} />}
-          <KButton ref={detailsButton} variant="ghost" sm lead="panel" label="Details" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} data-open-details="" />
-          <MoreMenu items={[...(view.more ?? []).filter(one => one !== record), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} showTab={showTab} />
+          {record !== undefined && record.kind === "link" && <KLinkButton variant="ghost" sm className="k-desk-only" label="Full record" href={record.href} />}
+          <KButton ref={detailsButton} variant="ghost" sm lead="panel" label="Details" className="k-desk-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} data-open-details="" />
+          <KButton variant="ghost" sm iconOnly="panel" label="Details" className="k-phone-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} />
+          <MoreMenu items={[...(view.more ?? []).map(one => one === record ? { ...one, label: "Full record" } : one), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} showTab={showTab} />
         </nav>} />
       {view.version !== null && <KInfoLine>{view.version.label} · <a className="k-link" href={view.version.current.href}>{view.version.current.label}</a></KInfoLine>}
       {view.archived != null && <KSlots status={<><KChip word="Archived" /><h2>Put away</h2></>}
