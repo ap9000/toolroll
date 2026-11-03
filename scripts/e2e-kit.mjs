@@ -382,7 +382,10 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   writeFileSync(join(repo, "src/math.js"), "export const add = (a, b) => a + b;\n");
   writeFileSync(join(repo, "test/math.test.js"), "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { add } from '../src/math.js';\n\ntest('adds', () => assert.equal(add(2, 3), 5));\n");
   seed?.(repo);
-  git("add", "."); git("-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid", "commit", "-qm", "seed");
+  // The project's own commit identity, as a person's git has one: a build's commit (builder.ts) needs one, and a fresh
+  // Linux machine (a hosted CI runner) has none of its own to fall back on, where macOS makes one up from the host name.
+  git("config", "user.name", "E2E"); git("config", "user.email", "e2e@example.invalid");
+  git("add", "."); git("commit", "-qm", "seed");
 
   const passwords = { alex: `alex-${randomBytes(8).toString("hex")}`, sam: `sam-${randomBytes(8).toString("hex")}` };
   const auth = ["--as", "alex", "--token", passwords.alex];
