@@ -1,26 +1,26 @@
 {
   "schema": "youi.baseline/v1",
   "project": "toolroll",
-  "recordedAt": "2026-11-03T06:25:17.164Z",
+  "recordedAt": "2026-11-03T08:59:15.785Z",
   "identity": {
     "tool": "youi-scanner/0.1.0",
     "system": {
       "id": "toolroll",
       "version": "1.0.0"
     },
-    "definitions": "d8656572f9c1",
+    "definitions": "f79f33e2a63e",
     "design": {
-      "commit": "572266ace6dd48d77c061327a67707e4adeb1685",
-      "dirty": true
+      "commit": "27b3b4bbc023015fab1b5aa5740a1f446d5bf5cf",
+      "dirty": false
     },
     "project": {
-      "commit": "572266ace6dd48d77c061327a67707e4adeb1685",
-      "dirty": true
+      "commit": "27b3b4bbc023015fab1b5aa5740a1f446d5bf5cf",
+      "dirty": false
     }
   },
   "totals": {
     "errors": 43,
-    "warnings": 98
+    "warnings": 92
   },
   "entries": [
     {
@@ -28,14 +28,10 @@
       "file": "src/browser/app.tsx",
       "text": "<button>",
       "severity": "warn",
-      "count": 6,
+      "count": 2,
       "lines": [
-        388,
-        389,
-        625,
-        715,
-        1079,
-        1080
+        770,
+        771
       ]
     },
     {
@@ -45,17 +41,7 @@
       "severity": "warn",
       "count": 1,
       "lines": [
-        912
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
-      "file": "src/browser/app.tsx",
-      "text": "text-[11.5px]",
-      "severity": "warn",
-      "count": 1,
-      "lines": [
-        597
+        587
       ]
     },
     {
@@ -398,16 +384,6 @@
     },
     {
       "rule": "youi:toolroll/rule/components.no-native-controls",
-      "file": "src/browser/views/home-view.tsx",
-      "text": "<button>",
-      "severity": "warn",
-      "count": 1,
-      "lines": [
-        114
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/components.no-native-controls",
       "file": "src/browser/views/projects-view.tsx",
       "text": "<button>",
       "severity": "warn",
@@ -581,7 +557,7 @@
       "severity": "error",
       "count": 1,
       "lines": [
-        160
+        175
       ]
     },
     {
@@ -591,7 +567,7 @@
       "severity": "error",
       "count": 1,
       "lines": [
-        886
+        903
       ]
     },
     {
