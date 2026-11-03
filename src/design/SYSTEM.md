@@ -455,7 +455,8 @@ AGENTS.md block from them; never edit those by hand.
 - Change a token, contract or rule in `src/design/system/`, then `npx youiyoux@0.1.21 sync` and commit what it wrote.
 - Before finishing UI work: `npx youiyoux@0.1.21 check --diff origin/main --strict` (and `check --baseline` for the
   whole repo: `youi.baseline.json` holds the violations that predate the kit). The pull-request job runs the
-  same and fails on drift a change adds.
+  same and fails on drift a change adds. A release never waits for or fails on that job (`release.ts`
+  `ADVISORY_PR_CHECKS`, by its exact name and workflow file).
 - The screens youiyoux compares wave by wave are listed in `.youi/screens/screens.json` (tracked; the pictures
   beside it are not). Capture them from a demo fixture with `npx youiyoux@0.1.21 screens capture --base <url>`.
 

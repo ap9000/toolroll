@@ -14,7 +14,7 @@ import { afterAll, describe, expect, test } from "vitest";
 import { parse } from "yaml";
 import { areaLanes, diffEntries, docsPath, parseNameStatus } from "../scripts/ci-scope.mjs";
 import { parseRequired, PROOF_EVENTS, proofProblem } from "../scripts/release-proof.mjs";
-import { RELEASE_TAG_CHECKS, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW } from "./release.js";
+import { ADVISORY_PR_CHECKS, RELEASE_TAG_CHECKS, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW } from "./release.js";
 import { GIT_FLOOR_WORDS } from "./git-floor.js";
 
 type Step = { uses?: string; with?: Record<string, unknown>; name?: string; run?: string; if?: unknown; env?: Record<string, unknown>; id?: string; "continue-on-error"?: unknown };
@@ -169,6 +169,10 @@ describe("the CI workflows", () => {
     const checks = runsOf(ui).filter(run => /\bcheck --diff\b/.test(run));
     expect(checks.map(run => /--strict\b/.test(run))).toEqual([true]);
     expect(checks.every(run => /\byouiyoux@\d+\.\d+\.\d+\b/.test(run))).toBe(true);
+    // The release verdict leaves out exactly this job, from exactly this workflow (release.ts ADVISORY_PR_CHECKS;
+    // release.slow.test.ts proves a failed or pending run of it neither fails nor holds a release).
+    expect(ADVISORY_PR_CHECKS).toEqual({ [ui.name!]: ".github/workflows/youiyoux.yml" });
+    expect(Object.keys(ADVISORY_PR_CHECKS)).toEqual(ADVISORY);
   });
 
   test("test-matrix: a documentation-only pull request skips the area lanes and nothing else; anything more runs them", () => {

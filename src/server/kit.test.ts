@@ -31,6 +31,17 @@ describe("the approval form", () => {
     expect(markup).toContain('<input type="hidden" name="csrf" value="c-1">');
   });
 
+  test("an approval form always carries CSRF and the k-approve guard marker, whatever a caller passes", () => {
+    const at = (form: object) => render(false, () => htmlString(approveForm({ action: "/t/x/approve", kind: "way-in", facts: approvalFactsNow({ remembered: false }), label: "Create invite link", form: form as never })));
+    expect(() => at({ signedOut: true })).toThrow(/CSRF/);
+    const extra = at({ attrs: { class: "extra wide", "data-approval-kind": "none" } });
+    expect(extra).toMatch(/class="k-approve extra wide"/);
+    expect(extra).toContain('data-approval-kind="way-in"');
+    expect(extra).toContain('name="csrf" value="c-1"');
+    // Outside a signed-in request there is no CSRF to give, so no approval form renders at all.
+    expect(() => htmlString(approveForm({ action: "/t/x/approve", kind: "standard", facts: { passwordless: false, remembered: false }, label: "Approve" }))).toThrow();
+  });
+
   test("an automatic approval renders nothing to press", () => {
     expect(form("standard", { remembered: false, automatic: true })).toBe("");
     expect(form("none", { remembered: false, automatic: true })).toBe("");

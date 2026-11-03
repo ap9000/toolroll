@@ -194,7 +194,9 @@ export function approveForm(options: {
   /** The screen's one primary (ink); otherwise outline. */
   primary?: boolean;
   docked?: boolean;
-  form?: PostFormOptions;
+  /** Hidden fields, return path, project revision, extra attributes. Never `signedOut`: an approval always carries the
+   * request's CSRF field. Extra classes are added to `k-approve`, never instead of it. */
+  form?: Omit<PostFormOptions, "signedOut">;
   /** Extra controls before the button (a note field, a confirm checkbox). */
   before?: Html;
 }): Html {
@@ -205,7 +207,12 @@ export function approveForm(options: {
     ? html`<div class="k-reauth k-field"><label class="k-label" for="${fieldId}">Your password</label><input class="k-input" id="${fieldId}" type="password" name="token" autocomplete="current-password" required></div>`
     : html``;
   const button = btn(options.label, { variant: options.primary === false ? "outline" : "primary", type: "submit", ...(options.docked ? { docked: true } : {}) });
-  const formOptions: PostFormOptions = { ...options.form, attrs: { class: "k-approve", "data-approval-kind": options.kind, ...options.form?.attrs } };
+  // An approval is made inside a signed-in request: its CSRF field is not optional, whatever a caller passes.
+  if (options.form !== undefined && "signedOut" in options.form) throw new Error("approveForm: an approval form always carries the request's CSRF field");
+  // The k-approve class is GuardedHtml's stale-approval marker: a caller's classes join it, never replace it.
+  const extra = options.form?.attrs ?? {};
+  const classes = ["k-approve", ...(typeof extra["class"] === "string" ? extra["class"].split(/\s+/).filter(name => name !== "" && name !== "k-approve") : [])].join(" ");
+  const formOptions: PostFormOptions = { ...options.form, attrs: { ...extra, class: classes, "data-approval-kind": options.kind } };
   return postForm(options.action, html`${options.before ?? ""}${password}<div class="k-acts">${button}</div>`, formOptions);
 }
 /** The terms line for an act, from the same rules. */

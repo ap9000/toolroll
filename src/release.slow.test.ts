@@ -1610,6 +1610,29 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(plane.gaveUp).toEqual([expect.stringContaining("release build")]);
   });
 
+  test("ui-wave0: youiyoux's drift check from its own workflow never holds or fails a release; the same name from elsewhere still counts", () => {
+    const CI_YML = ".github/workflows/ci.yml", RC_YML = ".github/workflows/release-candidate.yml", UI_YML = ".github/workflows/youiyoux.yml", UI = "youiyoux · UI drift";
+    const all = (): CheckRun[] => REQUIRED_PR_CHECKS.map((name, i) => {
+      const rc = REQUIRED_PR_CHECKS_WORKFLOW[name] === RC_YML;
+      return { id: 100 + i, name, status: "completed", conclusion: "success", app: "github-actions", head: SHA, suite: rc ? 6 : 5, workflow: rc ? 2 : 1, workflowPath: rc ? RC_YML : CI_YML };
+    });
+    const ui = (over: Partial<CheckRun>): CheckRun => ({ id: 300, name: UI, status: "completed", conclusion: "failure", app: "github-actions", head: SHA, suite: 9, workflow: 3, workflowPath: UI_YML, ...over });
+    expect((REQUIRED_PR_CHECKS as readonly string[]).includes(UI)).toBe(false);
+    for (const auto of [{}, { auto: true as const }]) {
+      const verdict = (extra: CheckRun[]) => prChecksVerdict([...all(), ...extra], SHA, REQUIRED_PR_CHECKS, { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW });
+      // Failed, still running, or an earlier failed attempt: the release still passes on its required checks.
+      expect(verdict([ui({})])).toMatchObject({ state: "passed", failures: [] });
+      expect(verdict([ui({ status: "in_progress", conclusion: null })])).toMatchObject({ state: "passed" });
+      expect(verdict([ui({ id: 299 }), ui({ id: 301, conclusion: "success" })])).toMatchObject({ state: "passed", failures: [] });
+      // The same name from another workflow or app is an ordinary check: it fails the verdict.
+      expect(verdict([ui({ workflowPath: CI_YML, workflow: 1, suite: 5 })])).toMatchObject({ state: "failed" });
+      expect(verdict([ui({ workflowPath: `${UI_YML}@evil.yml` })])).toMatchObject({ state: "failed" });
+      expect(verdict([ui({ app: "some-app" })])).toMatchObject({ state: "failed" });
+      // Leaving it out never stands in for a required check.
+      expect(prChecksVerdict([...all().slice(1), ui({ conclusion: "success" })], SHA, REQUIRED_PR_CHECKS, { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW })).toMatchObject({ state: "pending" });
+    }
+  });
+
   test("test-matrix: a skipped required check never passes a release, and each name counts only from its own workflow", () => {
     const CI_YML = ".github/workflows/ci.yml", RC_YML = ".github/workflows/release-candidate.yml";
     // ci.yml's run is workflow 1 (suite 5); the release candidate workflow's pull request run is workflow 2 (suite 6).

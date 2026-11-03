@@ -84,6 +84,14 @@ export const PROTECTION_REPORT_ONLY_CHECKS: readonly string[] = [];
 /** The checks main's protection must require at minimum: every required check that isn't report-only. */
 export const PROTECTION_MINIMUM_CHECKS: readonly string[] = REQUIRED_PR_CHECKS.filter(name => !PROTECTION_REPORT_ONLY_CHECKS.includes(name));
 /**
+ * Pull-request checks a release never waits for or fails on, by exact name and the workflow file that defines them:
+ * youiyoux's UI drift check (src/design/KIT.md), which fails a pull request that adds design drift but says nothing
+ * about whether a build is safe to release. Only a GitHub Actions run of that name from that workflow is left out; the
+ * same name from anywhere else is judged like any other check. Never a required check.
+ */
+export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = { "youiyoux · UI drift": ".github/workflows/youiyoux.yml" };
+
+/**
  * Main's protection as the plane's gh reads it (release-adapters.ts readMainProtection): `effective` only when one layer
  * (classic protection or one active ruleset) requires up-to-date branches, binds every PROTECTION_MINIMUM_CHECKS check to GitHub Actions,
  * and nobody merging as this gh can bypass it. `missing` names each absent property; `notYetRequired` the report-only
@@ -1455,6 +1463,9 @@ export function prChecksVerdict(runs: readonly CheckRun[], head: string, require
   const failed: string[] = [], waiting: string[] = [], failures: CheckFailure[] = [];
   const valid: CheckRun[] = [];
   for (const run of runs) {
+    // youiyoux's drift check from its own workflow neither holds nor fails a release (ADVISORY_PR_CHECKS).
+    const advisory = Object.hasOwn(ADVISORY_PR_CHECKS, run.name) ? ADVISORY_PR_CHECKS[run.name] : undefined;
+    if (advisory !== undefined && !required.includes(run.name) && run.app === "github-actions" && workflowIs(run.workflowPath, advisory)) continue;
     if (run.head !== head) { failed.push(`${run.name} (reported for ${run.head == null ? "no commit" : run.head.slice(0, 7)}, not ${head.slice(0, 7)})`); continue; }
     if (typeof run.id !== "number" || !Number.isSafeInteger(run.id) || run.id <= 0) { failed.push(`${run.name} (no check run id)`); continue; }
     if (required.includes(run.name) && run.app !== "github-actions") { failed.push(`${run.name} (reported by ${run.app ?? "an unknown app"}, not GitHub Actions)`); continue; }

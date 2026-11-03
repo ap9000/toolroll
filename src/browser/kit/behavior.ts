@@ -74,6 +74,8 @@ type Open = {
   scrim: HTMLElement;
   trigger: HTMLElement | null;
   inerted: HTMLElement[];
+  /** The panel and ancestors an overlay underneath had made inert: released while this one is open, inert again after. */
+  released: HTMLElement[];
   onClose: ((how: "close" | "escape" | "scrim" | "removed") => void) | undefined;
 };
 const stack: Open[] = [];
@@ -115,6 +117,11 @@ export function openOverlay(panel: HTMLElement, trigger: HTMLElement | null, opt
   panel.classList.toggle("as-sheet", floating && phone);
   if (floating && !phone) anchor(panel, trigger);
   if (!reducedMotion()) { panel.classList.remove("k-grow-in"); void panel.offsetWidth; panel.classList.add("k-grow-in"); }
+  // A panel an overlay underneath made inert (a pre-rendered sibling, or inside an inert ancestor) is released first.
+  const released: HTMLElement[] = [];
+  for (let node: HTMLElement | null = panel; node && node !== document.body; node = node.parentElement) {
+    if (node.inert) { node.inert = false; released.push(node); }
+  }
   // Everything but the panel goes inert: the siblings of the panel and of each of its ancestors up to the body.
   const inerted: HTMLElement[] = [];
   for (let node: HTMLElement = panel; node !== document.body && node.parentElement; node = node.parentElement) {
@@ -124,7 +131,8 @@ export function openOverlay(panel: HTMLElement, trigger: HTMLElement | null, opt
       inerted.push(sibling);
     }
   }
-  const entry: Open = { panel, scrim, trigger, inerted, onClose: options.onClose };
+  const entry: Open = { panel, scrim, trigger, inerted, released, onClose: options.onClose };
+  watchRemovals();
   stack.push(entry);
   scrim.addEventListener("click", () => close(entry, "scrim"));
   (panel.querySelector<HTMLElement>("[autofocus]") ?? panel.querySelector<HTMLElement>(`input:not([type="hidden"]), textarea, select`) ?? panel).focus();
@@ -137,12 +145,27 @@ function close(entry: Open, how: "close" | "escape" | "scrim" | "removed"): void
   // Anything stacked over this one goes with it, and settles as cancelled.
   for (const over of stack.slice(at + 1).reverse()) close(over, "removed");
   stack.splice(at, 1);
+  if (stack.length === 0) { observer?.disconnect(); observer = null; }
   for (const element of entry.inerted) element.inert = false;
+  for (const element of entry.released) if (element.isConnected) element.inert = true;
   entry.scrim.remove();
   entry.panel.hidden = true;
   entry.panel.classList.remove("k-grow-in", "as-sheet", "stacked");
   restoreFocus(entry.trigger);
   entry.onClose?.(how);
+}
+
+/** An overlay whose panel a re-render or navigation removed settles as cancelled and gives the page back: its scrim
+ * goes and nothing stays inert. Checked on every DOM change while an overlay is open, and on workspace-rendered. */
+export function releaseRemoved(): void {
+  for (const entry of stack.slice().reverse()) if (!entry.panel.isConnected) close(entry, "removed");
+  if (stack.length === 0) { observer?.disconnect(); observer = null; }
+}
+let observer: MutationObserver | null = null;
+function watchRemovals(): void {
+  if (observer !== null || typeof MutationObserver === "undefined") return;
+  observer = new MutationObserver(() => { if (stack.some(entry => !entry.panel.isConnected)) releaseRemoved(); });
+  observer.observe(document.body, { childList: true, subtree: true });
 }
 
 /** Close every open overlay (a navigation, a re-render): each settles as cancelled. */
@@ -279,7 +302,7 @@ export function installKitBehavior(): void {
     }
   });
   document.addEventListener("keydown", trapTab, true);
-  const syncAll = (): void => { for (const textarea of document.querySelectorAll<HTMLTextAreaElement>(".k-composer-ta")) composerSync(textarea); };
+  const syncAll = (): void => { releaseRemoved(); for (const textarea of document.querySelectorAll<HTMLTextAreaElement>(".k-composer-ta")) composerSync(textarea); };
   window.addEventListener("standing-orders:workspace-rendered", syncAll);
   window.visualViewport?.addEventListener("resize", trackKeyboard);
   window.visualViewport?.addEventListener("scroll", trackKeyboard);
