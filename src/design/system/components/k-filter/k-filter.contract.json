@@ -1,0 +1,59 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-filter",
+  "name": "KFilter",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "A list's text filter: a search field with its icon that narrows the rows already shown.",
+  "source": {
+    "file": "k-filter.tsx",
+    "export": "KFilter",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "label": {
+      "type": "string",
+      "required": true
+    },
+    "value": {
+      "type": "string",
+      "required": true
+    },
+    "onChange": {
+      "type": "function",
+      "required": true
+    },
+    "placeholder": {
+      "type": "string"
+    }
+  },
+  "tokens": {
+    "border": "youi:toolroll/token/color.field-line"
+  },
+  "a11y": {
+    "minTouchTarget": 44,
+    "notes": [
+      "16px text on a phone, so the page never zooms."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "Use in a list's top bar, beside its filters."
+    ],
+    "dont": [
+      "Never as site search (that is \u2318K)."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

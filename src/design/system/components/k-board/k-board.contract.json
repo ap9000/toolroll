@@ -1,0 +1,57 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-board",
+  "name": "KBoard",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "A list's rows as columns (Needs you \u00b7 Queued \u00b7 Running \u00b7 Finished), hairlines only; on a phone one column at a time with a pager above.",
+  "source": {
+    "file": "k-board.tsx",
+    "export": "KBoard",
+    "also": [
+      "KBoardCol",
+      "KCard"
+    ]
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "label": {
+      "type": "string",
+      "required": true
+    },
+    "children": {
+      "type": "node",
+      "required": true
+    }
+  },
+  "tokens": {
+    "divider": "youi:toolroll/token/color.line",
+    "needs": "youi:toolroll/token/color.wait"
+  },
+  "a11y": {
+    "role": "region",
+    "minTouchTarget": 44,
+    "notes": [
+      "Each column is a labelled section; a card is one link."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "Use as the optional Board view of a list that also has a List view."
+    ],
+    "dont": [
+      "Never as the only way to reach a row."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

@@ -1,0 +1,57 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-steps",
+  "name": "KSteps",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "A few named steps on one line (a task's Plan \u00b7 Approval \u00b7 Build \u00b7 Checks \u00b7 Ready), filled up to where the work is; the current step says why under its name.",
+  "source": {
+    "file": "k-steps.tsx",
+    "export": "KSteps",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "steps": {
+      "type": "string",
+      "required": true,
+      "description": "A structured value: see the component's TypeScript type."
+    },
+    "label": {
+      "type": "string"
+    }
+  },
+  "tokens": {
+    "track": "youi:toolroll/token/color.line",
+    "fill": "youi:toolroll/token/color.success",
+    "now": "youi:toolroll/token/color.wait",
+    "live": "youi:toolroll/token/color.info",
+    "failed": "youi:toolroll/token/color.danger"
+  },
+  "a11y": {
+    "role": "list",
+    "notes": [
+      "Each step is read with its state in words; the current one is aria-current=step.",
+      "Nothing pulses: a filled ring says running."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "Use for a single object's fixed stages, above its status box."
+    ],
+    "dont": [
+      "Never for a list's filters or for timed steps (use KTiming)."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}
