@@ -30,12 +30,14 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 #standing-orders-workspace { min-width: 0; }
 .so-workspace, .so-navigation-dialog { -webkit-tap-highlight-color: transparent; box-sizing: border-box; color: var(--so-ink); font: 13px/1.5 var(--so-font); -webkit-font-smoothing: antialiased; }
 .so-workspace *, .so-navigation-dialog * { box-sizing: border-box; }
+/* The shell (UI revamp wave B): the slim rail on the frame grey, then the page on paper behind one hairline; a page's
+ * own side sheet (Ask, Details, a result) behind another. No inset sheets, no shadows. */
 .so-workspace {
-  height: 100dvh; min-height: 440px; display: grid; grid-template-columns: 216px minmax(0, 1fr) 320px; column-gap: var(--so-space-sm);
-  padding: var(--so-space-sm) var(--so-space-sm) var(--so-space-sm) 0; background: var(--so-ground);
+  height: 100dvh; min-height: 440px; display: grid; grid-template-columns: 208px minmax(0, 1fr) 340px; column-gap: 0;
+  padding: 0; background: var(--so-ground);
 }
-.so-workspace:has(.so-supporting-panel--detail) { grid-template-columns: 196px minmax(330px, 1fr) minmax(400px, 1.12fr); }
-.so-workspace.so-workspace--single { grid-template-columns: 216px minmax(0, 1fr); }
+.so-workspace:has(.so-supporting-panel--detail) { grid-template-columns: 208px minmax(330px, 1fr) minmax(400px, 1.12fr); }
+.so-workspace.so-workspace--single { grid-template-columns: 208px minmax(0, 1fr); }
 .so-workspace :where(h1, h2, h3, p) { text-wrap: pretty; }
 .so-workspace a, .so-navigation-dialog a { color: inherit; text-underline-offset: 3px; }
 .so-workspace :where(input, textarea, select), .so-navigation-dialog :where(input, textarea, select) { font: inherit; caret-color: var(--so-signal); }
@@ -68,7 +70,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .ui-activity-row { padding: 9px 0; border-bottom: 1px solid var(--so-line); }
 .ui-activity-detail { color: var(--so-muted); font-size: 12px; }
 
-.so-sidebar { min-width: 0; background: var(--so-sidebar); overflow: auto; }
+.so-sidebar { min-width: 0; background: var(--so-ground); overflow: auto; }
 .so-navigation-content { padding: 18px 10px var(--so-space-sm) var(--so-space-md); display: flex; flex-direction: column; height: 100%; min-height: 420px; }
 .so-wordmark { display: flex; align-items: center; gap: 9px; min-height: 32px; font-size: 13.5px; font-weight: 600; text-decoration: none; margin: 0 6px 14px; white-space: nowrap; letter-spacing: -.02em; }
 .so-brand-mark { width: 16px; height: 20px; display: flex; align-items: center; gap: 3px; transform: skewY(-10deg); }
@@ -92,7 +94,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-account > span { display: block; font-size: 11px; color: var(--so-muted); width: 100%; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 .so-account form { margin: 0; padding: 0; background: transparent; border: 0; }
 
-.so-main-column { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--so-paper); border-radius: var(--so-sheet-radius); box-shadow: var(--so-sheet-shadow); overflow: hidden; }
+.so-main-column { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--so-paper); border-left: 1px solid var(--so-line); overflow: hidden; }
 .so-workspace-header { flex-shrink: 0; min-height: 52px; padding: var(--so-space-sm) var(--so-space-md) var(--so-space-sm) var(--so-space-xl); display: flex; align-items: center; gap: var(--so-space-md); border-bottom: 1px solid var(--so-line); }
 .so-workspace-header h1, .so-header-title { font-size: 14px; font-weight: 600; line-height: 1.3; letter-spacing: -.01em; margin: 0; flex-shrink: 0; }
 .so-focus-label { font-size: 12px; color: var(--so-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; margin-left: 3px; }
@@ -123,7 +125,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-workspace--kit [data-kit-page] { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .so-workspace--kit .so-page-content > .so-demo-notice { margin: var(--so-space-md) var(--so-space-xl) 0; }
 .so-workspace--kit .k-ph { display: none; }
-@media (min-width: 901px) {
+@media (min-width: 761px) {
   .so-workspace--kit .so-workspace-header { display: none; }
   .so-workspace--kit .so-workspace-notices { padding: var(--so-space-md) var(--so-space-xl) 0; }
 }
@@ -188,7 +190,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-work-tabs { padding: 14px var(--so-space-lg) 0; }
 .so-work-home { padding: var(--so-space-lg) var(--so-space-lg) var(--so-space-xl); }
 
-.so-supporting-panel { min-width: 0; min-height: 0; overflow: auto; background: var(--so-paper); border-radius: var(--so-sheet-radius); box-shadow: var(--so-sheet-shadow); }
+.so-supporting-panel { min-width: 0; min-height: 0; overflow: auto; background: var(--so-paper); border-left: 1px solid var(--so-line); }
 .so-work-panel-header { display: none; }
 .so-supporting-panel--detail .so-work-panel-header { min-height: 52px; padding: var(--so-space-sm) var(--so-space-md) var(--so-space-sm) var(--so-space-xl); display: flex; align-items: center; border-bottom: 1px solid var(--so-line); }
 .so-work-panel-header h2 { font-size: 14px; line-height: 1.3; margin: 0; font-weight: 600; }
@@ -232,7 +234,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 @media (hover: hover) and (pointer: fine) { .so-usage-chip:hover { color: var(--so-ink); } }
 .so-fresh-chip { display: flex; align-items: center; gap: var(--so-space-sm); margin: 0 10px var(--so-space-sm); font-size: 12px; color: var(--so-muted); }
 .so-fresh-chip button { margin-left: auto; padding: 2px 8px; min-height: 26px; border: 1px solid var(--so-line); border-radius: 6px; background: transparent; color: var(--so-ink); font: inherit; cursor: pointer; }
-@media (max-width: 900px) { .so-fresh-chip button { min-height: 44px; } }
+@media (max-width: 760px) { .so-fresh-chip button { min-height: 44px; } }
 .so-chime-switch { display: flex; align-items: center; gap: var(--so-space-sm); min-height: 26px; margin: 0 10px; font-size: 12px; color: var(--so-muted); cursor: pointer; }
 .so-chime-switch input { margin: 0; accent-color: var(--so-ink); }
 .so-fleet { display: grid; gap: 2px; margin: auto 0 var(--so-space-sm); padding: var(--so-space-sm) 10px; border-top: 1px solid var(--so-line); }
@@ -356,10 +358,10 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-command-results small { color: var(--so-muted); flex-shrink: 0; font-size: 11px; }
 .so-command-empty { color: var(--so-muted); font-size: 13px; }
 
-@media (max-width: 1150px) and (min-width: 901px) {
-  .so-workspace { grid-template-columns: 184px minmax(0, 1fr) 286px; }
-  .so-workspace.so-workspace--single { grid-template-columns: 184px minmax(0, 1fr); }
-  .so-workspace:has(.so-supporting-panel--detail) { grid-template-columns: 172px minmax(310px, 1fr) minmax(345px, 1.1fr); }
+@media (max-width: 1150px) and (min-width: 761px) {
+  .so-workspace { grid-template-columns: 200px minmax(0, 1fr) 286px; }
+  .so-workspace.so-workspace--single { grid-template-columns: 200px minmax(0, 1fr); }
+  .so-workspace:has(.so-supporting-panel--detail) { grid-template-columns: 200px minmax(300px, 1fr) minmax(320px, 1.1fr); }
   .so-navigation-content { padding-left: 10px; padding-right: 10px; }
   .so-wordmark { font-size: 11px; gap: 7px; }
   .so-workspace-header { padding-left: 18px; padding-right: 10px; }
@@ -368,7 +370,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-work-detail-content { padding: 17px; }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 760px) {
   /* The shell is the visible area, not 100dvh: an iPhone's keyboard covers the page without resizing it, so a
      shell of the full height keeps every composer under the keys. Fixed at the visible top, it also follows
      Safari when it pans the page to show the field being typed in. */
@@ -380,7 +382,9 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   html[data-mobile-keyboard] .so-enter-hint { display: none; }
   html[data-mobile-keyboard] .so-composer-area { padding-top: 6px; padding-bottom: 8px; }
   .so-sidebar { display: none; }
-  .so-main-column { width: 100%; height: 100%; border-radius: 0; box-shadow: none; }
+  /* The phone header (shell.tsx PhoneHeader) stands in for the desk header. */
+  .so-workspace-header { display: none; }
+  .so-main-column { width: 100%; height: 100%; border-radius: 0; box-shadow: none; border-left: 0; }
   .so-supporting-panel { display: none; width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; }
   .so-workspace[data-workspace-phone-view="work"] .so-main-column { display: none; }
   .so-workspace[data-workspace-phone-view="work"] .so-supporting-panel { display: block; }
@@ -549,7 +553,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 
 /* The Ask panel (v77): a task, result or project page with its own
  * conversation beside it — Chat | Crew tabs over the right column. */
-.so-workspace.so-workspace--docked { grid-template-columns: 204px minmax(0, 1fr) minmax(340px, 400px); }
+.so-workspace.so-workspace--docked { grid-template-columns: 208px minmax(0, 1fr) minmax(340px, 400px); }
 .so-ask-panel { display: flex; flex-direction: column; background: var(--so-paper); }
 .so-ask-header { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: var(--so-space-sm) 14px; border-bottom: 1px solid var(--so-line); }
 .so-ask-tabs { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--so-raised); }
@@ -571,7 +575,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-queued-state { font-weight: 600; color: var(--so-ink); }
 .so-queued form { margin: 0; }
 .so-queued-remove { min-height: 28px; padding: 0 6px; }
-@media (max-width: 900px) { .so-queued-remove { min-height: 44px; } }
+@media (max-width: 760px) { .so-queued-remove { min-height: 44px; } }
 .so-owner-ask { margin-top: var(--so-space-md); }
 .so-owner-ask-question { margin: 0 0 var(--so-space-sm); }
 .so-owner-ask-options { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 6px; margin: 0; }
@@ -581,9 +585,9 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 /* A question the task has moved past: its words, quieter, and one line saying so. */
 .so-owner-ask[data-ask-stale] .so-owner-ask-question { color: var(--so-muted); }
 .so-owner-ask-stale { margin: 0; font-size: 13px; color: var(--so-muted); }
-@media (max-width: 900px) { .so-owner-ask-options .so-suggestion { min-height: 44px; } }
-@media (max-width: 1150px) and (min-width: 901px) { .so-workspace.so-workspace--docked { grid-template-columns: 178px minmax(0, 1fr) minmax(300px, 340px); } }
-@media (max-width: 900px) {
+@media (max-width: 760px) { .so-owner-ask-options .so-suggestion { min-height: 44px; } }
+@media (max-width: 1150px) and (min-width: 761px) { .so-workspace.so-workspace--docked { grid-template-columns: 200px minmax(0, 1fr) minmax(300px, 340px); } }
+@media (max-width: 760px) {
   .so-ask-header { min-height: 60px; padding: 10px 14px; padding-top: max(10px, env(safe-area-inset-top)); }
   .so-workspace:not([data-workspace-phone-view="work"]) .so-ask-panel { display: none; }
   .so-workspace[data-workspace-phone-view="work"] .so-ask-panel { display: flex; }
@@ -627,7 +631,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-chat-card { border: 1px solid var(--so-input-line); border-radius: 12px; }
 .so-chat-card-title { font-size: 14px; color: var(--so-ink); }
 .so-needs-you { flex: none; padding: 1px 7px; border-radius: var(--so-radius-badge); background: var(--so-signal); color: var(--so-on-signal); font: var(--so-typography-badge); }
-@media (max-width: 900px) { .so-slash-menu li { min-height: 44px; } }
+@media (max-width: 760px) { .so-slash-menu li { min-height: 44px; } }
 /* v99: starter kit shortcuts under the empty chat. */
 .so-kit-links { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--so-space-sm); margin: var(--so-space-xs) auto 0; max-width: 36rem; font-size: 13px; color: var(--so-muted); }
 .so-kit-links a { text-decoration: none; }
@@ -699,7 +703,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-first-request-intro { font-size: 13.5px; }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 760px) {
   .so-first-run { margin-top: 3vh; }
   .so-work-link, .so-work-reason > summary { min-height: 44px; }
   .so-first-run h2 { font-size: 22px; }
@@ -811,7 +815,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-home-live { animation: so-live-pulse 2s ease-in-out infinite; }
 @keyframes so-live-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .so-home-live { animation: none; } }
-@media (max-width: 900px) {
+@media (max-width: 760px) {
   .so-workspace:not([data-workspace-phone-view="work"]) .so-details-panel { display: none; }
   .so-workspace[data-workspace-phone-view="work"] .so-details-panel { display: flex; }
   .so-details-header { min-height: 60px; padding: 10px 14px; padding-top: max(10px, env(safe-area-inset-top)); }
@@ -826,7 +830,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-mode { flex: 1; }
   .so-mode span { width: 100%; justify-content: center; min-height: 40px; font-size: 13px; }
 }
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) { .so-enter-hint { display: none; } }
+@media (hover: none) and (pointer: coarse) and (max-width: 760px) { .so-enter-hint { display: none; } }
 
 /* Inline steering (chat Workbench): a comment on a diff line is one quiet row under that line, indented to the code
    column so the numbers stay in view; it sticks to the diff's visible width while a long line scrolls. */
@@ -874,7 +878,7 @@ details.result-request-open > summary { list-style: none; }
 details.result-request-open > summary::-webkit-details-marker { display: none; }
 details.result-request-open > summary::marker { content: ""; }
 
-@media (max-width: 900px) {
+@media (max-width: 760px) {
   .diff-steer-slot { padding: 4px 16px 8px; }
   .diff-steer { max-width: none; }
   .diff-steer-row { min-height: 52px; padding: 4px 4px 4px 12px; align-items: center; }
@@ -890,7 +894,7 @@ details.result-request-open > summary::marker { content: ""; }
   /* The header's chips are quiet: a 1px line and 12px words, on the same 44px tap target. */
   .so-needs-chip { border: 6px solid transparent; background: transparent; background-clip: padding-box; box-shadow: inset 0 0 0 1px var(--so-line); border-radius: var(--so-radius-full); color: var(--so-ink); font: 500 12px/1 var(--so-font-sans); padding: 0 var(--so-phone-card); }
 }
-@media (max-width: 900px) {
+@media (max-width: 760px) {
   /* The Workbench on a phone: the result opens as a sheet over the chat, which stays in view (dimmed) above it. */
   .so-workspace[data-workspace-phone-view="work"] .so-main-column:has(~ .so-supporting-panel--detail) { display: flex; position: relative; }
   .so-workspace[data-workspace-phone-view="work"] .so-main-column:has(~ .so-supporting-panel--detail)::after { content: ""; position: absolute; inset: 0; background: var(--so-overlay); }
@@ -902,7 +906,7 @@ details.result-request-open > summary::marker { content: ""; }
 /* The pane's header names the run in the machine's voice, on the right. */
 .so-work-run { margin-left: auto; margin-right: var(--so-space-sm); font: 400 12px/1 var(--so-font-mono); color: var(--so-muted); }
 .so-work-run ~ .so-close-work { margin-left: 0; }
-@media (max-width: 900px) { .so-work-run { display: none; } }
+@media (max-width: 760px) { .so-work-run { display: none; } }
 /* A line comment in your bubble: where (small mono), the line it is about (as written, scrolling sideways), the words. */
 .chat-steer { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .ui-message-content .chat-steer p.chat-steer-ref { margin: 0; font: 400 11.5px/1.4 var(--so-font-mono); color: var(--so-muted); overflow-wrap: anywhere; }

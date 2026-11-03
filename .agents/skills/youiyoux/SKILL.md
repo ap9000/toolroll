@@ -65,7 +65,7 @@ Each finding names its rule, the file:line and a suggestion. The suggested token
 - **KFacts**: Facts: a key/value list (task details, a run's record, an audit entry).
 - **KField**: A field: label, the control, one hint line, and the error tied to the control (aria-invalid, aria-describedby). Errors appear next to the control, never as a banner.
 - **KFormRow**: The two-column settings row: label and one muted line | the control; stacks on a phone. (variant: |inline|top|wide)
-- **KIcon**: One 24×24 stroke icon from the kit set, drawn in currentColor. (name: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file)
+- **KIcon**: One 24×24 stroke icon from the kit set, drawn in currentColor. (name: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|home|tasks|flows|agents|projects|settings|pen|arrow)
 - **KNeedsPanel**: Waits that aren't tasks (a spend limit, a failed backup), on their own page: one amber outline, a count, one action each. Never part of the global Needs-you count.
 - **KNotFound**: The not-found page inside the shell: what was asked for and two ways on.
 - **KNotice**: A refusal in place (role=alert: what went wrong and what didn't change), a neutral system line, or a muted supporting note. There are no toasts.

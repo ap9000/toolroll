@@ -207,6 +207,7 @@ get("pages", "projects.github", "/projects/github", { ...free, callers: ["cookie
   ...anyApprover("your login can watch — adding projects is an approver's act") });
 get("pages", "projects.page", "/projects", { limited: "unscoped", ...free });
 get("pages", "home", "/", { limited: "collection", ...free });
+get("pages", "search", "/search", { limited: "collection", ...free });
 get("tasks", "inbox", "/inbox", { limited: "collection", ...free });
 get("tasks", "work", "/work", { limited: "collection", ...free });
 // Put away old tasks (task-tidy.md): the preview reads only; putting away is an approver's step-up in a browser session.

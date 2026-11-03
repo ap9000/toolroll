@@ -28,7 +28,15 @@
         "check",
         "alert",
         "more",
-        "file"
+        "file",
+        "home",
+        "tasks",
+        "flows",
+        "agents",
+        "projects",
+        "settings",
+        "pen",
+        "arrow"
       ],
       "default": "plus"
     },

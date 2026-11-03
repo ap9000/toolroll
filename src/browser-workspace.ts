@@ -705,9 +705,12 @@ export type BrowserAgentsView = {
   live?: boolean;
 };
 
-export type BrowserView = BrowserTasksView | BrowserSettingsView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView;
+export type BrowserView = BrowserTasksView | BrowserSettingsView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView | BrowserHomeView | BrowserSearchView;
 
 export type BrowserWorkspace = {
+  /** The one Needs-you count (tasks only) with its scope: the Tasks list's own count for the project in view (`scope`,
+   * a project path) or every project (null), its words ("5 need you in payments-api") and the list it opens. */
+  needsYou?: { count: number; saturated: boolean; scope: string | null; label: string; href: string };
   version: 1; path: string; title: string; user: string; csrf: string; sensitive: boolean;
   /** Passwordless is on for this signed-in browser: ceremony password fields are left out (docs/plans/passwordless.md). */
   passwordless?: boolean;
@@ -749,6 +752,44 @@ export type BrowserWorkspace = {
   phone?: BrowserPhoneCard;
   /** The Chat landing's live view: who is working now, four counts, and Catch up in tabs. */
   home?: BrowserHome | null;
+};
+
+/** Home ("/"): one sentence that answers "what needs me?", four counts that agree with the Tasks filters they open,
+ * what waits on this person grouped by what it asks, what is running, and the selected item answered in place. */
+export type BrowserHomeView = {
+  kind: 'home';
+  /** "7 need you across 2 projects.", derived from the same counts as the figures. */
+  say: string;
+  /** The project in view (a path) or every project (null), and the scope links (null with one project). */
+  project: string | null;
+  scopes: { key: string; label: string; href: string; active: boolean }[] | null;
+  counts: { key: 'needs' | 'running' | 'queued' | 'finished'; label: string; value: number; href: string }[];
+  groups: { key: 'decide' | 'review' | 'unblock' | 'running'; label: string; rows: BrowserHomeRow[] }[];
+  /** More waits than the list shows: open them all in Tasks. */
+  more: { count: number; href: string } | null;
+  newTask: string;
+  /** The lead's message box, where chat is allowed for this person: a POST to /chat in this scope. */
+  ask: { project: string | null; placeholder: string } | null;
+  empty: { title: string; text: string } | null;
+};
+export type BrowserHomeRow = {
+  id: string; title: string; href: string; project: string | null; age: string;
+  chip: { word: string; tone: '' | 'needs' | 'ask' | 'live' | 'done' | 'failed' };
+  /** One line: what it asks, or what the agent is doing now. */
+  line: string | null;
+  /** The one act that resolves it (a link), or null. */
+  action: { label: string; href: string } | null;
+  /** An agent's question, answered in place (POST /d/<id>/answer, one click); null when it must be answered on its page. */
+  question: { id: number; text: string; recap: string; options: { id: string; label: string; consequence: string; recommended: boolean }[] } | null;
+};
+
+/** Search ("/search"): the places and the tasks in view that match the words; the ⌘K menu's "See all results". */
+export type BrowserSearchView = {
+  kind: 'search';
+  q: string;
+  tasks: { id: string; title: string; href: string; project: string | null; age: string; chip: { word: string; tone: '' | 'needs' | 'ask' | 'live' | 'done' | 'failed' }; archived: boolean }[];
+  /** More tasks exist than were read: the Tasks list has them all. */
+  truncated: boolean;
 };
 
 /** One agent at work now: its task and the machine's own phase, in words. */
@@ -822,16 +863,17 @@ export function browserProjectsOf(projects: readonly { name: string; path: strin
 
 export function browserNavigationOf(path: string, project: string | null = null, needsYou = 0, tasksProject: string | null = project, needsYouLabel?: string): BrowserNavigationItem[] {
   const pathname = path.split('?')[0]!.split('#')[0]!;
-  const knowledge = pathname === '/settings/knowledge' || pathname.startsWith('/settings/knowledge/');
+  const under = (...roots: string[]) => roots.some(root => pathname === root || pathname.startsWith(`${root}/`));
+  // The rail (UI revamp, wave B): Home carries the one Needs-you count; the lead chat and an agent's question live
+  // under Home, a task's pages under Tasks, every computer and terminal under Agents, every setting under Settings.
   return [
-    { label: 'Chat', href: '/chat', active: pathname === '/chat' },
-    { label: 'Tasks', href: `/work${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
-      active: pathname === '/work' || pathname === '/tasks' || pathname.startsWith('/t/') || pathname.startsWith('/r/'),
+    { label: 'Home', href: '/', active: pathname === '/' || pathname === '/chat' || under('/d', '/activity', '/morning'),
       ...(needsYou > 0 ? { count: needsYou, ...(needsYouLabel === undefined ? {} : { countLabel: needsYouLabel }) } : {}) },
-    { label: 'Agents', href: '/agents', active: pathname === '/agents' || pathname === '/peek' },
-    { label: 'Flows', href: '/flows', active: pathname === '/flows' || pathname.startsWith('/flows/') },
-    { label: 'Projects', href: '/projects', active: pathname === '/projects' },
-    { label: 'Knowledge', href: `/settings/knowledge${project === null ? '' : `?repo=${encodeURIComponent(project)}`}`, active: knowledge },
-    { label: 'Settings', href: '/settings', active: !knowledge && (pathname === '/settings' || pathname.startsWith('/settings/')) },
+    { label: 'Tasks', href: `/work${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
+      active: under('/work', '/tasks', '/t', '/r', '/done', '/board', '/queue', '/inbox', '/review') },
+    { label: 'Flows', href: '/flows', active: under('/flows', '/recipes', '/kits', '/routines') },
+    { label: 'Agents', href: '/agents', active: under('/agents', '/peek', '/term', '/fleet', '/system', '/runs') },
+    { label: 'Projects', href: '/projects', active: under('/projects') },
+    { label: 'Settings', href: '/settings', active: under('/settings', '/spend', '/mode', '/people', '/ledger', '/menu') },
   ];
 }

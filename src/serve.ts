@@ -1555,7 +1555,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         catchUpHtml: extras.catchUpHtml === undefined ? '' : htmlString(extras.catchUpHtml), controlsHtml: extras.controlsHtml === undefined ? '' : htmlString(extras.controlsHtml), notices, view: extras.view ?? null,
         ...(s.chrome.demo ? { demo: { text: DEMO_BANNER, short: DEMO_BANNER_SHORT } } : {}),
         pageHtml: extras.pageHtml === undefined ? (conversation === null ? pageHtml : null) : extras.pageHtml === null ? null : htmlString(extras.pageHtml),
-        navigation: [...browserNavigationOf(currentPath, s.chrome.project, needsYou, tasksProject, s.chrome.inboxLabel), { label: 'Workspace tools', href: '/menu', active: path.pathname === '/menu' }],
+        navigation: browserNavigationOf(currentPath, s.chrome.project, needsYou, tasksProject, s.chrome.inboxLabel),
+        // The one Needs-you count (tasks only), with the scope it covers: the Tasks list's own count for this project
+        // view (or every project), so the rail, the phone header and Home all read the same number.
+        needsYou: { count: needsYou, saturated: s.chrome.inboxSaturated === true, scope: tasksProject ?? null,
+          label: s.chrome.inboxLabel ?? `${needsYou} ${needsYou === 1 ? 'needs' : 'need'} you`,
+          href: tasksProject === null ? '/work?view=needs-you' : `/work?project=${encodeURIComponent(tasksProject)}&view=needs-you` },
         chats,
         ...(s.refreshSeconds === undefined ? {} : { refreshSeconds: Math.max(5, Math.floor(s.refreshSeconds)) }),
         ...(s.chrome.signIn === undefined ? {} : { signIn: s.chrome.signIn }),

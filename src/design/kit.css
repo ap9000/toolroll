@@ -379,6 +379,11 @@
 
 /* ---------- Phone dock: the Needs-you button and the screen's one primary ---------- */
 .k-dock { display: none; }
+/* The Needs-you button (the app shell's dock): a dot, the words, the ink count, and which projects it covers. */
+.k-dock-needs { display: grid; align-content: center; gap: 1px; box-sizing: border-box; width: 136px; min-height: 48px; margin: 0; padding: 0 12px; border-radius: 8px; border: 1px solid var(--so-field-line); background: var(--so-paper); color: var(--so-ink); text-align: left; white-space: nowrap; cursor: pointer; box-shadow: none; }
+.k-dock-needs-l { display: inline-flex; align-items: center; gap: 7px; font: 500 14px/1.2 var(--so-font-sans); }
+.k-dock-needs-s { overflow: hidden; text-overflow: ellipsis; font-size: 11.5px; color: var(--so-muted); padding-left: 14px; }
+.k-dock-needs:focus-visible { outline: 2px solid var(--so-ring); outline-offset: 2px; }
 
 /* ---------- Phone (760px and narrower) ---------- */
 @media (max-width: 760px) {

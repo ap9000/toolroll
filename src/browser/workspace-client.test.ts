@@ -4,7 +4,8 @@ import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { BrowserWorkspace } from "../browser-workspace.js";
-import { CommandMenu, CrewRows, GuardedHtml, useWorkspace } from "./app.js";
+import { CrewRows, GuardedHtml, useWorkspace } from "./app.js";
+import { SearchMenu } from "./search.js";
 import {
   awaitReceipt, carryDraft, DRAFT_TTL, editDraft, emptyDraft, isWorkspace, readWorkspace, receiveDraft,
   restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, WorkspaceAuthError,
@@ -408,15 +409,15 @@ test("focused native drafts are preserved and deferred non-form updates apply af
 test("command shortcut opens outside editors and stays absent on sensitive pages", async () => {
   const node = document.createElement("div"); document.body.append(node); root = createRoot(node);
   const workspace = fixture(); workspace.sensitive = false;
-  await act(async () => root!.render(createElement(CommandMenu, { workspace })));
+  await act(async () => root!.render(createElement(SearchMenu, { workspace })));
   const editor = document.createElement("textarea"); document.body.append(editor); editor.focus();
   await act(async () => { editor.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true })); });
-  expect(document.querySelector("[data-workspace-command]")).toBeNull();
+  expect(document.querySelector(".so-cmdk")).toBeNull();
   editor.blur();
   await act(async () => { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true })); });
-  expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-  await act(async () => root!.render(createElement(CommandMenu, { workspace: { ...workspace, sensitive: true } })));
-  expect(document.querySelector("[data-workspace-command]")).toBeNull();
+  expect(document.querySelector('.so-cmdk[role="dialog"]')).not.toBeNull();
+  await act(async () => root!.render(createElement(SearchMenu, { workspace: { ...workspace, sensitive: true } })));
+  expect(document.querySelector(".so-cmdk")).toBeNull();
   expect(node.textContent).toBe("");
 });
 

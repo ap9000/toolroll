@@ -1,0 +1,59 @@
+/* The app shell (UI revamp wave B; prototype app.css .rail, .ph, .dock): the slim rail on the frame grey at a desk,
+ * the phone header and the phone dock. Colours are tokens only; no shadows; the console's one breakpoint (760px). */
+
+/* ---------- Rail ---------- */
+.so-rail { display: flex; flex-direction: column; gap: 1px; height: 100%; min-height: 420px; padding: var(--so-space-sm) 10px 10px; background: var(--so-ground); }
+.so-rail-top { display: flex; align-items: center; padding: 0 0 6px 6px; }
+.so-rail-brand { display: flex; align-items: center; gap: var(--so-space-sm); height: 36px; color: var(--so-ink); font: 600 13.5px/1 var(--so-font-sans); letter-spacing: -0.02em; text-decoration: none; }
+/* The brand is ink: amber is only for what waits on a person. */
+.so-rail .so-brand-mark i, .so-nav-sheet .so-brand-mark i { background: var(--so-ink); }
+.so-nav { display: flex; align-items: center; gap: 9px; box-sizing: border-box; width: 100%; height: 30px; min-height: 0; margin: 0; padding: 0 var(--so-space-sm); border: 0; border-radius: var(--so-radius-sm); background: transparent; color: var(--so-nav-ink); font: 500 13px/1 var(--so-font-sans); text-align: left; text-decoration: none; cursor: pointer; box-shadow: none; transition: background-color var(--m-quick) var(--m-ease), color var(--m-quick) var(--m-ease); }
+.so-nav > .k-i { opacity: .8; }
+.so-nav > .so-nav-l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.so-nav[aria-current] { background: var(--so-nav-hover); color: var(--so-ink); }
+.so-nav[aria-current] > .k-i { opacity: 1; }
+.so-nav-sub { font-weight: 400; }
+.so-nav-n { color: var(--so-muted); font-size: 12px; }
+.so-kbd { font: 500 11px/1 var(--so-font-mono); color: var(--so-muted); border: 1px solid var(--so-line); border-radius: var(--so-radius-badge); padding: 2px 5px; background: var(--so-paper); }
+.so-pdot { width: 16px; display: inline-grid; place-items: center; flex: none; }
+.so-pdot::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--so-muted); opacity: .55; }
+.so-rail-h { margin: 0; padding: 14px var(--so-space-sm) var(--so-space-xs); font: 500 12px/1 var(--so-font-sans); color: var(--so-muted); }
+.so-rail-projects { display: grid; gap: 1px; }
+.so-acct { display: grid; gap: var(--so-space-xs); padding: var(--so-space-sm) 0 0 var(--so-space-sm); border-top: 1px solid var(--so-line); margin-top: 6px; }
+.so-acct-row { display: flex; align-items: center; gap: var(--so-space-sm); font: var(--so-typography-label); }
+.so-acct-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.so-av { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--so-ink); color: var(--so-paper); font: 600 11px/1 var(--so-font-sans); flex: none; }
+.so-acct-note { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; padding: 0; border: 0; background: transparent; font-size: 12px; color: var(--so-muted); }
+.so-acct-note .so-acct-forget { height: 22px; padding: 0 6px; margin-left: -6px; color: var(--so-ink); font-size: 12px; }
+
+/* ---------- Phone header and dock (hidden at a desk) ---------- */
+.so-ph, .so-dock { display: none; }
+
+/* ---------- Sheets: navigation and Needs you ---------- */
+.so-nav-sheet .k-sheet-h h2 { gap: var(--so-space-sm); }
+.so-nav-sheet-b { display: grid; gap: 2px; padding: 6px var(--so-space-sm) 10px; }
+.so-nav-sheet .so-nav { height: 44px; font-size: 15px; }
+.so-nav-sheet .so-acct { padding: 10px var(--so-space-sm) 0; }
+.so-sheet-line { margin: 0; padding: var(--so-space-md) var(--so-space-lg); font-size: 13px; color: var(--so-muted); }
+.so-tri-g { margin: 0; padding: 14px var(--so-space-lg) 6px; font: 500 12.5px/1 var(--so-font-sans); color: var(--so-muted); }
+.so-ti { display: grid; gap: 6px; padding: 10px var(--so-space-lg); color: var(--so-ink); text-decoration: none; }
+.so-ti-t { font: 500 14px/1.35 var(--so-font-sans); }
+.so-ti-m { display: flex; flex-wrap: wrap; align-items: center; gap: var(--so-space-xs) 10px; font-size: 12.5px; color: var(--so-muted); }
+
+@media (hover: hover) and (pointer: fine) {
+  .so-nav:hover { background: var(--so-nav-hover); color: var(--so-ink); }
+  .so-ti:hover { background: var(--so-soft); }
+}
+
+@media (max-width: 760px) {
+  .so-ph { display: flex; align-items: center; gap: 2px; flex: none; height: 52px; padding: 0 var(--so-space-xs); padding-top: env(safe-area-inset-top); box-sizing: content-box; position: sticky; top: 0; z-index: 8; background: var(--so-paper); border-bottom: 1px solid var(--so-line); }
+  .so-ph-t { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 16px/1.2 var(--so-font-sans); padding-left: var(--so-space-xs); }
+  .so-ph .so-phone-work-button { margin: 0 var(--so-space-xs) 0 0; }
+  /* The dock: the Needs-you button on the left; a page's own dock (its one primary) fills the rest of the same bar. */
+  .so-dock { display: flex; gap: var(--so-phone-row); align-items: stretch; position: fixed; left: 0; right: 0; bottom: 0; z-index: 12; min-height: 48px; padding: 10px var(--so-phone-card) calc(10px + env(safe-area-inset-bottom)); background: var(--so-paper); border-top: 1px solid var(--so-line); }
+  .so-workspace:has(.so-dock) .k-dock { left: 148px; z-index: 13; padding-left: 0; border-top: 0; background: transparent; }
+  .so-workspace:not(:has(.k-dock)) .so-dock .k-dock-needs { flex: 1; width: auto; }
+  /* Room under the page for the dock. */
+  .so-workspace:has(.so-dock, .k-dock) .so-main-content { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+  html.kb-open .so-dock { display: none; }
+}

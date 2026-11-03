@@ -57,7 +57,7 @@ import { healthz } from "./remote-hooks.js";
 import { slowRequestLines, SLOW_REQUEST_MS } from "../latency-timeline.js";
 import type { ServerRuntime } from './runtime.js';
 import { leadsStillAdmitted, leadTilesFor } from './agents-live-lead.js';
-import { refuse, regionScript, screen, settingsRows, WORKSPACE_STYLE, workToolRows, type NavRow } from "./chrome.js";
+import { refuse, regionScript, relativeAge as relativeAgeOf, screen, settingsRows, WORKSPACE_STYLE, workToolRows, type NavRow } from "./chrome.js";
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
 import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
@@ -66,8 +66,10 @@ import { capsPage } from "./render-settings.js";
 import { decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { rereadBrowser } from "./live.js";
+import { homeView } from "./home.js";
+import { workIndexPage } from "../work-index.js";
 export function createPagesHandlers(runtime: ServerRuntime) {
-  const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession } = runtime;
+  const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession, firstRunStepsNow } = runtime;
 
   // The filesystem browser (operator request): pick a project folder by
   // looking, not typing. CONFINED to exactly what opening allows —
@@ -188,9 +190,42 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return void projectsScreen(response, who, url.searchParams.get("said"), 200, safeReturn(url.searchParams.get("return")));
   }
 
+  // Home (UI revamp wave B): what needs this person, four counts that agree with the Tasks filters, and the lead's box.
+  // A token or a restricted session keeps landing on Tasks; a first run with nothing filed yet keeps its checklist in the chat.
   async function homeRedirect(ctx: HandlerContext): Promise<void> {
-    const { who, response } = ctx;
-    return redirect(response, who.via === "cookie" && !restricted() ? "/chat" : "/work");
+    const { url, who, response, now } = ctx;
+    if (who.via !== "cookie" || restricted()) return redirect(response, "/work");
+    if (firstRunStepsNow(now) !== null && !store.hasAnyWork()) return redirect(response, "/chat");
+    const chrome = chromeFor(null, "none");
+    const projects = chrome.projects ?? [];
+    const named = url.searchParams.get("project");
+    const project = named !== null && projects.some(one => one.path === named) && visible(named) ? named : null;
+    const view = homeView({ store, now, access: workAccess(), evidenceRoot, project, projects, chat: chrome.chat === true, canAnswer: who.role === "approver" });
+    return sendScreen(response, 200, screen("Home", html`<div data-kit-page><h1>Home</h1><p>${view.say}</p><p><a href="/work">Tasks</a></p></div>`, { chrome, workspace: { view } }));
+  }
+
+  // Search (UI revamp wave B): the ⌘K menu's "See all results". The places come from the page; the tasks here are the
+  // most recent ones in view (live and archived), matched on their title and id. Reads only.
+  async function searchPage(ctx: HandlerContext): Promise<void> {
+    const { url, response, now } = ctx;
+    const q = (url.searchParams.get("q") ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ").trim().slice(0, 200);
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const access = workAccess();
+    const live = workIndexPage(store, now, access, { view: "all", limit: 100, root: evidenceRoot });
+    const archived = workIndexPage(store, now, access, { view: "archived", limit: 40, root: evidenceRoot });
+    const multi = new Set(live.items.map(one => one.repo ?? "")).size > 1;
+    const tasks = words.length === 0 ? [] : [...live.items, ...archived.items]
+      .filter(one => words.every(word => `${one.title} ${one.rootId}`.toLowerCase().includes(word)))
+      .slice(0, 60)
+      .map(one => {
+        const waits = one.status.views.includes("needs-you");
+        const tone = one.archived !== undefined ? "" as const : waits ? "needs" as const
+          : ({ attention: "needs", ready: "needs", live: "live", done: "done", problem: "failed", muted: "", neutral: "" } as const)[one.status.tone];
+        return { id: one.rootId, title: one.title, href: taskHref(one.rootId), project: multi || one.repo === null ? (one.repo === null ? "Unplaced" : projectName(one.repo)) : null,
+          age: relativeAgeOf(one.archived?.at ?? one.updatedAt, now), chip: { word: one.archived !== undefined ? "Archived" : waits ? "Needs you" : one.status.label, tone }, archived: one.archived !== undefined };
+      });
+    const view = { kind: "search" as const, q, tasks, truncated: live.nextCursor !== null || archived.nextCursor !== null };
+    return sendScreen(response, 200, screen("Search", html`<div data-kit-page><h1>Search</h1><form action="/search"><input type="search" name="q" value="${q}" aria-label="Search"></form></div>`, { chrome: chromeFor(null, "none"), workspace: { view } }));
   }
 
   // The board's old name; bookmarks keep working. A GET-only alias, so a
@@ -1133,6 +1168,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "projects.github-list": projectsGithubList,
     "projects.page": projectsIndex,
     "home": homeRedirect,
+    "search": searchPage,
     "morning": morningAlias,
     "workbench": workbench,
     "ledger": ledgerPage,

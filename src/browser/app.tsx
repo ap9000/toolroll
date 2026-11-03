@@ -5,8 +5,7 @@ import { createRoot } from "react-dom/client";
 import type { BrowserCrewItem, BrowserProjectState, BrowserRailTask, BrowserWorkspace } from "../browser-workspace.js";
 import { DISPLAY_STATES, STATE_WORDS, type DisplayState } from "../agent-state-words.js";
 import {
-  Alert, Artifact, ArtifactContent, Dialog, DialogClose, DialogContent,
-  DialogDescription, DialogTitle, DialogTrigger, Disclosure, MessageContent, FormToken, Passwordless, PostForm } from "./ui/index.js";
+  Alert, Artifact, ArtifactContent, Disclosure, MessageContent, FormToken, Passwordless, PostForm } from "./ui/index.js";
 import {
   awaitReceipt, carryDraft, editDraft, emptyDraft, isWorkspace, queuedDraft, readWorkspace, receiveDraft, rejectDraft,
   restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, WorkspaceAuthError,
@@ -19,21 +18,22 @@ import type { TeamSnapshot } from "../team-contract.js";
 import { GuardedHtml, notifyWorkspaceRendered, regionIsEditing } from "./guarded-html.js";
 import { ActionCards } from "./chat-cards.js";
 import { LineSteer } from "./line-steer.js";
-import { FirstRun, leaveFor } from "./first-run.js";
+import { FirstRun } from "./first-run.js";
 import { TaskDetails, ViewHost, type ThreadChat } from "./views/index.js";
 import { threadWhen, whenTitle } from "./views/task-view.js";
-import { Home } from "./views/home-view.js";
 import { HeadlineBadge, headlineGlyph } from "./views/status-summary.js";
-import { Toaster, Button as ViewButton, Input, Label, cn } from "./components/ui/index.js";
+import { Toaster, Button as ViewButton, cn } from "./components/ui/index.js";
 import { updateNoticeWords } from "../update-notice.js";
 import { shortAge } from "../when-html.js";
 import { useLiveRoom } from "./live.js";
-import { chimeOn, createChime, setChime } from "./chime.js";
+import { createChime } from "./chime.js";
 import { ActivityLine, WORKSPACE_NUDGE } from "./live-task.js";
 import { isSettingsFrame } from "../settings-kit-script.js";
 import { installKitBehavior } from "./kit/behavior.js";
 import { Icon } from "./icons.js";
 import { LeadChat, returnSends } from "./lead-chat.js";
+import { NeedsDock, PhoneHeader, Rail } from "./shell.js";
+import { SearchMenu } from "./search.js";
 import "./workspace.css";
 
 export { GuardedHtml, regionIsEditing };
@@ -102,7 +102,8 @@ export function useWorkspace(initial: BrowserWorkspace) {
   // A task page follows its task's room (live-task.tsx); a conversation or a live page follows the workspace's.
   const liveTask = initial.view?.kind === "task" && initial.view.live != null && !initial.sensitive;
   // The Agents board follows the workspace too, and its opened agent's own room nudges it (agents-view.tsx).
-  const agentsBoard = initial.view?.kind === "agents" && !initial.sensitive;
+  // Home follows the workspace the same way: its counts and rows move as work does, and an answer given in place re-reads it.
+  const agentsBoard = (initial.view?.kind === "agents" || initial.view?.kind === "home") && !initial.sensitive;
   const followsWorkspace = Boolean(initial.conversation || initial.refreshSeconds || agentsBoard);
   const check = useCallback(async (force = true, retry = false): Promise<void> => {
     clearRefreshRetry();
@@ -337,45 +338,6 @@ export function CrewRows({ workspace, items }: { workspace: BrowserWorkspace; it
   </li>)}</ul>;
 }
 
-/** The fleet at a glance, in the sidebar foot on every page (after Guided's "Support line is open" card): how many
- * tasks need a person, how many are running, how many wait, and whether the worker is online. Counts come from the
- * Crew the page already has; a trimmed Crew says "+" rather than undercount. */
-export function FleetStatus({ workspace }: { workspace: BrowserWorkspace }) {
-  const active = workspace.crew.filter(item => item.tone !== "done" && item.state !== "cancelled");
-  if (active.length === 0) return null;
-  const count = (group: CrewGroup) => active.filter(item => crewGroupOf(item) === group).length;
-  const more = workspace.crewTruncated ? "+" : "";
-  const running = active.filter(item => crewGroupOf(item) === "running");
-  const worker = running.length === 0 ? null : running.some(item => item.activity?.worker === "offline") ? "offline" : running.some(item => item.activity?.worker === "online") ? "online" : null;
-  type Row = { key: string; glyph: GlyphKind; text: string; href: string | null };
-  const rows: Row[] = ([
-    { key: "needs", glyph: "decide", text: `${count("needs")}${more} need you`, href: "/work?view=needs-you" },
-    { key: "running", glyph: "building", text: `${count("running")}${more} running`, href: "/work?view=running" },
-    { key: "waiting", glyph: "idle", text: `${count("waiting")}${more} waiting`, href: "/work" },
-  ] as Row[]).filter(row => !row.text.startsWith("0"));
-  if (worker !== null) rows.push({ key: "worker", glyph: worker === "online" ? "done" : "failed", text: worker === "online" ? "Worker online" : "Worker offline", href: worker === "online" ? null : "/settings" });
-  return <section className="so-fleet" aria-label="Your tasks now" data-fleet-status>
-    {rows.map(row => {
-      const body = <><StatusGlyph kind={row.glyph} />{row.text}</>;
-      return row.href === null ? <p key={row.key} data-fleet={row.key}>{body}</p> : <a key={row.key} href={row.href} data-fleet={row.key}>{body}</a>;
-    })}
-  </section>;
-}
-
-/** The Chat landing's Work panel (the phone's Work sheet): Home first, the Crew one tab away. */
-function WorkPanel({ workspace, home }: { workspace: BrowserWorkspace; home: NonNullable<BrowserWorkspace["home"]> }) {
-  const [tab, setTab] = useState<"home" | "crew">("home");
-  const tabs = useId();
-  return <>
-    <div className="so-work-tabs"><div role="tablist" aria-label="Work" className="so-ask-tabs">
-      <button type="button" role="tab" id={`${tabs}-home`} aria-controls={`${tabs}-home-panel`} aria-selected={tab === "home"} onClick={() => setTab("home")}>Home</button>
-      <button type="button" role="tab" id={`${tabs}-crew`} aria-controls={`${tabs}-crew-panel`} aria-selected={tab === "crew"} onClick={() => setTab("crew")}>Crew</button>
-    </div></div>
-    <div role="tabpanel" id={`${tabs}-home-panel`} aria-labelledby={`${tabs}-home`} className="so-work-home" data-view="home" hidden={tab !== "home"}><Home home={home} compact /></div>
-    <div role="tabpanel" id={`${tabs}-crew-panel`} aria-labelledby={`${tabs}-crew`} hidden={tab !== "crew"}><Crew workspace={workspace} /></div>
-  </>;
-}
-
 /** Active work leads; finished work waits behind one disclosure. */
 /** Which Crew group a task sits in: a person is needed (Needs you, Failed, Ready for review), an agent is on it, or it waits. */
 type CrewGroup = "needs" | "running" | "waiting";
@@ -507,13 +469,6 @@ export function titleWithCount(title: string, count: number): string {
   const bare = title.replace(/^\(\d+\+?\) /, "");
   return count > 0 ? `(${count > 99 ? "99+" : count}) ${bare}` : bare;
 }
-/** This browser's chime setting (off until turned on here). */
-function ChimeSwitch() {
-  const [on, setOn] = useState(chimeOn);
-  return <label className="so-chime-switch"><input type="checkbox" checked={on} onChange={event => { setChime(event.target.checked); setOn(event.target.checked); }} />
-    Chime when something needs me</label>;
-}
-
 function AttentionMarks({ workspace }: { workspace: BrowserWorkspace }) {
   const states = useProjectStates(workspace);
   const count = needsYouTotal(states);
@@ -569,53 +524,6 @@ export function ProjectStates({ states, current }: { states: BrowserProjectState
   </nav>;
 }
 
-export function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
-  const projectId = useId();
-  const currentProject = currentProjectOf(workspace);
-  const states = useProjectStates(workspace);
-  return <div className="so-navigation-content">
-    <a href="/chat" className="so-wordmark"><span className="so-brand-mark" aria-hidden="true"><i /><i /><i /></span>Toolroll</a>
-    <a href="/tasks/new" className="so-new-task"><Icon name="plus" />New task</a>
-    {workspace.projects.length > 0 && <div className="so-project-switch">
-      <Label className="mx-2 mt-0 mb-1.25 block text-[11.5px] leading-[inherit] text-muted-foreground" htmlFor={projectId}>Project</Label>
-      <select id={projectId} value={currentProject?.href ?? "/work"} onChange={event => { leaveFor(event.target.value); }}>
-        <option value="/work">All projects</option>
-        {workspace.projects.map(project => <option key={project.path} value={project.href}>{project.name}</option>)}
-      </select>
-    </div>}
-    <nav aria-label="Workspace" className="so-primary-navigation">{workspace.navigation.filter(item => item.href !== "/menu").map(item => {
-      const name = item.label.toLowerCase() as "chat" | "tasks" | "agents" | "flows" | "projects" | "knowledge" | "settings";
-      return <a key={item.href} href={item.href} aria-current={item.active ? "page" : undefined}><Icon name={["chat", "tasks", "agents", "flows", "projects", "knowledge", "settings"].includes(name) ? name : "tools"} /><span>{item.label}</span>
-        {item.count !== undefined && item.count > 0 && <span className="so-nav-count" aria-label={item.countLabel ?? `${item.count} ${item.count === 1 ? "needs" : "need"} you`} title={item.countLabel}>{item.count}</span>}</a>;
-    })}</nav>
-    {workspace.sensitive ? <InertProjectStates workspace={workspace} current={currentProject?.path ?? null} />
-      : states !== null && states.length > 0 && <div data-live data-sidebar-slot="projects"><ProjectStates states={states} current={currentProject?.path ?? null} /></div>}
-    {currentProject && <div className="so-project-links">
-      <a className="so-project-knowledge" href={`/chat?project=${encodeURIComponent(currentProject.path)}`}>Project chat</a>
-      <a className="so-project-knowledge" href={currentProject.knowledgeHref}>Project knowledge</a>
-    </div>}
-    {(workspace.chats?.length ?? 0) > 0 && <nav aria-label="Recent chats" className="so-recent-chats">
-      <p className="so-recent-chats-label">Recent chats</p>
-      {workspace.chats!.map(chat => <a key={chat.href} href={chat.href} aria-current={chat.active ? "page" : undefined} title={chat.title}>
-        <span className="so-recent-chat-kind" aria-hidden="true">{chat.kind === "task" ? "Task" : "Project"}</span><span className="so-recent-chat-title">{chat.title}</span>
-      </a>)}
-    </nav>}
-    <div className="so-sidebar-live" data-live data-sidebar-slot="chips">
-    {workspace.usage && !workspace.sensitive && <a className="so-usage-chip" href={workspace.usage.href} title={workspace.usage.title}
-      data-usage-chip={workspace.usage.tone} data-usage-stale={workspace.usage.stale ? "" : undefined}>{workspace.usage.text}</a>}
-    {workspace.fresh && !workspace.sensitive && <PostForm action={workspace.fresh.forget} className="so-fresh-chip" data-fresh-chip>
-      <input type="hidden" name="return" value={workspace.path} />
-      <span>Password remembered · {workspace.fresh.minutes} min</span><button type="submit">Forget</button>
-    </PostForm>}
-    {!workspace.sensitive && workspace.projectStates !== undefined && <ChimeSwitch />}
-    </div>
-    <FleetStatus workspace={workspace} />
-    <div className="so-navigation-bottom"><a href="/menu" aria-current={workspace.navigation.find(item => item.href === "/menu")?.active ? "page" : undefined}><Icon name="tools" />Workspace tools</a>
-      <div className="so-account"><span title={workspace.user}>{workspace.user}</span><PostForm action="/logout"><ViewButton variant="ghost" size="sm" type="submit" className="-ml-2.5 max-[901px]:h-11 max-[901px]:min-h-11">Sign out</ViewButton></PostForm></div>
-    </div>
-  </div>;
-}
-
 /** The project a page is about: the one its address names (?project, ?repo), its focused task's, else the session's
  * open project — so the picker always names what is open. */
 export function currentProjectOf(workspace: BrowserWorkspace): BrowserWorkspace["projects"][number] | undefined {
@@ -623,84 +531,6 @@ export function currentProjectOf(workspace: BrowserWorkspace): BrowserWorkspace[
   const named = query.get("project") ?? query.get("repo") ?? workspace.crew.find(task => task.id === workspace.focus?.id)?.project ?? workspace.openProject ?? null;
   return named === null ? undefined : workspace.projects.find(project => project.path === named);
 }
-
-/** On a sensitive page the live parts of the sidebar keep their place as static text: the project names without
- * states, no forms, no summary room (docs/plans/settings-revamp.md S2). */
-export function InertProjectStates({ workspace, current }: { workspace: BrowserWorkspace; current: string | null }) {
-  if (workspace.projects.length === 0) return null;
-  return <div className="so-project-states so-project-states--inert" data-live data-sidebar-slot="projects">
-    {workspace.projects.map(project => <p key={project.path} className="so-project-state" aria-current={project.path === current ? "true" : undefined}>
-      <span className="so-project-state-name">{project.name}</span></p>)}
-  </div>;
-}
-
-export function workspaceCommands(workspace: BrowserWorkspace, query = "") {
-  const entries = [
-    ...workspace.navigation.map(item => ({ label: item.label, detail: "Page", href: item.href })),
-    ...workspace.projects.map(item => ({ label: item.name, detail: "Project", href: item.href })),
-    ...workspace.crew.map(item => ({ label: item.title, detail: item.label, href: item.resultHref ?? item.href })),
-  ];
-  // The same place under two names (a single project's page is also where Tasks leads) stays findable by both.
-  const seen = new Set<string>();
-  return entries.filter(item => {
-    const key = `${item.label}\n${item.href}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return `${item.label} ${item.detail}`.toLowerCase().includes(query.trim().toLowerCase());
-  });
-}
-
-export function CommandMenu({ workspace }: { workspace: BrowserWorkspace }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const searchId = useId();
-  const searchInput = useRef<HTMLInputElement>(null);
-  const results = useRef<HTMLUListElement>(null);
-  const changeOpen = (next: boolean) => { setOpen(next); setQuery(""); };
-  useEffect(() => {
-    if (workspace.sensitive) return;
-    const shortcut = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.key.toLowerCase() !== "k"
-        || event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]')) return;
-      event.preventDefault(); setOpen(value => !value); setQuery("");
-    };
-    window.addEventListener("keydown", shortcut);
-    return () => window.removeEventListener("keydown", shortcut);
-  }, [workspace.sensitive]);
-  if (workspace.sensitive) return null;
-  const entries = workspaceCommands(workspace, query);
-  return <Dialog open={open} onOpenChange={changeOpen}>
-    <DialogTrigger asChild><ViewButton variant="ghost" size="sm" className="so-command-trigger max-[901px]:h-11 max-[901px]:min-h-11">Search<span className="so-command-hint" aria-hidden="true">{"⌘\u00a0/\u00a0Ctrl\u00a0K"}</span></ViewButton></DialogTrigger>
-    <DialogContent className="so-command-dialog" data-workspace-command onOpenAutoFocus={event => { event.preventDefault(); searchInput.current?.focus(); }}>
-      <div className="so-command-heading"><DialogTitle>Go to</DialogTitle><DialogClose asChild><ViewButton className="max-[901px]:size-11 max-[901px]:min-h-11" variant="ghost" size="icon" aria-label="Close search"><Icon name="close" /></ViewButton></DialogClose></div>
-      <DialogDescription className="so-sr-only">Search pages, projects, and tasks. Use Tab or the arrow keys to choose a link.</DialogDescription>
-      <Label htmlFor={searchId} className="so-sr-only">Search workspace</Label>
-      <Input className="focus-visible:border-signal focus-visible:ring-[3px] focus-visible:ring-signal-soft max-[900px]:text-base" ref={searchInput} id={searchId} type="search" placeholder="Search workspace…" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => {
-        if (event.key === "ArrowDown") { event.preventDefault(); results.current?.querySelector("a")?.focus(); }
-      }} />
-      <ul ref={results} className="so-command-results" onKeyDown={event => {
-        if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-        const links = Array.from(results.current?.querySelectorAll("a") ?? []);
-        const index = links.indexOf(document.activeElement as HTMLAnchorElement);
-        if (index < 0) return;
-        event.preventDefault(); links[(index + (event.key === "ArrowDown" ? 1 : -1) + links.length) % links.length]?.focus();
-      }}>{entries.map(item => <li key={item.href}><a href={item.href}><span>{item.label}</span><small>{item.detail}</small></a></li>)}</ul>
-      {entries.length === 0 && <p className="so-command-empty" role="status">No matches.</p>}
-    </DialogContent>
-  </Dialog>;
-}
-
-function PhoneNavigation({ workspace }: { workspace: BrowserWorkspace }) {
-  // On a phone the rail is a sheet: a header chip says how many need you and opens it.
-  const states = useProjectStates(workspace);
-  const needing = needsYouTotal(states);
-  return <Dialog><DialogTrigger asChild><ViewButton variant="ghost" size="icon" className="so-mobile-menu min-[901px]:hidden max-[901px]:size-11 max-[901px]:min-h-11" aria-label="Open navigation"><Icon name="menu" /></ViewButton></DialogTrigger>
-    {needing > 0 && <DialogTrigger asChild><button type="button" className="so-needs-chip min-[901px]:hidden" data-needs-chip>{needing} need{needing === 1 ? "s" : ""} you</button></DialogTrigger>}
-    <DialogContent className="so-navigation-dialog"><DialogTitle className="so-sr-only">Workspace navigation</DialogTitle><DialogDescription className="so-sr-only">Choose a project or a workspace page.</DialogDescription>
-      <DialogClose asChild><ViewButton variant="ghost" size="icon" className="so-navigation-close max-[901px]:size-11 max-[901px]:min-h-11" aria-label="Close navigation"><Icon name="close" /></ViewButton></DialogClose><Navigation workspace={workspace} />
-    </DialogContent></Dialog>;
-}
-
 
 /** The task composer's modes: what the lead may come back with. Every action
  * still arrives as a card the person confirms; the mode grants nothing. */
@@ -805,7 +635,7 @@ function useWindowStaysPut() {
 }
 
 /** The views built from the revamp kit; a server page says so with `data-kit-page` on its root. */
-const KIT_VIEWS = new Set(["tasks", "task", "agents"]);
+const KIT_VIEWS = new Set(["agents", "home", "search"]);
 export function isKitPage(workspace: BrowserWorkspace): boolean {
   if (workspace.team) return false;
   if (workspace.view != null) return KIT_VIEWS.has(workspace.view.kind);
@@ -820,8 +650,8 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const [phoneView, setPhoneView] = useState<"chat" | "work">(workspace.result || workspace.focus ? "work" : "chat");
   const hasWork = workspace.focus !== null || workspace.result !== null;
   const selectedTask = workspace.crew.find(item => item.id === workspace.focus?.id);
-  const isChat = workspace.navigation.some(item => item.label === "Chat" && item.active);
-  const section = workspace.navigation.find(item => item.active)?.label ?? (workspace.title.charAt(0).toUpperCase() + workspace.title.slice(1));
+  const isChat = new URL(workspace.path, window.location.origin).pathname === "/chat";
+  const section = isChat ? "Chat" : workspace.navigation.find(item => item.active)?.label ?? (workspace.title.charAt(0).toUpperCase() + workspace.title.slice(1));
   // The Ask panel (v77): a page with its own view and its own conversation
   // keeps the page in the middle and the conversation beside it.
   // A task page (console v2): the conversation is the page's own thread, and
@@ -849,18 +679,20 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   // A page built from the revamp kit (src/design/KIT.md) brings its own top bar and spacing: no page padding, no side
   // panel, and no desk header (search lives in the rail); on a phone the shell's header is the phone header.
   const kitPage = isKitPage(workspace);
-  const hidePanel = settingsFrame || kitPage || (pageOnly && !docked && !hasWork && (FULL_WIDTH_PAGES.has(pathname) || pathname.startsWith("/code/") || workspace.view?.kind === "flow"));
+  // The side sheet is only ever a page's own: the Ask panel beside a page, a task's Details, or a result opened from the
+  // chat. Nothing else repeats the task list beside a page (the rail and Home hold it).
+  const hidePanel = settingsFrame || kitPage || !hasWork || pageOnly && !docked && FULL_WIDTH_PAGES.has(pathname);
   const crumbs = settingsFrame ? (workspace.crumbs ?? []).filter(one => one.href === null || (one.href.startsWith("/") && !one.href.startsWith("//"))) : [];
   const [dismissedUpdate, setDismissedUpdate] = useState<string | null>(null);
   const update = workspace.update !== undefined && workspace.update.version !== dismissedUpdate ? workspace.update : null;
   // The demo notice scrolls away with a page; a chat keeps it above.
   const demo = workspace.demo;
   const pageScrolls = !workspace.team && !(workspace.conversation && !docked && taskView === null);
-  // The Chat landing keeps Home beside the conversation, not inside it.
-  const home = isChat && !hasWork && !docked && taskView === null && !workspace.team ? workspace.home ?? null : null;
   // After the first Ready result: one line pointing to the phone setup in Settings, until put away.
   const [phoneDismissed, setPhoneDismissed] = useState(false);
   const phone = isChat && workspace.conversation !== null && !docked && taskView === null && !phoneDismissed ? workspace.phone ?? null : null;
+  const states = useProjectStates(workspace);
+  const current = currentProjectOf(workspace)?.path ?? null;
   useEffect(notifyWorkspaceRendered, []);
   useWindowStaysPut();
   // On a phone the result opens as a sheet over the chat (workspace.css): the chat stays in view, dimmed, and out of
@@ -870,7 +702,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   useEffect(() => {
     const column = mainColumn.current;
     if (!column) return;
-    const phone = matchMedia("(max-width: 900px)");
+    const phone = matchMedia("(max-width: 760px)");
     const sync = () => column.toggleAttribute("inert", sheet && phone.matches);
     sync();
     phone.addEventListener("change", sync);
@@ -878,26 +710,27 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   }, [sheet]);
   return <FormToken.Provider value={workspace.csrf}><Passwordless.Provider value={workspace.passwordless === true}><Toaster /><AttentionMarks workspace={workspace} /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${kitPage ? " so-workspace--kit" : ""}${settingsFrame ? " so-workspace--settings" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
     <a href="#workspace-main" className="so-skip-link">Skip to content</a>
-    <aside className="so-sidebar"><Navigation workspace={workspace} /></aside>
+    <aside className="so-sidebar"><Rail workspace={workspace} states={states} current={current} /></aside>
     <div ref={mainColumn} className={`so-main-column${isChat ? " so-main-column--chat" : ""}`}>
-      <header className="so-workspace-header"><PhoneNavigation workspace={workspace} />{crumbs.length > 0
+      <PhoneHeader workspace={workspace} title={crumbs.length > 0 ? crumbs[crumbs.length - 1]!.label : section} states={states} current={current} trailing={<>
+        {isChat && hasWork && <ViewButton variant="outline" size="sm" className="so-phone-work-button h-11 min-h-11" onClick={() => setPhoneView("work")}>Open work</ViewButton>}
+        {docked && <ViewButton variant="outline" size="sm" className="so-phone-work-button h-11 min-h-11" onClick={() => { setPanelTab("chat"); setPhoneView("work"); }}><Icon name="chat" />Ask</ViewButton>}
+        {taskView !== null && !kitPage && <ViewButton variant="outline" size="sm" className="so-phone-work-button h-11 min-h-11" data-open-details onClick={() => setPhoneView("work")}>Task details</ViewButton>}
+      </>} />
+      {!kitPage && <header className="so-workspace-header">{crumbs.length > 0
         ? <nav className="kit-crumbs so-header-title" aria-label="Breadcrumb"><ol>{crumbs.map((one, at) => one.href === null
           ? <li key={at} aria-current="page">{one.label}</li> : <li key={at}><a href={one.href}>{one.label}</a></li>)}</ol></nav>
         : pageOnly || settingsFrame
         ? <p className="so-header-title">{section}</p>
         : <h1>{isChat ? workspace.leadName ?? "Lead" : section}</h1>}
         {workspace.focus && isChat && <span className="so-focus-label" title={workspace.focus.title}>{workspace.focus.title}</span>}
-        <CommandMenu workspace={workspace} />
-        {isChat && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden max-[901px]:h-11 max-[901px]:min-h-11" onClick={() => setPhoneView("work")}>{hasWork ? "Open work" : home !== null ? "Work" : "Crew"}</ViewButton>}
-        {docked && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden max-[901px]:h-11 max-[901px]:min-h-11" onClick={() => { setPanelTab("chat"); setPhoneView("work"); }}><Icon name="chat" />Ask</ViewButton>}
-        {taskView !== null && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden max-[901px]:h-11 max-[901px]:min-h-11" data-open-details onClick={() => setPhoneView("work")}>Task details</ViewButton>}
-      </header>
+      </header>}
       {(workspace.notices.length > 0 || (workspace.signIn?.length ?? 0) > 0 || update !== null || phone !== null || (demo !== undefined && !pageScrolls)) && <div className="so-workspace-notices">
         {!pageScrolls && <DemoNotice demo={demo} />}
         {workspace.signIn?.map(item => <Alert key={item.provider} className="so-sign-in" data-sign-in={item.provider}>
           <p className="so-sign-in-title">{item.title}</p>
           <p className="so-sign-in-detail">Run <code>{item.command}</code> on this computer, then resume.{item.detail === "" ? "" : ` ${item.detail}`}</p>
-          <PostForm action={item.resumeHref}><ViewButton className="max-[901px]:h-11 max-[901px]:min-h-11" size="sm" type="submit">{item.resumeLabel}</ViewButton></PostForm>
+          <PostForm action={item.resumeHref}><ViewButton className="max-[761px]:h-11 max-[761px]:min-h-11" size="sm" type="submit">{item.resumeLabel}</ViewButton></PostForm>
         </Alert>)}
         {workspace.notices.map((notice, index) => <Alert key={index}>{notice}</Alert>)}
         {update !== null && <Alert className="so-update" data-update={update.version}>
@@ -909,7 +742,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
             void fetch(update.dismissHref, { method: "POST", body: new URLSearchParams({ csrf: workspace.csrf, version: update.version, quiet: "1" }) }).catch(() => {});
           }}>
             <input type="hidden" name="version" value={update.version} />
-            <ViewButton className="max-[901px]:size-11 max-[901px]:min-h-11" variant="ghost" size="icon" type="submit" aria-label={`Dismiss the notice about ${update.version}`}><Icon name="close" /></ViewButton>
+            <ViewButton className="max-[761px]:size-11 max-[761px]:min-h-11" variant="ghost" size="icon" type="submit" aria-label={`Dismiss the notice about ${update.version}`}><Icon name="close" /></ViewButton>
           </PostForm>
         </Alert>}
         {phone !== null && <Alert className="so-update so-phone-notice" data-phone-notice>
@@ -920,17 +753,17 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
             setPhoneDismissed(true);
             void fetch(phone.dismissHref, { method: "POST", body: new URLSearchParams({ csrf: workspace.csrf, quiet: "1" }) }).catch(() => {});
           }}>
-            <ViewButton className="max-[901px]:size-11 max-[901px]:min-h-11" variant="ghost" size="icon" type="submit" aria-label="Dismiss the phone notice"><Icon name="close" /></ViewButton>
+            <ViewButton className="max-[761px]:size-11 max-[761px]:min-h-11" variant="ghost" size="icon" type="submit" aria-label="Dismiss the phone notice"><Icon name="close" /></ViewButton>
           </PostForm>
         </Alert>}
       </div>}
       <main id="workspace-main" className="so-main-content" tabIndex={-1}>
-        {workspace.team ? <TeamChat initial={workspace.team} user={workspace.user} csrf={workspace.csrf} onSnapshot={setTeamSnapshot} /> : workspace.conversation && !docked && taskView === null ? <LeadChat controller={controller} /> : <div className="so-page-content" data-workspace-page><DemoNotice demo={demo} />{isChat && workspace.firstRun && <FirstRun firstRun={workspace.firstRun} />}{workspace.view ? <ViewHost view={workspace.view} csrf={workspace.csrf} taskChat={taskChat} taskDetails={false} /> : <GuardedHtml html={initial.pageHtml ?? ""} immutable />}</div>}
+        {workspace.team ? <TeamChat initial={workspace.team} user={workspace.user} csrf={workspace.csrf} onSnapshot={setTeamSnapshot} /> : workspace.conversation && !docked && taskView === null ? <LeadChat controller={controller} /> : <div className="so-page-content" data-workspace-page><DemoNotice demo={demo} />{isChat && workspace.firstRun && <FirstRun firstRun={workspace.firstRun} />}{workspace.view ? <ViewHost view={workspace.view} csrf={workspace.csrf} taskChat={taskChat} taskDetails={false} workspace={workspace} /> : <GuardedHtml html={initial.pageHtml ?? ""} immutable />}</div>}
       </main>
     </div>
     {docked && <aside className="so-supporting-panel so-ask-panel" data-workspace-detail aria-label="Ask">
       <div className="so-ask-header">
-        <ViewButton variant="ghost" size="sm" className="so-phone-back min-[901px]:hidden max-[901px]:h-11 max-[901px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />Back</ViewButton>
+        <ViewButton variant="ghost" size="sm" className="so-phone-back min-[761px]:hidden max-[761px]:h-11 max-[761px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />Back</ViewButton>
         <div role="tablist" aria-label="Panel" className="so-ask-tabs">
           <button type="button" role="tab" aria-selected={panelTab === "chat"} onClick={() => setPanelTab("chat")}>Chat</button>
           <button type="button" role="tab" aria-selected={panelTab === "crew"} onClick={() => setPanelTab("crew")}>Crew</button>
@@ -941,13 +774,13 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
     </aside>}
     {taskView !== null && <aside className="so-supporting-panel so-details-panel" data-workspace-detail aria-label="Task details">
       <div className="so-details-header">
-        <ViewButton variant="ghost" size="sm" className="so-phone-back min-[901px]:hidden max-[901px]:h-11 max-[901px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />Back</ViewButton>
+        <ViewButton variant="ghost" size="sm" className="so-phone-back min-[761px]:hidden max-[761px]:h-11 max-[761px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />Back</ViewButton>
         <h2>Task details</h2>
       </div>
       <div data-view="task-details" className="w-full"><TaskDetails view={taskView} /></div>
     </aside>}
     {!hidePanel && !docked && taskView === null && <aside className={`so-supporting-panel${hasWork ? " so-supporting-panel--detail" : ""}`} data-workspace-detail>
-      <div className="so-work-panel-header"><ViewButton variant="ghost" size="sm" className="so-phone-back min-[901px]:hidden max-[901px]:h-11 max-[901px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />{isChat ? "Back to chat" : "Back"}</ViewButton>
+      <div className="so-work-panel-header"><ViewButton variant="ghost" size="sm" className="so-phone-back min-[761px]:hidden max-[761px]:h-11 max-[761px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />{isChat ? "Back to chat" : "Back"}</ViewButton>
         {hasWork && <><h2>{workspace.result ? "Result" : "Task"}</h2>{workspace.result && selectedTask && <HeadlineBadge label={selectedTask.label} tone={selectedTask.tone} className="so-current-task-state" data-workspace-current-task-state="" />}{workspace.result && <span className="so-work-run">run #{workspace.result.runId}</span>}<a href={teamSnapshot?.selected ? "/chat?conversation=" + encodeURIComponent(teamSnapshot.selected.id) : "/chat"} className="so-close-work" aria-label="Close work and return to the main chat"><Icon name="close" /></a></>}
       </div>
       {hasWork ? <div className="so-work-detail-content">
@@ -957,8 +790,10 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
         {workspace.result && <div ref={resultHost} className="so-result-host"><Artifact data-workspace-result={workspace.result.runId}><ArtifactContent><GuardedHtml key={workspace.result.runId} html={workspace.result.html} immutable /></ArtifactContent></Artifact>
           {/* A comment on a line of this result's change goes to the lead as the conversation's next message. */}
           {workspace.conversation && <LineSteer key={workspace.result.runId} host={resultHost} run={workspace.result.runId} maxChars={workspace.conversation.maxChars} steer={controller.steer} />}</div>}
-      </div> : home !== null ? <WorkPanel workspace={workspace} home={home} /> : <Crew workspace={workspace} />}
+      </div> : null}
     </aside>}
+    <NeedsDock workspace={workspace} />
+    <SearchMenu workspace={workspace} />
   </div></Passwordless.Provider></FormToken.Provider>;
 }
 
