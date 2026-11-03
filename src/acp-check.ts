@@ -62,34 +62,6 @@ export async function runAcpChecks(job: AcpCheckJob): Promise<void> {
 }
 
 /**
- * Tests only: runAcpChecks with a shorter stop-step window, so a test whose agent never starts its command doesn't
- * wait out the product's minute. No product code may import it (src/acp-check-timing.test.ts fails if any does); the
- * job carries no wait of its own, so no CLI, environment or config value can change the product's.
- */
-export async function runAcpChecksForTests(job: AcpCheckJob, stopWaitMs: number): Promise<void> {
-  return runChecks(job, stopWaitMs);
-}
-
-async function runChecks(job: AcpCheckJob, stopWaitMs: number): Promise<void> {
-  const clock = job.clock ?? (() => new Date());
-  job.store.expireAcpChecks(clock());
-  for (const abandoned of job.store.abandonedAcpChecks(job.runner, clock())) job.store.failAcpCheck(abandoned.id, "interrupted", clock());
-  await settleChecks(job, clock);
-  if (process.platform === "win32") return;
-  const request = job.store.claimAcpCheck(job.runner, job.watch, clock());
-  if (request === null) return;
-  const name = isAcpProvider(request.provider) ? ACP_AGENTS[request.provider].name : request.provider;
-  job.progress?.(`agents: checking ${name} (${request.model}) on ${job.runner}`);
-  try {
-    const verdict = await check(job, request, clock, stopWaitMs);
-    job.progress?.(`agents: ${name} ${verdict === null ? "passed its check" : `failed its check — ${verdict}`}`);
-  } catch (error) {
-    job.store.failAcpCheck(request.id, `the check stopped: ${error instanceof Error ? error.message : String(error)}`, clock());
-  }
-  await settleChecks(job, clock);
-}
-
-/**
  * Let go of what finished checks hold — their checkout, their task, their claim — once nothing of theirs can still be
  * running. The whole teardown happens under a live claim of the check's own on its task (its first, or a fresh one
  * recorded in its place when that expired), so no one else can take the task while its checkout goes; ownership is
@@ -147,6 +119,34 @@ async function settleChecks(job: AcpCheckJob, clock: () => Date): Promise<void> 
       store.endAcpSettle(request.id, attempt);
     }
   }
+}
+
+/**
+ * Tests only: runAcpChecks with a shorter stop-step window, so a test whose agent never starts its command doesn't
+ * wait out the product's minute. No product code may import it (src/acp-check-timing.test.ts fails if any does); the
+ * job carries no wait of its own, so no CLI, environment or config value can change the product's.
+ */
+export async function runAcpChecksForTests(job: AcpCheckJob, stopWaitMs: number): Promise<void> {
+  return runChecks(job, stopWaitMs);
+}
+
+async function runChecks(job: AcpCheckJob, stopWaitMs: number): Promise<void> {
+  const clock = job.clock ?? (() => new Date());
+  job.store.expireAcpChecks(clock());
+  for (const abandoned of job.store.abandonedAcpChecks(job.runner, clock())) job.store.failAcpCheck(abandoned.id, "interrupted", clock());
+  await settleChecks(job, clock);
+  if (process.platform === "win32") return;
+  const request = job.store.claimAcpCheck(job.runner, job.watch, clock());
+  if (request === null) return;
+  const name = isAcpProvider(request.provider) ? ACP_AGENTS[request.provider].name : request.provider;
+  job.progress?.(`agents: checking ${name} (${request.model}) on ${job.runner}`);
+  try {
+    const verdict = await check(job, request, clock, stopWaitMs);
+    job.progress?.(`agents: ${name} ${verdict === null ? "passed its check" : `failed its check — ${verdict}`}`);
+  } catch (error) {
+    job.store.failAcpCheck(request.id, `the check stopped: ${error instanceof Error ? error.message : String(error)}`, clock());
+  }
+  await settleChecks(job, clock);
 }
 
 /** Run one claimed check; null when it passed (and was published), else why not. */
