@@ -259,11 +259,12 @@ test("the Spend page, its CSV and budgets are an instance operator's; the task p
       .headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
     const cookie = await signIn("alex", alex.token);
     const page = await (await fetch(`${base}/spend`, { headers: { cookie } })).text();
-    expect(page).toContain("<h1>Spend</h1>");
+    expect(page).toContain('<h2 class="k-same">Spend</h2>');
     expect(page).toContain('data-amount-kind="api" data-microusd="3000000"');
-    // Limits change on Settings → Spend, not on the Spend page.
+    // A limit's form opens in place (Edit limit); Settings → Spend's old address leads here.
     expect(page).not.toContain('action="/spend/budget"');
-    const settings = await (await fetch(`${base}/settings/spend`, { headers: { cookie } })).text();
+    expect((await fetch(`${base}/settings/spend`, { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe("/spend");
+    const settings = await (await fetch(`${base}/spend?edit=${encodeURIComponent(`project:${REPO}`)}`, { headers: { cookie } })).text();
     expect(settings).toContain('action="/spend/budget"');
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(settings)![1]!;
     const post = (fields: Record<string, string>) => fetch(`${base}/spend/budget`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });

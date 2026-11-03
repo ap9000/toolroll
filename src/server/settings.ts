@@ -121,9 +121,10 @@ import { addProjectInstructions,ASSISTANTS,detectPreparation,modelChoices,previe
 import { skillsHtml,skillsScript } from "../skills-ui.js";
 import { checkSlackCredentials,clearSlackCredentials,loadSlackCredentials,saveSlackCredentials,SLACK_MANIFEST,SlackError } from "../slack-api.js";
 import { slackSettingsHtml } from "../slack-settings.js";
-import { spendHtml,spendSettingsHtml } from "../spend-ui.js";
+import { spendHtml,spendScript,type LimitEdit,type LimitRowView } from "../spend-ui.js";
+import { approvalFactsNow } from "./kit.js";
 import { spendReport,spendReportCsv,spendRows } from "../spend-report.js";
-import { limitsHtml,limitsView } from "../limits-ui.js";
+import { limitsView } from "../limits-ui.js";
 import { budgetStates,monthNamed,spendItems,usd as spendUsd,subagentNames as subagentNamesOf } from "../spend.js";
 import { removeSsoSettings,saveSsoSettings,SSO_CALLBACK,ssoChangeWords } from "../sso-settings.js";
 import { ssoSettingsHtml } from "../sso-ui.js";
@@ -152,8 +153,9 @@ type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
   const { identities, store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, connectionKnown, lastChecks, checkRelease, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, chatCatalogKnown, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, googleVisits } = runtime;
 
-  // What agent work cost, by month: API dollars, plan usage and unknown cost apart (spend-report.ts). An instance
-  // operator's page. Its limits show read-only; they change on Settings → Spend.
+  // What agent work cost, by month: API dollars, plan usage and unknown cost apart (spend-report.ts), with this
+  // month's limits first. An instance operator's page. A limit opens its form in place (?edit=<scope:key>) and saves
+  // to /spend/budget with a step-up.
   async function spendPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, now } = ctx;
     const current = monthOf(now);
@@ -167,11 +169,35 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
       return void response.end(spendReportCsv(rows, subagentNames));
     }
     const shift = (by: number) => { const at = new Date(`${month.name}-01T00:00:00.000Z`); at.setUTCMonth(at.getUTCMonth() + by); return at.toISOString().slice(0, 7); };
-    // Limits read what the budget gate counts today (spend.ts spendItems), for the current month.
-    const budgets = month.name === current.name ? budgetStates(store.budgets(), spendItems(store.handle, current.from, current.to)) : null;
-    const windows = month.name !== current.name ? html`` : limitsHtml(limitsView(store.providerLimits(), [], { project: projectName, subagent: id => subagentNames.get(id) ?? `Subagent ${id}` }, now));
-    const view = { month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1), report: spendReport(rows), budgets, windows, subagentNames };
-    return sendScreen(response, 200, screen("Spend", spendHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }), { chrome: chromeFor(null, "spend") }));
+    // Limits read what the budget gate counts today (spend.ts spendItems): always this month's, whichever month is shown.
+    const items = spendItems(store.handle, current.from, current.to);
+    const saved = store.budgets();
+    const budgets = budgetStates(saved, items);
+    const has = (scope: string, key: string) => saved.some(one => one.scope === scope && one.key === key);
+    // Everything and each project with no limit yet, with what it spent this month (counted as a limit would count it).
+    const spentFor = (scope: "installation" | "project", key: string) => budgetStates([{ id: 0, scope, key, limitMicrousd: 1, hardStop: false, updatedBy: "", updatedAt: "" }], items)[0]!.spentMicrousd;
+    const unlimited: LimitRowView[] = [
+      ...(has("installation", "*") ? [] : [{ target: "installation:*", label: "Everything", budget: null, spentMicrousd: spentFor("installation", "*") }]),
+      ...consoleProjects().filter(repo => !has("project", repo)).map(repo => ({ target: `project:${repo}`, label: projectName(repo), budget: null, spentMicrousd: spentFor("project", repo) })),
+    ];
+    const targets = [
+      ...store.accountFacts().filter(one => one.revokedAt === null && !has("person", one.name)).map(one => ({ value: `person:${one.name}`, label: one.name, group: "People" as const })),
+      ...store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]).filter(one => !has("subagent", String(one.id)))
+        .map(one => ({ value: `subagent:${one.id}`, label: `${subagentNames.get(one.id) ?? one.handle} (${projectName(one.repo)})`, group: "Subagents" as const })),
+    ];
+    const editing = url.searchParams.get("edit");
+    const stop = url.searchParams.get("stop");
+    const edit: LimitEdit | null = editing === null || editing === "" ? null : {
+      target: editing, usd: url.searchParams.get("usd"), stop: stop === null ? null : stop === "1",
+      fieldError: url.searchParams.get("field") === "usd" ? url.searchParams.get("problem") : null,
+      problem: url.searchParams.get("field") === "usd" ? null : url.searchParams.get("problem"),
+    };
+    const windows = limitsView(store.providerLimits(), [], { project: projectName, subagent: id => subagentNames.get(id) ?? `Subagent ${id}` }, now);
+    const view = { month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1), current: current.name, report: spendReport(rows),
+      budgets, unlimited, targets, windows, subagentNames, edit, facts: approvalFactsNow() };
+    // A refusal for the open form shows in the form; anything else under the limits' heading.
+    const said = { said: url.searchParams.get("said"), problem: edit === null ? url.searchParams.get("problem") : null };
+    return sendScreen(response, 200, screen("Spend", spendHtml(view, said), { chrome: chromeFor(null, "spend"), functional: { script: spendScript() } }));
   }
   async function modePage(ctx: HandlerContext): Promise<void> {
     const { who, response, now, project } = ctx;
@@ -320,7 +346,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     // Only an instance operator changes models (docs/plans/spend-dashboard.md D4); a preset or a switch is previewed
     // here, read-only, and applied by its own password-checked POST.
     const view = modelsView(who.via === "cookie" && store.isInstanceOperator(who.name), who.via === "cookie" ? who.session.csrf : "", now, url.searchParams.get("said"), url.searchParams.get("problem"), url.searchParams);
-    return sendScreen(response, 200, screen("Models", html`<p><a href="/settings">Settings</a></p><h1>Models</h1>${modelsHtml(view)}`, { chrome: chromeFor(project, "settings"), functional: { script: modelsScript() } }));
+    return sendScreen(response, 200, screen("Models", modelsHtml({ ...view, facts: approvalFactsNow() }), { chrome: chromeFor(project, "settings"), functional: { script: modelsScript() } }));
   }
   async function skillsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
@@ -801,30 +827,36 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       return sendScreen(response,409,screen('Skills',html`<h1>Skills</h1>${content}`,{chrome:chromeFor(repo,'settings'),functional:{script:skillsScript()}}));
     }
   };
-  // v105: set or remove a monthly budget. An instance operator, with a step-up; the ledger keeps before → after.
+  // v105: set or remove a monthly budget. An instance operator, with a step-up; the ledger keeps before → after. The
+  // amount is checked before the password (nothing is written before the password is proved), so a refused amount
+  // shows next to its field with the person's draft kept.
   async function spendBudget(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.spendBudget);
-    const back = sayTo(response, "/settings/spend");
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change a budget.");
-    const target = /^(installation|project|person|subagent):(.+)$/.exec(body.get("target") ?? "");
-    if (target === null) return back("problem", "Choose what the budget is for.");
+    const targetField = body.get("target") ?? "";
+    const remove = body.get("action") === "remove";
+    const draft = { usd: body.get("usd") ?? "", stop: body.get("stop") === "1" ? "1" : "0" };
+    const done = (words: string) => redirect(response, `/spend?said=${encodeURIComponent(words)}`);
+    const refused = (words: string, field?: "usd") => redirect(response, `/spend?${new URLSearchParams({ edit: targetField === "" ? "new" : targetField, ...draft, ...(field ? { field } : {}), problem: words }).toString()}`);
+    const target = /^(installation|project|person|subagent):(.+)$/.exec(targetField);
+    if (target === null) return refused("Choose what the limit is for. Nothing changed.");
     const scope = target[1] as "installation" | "project" | "person" | "subagent", key = target[2]!;
     const known = scope === "installation" ? key === "*"
       : scope === "project" ? consoleProjects().includes(key)
       : scope === "person" ? store.accountFacts().some(one => one.name === key && one.revokedAt === null)
       : store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]).some(one => String(one.id) === key);
-    if (!known) return back("problem", "That isn't a project, person or subagent here.");
+    if (!known) return refused("That isn't a project, person or subagent here. Nothing changed.");
+    const dollars = Number((body.get("usd") ?? "").replace(/[$,\s]/g, ""));
+    if (!remove && (!Number.isFinite(dollars) || dollars < 1 || dollars > 10_000_000)) return refused("Use a whole number of dollars, at least $1, like 40. Nothing changed.", "usd");
+    if (!authenticateApprover(who, body.get("password") ?? "").ok) return refused("That password didn't match. Nothing changed.");
     const label = budgetLabel({ scope, key }).replace(/'s$/, "");
-    if (body.get("action") === "remove") {
+    if (remove) {
       const existing = store.budgets().find(one => one.scope === scope && one.key === key);
-      if (existing === undefined || !store.removeBudget(existing.id, who.name, now)) return back("problem", "That budget is already gone.");
-      return back("said", `${label}: budget removed.`);
+      if (existing === undefined || !store.removeBudget(existing.id, who.name, now)) return refused("That limit is already gone. Nothing changed.");
+      return done(`${label}: limit removed.`);
     }
-    const dollars = Number(body.get("usd") ?? "");
-    if (!Number.isFinite(dollars) || dollars < 1 || dollars > 10_000_000) return back("problem", "A monthly limit is a whole number of dollars, at least $1.");
     const saved = store.setBudget({ scope, key, limitMicrousd: Math.round(dollars) * 1_000_000, hardStop: body.get("stop") === "1" }, who.name, now);
-    return back("said", `${label}: ${spendUsd(saved.limitMicrousd)} a month${saved.hardStop ? ", API work stops at 100%" : ", alerts only"}.`);
+    return done(`${label}: ${spendUsd(saved.limitMicrousd)} a month${saved.hardStop ? ", new API work pauses at the limit" : ", alerts only"}.`);
   }
   // Settings → Project → Builds at once: an approver for the project sets it; the ledger keeps before → after.
   async function projectConcurrency(ctx: HandlerContext): Promise<void> {
@@ -2480,29 +2512,10 @@ ${modeWords(terms)
     const changed = setReleaseApproval(store, repo, true, who.name, now);
     return back("said", changed.changed ? "Releases approve themselves once CI and the release check pass." : "Saved.");
   }
-  // Settings → Spend: the monthly limits editor and the models in use. An instance operator's page; changing a limit
-  // posts to /spend/budget with a step-up.
+  // Settings → Spend moved onto the Spend page (/spend), limits first; the old address keeps working.
   async function spendSettingsPage(ctx: HandlerContext): Promise<void> {
-    const { url, response, now } = ctx;
-    const current = monthOf(now);
-    const subagents = store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]);
-    const subagentNames = subagentNamesOf(store.handle);
-    const projects = consoleProjects();
-    const people = store.accountFacts().filter(one => one.revokedAt === null).map(one => one.name);
-    const models = (["plan", "build", "review"] as const).map(phase => {
-      const agent = resolvePhaseAgent(store, phase, null, {});
-      return { role: phase === "plan" ? "Planner" : phase === "build" ? "Builder" : "Reviewer", model: agent.ok ? `${agent.spec.provider} · ${agent.spec.model ?? "its default model"}` : "Not set" };
-    });
-    const view = {
-      budgets: budgetStates(store.budgets(), spendItems(store.handle, current.from, current.to)), subagentNames, models,
-      targets: [
-        { value: "installation:*", label: "Everything", group: "Everything" as const },
-        ...projects.map(repo => ({ value: `project:${repo}`, label: projectName(repo), group: "Projects" as const })),
-        ...people.map(name => ({ value: `person:${name}`, label: name, group: "People" as const })),
-        ...subagents.map(one => ({ value: `subagent:${one.id}`, label: `${subagentNames.get(one.id) ?? one.handle} (${projectName(one.repo)})`, group: "Subagents" as const })),
-      ],
-    };
-    return sendScreen(response, 200, screen("Spend settings", spendSettingsHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }), { chrome: chromeFor(null, "settings") }));
+    const said = ctx.url.searchParams.get("said"), problem = ctx.url.searchParams.get("problem");
+    return redirect(ctx.response, `/spend${problem !== null ? `?problem=${encodeURIComponent(problem)}` : said !== null ? `?said=${encodeURIComponent(said)}` : ""}`);
   }
   // Settings → Models (docs/plans/spend-dashboard.md, slice 3): the one editor. Both posts are an instance operator's,
   // browser-only step-ups: the password (or a Passwordless session, or an identity-provider re-check) is proved here,

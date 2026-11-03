@@ -677,7 +677,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/model-catalog.ts#recordCatalog@8>store.transact(_)@1": 2,
     "src/models-cli.ts#runModelsCommand@1": 3,
     "src/models-ui.ts#<module>": 1,
-    "src/models-ui.ts#modelsHtml@4": 4,
+    "src/models-ui.ts#modelsHtml@9": 4,
     "src/oidc.ts#providerKeys@8": 2,
     "src/operate.ts#daemonCommand@55": 2,
     "src/orphan-sweep.ts#sweepOrphans@7": 5,

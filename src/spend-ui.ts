@@ -1,31 +1,39 @@
 /**
- * The Spend page (docs/plans/spend-dashboard.md, slice 1): what agent work cost this month, with API dollars, plan
- * usage and unknown cost kept apart and never added together, broken down by project, model, role and person, the
- * runs that cost most, and what isn't recorded here. An instance operator's page. Monthly limits show read-only here
- * and change on Settings → Spend, with a step-up.
+ * The Spend page (docs/plans/spend-dashboard.md, slice 1), in the kit's Settings frame (group "spend"): the monthly
+ * limits first (the one that needs you on top), then what agent work cost in a month, with API dollars, plan usage
+ * and unknown cost kept apart and never added together, broken down by project and model (and, on demand, role,
+ * person and the costliest runs), the plan windows, and what isn't recorded here. An instance operator's page.
+ * A limit changes in place: Edit limit opens its form under the row (`?edit=<target>`), saved with a step-up.
  */
-import { html, postForm, type Html, reauth } from "./html.js";
+import { html, postForm, type Html } from "./html.js";
+import { approvalAsk, termsOf, type ApprovalFacts } from "./design/kit.js";
+import { acts, btn, chip, disclose, dock, empty, field, input, note, notice, segLinks, settingsShell } from "./server/kit.js";
 import { budgetLabel, usd, type BudgetState, type SpendItem } from "./spend.js";
 import type { SpendLine, SpendReport, SpendRole } from "./spend-report.js";
+import type { BrowserLimits } from "./browser-workspace.js";
 import { runHref, taskHref } from "./server/http.js";
 
 const projectName = (repo: string) => repo.split("/").filter(Boolean).pop() ?? repo;
 
-export const SPEND_CSS = `.spend{max-width:960px;min-width:0}.spend-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}.spend-head h1{margin:0}` +
-  `.spend-month{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;font-size:.875rem;margin:0}` +
-  `.spend h2{font-size:.9375rem;margin:24px 0 8px}.spend table{width:100%;border-collapse:collapse;font-size:.8125rem}.spend th,.spend td{text-align:left;padding:6px 8px 6px 0;border-bottom:1px solid var(--border);overflow-wrap:anywhere}` +
-  `.spend th{font-weight:500;color:var(--muted-foreground)}.spend td.n,.spend th.n{text-align:right;font-variant-numeric:tabular-nums}.spend td.n,.spend th.n{white-space:nowrap}.spend table.lines td:first-child{overflow-wrap:break-word;width:40%}` +
-  `.spend-figures{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:16px 0 4px}.spend-figure{border:1px solid var(--border);border-radius:10px;padding:12px 14px;min-width:0}` +
-  `.spend-figure h2{margin:0;font-size:.8125rem;font-weight:500;color:var(--muted-foreground)}.spend-figure .value{margin:6px 0 0;font-size:1.5rem;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.01em}` +
-  `.spend-figure .meta{margin:4px 0 0}.spend-not-counted ul{margin:0;padding-left:20px;font-size:.8125rem}.spend-not-counted li{margin:2px 0}` +
-  `.budget{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;padding:10px 0;border-bottom:1px solid var(--border)}.budget .name{font-weight:500;font-size:.875rem}` +
-  `.budget .figures{font-size:.8125rem;font-variant-numeric:tabular-nums;text-align:right}.budget .bar{grid-column:1/-1;height:6px;border-radius:3px;background:var(--muted);overflow:hidden}` +
-  `.budget .bar span{display:block;height:100%;background:var(--foreground)}.budget.over .bar span{background:var(--danger)}.budget.over .figures{color:var(--danger)}.budget .meta{grid-column:1/-1}` +
-  `.budget details{grid-column:1/-1}.spend form.budget-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 12px;align-items:end;margin:8px 0}` +
-  `.spend form.budget-form label{display:grid;gap:4px;font-size:.8125rem}.spend form.budget-form .choice{display:flex;gap:8px;align-items:center}.spend form.budget-form button{justify-self:start}` +
-  `.spend-models dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 16px;margin:0 0 8px;font-size:.875rem}.spend-models dt{color:var(--muted-foreground)}.spend-models dd{margin:0;overflow-wrap:anywhere}` +
-  `@media(max-width:640px){.spend-figures{grid-template-columns:minmax(0,1fr)}.spend table.lines thead{display:none}.spend table.lines tr{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px 12px;padding:8px 0;border-bottom:1px solid var(--border)}` +
-  `.spend table.lines td{border:0;padding:0;white-space:normal}.spend table.lines td:first-child{grid-column:1/-1;font-weight:500;width:auto}.spend table.lines td.n{text-align:left;color:var(--muted-foreground)}.spend table.lines td.n::before{content:attr(data-label);display:block;font-size:.6875rem}}`;
+/** The page's own layout: the limit rows and meters, the summary figures and the quiet bars. Colour from tokens only. */
+export const SPEND_CSS = `.spend{display:grid;gap:24px;min-width:0}.spend-sec{display:grid;gap:0}.spend-sec .k-secthead{margin-bottom:0}.spend-sec .k-secthead small{font-weight:400;color:var(--so-muted);font-size:12.5px}` +
+  `.spend-lim{display:grid;gap:8px;padding:12px 0;border-bottom:1px solid var(--so-line)}.spend-lim-h{display:grid;grid-template-columns:minmax(0,1fr) auto 124px;gap:12px;align-items:center}` +
+  `.spend-lim-l{display:grid;gap:2px;min-width:0}.spend-lim-t{font-weight:500;display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;overflow-wrap:anywhere}.spend-lim-x{font-size:12.5px;color:var(--so-muted)}` +
+  `.spend-fig{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}.spend-lim-a{display:flex;justify-content:flex-end}.spend-lim-a .k-btn{min-width:108px}` +
+  `.spend-meter{display:block;height:6px;border-radius:3px;background:var(--so-soft);overflow:hidden}.spend-meter>i{display:block;height:100%;border-radius:3px;background:var(--so-neutral-ink)}.spend-meter.over>i{background:var(--so-danger)}` +
+  `.spend-edit{display:grid;gap:12px;padding:4px 0 4px}.spend-edit-row{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:flex-end}.spend-edit-row .k-field{flex:0 1 220px}.spend-edit-row .k-checks{min-height:32px}` +
+  `.spend-edit>.k-field{max-width:300px}.spend-month{display:flex;align-items:center;gap:12px;flex-wrap:wrap}` +
+  `.spend-sum{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--so-line);border-bottom:1px solid var(--so-line)}.spend-sum>div{display:grid;gap:4px;align-content:start;padding:16px 16px 16px 0;min-width:0}` +
+  `.spend-sum>div+div{border-left:1px solid var(--so-line);padding-left:16px}.spend-sum-k{font-size:12px;color:var(--so-muted)}.spend-sum-v{font-size:20px;font-weight:600;letter-spacing:-.01em;font-variant-numeric:tabular-nums}.spend-sum-x{font-size:12px;color:var(--so-muted);line-height:1.45}` +
+  `.spend-bars{display:grid}.spend-bar{display:grid;grid-template-columns:minmax(0,200px) minmax(0,1fr) 84px;gap:12px;align-items:center;min-height:40px;padding:6px 0;border-bottom:1px solid var(--so-line)}` +
+  `.spend-bar.h{min-height:28px;font-size:11.5px;color:var(--so-muted)}.spend-bar.tot{font-weight:600;border-bottom:0}.spend-bar-n{min-width:0;overflow-wrap:anywhere}.spend-bar-n small{display:block;font-size:11.5px;color:var(--so-muted)}` +
+  `.spend-lane{position:relative;height:14px}.spend-lane>i{position:absolute;left:0;top:4px;height:6px;border-radius:3px;background:var(--so-neutral-ink);min-width:3px}.spend-bar-v{text-align:right;font-variant-numeric:tabular-nums}` +
+  `.spend-runs{display:grid}.spend-run{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:8px 0;border-bottom:1px solid var(--so-line)}.spend-run small{grid-column:1/-1;color:var(--so-muted);font-size:12px;overflow-wrap:anywhere}` +
+  `.spend-wins{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;padding-top:12px}.spend-win{display:grid;gap:6px;min-width:0}.spend-win-h{display:flex;justify-content:space-between;gap:8px}.spend-win-h b{font-weight:500}` +
+  `.spend-win.warning .spend-meter>i,.spend-win.danger .spend-meter>i{background:var(--so-danger)}.spend .k-disclose{padding-top:4px}.spend .k-disclose[open]>summary{margin-bottom:8px}` +
+  `@media(max-width:760px){.spend-lim-h{grid-template-columns:minmax(0,1fr) auto}.spend-lim-a{grid-column:1/-1}.spend-lim-a .k-btn{width:100%}.spend-sum{grid-template-columns:minmax(0,1fr)}` +
+  `.spend-sum>div+div{border-left:0;border-top:1px solid var(--so-line);padding-left:0}.spend-bar{grid-template-columns:minmax(0,120px) minmax(0,1fr) 68px;gap:8px;font-size:12.5px}` +
+  `.spend-edit-row .k-field{flex:1 1 100%}.spend .k-btn.k-btn-primary.k-docked{display:none}}`;
 
 const ROLE_WORDS: Record<SpendRole, string> = {
   builder: "Builds", repair: "Repairs", planner: "Plans", reviewer: "Reviews", scout: "Scouting",
@@ -41,20 +49,40 @@ export const NOT_COUNTED: readonly string[] = [
   "A Sort step that failed before saving its answer",
 ];
 
+/** A limit's row: a saved limit, or a target with none yet (Everything, a project) and what it spent so far. */
+export type LimitRowView = { target: string; label: string; budget: BudgetState | null; spentMicrousd: number };
+/** The open limit form: whose, the draft the person typed, and a refusal next to the field or under the form. */
+export type LimitEdit = { target: string; usd?: string | null; stop?: boolean | null; fieldError?: string | null; problem?: string | null };
+
 export type SpendView = {
   month: string; previous: string; next: string | null;
   report: SpendReport;
-  /** This month's limits; null for a past month (a limit is this month's). */
+  /** This month's saved limits (what the budget gate counts today), whichever month is shown. */
   budgets: BudgetState[] | null;
-  /** The plan windows as their providers last reported them (limits-ui.ts), or nothing. */
-  windows: Html;
+  /** Everything and each project with no limit yet, with what it spent this month. */
+  unlimited?: LimitRowView[];
+  /** People and subagents a limit can be added for (Add a limit). */
+  targets?: { value: string; label: string; group: "People" | "Subagents" }[];
+  /** The plan windows as their providers last reported them (limits-ui.ts limitsView), or nothing. */
+  windows: BrowserLimits | null;
   subagentNames: Map<number, string>;
+  /** The limit form that is open, if any. */
+  edit?: LimitEdit | null;
+  /** What this request's approval shows (approvalFactsNow): a step-up asks for the password unless Passwordless is on. */
+  facts?: ApprovalFacts;
+  /** This month's name (YYYY-MM): the limits are this month's. */
+  current?: string;
 };
 
 /** Dollars for the page: a positive amount under a cent reads "<$0.01", never a false $0. */
 export const money = (microusd: number): string => microusd > 0 && microusd < 10_000 ? "<$0.01" : usd(microusd);
 
 const each = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const monthWords = (name: string, style: "long" | "short" = "long"): string =>
+  new Intl.DateTimeFormat("en-US", { month: style, year: "numeric", timeZone: "UTC" }).format(new Date(`${name}-01T00:00:00.000Z`));
+
+/** A limit Settings flags as Needs you: one that pauses work and is at or near its limit. */
+export const limitNeedsYou = (budget: BudgetState): boolean => budget.hardStop && budget.percent >= 90;
 
 /** A line's plan usage in words: the reported usage, or that none was reported. Never $0 for unreported usage. */
 const usageWords = (line: SpendLine): string =>
@@ -66,72 +94,128 @@ const unknownWords = (line: SpendLine): string => {
 };
 const apiWords = (line: SpendLine): string => line.apiMicrousd > 0 ? money(line.apiMicrousd) : "—";
 
-function linesTable(title: string, lines: readonly SpendLine[], name: (key: string) => string, top = 12, detail: (line: SpendLine) => string = () => ""): Html | "" {
-  if (lines.length === 0) return "";
-  return html`<section><h2>${title}</h2><table class="lines"><thead><tr><th></th><th class="n">API dollars</th><th class="n">Plan usage</th><th class="n">Unknown</th></tr></thead><tbody>${
-    lines.slice(0, top).map(line => html`<tr><td>${name(line.key)}${detail(line) === "" ? "" : html` <span class="meta">${detail(line)}</span>`}</td><td class="n" data-label="API dollars" data-amount-kind="api">${apiWords(line)}</td><td class="n" data-label="Plan usage" data-amount-kind="subscription">${usageWords(line)}</td><td class="n" data-label="Unknown" data-amount-kind="unknown">${unknownWords(line)}</td></tr>`)
-  }</tbody></table></section>`;
+const sec = (id: string, title: string, state: string, body: Html, attrs: Html | "" = ""): Html =>
+  html`<section class="k-sec spend-sec" aria-labelledby="spend-${id}"${attrs}><div class="k-secthead"><h3 id="spend-${id}">${title}${state ? html` <small>· ${state}</small>` : ""}</h3></div>${body}</section>`;
+
+/** A breakdown as quiet bars of API dollars; plan usage and unknown cost stay on the line, never added in. */
+function bars(head: string, lines: readonly SpendLine[], name: (key: string) => string, max: number, top = 12, detail: (line: SpendLine) => string = () => ""): Html {
+  const rows = lines.slice(0, top).map(line => {
+    const sub = [detail(line), line.usageCount > 0 ? `plan usage ${usageWords(line)}` : "", line.unknown > 0 || line.estimatedMicrousd > 0 ? `unknown ${unknownWords(line)}` : ""].filter(Boolean).join(" · ");
+    const width = max > 0 ? Math.max(0, Math.min(100, (line.apiMicrousd / max) * 100)) : 0;
+    return html`<div class="spend-bar" role="row"><span class="spend-bar-n" role="cell">${name(line.key)}${sub === "" ? "" : html`<small data-amount-kind="${line.usageCount > 0 ? "subscription" : "unknown"}">${sub}</small>`}</span>\
+<span class="spend-lane" role="cell" aria-hidden="true">${line.apiMicrousd > 0 ? html`<i style="width:${width.toFixed(1)}%"></i>` : ""}</span><span class="spend-bar-v" role="cell" data-amount-kind="api">${apiWords(line)}</span></div>`;
+  });
+  const total = lines.reduce((sum, line) => sum + line.apiMicrousd, 0);
+  return html`<div class="spend-bars" role="table" aria-label="${head}"><div class="spend-bar h" role="row"><span role="columnheader">${head}</span><span role="columnheader"></span><span class="spend-bar-v" role="columnheader">API dollars</span></div>${rows}\
+<div class="spend-bar tot" role="row"><span role="cell">Total</span><span role="cell"></span><span class="spend-bar-v" role="cell">${total > 0 ? money(total) : "—"}</span></div></div>`;
 }
 
-/** A monthly limit's row; `editor` is Settings → Spend's change form, nothing on the Spend page. */
-function limitRow(budget: BudgetState, nameOfSubagent: (key: string) => string, editor: Html | ""): Html {
-  const width = Math.min(100, Math.max(0, budget.percent));
-  const over = budget.spentMicrousd >= budget.limitMicrousd;
-  const label = budgetLabel(budget, budget.scope === "subagent" ? nameOfSubagent(budget.key) : undefined).replace(/'s$/, "");
-  return html`<div class="budget${over ? " over" : ""}" data-budget="${budget.id}"><span class="name">${label}</span><span class="figures">${money(budget.spentMicrousd)} of ${usd(budget.limitMicrousd)} · ${budget.percent}%</span><span class="bar" aria-hidden="true"><span style="width:${width}%"></span></span><span class="meta">${over && budget.hardStop ? "Used up: new API work waits until next month or a higher limit." : budget.hardStop ? "Pauses new API work at 100%." : "Alerts only."}${budget.unpriced > 0 ? ` ${budget.unpriced} without a price.` : ""}</span>${editor}</div>`;
+const editHref = (target: string, month: string, current: string): string =>
+  `/spend?${month === current ? "" : `month=${month}&`}edit=${encodeURIComponent(target)}`;
+
+/** The open limit form, under its row: amount and pause, validated next to the field before any password; saving
+ * is a step-up (/spend/budget proves the password again, in the write). */
+function limitForm(row: LimitRowView | null, edit: LimitEdit, view: SpendView, targets: SpendView["targets"]): Html {
+  const id = `limit-${edit.target.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 60) || "new"}`;
+  const facts = view.facts ?? { passwordless: false, remembered: false };
+  const amount = edit.usd ?? (row?.budget ? String(Math.round(row.budget.limitMicrousd / 1_000_000)) : "");
+  const stop = edit.stop ?? row?.budget?.hardStop ?? true;
+  const choose = row === null && targets !== undefined
+    ? field({ id: `${id}-for`, label: "For", control: html`<span class="k-selw wide"><select class="k-sel" id="${id}-for" name="target" required>${(["People", "Subagents"] as const).map(group => {
+      const members = targets.filter(one => one.group === group);
+      return members.length === 0 ? "" : html`<optgroup label="${group}">${members.map(one => html`<option value="${one.value}">${one.label}</option>`)}</optgroup>`;
+    })}</select></span>` })
+    : "";
+  const password = approvalAsk("step-up", facts) === "password"
+    ? field({ id: `${id}-pw`, label: "Your password", control: input({ id: `${id}-pw`, name: "password", type: "password", attrs: { autocomplete: "current-password", required: true } }) })
+    : "";
+  const back = view.month === view.current ? "/spend" : `/spend?month=${view.month}`;
+  const body = html`${choose}<div class="spend-edit-row">${field({ id: `${id}-usd`, label: "Monthly limit (US dollars)", error: edit.fieldError ?? null,
+    control: input({ id: `${id}-usd`, name: "usd", value: amount, error: Boolean(edit.fieldError), attrs: { inputmode: "numeric", autocomplete: "off", "data-spend-usd": "", autofocus: true } }) })}\
+<div class="k-checks"><label><input type="checkbox" name="stop" value="1"${stop ? html` checked` : ""}>Pause new API work at the limit</label></div></div>\
+${note(`Unchecked means alerts only. Plan usage never counts toward a limit. ${termsOf("step-up", facts)}`)}${password}\
+${acts(btn("Save limit", { variant: "primary", type: "submit", docked: true, attrs: { name: "action", value: "save" } }),
+    row?.budget ? btn("Remove limit", { variant: "ghost", type: "submit", attrs: { name: "action", value: "remove", formnovalidate: true, "data-spend-remove": "" } }) : "",
+    btn("Cancel", { variant: "ghost", href: back }))}${edit.problem ? notice(edit.problem) : ""}`;
+  return postForm("/spend/budget", body, { attrs: { class: "spend-edit", id, "data-spend-limit": "", novalidate: true }, hidden: row === null ? {} : { target: row.target } });
 }
 
-export function spendHtml(view: SpendView, notice: { said?: string | null; problem?: string | null }): Html {
-  const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
-  const { totals } = view.report;
+function limitRow(row: LimitRowView, view: SpendView, current: string, open: LimitEdit | null): Html {
+  const budget = row.budget;
+  const hot = budget !== null && limitNeedsYou(budget);
+  const over = budget !== null && budget.spentMicrousd >= budget.limitMicrousd;
+  const hint = budget === null ? "No limit." : over && budget.hardStop ? "Used up: new API work waits until next month or a higher limit."
+    : `${budget.hardStop ? "Pauses new API work at the limit." : "Alerts only."}${budget.unpriced > 0 ? ` ${each(budget.unpriced, "piece")} of work without a price.` : ""}`;
+  const fig = budget === null ? `${money(row.spentMicrousd)} so far` : `${money(budget.spentMicrousd)} of ${usd(budget.limitMicrousd)} · ${budget.percent}%`;
+  const action = open !== null ? "" : btn(budget === null ? "Set a limit" : "Edit limit", { sm: true, href: editHref(row.target, view.month, current) });
+  const meter = budget === null ? "" : html`<span class="spend-meter${over ? " over" : ""}" role="meter" aria-valuemin="0" aria-valuemax="${budget.limitMicrousd}" aria-valuenow="${budget.spentMicrousd}" aria-label="${row.label}: ${fig}"><i style="width:${Math.min(100, Math.max(0, budget.percent))}%"></i></span>`;
+  return html`<div class="spend-lim"${budget === null ? "" : html` data-budget="${budget.id}"`}><div class="spend-lim-h"><span class="spend-lim-l"><span class="spend-lim-t">${row.label}${hot ? chip("Needs you", "needs") : ""}</span><span class="spend-lim-x">${hint}</span></span>\
+<span class="spend-fig">${fig}</span><span class="spend-lim-a">${action}</span></div>${meter}${open === null ? "" : limitForm(row, open, view, undefined)}</div>`;
+}
+
+export function spendHtml(view: SpendView, said: { said?: string | null; problem?: string | null }): Html {
+  const current = view.current ?? view.month;
   const nameOfSubagent = (key: string) => view.subagentNames.get(Number(key)) ?? `Subagent ${key}`;
+  const edit = view.edit ?? null;
+  const saved: LimitRowView[] = (view.budgets ?? []).map(budget => ({ target: `${budget.scope}:${budget.key}`, budget, spentMicrousd: budget.spentMicrousd,
+    label: budget.scope === "installation" ? "Everything" : budget.scope === "project" ? projectName(budget.key) : budgetLabel(budget, budget.scope === "subagent" ? nameOfSubagent(budget.key) : undefined).replace(/'s$/, "") }));
+  // The limit Settings flags (Needs you) sits first; then the saved limits, then what has none yet.
+  const rows = [...saved.filter(one => one.budget !== null && limitNeedsYou(one.budget)), ...saved.filter(one => one.budget === null || !limitNeedsYou(one.budget)), ...(view.unlimited ?? [])];
+  const openFor = (row: LimitRowView) => edit !== null && edit.target === row.target ? edit : null;
+  const targets = view.targets ?? [];
+  const adding = edit !== null && !rows.some(row => row.target === edit.target) && targets.length > 0 ? edit : null;
+  const add = targets.length === 0 ? "" : html`<div class="spend-lim"><div class="spend-lim-h"><span class="spend-lim-l"><span class="spend-lim-t">A person or a subagent</span><span class="spend-lim-x">A limit for one person’s or one subagent’s work.</span></span><span></span>\
+<span class="spend-lim-a">${adding === null ? btn("Add a limit", { sm: true, href: editHref("new", view.month, current) }) : ""}</span></div>${adding === null ? "" : limitForm(null, adding, view, targets)}</div>`;
+  const status = said.problem ? notice(said.problem) : said.said ? html`<p class="k-note" role="status">${said.said}</p>` : "";
+  const limits = view.budgets === null ? "" : sec("limits", "Monthly limits", monthWords(current, "long").split(" ")[0]!, html`${status}${rows.map(row => limitRow(row, view, current, openFor(row)))}${add}`);
+
+  const { totals } = view.report;
   const usageValue = totals.usageCount === 0 ? "None" : totals.usageMicrousd > 0 ? money(totals.usageMicrousd) : "Not reported";
   const usageMeta = totals.usageCount === 0 ? "No plan usage recorded"
     : totals.usageMicrousd > 0 ? `of usage at API prices${totals.usageUnreported > 0 ? ` · ${each(totals.usageUnreported, "piece")} of work not reported` : ""}` : `${each(totals.usageCount, "piece")} of work`;
   const unknownValue = totals.unknown === 0 ? "None" : String(totals.unknown);
   const unknownMeta = [totals.unknown > 0 ? `${totals.unknown === 1 ? "piece" : "pieces"} of work with billing not proved or cost not recorded` : "Nothing with an unknown cost",
     ...(totals.estimatedMicrousd > 0 ? [`counted as ${money(totals.estimatedMicrousd)} (estimated)`] : [])].join(" · ");
-  const figures = html`<section class="spend-figures" aria-label="This month">\
-<div class="spend-figure" data-amount-kind="api" data-microusd="${totals.apiMicrousd}"><h2>API dollars</h2><p class="value">${money(totals.apiMicrousd)}</p><p class="meta">Recorded charges to API keys</p></div>\
-<div class="spend-figure" data-amount-kind="subscription" data-microusd="${totals.usageMicrousd}" data-unreported="${totals.usageUnreported}"><h2>Plan usage</h2><p class="value">${usageValue}</p><p class="meta">${usageMeta}</p></div>\
-<div class="spend-figure" data-amount-kind="unknown" data-count="${totals.unknown}" data-estimated-microusd="${totals.estimatedMicrousd}"><h2>Unknown</h2><p class="value">${unknownValue}</p><p class="meta">${unknownMeta}</p></div></section>`;
-  const limits = view.budgets === null ? "" : html`<section><h2>Monthly limits</h2>${view.budgets.length === 0 ? html`<p class="meta">No monthly limits. <a href="/settings/spend">Set a limit</a></p>`
-    : html`${view.budgets.map(budget => limitRow(budget, nameOfSubagent, ""))}<p class="meta"><a href="/settings/spend">Change limits</a> · Evals never count toward a limit.</p>`}${view.windows}</section>`;
-  const runs = view.report.topRuns.length === 0 ? "" : html`<section><h2>Most expensive runs</h2><table><thead><tr><th>Task</th><th>Run</th><th>Model</th><th class="n">API dollars</th></tr></thead><tbody>${
-    view.report.topRuns.map(run => html`<tr data-run="${run.runId}"><td><a href="${taskHref(run.taskId)}">${run.taskId}</a>${run.project === null ? "" : html` <span class="meta">${projectName(run.project)}</span>`}</td><td><a href="${runHref(run.runId)}">${ROLE_WORDS[run.role]} ${run.runId}</a></td><td>${run.provider} · ${run.model}</td><td class="n">${money(run.microusd)}</td></tr>`)
-  }</tbody></table></section>`;
-  const notCounted = html`<section class="spend-not-counted" data-not-counted><h2>Not counted here</h2><ul>${NOT_COUNTED.map(one => html`<li>${one}</li>`)}</ul></section>`;
-  return html`<article class="spend"><div class="spend-head"><h1>Spend</h1><p class="spend-month"><a href="/spend?month=${view.previous}">← ${view.previous}</a><strong>${view.month}</strong>${view.next === null ? "" : html`<a href="/spend?month=${view.next}">${view.next} →</a>`}<span class="meta">UTC month</span><a href="/spend?month=${view.month}&amp;format=csv" download>CSV</a></p></div>${note}${figures}${limits}${
-    linesTable("By project", view.report.byProject, projectName)}${
-    linesTable("By model", view.report.byModel, key => key, 12, line => line.chosen.length === 0 ? "" : `chosen as ${line.chosen.join(", ")}`)}${
-    linesTable("By role", view.report.byRole, key => ROLE_WORDS[key as SpendRole] ?? key)}${
-    linesTable("By person", view.report.byPerson, key => key)}${runs}${notCounted}</article>`;
+  const label = monthWords(view.month, "long");
+  const figures = html`<section class="spend-sum" aria-label="${label}">\
+<div data-amount-kind="api" data-microusd="${totals.apiMicrousd}"><span class="spend-sum-k">API dollars · ${label}${view.month === current ? " so far" : ""}</span><span class="spend-sum-v">${money(totals.apiMicrousd)}</span><span class="spend-sum-x">Recorded charges to API keys</span></div>\
+<div data-amount-kind="subscription" data-microusd="${totals.usageMicrousd}" data-unreported="${totals.usageUnreported}"><span class="spend-sum-k">Plan usage</span><span class="spend-sum-v">${usageValue}</span><span class="spend-sum-x">${usageMeta}</span></div>\
+<div data-amount-kind="unknown" data-count="${totals.unknown}" data-estimated-microusd="${totals.estimatedMicrousd}"><span class="spend-sum-k">Unknown</span><span class="spend-sum-v">${unknownValue}</span><span class="spend-sum-x">${unknownMeta}</span></div></section>`;
+  const monthItems = [{ key: view.previous, label: monthWords(view.previous, "short"), href: `/spend?month=${view.previous}` }, { key: view.month, label: monthWords(view.month, "short"), href: `/spend?month=${view.month}` },
+    ...(view.next === null ? [] : [{ key: view.next, label: monthWords(view.next, "short"), href: `/spend?month=${view.next}` }])];
+  const monthBar = html`<div class="spend-month">${segLinks("Month", view.month, monthItems)}${btn("Download CSV", { variant: "ghost", sm: true, href: `/spend?month=${view.month}&format=csv`, attrs: { download: "" } })}</div>`;
+
+  const nothing = view.report.byProject.length === 0 && view.report.byModel.length === 0 && totals.unknown === 0 && totals.usageCount === 0;
+  const max = Math.max(0, ...view.report.byProject.map(line => line.apiMicrousd), ...view.report.byModel.map(line => line.apiMicrousd));
+  const runs = view.report.topRuns.length === 0 ? "" : html`<div class="spend-runs">${view.report.topRuns.map(run => html`<div class="spend-run" data-run="${run.runId}"><span><a class="k-link" href="${taskHref(run.taskId)}">${run.taskId}</a> · <a class="k-link" href="${runHref(run.runId)}">${ROLE_WORDS[run.role]} ${run.runId}</a></span>\
+<span class="k-num">${money(run.microusd)}</span><small>${run.project === null ? "" : `${projectName(run.project)} · `}<span class="k-mono">${run.provider} · ${run.model}</span></small></div>`)}</div>`;
+  const more = view.report.byRole.length === 0 && view.report.byPerson.length === 0 && runs === "" ? "" : disclose("By role, by person and the costliest runs", html`${
+    view.report.byRole.length === 0 ? "" : bars("Role", view.report.byRole, key => ROLE_WORDS[key as SpendRole] ?? key, max)}${
+    view.report.byPerson.length === 0 ? "" : bars("Person", view.report.byPerson, key => key, max)}${runs}`);
+  const breakdowns = nothing ? empty({ title: `Nothing spent in ${label}.` }) : html`${
+    view.report.byProject.length === 0 ? "" : sec("by-project", "By project", "", bars("Project", view.report.byProject, projectName, max))}${
+    view.report.byModel.length === 0 ? "" : sec("by-model", "By model", "", bars("Model", view.report.byModel, key => key, max, 12, line => line.chosen.length === 0 ? "" : `chosen as ${line.chosen.join(", ")}`))}${more}`;
+
+  const windows = view.windows === null || view.windows.tiles.length === 0 ? "" : sec("windows", "Plan windows", "", html`<div class="spend-wins">${view.windows.tiles.map(tile => html`<div class="spend-win ${tile.tone}" data-limit="${tile.key}"${tile.title === null ? "" : html` title="${tile.title}"`}>\
+<div class="spend-win-h"><b>${tile.name} ${tile.window}</b><span class="k-num">${tile.value}${tile.unit}</span></div><span class="spend-meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(tile.percent)}" aria-label="${tile.name} ${tile.window}: ${tile.value}${tile.unit}"><i style="width:${Math.min(100, Math.max(0, tile.percent))}%"></i></span><span class="k-note">${tile.detail}</span></div>`)}</div>`);
+  const notCounted = html`<p class="k-note" data-not-counted>Not counted here: ${NOT_COUNTED.map(one => one.charAt(0).toLowerCase() + one.slice(1)).join("; ")}. Evals never count toward a limit.</p>`;
+
+  const docked = edit !== null && (rows.some(row => row.target === edit.target) || adding !== null)
+    ? dock(btn("Save limit", { variant: "primary", type: "submit", attrs: { form: `limit-${edit.target.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 60) || "new"}`, name: "action", value: "save" } }))
+    : "";
+  const body = html`<div class="spend">${limits}${monthBar}${figures}${breakdowns}${windows}${notCounted}</div>${docked}`;
+  return settingsShell({ group: "spend", title: "Spend", lead: "What agents cost, by project and by model, with the limits that stop them. Dates are UTC months.", body,
+    flags: { spend: saved.some(one => one.budget !== null && limitNeedsYou(one.budget)) } });
 }
 
-export type SpendSettingsView = {
-  budgets: BudgetState[];
-  targets: { value: string; label: string; group: "Everything" | "Projects" | "People" | "Subagents" }[];
-  subagentNames: Map<number, string>;
-  /** Each role's model at the installation, in words. */
-  models: { role: string; model: string }[];
-};
-
-/** Settings → Spend: the monthly limits editor (moved from the Spend page) and a summary of the models in use. */
-export function spendSettingsHtml(view: SpendSettingsView, notice: { said?: string | null; problem?: string | null }): Html {
-  const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
-  const nameOfSubagent = (key: string) => view.subagentNames.get(Number(key)) ?? `Subagent ${key}`;
-  const password = reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label>`);
-  const budgets = view.budgets.map(budget => limitRow(budget, nameOfSubagent, html`<details><summary>Change</summary>${
-    postForm("/spend/budget", html`<label>Monthly limit (US dollars)<input type="number" name="usd" min="1" step="1" value="${Math.round(budget.limitMicrousd / 1_000_000)}" required></label><label class="choice"><input type="checkbox" name="stop" value="1"${budget.hardStop ? html` checked` : ""}> Pause new API work at 100%</label>${password}<button type="submit" name="action" value="save">Save</button> <button type="submit" name="action" value="remove">Remove</button>`,
-      { attrs: { class: "budget-form" }, hidden: { target: `${budget.scope}:${budget.key}` } })}</details>`));
-  const groups = ["Everything", "Projects", "People", "Subagents"] as const;
-  const options = groups.map(group => {
-    const members = view.targets.filter(one => one.group === group);
-    return members.length === 0 ? "" : html`<optgroup label="${group}">${members.map(one => html`<option value="${one.value}">${one.label}</option>`)}</optgroup>`;
-  });
-  const add = html`<details${view.budgets.length === 0 ? html` open` : ""}><summary>Add a limit</summary>${postForm("/spend/budget", html`<label>For<select name="target" required>${options}</select></label><label>Monthly limit (US dollars)<input type="number" name="usd" min="1" step="1" required></label><label class="choice"><input type="checkbox" name="stop" value="1" checked> Pause new API work at 100%</label>${password}<button type="submit" name="action" value="save">Add limit</button>`, { attrs: { class: "budget-form" } })}</details>`;
-  const models = html`<section class="spend-models"><h2>Models</h2>${view.models.length === 0 ? "" : html`<dl>${view.models.map(one => html`<dt>${one.role}</dt><dd>${one.model}</dd>`)}</dl>`}<p><a href="/settings/models">Change models</a></p></section>`;
-  return html`<article class="spend"><div class="spend-head"><h1>Spend</h1><p class="spend-month"><a href="/spend">See this month's spend</a></p></div>${note}<section><h2>Monthly limits</h2>${budgets.length === 0 ? html`<p class="meta">No monthly limits yet.</p>` : budgets}${add}</section>${models}</article>`;
+/** Checks the amount next to its field before any password is asked or the form leaves the page; the server checks
+ * it again. Remove skips it. */
+export function spendScript(): string {
+  return `(function(){document.addEventListener("submit",function(e){var f=e.target;if(!f||!f.matches||!f.matches("form[data-spend-limit]"))return;
+var s=e.submitter;if(s&&s.hasAttribute("data-spend-remove"))return;var u=f.querySelector("[data-spend-usd]");if(!u)return;
+var v=u.value.replace(/[$,\\s]/g,""),ok=/^\\d+$/.test(v)&&+v>=1&&+v<=10000000,err=document.getElementById(u.id+"-err");
+if(ok){u.removeAttribute("aria-invalid");if(err)err.textContent="";u.value=v;return;}
+e.preventDefault();u.setAttribute("aria-invalid","true");if(err)err.textContent="Use a whole number of dollars, at least $1, like 40. Nothing changed.";u.focus();},true);})();`;
 }
 
 /** One row per piece of spend, for a spreadsheet (the command line's `spend --csv`). */
