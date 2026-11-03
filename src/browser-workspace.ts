@@ -347,6 +347,11 @@ export type BrowserTaskView = {
     kind: import("./design/kit.js").ApprovalKind; facts: { passwordless: boolean; remembered: boolean; automatic?: boolean };
     /** When a remembered password stops counting (ISO); the page words it in the viewer's zone. */
     rememberedUntil: string | null; planHtml: string } | null;
+  /** Ship: the pull request's checks, each on one time axis (task ship's twin). Null: no checks read yet. */
+  ship?: { pr: number; head: string; state: "running" | "passed" | "failed"; rows: import("./design/kit.js").TimingRow[]; summary: string; observedAt: string } | null;
+  /** A release's own steps (release status's twin). Null: this task is no release, or nothing recorded. */
+  release?: { tag: string; version: string; pr: number | null; state: "running" | "waiting" | "failed" | "done"; rows: import("./design/kit.js").TimingRow[];
+    headline: string; stopped: { step: string; message: string; at: string } | null; startedAt: string } | null;
   /** How the plan was approved: by whom and how, or the rule that approved it automatically. */
   approved?: { by: string; at: string; automatic: boolean; rule: string | null; how: string; version: string } | null;
   /** ⋯ More actions: the task's secondary acts, the same order on the task and agent pages, destructive last. */

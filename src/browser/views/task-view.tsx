@@ -14,7 +14,7 @@ import type { JourneyStep } from "../../first-run.js";
 import { GuardedHtml } from "../guarded-html.js";
 import {
   KApprove, KButton, KChip, KCount, KDisclose, KDocHeader, KDock, KEmpty, KFacts, KHeadlineChip, KInfoLine, KLinkButton, KNote, KOverlay, KRow, KSelect,
-  KSlots, KSteps, KTabs, KTextarea, useKMenu,
+  KNotice, KSlots, KSteps, KTabs, KTextarea, KTiming, useKMenu,
 } from "../kit/index.js";
 import { RETRY_NOTE_LIMIT } from "../../needs-you.js";
 import { TEXT_LIMITS } from "../../text-limits.js";
@@ -183,6 +183,29 @@ function ApprovalBox({ approve, latest, onEdit }: { approve: NonNullable<Browser
           {onEdit !== null && <KButton label="Edit plan" onClick={onEdit} />}</>}
       terms={changed ? "The plan changed since this page loaded. Reload to see the version you would approve." : terms} />
   </PostForm>;
+}
+
+/** Ship: the pull request's checks on one elapsed-time axis (`toolroll task ship` is its twin). Merge stays the pull
+ * request card's own act. Nothing animates while a check runs: a ring says running. */
+function ShipBox({ ship }: { ship: NonNullable<BrowserTaskView["ship"]> }) {
+  const chip = ship.state === "failed" ? <KChip word="Check failed" tone="failed" /> : ship.state === "running" ? <KChip word="Checks running" tone="live" /> : <KChip word="Checks passed" tone="done" />;
+  return <section className="k-sec" aria-label="Ship" data-ship={ship.state}>
+    <KTiming label={`Pull request #${ship.pr} · checks`} head="Check" chip={chip} rows={ship.rows}
+      foot={<>{ship.summary} on <span className="k-mono">{ship.head}</span> · read <time dateTime={ship.observedAt} title={whenTitle(ship.observedAt)}>{threadWhen(ship.observedAt)}</time></>} />
+  </section>;
+}
+
+/** A release's own steps, in order on one time axis, where it stands in one line, and why it stopped
+ * (`toolroll release status` is its twin). */
+function ReleaseBox({ release }: { release: NonNullable<BrowserTaskView["release"]> }) {
+  const chip = release.state === "failed" ? <KChip word="Failed" tone="failed" /> : release.state === "done" ? <KChip word="Released" tone="done" />
+    : release.state === "waiting" ? <KChip word="Needs you" tone="needs" /> : <KChip word="Releasing" tone="live" />;
+  return <section className="k-sec" aria-label="Release" data-release={release.state}>
+    <h3>{release.headline}</h3>
+    {release.stopped !== null && <KNotice>{release.stopped.step}: {release.stopped.message} Run the same release command again to continue from there.</KNotice>}
+    <KTiming label={`Release ${release.version}`} chip={chip} rows={release.rows}
+      foot={<>Tag <span className="k-mono">{release.tag}</span>{release.pr !== null && <> · pull request #{release.pr}</>} · started <time dateTime={release.startedAt} title={whenTitle(release.startedAt)}>{threadWhen(release.startedAt)}</time></>} />
+  </section>;
 }
 
 /** The status box's heading: the specific thing it is about, the chip already saying its status. */
@@ -561,6 +584,8 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       {/* The older approval region (a blocked or closed approval, a fold of updated terms): installed once, and a new
           region when what it is changes (folded or open, and the exact plan it signs). */}
       {approvalHere && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
+      {view.release != null && <ReleaseBox release={view.release} />}
+      {view.ship != null && <ShipBox ship={view.ship} />}
       {view.lead.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />)}
       {view.questions !== "" && <Html html={view.questions} className="so-task-questions" />}
       <KTabs label="Task" current={tab} onChange={key => showTab(key as PageTab)}
