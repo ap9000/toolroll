@@ -533,7 +533,7 @@ function SortSettings({ sort, others, ready, set }: { sort: SortSettingsValue; o
   const answer = (index: number, change: Partial<SortSettingsValue["answers"][number]>) => set({ ...sort, answers: sort.answers.map((one, at) => at === index ? { ...one, ...change } : one) });
   const note = (index: number, change: Partial<SortSettingsValue["notes"][number]>) => set({ ...sort, notes: sort.notes.map((one, at) => at === index ? { ...one, ...change } : one) });
   return <>
-    {!ready && <p className="rounded-md border border-border px-3 py-2 text-[12.5px]" data-sort-needs-key>Sorting needs an OpenRouter key. <a className="font-medium text-primary underline-offset-4 hover:underline" href="/settings#providers">Add it in Settings</a></p>}
+    {!ready && <p className="rounded-md border border-border px-3 py-2 text-[12.5px]" data-sort-needs-key>Sorting needs an OpenRouter key. <a className="font-medium text-primary underline-offset-4 hover:underline" href="/settings/agents#providers">Add it in Settings</a></p>}
     <Field label="Question">
       <Input value={sort.question} maxLength={300} onChange={event => set({ ...sort, question: event.target.value })} aria-label="Question" />
     </Field>
@@ -717,7 +717,7 @@ const SCRIPT_EXAMPLES: Record<string, string> = {
 /** An email: who it goes to, the subject and the words. */
 function EmailSettings({ email, view, set }: { email: NonNullable<BrowserFlowStage["email"]>; view: BrowserFlowView; set: (email: NonNullable<BrowserFlowStage["email"]>) => void }) {
   return <>
-    {!view.emailReady && <p className="rounded-md border border-border px-3 py-2 text-[12.5px]" data-email-needs-setup>Email isn't set up yet. <a className="font-medium text-primary underline-offset-4 hover:underline" href="/settings#email">Add your mail server in Settings</a></p>}
+    {!view.emailReady && <p className="rounded-md border border-border px-3 py-2 text-[12.5px]" data-email-needs-setup>Email isn't set up yet. <a className="font-medium text-primary underline-offset-4 hover:underline" href="/settings/alerts#email">Add your mail server in Settings</a></p>}
     <Field label="To"><Input value={email.to} maxLength={500} onChange={event => set({ ...email, to: event.target.value })} aria-label="To" /></Field>
     <Field label="Subject"><Input value={email.subject} maxLength={200} onChange={event => set({ ...email, subject: event.target.value })} aria-label="Subject" /></Field>
     <Field label="Email" hint={FILL_INS}><Textarea rows={6} value={email.body} maxLength={8000} onChange={event => set({ ...email, body: event.target.value })} aria-label="Email" /></Field>
@@ -1062,7 +1062,7 @@ function AddTrigger({ view, csrf, open, onResult }: { view: BrowserFlowView; csr
       </div>}
       {kind === "email" && <>
         {setup.mailbox === null
-          ? <p className="rounded-md bg-muted px-2.5 py-2 text-[12.5px]" data-mailbox-missing>Reading mail isn't set up yet. Add your mail server's IMAP address, or sign in with Google, in <a className="underline" href="/settings#email">Settings → Email</a>.</p>
+          ? <p className="rounded-md bg-muted px-2.5 py-2 text-[12.5px]" data-mailbox-missing>Reading mail isn't set up yet. Add your mail server's IMAP address, or sign in with Google, in <a className="underline" href="/settings/alerts#email">Settings → Email</a>.</p>
           : <p className="text-[12.5px] text-muted-foreground">New mail in {setup.mailbox} becomes cards, from now on. The mailbox is only read: nothing is marked or moved.</p>}
         <Field label="Folder"><Input value={v("folder")} onChange={set("folder")} placeholder="INBOX" maxLength={100} /></Field>
         <Field label="Only from (optional)" hint="Addresses or domains, like priya@example.com, example.com."><Input value={v("sender")} onChange={set("sender")} maxLength={300} /></Field>
@@ -2141,7 +2141,7 @@ export function FlowView({ view: initial, csrf }: { view: BrowserFlowView; csrf:
     : "newCard" in overlay.open ? { title: "New card", body: <NewCard view={view} csrf={csrf} apply={result => { apply(result); if (result.ok) close(); }} /> }
     : null;
 
-  return <div className="fl-page" data-flow={view.flow.id}>
+  return <div className="fl-page" data-kit-page data-flow={view.flow.id}>
     {header}
     {phone && !editing && <div className="fl-phonebar">{tabs}</div>}
     {!editing && head}

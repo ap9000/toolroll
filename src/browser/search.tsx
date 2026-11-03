@@ -22,7 +22,7 @@ export const DESTINATIONS: readonly (readonly [title: string, href: string, wher
   ["Knowledge", "/settings/knowledge", "Settings → Agents and models", "instructions project knowledge"],
   ["Skills", "/settings/skills", "Settings → Agents and models", "skill tests"],
   ["Learning", "/settings/learning", "Settings → Agents and models", "lessons"],
-  ["Chat apps", "/settings#settings-chat-apps", "Settings → Chat apps and alerts", "telegram slack discord teams phone"],
+  ["Chat apps", "/settings/alerts#chat-apps", "Settings → Chat apps and alerts", "telegram slack discord teams phone"],
   ["Operating mode", "/mode", "Settings → Approvals and safety", "hands-off mode"],
   ["Approval rules", "/settings/approval", "Settings → Approvals and safety", "automatic approval auto-approve"],
   ["Policy", "/settings/policy", "Settings → Approvals and safety", "protected paths"],

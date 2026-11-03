@@ -63,7 +63,7 @@ export function ProjectsView({ view }: { view: BrowserProjectsView; csrf: string
     setTrigger(header.current?.querySelector("button") ?? null);
     setAdding(true);
   }, [view.add.openOnLoad]);
-  return <div className="w-full">
+  return <div className="w-full" data-kit-page>
     <KPageHeader title={view.choosing ? "New task" : "Projects"} {...(view.choosing ? { ctx: "Choose the project it belongs to" } : {})}
       right={<span ref={header}><KButton variant={primary ? "primary" : "outline"} sm lead="plus" label="Add project" docked={primary} aria-haspopup="dialog" onClick={open} /></span>}
       {...(primary ? {} : { trailing: <KButton variant="ghost" iconOnly="plus" label="Add project" aria-haspopup="dialog" onClick={open} /> })} />

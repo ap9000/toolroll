@@ -53,7 +53,7 @@ export function welcomeSteps(facts: WelcomeFacts): { steps: CheckStep[]; primary
     { key: "password", title: "Your password", text: "You're signed in. Your first login is saved on the computer running Toolroll.", state: "done" },
     { key: "project", title: "Add a project", text: projectDone ? plural(facts.projects, "project added.", "projects added.") : "A git repository agents work in.", state: projectDone ? "done" : "open", action: action("project", order[0]!.link) },
     { key: "agent", title: "Agent and models", text: agentText, state: agentState, action: action("agent", agentLink) },
-    { key: "phone", title: "Alerts on your phone", text: facts.alerts ? "Alerts are on." : "Optional. Hear when something needs you.", state: facts.alerts ? "done" : "open", action: btn("Set up alerts", { sm: true, href: "/settings#phone" }) },
+    { key: "phone", title: "Alerts on your phone", text: facts.alerts ? "Alerts are on." : "Optional. Hear when something needs you.", state: facts.alerts ? "done" : "open", action: btn("Set up alerts", { sm: true, href: "/settings/alerts#this-device" }) },
     { key: "task", title: "Your first task", text: taskDone ? "Filed. Its plan waits for your approval." : "Describe a change and approve its plan.", state: taskDone ? "done" : "open",
       action: projectDone ? action("task", order[2]!.link) : null },
   ];

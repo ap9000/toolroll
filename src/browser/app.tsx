@@ -638,14 +638,16 @@ function useWindowStaysPut() {
   }, []);
 }
 
-/** The views built from the revamp kit; a server page says so with `data-kit-page` on its root. */
-const KIT_VIEWS = new Set(["tasks", "task", "agents", "home", "search"]);
+/** The views built from the revamp kit; a server page says so with `data-kit-page` on its root, or by drawing the kit's
+ * own phone header (`k-ph`: pageHeader, phoneHeader, settingsShell), which the shell's phone header replaces. */
+const KIT_VIEWS = new Set(["tasks", "task", "agents", "home", "search", "projects", "flow"]);
+const KIT_PAGE_MARK = /data-kit-page|class="k-ph"/;
 export function isKitPage(workspace: BrowserWorkspace): boolean {
   if (workspace.team) return false;
   if (workspace.view != null) return KIT_VIEWS.has(workspace.view.kind);
   // The lead chat draws its own top bar (lead-chat.tsx); a result or task opened beside it keeps the older frame.
   if (workspace.conversation && new URL(workspace.path, window.location.origin).pathname === "/chat" && !workspace.focus && !workspace.result) return true;
-  return !workspace.conversation && (workspace.pageHtml ?? "").includes("data-kit-page");
+  return !workspace.conversation && KIT_PAGE_MARK.test(workspace.pageHtml ?? "");
 }
 
 export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
@@ -682,15 +684,17 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   // A flow's canvas needs the whole width.
   // Pages that are themselves a list of work, or need the width (the board's columns, a coding session), go without the side panel.
   const pathname = new URL(workspace.path, window.location.origin).pathname;
-  // The settings frame (docs/plans/settings-revamp.md §4): one column, no Crew sheet, the breadcrumb in the header.
-  const settingsFrame = !workspace.team && !workspace.conversation && isSettingsFrame(pathname);
+  const settingsPath = !workspace.team && !workspace.conversation && isSettingsFrame(pathname);
   // A page built from the revamp kit (src/design/KIT.md) brings its own top bar and spacing: no page padding, no side
   // panel, and no desk header (search lives in the rail); on a phone the shell's header is the phone header.
   const kitPage = isKitPage(workspace);
+  // The older settings frame (docs/plans/settings-revamp.md §4): one column, no Crew sheet, the breadcrumb in the header.
+  // A kit settings page (settingsShell) draws its own frame: the section nav beside one 760px column.
+  const settingsFrame = settingsPath && !kitPage;
   // The side sheet is only ever a page's own: the Ask panel beside a page, a task's Details, or a result opened from the
   // chat. Nothing else repeats the task list beside a page (the rail and Home hold it).
   const hidePanel = settingsFrame || kitPage || !hasWork || pageOnly && !docked && FULL_WIDTH_PAGES.has(pathname);
-  const crumbs = settingsFrame ? (workspace.crumbs ?? []).filter(one => one.href === null || (one.href.startsWith("/") && !one.href.startsWith("//"))) : [];
+  const crumbs = settingsPath ? (workspace.crumbs ?? []).filter(one => one.href === null || (one.href.startsWith("/") && !one.href.startsWith("//"))) : [];
   const [dismissedUpdate, setDismissedUpdate] = useState<string | null>(null);
   const update = workspace.update !== undefined && workspace.update.version !== dismissedUpdate ? workspace.update : null;
   // The demo notice scrolls away with a page; a chat keeps it above.
@@ -754,7 +758,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
           </PostForm>
         </Alert>}
         {phone !== null && <Alert className="so-update so-phone-notice" data-phone-notice>
-          <p><span>Use it from your phone too</span> · <a href="/settings#settings-chat-apps">Set up</a></p>
+          <p><span>Use it from your phone too</span> · <a href="/settings/alerts#chat-apps">Set up</a></p>
           <PostForm action={phone.dismissHref} onSubmit={event => {
             // The same installation-wide put-away as before; the setup stays in Settings → Chat apps.
             event.preventDefault();

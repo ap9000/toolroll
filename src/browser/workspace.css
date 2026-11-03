@@ -133,7 +133,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 }
 /* The settings frame: one 760px column, the breadcrumb in the header, and room under a sticky Save. */
 .so-workspace--settings .so-page-content > * { max-width: var(--so-settings-width, 760px); }
-.so-workspace--settings .so-page-content:has(.kit-save-bar) { scroll-padding-bottom: 80px; }
+.so-page-content:has(.kit-save-bar) { scroll-padding-bottom: 80px; }
 .so-workspace-header .kit-crumbs { min-width: 0; flex-shrink: 1; }
 .so-workspace-header .kit-crumbs ol { flex-wrap: nowrap; font-size: inherit; }
 .so-workspace-header .kit-crumbs li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -945,4 +945,5 @@ details.result-request-open > summary::marker { content: ""; }
 .so-workspace--kit .k-doc :where(.card .card) { border: 0; padding: 0; }
 .k-slot-acts > [data-retry] { flex: 1 1 100%; }
 /* A kit page with a phone dock keeps its last row clear of it. */
-@media (max-width: 760px) { .so-workspace--kit [data-kit-page]:has(.k-dock) { padding-bottom: 76px; } }
+/* Room above the phone dock: a kit view's root, or a server page known as kit by its phone header (app.tsx isKitPage). */
+@media (max-width: 760px) { .so-workspace--kit :is([data-kit-page], [data-workspace-native]:not(:has([data-kit-page]))):has(.k-dock) { padding-bottom: 76px; } }
