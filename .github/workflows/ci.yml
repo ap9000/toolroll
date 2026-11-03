@@ -1,7 +1,8 @@
 name: CI
 
-# Every pull request (docs/plans/test-matrix.md): the full unit suite on Ubuntu and on macOS with Node 24, in four
-# shards each joined by one required job per OS, plus the area lanes: Linux cgroup containment, the Linux fence,
+# Every pull request (docs/plans/test-matrix.md, docs/plans/ci-speed.md): the full unit suite on Ubuntu with Node 24 in
+# six timing-balanced shards, and the macOS lane of it (every file that can behave differently on a Mac, plus a smoke
+# set; scripts/ci-shards.mjs LANES) on macOS in three, each joined by one required job per OS, plus the area lanes: Linux cgroup containment, the Linux fence,
 # Windows Job Object containment and the git lanes. Node 22 (the engines floor) runs before each release instead, in
 # release-candidate.yml; nightly.yml runs everything on main every night; main-push.yml runs this whole workflow on a
 # push to main whose merge commit it can't prove tested (it calls it, so its runs never stand in for these).
@@ -23,15 +24,29 @@ on:
   pull_request:
   # main-push.yml (a merge commit not proven tested) and nightly.yml run this workflow whole.
   workflow_call:
+    inputs:
+      # Which files the macOS shards run: the macOS lane (`macos`, every pull request and main-push.yml) or the whole
+      # suite (`all`, nightly.yml). Never part of a check's name.
+      macos_lane:
+        type: string
+        default: macos
 
 permissions:
   contents: read
 
+# A newer push to a pull request cancels the run on its older head (docs/plans/ci-speed.md, item 5). Never a release-*
+# branch's (each of its runs stands on its own head, and none waits behind another), never a call from main-push.yml or
+# nightly.yml: those get a group of their own run id, so nothing ever cancels them.
+concurrency:
+  group: ci-${{ (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-')) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
-  # The unit suite (`npm run test:all`) in shards: four on Node 24, run side by side (docs/plans/pipeline-speed.md: one
-  # job ran it in 14–21 minutes; a shard runs a quarter). Each shard records the files it ran on the tested commit.
+  # The unit suite (`npm run test:all`) in shards: six on Node 24, run side by side (docs/plans/pipeline-speed.md: one
+  # job ran it in 14–21 minutes). `--shard=i/K` takes the files test/timings.json's plan gives shard i, slowest first
+  # (test/shard-sequencer.ts), so the shards end together. Each shard records the files it ran on the tested commit.
   test-shard:
-    name: node ${{ matrix.node }} · shard ${{ matrix.shard }}/4
+    name: node ${{ matrix.node }} · shard ${{ matrix.shard }}/6
     # Pinned: ubuntu-latest moved to 26.04 (2026-10-21), where bubblewrap runs
     # unprivileged, so the agent-fence and ACP tests take the Linux fence road
     # they were never written for.
@@ -43,7 +58,7 @@ jobs:
       fail-fast: false
       matrix:
         node: ["24"]
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -70,7 +85,7 @@ jobs:
       # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
       # TOOLROLL_REQUIRE_NATIVE: a Linux fence attack that can't run here fails instead of skipping (a skip is not
       # evidence); the join's verifier runs with the same --native policy.
-      - run: npm run test:all -- --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
+      - run: npm run test:all -- --shard=${{ matrix.shard }}/6 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
         env:
           CI: "true"
           TOOLROLL_REQUIRE_NATIVE: linux
@@ -133,12 +148,15 @@ jobs:
         run: |
           verifier=.trusted-base/scripts/ci-shards.mjs
           if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 4 --native linux
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 6 --native linux
 
   # The unit suite on macOS (docs/plans/pipeline-speed.md, item 3a): it runs on the candidate itself, before anything
-  # merges, sharded like the Linux suite, beside it; the release tag no longer runs it again (test-matrix.md). Each shard records the files it ran on the tested commit.
+  # merges, sharded like the Linux suite, beside it; the release tag no longer runs it again (test-matrix.md). On a pull
+  # request it runs the macOS lane (docs/plans/ci-speed.md, item 3: what can behave differently on a Mac, and a smoke
+  # set; Linux runs every file), in three timing-balanced shards; the nightly runs every file here too. Each shard
+  # records the files it ran on the tested commit.
   macos-shard:
-    name: node ${{ matrix.node }} · macos shard ${{ matrix.shard }}/4
+    name: node ${{ matrix.node }} · macos shard ${{ matrix.shard }}/3
     runs-on: macos-latest
     timeout-minutes: 40
     env:
@@ -147,7 +165,7 @@ jobs:
       fail-fast: false
       matrix:
         node: ["24"]
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -169,10 +187,12 @@ jobs:
       # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
       # TOOLROLL_REQUIRE_NATIVE: a Seatbelt attack that can't run on the hosted Mac fails instead of skipping; the join's
       # verifier runs with the same --native policy.
-      - run: npm run test:all -- --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
+      # TOOLROLL_TEST_LANE: vitest.config.ts runs exactly the lane's files (scripts/ci-shards.mjs laneFiles).
+      - run: npm run test:all -- --shard=${{ matrix.shard }}/3 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
         env:
           CI: "true"
           TOOLROLL_REQUIRE_NATIVE: darwin
+          TOOLROLL_TEST_LANE: ${{ inputs.macos_lane || 'macos' }}
       - uses: actions/upload-artifact@v4
         with:
           name: macos-shard-${{ matrix.node }}-${{ matrix.shard }}
@@ -187,7 +207,8 @@ jobs:
   # protection doesn't require it.
   macos:
     name: node ${{ matrix.node }} · macos-latest
-    needs: macos-shard
+    # The Linux shards too: what they skipped must be among the files the macOS lane ran (ci-shards.mjs linuxSkipsProblem).
+    needs: [macos-shard, test-shard]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -223,6 +244,10 @@ jobs:
         with:
           pattern: macos-shard-${{ matrix.node }}-*
           path: ${{ runner.temp }}/macos-downloads
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shard-${{ matrix.node }}-*
+          path: ${{ runner.temp }}/linux-shards
       # The verifier reads shard-<node>-<i> folders; macOS artifacts carry a prefix so their names differ from Linux's.
       - name: The macOS shards' reports, under the verifier's names
         shell: bash
@@ -237,12 +262,16 @@ jobs:
           # (trusted) verifier judges the same relative paths. Nothing else in the reports changes.
           mac_root="/Users/runner/work/${GITHUB_REPOSITORY#*/}/${GITHUB_REPOSITORY#*/}/"
           find "$RUNNER_TEMP/shards" -type f -name '*.json' -print0 | xargs -0 sed -i "s#\"${mac_root}#\"${GITHUB_WORKSPACE}/#g"
-      - name: Every shard ran the whole suite
+      # The lane's files are the trusted verifier's own policy over this checkout (LANES): a candidate can't shrink them.
+      - name: Every shard ran the whole lane
         shell: bash
+        env:
+          LANE: ${{ inputs.macos_lane || 'macos' }}
         run: |
           verifier=.trusted-base/scripts/ci-shards.mjs
           if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 4 --native darwin
+          if ! grep -q "export function linuxSkipsProblem" "$verifier"; then echo "::warning::the base revision's shard verifier has no macOS lane yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 3 --native darwin --lane "$LANE" --linux-reports "$RUNNER_TEMP/linux-shards" --linux-shards 6
 
   # Whether the area lanes below apply (docs/plans/test-matrix.md): every pull request runs them except a narrow
   # documentation-only change (scripts/ci-scope.mjs says exactly which), and every release-* branch and every run that

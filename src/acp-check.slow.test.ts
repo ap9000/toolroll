@@ -8,7 +8,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { runAcpChecks } from "./acp-check.js";
+import { runAcpChecks, runAcpChecksForTests } from "./acp-check.js";
 import { acquire, release } from "./claim.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { register } from "./runner.js";
@@ -82,7 +82,8 @@ describe.skipIf(!FENCED)("an ACP agent's check", () => {
     // The stop step's agent claims a running command but starts none.
     process.env["FAKE_ACP"] = "slow-no-child";
     const id = store.requestAcpCheck({ provider: "opencode", runner: RUNNER, model: "fake/model", by: "alex" }, new Date());
-    await runAcpChecks(job());
+    // Nothing ever starts, so the stop step waits out its whole window: a short one here (the product waits a minute).
+    await runAcpChecksForTests(job(), 3_000);
     expect(store.acpCheck(id)).toMatchObject({ state: "failed" });
     expect(store.acpAttestationFor("opencode", RUNNER)).toBeNull();
   }, 180_000);

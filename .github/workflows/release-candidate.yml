@@ -18,6 +18,11 @@ name: Release candidate
 on:
   pull_request:
   workflow_call:
+    inputs:
+      # Which files the macOS shards run, as in ci.yml: the macOS lane, or the whole suite (`all`, nightly.yml).
+      macos_lane:
+        type: string
+        default: macos
 
 permissions:
   contents: read
@@ -25,7 +30,7 @@ permissions:
 jobs:
   # The unit suite on Node 22, Linux: four shards, exactly as ci.yml runs Node 24's.
   test-shard:
-    name: node 22 · shard ${{ matrix.shard }}/4
+    name: node 22 · shard ${{ matrix.shard }}/6
     # Pinned: ubuntu-latest moved to 26.04 (2026-10-21), where bubblewrap runs
     # unprivileged, so the agent-fence and ACP tests take the Linux fence road
     # they were never written for.
@@ -37,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -64,7 +69,7 @@ jobs:
       # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
       # TOOLROLL_REQUIRE_NATIVE: a Linux fence attack that can't run here fails instead of skipping (a skip is not
       # evidence); the join's verifier runs with the same --native policy.
-      - run: npm run test:all -- --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
+      - run: npm run test:all -- --shard=${{ matrix.shard }}/6 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
         env:
           CI: "true"
           TOOLROLL_REQUIRE_NATIVE: linux
@@ -123,12 +128,14 @@ jobs:
         run: |
           verifier=.trusted-base/scripts/ci-shards.mjs
           if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node 22 --shards 4 --native linux
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node 22 --shards 6 --native linux
 
   # The unit suite on macOS (docs/plans/pipeline-speed.md, item 3a): it runs on the candidate itself, before anything
-  # merges, sharded like the Linux suite, beside it; the release tag no longer runs it again (test-matrix.md). Each shard records the files it ran on the tested commit.
+  # merges, sharded like the Linux suite, beside it; the release tag no longer runs it again (test-matrix.md). It runs
+  # the macOS lane as ci.yml does (docs/plans/ci-speed.md, item 3), the nightly every file. Each shard records the files
+  # it ran on the tested commit.
   macos-shard:
-    name: node 22 · macos shard ${{ matrix.shard }}/4
+    name: node 22 · macos shard ${{ matrix.shard }}/3
     if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
     runs-on: macos-latest
     timeout-minutes: 40
@@ -137,7 +144,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -159,10 +166,12 @@ jobs:
       # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
       # TOOLROLL_REQUIRE_NATIVE: a Seatbelt attack that can't run on the hosted Mac fails instead of skipping; the join's
       # verifier runs with the same --native policy.
-      - run: npm run test:all -- --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
+      # TOOLROLL_TEST_LANE: the macOS lane, as in ci.yml (scripts/ci-shards.mjs laneFiles); Linux runs every file.
+      - run: npm run test:all -- --shard=${{ matrix.shard }}/3 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
         env:
           CI: "true"
           TOOLROLL_REQUIRE_NATIVE: darwin
+          TOOLROLL_TEST_LANE: ${{ inputs.macos_lane || 'macos' }}
       - uses: actions/upload-artifact@v4
         with:
           name: macos-shard-22-${{ matrix.shard }}
@@ -177,7 +186,8 @@ jobs:
   # protection doesn't require it.
   macos:
     name: node 22 · macos-latest
-    needs: macos-shard
+    # The Linux shards too: what they skipped must be among the files the macOS lane ran (ci-shards.mjs linuxSkipsProblem).
+    needs: [macos-shard, test-shard]
     if: ${{ always() && (github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -209,6 +219,10 @@ jobs:
         with:
           pattern: macos-shard-22-*
           path: ${{ runner.temp }}/macos-downloads
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shard-22-*
+          path: ${{ runner.temp }}/linux-shards
       # The verifier reads shard-<node>-<i> folders; macOS artifacts carry a prefix so their names differ from Linux's.
       - name: The macOS shards' reports, under the verifier's names
         shell: bash
@@ -223,9 +237,13 @@ jobs:
           # (trusted) verifier judges the same relative paths. Nothing else in the reports changes.
           mac_root="/Users/runner/work/${GITHUB_REPOSITORY#*/}/${GITHUB_REPOSITORY#*/}/"
           find "$RUNNER_TEMP/shards" -type f -name '*.json' -print0 | xargs -0 sed -i "s#\"${mac_root}#\"${GITHUB_WORKSPACE}/#g"
-      - name: Every shard ran the whole suite
+      # The lane's files are the trusted verifier's own policy over this checkout (LANES): a candidate can't shrink them.
+      - name: Every shard ran the whole lane
         shell: bash
+        env:
+          LANE: ${{ inputs.macos_lane || 'macos' }}
         run: |
           verifier=.trusted-base/scripts/ci-shards.mjs
           if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node 22 --shards 4 --native darwin
+          if ! grep -q "export function linuxSkipsProblem" "$verifier"; then echo "::warning::the base revision's shard verifier has no macOS lane yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node 22 --shards 3 --native darwin --lane "$LANE" --linux-reports "$RUNNER_TEMP/linux-shards" --linux-shards 6

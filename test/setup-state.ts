@@ -29,6 +29,9 @@ process.env.XDG_CONFIG_HOME = join(state, "config");
 process.env.TOOLROLL_NO_UPDATE_CHECK = "1";
 // No worker pass a test runs sweeps the machine's temp folders or processes; the sweep's own tests turn it on.
 process.env.TOOLROLL_STORAGE_SWEEP = "off";
+// The macOS lane (vitest.config.ts TOOLROLL_TEST_LANE) picks the files of this run only: a Vitest a test starts runs
+// exactly the files it names, never filtered by the outer run's lane.
+delete process.env.TOOLROLL_TEST_LANE;
 // No test reads the person's own home: their Codex and Claude sign-ins, settings and sessions stay theirs (and the
 // plane's check fence hides them anyway). A test that wants one makes it in this home.
 process.env.TOOLROLL_TEST_OUTER_HOME ??= process.env.HOME ?? "";

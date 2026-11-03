@@ -342,7 +342,14 @@ export function checkBudget(cores, load = Number.NaN, upgradeLimit = Number.POSI
   const upgradeWorkers = Math.max(1, Math.min(4, upgradeLimit, left));
   // Each part needs at least one: when even that doesn't fit, the parts run one after another instead of together.
   const sequential = 1 + unitWorkers + app + flows + upgradeWorkers > free;
-  return { free, unitWorkers, lanes: { app, flows }, upgradeWorkers, sequential };
+  if (!sequential) return { free, unitWorkers, lanes: { app, flows }, upgradeWorkers, sequential };
+  // One part after another (docs/plans/ci-speed.md, item 6): each part has the budget to itself while it runs, so it
+  // takes all of it — the units every core but the typecheck's, then the journeys' browser lanes (each group its own
+  // world, so groups run side by side), then the upgrade path. At no moment does the check run more than `free`
+  // (0.9.87's check on a machine at load 13 of 24 ran its units on 2 workers and its app journeys one group at a time).
+  const lanesApp = Math.max(1, Math.min(LANES.app, Math.floor(free / 2)));
+  const lanesFlows = Math.max(1, Math.min(LANES.flows, free - lanesApp));
+  return { free, unitWorkers: Math.max(1, free - 1), lanes: { app: lanesApp, flows: lanesFlows }, upgradeWorkers: Math.max(1, Math.min(4, upgradeLimit, free)), sequential };
 }
 
 /** The machine's one-minute load, or NaN where it isn't measured (Windows always reports 0). */
@@ -354,7 +361,7 @@ export const machineBusy = (load, cores) => Number.isFinite(load) && load / core
 /** The load the check ran under, in one line: what it started at, its peak and mean, and the budget it chose. */
 export function loadWords(samples, cores, budget) {
   const measured = samples.filter(Number.isFinite);
-  const shares = `budget ${budget.free} of ${cores} cores: ${budget.unitWorkers} unit workers, ${budget.lanes.app} app and ${budget.lanes.flows} flows browser lanes, ${budget.upgradeWorkers} upgrade workers${budget.sequential ? ", one part after another" : ""}`;
+  const shares = `budget ${budget.free} of ${cores} cores: ${budget.unitWorkers} unit workers, ${budget.lanes.app} app and ${budget.lanes.flows} flows browser lanes, ${budget.upgradeWorkers} upgrade workers${budget.sequential ? ", one part after another, each with the whole budget" : ""}`;
   if (measured.length === 0) return `load: not measured on this platform; ${shares}`;
   const peak = Math.max(...measured), mean = measured.reduce((a, b) => a + b, 0) / measured.length;
   return `load: ${measured[0].toFixed(1)} at start, peak ${peak.toFixed(1)}, mean ${mean.toFixed(1)} on ${cores} cores; ${shares}`;

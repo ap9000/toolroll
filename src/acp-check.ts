@@ -33,8 +33,9 @@ export const CHECK_PROMPTS = {
   stop: "Run the shell command `sleep 120` and wait for it to finish.",
 } as const;
 
-/** How long the stop step waits for the agent to start its command, and for the cancel to be answered. */
-const STOP_WAIT_MS = 60_000;
+/** How long the stop step waits for the agent to start its command, and for the cancel to be answered. Every product
+ * path waits exactly this: runAcpChecks takes no other value (src/acp-check-timing.test.ts holds it). */
+export const STOP_WAIT_MS = 60_000;
 /** How long the agent has to answer the cancel. */
 const CANCEL_ANSWER_MS = 15_000;
 
@@ -57,22 +58,7 @@ export type AcpCheckJob = {
 /** Close what no live watch holds any more, let go of what finished checks still hold, then run this runner's next
  * check, if one is waiting. */
 export async function runAcpChecks(job: AcpCheckJob): Promise<void> {
-  const clock = job.clock ?? (() => new Date());
-  job.store.expireAcpChecks(clock());
-  for (const abandoned of job.store.abandonedAcpChecks(job.runner, clock())) job.store.failAcpCheck(abandoned.id, "interrupted", clock());
-  await settleChecks(job, clock);
-  if (process.platform === "win32") return;
-  const request = job.store.claimAcpCheck(job.runner, job.watch, clock());
-  if (request === null) return;
-  const name = isAcpProvider(request.provider) ? ACP_AGENTS[request.provider].name : request.provider;
-  job.progress?.(`agents: checking ${name} (${request.model}) on ${job.runner}`);
-  try {
-    const verdict = await check(job, request, clock);
-    job.progress?.(`agents: ${name} ${verdict === null ? "passed its check" : `failed its check — ${verdict}`}`);
-  } catch (error) {
-    job.store.failAcpCheck(request.id, `the check stopped: ${error instanceof Error ? error.message : String(error)}`, clock());
-  }
-  await settleChecks(job, clock);
+  return runChecks(job, STOP_WAIT_MS);
 }
 
 /**
@@ -135,8 +121,36 @@ async function settleChecks(job: AcpCheckJob, clock: () => Date): Promise<void> 
   }
 }
 
+/**
+ * Tests only: runAcpChecks with a shorter stop-step window, so a test whose agent never starts its command doesn't
+ * wait out the product's minute. No product code may import it (src/acp-check-timing.test.ts fails if any does); the
+ * job carries no wait of its own, so no CLI, environment or config value can change the product's.
+ */
+export async function runAcpChecksForTests(job: AcpCheckJob, stopWaitMs: number): Promise<void> {
+  return runChecks(job, stopWaitMs);
+}
+
+async function runChecks(job: AcpCheckJob, stopWaitMs: number): Promise<void> {
+  const clock = job.clock ?? (() => new Date());
+  job.store.expireAcpChecks(clock());
+  for (const abandoned of job.store.abandonedAcpChecks(job.runner, clock())) job.store.failAcpCheck(abandoned.id, "interrupted", clock());
+  await settleChecks(job, clock);
+  if (process.platform === "win32") return;
+  const request = job.store.claimAcpCheck(job.runner, job.watch, clock());
+  if (request === null) return;
+  const name = isAcpProvider(request.provider) ? ACP_AGENTS[request.provider].name : request.provider;
+  job.progress?.(`agents: checking ${name} (${request.model}) on ${job.runner}`);
+  try {
+    const verdict = await check(job, request, clock, stopWaitMs);
+    job.progress?.(`agents: ${name} ${verdict === null ? "passed its check" : `failed its check — ${verdict}`}`);
+  } catch (error) {
+    job.store.failAcpCheck(request.id, `the check stopped: ${error instanceof Error ? error.message : String(error)}`, clock());
+  }
+  await settleChecks(job, clock);
+}
+
 /** Run one claimed check; null when it passed (and was published), else why not. */
-async function check(job: AcpCheckJob, request: AcpCheckRequest, clock: () => Date): Promise<string | null> {
+async function check(job: AcpCheckJob, request: AcpCheckRequest, clock: () => Date, stopWaitMs: number): Promise<string | null> {
   const { store } = job;
   const fail = (words: string): string => { store.failAcpCheck(request.id, words, clock()); return words; };
   if (!isAcpProvider(request.provider)) return fail("not an ACP agent");
@@ -176,7 +190,7 @@ async function check(job: AcpCheckJob, request: AcpCheckRequest, clock: () => Da
   const canaryFile = join(stateDir, `acp-check-secret-${request.id}`);
   let verdict: string | null = null;
   try {
-    verdict = await steps(job, request, { ref, leaseId, worktree, canaryFile }, clock);
+    verdict = await steps(job, request, { ref, leaseId, worktree, canaryFile }, clock, stopWaitMs);
   } finally {
     rmSync(canaryFile, { force: true });
   }
@@ -192,16 +206,16 @@ function finishCheckRun(store: Store, run: number, clock: () => Date): void {
 }
 
 /** The two steps; whatever throws, the step's run in flight is finished (cleanup still waits for its processes). */
-async function steps(job: AcpCheckJob, request: AcpCheckRequest, at: StepContext, clock: () => Date): Promise<string | null> {
+async function steps(job: AcpCheckJob, request: AcpCheckRequest, at: StepContext, clock: () => Date, stopWaitMs: number): Promise<string | null> {
   let current: number | null = null;
   try {
-    return await runSteps(job, request, at, clock, run => { current = run; });
+    return await runSteps(job, request, at, clock, run => { current = run; }, stopWaitMs);
   } finally {
     if (current !== null) finishCheckRun(job.store, current, clock);
   }
 }
 
-async function runSteps(job: AcpCheckJob, request: AcpCheckRequest, at: StepContext, clock: () => Date, track: (run: number) => void): Promise<string | null> {
+async function runSteps(job: AcpCheckJob, request: AcpCheckRequest, at: StepContext, clock: () => Date, track: (run: number) => void, stopWaitMs: number): Promise<string | null> {
   const { store } = job;
   const spec = { provider: request.provider as Parameters<typeof invokeAgent>[2]["provider"], model: request.model };
   const ask = (brief: string) => ({ phase: "build" as const, brief, maxTurns: 1, permissionMode: "bypassPermissions", skipPermissions: true, resumeSession: null });
@@ -269,7 +283,7 @@ async function runSteps(job: AcpCheckJob, request: AcpCheckRequest, at: StepCont
     },
     acp: { prompt: "", model: "", expect: null, onControl: (control: AcpControl) => {
       // The agent's word only times the cancel: what the plane itself sees alive is what is graded.
-      const until = Date.now() + STOP_WAIT_MS;
+      const until = Date.now() + stopWaitMs;
       const poll = setInterval(() => {
         if (Date.now() > until) { clearInterval(poll); control.cancel(CANCEL_ANSWER_MS); return; }
         if (!started) return;
