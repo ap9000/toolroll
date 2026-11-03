@@ -27,7 +27,7 @@ import { run as execRun } from "../exec.js";
 import { computeGaps } from "../gaps.js";
 import { LEDGER_CSV_HEADER,ledgerCsvRows } from "../ledger-csv.js";
 import { ledgerBody } from "../ledger-view.js";
-import { agentRowOf, agentsBoardOf, agentFactsFor, sealedDiffOf } from "../agents-board.js";
+import { agentRowOf, agentsListOf, agentFactsFor, sealedDiffOf } from "../agents-board.js";
 import { computersOf, phasesOf, systemOf } from "./agents-computers.js";
 import { markAgentSeen } from "../agent-board.js";
 import { agentsLiveOf } from "../agents-live.js";
@@ -194,13 +194,12 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   // Home (UI revamp wave B): what needs this person, four counts that agree with the Tasks filters, and the lead's box.
   // A token or a restricted session keeps landing on Tasks; a first run with nothing filed yet keeps its checklist in the chat.
   async function homeRedirect(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, now } = ctx;
+    const { who, response, now, project } = ctx;
     if (who.via !== "cookie" || restricted()) return redirect(response, "/work");
     if (firstRunStepsNow(now) !== null && !store.hasAnyWork()) return redirect(response, "/chat");
-    const chrome = chromeFor(null, "none");
+    // One scope for the page and the chrome around it: the project its address names (proved by the router), else all.
+    const chrome = chromeFor(project, "none");
     const projects = chrome.projects ?? [];
-    const named = url.searchParams.get("project");
-    const project = named !== null && projects.some(one => one.path === named) && visible(named) ? named : null;
     const view = homeView({ store, now, access: workAccess(), evidenceRoot, project, projects, chat: chrome.chat === true, canAnswer: who.role === "approver" });
     return sendScreen(response, 200, screen("Home", html`<div data-kit-page><h1>Home</h1><p>${view.say}</p><p><a href="/work">Tasks</a></p></div>`, { chrome, workspace: { view } }));
   }
@@ -508,7 +507,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       const view: BrowserAgentsView = { kind: "agents", groups: [], selected: null, lanes: null, empty: null, live: true };
       return sendScreen(response, 200, screen("Agents", html`<h1>Agents</h1><p class="meta">Live needs JavaScript.</p>`, { chrome: chromeFor(project, "runs"), workspace: { view } }));
     }
-    const groups = agentsBoardOf(store, now, access, who.name, evidenceRoot);
+    const groups = agentsListOf(store, now, access, who.name, evidenceRoot);
     // The installation's parts (what /fleet and /system showed) are for a person with access to all of it, as those
     // pages were; a project-limited person sees their own agents only.
     const installation = !restricted();

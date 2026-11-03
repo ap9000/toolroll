@@ -65,11 +65,19 @@ test("Home's four counts are the Tasks list's own counts, scoped the same way, a
   expect(workspace.needsYou?.count ?? 0).toBe(tasks.needsYou);
   // Two projects: the scope links, and a project outside them is never taken as the scope.
   expect(home.scopes?.map(one => one.label)).toEqual(["All projects", repoA.split("/").pop(), repoB.split("/").pop()]);
-  const scoped = (await page(`/?project=${encodeURIComponent(repoA)}`, cookie)).view as BrowserHomeView;
-  expect(scoped.project).toBe(repoA);
-  expect(scoped.counts[0]!.href).toBe(`/work?project=${encodeURIComponent(repoA)}&view=needs-you`);
-  const outside = (await page(`/?project=${encodeURIComponent("/somewhere/else")}`, cookie)).view as BrowserHomeView;
-  expect(outside.project).toBeNull();
+  // One scope for the page and its chrome: /?project=B scopes Home, the rail's count and the dock's list alike.
+  for (const repo of [repoA, repoB]) {
+    const scopedPage = await page(`/?project=${encodeURIComponent(repo)}`, cookie);
+    const scoped = scopedPage.view as BrowserHomeView;
+    expect(scoped.project).toBe(repo);
+    expect(scoped.counts[0]!.href).toBe(`/work?project=${encodeURIComponent(repo)}&view=needs-you`);
+    expect(scopedPage.needsYou).toMatchObject({ scope: repo, count: scoped.counts[0]!.value, href: scoped.counts[0]!.href });
+  }
+  // Unscoped Home and its chrome both cover every project.
+  expect(workspace.needsYou).toMatchObject({ scope: null, href: "/work?view=needs-you" });
+  // A project outside this workspace is refused, never quietly widened.
+  const outside = await fetch(url(`/?project=${encodeURIComponent("/somewhere/else")}`), { headers: { cookie } });
+  expect(outside.status).toBe(404);
 });
 
 test("before anything is filed, Home is the first-run checklist in the chat; the chat itself stays where it was", async () => {

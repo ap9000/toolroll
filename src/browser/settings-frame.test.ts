@@ -21,6 +21,7 @@ const workspace = (over: Partial<BrowserWorkspace>): BrowserWorkspace => ({
 const live = workspace({
   projectStates: [{ path: "/r/shop", name: "shop", href: shop.href, state: "needs-you", counts: { ...NO_COUNTS, "needs-you": 2 }, tasks: [], more: 0, asks: [] }],
   fresh: { minutes: 9, forget: "/session/forget-password" },
+  needsYouByProject: [{ path: "/r/shop", count: 2 }],
 });
 const sensitive = workspace({ sensitive: true });
 

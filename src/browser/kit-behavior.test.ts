@@ -68,6 +68,24 @@ test("a server form's button shows its busy face once, a second press does nothi
   window.removeEventListener("submit", count);
 });
 
+test("Back also frees a busy button that sits outside its form (form=\"…\", the phone dock's copy), so the next press sends", () => {
+  document.body.innerHTML = `<form id="answer-form" method="post" action="/d/1/answer"></form><div class="k-dock"><button id="dock" class="k-btn" type="submit" form="answer-form" data-k-busy="Answering…"><span class="k-face">Answer</span></button></div>`;
+  const form = $("answer-form") as HTMLFormElement;
+  let sent = 0;
+  const count = (event: Event) => { if (!event.defaultPrevented) sent += 1; event.preventDefault(); };
+  window.addEventListener("submit", count);
+  const press = () => form.dispatchEvent(Object.assign(new Event("submit", { bubbles: true, cancelable: true }), { submitter: $("dock") }));
+  press();
+  expect($("dock").classList.contains("busy")).toBe(true);
+  window.dispatchEvent(new Event("pageshow"));
+  expect($("dock").textContent).toBe("Answer");
+  expect($("dock").classList.contains("busy")).toBe(false);
+  expect(form.hasAttribute("aria-busy")).toBe(false);
+  press();
+  expect(sent).toBe(2);
+  window.removeEventListener("submit", count);
+});
+
 test("Print on a server page opens the browser's print dialog", () => {
   document.body.innerHTML = `<button id="print" class="k-btn" type="button" data-k-print>Print</button>`;
   let printed = 0;

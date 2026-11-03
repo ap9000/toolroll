@@ -96,3 +96,12 @@ test("search finds a setting by any of its words and an old name says where it l
   // Ask the lead never sends from a link: it only starts a draft.
   expect(searchResults(workspace, "why is it slow").find(one => one.title === "Ask the lead")!.href).toBe("/chat?draft=why%20is%20it%20slow");
 });
+
+test("search with nothing found in a truncated read says so and offers every task", async () => {
+  const { SearchView } = await import("./views/search-view.js");
+  const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  const workspace = { crew: [], projects: [], chats: [], navigation: [] } as never;
+  await act(async () => root!.render(createElement(SearchView, { view: { kind: "search", q: "zzqq", tasks: [], truncated: true }, workspace })));
+  expect(host.textContent).toContain("so an older task may not show");
+  expect(host.querySelector('a[href="/work?view=all"]')?.textContent).toBe("Open every task in Tasks");
+});

@@ -5,7 +5,7 @@
  */
 import { useMemo, useState } from "react";
 import type { BrowserSearchView, BrowserWorkspace } from "../../browser-workspace.js";
-import { KChip, KCount, KEmpty, KIcon, KInput, KPageHeader, KRow } from "../kit/index.js";
+import { KChip, KCount, KEmpty, KIcon, KInput, KLinkButton, KPageHeader, KRow } from "../kit/index.js";
 import { GROUP_NAMES, searchIndex, type SearchEntry } from "../search.js";
 
 export function SearchView({ view, workspace }: { view: BrowserSearchView; workspace: BrowserWorkspace | null }) {
@@ -25,12 +25,15 @@ export function SearchView({ view, workspace }: { view: BrowserSearchView; works
     <KPageHeader title="Search" right={null} />
     <div className="so-search-bar">{box}</div>
     {words.length === 0 ? <KEmpty title="Search everything in this Toolroll." text="Tasks, including finished and archived ones, projects, chats, every page and setting, and the old names of things." />
-      : tasks.length === 0 && places.length === 0 ? <KEmpty title={`Nothing matches “${text.trim()}”.`} text="Search looks in task titles and ids, projects, chats, pages and settings." />
+      : tasks.length === 0 && places.length === 0 ? <KEmpty title={`Nothing matches “${text.trim()}” here.`}
+          text={view.truncated ? "Search reads your 100 most recent tasks and 40 most recent archived ones, so an older task may not show. Every task is in Tasks." : "Search looks in task titles and ids, projects, chats, pages and settings."}
+          {...(view.truncated ? { action: <KLinkButton sm label="Open every task in Tasks" href="/work?view=all" /> } : {})} />
       : <div className="so-search-results" aria-live="polite">
         {tasks.length > 0 && <><h2 className="k-grp">Tasks<KCount n={tasks.length} /></h2>
           {tasks.map(one => <KRow key={one.id} href={one.href} chip={<KChip word={one.chip.word} tone={one.chip.tone} />} title={one.title}
             desc={one.archived ? "Archived" : ""} meta={<>{one.project && <span>{one.project}</span>}<span className="k-num">{one.age}</span></>} />)}
-          {view.truncated && <p className="so-search-note">Search reads your most recent tasks. <a className="k-link" href="/work">Every task is in Tasks</a>.</p>}</>}
+          </>}
+        {view.truncated && <p className="so-search-note">Search reads your 100 most recent tasks and 40 most recent archived ones. <a className="k-link" href="/work?view=all">Every task is in Tasks</a>.</p>}
         {kinds.map(kind => {
           const hits = places.filter(one => one.kind === kind);
           return hits.length === 0 ? null : <div key={kind}><h2 className="k-grp">{GROUP_NAMES[kind]}<KCount n={hits.length} /></h2>

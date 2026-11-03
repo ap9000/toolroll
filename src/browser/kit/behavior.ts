@@ -327,13 +327,15 @@ export function installKitBehavior(): void {
   });
   window.addEventListener("pageshow", () => {
     for (const form of document.querySelectorAll<HTMLFormElement>("form[aria-busy=true]")) {
-      const button = form.querySelector<HTMLButtonElement>("button.busy[data-k-busy]");
-      if (button === null) continue;
+      // Every busy button the form owns, its own and any outside it tied to it by form="…" (a phone dock's copy).
       form.removeAttribute("aria-busy");
-      button.classList.remove("busy");
-      const face = button.querySelector(".k-face");
-      const saved = savedFaces.get(button);
-      if (face !== null && saved !== undefined) face.replaceChildren(...saved);
+      for (const button of Array.from(form.elements)) {
+        if (!(button instanceof HTMLButtonElement) || !button.classList.contains("busy") || button.dataset["kBusy"] === undefined) continue;
+        button.classList.remove("busy");
+        const face = button.querySelector(".k-face");
+        const saved = savedFaces.get(button);
+        if (face !== null && saved !== undefined) face.replaceChildren(...saved);
+      }
     }
   });
   document.addEventListener("keydown", trapTab, true);

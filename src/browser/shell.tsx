@@ -48,12 +48,11 @@ function Destinations({ workspace, needs }: { workspace: BrowserWorkspace; needs
 /** The projects in view, each with what needs this person there (the live project summary, when the page has it). */
 function RailProjects({ workspace, states, current }: { workspace: BrowserWorkspace; states: BrowserProjectState[] | null; current: string | null }) {
   const rows = states !== null && states.length > 0
-    ? states.filter(one => one.path !== null && !one.others).map(one => ({ key: one.path!, name: one.name, href: one.href, needs: one.counts["needs-you"] }))
+    ? states.filter(one => one.path !== null && !one.others).map(one => ({ key: one.path!, name: one.name, href: one.href, needs: 0 }))
     : workspace.projects.map(one => ({ key: one.path, name: one.name, href: one.href, needs: 0 }));
   if (rows.length === 0) return null;
-  // Each project's figure is the one Needs-you count for that project, when the page carries it.
-  const counted = workspace.needsYouByProject;
-  if (counted) for (const row of rows) row.needs = counted.find(one => one.path === row.key)?.count ?? 0;
+  // Each project's figure is only ever the one Needs-you count for that project (never the summary's own sum).
+  for (const row of rows) row.needs = workspace.needsYouByProject?.find(one => one.path === row.key)?.count ?? 0;
   return <nav aria-label="Projects" className="so-rail-projects" data-live data-sidebar-slot="projects">
     <p className="so-rail-h">Projects</p>
     {rows.map(row => <a key={row.key} className="so-nav so-nav-sub" href={row.href} aria-current={row.key === current ? "true" : undefined} title={row.name}>

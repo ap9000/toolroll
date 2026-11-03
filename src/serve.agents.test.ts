@@ -77,6 +77,20 @@ afterEach(async () => {
 });
 
 describe("the Agents board", () => {
+  test("a running planner is on the list too, under Working, never \"No agents\"", async () => {
+    const cookie = await login("alex", alexToken);
+    store.createTask({ id: "t-plan", title: "Plan the limiter" }, T0);
+    const ref = store.refFor("built-in", "t-plan", "ours").id;
+    store.placeTask(ref, repoA);
+    const taken = acquire(store, ref, "builder-1", { token: "tok-builder-1", now: new Date(), ttlMs: 3_600_000 });
+    if (!taken.ok) throw new Error("claim failed");
+    store.startRun({ taskRef: ref, leaseId: taken.claim.leaseId, runner: "builder-1", branch: "b-plan", worktree, now: new Date(), role: "planner", ...presented(store, ref, "planner") });
+    const view = await board("/agents", cookie);
+    expect(view.empty).toBeNull();
+    const working = view.groups.find(group => group.key === "working");
+    expect(working?.rows.map(row => [row.taskId, row.label])).toEqual([["t-plan", "Planning"]]);
+  });
+
   test("replaces Peek, and groups agents by state in the viewer's own projects", async () => {
     const cookie = await login("alex", alexToken);
     const peek = await fetch(url("/peek"), { headers: { cookie }, redirect: "manual" });

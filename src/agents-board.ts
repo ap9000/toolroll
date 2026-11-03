@@ -348,3 +348,27 @@ export function agentLanesOf(store: Store, now: Date, access: { repos: readonly 
 
   };
 }
+
+/** The word a running planner, scout or reviewer wears on the Agents list (a build keeps its own state word). */
+const ROLE_WORDS: Readonly<Record<string, string>> = { planner: "Planning", scout: "Investigating", reviewer: "Reviewing" };
+/**
+ * The Agents list's every live agent, not only builds (UI revamp wave B): the build board's groups, with each running
+ * planner, scout and reviewer in the admitted projects added under Working (or Needs you when it asks). Reads the
+ * open leases only (store.liveRuns), then each run through the same admitted read the opened view uses.
+ */
+export function agentsListOf(store: Store, now: Date, access: { repos: readonly string[] | null }, account: string, root?: string): { key: AgentGroupKey; label: string; rows: BrowserAgentRow[] }[] {
+  const groups = agentsBoardOf(store, now, access, account, root);
+  const shown = new Set(groups.flatMap(group => group.rows.map(row => row.runId)));
+  const extra: BrowserAgentRow[] = [];
+  for (const run of store.liveRuns(now)) {
+    const role = run.role;
+    if (!(role in ROLE_WORDS) || shown.has(run.id)) continue;
+    const facts = agentFactsFor(store, run.id, access, account);
+    if (facts === null) continue;
+    const row = agentRowOf(store, facts, now, root);
+    extra.push(row.group === "working" || row.group === "stuck" ? { ...row, group: "working", label: ROLE_WORDS[role]! } : row);
+  }
+  if (extra.length === 0) return groups;
+  const all = [...groups.flatMap(group => group.rows), ...extra];
+  return AGENT_GROUPS.map(group => ({ ...group, rows: all.filter(row => row.group === group.key) })).filter(group => group.rows.length > 0);
+}

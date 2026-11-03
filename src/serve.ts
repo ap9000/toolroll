@@ -1029,6 +1029,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
       project = wanted;
     }
+    // Home (UI revamp wave B) shows every project unless its address names one (proved the same way), and the rail's
+    // and the dock's Needs-you count follow that same one scope.
+    if (route.id === 'home') {
+      const wanted = url.searchParams.get('project');
+      if (wanted !== null && (url.searchParams.getAll('project').length !== 1 || !visible(wanted) ||
+          ![...managedRepos(), ...store.listProjects().map(one => one.path)].includes(wanted))) {
+        return refuse(response, who, 404, 'That project is not available in this workspace.', '/');
+      }
+      project = wanted;
+    }
     // Every page's Tasks count covers this one project view, whatever project the page itself shows.
     const facts = requestContext.getStore();
     if (facts !== undefined) facts.lens = project;
