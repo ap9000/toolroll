@@ -1170,8 +1170,11 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const cookie = await login();
     const badgeOf = async (path: string): Promise<{ sidebar: number; navigation: number | undefined; href: string | undefined }> => {
       const html = await page(cookie, path);
-      const tasks = workspaceOf(html).navigation.find(one => one.label === "Tasks");
-      return { sidebar: Number(/<a href="\/work"[^>]*data-waiting="(\d+)"/.exec(html)?.[1]), navigation: tasks?.count, href: tasks?.href };
+      // The rail's Home wears the one Needs-you count (UI revamp wave B); Tasks still links the project in view.
+      const workspace = workspaceOf(html);
+      const tasks = workspace.navigation.find(one => one.label === "Tasks");
+      expect(workspace.needsYou?.count ?? 0, path).toBe(workspace.navigation.find(one => one.label === "Home")?.count ?? 0);
+      return { sidebar: Number(/<a href="\/work"[^>]*data-waiting="(\d+)"/.exec(html)?.[1]), navigation: workspace.navigation.find(one => one.label === "Home")?.count, href: tasks?.href };
     };
     const surfaces = ["/flows/" + flow, "/t/t-b1", "/work", "/chat"];
     // All projects open: every surface counts Needs you across both projects.
