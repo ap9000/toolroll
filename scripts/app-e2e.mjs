@@ -212,10 +212,19 @@ const zone = (x, y = 0) => ({ x, y, w: 260, h: 300, color: "blue" });
 const none = { instructions: null, planning: null, approver: null, message: null, close: null, script: null, sort: null };
 async function addCard(title, details) {
   // New card is the flow's primary until cards wait on you (then Review is); otherwise it is in the More menu.
-  const primary = page.locator('[data-flow-new-card]:visible');
-  if (await primary.count() > 0) await primary.first().click();
-  else { await page.locator("[data-flow-menu]:visible").first().click(); await page.click('.k-menu button:has-text("New card")'); }
-  await page.fill('input[aria-label="Title"]', title);
+  // The primary can turn from New card into Review between looking and pressing (a subagent's card starts waiting on
+  // you, live): whatever opened then is closed and New card is asked for again.
+  const titleField = page.locator('[data-view="flow-drawer"] input[aria-label="Title"]');
+  for (let attempt = 1; ; attempt += 1) {
+    const primary = page.locator('[data-flow-new-card]:visible');
+    if (await primary.count() > 0) await primary.first().click();
+    else { await page.locator("[data-flow-menu]:visible").first().click(); await page.click('.k-menu button:has-text("New card")'); }
+    if (await titleField.waitFor({ timeout: 5_000 }).then(() => true, () => false)) break;
+    if (attempt === 3) throw new Error(`New card didn't open (tried ${attempt} times)`);
+    await page.keyboard.press("Escape");
+    await page.locator('[data-view="flow-drawer"]').waitFor({ state: "detached", timeout: 5_000 }).catch(() => undefined);
+  }
+  await titleField.fill(title);
   if (details) await page.fill('textarea[aria-label="Details"]', details);
   await page.click('button:has-text("Add card")');
   // The card is on the canvas before anything else happens: the canvas re-renders live as a subagent moves cards, and a
@@ -762,13 +771,16 @@ await journey("builds", REAL_MODEL, "A build stops to ask a question the plan le
   cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
   const asked = await until("the builder's question", async () => rows(`SELECT d.id, d.question, d.run FROM decision d JOIN run r ON r.id = d.run JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${id}' AND d.state = 'open'`)[0], { timeoutMs: 600_000, everyMs: 5000 });
   await page.goto(`${base}/d/${asked.id}`);
-  const options = page.locator(`form.option[action="/d/${asked.id}/answer"]`);
+  // The answer box: one choice per option (the recommended one picked), then Answer.
+  const form = page.locator(`form#answer-form[action="/d/${asked.id}/answer"]`);
+  const options = form.locator('label:has(input[name="choice"])');
   await options.first().waitFor({ timeout: 15_000 });
-  const labels = await options.locator('button[type="submit"]').allInnerTexts();
+  const labels = await options.allInnerTexts();
   const pick = labels.findIndex(one => /even/i.test(one));
   if (pick < 0) throw new Error(`no half-to-even option: ${labels.join(" | ")}`);
+  await options.nth(pick).locator('input[name="choice"]').check();
   await shot("decision");
-  await Promise.all([page.waitForNavigation(), options.nth(pick).locator('button[type="submit"]').click()]);
+  await Promise.all([page.waitForNavigation(), form.locator('button[type="submit"]:has-text("Answer")').first().click()]);
   const answered = rows(`SELECT state, answered_by, answered_via FROM decision WHERE id = ${asked.id}`)[0];
   if (answered?.state !== "answered" || answered.answered_by !== "alex" || answered.answered_via !== "web") throw new Error(`the answer wasn't recorded: ${JSON.stringify(answered)}`);
   // The answer admits a fresh build; the parked one stays in the history.
@@ -1835,7 +1847,7 @@ await journey("memory", SCRIPTED, "Subagents remember and learn: Rosa keeps a cu
   // Accepting a looser rule she suggested takes the password, on her page (a chat tap can't).
   // (A password remembered on this computer stands in for it: then the field isn't drawn, and the server still checks.)
   const typed = offered.locator('input[name="password"]');
-  if (await typed.count() > 0) await typed.fill(w.passwords.alex);
+  if (await typed.isVisible()) await typed.fill(w.passwords.alex);
   else if (await page.locator("text=Password remembered").count() === 0) throw new Error("accepting the looser rule asks for no password, and none is remembered");
   await Promise.all([page.waitForNavigation(), offered.locator('button:has-text("Yes, change it")').click()]);
   const rule = JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${mate} AND tool = 'store'`)[0]?.rules_json ?? "{}").refund_order;
