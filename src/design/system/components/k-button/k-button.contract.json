@@ -46,7 +46,10 @@
         "check",
         "alert",
         "more",
-        "file"
+        "file",
+        "list",
+        "board",
+        "panel"
       ],
       "default": "plus",
       "description": "Icon-only: the label becomes aria-label and title."
@@ -65,7 +68,10 @@
         "check",
         "alert",
         "more",
-        "file"
+        "file",
+        "list",
+        "board",
+        "panel"
       ],
       "default": "plus",
       "description": "An icon before the label."

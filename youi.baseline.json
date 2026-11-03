@@ -1,26 +1,26 @@
 {
   "schema": "youi.baseline/v1",
   "project": "toolroll",
-  "recordedAt": "2026-11-03T09:25:46.085Z",
+  "recordedAt": "2026-11-03T11:04:16.136Z",
   "identity": {
     "tool": "youi-scanner/0.1.0",
     "system": {
       "id": "toolroll",
       "version": "1.0.0"
     },
-    "definitions": "d44f573d8c67",
+    "definitions": "38e14fe99a98",
     "design": {
-      "commit": "c71521810bcd4841358e1422021ac76e2b5d1434",
-      "dirty": false
+      "commit": "9b3a101e82442a0781e423a38724dd2fb6879d3d",
+      "dirty": true
     },
     "project": {
-      "commit": "c71521810bcd4841358e1422021ac76e2b5d1434",
-      "dirty": false
+      "commit": "9b3a101e82442a0781e423a38724dd2fb6879d3d",
+      "dirty": true
     }
   },
   "totals": {
-    "errors": 65,
-    "warnings": 115
+    "errors": 62,
+    "warnings": 112
   },
   "entries": [
     {
@@ -34,8 +34,8 @@
         389,
         625,
         715,
-        1079,
-        1080
+        1082,
+        1083
       ]
     },
     {
@@ -842,55 +842,13 @@
       ]
     },
     {
-      "rule": "youi:toolroll/rule/components.no-native-controls",
-      "file": "src/browser/views/task-view.tsx",
-      "text": "<button>",
-      "severity": "warn",
-      "count": 1,
-      "lines": [
-        526
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/color.no-raw-color",
-      "file": "src/browser/views/tasks-view.tsx",
-      "text": "#000",
-      "severity": "error",
-      "count": 3,
-      "lines": [
-        199,
-        199,
-        199
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/components.no-native-controls",
-      "file": "src/browser/views/tasks-view.tsx",
-      "text": "<button>",
-      "severity": "warn",
-      "count": 1,
-      "lines": [
-        172
-      ]
-    },
-    {
-      "rule": "youi:toolroll/rule/tokens.no-arbitrary-values",
-      "file": "src/browser/views/tasks-view.tsx",
-      "text": "text-[12px]",
-      "severity": "warn",
-      "count": 1,
-      "lines": [
-        91
-      ]
-    },
-    {
       "rule": "youi:toolroll/rule/color.no-raw-color",
       "file": "src/browser/workspace.css",
       "text": "box-shadow: rgb(0 0 0 / .04)",
       "severity": "error",
       "count": 1,
       "lines": [
-        160
+        168
       ]
     },
     {
@@ -900,7 +858,7 @@
       "severity": "error",
       "count": 1,
       "lines": [
-        886
+        894
       ]
     },
     {

@@ -10,8 +10,8 @@
  */
 import { attributes, html, joinHtml, passwordlessRendering, postForm, type AttributeValue, type Html, type HtmlValue, type PostFormOptions } from "../html.js";
 import {
-  KIT_ICONS, NOT_FOUND, SETTINGS_GROUPS, STATUS, needsWords, TIMING_WORDS, approvalAsk, chipOfHeadline, dur, termsOf, timingBars,
-  type ApprovalFacts, type ApprovalKind, type ChipTone, type IconShape, type KitIcon, type StatusKey, type TimingRow,
+  KIT_ICONS, NOT_FOUND, SETTINGS_GROUPS, STATUS, STEP_WORDS, TIMING_WORDS, approvalAsk, chipOfHeadline, dur, needsWords, stepsFill, termsOf, timingBars,
+  type ApprovalFacts, type ApprovalKind, type ChipTone, type IconShape, type KitIcon, type StatusKey, type StepItem, type TimingRow,
 } from "../design/kit.js";
 import type { Headline } from "../task-status.js";
 
@@ -79,6 +79,15 @@ export function linkTabs(label: string, current: string, items: readonly TabItem
 /** Filters or views of a list as addresses: the segmented track. */
 export function segLinks(label: string, current: string, items: readonly TabItem[]): Html {
   return html`<nav class="k-seg" aria-label="${label}">${items.map(item => html`<a href="${item.href}"${item.key === current ? html` aria-current="page"` : ""}>${item.label}${item.count ?? ""}</a>`)}</nav>`;
+}
+
+/** Filters or views as addresses with icons (List / Board): each item an icon, its label read aloud. */
+export function iconSegLinks(label: string, current: string, items: ReadonlyArray<{ key: string; label: string; href: string; icon: KitIcon }>): Html {
+  return html`<nav class="k-seg k-seg-icons" aria-label="${label}">${items.map(item => html`<a href="${item.href}" aria-label="${item.label}" title="${item.label}"${item.key === current ? html` aria-current="page"` : ""}>${icon(item.icon)}</a>`)}</nav>`;
+}
+/** A list's text filter (the workspace narrows the rows on the page as it is typed; without it, a GET form). */
+export function filterInput(options: { label: string; name?: string; value?: string; placeholder?: string }): Html {
+  return html`<label class="k-filter">${icon("search", true)}<input type="search"${attributes({ name: options.name, value: options.value, placeholder: options.placeholder ?? options.label, "aria-label": options.label })}></label>`;
 }
 
 // ---- fields -----------------------------------------------------------------------------------------------------
@@ -244,6 +253,22 @@ export function timing(options: { label?: string; chip?: Html; rows: readonly Ti
 <div class="k-timing-b"><div class="k-crow head" aria-hidden="true"><span></span><span>${options.head ?? "Step"}</span><span class="k-crow-lane">Elapsed time</span><span>Status</span><span class="k-crow-s">Time</span></div>${rows}</div>\
 <div class="k-timing-f">${options.foot ?? ""}</div></section>`;
 }
+
+// ---- progress line and board -----------------------------------------------------------------------------------
+
+/** A few named steps on one line, filled up to where the work is. */
+export function steps(items: readonly StepItem[], label = "Progress"): Html {
+  return html`<ol class="k-steps" aria-label="${label}" style="--k-n:${items.length};--k-fill:${stepsFill(items).toFixed(3)}"><span class="k-steps-fill" aria-hidden="true"></span>\
+${items.map(step => html`<li class="k-step ${step.state}"${step.state === "now" || step.state === "live" || step.state === "failed" ? html` aria-current="step"` : ""} aria-label="${step.label}: ${STEP_WORDS[step.state]}${step.sub ? `, ${step.sub}` : ""}"><b aria-hidden="true"></b><span class="k-step-l" aria-hidden="true">${step.label}</span><span class="k-step-s" aria-hidden="true">${step.sub ?? ""}</span></li>`)}</ol>`;
+}
+/** The board's columns; on a phone one at a time (`on`). */
+export const board = (label: string, ...columns: HtmlValue[]): Html => html`<div class="k-board" role="region" aria-label="${label}">${columns}</div>`;
+export function boardCol(options: { label: string; count?: Html; needs?: boolean; on?: boolean; empty: string; cards: readonly Html[] }): Html {
+  return html`<section class="${cls("k-col", options.on && "on")}" aria-label="${options.label}"><h2 class="${cls("k-col-h", options.needs && "needs")}">${options.label}${options.count ?? ""}</h2>\
+${options.cards.length > 0 ? options.cards : html`<p class="k-col-e">${options.empty}</p>`}</section>`;
+}
+export const card = (options: { href: string; title: string; meta: HtmlValue }): Html =>
+  html`<a class="k-card" href="${options.href}"><span class="k-card-t">${options.title}</span><span class="k-card-m">${options.meta}</span></a>`;
 
 // ---- pages ------------------------------------------------------------------------------------------------------
 

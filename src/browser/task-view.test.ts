@@ -20,9 +20,9 @@ describe("the task thread", () => {
       reply("none", "Answered", null),
       reply("words", "Asked for changes", "Also refuse a zero payout."),
     ]), details: false }));
-    expect(page.match(/bg-user-bubble/g)).toHaveLength(1);
+    expect(page.match(/so-thread-quote/g)).toHaveLength(1);
     expect(page).toContain("Also refuse a zero payout.</p>");
-    expect(page).toContain(">Asked for a repair</span>");
+    expect(page).toContain("<b>Asked for a repair</b>");
   });
 });
 

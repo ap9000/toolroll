@@ -9,7 +9,7 @@ import { writesWords } from "../writes-mode.js";
 import { checkAccessWords } from "../check-access.js";
 import { sandboxTermsWords } from "../project-sandbox.js";
 import { ACP_AGENTS, isAcpProfile } from "../acp-agents.js";
-import { type Html, html, htmlString, joinHtml, postForm, replaceMarkup, reauth } from "../html.js";
+import { type Html, html, htmlString, joinHtml, passwordlessRendering, postForm, replaceMarkup, reauth } from "../html.js";
 import { closedQuestionReason, closedQuestionWords } from "../decision.js";
 import { type RunActivity } from "../activity-line.js";
 import { type AgentChoice } from "../agentconfig.js";
@@ -39,7 +39,7 @@ import { agentModelName } from "../model-names.js";
 import { type Phase } from "../provider.js";
 import { type QualityMode,qualityModeTitle } from "../quality.js";
 import { evidenceShortenedWords } from "../result-review.js";
-import { type AcceptanceCriterion, acceptanceToLines, approvalOf, type Scope, scopeAuthorityOf, type UnattendedPermissionMode } from "../scope.js";
+import { type AcceptanceCriterion, acceptanceToLines, approvalOf, freshUntil, type Scope, scopeAuthorityOf, type UnattendedPermissionMode } from "../scope.js";
 import { type Artifact,type CheckProgress,type CoordinatorProposal,type Decision,type ExternalMirror,type Hold,type Incident,type PlanRevisionKind,type PlanRevisionStatus,type Publication,type PublicationGrant,type RepairChainRow,type ReviewRetryState,type RevisionLineage,type Run,type SteerNote,type Store,type Task } from "../store.js";
 import { runCostWords } from "../summary.js";
 import { type TaskControlView } from "../task-control.js";
@@ -255,7 +255,7 @@ function originParts(origin: TaskOrigin): BrowserTaskFact["parts"] {
   return parts;
 }
 
-export function approvalSheetHtml(input: {
+export type ApprovalSheetInput = {
   surface: "task" | "chat";
   action: string;
   csrf: string;
@@ -286,7 +286,37 @@ export function approvalSheetHtml(input: {
   edit: { action: string; draft: URLSearchParams | null; problem: string | null; open: boolean; stepsHref: string | null } | null;
   /** Cockpit B2: this person's password is remembered (when, ISO) and these terms may stand on it. */
   freshSince?: string | null;
-}): Html {
+};
+
+/** The approval sheet: one form that restates every term it signs, the password, and Approve & start. */
+export function approvalSheetHtml(input: ApprovalSheetInput): Html {
+  const parts = approvalSheetParts(input);
+  return joinHtml([
+    postForm(input.action, joinHtml([
+      html`<input type="text" name="username" autocomplete="username" class="visually-hidden" tabindex="-1" aria-hidden="true">`,
+      parts.lead,
+      parts.rows,
+      html`<div class="approval-act" id="${input.surface === "task" ? "approval-confirm" : "chat-approval-confirm"}">`,
+      html`${reauth(html`<label class="approval-password"><span class="visually-hidden">Your password</span><input type="password" name="token" autocomplete="current-password" placeholder="Your password" aria-describedby="${parts.passwordNote}"></label>`)}`,
+      input.freshSince == null ? html`<p class="approval-password-note" id="${parts.passwordNote}">Your password signs this approval.</p>`
+        : html`<p class="approval-password-note" id="${parts.passwordNote}" data-approval-fresh>Your password from ${whenTime(input.freshSince)} is remembered on this computer — leave this blank to approve with it, or type it again.</p>`,
+      html`<button type="submit" data-primary-action>${parts.submit}</button></div>`,
+      html`<p class="approval-after">${parts.after}</p>`,
+      html`<div class="approval-secondary">${parts.editor ?? html`<a class="approval-link" href="${input.editHref}">Edit plan</a>`}<a class="approval-link" href="${input.notNowHref}">Not now</a></div>`,
+      parts.details,
+    ]), {
+      attrs: { class: "approve-form approval-sheet", id: input.surface === "task" ? "approve" : null, "data-sticky": input.sticky },
+      hidden: { nonce: input.nonce, digest: input.digest, ...(input.rebuild == null ? {} : { rebuild: String(input.rebuild) }) },
+      returnTo: input.returnTo,
+    }),
+    parts.editorForm,
+  ]);
+}
+
+/** The approval sheet's parts: what it says first, the signed rows, the in-place editor and its own form, the
+ * details fold, and the words the act and its outcome use. The task page (src/design/KIT.md) shows the rows in its
+ * Plan tab and the act in its approval box; the chat and /next keep the one sheet. */
+export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; rows: Html; editor: Html | null; editorForm: Html | string; details: Html; submit: Html; label: string; after: Html; allowing: string[]; passwordNote: string } {
   const { scope, route } = input;
   // A machine-drafted repair appends its brief to the signed goal; the row
   // shows the goal and one sentence says what the repair fixes. The whole
@@ -448,14 +478,14 @@ export function approvalSheetHtml(input: {
     },
   });
 
-  return joinHtml([
-    postForm(input.action, joinHtml([
-      html`<input type="text" name="username" autocomplete="username" class="visually-hidden" tabindex="-1" aria-hidden="true">`,
+  const lead = joinHtml([
       html`<h2 class="approval-sheet-title">${input.deliverable === "report" ? "The investigation" : "The plan"}</h2>`,
       sentence === null ? "" : html`<p class="approval-revision">${sentence}</p>`,
       input.coordinator === null ? "" : html`<p class="approval-note">An agent filed this: <span class="mono">${input.coordinator.label}</span>${input.coordinator.filedAgo === null ? "" : html`, ${input.coordinator.filedAgo}`}. Nothing runs until you approve, and approving runs its request.</p>`,
       input.deliverable === "report" ? html`<p class="approval-note">Read-only: it reports back and changes nothing in the repository.</p>` : "",
       originNote(input.origin) === null ? "" : html`<p class="approval-note" data-approval-origin>${originNote(input.origin)!}</p>`,
+  ]);
+  const rows = joinHtml([
       html`<dl class="approval-rows">`,
       row("Goal", html`<p class="approval-goal">${goalShown}</p>`),
       row("Changes", changes),
@@ -467,21 +497,8 @@ export function approvalSheetHtml(input: {
       projection === null ? "" : sizeLineHtml(projection),
       who.length === 0 ? "" : html`<p class="approval-who">${who.join(" · ")}</p>`,
       consent,
-      html`<div class="approval-act" id="${input.surface === "task" ? "approval-confirm" : "chat-approval-confirm"}">`,
-      html`${reauth(html`<label class="approval-password"><span class="visually-hidden">Your password</span><input type="password" name="token" autocomplete="current-password" placeholder="Your password" aria-describedby="${passwordNote}"></label>`)}`,
-      input.freshSince == null ? html`<p class="approval-password-note" id="${passwordNote}">Your password signs this approval.</p>`
-        : html`<p class="approval-password-note" id="${passwordNote}" data-approval-fresh>Your password from ${whenTime(input.freshSince)} is remembered on this computer — leave this blank to approve with it, or type it again.</p>`,
-      html`<button type="submit" data-primary-action>${submit}</button></div>`,
-      html`<p class="approval-after">${after}</p>`,
-      html`<div class="approval-secondary">${editor ?? html`<a class="approval-link" href="${input.editHref}">Edit plan</a>`}<a class="approval-link" href="${input.notNowHref}">Not now</a></div>`,
-      details,
-    ]), {
-      attrs: { class: "approve-form approval-sheet", id: input.surface === "task" ? "approve" : null, "data-sticky": input.sticky },
-      hidden: { nonce: input.nonce, digest: input.digest, ...(rebuild === null ? {} : { rebuild: String(rebuild) }) },
-      returnTo: input.returnTo,
-    }),
-    editorForm,
   ]);
+  return { lead, rows, editor, editorForm, details, submit, label: rebuild !== null ? "Approve and build again" : "Approve and start", after, allowing, passwordNote };
 }
 /** Earlier versions of a task still in flight, in plain words: queued
  * while they only wait, running once one has started; null when none. */
@@ -2071,16 +2088,11 @@ export function taskBodyParts(data: {
   // assignment's one action): then it is shown open under the status, never folded.
   const approvalLeads = data.dispatch?.action === "approve-scope" ||
     (data.assignment?.primaryAction?.code === "approve-scope" && data.assignment.primaryAction.target.taskId === task.id);
-  const approveForm =
-    scope === null || approval.approved || data.plan === "requested"
-      ? ""
-      : data.revision !== null && data.revision !== undefined && "problem" in data.revision
-        ? html`<div class="card approve-form" id="approve"><p><strong>This task is waiting on you: approval is blocked.</strong></p><p class="meta">${data.revision.problem} — a revision approves only against a brief that verifies</p></div>`
-        : scope.profileState === "unresolved"
-          ? html`<div class="card approve-form" id="approve"><p><strong>This task is waiting on you: its scope cannot be approved yet.</strong></p>${profileWords(scope)}<p class="ceremony-road"><a class="button-link" href="#scope">Edit the scope to fix it →</a></p></div>`
-        : !consentDoor.open
-          ? consentClosedHtml(task.id, consentDoor, "task")
-        : approvalSheetHtml({
+  // The sheet's terms, when this person can approve them here: the task page's kit approval box (its Plan tab shows
+  // the rows) and the legacy sheet both read these.
+  const sheetInput: ApprovalSheetInput | null =
+    scope === null || approval.approved || data.plan === "requested" || (data.revision != null && "problem" in data.revision) ||
+    scope.profileState === "unresolved" || !consentDoor.open ? null : {
           surface: "task",
           action: `${taskHref(task.id)}/approve`,
           csrf: data.csrf,
@@ -2106,7 +2118,17 @@ export function taskBodyParts(data: {
           edit: data.csrf === "" ? null
             : { action: `${taskHref(task.id)}/scope`, draft: inlineScopeDraft ? data.scopeDraft ?? null : null, problem: inlineScopeDraft ? data.problem : null,
               open: data.editPlan === true, stepsHref: data.planSha != null && data.planDocument !== null ? "#plan-edit" : null },
-        });
+        };
+  const approveForm =
+    scope === null || approval.approved || data.plan === "requested"
+      ? ""
+      : data.revision !== null && data.revision !== undefined && "problem" in data.revision
+        ? html`<div class="card approve-form" id="approve"><p><strong>This task is waiting on you: approval is blocked.</strong></p><p class="meta">${data.revision.problem} — a revision approves only against a brief that verifies</p></div>`
+        : scope.profileState === "unresolved"
+          ? html`<div class="card approve-form" id="approve"><p><strong>This task is waiting on you: its scope cannot be approved yet.</strong></p>${profileWords(scope)}<p class="ceremony-road"><a class="button-link" href="#scope">Edit the scope to fix it →</a></p></div>`
+        : !consentDoor.open
+          ? consentClosedHtml(task.id, consentDoor, "task")
+        : approvalSheetHtml(sheetInput!);
 
   const scopeForm = joinHtml([
     html`<details${scope === null || scopeDraft !== undefined ? html` open` : ""}><summary>${scope === null ? "Write the scope" : "Edit the scope"}${
@@ -2859,6 +2881,9 @@ export function taskBodyParts(data: {
     earlier,
     approval: data.archived != null ? "" : fragmentString(approvalHtml),
     approvalPlacement: approvalLeads ? "lead" : "plan",
+    // The kit's approval box (src/design/KIT.md): the act, by the real rules, with the rows in the Plan tab.
+    approve: data.archived != null || sheetInput === null || dependencyChoiceNeeded || data.csrf === "" ? null : approveKitOf(sheetInput, data.approvalFresh ?? null),
+    approved: scope !== null && approval.approved ? approvedKitOf(scope, approval, data.approvalProof ?? null) : null,
     more,
     confirmStopped: data.csrf !== "" && data.assignment?.primaryAction?.code === "confirm-stopped" && data.assignment.primaryAction.target.runId !== null
       ? { action: `${taskHref(data.assignment.rootId)}/confirm-stopped`, run: data.assignment.primaryAction.target.runId, checked: needsCheck(data.assignment) } : null,
@@ -3057,4 +3082,36 @@ export function releaseCardHtml(taskId: string, release: ReleaseView | null, can
     release.carrying && canStop ? postForm(`${taskHref(taskId)}/stop-carrying`, html`<button type="submit" class="secondary">Stop carrying later commits</button>`, { attrs: { class: "inline" } }) : "",
     html`</div>`,
   ], "\n");
+}
+
+/** The task page's approval box (src/design/KIT.md): what it asks, the act's own form fields, and the facts the
+ * approve control reads to show a password, one click, or nothing. The rows it signs go to the Plan tab (`planHtml`).
+ * These decide only what the page shows: the approve route proves the person, the freshness and the digest again. */
+export function approveKitOf(input: ApprovalSheetInput, freshSince: string | null): NonNullable<BrowserTaskView["approve"]> {
+  const parts = approvalSheetParts(input);
+  const rebuild = input.rebuild ?? null;
+  const after = rebuild !== null ? "builds it again to this plan" : input.deliverable === "report" ? "starts the investigation" : "starts the build";
+  const allowing = parts.allowing.length === 0 ? "" : ` You’re allowing ${parts.allowing.join(", ")}.`;
+  const until = freshSince === null ? null : freshUntil(freshSince);
+  return {
+    action: input.action,
+    fields: { nonce: input.nonce, digest: input.digest, ...(rebuild === null ? {} : { rebuild: String(rebuild) }) },
+    label: parts.label,
+    heading: rebuild !== null ? "The plan changed" : input.deliverable === "report" ? "Investigation ready" : "Plan ready",
+    text: `Approving signs plan version ${input.scope.digest.slice(0, 12)} and ${after}.${allowing}`,
+    kind: "standard",
+    facts: { passwordless: passwordlessRendering(), remembered: until !== null },
+    rememberedUntil: until,
+    planHtml: htmlString(joinHtml([parts.lead, parts.rows, parts.editor ?? "", parts.details, parts.editorForm])),
+  };
+}
+
+/** How an approved plan was approved, for the status box's terms line: by whom and how, or the rule that approved it. */
+export function approvedKitOf(scope: Scope, approval: { approved: true; at: string; by: string } | { approved: false }, proof: { method: string; at: string } | null): NonNullable<BrowserTaskView["approved"]> | null {
+  if (!approval.approved) return null;
+  const basis = scope.approvalBasis ?? null;
+  const rule = basis === "mode" ? "your operating mode for this project" : basis === "grant" ? "its flow, which runs on its own" : basis === "schedule" ? "the schedule you approved"
+    : basis === "auto-green" || basis === "auto-check" ? "this project’s release approval (CI and the release check passed)" : basis === "carried" ? "the release approval it was carried under" : null;
+  const how = approvalProofWords(proof).replace(/^ \(|\)$/g, "");
+  return { by: approval.by, at: approval.at, automatic: rule !== null, rule, how: how === "" ? (rule === null ? "password typed" : "") : how, version: scope.digest.slice(0, 12) };
 }

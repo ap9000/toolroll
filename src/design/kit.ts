@@ -134,6 +134,20 @@ export function timingBars(rows: readonly TimingRow[], scale?: number): Array<{ 
   return rows.map(row => row.st === "q" ? null : { left: (Math.max(0, row.start) / sc) * 100, width: (Math.max(row.dur, sc / 400) / sc) * 100 });
 }
 
+// ---- progress line -----------------------------------------------------------------------------------------------
+
+/** One step on a progress line: done (a check), now (waits on you: amber), live (running: blue), failed, or to do. */
+export type StepState = "done" | "now" | "live" | "failed" | "todo";
+export type StepItem = { label: string; state: StepState; sub?: string };
+/** The words a screen reader hears for a step's state. */
+export const STEP_WORDS: Readonly<Record<StepState, string>> = { done: "done", now: "waiting on you", live: "in progress", failed: "failed", todo: "not started" };
+/** How far the line is filled, 0–1: up to the current step (the first that isn't done), or all of it. */
+export function stepsFill(steps: readonly StepItem[]): number {
+  if (steps.length < 2) return steps.length === 1 && steps[0]!.state === "done" ? 1 : 0;
+  const at = steps.findIndex(step => step.state !== "done");
+  return at === -1 ? 1 : at / (steps.length - 1);
+}
+
 // ---- icons ------------------------------------------------------------------------------------------------------
 
 /** One shape of a 24×24 stroke icon: its element and attributes (data, so each side draws it with its own escaping). */
@@ -163,6 +177,9 @@ export const KIT_ICONS = {
   people: [path("M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"), circle(9, 7, 4), path("M22 21v-2a4 4 0 0 0-3-3.87"), path("M16 3.13a4 4 0 0 1 0 7.75")],
   coin: [circle(12, 12, 10), path("M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"), path("M12 18V6")],
   monitor: [["rect", { x: 2, y: 3, width: 20, height: 14, rx: 2 }], path("M8 21h8"), path("M12 17v4")],
+  list: [path("M8 6h13"), path("M8 12h13"), path("M8 18h13"), path("M3 6h.01"), path("M3 12h.01"), path("M3 18h.01")],
+  board: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], path("M9 3v18"), path("M15 3v18")],
+  panel: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], path("M15 3v18")],
 } as const satisfies Record<string, readonly IconShape[]>;
 export type KitIcon = keyof typeof KIT_ICONS;
 
