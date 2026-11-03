@@ -61,6 +61,10 @@ test("each teammate pairs and unpairs their own phone from the console; a code s
     const samCsrf = /name="csrf" value="([^"]+)"/.exec(samPage)![1]!;
     const samSettings = await (await fetch(`${base}/settings/alerts`, { headers: { cookie: samCookie } })).text();
     expect(samSettings).toContain('href="/settings/telegram"');
+    // A project-limited account sees nothing of the installation's bot: not its id, not its last characters, no form.
+    expect(samSettings).not.toContain("777000");
+    expect(samSettings).not.toContain("7890");
+    expect(samSettings).not.toContain('action="/settings/telegram-token"');
     expect((await post("/settings/telegram-token", { csrf: samCsrf, password: samPassword, token: BOT_TOKEN }, samCookie)).status).toBe(403);
     const samResponse = await post("/settings/telegram/pair", { csrf: samCsrf, password: samPassword }, samCookie);
     expect(samResponse.status).toBe(200);

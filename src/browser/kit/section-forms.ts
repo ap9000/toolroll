@@ -235,9 +235,86 @@ function problemIn(page: string): string | null {
   } catch { return null; }
 }
 
+// ---- drafts kept across the page's own reloads ---------------------------------------------------------------------
+// Saving one section opens the page the server answered with. Every OTHER section with unsaved changes keeps them: its
+// visible, non-secret values are kept for this tab (sessionStorage) and put back when the page comes back, still
+// marked changed. Passwords, secrets and the proof are never kept. A section whose save could not be confirmed gets a
+// note instead of its draft: the page then shows what is stored.
+const DRAFTS = "k-sform-drafts";
+type Kept = { path: string; drafts: Record<string, [string, string][]>; notes: Record<string, string> };
+function readKept(): Kept | null {
+  try { const raw = window.sessionStorage.getItem(DRAFTS); return raw === null ? null : JSON.parse(raw) as Kept; } catch { return null; }
+}
+function writeKept(kept: Kept | null): void {
+  try { if (kept === null) window.sessionStorage.removeItem(DRAFTS); else window.sessionStorage.setItem(DRAFTS, JSON.stringify(kept)); } catch { /* a private window: nothing kept */ }
+}
+/** The values a draft may keep: the visible ones, never a password-type field or the proof. */
+function keepable(form: HTMLFormElement): [string, string][] {
+  const secret = new Set(Array.from(form.querySelectorAll<HTMLInputElement>('input[type="password"], [data-so-secret]')).map(input => input.name));
+  const visible = new Set(visibleNames(form));
+  return entriesOf(form).filter(([name]) => visible.has(name) && !secret.has(name));
+}
+let leaving = false;
+/** Before the page goes on to the server's answer: keep every other changed section, and a note for `unconfirmed`. */
+function keepOthers(saving: SForm, unconfirmed: string | null): void {
+  const drafts: Record<string, [string, string][]> = {};
+  for (const form of Array.from(document.querySelectorAll<SForm>(`${FORM}[data-k-gate][data-dirty]`))) {
+    if (form === saving || !form.id) continue;
+    drafts[form.id] = keepable(form);
+  }
+  const notes: Record<string, string> = unconfirmed !== null && saving.id ? { [saving.id]: unconfirmed } : {};
+  writeKept(Object.keys(drafts).length + Object.keys(notes).length === 0 ? null : { path: window.location.pathname, drafts, notes });
+  leaving = true;
+}
+function setValues(form: HTMLFormElement, entries: readonly [string, string][]): void {
+  const values = grouped(entries);
+  for (const name of visibleNames(form)) {
+    const wanted = values.get(name) ?? [];
+    for (const element of Array.from(form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name="${CSS.escape(name)}"]`))) {
+      if (element instanceof HTMLInputElement && (element.type === "radio" || element.type === "checkbox")) element.checked = wanted.includes(element.value);
+      else if (element instanceof HTMLInputElement && (element.type === "password" || element.hasAttribute("data-so-secret"))) continue;
+      else if (wanted.length > 0) element.value = wanted[0]!;
+    }
+  }
+}
+/** Put back what this tab kept for this page: drafts (still changed) and notes (said next to Save). Once. */
+function restoreKept(): void {
+  const kept = readKept();
+  if (kept === null || kept.path !== window.location.pathname) return;
+  writeKept(null);
+  for (const [id, entries] of Object.entries(kept.drafts)) {
+    const form = document.getElementById(id) as SForm | null;
+    if (!form || !form.matches(FORM)) continue;
+    prep(form);
+    setValues(form, entries);
+    sync(form, true);
+  }
+  for (const [id, words] of Object.entries(kept.notes)) {
+    const form = document.getElementById(id) as SForm | null;
+    if (form && form.matches(FORM)) showNote(form, words);
+  }
+}
+function showNote(form: SForm, message: string): void {
+  const slot = form.querySelector<HTMLElement>(".k-ssave-err");
+  if (!slot) return;
+  const line = document.createElement("p");
+  line.className = "k-notice info";
+  line.setAttribute("role", "status");
+  line.textContent = message;
+  slot.replaceChildren(line);
+}
+
 /** Where the post goes: the pressed button's own formaction (Check again, Remove), else the form's. */
 const actionOf = (form: HTMLFormElement, submitter: HTMLElement | null): string =>
   submitter instanceof HTMLButtonElement && submitter.form === form && submitter.hasAttribute("formaction") ? submitter.formAction : form.action;
+
+/** The post may have landed but its answer never arrived: say so, never "nothing was saved", and show what is stored
+ * now (the page again, other drafts kept) so nobody retries a safety change blind. */
+function unconfirmed(form: SForm): void {
+  const what = clean(form.closest("section")?.querySelector("h3")?.textContent) || "this section";
+  keepOthers(form, `Couldn’t confirm whether ${what} saved. This page now shows what is stored; check it before saving again.`);
+  window.location.reload();
+}
 
 async function post(form: SForm, snapshot: readonly [string, string][], proof: readonly [string, string][], submitter: HTMLElement | null): Promise<void> {
   busy(form, true);
@@ -248,26 +325,47 @@ async function post(form: SForm, snapshot: readonly [string, string][], proof: r
   try {
     response = await fetch(action, { method: "POST", body, credentials: "same-origin", redirect: "follow", headers: { accept: "text/html" } });
   } catch {
-    refused(form, "Couldn’t reach Toolroll, so nothing was saved. Your edits are still here.");
+    unconfirmed(form);
     return;
   }
   const landed = new URL(response.url || action, window.location.href);
-  if (landed.origin !== window.location.origin || landed.pathname === "/login") {
+  // The sign-in gate answers before any handler runs: nothing was done.
+  if (landed.origin === window.location.origin && landed.pathname === "/login") {
     refused(form, "Your sign-in ended, so nothing was saved. Sign in again in another tab; your edits are still here.");
     return;
   }
+  if (landed.origin !== window.location.origin) { unconfirmed(form); return; }
+  // A handler's own refusal: back with ?problem=, or a refusal page answered directly (4xx, no redirect).
   const problem = landed.searchParams.get("problem");
   if (problem) { refused(form, kept(problem)); return; }
-  if (!response.ok) {
+  if (!response.redirected && response.status >= 400 && response.status < 500) {
     const words = problemIn(await response.text().catch(() => ""));
     refused(form, kept(words ?? `Toolroll refused this (${response.status}). Nothing changed`));
     return;
   }
-  // Saved: open what the server answered with, so the page shows what is stored now.
+  // Anything else that isn't a plain success (a server error, the page after a redirect failing) is unconfirmed.
+  if (!response.ok) { unconfirmed(form); return; }
+  // Saved: open what the server answered with, so the page shows what is stored now; other drafts are kept.
   const here = landed.pathname === window.location.pathname;
   const anchor = form.closest("section[id]")?.id;
+  keepOthers(form, null);
   if (response.redirected) window.location.assign(`${landed.pathname}${landed.search}${here && anchor ? `#${anchor}` : ""}`);
   else window.location.reload();
+}
+
+function submitNative(form: SForm, submitter: HTMLElement | null): void {
+  const download = form.hasAttribute("data-k-download");
+  if (!download) keepOthers(form, null);
+  form.kGo = true;
+  try { if (submitter instanceof HTMLButtonElement && submitter.form === form) form.requestSubmit(submitter); else form.requestSubmit(); } finally { form.kGo = false; }
+  if (download) {
+    // A download leaves the page where it is: nothing stays pending or busy, and the typed password is cleared.
+    leaving = false;
+    form.kPending = false;
+    form.kSent = false;
+    busy(form, false);
+    for (const input of Array.from(proofOf(form)?.querySelectorAll<HTMLInputElement>('input[type="password"]') ?? [])) input.value = "";
+  }
 }
 
 function send(form: SForm, snapshot: readonly [string, string][], proof: readonly [string, string][], submitter: HTMLElement | null): void {
@@ -275,16 +373,20 @@ function send(form: SForm, snapshot: readonly [string, string][], proof: readonl
   if (form.hasAttribute("data-k-native")) {
     // The answer is a page of its own: post as a navigation. The page behind the popover was inert, so the form
     // holds exactly the snapshot, plus the proof just typed.
-    // A download leaves the page where it is: nothing stays pending or busy, and the typed password is cleared.
-    const download = form.hasAttribute("data-k-download");
-    if (!download) busy(form, true);
-    form.kGo = true;
-    try { if (submitter instanceof HTMLButtonElement && submitter.form === form) form.requestSubmit(submitter); else form.requestSubmit(); } finally { form.kGo = false; }
-    if (download) {
-      form.kPending = false;
-      form.kSent = false;
-      for (const input of Array.from(proofOf(form)?.querySelectorAll<HTMLInputElement>('input[type="password"]') ?? [])) input.value = "";
+    if (!form.hasAttribute("data-k-download")) busy(form, true);
+    if (form.hasAttribute("data-k-prepare")) {
+      // A page script fills fields the post needs (a push subscription) before it goes: it answers `done` once, with
+      // null to post or with words to show as the refusal. The pending guard holds the whole time.
+      let answered = false;
+      const done = (problem: string | null): void => {
+        if (answered) return;
+        answered = true;
+        if (problem === null) submitNative(form, submitter); else refused(form, kept(problem));
+      };
+      form.dispatchEvent(new CustomEvent("k-prepare", { detail: { done } }));
+      return;
     }
+    submitNative(form, submitter);
     return;
   }
   void post(form, snapshot, proof, submitter);
@@ -344,7 +446,8 @@ function openProof(form: SForm, snapshot: [string, string][], submitter: HTMLEle
 
 function confirmProof(form: SForm): void {
   const proof = proofOf(form);
-  const missing = Array.from(proof?.querySelectorAll<HTMLInputElement>("input[data-k-required]") ?? []).find(input => input.type === "password" && input.value === "");
+  // The prompt is shown only when the proof applies, so its password is required, conditional row or not.
+  const missing = Array.from(proof?.querySelectorAll<HTMLInputElement>('input[type="password"]') ?? []).find(input => input.value === "");
   if (missing) { missing.setCustomValidity("Enter your password."); missing.reportValidity(); missing.focus(); return; }
   const typed = proofEntries(proof);
   form.kSent = true;
@@ -407,8 +510,15 @@ export function installSectionForms(): void {
   });
   // Back to this page from the history: nothing is pending any more.
   window.addEventListener("pageshow", () => {
+    leaving = false;
     for (const form of Array.from(document.querySelectorAll<SForm>(FORM))) { form.kPending = false; form.kSent = false; busy(form, false); }
   });
-  window.addEventListener("standing-orders:workspace-rendered", prepAll);
+  window.addEventListener("standing-orders:workspace-rendered", () => { prepAll(); restoreKept(); });
+  // Leaving with sections changed and not saved asks first (the page's own saves keep them instead).
+  window.addEventListener("beforeunload", event => {
+    if (leaving || document.querySelector(`${FORM}[data-k-gate][data-dirty]`) === null) return;
+    event.preventDefault();
+  });
   prepAll();
+  restoreKept();
 }

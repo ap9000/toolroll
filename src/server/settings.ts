@@ -675,7 +675,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const accounts = minimal || !operator ? null : store.accountFacts().filter(one => one.revokedAt === null);
     const passwordless = minimal ? null : passwordlessSetting(store).on;
     const facts: SettingsFacts = {
-      name: who.name, approver: who.role === "approver", operator, browser: who.via === "cookie",
+      name: who.name, approver: who.role === "approver", operator, browser: who.via === "cookie", installation: !minimal,
       said: url.searchParams.get("said"), problem: url.searchParams.get("problem"),
       theme: requestContext.getStore()?.theme ?? "system", accent: requestContext.getStore()?.accent ?? DEFAULT_ACCENT,
       version: updates?.current ?? (operator ? PACKAGE_VERSION : null),
@@ -694,8 +694,9 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       push,
       digest: digest === null || csrf === "" || chosen?.mode === "quiet" ? null : { every: digest.everyMs === null ? "off" : String(Math.round(digest.everyMs / 60_000)), held: digest.everyMs === null ? null : `${digest.held} routine update${digest.held === 1 ? "" : "s"} held` },
       telegram: {
-        state: hasEnv ? "from the environment" : existing === null ? "not set" : "saved",
-        current: hasEnv ? `set in the environment (${TOKEN_ENV}), which takes precedence over anything saved here` : existing === null ? "not set" : `saved: ${redactToken(existing.token)} (bot ${existing.botId})`,
+        // The installation's bot: no part of it (not even its id or last characters) for a project-limited account.
+        state: minimal ? "" : hasEnv ? "from the environment" : existing === null ? "not set" : "saved",
+        current: minimal ? "" : hasEnv ? `set in the environment (${TOKEN_ENV}), which takes precedence over anything saved here` : existing === null ? "not set" : `saved: ${redactToken(existing.token)} (bot ${existing.botId})`,
         delivery: minimal ? null : telegramDeliveryWords(store, telegramBot), failing: !minimal && telegramTrouble(store, telegramBot),
       },
       email: who.role === "approver" && csrf !== "" && !minimal ? (() => {

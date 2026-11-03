@@ -43,6 +43,8 @@ export type EmailFacts = { set: boolean; host: string; port: number; secure: boo
 export type SettingsFacts = {
   /** The person: an approver (can manage and approve), an instance operator, signed in in a browser. */
   name: string; approver: boolean; operator: boolean; browser: boolean;
+  /** Installation-wide settings are this person's to see: not a project-limited account (the bot token, defaults…). */
+  installation: boolean;
   said: string | null; problem: string | null;
   theme: "system" | "light" | "dark"; accent: string;
   version: string | null;
@@ -322,18 +324,18 @@ function pushSection(facts: SettingsFacts): Html {
       enrol,
     ]) });
 }
-/** Enrolling this device fills the subscription the form posts; it never reads the password beside it. Native post. */
+/** Enrolling this device fills the subscription the form posts; it never reads the password beside it. With the kit's
+ * section forms (section-forms.ts) it answers their `k-prepare` hook after the password is confirmed, so the post
+ * goes exactly once under the pending guard; without them it holds the plain submit, then posts. */
 export function pushScriptOf(facts: SettingsFacts): string | null {
   if (facts.push === null || !facts.push.available) return null;
   return `(function(){` +
     `if(!("serviceWorker" in navigator)||!("PushManager" in window))return;` +
     `var link=document.createElement("link");link.rel="manifest";link.href="/manifest.webmanifest";document.head.appendChild(link);` +
     `navigator.serviceWorker.register("/sw.js",{scope:"/"}).catch(function(){});` +
-    `document.addEventListener("submit",function(event){var form=event.target;if(!form||form.id!=="push-form")return;` +
-    `if(form.dataset.ready==="1")return;` +
-    `event.preventDefault();event.stopImmediatePropagation();var state=document.getElementById("push-state");` +
-    `Notification.requestPermission().then(function(granted){` +
-    `if(granted!=="granted"){if(state)state.textContent="Notifications are blocked for this site in the browser settings.";return;}` +
+    `function fill(form){var state=document.getElementById("push-state");` +
+    `return Notification.requestPermission().then(function(granted){` +
+    `if(granted!=="granted")return "Notifications are blocked for this site in the browser settings.";` +
     `return fetch("/push/key").then(function(r){return r.json();}).then(function(d){` +
     `return navigator.serviceWorker.ready.then(function(reg){` +
     `return reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:Uint8Array.from(atob(d.key.replace(/-/g,"+").replace(/_/g,"/")),function(c){return c.charCodeAt(0);})});});` +
@@ -341,8 +343,14 @@ export function pushScriptOf(facts: SettingsFacts): string | null {
     `form.querySelector("[name=endpoint]").value=sub.endpoint;` +
     `form.querySelector("[name=p256dh]").value=(raw.keys.p256dh||"").replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=+$/,"");` +
     `form.querySelector("[name=auth]").value=(raw.keys.auth||"").replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=+$/,"");` +
-    `form.dataset.ready="1";form.requestSubmit();});` +
-    `}).catch(function(){if(state)state.textContent="Couldn’t subscribe: the browser said no.";});},true);` +
+    `return null;});` +
+    `}).catch(function(){return "Couldn’t subscribe: the browser said no.";}).then(function(problem){if(problem&&state)state.textContent=problem;return problem;});}` +
+    `function wire(){var form=document.getElementById("push-form");if(!form||form.dataset.pushWired)return;form.dataset.pushWired="1";` +
+    `form.setAttribute("data-k-prepare","");` +
+    `form.addEventListener("k-prepare",function(e){fill(form).then(function(problem){e.detail.done(problem);});});` +
+    `form.addEventListener("submit",function(event){if(document.documentElement.classList.contains("k-js")||form.dataset.ready==="1")return;` +
+    `event.preventDefault();fill(form).then(function(problem){if(problem)return;form.dataset.ready="1";form.submit();});});}` +
+    `wire();window.addEventListener("standing-orders:workspace-rendered",wire);` +
     `})();`;
 }
 function emailSection(email: EmailFacts): Html {
@@ -398,7 +406,7 @@ export function alertsGroup(facts: SettingsFacts, flags: Record<string, boolean>
   return settingsShell({
     group: "alerts", title: "Chat apps and alerts", lead: "What reaches you, where, and how.", flags,
     body: joinHtml([answered(facts), legacy, chatAppsSection(facts), reachSection(facts), serviceSection(facts), digestSection(facts), pushSection(facts),
-      facts.phone === null ? "" : phoneSection(facts.phone), facts.email === null ? "" : emailSection(facts.email), facts.approver && facts.browser ? telegramTokenSection(facts) : ""]),
+      facts.phone === null ? "" : phoneSection(facts.phone), facts.email === null ? "" : emailSection(facts.email), facts.approver && facts.browser && facts.installation ? telegramTokenSection(facts) : ""]),
   });
 }
 
