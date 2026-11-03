@@ -46,4 +46,18 @@ describe("the Tasks list", () => {
     expect(board).toContain("Nothing queued.");
     expect(board).not.toContain("data-task-group");
   });
+
+  test("a column with more than it shows says so and opens the rest; a filter over a part says it is a part", () => {
+    const one = row("plan", "decide", "decide", 0, { word: "Plan", tone: "ask" });
+    const board = html(view({ layout: "board", board: [{ key: "needs", label: "Needs you", count: 57, href: "/work?view=needs-you", empty: "Nothing needs you.", rows: [one] }] }));
+    expect(board).toMatch(/data-column-more="needs"><a class="k-link" href="\/work\?view=needs-you">View all 57<\/a>/);
+  });
+
+  test("on a phone the list keeps New task (the dock's primary), the text filter and the task tools", () => {
+    const page = html(view({ tools: [{ label: "Recipes", href: "/recipes" }] }));
+    const phone = /<div class="k-tbp">([\s\S]*?)<\/div><p/.exec(page)?.[1] ?? "";
+    expect(phone).toContain('class="k-filter"');
+    expect(phone).toContain('aria-label="More task tools"');
+    expect(page).toMatch(/<div class="k-dock"><div class="k-dock-primary"><a class="k-btn k-btn-primary"[^>]*href="\/tasks\/new"/);
+  });
 });

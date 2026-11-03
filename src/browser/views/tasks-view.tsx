@@ -7,7 +7,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { BrowserLimits, BrowserTaskRow, BrowserTasksView } from "../../browser-workspace.js";
 import {
-  KBoard, KBoardCol, KButton, KCard, KChip, KCount, KEmpty, KFilter, KGroup, KIcon, KLinkButton, KLinkSeg, KPageHeader, KRow, KSeg, KSelect, useKMenu,
+  KBoard, KBoardCol, KButton, KCard, KChip, KCount, KDock, KEmpty, KFilter, KGroup, KIcon, KLinkButton, KLinkSeg, KPageHeader, KRow, KSeg, KSelect, useKMenu,
 } from "../kit/index.js";
 import { PostForm } from "../ui/post-form.js";
 
@@ -76,6 +76,8 @@ function TaskBoard({ view, match }: { view: BrowserTasksView; match: (row: Brows
     <KBoard label="Tasks by status">{columns.map(one => <KBoardCol key={one.key} label={one.label} count={<KCount n={one.count} ink={one.key === "needs"} />}
       needs={one.key === "needs"} on={column === one.key} empty={one.empty}>
       {one.rows.filter(match).map(row => <KCard key={row.id} href={row.href} title={row.title} meta={<><KChip word={row.word.word} tone={row.word.tone} /><Meta row={row} /></>} />)}
+      {/* A column shows its first cards; its count covers them all, and the list holds the rest. */}
+      {one.count > one.rows.length && <p className="k-col-e" data-column-more={one.key}><a className="k-link" href={one.href}>View all {one.count}</a></p>}
     </KBoardCol>)}</KBoard>
   </>;
 }
@@ -94,6 +96,7 @@ export function TasksView({ view }: { view: BrowserTasksView }) {
   const needle = query.trim().toLowerCase();
   const match = useMemo(() => (row: BrowserTaskRow) => needle === "" || `${row.title} ${row.id}`.toLowerCase().includes(needle), [needle]);
   const rows = view.rows.filter(match);
+  const partial = view.layout === "board" ? (view.board ?? []).some(one => one.count > one.rows.length) : view.pages.next !== null || view.pages.first !== null;
   const current = view.tabs.find(tab => tab.active)?.key ?? (view.archived?.active ? "archived" : "all");
   const project = view.projects?.find(one => one.active)?.key ?? "";
   const statusItems = view.tabs.map(tab => ({ key: tab.key ?? tab.label, label: tab.label, href: tab.href, count: <KCount n={tab.count} ink={tab.key === "needs-you"} /> }));
@@ -116,6 +119,8 @@ export function TasksView({ view }: { view: BrowserTasksView }) {
       {view.layout === "list" && <KSelect aria-label="Status" value={current} onChange={event => { const to = statusChoices.find(one => one.key === event.target.value); if (to) go(to.href); }}
         items={statusChoices.map(one => [one.key, `${one.label} (${one.count})`] as const)} />}
       <KLinkSeg icons label="View" current={view.layout} items={layouts} />
+      <ToolsMenu view={view} />
+      <KFilter label="Filter tasks" value={query} onChange={setQuery} />
     </div>
     {/* The stored-state filter (from an older link or the CLI's --state): said once, with the way back. */}
     {view.states !== undefined && !view.states[0]?.active && <p className="k-foot" data-state-filter>
@@ -126,6 +131,10 @@ export function TasksView({ view }: { view: BrowserTasksView }) {
     {view.layout === "list" && (view.pages.first || view.pages.next) && <p className="k-foot">
       {view.pages.first && <a href={view.pages.first}>First page</a>}{view.pages.first && view.pages.next && " · "}{view.pages.next && <a href={view.pages.next} rel="next">Next page</a>}
     </p>}
+    {/* The text filter narrows what this page loaded, and says so when there is more than it shows. */}
+    {needle !== "" && partial && <p className="k-foot" data-filter-partial>Filtering the tasks loaded here. Search (⌘K) finds every task.</p>}
     {usage && <p className="k-foot" data-usage-summary>Usage: <a href="/spend">{usage}</a></p>}
+    {/* On a phone the top bar's New task is the page's one primary, in the dock. */}
+    <KDock><KLinkButton variant="primary" lead="plus" label={view.newTask.label} href={view.newTask.href} /></KDock>
   </div>;
 }

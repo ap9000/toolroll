@@ -457,7 +457,8 @@
   .k-row-msg { grid-column: 1 / -1; }
   .k-tbp { display: flex; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--so-line); background: var(--so-paper); }
   .k-tbp > .k-selw { flex: 1; min-width: 0; }
-  .k-tbp > .k-filter { flex: 1; width: auto; height: 44px; }
+  .k-tbp { flex-wrap: wrap; }
+  .k-tbp > .k-filter { flex: 1 1 100%; width: auto; height: 44px; order: 2; }
   .k-filter > input { font-size: 16px; }
   .k-foot { padding: 12px 16px; }
   .k-foot a { display: inline-flex; align-items: center; min-height: 44px; }

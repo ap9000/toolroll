@@ -287,7 +287,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // The Board view: the same index as four columns (needs you, queued, running, finished), never a second classifier.
     const board = url.searchParams.get("layout") !== "board" ? null : (() => {
       const column = (view: "needs-you" | "queued" | "running" | "completed"): WorkIndexPage =>
-        enrich(workIndexPage(store, now, workAccess(), { view, limit: 40, project, root: evidenceRoot }));
+        enrich(workIndexPage(store, now, workAccess(), { view, limit: BOARD_COLUMN_LIMIT, project, root: evidenceRoot, ...(state === null ? {} : { state }) }));
       return { needs: column("needs-you"), queued: column("queued"), running: column("running"), finished: column("completed") };
     })();
     const page = workPage(chromeFor(project, "work", undefined, rollup ? "all" : undefined), {
@@ -3216,3 +3216,6 @@ export function retiredTasksAddress(route: "board" | "done", url: URL): string |
       return url.searchParams.get("scope") === "all" ? "/work?all=1&layout=board" : `/work?${keep}layout=board`;
   }
 }
+
+/** How many cards a Board column shows; the column's count covers them all and its "View all" opens the list. */
+export const BOARD_COLUMN_LIMIT = 40;

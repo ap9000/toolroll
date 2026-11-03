@@ -690,6 +690,10 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     // state is refused as it was there.
     const cancelledOnly = workspaceOf(await page(cookie, "/work?state=cancelled")).view as typeof needing;
     expect(cancelledOnly.rows.map(row => row.id)).toEqual(["t-cancelled"]);
+    // The Board keeps the same stored-state filter in every column.
+    const cancelledBoard = workspaceOf(await page(cookie, "/work?layout=board&state=failed")).view as typeof needing;
+    expect(cancelledBoard.board?.flatMap(column => column.rows.map(row => row.id))).toEqual(["t-failed"]);
+    expect(cancelledBoard.board?.every(column => column.href.includes("state=failed"))).toBe(true);
     expect(cancelledOnly.states?.find(one => one.active)?.label).toBe("Cancelled");
     expect(cancelledOnly.tabs.every(tab => tab.href.includes("state=cancelled"))).toBe(true);
     expect(cancelledOnly.states?.[0]).toMatchObject({ label: "Any state", href: "/work" });
