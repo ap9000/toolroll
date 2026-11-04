@@ -3,7 +3,7 @@ import { adapterPolicy } from "./route-policy.js";
 /** settings handlers, moved without changing their route bodies. */
 import { mintApiToken,TOKEN_DAYS } from "../api-tokens.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
-import { html, htmlString, joinHtml, postForm, reauth } from "../html.js";
+import { html, htmlString, joinHtml, postForm, reauth, replaceMarkup, scriptElement, type Html } from "../html.js";
 import { credentialsHtml,tokenShownHtml } from "../credentials-ui.js";
 import {
 projectName
@@ -27,8 +27,11 @@ import { personAuditHtml,personHref } from "../people-audit-ui.js";
 import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
 import { credentialProof,hashPassword,proveAccountNow } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
-import { joinDeadPage,joinFormPage,loginPage,reconnectPage,SIGNUP_NAME,SIGNUP_PASSWORD_MIN,signupPage } from "./render-people.js";
-import { liveInviteTerms, localOwnerBinding } from "../store.js";
+import { joinDeadPage,joinFormPage,loginPage,passwordAlreadySetPage,passwordSetPage,reconnectPage,SIGNUP_NAME,SIGNUP_PASSWORD_MIN,signupPage,type PasswordSetProblem } from "./render-people.js";
+import { enrollOwnerPassword, liveInviteTerms, localOwnerBinding } from "../store.js";
+import { KEY_FILL_SCRIPT } from "./mutation-key.js";
+import { LOCAL_OWNER_LAPSED } from "../local-owner.js";
+import { withFormToken } from "./request-context.js";
 import { FULL_SESSION,SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
 import { setupCodeMatches,signupCookie,signupFromHere } from "./signup-gate.js";
 
@@ -742,6 +745,96 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     return browserKeys.deliver(response, key, returnTo);
   }
 
+  // Easy-start C4: /password/set, the one credential act a local owner's session may make: its first password, only
+  // while the account has none. The answer is a fresh full session (and a fresh browser key), and on to the act that
+  // was refused. Every other session, and an account that has a password, is told to sign in with it.
+  /** A /password/set page: no-store, and on a protected loopback install the key fill rides it (its form posts the key). */
+  function passwordSetAnswer(response: ServerResponse, status: number, document: Html): void {
+    response.setHeader("Cache-Control", "no-store");
+    if (!browserKeys.required()) return page(response, status, document);
+    const nonce = randomBytes(16).toString("base64");
+    return page(response, status, replaceMarkup(document, /<\/body><\/html>$/, () => html`${scriptElement(KEY_FILL_SCRIPT, { nonce })}</body></html>`), nonce);
+  }
+
+  async function passwordSetForm(ctx: EdgeContext): Promise<void> {
+    const { url, who, response } = ctx;
+    const returnTo = loginReturn(url.searchParams.get("return"));
+    if (who === null || who === undefined) return redirect(response, loginHref(returnTo));
+    if (who.via !== "cookie") return respond(response, 403, "text/plain; charset=utf-8", "This address needs a browser sign-in.");
+    if (who.authority === "full" || store.accountOf(who.name)?.passwordSet !== false) return passwordSetAnswer(response, 200, passwordAlreadySetPage("A password is already set", returnTo, who.authority === "full"));
+    return passwordSetAnswer(response, 200, withFormToken(who.session.csrf, () => passwordSetPage({ returnTo, problem: null })));
+  }
+
+  async function passwordSetSend(ctx: EdgeContext): Promise<void> {
+    const { who, request, response } = ctx;
+    const media = String(request.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
+    if (media !== "application/x-www-form-urlencoded") { request.resume(); return respond(response, 415, "text/plain; charset=utf-8", "forms only"); }
+    const body = readForm(await form(request), CONSOLE_FORMS.passwordSet);
+    const returnTo = loginReturn(body.get("return"));
+    if (who === null || who === undefined) return redirect(response, loginHref(returnTo));
+    if (who.via !== "cookie") return respond(response, 403, "text/plain; charset=utf-8", "This address needs a browser sign-in.");
+    for (const field of ["csrf", "password", "again", "return"] as const) {
+      if (body.getAll(field).length > 1) return respond(response, 400, "text/plain; charset=utf-8", `duplicated ${field} field`);
+    }
+    const account = store.accountOf(who.name);
+    // A full session, or an account that has a password: only signing in with it.
+    if (who.authority === "full" || account === null || account.passwordSet) return passwordSetAnswer(response, 409, passwordAlreadySetPage("A password is already set", returnTo, who.authority === "full"));
+    const again = (problem: PasswordSetProblem, status: number) => passwordSetAnswer(response, status, withFormToken(who.session.csrf, () => passwordSetPage({ returnTo, problem })));
+    // The console's own page only: a present Origin (or Referer) must name it; the session's CSRF token and (on a protected
+    // loopback install) its browser key are proved as for every other mutation.
+    const origin = request.headers.origin, referer = request.headers.referer;
+    const named = typeof origin === "string" && origin !== "null" ? origin : typeof referer === "string" ? referer : null;
+    if (named !== null && !runtime.allowedHost(named.replace(/^https?:\/\//, "").split("/")[0])) return again({ field: null, text: "Set your password from Toolroll's own page." }, 403);
+    if (body.get("csrf") !== who.session.csrf) return again({ field: null, text: "This form had expired, so it was reloaded. Enter the password again." }, 403);
+    const keyed = browserKeys.check(who, request, body.sent);
+    if (keyed !== null) return again({ field: null, text: keyed.message }, keyed.status);
+    if (account.revokedAt !== null || account.generation !== who.session.generation || !sessions.savedNow(who.session) || who.session.localGeneration === null) {
+      return again({ field: null, text: LOCAL_OWNER_LAPSED }, 409);
+    }
+    // Rate-limited like signing in: the same per-address budget, and each refused try spends from it.
+    const source = joinSourceOf(request), at = Date.now();
+    const wait = signInBudget.waitFor(source, at);
+    if (wait > 0) {
+      response.setHeader("Retry-After", String(Math.ceil(wait / 1000)));
+      return again({ field: null, text: `Too many tries. Try again in ${minutesWords(wait)}.` }, 429);
+    }
+    const password = body.get("password") ?? "";
+    // The strength rule sign-up and joining use.
+    if (password.length < SIGNUP_PASSWORD_MIN) { signInBudget.failed(source, at); return again({ field: "password", text: `Use at least ${SIGNUP_PASSWORD_MIN} characters.` }, 400); }
+    if ((body.get("again") ?? "") !== password) { signInBudget.failed(source, at); return again({ field: "again", text: "The two passwords don't match. Type them again." }, 400); }
+    // Hashed before the transaction (scrypt is slow); enrollOwnerPassword then checks and writes in one IMMEDIATE
+    // transaction: still no password, local mode on at this session's generation, the account its active owner. It ends
+    // every session the account had (this one included).
+    const enrolled = enrollOwnerPassword(store, who.name, hashPassword(password), who.session.localGeneration, clock());
+    if (!enrolled.ok) {
+      if (enrolled.reason === "already-set") return passwordSetAnswer(response, 409, passwordAlreadySetPage("A password was just set", returnTo));
+      return again({ field: null, text: LOCAL_OWNER_LAPSED }, 409);
+    }
+    const cookieId = new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([0-9a-f]{64})`).exec(request.headers.cookie ?? "")?.[1];
+    if (cookieId !== undefined) sessions.delete(cookieId);
+    recordSignIn(who.name, "signed in", "browser", "first password set");
+    // A fresh full session, made only after the commit, with a fresh key delivered once (no-store) on a protected install.
+    const id = randomBytes(32).toString("hex");
+    const issued = keyFor(request);
+    sessions.set(id, {
+      ...arrival(request),
+      ...FULL_SESSION,
+      ...issued.fields,
+      name: who.name,
+      csrf: randomBytes(32).toString("hex"),
+      role: account.role,
+      generation: enrolled.generation,
+      createdAt: Date.now(),
+      sawBoardAt: null,
+      lastSeen: Date.now(),
+      project: who.session.project ?? runtime.defaultProject,
+      projectRevision: 1,
+      // A password typed on this computer starts this session's freshness window (cockpit B2), as signing in does.
+      ...(fromThisComputer(request) ? { passwordAt: Date.now() } : {}),
+    });
+    return signedInTo(response, issued.key, returnTo, [`${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
+  }
+
   const registrations = handlersOf("people", {
     "people.page": peoplePage,
     "settings.sessions": sessionsPage,
@@ -763,6 +856,8 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     "edge.rekey": rekeySend,
     "edge.join": joinPage,
     "edge.join-send": joinSend,
+    "edge.password-set-page": passwordSetForm,
+    "edge.password-set": passwordSetSend,
   });
   return { registrations, takeJoinAttempt, ssoCallback, readAccessForm };
 }

@@ -108,6 +108,7 @@ export const CONSOLE_FORMS = {
   login: formContract("POST /login", ["name", "token", "return"]),
   join: formContract("POST /join/<invite>", ["name", "password"]),
   rekey: formContract("POST /login/rekey", ["token", "return"]),
+  passwordSet: formContract("POST /password/set", ["csrf", "password", "again", "return", "toolroll-key"]),
 
   // Shared by every signed-in POST.
   mutationGuard: formContract("POST (every signed-in form)", ["csrf", "token", "digest", "nonce", "confirm", "toolroll-key"]),
@@ -122,6 +123,7 @@ export const CONSOLE_FORMS = {
   code: formContract("POST /code, /code/start, /code/<session>/<act>, /code/<anything else>", ["repo", "password", "title", "model", "prompt", "requestId", "base", "candidate", "goal", "acceptance", "visual", "decision", "answers"], { prefixes: ["question:"] }),
   sweep: formContract("POST /sweeps/<sweep>/cancel-rest", ["confirm", "snapshot"]),
   passwordless: formContract("POST /settings/passwordless", ["action", "password"]),
+  localModeOff: formContract("POST /settings/local-mode/off", ["password"]),
   releaseApproval: formContract("POST /settings/release-approval", ["repo", "action", "password"]),
   term: formContract("POST /term/start, /term/<terminal>/close, /term/<terminal>/remove", ["repo", "program", "password"]),
   skillsRevise: formContract("POST /settings/skills/revise", ["run", "repo", "feedback", "nonce"]),

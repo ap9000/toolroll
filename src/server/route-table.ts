@@ -224,6 +224,8 @@ export const EDGE_LOCAL: Readonly<Record<string, { local: "allow" | "deny"; why:
   "edge.join-send": { local: "allow", why: "before sign-in: an invitation" },
   "edge.rekey-page": { local: "allow", why: "reads only: a local owner is told to run `toolroll open`" },
   "edge.rekey": { local: "allow", why: "only a password typed now re-keys a full session; a local owner is told to run `toolroll open` and gets no key" },
+  "edge.password-set-page": { local: "allow", why: "reads only: the local owner's form for a first password, or \"already set — sign in\"" },
+  "edge.password-set": { local: "allow", why: "the one credential act a local owner may make: its first password (Origin, CSRF and key proved by the handler; enrollOwnerPassword re-checks local mode, the owner and password_set=0 in its own transaction); a session with a password set is refused" },
   live: { local: "allow", why: "observational only; the agent watch lease is a keyed POST (agents.watch)" },
 });
 function localMarkOf(stage: Stage, method: RouteMethod, id: string): Pick<RouteDeclaration, "local" | "localAct"> {
@@ -298,6 +300,9 @@ edge("people", "edge.logout", "POST", "/logout", { callers: ["anonymous", "cooki
 // Easy-start C2: a browser session's fresh mutation key after a restart: its own password again (the handler proves both).
 edge("people", "edge.rekey-page", "GET", "/login/rekey", { callers: ["anonymous", "cookie"] });
 edge("people", "edge.rekey", "POST", "/login/rekey", { callers: ["anonymous", "cookie"] });
+// Easy-start C4: the local owner sets a first password (only while none is set); the answer is a fresh full session.
+edge("people", "edge.password-set-page", "GET", "/password/set", { callers: ["anonymous", "cookie"] });
+edge("people", "edge.password-set", "POST", "/password/set", { callers: ["anonymous", "cookie"] });
 edge("people", "edge.join", "GET", "^\\/join\\/[A-Za-z0-9_-]{16,64}$", { sample: "/join/abcdefghijklmnop" });
 edge("people", "edge.join-send", "POST", "^\\/join\\/[A-Za-z0-9_-]{16,64}$", { sample: "/join/abcdefghijklmnop" });
 
@@ -520,6 +525,8 @@ post("tasks", "sweep.cancel-rest", "^\\/sweeps\\/[1-9][0-9]{0,9}\\/cancel-rest$"
 // (the handler proves it as a credential act); turning it off is one click, so the row itself is not a step-up.
 get("settings", "settings.passwordless", "/settings/passwordless", { ...free, ...operator("An instance operator sets Passwordless.", "/settings") });
 post("settings", "settings.passwordless-send", "/settings/passwordless", { callers: ["cookie"], ...operator("An instance operator sets Passwordless.", "/settings") });
+// Easy-start C5: turning local mode off: an instance operator's step-up from a full session (a local owner is refused).
+post("settings", "settings.local-mode-off", "/settings/local-mode/off", { callers: ["cookie"], scope: "step-up", ...operator("An instance operator turns off local mode.", "/settings/access") });
 // Release approval (docs/plans/auto-approve-green.md): an approver of the project, from a browser. Approving releases
 // automatically takes a typed password (the handler proves it as a credential act); asking again is one click.
 post("settings", "settings.release-approval-send", "/settings/release-approval", { callers: ["cookie"], ...approver("An approver sets how releases are approved.", "/settings/approval") });

@@ -852,7 +852,10 @@ export function createPagesHandlers(runtime: ServerRuntime) {
 
     // CONFIRM: password, then session liveness AGAIN via lookupSession
     // (finding 22/33) — the record is consumed from the RETURNED live
-    // session, synchronously, before the first await.
+    // session, synchronously, before the first await. A full session types
+    // its password (or Passwordless stands in); a laptop's local owner has
+    // none: inside this row's add-project admission the prover's local-owner
+    // branch proves it (scope.ts proveAccountNow), whatever the field holds.
     const password = body.get("token") ?? "";
     if (!authenticateApprover(who, password).ok) {
       return projectsScreen(response, who, "cloning takes your password, typed again", 403, "/", "clone");
@@ -973,7 +976,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
                     ? "Choose a projects folder once: toolroll up --project-root <dir>"
                     : "choose which folder this server may use with --project-root <dir>",
                 }
-              : { enabled: true as const, roots: ceiling.roots, record: [...(who.session.onboard?.entries() ?? [])][0] ?? null };
+              : { enabled: true as const, roots: ceiling.roots, localOwner: who.authority !== "full", record: [...(who.session.onboard?.entries() ?? [])][0] ?? null };
     const peeks: Record<string, ProjectPeek | null> = {};
     for (const one of recent) peeks[one.path] = peekOf(one.path, now);
     for (const path of candidates) peeks[path] = peekOf(path, now);

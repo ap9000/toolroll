@@ -358,7 +358,8 @@ describe("where freshness may be honoured", () => {
     expect(hits[".ssoNowAt"]).toEqual({ "src/serve.ts": 5, "src/server/people-tokens.ts": 1, "src/server/settings.ts": 1 });
     expect(hits[".freshFloor"]).toEqual({ "src/serve.ts": 1, "src/server/settings.ts": 1 });
     for (const name of FACT_NAMES) expect(hits[`{${name}}`]).toBeUndefined();
-    expect((files.find(one => one.path === "src/server/people-tokens.ts")!.text.match(/passwordAt: Date\.now\(\)/g) ?? []).length).toBe(2);
+    // Signing in, signing up, and (easy-start C4) setting the first password on /password/set.
+    expect((files.find(one => one.path === "src/server/people-tokens.ts")!.text.match(/passwordAt: Date\.now\(\)/g) ?? []).length).toBe(3);
     for (const line of files.find(one => one.path === "src/server/people-tokens.ts")!.text.split("\n").filter(one => one.includes("passwordAt: Date.now()"))) {
       expect(line).toContain("fromThisComputer(request) ?");
     }
@@ -384,7 +385,7 @@ describe("where freshness may be honoured", () => {
       "src/nightly-github.ts": 1, "src/operate.ts": 61, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
-      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 10, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 25,
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 10, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 26,
       "src/server/tasks.ts": 7, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -569,6 +570,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>modeAct@91><anonymous>@1": 1,
     // Settings → Models (spend-dashboard slice 3): the editor's save and a preset's or switch's apply.
     "src/server/settings.ts#createSettingsHandlers@1>modelsApply@109": 1,
+    // Easy-start C5: turning local mode off is an operator's step-up from a full session, proved inside the write's transaction.
+    "src/server/settings.ts#createSettingsHandlers@1>localModeOff@110>turned:store.transact(_)@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>modelsSave@108": 1,
     "src/server/settings.ts#createSettingsHandlers@1>monitoringSave@64": 1,
     "src/server/settings.ts#createSettingsHandlers@1>permissionDefaultSave@82": 1,
@@ -821,6 +824,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1>freshFactsOf@54>stamp@7": 1,
     "src/serve.ts#createDecisionServer@1>sendScreen@128>workspace@6": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>loginSend@14": 1,
+    // Easy-start C4: the first password typed on /password/set starts the fresh full session's window, as signing in does.
+    "src/server/people-tokens.ts#createPeopleHandlers@2>passwordSetSend@29": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>signupSend@13": 1,
     "src/server/session.ts#<module>": 1,
     "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@39": 1,

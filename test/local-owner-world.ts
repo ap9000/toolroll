@@ -18,7 +18,8 @@ export const LOCAL_T0 = new Date("2026-11-03T12:00:00.000Z");
 
 export type LocalWorld = Awaited<ReturnType<typeof openLocalWorld>>;
 
-export async function openLocalWorld(extra: Partial<ServeOptions> = {}) {
+/** `extra` may be a function of the world's own folder (for options that name it, like projectRoots). */
+export async function openLocalWorld(more: Partial<ServeOptions> | ((root: string) => Partial<ServeOptions>) = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "so-local-")));
   const repo = join(root, "repo"); mkdirSync(repo);
   const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
@@ -27,6 +28,7 @@ export async function openLocalWorld(extra: Partial<ServeOptions> = {}) {
   execFileSync("git", ["-C", repo, "add", "README.md"], { env: gitEnv });
   execFileSync("git", ["-C", repo, "-c", "user.email=q@example.com", "-c", "user.name=q", "commit", "-qm", "readme"], { env: gitEnv });
   const configDir = join(root, "config"); mkdirSync(configDir);
+  const extra = typeof more === "function" ? more(root) : more;
   const store: Store = openStore(join(configDir, "state.db"), { createdBy: "laptop" });
   const init = initLocalMode(store, { owner: "alex", fenceAvailable: true, now: LOCAL_T0 });
   if (!init.ok) throw Error(`local mode: ${init.reason}`);

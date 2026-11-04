@@ -101,6 +101,8 @@ describe("the proof inventory agrees with the handlers' contracts", () => {
       .flatMap(m => [m[1], m[2], m[3], m[4]]).filter((one): one is string => one !== undefined));
     // Choices the person makes on the page, not terms carried back.
     for (const choice of ["confirm-open", "pings", "repo"]) checked.delete(choice);
+    // /password/set (people-tokens.ts): its form token and the new password typed twice, never terms a page showed.
+    for (const own of ["csrf", "again"]) checked.delete(own);
     const required = new Set(PROOF_INVENTORY.flatMap(row => row.terms));
     expect([...checked].filter(field => !required.has(field))).toEqual([]);
     expect(checked).toContain("preview");
