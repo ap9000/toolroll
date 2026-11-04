@@ -10,6 +10,7 @@ import type { QualityMode } from "../quality.js";
 import type { UnattendedPermissionMode } from "../scope.js";
 import { type Chrome, screen, type Screen } from "./chrome.js";
 import { btn, composer, disclose, doc, docHeader, dock, field, ideas, input, note, phoneHeader, radios, select, sendButton, textarea, toggleChip } from "./kit.js";
+import { TASK_TEXT_LIMITS } from "../task-text.js";
 
 export type TaskComposerPrefill = { title: string; goal: string; not: string; touches: string; acceptance: string; values?: URLSearchParams };
 
@@ -73,7 +74,8 @@ export function newTaskPage(
     value: text, rows: 4, maxRows: 10, before: bar, error: problem,
     send: sendButton({ label: "File task" }),
     note: html`<span class="k-on-note">${PLAN_ON}</span><span class="k-off-note">${PLAN_OFF}</span>`,
-    textAttrs: { maxlength: 200, autofocus: true },
+    // Longer words are kept to a whole-word title with an ellipsis when filed (task-text.ts titleWithin).
+    textAttrs: { maxlength: TASK_TEXT_LIMITS.text, autofocus: true },
   });
   const options = html`<div class="k-form">\
 ${field({ id: "nt-quality", label: "Checks", control: select({ id: "nt-quality", name: "quality-mode", items: [["default", "Default checks"], ["strict", "Strict (release)"]], current: quality, wide: true }) })}\

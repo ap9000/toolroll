@@ -1,3 +1,4 @@
+import { titleWithin } from "../task-text.js";
 import { parseFeedbackImage, sameFeedbackImage } from "../result-review.js";
 import { archiveTaskFamily, dropFeedbackImage, releaseAuthorityOfTask, restoreTaskFamily, revokeRelease, runLiveCommands } from "../store.js";
 import { applyTidy, approverStandsNow, familyRepoOf, releaseFactsOf, tidyDays, tidyDigest, tidyPreview, TIDY_DEFAULT_DAYS } from "../tidy.js";
@@ -1052,7 +1053,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       }
     }
     const id = (body.get("id") ?? "").trim();
-    const title = body.get("title") ?? "";
+    // Words longer than a title are cut at a whole word, with an ellipsis (task-text.ts titleWithin); a refusal keeps
+    // the person's own words (the draft below).
+    const typed = body.get("title") ?? "";
+    const title = titleWithin(typed);
     // The EFFECTIVE placement (repo onboarding, findings 15/35): the
     // trimmed, nonempty posted repo, else the open project — an empty
     // input falls through correctly. In root mode the effective path is
@@ -1068,7 +1072,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // direct POST with no project open must not mint an unplaced task
     // under a ceiling. Unscoped mode keeps its historic unplaced filings.
     // A refusal from here on is the add page again with the person's own words (the old task list kept them too).
-    const draft: TaskComposerPrefill = { title, goal: body.get("goal") ?? "", not: body.get("not") ?? "", touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent };
+    const draft: TaskComposerPrefill = { title: typed, goal: body.get("goal") ?? "", not: body.get("not") ?? "", touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent };
     if (!unscopedMode && effective === "") {
       return newTaskScreen(ctx, 400, "name a repository — no project is open, so the task must say where it belongs", draft);
     }

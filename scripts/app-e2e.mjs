@@ -2909,8 +2909,13 @@ await journey("easy-start", SCRIPTED, "A revision with long words, then a build 
   await on.goto(`${install.base}/t/${encodeURIComponent(failing)}`);
   await waitFor(on.locator("[data-task-status]").first(), "the failed task's status", { timeoutMs: 30_000, seen: () => saysNow(on) });
   const status = (await on.locator("[data-task-status]").first().innerText()).replace(/\s+/g, " ");
-  // The worker tries a failed build again after a pause: the status says when.
-  if (!/fail|stopped|couldn.t|didn.t|next attempt/i.test(status)) throw new Error(`the failed task's status says: ${status.slice(0, 300)}`);
+  // The worker tries a failed build again after a pause: the status says when, once, in words (never a raw stamp).
+  if (!/fail|stopped|couldn.t|didn.t|tries again/i.test(status)) throw new Error(`the failed task's status says: ${status.slice(0, 300)}`);
+  if (/tries again/.test(status) && !/Retry scheduled/.test(status)) throw new Error(`a retry's heading doesn't say so: ${status.slice(0, 300)}`);
+  if (/Queued\s+Queued/.test(status) || /\d{4}-\d\d-\d\dT\d\d:/.test(status)) throw new Error(`the failed task's status repeats itself or shows a raw time: ${status.slice(0, 300)}`);
+  // Its long title is cut at a whole word, with an ellipsis.
+  const titled = laptopRows(`SELECT title FROM task WHERE id = '${failing}'`)[0]?.title ?? "";
+  if (!titled.endsWith("without changing what any function…")) throw new Error(`the long title reads: ${titled}`);
   await bothSizes(on, "13-failed", "easy-start");
   return { revision, failed: failing, status: status.slice(0, 160) };
 });

@@ -246,6 +246,9 @@ function headingOf(card: AssignmentCard): string {
     case "Ready for review": return "Ready for your review";
     case "Failed": return "A requirement was missed";
     case "Complete": return "Finished";
+    // The chip already says Queued: the heading says why it waits, never Queued again. A task that has run already
+    // waits to try again; one that hasn't, to start.
+    case "Queued": return card.attempts.some(one => one.runId !== null) ? "Retry scheduled" : "Waiting to start";
     default: return card.status.headline;
   }
 }

@@ -18,6 +18,7 @@ import { replacedWords } from "./task-status.js";
 import { failedAttemptSentence, latestFinishedAttempt } from "./needs-you.js";
 import { buildReviewOf } from "./review-switch.js";
 import { BUILT_IN, refArchived, parseCapabilityKey, type ChatSnapshot, type ReviewRequestOrigin, type ReviewRetryState, type Store, type TaskState } from "./store.js";
+import { shortWhen } from "./when-html.js";
 
 export const DEFAULT_MAX_OPEN_DECISIONS = 5;
 
@@ -380,9 +381,10 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
     if (local.ownerKind === "backoff") {
       // Run 2085: an attempt that stopped before its handoff says so plainly.
       const last = store.runsFor(ref.id).find(one => one.role === "builder" && one.finishedAt !== null);
-      const when = local.until === null ? "" : ` The next attempt is eligible at ${local.until}.`;
+      // Said once, with a time a person reads (nextAt keeps the exact stamp for machines).
+      const when = local.until === null ? "" : ` It tries again ${retryWhenWords(local.until, now)}.`;
       if (last?.reason === "no-handoff") return answer("retry-scheduled", "retrying", "Retry scheduled", `The agent stopped before handing off; its work was kept and it is being resumed.${when}`, { nextAt: local.until });
-      return answer("retry-scheduled", "retrying", "Retry scheduled", local.until === null ? "The failed attempt is backing off before retrying." : `The next attempt is eligible at ${local.until}.`, { nextAt: local.until });
+      return answer("retry-scheduled", "retrying", "Retry scheduled", local.until === null ? "The failed attempt is backing off before retrying." : `It tries again ${retryWhenWords(local.until, now)}.`, { nextAt: local.until });
     }
     if (local.ownerKind === "decision") return answer("waiting-decision", "waiting", "Waiting on your answer", "An agent parked a question; answering it resumes the task.", { action: "answer-decision" });
     if (local.ownerKind === "incident") return answer("waiting-incident", "waiting", "Needs a retry", "An unresolved incident holds the next attempt.", { action: "retry-task" });
@@ -480,4 +482,18 @@ export function withDispatchDiagnoses(store: Store, snapshot: ChatSnapshot, now:
     ...snapshot,
     tasks: snapshot.tasks.map(one => ({ ...one, dispatch: diagnoseTaskDispatch(store, one.id, now) })),
   };
+}
+
+/** When a backed-off task tries again, as a person reads it: "in under a minute", "in 3 minutes", or a later day's
+ * time in UTC (the console's own clock words, when-html.ts shortWhen). */
+export function retryWhenWords(until: string, now: Date): string {
+  const ms = Date.parse(until) - now.getTime();
+  if (Number.isNaN(ms)) return "soon";
+  if (ms <= 60_000) return "in under a minute";
+  const minutes = Math.ceil(ms / 60_000);
+  if (minutes < 60) return `in ${minutes} minutes`;
+  const at = shortWhen(until, now, "UTC", true);
+  if (/^\d/.test(at)) return `at ${at} UTC`;
+  if (at.startsWith("Tomorrow ")) return `tomorrow at ${at.slice("Tomorrow ".length)} UTC`;
+  return `on ${at} UTC`;
 }

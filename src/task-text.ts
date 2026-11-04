@@ -42,3 +42,19 @@ export function validateTaskText(fields: { title: string; goal?: string; outOfSc
   const bad = validateScopeText(fields);
   return bad === null ? null : refuse("bad-goal", bad.message);
 }
+
+/**
+ * A title that fits: words longer than the title limit are cut at the last whole word that fits, with an ellipsis,
+ * never mid-word (one unbroken word longer than half the limit is the only thing cut inside a word). Whitespace runs
+ * read as one space. Text within the limit is returned as it is.
+ */
+export function titleWithin(text: string, max: number = TASK_TEXT_LIMITS.title): string {
+  if (text.length <= max) return text;
+  const words = text.replace(/\s+/g, " ").trim();
+  if (words.length <= max) return words;
+  const room = words.slice(0, max - 1);
+  // The room ends at a whole word when the next character is a space; else back to the last space in it.
+  const space = words[max - 1] === " " ? room.length : room.lastIndexOf(" ");
+  const cut = (space >= Math.floor(max / 2) ? room.slice(0, space) : room).replace(/[\s,;:.\-–—]+$/u, "");
+  return `${cut}…`;
+}

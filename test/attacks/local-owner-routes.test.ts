@@ -42,6 +42,15 @@ describe("the console's rows, as a local owner", () => {
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM task WHERE title = 'Fix the footer'").get()?.["n"]).toBe(1);
   });
 
+  test("a description longer than a title is filed with a whole-word title and an ellipsis", async () => {
+    const { cookie, csrf } = await world.localSession();
+    const words = "Format prices with a currency symbol everywhere they are shown, including the README's examples, the error messages and every test name that mentions an amount, without changing what any function returns";
+    const filed = await world.post("/tasks/add", cookie, { csrf, repo: world.repo, title: words });
+    expect(filed.status).toBe(303);
+    const title = String(world.store.handle.prepare("SELECT title FROM task ORDER BY rowid DESC LIMIT 1").get()?.["title"]);
+    expect(title).toBe("Format prices with a currency symbol everywhere they are shown, including the README's examples, the error messages and every test name that mentions an amount, without changing what any function…");
+  });
+
   test("once a password is set, a refused act leads to signing in with it (and back to this page)", async () => {
     expect(enrollOwnerPassword(world.store, "alex", hashPassword("a long enough password"), 1, LOCAL_T0)).toMatchObject({ ok: true });
     // Local mode stays on: the local link still opens a local owner's session.
