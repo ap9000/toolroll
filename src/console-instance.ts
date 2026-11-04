@@ -160,8 +160,15 @@ export function askSocket(socketPath: string, request: object, timeoutMs = 2_000
  * The console's discovery socket: one line in, one line out. `hello` (with a challenge) answers the public facts and
  * the socket proof; every other verb is refused. It reads nothing else and changes nothing. Bound under a fresh name
  * no other process has, so it never clears or replaces anything; its own listener removes it on close.
+ *
+ * Easy start D: the one other verb is `link`, and only when the console passes `link`. The console answers with a fresh
+ * challenge of its own; the asker must answer it with HMAC(secret, "link:" + challenge) — the secret is in the database
+ * (behind the agent fence), so only a process that read it can — and then gets one local owner's one-time sign-in path.
+ * Each challenge is spent by the first answer on its own connection, right or wrong; the "link:" domain keeps a hello or
+ * HTTP proof from ever counting here. The request names no account: what the link signs in as is the console's own
+ * decision (`link` returns null unless local mode is on).
  */
-export async function openInstanceSocket(databaseFile: string, facts: HelloFacts, secret: () => string | null): Promise<{ ok: true; name: string; close: () => void } | { ok: false; problem: string }> {
+export async function openInstanceSocket(databaseFile: string, facts: HelloFacts, secret: () => string | null, link?: () => string | null): Promise<{ ok: true; name: string; close: () => void } | { ok: false; problem: string }> {
   const dir = instanceRunDir(databaseFile);
   const problem = prepareRunDir(dir);
   if (problem !== null) return { ok: false, problem };
@@ -170,28 +177,109 @@ export async function openInstanceSocket(databaseFile: string, facts: HelloFacts
   if (pathProblem !== null) return { ok: false, problem: pathProblem };
   const server: Server = createServer(socket => {
     let buffer = "";
+    // The link challenge this connection was given, until its one answer arrives.
+    let challenged: string | null = null;
+    let done = false;
     socket.setEncoding("utf8");
     socket.setTimeout(5_000, () => socket.destroy());
-    const reply = (body: object) => { socket.end(`${JSON.stringify(body)}\n`); };
-    socket.on("error", () => socket.destroy());
-    socket.on("data", chunk => {
-      buffer += chunk;
-      if (buffer.length > LINE_CAP) return void socket.destroy();
-      const end = buffer.indexOf("\n");
-      if (end < 0) return;
+    const reply = (body: object) => { done = true; socket.end(`${JSON.stringify(body)}\n`); };
+    const answerLine = (line: string): void => {
       let asked: unknown;
-      try { asked = JSON.parse(buffer.slice(0, end)); } catch { return reply({ error: "refused" }); }
-      const verb = asked !== null && typeof asked === "object" ? (asked as { verb?: unknown }).verb : undefined;
-      const challenge = asked !== null && typeof asked === "object" ? (asked as { challenge?: unknown }).challenge : undefined;
+      try { asked = JSON.parse(line); } catch { return reply({ error: "refused" }); }
+      const field = (key: string): unknown => asked !== null && typeof asked === "object" && !Array.isArray(asked) ? (asked as Record<string, unknown>)[key] : undefined;
       const key = secret();
+      if (challenged !== null) {
+        // The one answer to this connection's challenge: spent now, whatever it says.
+        const expected = key === null ? null : linkProof(key, challenged);
+        challenged = null;
+        if (expected === null || field("verb") !== "link-proof" || !same(field("proof"), expected)) return reply({ error: "refused" });
+        let path: string | null = null;
+        try { path = link?.() ?? null; } catch { path = null; }
+        return reply(path === null ? { error: "no-link" } : { link: path });
+      }
+      const verb = field("verb");
+      if (verb === "link" && link !== undefined && key !== null) {
+        challenged = randomBytes(32).toString("hex");
+        socket.write(`${JSON.stringify({ challenge: challenged })}\n`);
+        return;
+      }
+      const challenge = field("challenge");
       if (verb !== "hello" || typeof challenge !== "string" || !CHALLENGE.test(challenge) || key === null) return reply({ error: "refused" });
       reply({ ...facts, proof: socketProof(key, challenge) });
+    };
+    socket.on("error", () => socket.destroy());
+    socket.on("data", chunk => {
+      if (done) return;
+      buffer += chunk;
+      if (buffer.length > LINE_CAP) return void socket.destroy();
+      for (let end = buffer.indexOf("\n"); end >= 0 && !done; end = buffer.indexOf("\n")) {
+        const line = buffer.slice(0, end);
+        buffer = buffer.slice(end + 1);
+        answerLine(line);
+      }
     });
   });
   // A Unix bind never replaces an existing path (EADDRINUSE).
   const listening = await new Promise<boolean>(resolve => { server.once("error", () => resolve(false)); server.listen(socketPath, () => resolve(true)); });
   if (!listening) return { ok: false, problem: `couldn't listen on ${socketPath}` };
   return { ok: true, name, close: () => { server.close(); } };
+}
+
+/** The `link` verb's answer to the console's challenge: bound to this verb, so no other proof ever counts for it. */
+export const linkProof = (secret: string, challenge: string): string => createHmac("sha256", secret).update(`link:${challenge}`).digest("hex");
+const LINK_PATH = /^\/login\/once\/[A-Za-z0-9_-]{16,128}$/;
+
+/**
+ * Ask the console on `socketPath` for a local owner's one-time sign-in path with the record's secret: `link`, the
+ * console's challenge, then the proof. Null when it gives none (local mode off, a wrong or late answer, anything
+ * malformed). The caller proves the console live first (proveLiveConsole) and opens the path on its proved address.
+ */
+export function askLink(socketPath: string, secret: string, timeoutMs = 5_000, connect: (path: string) => Socket = path => createConnection(path)): Promise<string | null> {
+  return new Promise(resolve => {
+    let settled = false, buffer = "", sentProof = false;
+    const done = (value: string | null) => { if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); resolve(value); };
+    const socket = connect(socketPath);
+    const timer = setTimeout(() => done(null), timeoutMs);
+    socket.setEncoding("utf8");
+    socket.on("error", () => done(null));
+    socket.on("connect", () => socket.write(`${JSON.stringify({ verb: "link" })}\n`));
+    socket.on("data", chunk => {
+      buffer += chunk;
+      if (buffer.length > LINE_CAP) return done(null);
+      for (let end = buffer.indexOf("\n"); end >= 0 && !settled; end = buffer.indexOf("\n")) {
+        const line = buffer.slice(0, end);
+        buffer = buffer.slice(end + 1);
+        let parsed: unknown;
+        try { parsed = JSON.parse(line); } catch { return done(null); }
+        const body = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+        if (!sentProof) {
+          const challenge = body["challenge"];
+          if (typeof challenge !== "string" || !/^[0-9a-f]{64}$/.test(challenge)) return done(null);
+          sentProof = true;
+          socket.write(`${JSON.stringify({ verb: "link-proof", proof: linkProof(secret, challenge) })}\n`);
+        } else {
+          const path = body["link"];
+          return done(typeof path === "string" && LINK_PATH.test(path) ? path : null);
+        }
+      }
+    });
+    socket.on("end", () => done(null));
+  });
+}
+
+/**
+ * A local owner's one-time sign-in address from this installation's live console (easy start D, `toolroll open`): the
+ * console is proved live on both channels first, then asked over its socket with the record's secret. The address is
+ * always the proved console's own; null when there is no proved console or it gives no link.
+ */
+export async function requestLocalLink(databaseFile: string, store: Store, build: string, seams: AttachSeams & { askLink?: typeof askLink } = {}): Promise<{ ok: true; url: string; console: string } | { ok: false; message: string }> {
+  const proof = await proveLiveConsole(databaseFile, store, build, seams);
+  if (!proof.ok) return { ok: false, message: proof.message };
+  const record = readInstance(store);
+  if (record === null || record.pid !== proof.pid || record.port !== proof.port) return { ok: false, message: "the console changed while it was being checked" };
+  const path = await (seams.askLink ?? askLink)(join(instanceRunDir(databaseFile), record.socket), record.secret);
+  if (path === null) return { ok: false, message: "the console gave no sign-in link (local mode is off, or it is still starting)" };
+  return { ok: true, url: new URL(path, proof.url).toString(), console: proof.url };
 }
 
 /**

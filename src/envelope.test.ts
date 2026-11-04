@@ -143,6 +143,9 @@ describe("the machine envelope", () => {
       // The usage roads: nothing reaches a supervisor or signals a process.
       background: ["sideways", "--json"],
       stop: ["now", "--json"],
+      open: ["now", "--json"],
+      welcome: ["now", "--json"],
+      password: ["sideways", "--json"],
       bridge: ["--json"],
       publish: ["status", "--json"],
       reconcile: ["--json"],

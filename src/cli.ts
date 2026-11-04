@@ -33,6 +33,8 @@ import { GUIDES, guideNamed } from "./guides.js";
 import { parseGithubRepo, previewGithubRepo, cloneGithubRepo, isLargeRepo } from "./onboard.js";
 import { run as execRun } from "./exec.js";
 import { isBareInvocation, runQuickStart, type QuickStartSeams } from "./quick-start.js";
+import { easyStartApplies, easyStartArgs } from "./easy-start-args.js";
+import { underAgent } from "./prompt.js";
 import { COMMAND_GUIDE, SURFACE_NOTES, SURFACE_SCHEMA_VERSION } from "./surface.js";
 import { hasCentralProfile, maybeRunConnectCommand, type ConnectOptions } from "./connect-cli.js";
 import { removedCommand, removedMessage } from "./deprecations.js";
@@ -208,6 +210,9 @@ export const OPERATE_COMMANDS = new Set([
   "daemon",
   "background",
   "stop",
+  "open",
+  "welcome",
+  "password",
   "bridge",
   "publish",
   "reconcile",
@@ -238,6 +243,8 @@ export type MainOptions = {
   release?: ReleaseCliDeps;
   /** Tests: bare `toolroll` in a repository (quick-start.ts) — its repository, agent check, proofs and actions. */
   quickStart?: Partial<QuickStartSeams>;
+  /** Tests: bare `toolroll` at a person's terminal (easy-start.ts) — the terminal and agent checks, and its seams. */
+  easyStart?: { terminal?: boolean; underAgent?: boolean; seams?: Partial<import("./easy-start.js").EasyStartSeams> };
 };
 
 /**
@@ -423,6 +430,22 @@ async function dispatch(
   if (first === "graph") return runGraphCommand(rest, write);
   if (first !== undefined && OPERATE_COMMANDS.has(first)) {
     return runOperate(first, rest, write, mainOptions.operate ?? {});
+  }
+  // Easy start (A): bare `toolroll` (or with --web / --project-root) at a person's terminal — no --json, not under a
+  // coding agent — starts this computer's Toolroll and opens the terminal UI. Anything else keeps its behaviour below.
+  if (first !== "scan" && first !== "--json" && easyStartArgs(argv) !== null) {
+    const terminal = mainOptions.easyStart?.terminal ?? (process.stdin.isTTY === true && process.stdout.isTTY === true);
+    const agent = terminal && (mainOptions.easyStart?.underAgent ?? underAgent(process.env));
+    if (easyStartApplies(argv, { stdin: terminal, stdout: terminal, agent })) {
+      const databaseFile = mainOptions.operate?.databaseFile ?? databasePath(process.env, homedir());
+      const easy = await import("./easy-start.js");
+      const seams = easy.defaultEasyStartSeams({
+        databaseFile, write, build: (await import("./monitoring.js")).packageVersion(),
+        ...(mainOptions.operate === undefined ? {} : { operate: mainOptions.operate }),
+        admit: repo => runReposCommand(["add", repo], write, mainOptions.onboard),
+      });
+      return easy.runEasyStart("start", easyStartArgs(argv)!, { ...seams, ...mainOptions.easyStart?.seams });
+    }
   }
   // Cockpit B1: the scan by name, and bare `toolroll` in a repository starting (or attaching to) its console.
   if (first === "scan") argv = rest;

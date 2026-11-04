@@ -114,7 +114,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
-  openStore, openStoreNoMigrate, initLocalMode, installationCreatedBy, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
+  openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -286,6 +286,7 @@ import { stopProcessTree } from "./process-tree.js";
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
+import { hashPassword } from "./scope.js";
 import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha, credentialProof, rememberedLogin, personApprovalOf } from "./scope.js";
 import { CHAT_APPROVE_ALL, presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
 import { WorktreePool, type BaseStanding } from "./worktree.js";
@@ -410,6 +411,8 @@ export type OperateOptions = {
   upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void; home?: string; fenceAvailable?: () => boolean };
   /** Injected by tests: the background service handoff's supervisor, HOME, processes and console proof (laptop-background.ts). */
   laptopSeams?: LaptopSeams;
+  /** Injected by tests: `open`, `welcome` and `password set` — the terminal, the easy start's seams, the prompts. */
+  easySeams?: EasyCommandSeams;
   /** Injected by tests: the classifier that sizes filed tasks (none by default under test). */
   filingSizer?: Sizer;
   /** Set only by up-role-child.ts: this process is one role of a `toolroll up` (the console or the worker). */
@@ -917,7 +920,7 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "no-carry",
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file",
   "clear", "follow", "ready", "all-tasks", "inbound-only", "help", "undo", "anyone", "allow-dispatch", "allow-merge", "merge-delete-branch",
-  "no-open", "single-process", "laptop", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
+  "no-open", "single-process", "laptop", "web", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
   "self-heal", "plan-auto", "chat-approve", "full-access", "repair-auto", "review-retry-auto", "no-local",
   "html", "csv", "alerts-only",
   // project network: what its builds may reach (--open | --allowlist).
@@ -1198,6 +1201,7 @@ async function dispatchOn(
       ...(options.onboardSeams === undefined ? {} : { onboardSeams: options.onboardSeams }),
       ...(options.upSeams === undefined ? {} : { upSeams: options.upSeams }),
       ...(options.laptopSeams === undefined ? {} : { laptopSeams: options.laptopSeams }),
+      ...(options.easySeams === undefined ? {} : { easySeams: options.easySeams }),
       ...(options.upRole === undefined ? {} : { upRole: options.upRole }),
       ...(options.folderLook === undefined ? {} : { folderLook: options.folderLook }),
       ...(upNeedsOneProcess(options) ? { upOneProcess: true } : {}),
@@ -1378,6 +1382,7 @@ type Context = {
   upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void; home?: string; fenceAvailable?: () => boolean };
   /** Injected by tests: the background service handoff's supervisor, HOME, processes and console proof (laptop-background.ts). */
   laptopSeams?: LaptopSeams;
+  easySeams?: EasyCommandSeams;
   /** This process is one role of a `toolroll up`, started by it (never from the command line). */
   upRole?: UpRoleHost;
   /** In-memory seams a child process can't receive: `up` runs its console and worker in this one process. */
@@ -1647,6 +1652,12 @@ async function dispatch(
       return backgroundCommand(positional, flags, context);
     case "stop":
       return stopCommand(positional, flags, context);
+    case "open":
+      return openCommand(positional, flags, context);
+    case "welcome":
+      return welcomeCommand(positional, flags, context);
+    case "password":
+      return passwordCommand(positional, flags, context);
     case "bridge":
       return bridgeCommand(positional, flags, context);
     case "publish":
@@ -12750,7 +12761,9 @@ async function runUpConsoleRole(context: Context, config: UpConsoleConfig, port:
   // record. A second console on the same database (another port) never replaces the first one's record.
   let mintedSecret: string | null = null;
   const instanceSocket = await openInstanceSocket(context.databaseFile,
-    { pid: process.pid, build: packageVersion(), database: context.databaseFile, port: console_.port }, () => mintedSecret);
+    { pid: process.pid, build: packageVersion(), database: context.databaseFile, port: console_.port }, () => mintedSecret,
+    // Easy start D: `toolroll open`'s link verb. mintLocalLink names no account and mints only while local mode is on.
+    () => console_.server.mintLocalLink());
   if (instanceSocket.ok) {
     mintedSecret = await claimInstance(store, context.databaseFile, { pid: process.pid, port: console_.port, build: packageVersion(), socket: instanceSocket.name, keyEpoch: console_.server.keyEpoch }, clock());
     instanceSecret = mintedSecret;
@@ -13646,5 +13659,107 @@ async function stopCommand(positional: readonly string[], flags: Map<string, str
     stopped.action === "not-running" ? "Toolroll isn't running."
       : stopped.action === "service-stopped" ? "Toolroll stopped. It starts again when you log in — run `toolroll background off` to stop that."
         : "Toolroll stopped.",
+  ]);
+}
+
+// ---- easy-start wave 2a: `open`, `welcome` and `password set` (plan A, B, C4, D) --------------------------------------
+
+/** Tests: a person at a terminal, the easy start's seams, the agents' sign-in check, and the prompts. */
+export type EasyCommandSeams = {
+  terminal?: boolean;
+  seams?: Partial<import("./easy-start.js").EasyStartSeams>;
+  check?: import("./provider-connection.js").ConnectionChecker;
+  ask?: (question: string) => Promise<string>;
+  askHidden?: (question: string) => Promise<string>;
+};
+
+/** A person at this terminal: stdin and stdout a TTY, not --json, not under a coding agent (a UX guard, plan F1). */
+function personAtTerminal(context: Context): boolean {
+  return !context.json && (context.easySeams?.terminal ?? (process.stdin.isTTY === true && process.stdout.isTTY === true && !underAgent(process.env)));
+}
+
+/**
+ * `toolroll open [--web]`: make sure this computer's Toolroll runs (the background service if installed, else `up
+ * --laptop` as a child of this process), then open the terminal UI on it as the local owner — or, with --web, this
+ * computer's browser, signed in through the console's socket `link` verb. Never prints a sign-in link.
+ */
+async function openCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json } = context;
+  const command = "open";
+  if (positional.length > 0) return fail(write, json, command, "usage", "Use `toolroll open [--web]`.", EXIT.usage);
+  for (const name of flags.keys()) if (!["db", "json", "web"].includes(name)) return fail(write, json, command, "usage", `--${name} is not an open option.`, EXIT.usage);
+  if (context.principal !== undefined) return fail(write, json, command, "not-remote", "Toolroll opens on its own computer.", EXIT.refused);
+  if (!personAtTerminal(context)) return fail(write, json, command, "not-a-terminal", "Run `toolroll open` yourself at a terminal: it opens Toolroll here, signed in.", EXIT.refused);
+  const easy = await import("./easy-start.js");
+  const seams = easy.defaultEasyStartSeams({ databaseFile: context.databaseFile, write, build: packageVersion(), admit: async () => EXIT.ok });
+  return easy.runEasyStart("open", { web: flags.has("web"), projectRoot: null }, { ...seams, ...context.easySeams?.seams });
+}
+
+/**
+ * `toolroll welcome`: the three steps to a first result (Agent · Project · First task), from the same model the
+ * console's /welcome shows. `--json` prints the model; at a terminal it walks the steps one at a time, checking each
+ * again when the person says it's done. Reads only.
+ */
+async function welcomeCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json } = context;
+  const command = "welcome";
+  if (positional.length > 0) return fail(write, json, command, "usage", "Use `toolroll welcome [--json]`.", EXIT.usage);
+  for (const name of flags.keys()) if (!["db", "json"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a welcome option.`, EXIT.usage);
+  const { welcomeHere, welcomeLines, welcomeStepLines, WELCOME_STEPS } = await import("./welcome-facts.js");
+  const read = async () => (await welcomeHere(context.store, context.databaseFile, context.clock(), context.easySeams?.check === undefined ? {} : { check: context.easySeams.check })).model;
+  let model = await read();
+  if (json || !personAtTerminal(context) || localOwnerRequested()) return succeed(write, json, command, { ...model }, () => welcomeLines(model));
+  const askNow = context.easySeams?.ask ?? ask;
+  write(model.left === 0 ? "Setup is done." : `Welcome to Toolroll. ${model.left} ${model.left === 1 ? "step" : "steps"} to your first result.`);
+  for (const key of WELCOME_STEPS) {
+    for (;;) {
+      write("");
+      for (const line of welcomeStepLines(model, key)) write(line);
+      if (model[key].done) break;
+      const said = (await askNow("Press Enter once it's done, s to skip, q to stop: ")).trim().toLowerCase();
+      if (said === "q") return EXIT.ok;
+      if (said === "s") break;
+      model = await read();
+    }
+  }
+  write("");
+  write(model.left === 0 ? "You're set. Run `toolroll` to open Toolroll." : "Run `toolroll` to open Toolroll; the steps left are there too.");
+  return EXIT.ok;
+}
+
+/**
+ * `toolroll password set`: the local owner's first password (plan C4), typed twice, hidden, at a person's own
+ * terminal — never from a flag, a file or the environment, never under a coding agent. Only while local mode is on and
+ * its owner has none: one transaction (store.ts enrollOwnerPassword) checks that again, writes the hash, moves the
+ * account's generation and ends every session. Local mode stays on. With a password already set, it is refused: sign
+ * in with it in the browser.
+ */
+async function passwordCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json, store } = context;
+  const [action, ...rest] = positional;
+  const command = action === undefined ? "password" : `password ${action}`;
+  if (action !== "set" || rest.length > 0) return fail(write, json, command, "usage", "Use `toolroll password set`.", EXIT.usage);
+  for (const name of flags.keys()) if (!["db", "json"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a password set option: the password is only ever typed.`, EXIT.usage);
+  if (context.principal !== undefined) return fail(write, json, command, "not-remote", "A password is set on Toolroll's own computer.", EXIT.refused);
+  if (localOwnerRequested() || !personAtTerminal(context)) return fail(write, json, command, "not-a-terminal", "Set your password yourself at a terminal: run `toolroll password set`.", EXIT.refused);
+  const binding = localOwnerBinding(store);
+  if (binding === null) return fail(write, json, command, "not-local", "This Toolroll already signs in with a password. Sign in with it in the browser.", EXIT.refused);
+  if (store.accountOf(binding.account)?.passwordSet === true) return fail(write, json, command, "already-set", "A password is already set. Sign in with it in the browser.", EXIT.refused);
+  const typeHidden = context.easySeams?.askHidden ?? askHidden;
+  write(`Choose a password for ${binding.account}. It signs you in from other devices and approves what this computer's browser can't.`);
+  const chosen = await typeHidden("New password: ");
+  if (chosen.length < 8) return fail(write, json, command, "weak-password", "A password needs at least 8 characters. Nothing changed.", EXIT.refused);
+  const again = await typeHidden("Type it again: ");
+  if (again !== chosen) return fail(write, json, command, "mismatch", "The two passwords didn't match. Nothing changed.", EXIT.refused);
+  const enrolled = enrollOwnerPassword(store, binding.account, hashPassword(chosen), binding.localGeneration, context.clock());
+  if (!enrolled.ok) {
+    const words = enrolled.reason === "already-set" ? "A password was just set. Sign in with it in the browser."
+      : enrolled.reason === "local-mode-changed" ? "Local mode changed while you were typing. Nothing changed."
+        : "Only this computer's owner sets the first password. Nothing changed.";
+    return fail(write, json, command, enrolled.reason, words, EXIT.refused);
+  }
+  return succeed(write, json, command, { account: binding.account, generation: enrolled.generation }, () => [
+    "Password set.",
+    "Open browser tabs and the terminal UI sign in again: run `toolroll open`, or sign in with your password.",
   ]);
 }

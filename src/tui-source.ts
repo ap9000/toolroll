@@ -1,0 +1,153 @@
+/**
+ * The terminal UI's view of this installation (tui-contract.ts TuiSource), in this process.
+ *
+ * Reads come straight from the database through a read-only handle (the task list and a task's own envelopes through
+ * `runOperate`, live output through peek's tail reader, the store's wake sequence as the change signal). Every write
+ * goes through `runOperate` inside runAsLocalOwner: the same commands, rows and refusals as the CLI, bound to local
+ * mode when each command opens the database, never to anything the screen says. Every command runs with --json, so
+ * nothing ever prompts on the terminal the screen owns.
+ */
+import { dirname, join } from "node:path";
+import { assignmentOf } from "./assignment.js";
+import { runAsLocalOwner } from "./local-owner.js";
+import type { OperateOptions } from "./operate.js";
+import { snapshotLiveRuns } from "./peek-cli.js";
+import type { ConnectionChecker } from "./provider-connection.js";
+import { loadProjectRegistry } from "./repos.js";
+import { describeScope } from "./scope.js";
+import { localModeOf, openStoreReadOnly, type Store } from "./store.js";
+import type { TuiAct, TuiActResult, TuiDecision, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
+import { welcomeHere, welcomeLines } from "./welcome-facts.js";
+
+export type TuiSourceOptions = {
+  databaseFile: string;
+  clock?: () => Date;
+  /** Passed to every runOperate (tests: a fixed clock, seams). */
+  operate?: OperateOptions;
+  /** The agents' sign-in check for the Setup screen (tests pass their own). */
+  check?: ConnectionChecker;
+};
+
+type Envelope = Record<string, unknown> & { ok?: boolean; reason?: string; message?: string };
+const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const words = (value: unknown, fallback = ""): string => typeof value === "string" ? value : fallback;
+
+/** What a refused write says, and whether it is a local-owner refusal (the screen then leads to a password). */
+function refusalOf(envelope: Envelope): TuiActResult {
+  const message = words(envelope.message, "That was refused.");
+  return { ok: false, message, needsPassword: envelope.reason === "refused" || envelope.reason === "machine-proof" || envelope.reason === "person-required" || /password/i.test(message) };
+}
+
+export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(): void } {
+  const file = options.databaseFile;
+  const clock = options.clock ?? (() => new Date());
+  const evidenceRoot = join(dirname(file), "evidence");
+  const tails: NonNullable<Parameters<typeof snapshotLiveRuns>[3]> = new Map();
+  let reader: Store | null = null;
+  const read = (): Store | null => {
+    reader ??= openStoreReadOnly(file);
+    return reader;
+  };
+
+  /** One command as the local owner, with --json: its envelope (an unreadable answer reads as a refusal). */
+  async function command(argv: readonly string[]): Promise<Envelope> {
+    const [name = "", ...rest] = argv;
+    let out = "";
+    const { runOperate } = await import("./operate.js");
+    await runAsLocalOwner(() => runOperate(name, [...rest, "--json", "--db", file], text => { out += `${text}\n`; }, options.operate ?? {}));
+    try { return record(JSON.parse(out.trim())) as Envelope; }
+    catch {
+      const last = out.trim().split("\n").at(-1) ?? "";
+      try { return record(JSON.parse(last)) as Envelope; } catch { return { ok: false, reason: "unreadable", message: "Toolroll's answer couldn't be read." }; }
+    }
+  }
+
+  let setupCache: { at: number; value: TuiSetup | null } | null = null;
+
+  return {
+    async snapshot(): Promise<TuiSnapshot> {
+      const listed = await command(["task", "list"]);
+      const tasks = Array.isArray(listed["tasks"]) ? listed["tasks"] as unknown[] : [];
+      const rows: TuiRow[] = tasks.map(one => {
+        const row = record(one), status = record(row["status"]);
+        const views = Array.isArray(status["views"]) ? status["views"] as unknown[] : [];
+        return {
+          id: words(row["id"], words(row["rootId"])), title: words(row["title"]), status: words(status["label"], words(row["state"])), detail: words(status["detail"]),
+          needsYou: views.includes("needs-you"), liveRunId: typeof row["liveRunId"] === "number" ? row["liveRunId"] : null, repo: typeof row["repo"] === "string" ? row["repo"] : null,
+        };
+      });
+      const waiting = rows.filter(one => one.needsYou);
+      const needsYou = waiting.length === 0 ? null : `${waiting.length === 1 ? "1 task needs" : `${waiting.length} tasks need`} you: ${waiting[0]!.title}`;
+      const registry = await loadProjectRegistry(join(dirname(file), "repos.json"));
+      const store = read();
+      const mode = store === null ? null : localModeOf(store);
+      const passwordSet = store !== null && mode !== null && store.accountOf(mode.owner)?.passwordSet === true;
+      return { rows, needsYou, projects: "error" in registry ? [] : registry.repos, passwordSet };
+    },
+
+    async task(id: string): Promise<TuiTask | null> {
+      const shown = await command(["task", "show", id]);
+      if (shown.ok !== true) return null;
+      const task = record(shown["task"]), work = record(shown["work"]), status = record(work["status"]);
+      const store = read();
+      const scope = store === null ? null : store.getScope(id);
+      const plan = scope === null || scope.approvedDigest === scope.digest ? null : { digest: scope.digest, lines: describeScope(scope) };
+      let hasResult = false;
+      try { hasResult = store !== null && assignmentOf(store, id, clock(), { principal: "operator", repos: null })?.receipt != null; } catch { hasResult = false; }
+      const decisions: TuiDecision[] = store === null ? [] : store.listDecisions("unanswered").filter(one => one.taskId === id)
+        .map(one => ({ id: one.id, question: one.question, options: one.options.map(option => ({ id: option.id, label: option.label })) }));
+      return {
+        id, title: words(task["title"], id), status: words(status["label"], words(work["state"])), detail: words(status["detail"]),
+        plan, liveRunId: typeof work["liveRunId"] === "number" ? work["liveRunId"] : null, hasResult, decisions,
+      };
+    },
+
+    live(id: string): readonly string[] {
+      const store = read();
+      if (store === null) return [];
+      try { return snapshotLiveRuns(store, evidenceRoot, clock(), tails).find(one => one.taskId === id)?.lines ?? []; } catch { return []; }
+    },
+
+    changed(): number {
+      try { return read()?.wakeSeq() ?? 0; } catch { return 0; }
+    },
+
+    async act(act: TuiAct): Promise<TuiActResult> {
+      let argv: string[];
+      let done: string;
+      switch (act.kind) {
+        case "new": argv = ["task", "add", act.text, ...(act.repo === null ? [] : ["--repo", act.repo])]; done = "Filed. Its plan will be ready for you to approve."; break;
+        case "approve": argv = ["task", "approve", act.id, "--yes", "--digest", act.digest]; done = "Approved. An agent starts on it."; break;
+        case "stop": argv = ["task", "stop", act.id, "--run", String(act.runId)]; done = "Stopping. Its work so far is kept."; break;
+        case "revise": argv = ["task", "revise", act.id, "--feedback", act.text]; done = "Revision requested."; break;
+        case "answer": argv = ["decide", String(act.decision), "--choose", act.option]; done = "Answered."; break;
+        case "complete": {
+          const store = read();
+          let digest: string | undefined;
+          try { digest = store === null ? undefined : assignmentOf(store, act.id, clock(), { principal: "operator", repos: null })?.receipt?.digest; } catch { digest = undefined; }
+          if (digest === undefined) return { ok: false, message: "This task has no finished result to mark Complete.", needsPassword: false };
+          argv = ["task", "complete", act.id, "--digest", digest]; done = "Marked Complete."; break;
+        }
+      }
+      const answer = await command(argv);
+      if (answer.ok !== true) return refusalOf(answer);
+      const filed = act.kind === "new" ? words(record(answer["task"])["id"], words(answer["id"])) : "";
+      return { ok: true, message: done, ...(filed === "" ? {} : { id: filed }) };
+    },
+
+    async setup(): Promise<TuiSetup | null> {
+      if (setupCache !== null && Date.now() - setupCache.at < 30_000) return setupCache.value;
+      const store = read();
+      if (store === null) return null;
+      const here = await welcomeHere(store, file, clock(), options.check === undefined ? {} : { check: options.check });
+      const value = here.model.left === 0 ? null : { left: here.model.left, lines: welcomeLines(here.model) };
+      setupCache = { at: Date.now(), value };
+      return value;
+    },
+
+    close(): void {
+      reader?.close();
+      reader = null;
+    },
+  };
+}

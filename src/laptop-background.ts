@@ -520,3 +520,33 @@ export async function laptopStatus(store: Store, databaseFile: string, seams: La
   }
   return { running: live.ok, url: live.ok ? live.url : null, pid: live.ok ? live.pid : null, background };
 }
+
+// ---- easy start: starting the installed service again ------------------------------------------------------------------
+
+/** Whether Toolroll's own login item is installed here (its unit file exists). Reads one path; asks no supervisor. */
+export function backgroundInstalled(seams: LaptopSeams = {}): boolean {
+  const s = resolveSeams(seams);
+  return (s.platform === "darwin" || s.platform === "linux") && existsSync(unitPath(s.platform, s.home));
+}
+
+/**
+ * Bare `toolroll` and `toolroll open` with the background service installed but this database's console not running
+ * (stopped with `toolroll stop`, or not yet started at this login): start it through its supervisor — never a second
+ * `up` beside it — and prove the console it runs live. Our own label only.
+ */
+export async function startInstalledService(store: Store, databaseFile: string, seams: LaptopSeams = {}): Promise<AttachProof> {
+  const s = resolveSeams(seams);
+  const platform = s.platform;
+  if ((platform !== "darwin" && platform !== "linux") || !existsSync(unitPath(platform, s.home))) return { ok: false, state: "none", message: "the background service isn't installed" };
+  const already = await s.proveConsole(databaseFile, store);
+  if (already.ok || already.state === "refused") return already;
+  if (!(await serviceLoaded(s, platform))) {
+    const started = await startService(s, platform, unitPath(platform, s.home));
+    if (started !== null) return { ok: false, state: "refused", message: started };
+  } else if (platform === "darwin") {
+    // Loaded but not answering (between restarts): ask launchd to run it now.
+    await s.supervisor("launchctl", ["kickstart", `gui/${uid()}/${LAPTOP_LABEL_DARWIN}`]);
+  }
+  const healthy = await awaitHealthy(databaseFile, store, s);
+  return healthy.ok ? healthy : { ok: false, state: "refused", message: `the background service did not answer within ${Math.round(s.healthTimeoutMs / 1000)} s (${healthy.message})` };
+}
