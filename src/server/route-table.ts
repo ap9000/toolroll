@@ -174,6 +174,10 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "projects.github-list": "add-project",
   "projects.onboard-preview": "add-project",
   "projects.onboard-confirm": "add-project",
+  // The welcome's sample project, added the way Projects adds a folder (the same admission and its re-check).
+  "welcome.sample": "add-project",
+  // The welcome's "Use this one" (and Settings → Lead's turn-on): the lead runs on Claude Code or Codex signed in here.
+  "settings.lead-on": "choose-default-agent",
   // Choosing which open project the pages show: a view filter, never authorization.
   "projects.select": "read",
   "agents.seen": "mark-seen",
