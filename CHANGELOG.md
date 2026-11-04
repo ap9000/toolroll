@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Type `toolroll` and you're in.** At your own terminal, bare `toolroll`
+  starts Toolroll on this computer (or opens the one already running) and
+  shows your tasks, what each agent is doing and what needs you, right in the
+  terminal: file a task, read the full plan and approve it, stop, revise,
+  complete, answer a question, or press `w` for the browser. On a laptop
+  install nothing asks for a password. `toolroll --web` opens the browser
+  instead, `toolroll open` gets you back in signed in, `toolroll welcome`
+  walks the three setup steps, and `toolroll password set` adds a password
+  when you want one. Scripts, agents and `--json` see exactly what they did
+  before.
+
 ## 0.9.89 — 2026-11-03
 
 - **The app no longer freezes when a drive stops answering.** If an external

@@ -56,7 +56,13 @@ function databasePresence(file: string): "present" | "absent" | "unknown" {
   catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unknown"; }
 }
 
-async function prove(seams: QuickStartSeams): Promise<AttachProof> {
+function prove(seams: QuickStartSeams): Promise<AttachProof> {
+  return proveConsoleReadOnly(seams.databaseFile, seams.build, seams.attach ?? {});
+}
+
+/** This database's console, proved live without creating, migrating or changing anything (also easy-start.ts's). */
+export async function proveConsoleReadOnly(databaseFile: string, build: string, attach: AttachSeams = {}): Promise<AttachProof> {
+  const seams = { databaseFile, build, attach };
   // Read only, never created or migrated, never cleaned up: proving changes nothing. "None" only when nothing of this
   // build can be running on it (no database yet, or one older than this build, which `up` brings up to date); a
   // database that can't be read, is mid-upgrade or is newer than this build can't be checked, so it is refused.

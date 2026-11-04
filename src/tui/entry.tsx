@@ -1,19 +1,22 @@
 /**
  * The terminal UI bundle's entry (esbuild → dist/tui.js, scripts/browser-build.mjs). Ink, React and yoga-layout are
- * bundled in, so the installed package gains no runtime dependency. The CLI must load this file only through a dynamic
- * `import()` on the paths that show the terminal UI, never statically, so every other command stays as fast as today.
- * Nothing reaches it yet (wave 0a): running the file directly shows the sample screen.
+ * bundled in, so the installed package gains no runtime dependency. The CLI loads this file only through a dynamic
+ * `import()` when the screen opens (easy-start.ts), never statically, so every other command stays as fast as today.
+ * Running the file directly shows a sample screen.
  */
 import { render } from "ink";
 import { pathToFileURL } from "node:url";
 import { App } from "./app.js";
-import { sampleData, type TuiData } from "./data.js";
+import { sampleSession, sampleSource, type TuiExit, type TuiSession, type TuiSource } from "./data.js";
 
-/** Shows the screen until the person quits. Refuses without an interactive terminal (Ink needs raw input). */
-export async function startTui(data: TuiData = sampleData()): Promise<void> {
+/** Shows the screen until the person quits, and says how they left. Refuses without an interactive terminal. */
+export async function startTui(source: TuiSource = sampleSource(), session: TuiSession = sampleSession()): Promise<TuiExit> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("The terminal UI needs an interactive terminal.");
-  const instance = render(<App data={data} />);
+  let how: TuiExit = "leave";
+  // Ctrl-C is the screen's own key (it asks before stopping agents), never an abrupt exit.
+  const instance = render(<App source={source} session={session} onExit={exit => { how = exit; }} />, { exitOnCtrlC: false });
   await instance.waitUntilExit();
+  return how;
 }
 
 const invoked = process.argv[1];

@@ -151,7 +151,10 @@ describe("the CLI's --json bytes", () => {
     execFileSync("git", ["init", "-q", "-b", "main", repo]);
     const out: string[] = [];
     // The laptop status key reads this test's own HOME, never the machine's login items.
-    const options = { databaseFile: db, now: T0, gitRunner: quickGit, releaseIo: offline, integrationIo: { env: {}, repos: [repo] }, laptopSeams: { home: dir } } as Parameters<typeof runOperate>[3];
+    // The welcome's agent check answers here, never this machine's real agent CLIs; nothing is a person at a terminal.
+    const check = async () => ({ state: "signed-out" as const, mode: "subscription" as const, checkedAt: T0.toISOString() });
+    const options = { databaseFile: db, now: T0, gitRunner: quickGit, releaseIo: offline, integrationIo: { env: {}, repos: [repo] }, laptopSeams: { home: dir },
+      easySeams: { check, terminal: false } } as Parameters<typeof runOperate>[3];
     const record = async (argv: readonly string[], run: (write: (line: string) => void) => Promise<number>) => {
       const lines: string[] = [];
       const code = await run(line => lines.push(line));
@@ -164,6 +167,12 @@ describe("the CLI's --json bytes", () => {
       await cli(["contract", "--commands", "--json"]);
       await cli(["contract", "--bogus", "--json"]);
       await cli([dir, "--json", "--local"]);
+      // Bare `toolroll --json` outside any repository: the scan of this folder, exactly as before the easy start.
+      const outside = join(dir, "outside");
+      execFileSync("mkdir", [outside]);
+      const was = process.cwd();
+      process.chdir(outside);
+      try { await cli(["--json"]); } finally { process.chdir(was); }
       await operate(["task", "add", "Tidy the README", "--id", "t-readme", "--repo", repo, "--json"]);
       await operate(["task", "add", "Fix the login form", "--id", "t-login", "--repo", repo, "--json"]);
       await operate(["task", "list", "--json"]);
@@ -192,6 +201,10 @@ describe("the CLI's --json bytes", () => {
       await operate(["incident", "list", "--json"]);
       await operate(["audit", "--json"]);
       await operate(["audit", "--since", "0d", "--json"]);
+      // Easy start: the welcome's model; `open` and `password set` only at a person's own terminal.
+      await operate(["welcome", "--json"]);
+      await operate(["open", "--json"]);
+      await operate(["password", "set", "--json"]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

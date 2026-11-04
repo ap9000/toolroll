@@ -5136,6 +5136,42 @@ $ contract --commands --json → 0
       "remote": "no"
     },
     {
+      "invocation": "open",
+      "synopsis": "open this computer's Toolroll at a terminal, signed in: the terminal UI, or the browser with --web (starts it first when it isn't running); never prints a sign-in link",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
+    },
+    {
+      "invocation": "welcome",
+      "synopsis": "the three steps to a first result (agent, project, first task) as the console's welcome shows them; at a terminal it walks them one at a time",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ],
+      "remote": "no"
+    },
+    {
+      "invocation": "password set",
+      "synopsis": "set this computer's first password, typed twice at your own terminal (never a flag, file or environment variable); every session signs in again and local mode stays on",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
+    },
+    {
       "invocation": "doctor",
       "synopsis": "check that Toolroll's service holds no key, token or password a build could read; names what it finds and the steps to fix it, never a value, and changes nothing",
       "audience": "operator",
@@ -5202,6 +5238,20 @@ $ <dir> --json --local → 0
       "remoteProblems": []
     }
   ]
+}
+
+$ --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "scan",
+  "scannedAt": "2026-08-13T22:00:00.000Z",
+  "roots": [
+    "<dir>/outside"
+  ],
+  "missingRoots": [],
+  "remoteRead": true,
+  "repos": []
 }
 
 $ task add Tidy the README --id t-readme --repo <dir>/shop --json → 0
@@ -6125,4 +6175,66 @@ $ audit --since 0d --json → 2
   "command": "audit",
   "reason": "usage",
   "message": "--since is a number of days, like 7d. Use audit [--person <name>] [--token <name>] [--source api|mcp] [--since <days>d] [--limit <n>] [--cursor <id>] [--json]."
+}
+
+$ welcome --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "welcome",
+  "agent": {
+    "done": false,
+    "checking": false,
+    "agents": [
+      {
+        "id": "claude",
+        "name": "Claude Code",
+        "state": "signed-out",
+        "command": "claude auth login",
+        "inUse": false,
+        "canUse": false
+      },
+      {
+        "id": "codex",
+        "name": "Codex",
+        "state": "signed-out",
+        "command": "codex login",
+        "inUse": false,
+        "canUse": false
+      }
+    ],
+    "inUse": null,
+    "buildsWith": null
+  },
+  "project": {
+    "done": false,
+    "projects": [],
+    "sample": null,
+    "notTakingWork": false
+  },
+  "task": {
+    "done": true,
+    "open": false,
+    "starters": []
+  },
+  "next": "project",
+  "left": 2
+}
+
+$ open --json → 3
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "open",
+  "reason": "not-a-terminal",
+  "message": "Run `toolroll open` yourself at a terminal: it opens Toolroll here, signed in."
+}
+
+$ password set --json → 3
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "password set",
+  "reason": "not-a-terminal",
+  "message": "Set your password yourself at a terminal: run `toolroll password set`."
 }

@@ -94,7 +94,10 @@ test("up's worker gate (easy-start C4): a runner registers under a verified pass
   expect(up.match(/approverPlan\.startAuthority === "none"\) return fail\(write, json, "up", "login"/g)).toHaveLength(1);
   expect(up).not.toContain("approverPlan.verified)");
   // The console mints a link only through consoleSignInLink, by the kind its own start was authorised for.
-  expect(operate.match(/\.mintSignInLink\(|\.mintLocalLink\(/g)).toHaveLength(2);
+  expect(operate.match(/\.mintSignInLink\(|\.mintLocalLink\(/g)).toHaveLength(3);
+  // The third is the console socket's `link` verb (easy start D, `toolroll open`): only ever a local owner's link, which
+  // mintLocalLink mints only while local mode is on; it names no account.
+  expect(operate).toContain("    () => console_.server.mintLocalLink());");
   expect(/export function consoleSignInLink\([\s\S]*?\n\}\n/.exec(operate)![0]).toMatch(/message\.kind === "local"\) return startAuthority === "local" \? server\.mintLocalLink\(\) : null;\n  return startAuthority === "full" \? server\.mintSignInLink\(message\.account\) : null;/);
 });
 
