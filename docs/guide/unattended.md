@@ -6,6 +6,36 @@ Toolroll is a control plane for coding agents, optimized for the stretch where *
 
 It owns a deliberately small local task store, adapts richer trackers when they are already there, and owns no worktree pool, no review gate, and no agents. Those are adapters over [`beads`](https://github.com/gastownhall/beads), [`treehouse`](https://github.com/kunchenguid/treehouse), [`no-mistakes`](https://github.com/kunchenguid/no-mistakes), `claude`, and `codex`.
 
+## Keeping it running
+
+On your own computer, `toolroll` runs while its terminal window is open.
+To keep agents working after you close it, or after a restart:
+
+```sh
+toolroll background on     # start at login and keep running (asks once, the first time you quit)
+toolroll background show   # whether it is on, and where Toolroll is running
+toolroll background off    # stop starting at login; nothing else changes
+toolroll stop              # stop Toolroll now; running work is saved
+```
+
+`background on` installs one login item for your user (launchd on macOS,
+systemd on Linux), hands over from the Toolroll your terminal started, and
+checks the new one answers before it says yes; if it doesn't, it puts things
+back as they were. A coding agent can't turn it on for you. With the
+background service on, `toolroll stop` stops it until your next login (`toolroll
+background off` stops that too), and `toolroll` and `toolroll open` attach to
+it.
+
+**The password moment.** Work you start and approve at this computer needs
+no password. Letting agents work while you're away is different: hands-off
+modes, merging, releasing and publishing ask you to set a password first
+(`toolroll password set`, or **Set a password** where you were refused).
+After that, those steps ask for it; your everyday attended work still
+doesn't.
+
+The `daemon` commands below are an advanced, separate builder for split
+deployments; you don't need them for this.
+
 ## Unattended is not auto-accept
 
 Every tool in this category has a mode where the agent stops asking —
@@ -15,7 +45,7 @@ do not loosen when you leave the room:
 | An agent here can never | Enforced by |
 |---|---|
 | touch a default branch | builds land on `toolroll/<task>` in a leased worktree; push + PR happen only under a publication grant naming the exact repo, branch prefix, and base |
-| approve its own work | approval nonces are minted only on screens that restate the digest-bound terms, and require your approver token typed again — **no LLM sits in any approval path** — and the [agent fence](security.md#what-an-agent-can-reach) keeps your remembered login, runner tokens and the database out of the agent's reach |
+| approve its own work | approval nonces are minted only on screens that restate the digest-bound terms, and need you: your password typed again, or, for attended work on your own computer, you at its own browser or terminal — **no LLM sits in any approval path** — and the [agent fence](security.md#what-an-agent-can-reach) keeps your remembered login, runner tokens and the database out of the agent's reach |
 | act on an irreversible option | `reversible` is a schema field; irreversible choices never auto-apply, and answering one from a phone takes a second minted confirmation tap |
 | see Toolroll's secrets | the [agent fence](security.md#what-an-agent-can-reach) blocks your login, runner and bot tokens, stored provider keys and project tool secrets at the operating system; other providers' keys are stripped from each agent's environment; tool secrets rest sealed in the OS keychain ([how](security.md#how-build-sessions-are-protected)) and other secrets in 0600 files, never in the database, URLs, or logs |
 | spend while idle | **an LLM never polls** — the daemon does every no-judgement chore at zero token cost and wakes an agent only on a real event |

@@ -29,24 +29,30 @@ Approve the exact scope once. Get results back Ready with the diff, the passing 
 
 ## Quick start
 
-macOS or Linux, Node.js 22.13+, git 2.41+, and a signed-in `claude` or `codex`
-CLI.
+macOS or Linux, Node.js 22.13+, git 2.41+, and Claude Code (`claude`) or
+Codex (`codex`) signed in on this computer.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
+```
+
+or
 
 ```sh
 npm install -g toolroll    # or: brew install ap9000/toolroll/toolroll
-toolroll demo              # optional: a seeded sandbox, no model calls, no spend
-toolroll up                # the app and a builder; opens http://127.0.0.1:4180
+toolroll
 ```
 
-`up` saves your password in `up-login.txt` and prints the command that shows
-it (never the password itself), then keeps running. Then, in a repository:
+Toolroll opens in your terminal and runs while that window is open. No
+password and no login file: on your own computer you're already in. Pick an
+agent, a project (or the sample one) and a first task; approve the plan, and
+the result comes back **Ready**. Press `w` for the browser, or run
+`toolroll --web`. To look around first, `toolroll demo` opens a seeded
+sandbox with no model calls and no spend.
 
-```sh
-toolroll onboard --yes     # add it as a project, install the agent skill
-```
-
-Open **Chat**, say what you want, approve the plan. The result comes back
-**Ready**. More: [Getting started](docs/guide/getting-started.md).
+**Letting agents work on their own.** Approving work you start on this
+computer needs no password. Hands-off modes, merging, releasing and most
+settings ask you to set one first: `toolroll password set`. More: [Getting started](docs/guide/getting-started.md).
 
 ## How it works
 
