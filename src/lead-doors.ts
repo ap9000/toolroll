@@ -32,6 +32,15 @@ import { isProviderId } from "./provider.js";
 import type { Phase, ProviderId } from "./provider.js";
 import { applyChatReview, type ReviewRequest } from "./chat-review.js";
 import { applyChatTaskAction } from "./chat-task-actions.js";
+import { currentLocalOwner, localOwnerRefusal, proposalLocalAct, withLocalAct, type Authority } from "./local-owner.js";
+
+/** Easy-start C1: whether this door is a local owner's — named by the caller, or the chain's own (the stricter wins). */
+function localDoor(options: Pick<DoorOptions, "authority">): boolean {
+  return options.authority !== "full" || currentLocalOwner() !== null;
+}
+function localDoorWords(store: Store, name: string): string {
+  return localOwnerRefusal(store.accountOf(name)?.passwordSet === true, "/chat").message;
+}
 
 export type ProposalKind = LeadProposal["kind"];
 
@@ -60,6 +69,11 @@ export type DoorRefusal =
   | "refused";
 
 export type DoorOptions = {
+  /**
+   * Easy-start C1: whose authority confirms — a full session (or the CLI, a paired phone, a chat relay), or a laptop's
+   * local owner. Named by every caller; the door also reads the local owner its chain acts as, and the stricter wins.
+   */
+  authority: Authority;
   /** Resolved inside the transaction. Without it, only current subscription terms are available. */
   chatProvider?: TeamChatProviderResolver;
   evidenceRoot?: string;
@@ -202,6 +216,10 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
       const challenged = options.via !== "web" && options.via !== "cli" && options.confirm === true && sharedActionAllowsChallenge(action);
       if (sharedActionNeedsReview(action) && !challenged && (options.via !== "web" || options.actionReview === undefined || options.confirm !== true)) return { ok: false, kind: proposal.kind, reason: "needs-confirm", said: "Review this action in the secure confirmation screen." } as const;
     }
+    // Easy-start C1, before the CAS: a local owner confirms only a kind it may (LOCAL_OWNER_PROPOSALS) and, for an
+    // operation kind, only an operation that is one of its acts. The card stays pending for a full session.
+    const localAct = localDoor(options) ? proposalLocalAct(proposal.kind, proposal.kind === "action" ? sharedActionPayload(proposal.payload)?.operation : proposal.payload["operation"]) : null;
+    if (localDoor(options) && localAct === null) return { ok: false, kind: proposal.kind, reason: "refused", said: localDoorWords(store, who.name) } as const;
     // An irreversible answer takes the explicit field BEFORE the CAS: a
     // missing confirmation leaves the card pending, not refused.
     const needsConfirm = proposal.kind === "answer" && proposal.payload["reversible"] === false && options.confirm !== true;
@@ -209,9 +227,11 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
     if (!store.casLeadProposal(proposalId, "pending", "confirming", who.name, null, now)) {
       return { ok: false, kind: proposal.kind, reason: "not-pending", said: "this proposal was already acted on" } as const;
     }
+    // Both executors run as the card's own act: the prover answers "local-owner" only for it.
+    const execute = <T,>(body: () => T): T => localAct === null ? body() : withLocalAct(localAct, body);
     const outcome: DoorOutcome = proposal.kind === "action"
-      ? { ...executeSharedAction(store, who, proposal.id, sharedActionPayload(proposal.payload)!, now, {via:options.via, ...(options.evidenceRoot===undefined?{}:{root:options.evidenceRoot}), ...(options.actionReview===undefined?{}:{review:options.actionReview}), ...(options.confirm===undefined?{}:{confirm:options.confirm})}), kind: proposal.kind }
-      : executeProposal(store, who, proposal.kind, proposal.payload, now, { ...options, deferSignal: defer });
+      ? { ...execute(() => executeSharedAction(store, who, proposal.id, sharedActionPayload(proposal.payload)!, now, {via:options.via, authority: localAct === null ? "full" : "local-owner", ...(options.evidenceRoot===undefined?{}:{root:options.evidenceRoot}), ...(options.actionReview===undefined?{}:{review:options.actionReview}), ...(options.confirm===undefined?{}:{confirm:options.confirm})})), kind: proposal.kind }
+      : execute(() => executeProposal(store, who, proposal.kind, proposal.payload, now, { ...options, deferSignal: defer }));
     if (!outcome.ok && outcome.reason === "needs-confirm") {
       store.casLeadProposal(proposalId, "confirming", "pending", null, null, now);
       return outcome;
@@ -261,6 +281,8 @@ export function dismissLeadProposal(store: Store, who: VerifiedApprover, proposa
 export function confirmCoordinatorProposal(store: Store, who: VerifiedApprover, proposalId: number, now: Date, options: DoorOptions): DoorOutcome {
   if (!isVerifiedApprover(who)) return { ok: false, kind: null, reason: "standing", said: "your approver standing changed — sign in again" };
   const signals: (() => void)[] = [];
+  // Easy-start C1: a coordinator's proposal is never a local owner's to confirm (work a coordinator files needs a password).
+  if (localDoor(options)) return { ok: false, kind: null, reason: "refused", said: localDoorWords(store, who.name) };
   const result = store.transact(() => {
     if (!reproveApprover(store, who).ok) return { ok: false, kind: null, reason: "standing", said: "your approver standing changed — sign in again" } as const;
     const proposal = store.getCoordinatorProposal(proposalId);

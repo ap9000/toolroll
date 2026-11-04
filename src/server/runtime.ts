@@ -175,7 +175,9 @@ export interface ServerRuntime {
   googleVisits: Map<string, GoogleVisit>;
   setupAttemptsLeft: number;
   ssoOffer: () => { label: string; operatorsOnly: boolean; } | null;
-  signInLinks: Map<string, { account: string; expires: number; }>;
+  signInLinks: Map<string, import("./session.js").SignInLink>;
+  /** v147: this console start's key epoch (easy-start C2). */
+  keyEpoch: string;
   linkKey: (code: string) => string;
   fromThisComputer: (request: IncomingMessage) => boolean;
   /** Cockpit B2: the request's live password-freshness facts (null off a browser session). */

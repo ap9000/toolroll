@@ -212,7 +212,7 @@ describe("c1: a project is Quick, Full or Off, and a task can override it", () =
     expect(store.getLeadProposal(drafts.at(-1)!)!.payload["checks"]).toBe("off");
     store.finalizeLeadTurn(turn.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "Here's the task.", activity: "" } }, NOW);
     // The card shows the checks before the yes; confirming files the task with them.
-    const filed = confirmLeadProposal(store, who.who, drafts.at(-1)!, NOW, { via: "web", evidenceRoot: root });
+    const filed = confirmLeadProposal(store, who.who, drafts.at(-1)!, NOW, { authority: "full", via: "web", evidenceRoot: root });
     expect(filed).toMatchObject({ ok: true, kind: "task" });
     expect(taskCheckLevel(store, (filed as { taskId: string }).taskId)).toBe("off");
   });

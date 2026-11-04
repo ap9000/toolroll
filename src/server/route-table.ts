@@ -17,6 +17,8 @@
  * sessions and revoked tokens.
  */
 
+import type { LocalOwnerAct } from "../local-owner.js";
+
 /** Who presents the request. `service` is a verified external sender (a signed webhook, an OAuth return carrying its one-time state). */
 export type Caller = "anonymous" | "service" | "cookie" | "bearer" | "oauth" | "coordinator" | "lead";
 /** What the caller must hold: nothing, read, act (an approver or an `act` token), or a fresh password/provider check on top. */
@@ -90,9 +92,16 @@ export interface RouteDeclaration {
   /** Cockpit B2: whether a password remembered on this session may stand in here (`allowlist`), or never. Only the
    * allowlisted acts run their check inside `withFreshness` (scope.ts); every other step-up is `never`. */
   readonly freshness: "never" | "allowlist";
+  /**
+   * Easy-start C1: whether a local owner's session (a laptop install's passwordless owner) may use this row, decided for
+   * every row when the table loads (localMarkOf below). `allow` rows name the act they are (local-owner.ts
+   * LOCAL_OWNER_ACTS); the console's admission refuses a local owner everywhere else before the handler runs.
+   */
+  readonly local: "allow" | "deny";
+  readonly localAct: LocalOwnerAct | null;
 }
 
-type Options = Partial<Omit<RouteDeclaration, "id" | "domain" | "method" | "pattern" | "stage">>;
+type Options = Partial<Omit<RouteDeclaration, "id" | "domain" | "method" | "pattern" | "stage" | "local" | "localAct">>;
 const CONSOLE: readonly Caller[] = ["cookie", "bearer"];
 
 const exact = (path: string): string => `^${path.replace(/[.*+?^${}()|[\]\\/]/g, m => (m === "/" ? "\\/" : `\\${m}`))}$`;
@@ -123,8 +132,106 @@ function row(stage: Stage, domain: Domain, id: string, method: RouteMethod, patt
     ...(options.roleRefusal === undefined ? {} : { roleRefusal: options.roleRefusal }),
     ...(options.bodyCap === undefined ? {} : { bodyCap: options.bodyCap }),
     freshness: options.freshness ?? "never",
+    ...localMarkOf(stage, method, id),
   });
 }
+
+// ---- easy-start C1: the local owner's marks --------------------------------------------------------------------------
+// Decided here for every row, failing the table's load for an edge row nobody decided. A console POST is refused to a
+// local owner unless LOCAL_POSTS names its act; a console GET is a read (`read`) unless LOCAL_GET_DENY names it.
+
+/** The console POST rows a local owner may use, and the act each is. Everything else is refused. */
+const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
+  "tasks.add": "file-task",
+  "chat.file": "file-task",
+  "chat.send": "lead-send",
+  "chat.queued-remove": "lead-send",
+  "chat.mate-mint": "lead-send",
+  "chat.mate-follow": "lead-send",
+  "chat.mate-end": "lead-send",
+  "chat.mate-stop": "lead-send",
+  // The confirm door narrows the act to the card's own (lead-doors.ts: LOCAL_OWNER_PROPOSALS and the operation's act).
+  "chat.proposal.confirm": "lead-send",
+  "chat.proposal.dismiss": "lead-send",
+  "task.act.steer": "lead-send",
+  "task.act.approve": "approve-plan",
+  "decision.answer": "answer-question",
+  "task.act.reply": "answer-question",
+  "task.act.stop": "stop-run",
+  "task.act.cancel": "stop-run",
+  "task.act.hold": "pause-run",
+  "task.act.pause": "pause-run",
+  "task.act.unhold": "resume-run",
+  "task.act.resume-arm": "resume-run",
+  "task.act.resume": "resume-run",
+  "task.act.complete": "complete-task",
+  "run.act.revise": "request-revision",
+  "run.act.note": "request-revision",
+  "run.act.comment": "request-revision",
+  "task.act.archive": "archive-task",
+  "task.act.restore": "archive-task",
+  "projects.open": "add-project",
+  "projects.github-list": "add-project",
+  "projects.onboard-preview": "add-project",
+  "projects.onboard-confirm": "add-project",
+  // Choosing which open project the pages show: a view filter, never authorization.
+  "projects.select": "read",
+  "agents.seen": "mark-seen",
+  "agents.watch": "watch-agent",
+});
+/** Console GET rows refused to a local owner (none so far: every GET is a read; adapter-inventory.test.ts proves no GET
+ * writes beyond the allowlisted session touch and review nonce). */
+const LOCAL_GET_DENY: ReadonlySet<string> = new Set<string>([]);
+/** Every edge row, decided: allow where a local owner's cookie may reach it, deny where its adapter refuses one (or no
+ * cookie is ever read there). A new edge row fails the table's load until it is listed here. */
+export const EDGE_LOCAL: Readonly<Record<string, { local: "allow" | "deny"; why: string }>> = Object.freeze({
+  "edge.healthz": { local: "allow", why: "public read" },
+  "edge.instance": { local: "allow", why: "public read (the CLI proves the console)" },
+  "edge.telegram-hook": { local: "deny", why: "signed webhook; never a cookie" },
+  "edge.flow-form": { local: "deny", why: "a flow's public form; never a cookie" },
+  "edge.flow-form-send": { local: "deny", why: "a flow's public form; never a cookie" },
+  "edge.flow-hook": { local: "deny", why: "signed webhook; never a cookie" },
+  "edge.mcp": { local: "deny", why: "bearer only" },
+  "edge.oauth-discovery": { local: "allow", why: "public read" },
+  "edge.oauth-register": { local: "deny", why: "no cookie; registers a client only" },
+  "edge.oauth-token": { local: "deny", why: "OAuth client only" },
+  "edge.oauth-authorize": { local: "deny", why: "consent is a credential act: the adapter refuses a local owner's session" },
+  "edge.oauth-consent": { local: "deny", why: "consent is a credential act: the adapter refuses a local owner's session" },
+  "edge.google-callback": { local: "deny", why: "bound to state a refused settings POST starts" },
+  "edge.connect-callback": { local: "deny", why: "bound to state a refused settings POST starts" },
+  "edge.team-read": { local: "deny", why: "team conversations are a remote feature: authenticate refuses a local owner" },
+  "edge.team-send": { local: "deny", why: "team conversations are a remote feature: authenticate refuses a local owner" },
+  "edge.cli": { local: "deny", why: "bearer only" },
+  "edge.teams": { local: "deny", why: "signed service only" },
+  "edge.browser-asset": { local: "allow", why: "public asset" },
+  "edge.workspace-style": { local: "allow", why: "public asset" },
+  "edge.install-asset": { local: "allow", why: "public asset" },
+  "edge.font": { local: "allow", why: "public asset" },
+  "edge.desktop-health": { local: "allow", why: "public read" },
+  "edge.login-page": { local: "allow", why: "before sign-in" },
+  "edge.login-link": { local: "allow", why: "before sign-in: a one-time link" },
+  "edge.sso-start": { local: "allow", why: "before sign-in" },
+  "edge.sso-callback": { local: "allow", why: "before sign-in" },
+  "edge.sso-finish": { local: "allow", why: "before sign-in" },
+  "edge.signup": { local: "allow", why: "before sign-in" },
+  "edge.login": { local: "allow", why: "before sign-in: a password typed now makes a full session" },
+  "edge.logout": { local: "allow", why: "only narrows: ends this session" },
+  "edge.join": { local: "allow", why: "before sign-in: an invitation" },
+  "edge.join-send": { local: "allow", why: "before sign-in: an invitation" },
+  live: { local: "allow", why: "observational only; the agent watch lease is a keyed POST (agents.watch)" },
+});
+function localMarkOf(stage: Stage, method: RouteMethod, id: string): Pick<RouteDeclaration, "local" | "localAct"> {
+  if (stage === "edge") {
+    const decided = Object.prototype.hasOwnProperty.call(EDGE_LOCAL, id) ? EDGE_LOCAL[id] : undefined;
+    if (decided === undefined) throw new Error(`route table: edge row ${id} has no local-owner mark (EDGE_LOCAL)`);
+    return { local: decided.local, localAct: decided.local === "allow" ? "read" : null };
+  }
+  if (method !== "POST") return LOCAL_GET_DENY.has(id) ? { local: "deny", localAct: null } : { local: "allow", localAct: "read" };
+  const act = Object.prototype.hasOwnProperty.call(LOCAL_POSTS, id) ? LOCAL_POSTS[id]! : null;
+  return act === null ? { local: "deny", localAct: null } : { local: "allow", localAct: act };
+}
+/** The ids the local marks name, for the inventory test (a mark naming no row is stale). */
+export const LOCAL_MARKED_IDS: readonly string[] = Object.freeze([...Object.keys(LOCAL_POSTS), ...LOCAL_GET_DENY, ...Object.keys(EDGE_LOCAL)]);
 const edge = (domain: Domain, id: string, method: RouteMethod, path: string, options: Options = {}) => row("edge", domain, id, method, path.startsWith("^") ? path : exact(path), options);
 const get = (domain: Domain, id: string, path: string, options: Options = {}) => row("console", domain, id, "GET", path.startsWith("^") ? path : exact(path), options);
 const post = (domain: Domain, id: string, path: string, options: Options = {}) => row("console", domain, id, "POST", path.startsWith("^") ? path : exact(path), options);
@@ -536,6 +643,11 @@ for (const one of ["note", "comment", "revise", "draft-repair", "checks", "add-t
 // Cockpit E: reveal a running attempt's proved checkout in Finder (nothing is launched in it).
 post("tasks", "run.act.reveal", `^\\/r\\/${ID}\\/reveal$`, { project: "run", limited: "resource", callers: ["cookie"], sample: "/r/1/reveal", ...approver("Only an approver can show an agent's files.") });
 post("tasks", "session.editor-links", "/session/editor-links", { viewer: true });
+// Easy-start C1 (N1): reads never write. The shell says a finished result was opened (it leaves the person's unread
+// Done), and holds or releases the short lease that quiets chat pings while an agent's page is open — keyed POSTs, never
+// a page load or the live stream. A watch-only account keeps its own seen marks and watches too.
+post("tasks", "agents.seen", "/agents/seen", { callers: ["cookie"], project: "none", limited: "unscoped", viewer: true });
+post("tasks", "agents.watch", "/agents/watch", { callers: ["cookie"], project: "none", limited: "unscoped", viewer: true });
 post("tasks", "incident.resolve", `^\\/i\\/${ID}\\/resolve$`, { project: "incident", sample: "/i/1/resolve" });
 
 /** The sole route table, in match order. */

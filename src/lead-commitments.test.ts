@@ -158,7 +158,7 @@ describe("the lead keeps its promises and remembers corrections", () => {
     expect(bundle.corrections).toEqual([]);
     expect(bundle.commitments).toMatchObject([{ id: promise, what: "Tell you when the full checks pass" }]);
 
-    const confirmed = confirmLeadProposal(store, who, card, at(2), { via: "telegram", evidenceRoot: root });
+    const confirmed = confirmLeadProposal(store, who, card, at(2), { authority: "full", via: "telegram", evidenceRoot: root });
     expect(confirmed).toMatchObject({ ok: true });
     bundle = JSON.parse(leadContext(store, who.repos, at(3), { evidenceRoot: root, owner: who.name, thread }));
     expect(bundle.projects).toMatchObject([{ repo: "r1", decisions: [{ title: "Don't run full checks on this project" }] }]);
@@ -178,7 +178,7 @@ describe("the lead keeps its promises and remembers corrections", () => {
       expect(executeLeadTool(ctx, "remember", { repo: "r1", kind: "decision", text: "No reason given" })).toMatchObject({ ok: false });
     });
     expect(store.getLeadProposal(card)!.payload).toMatchObject({ operation: "knowledge_instructions" });
-    expect(confirmLeadProposal(store, who, card, at(1), { via: "telegram", evidenceRoot: root })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, card, at(1), { authority: "full", via: "telegram", evidenceRoot: root })).toMatchObject({ ok: true });
     expect(knowledgeView(store, repo, who.name).knowledge.instructions).toBe("Keep replies to two sentences.");
     const bundle = JSON.parse(leadContext(store, who.repos, at(2), { evidenceRoot: root, owner: who.name, thread }));
     expect(bundle.rest.knowledge).toMatchObject([{ repo: "r1", instructions: "Keep replies to two sentences." }]);
@@ -313,7 +313,7 @@ describe("the lead keeps its promises and remembers corrections", () => {
       call(ctx, "commit_to", { what: "Tell you in five minutes", when: "time", at: at(5).toISOString() });
       card = Number(call(ctx, "remember", { repo: "r1", kind: "decision", text: "Use quick checks on this project", why: "The operator said full checks are too slow here." })["proposal"]);
     });
-    expect(confirmLeadProposal(store, who, card, at(1), { via: "telegram", evidenceRoot: root })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, card, at(1), { authority: "full", via: "telegram", evidenceRoot: root })).toMatchObject({ ok: true });
     // A turn-less line after the confirmation: a promise report, then a follow update.
     await pass(at(6));
     expect(said()).toHaveLength(1);
@@ -342,8 +342,8 @@ describe("the lead keeps its promises and remembers corrections", () => {
     const elsewhere = prepareSharedAction(store, who, "knowledge_instructions", { repo, instructions: "Edited on the Knowledge page." }, root, at(1));
     turn(at(1), ctx => { expect(ctx.draft("action", { ...elsewhere })).not.toBeNull(); });
     const other = store.listLeadProposals(thread, ["pending"]).at(-1)!.id;
-    expect(confirmLeadProposal(store, who, other, at(2), { via: "telegram", evidenceRoot: root })).toMatchObject({ ok: true });
-    expect(confirmLeadProposal(store, who, first, at(3), { via: "telegram", evidenceRoot: root })).toMatchObject({ ok: false });
+    expect(confirmLeadProposal(store, who, other, at(2), { authority: "full", via: "telegram", evidenceRoot: root })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, first, at(3), { authority: "full", via: "telegram", evidenceRoot: root })).toMatchObject({ ok: false });
     expect(knowledgeView(store, repo, who.name).knowledge.instructions).toBe("Edited on the Knowledge page.");
     // Once it is no longer waiting, a fresh card against the current revision is accepted.
     turn(at(4), ctx => { expect(executeLeadTool(ctx, "remember", { repo: "r1", kind: "instruction", text: "Keep replies short.", revision: 1 })).toMatchObject({ ok: true }); });

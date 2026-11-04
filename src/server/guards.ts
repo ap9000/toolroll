@@ -18,9 +18,11 @@ authenticateApprover as checkApproverPassword, credentialProof
 } from "../scope.js";
 import { SourceBudget } from "../sign-in-guard.js";
 import {
+localModeOf,
 type Run,
 type Store
 } from "../store.js";
+import { currentLocalOwner, localBindingStands, localOwnerStandsNow } from "../local-owner.js";
 import type { RouteDeclaration } from './route-table.js';
 import { requestContext } from "./request-context.js";
 import { refuse } from "./chrome.js";
@@ -114,6 +116,12 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     const current = runtime.store.accountOf(who.name);
     if (current === null || current.revokedAt !== null || current.role !== who.role || current.generation !== (who.via === "cookie" ? who.session.generation : who.generation)) {
       return { status: 403, message: "Your access changed. Sign in again." };
+    }
+    // Easy-start C1: a local owner's session mutates only inside the console's admission of a row marked for it (which
+    // set the local owner this chain acts as), and only while that still stands; anywhere else it is refused.
+    if (who.via === "cookie" && who.authority !== "full") {
+      const local = currentLocalOwner();
+      if (local === null || local.account !== who.name || !localOwnerStandsNow(runtime.store, local)) return { status: 403, message: "Set a password to do this." };
     }
     const type = request.headers["content-type"] ?? "";
     if (!type.startsWith("application/x-www-form-urlencoded")) {
@@ -321,7 +329,7 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     const match = new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([0-9a-f]{64})`).exec(cookies);
     if (match === null) return null;
     const session = lookupSession(match[1] as string, touch);
-    return session === null ? null : { name: session.name, via: "cookie", session, role: session.role };
+    return session === null ? null : { name: session.name, via: "cookie", session, role: session.role, authority: session.authority };
   }
 
   /**
@@ -346,6 +354,12 @@ export function createSharedGuards(runtime: GuardsRuntime) {
         return null;
       }
       if (runtime.store.approverGeneration(session.name) !== session.generation) {
+        runtime.sessions.delete(id);
+        return null;
+      }
+      // v147: a local owner's session stands only while local mode is on, at the generation it was made under, for its
+      // owner. Off, moved or changed hands: the session is ended, never read as full.
+      if (session.authority !== "full" && !localBindingStands(localModeOf(runtime.store), { account: session.name, localGeneration: session.localGeneration })) {
         runtime.sessions.delete(id);
         return null;
       }

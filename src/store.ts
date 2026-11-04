@@ -80,7 +80,8 @@ import { containerEmptiness } from "./container-state.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
-import { liveReleaseOf } from "./scope.js";
+import { hashPassword, liveReleaseOf } from "./scope.js";
+import { currentLocalOwner, LOCAL_MODE_CONFINES, LOCAL_OWNER_LAPSED, localModeOn, localOwnerInFlight, localOwnerStandsNow, type Authority, type LocalMode } from "./local-owner.js";
 import { nightlyDebtHold } from "./nightly-github.js";
 import { releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { APPROVAL_BASES, approvalOf, machineActing, personProof, proofDetailOf, quarantinedAuthor, sealOriginOf, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
@@ -1160,7 +1161,12 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // deploy_in_flight, flow_step_task; V145_SCHEMA, new tables only).
 // v146 adds, and changes no saved row: each pull request check's own timing as GitHub last reported it for the head the
 // plane observed (ci_check), and each release step's start, end and outcome (release_step; V146_SCHEMA, new tables only).
-export const SCHEMA_VERSION = 146;
+// v147 adds, and changes no saved row (easy-start plan F): local mode (local_mode, one row, absent = off: only
+// `up --laptop` on a new database ever writes it), whether an account has a password (approver.password_set; saved rows
+// read 1), a browser session's authority (web_session.authority; saved rows read 'full'), its local generation, key
+// epoch and key hash (saved rows read NULL: no local binding, and a stale key), and the running console's key epoch
+// (console_instance.key_epoch; NULL). V147_ADDED_COLUMNS.
+export const SCHEMA_VERSION = 147;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1298,7 +1304,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1533,6 +1539,36 @@ CREATE TABLE IF NOT EXISTS release_step (
 );
 CREATE INDEX IF NOT EXISTS release_step_by_task ON release_step (task_id, updated_at);
 `;
+/** v147 (easy-start plan F): local mode, one row. Absent is off. Written only by initLocalMode (a database `up --laptop`
+ * created, with no account yet) and changed only through enrollOwnerPassword's precondition and setLocalModeOff, each
+ * of which moves `generation` when it changes what a local-owner session may stand on. `enabled` is the plan's `on`
+ * (ON is an SQL keyword). */
+export const LOCAL_MODE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS local_mode (
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  owner          TEXT NOT NULL REFERENCES approver(name),
+  generation     INTEGER NOT NULL CHECK (generation >= 1),
+  enabled        INTEGER NOT NULL CHECK (enabled IN (0,1)),
+  initialized_at TEXT NOT NULL,
+  changed_at     TEXT NOT NULL
+);
+`;
+/** v147: an account's password flag, a browser session's authority and local binding, and the console's key epoch.
+ * Every saved row reads the declared value: an account has a password (1), a session is full ('full') with no local
+ * generation, no key epoch (stale: the next mutation asks to reconnect) and no key; the console record has no epoch. */
+export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  approver: { password_set: { definition: "INTEGER NOT NULL DEFAULT 1 CHECK (password_set IN (0,1))", saved: "1" } },
+  web_session: {
+    authority: { definition: "TEXT NOT NULL DEFAULT 'full' CHECK (authority IN ('full','local-owner'))", saved: "'full'" },
+    local_generation: { definition: "INTEGER CHECK (local_generation IS NULL OR local_generation >= 1)", saved: "NULL" },
+    key_epoch: { definition: "TEXT", saved: "NULL" },
+    key_hash: { definition: "TEXT", saved: "NULL" },
+  },
+  console_instance: { key_epoch: { definition: "TEXT", saved: "NULL" } },
+});
+/** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
+export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
+export type MigrationStep = (typeof V147_STEPS)[number];
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -1868,7 +1904,10 @@ export type ApiTokenRow = { id: string; account: string; name: string; access: "
   projects: string[] | null;
   /** v111: the token it replaced, the one that replaced it, and when this one stops after being replaced. */
   replaces: string | null; replacedBy: string | null; overlapUntil: string | null };
-export type WebSessionRow = { idHash: string; account: string; csrf: string; role: "approver" | "viewer"; generation: number; createdAt: number; lastSeen: number; project: string | null; projectRevision: number; ssoAt: number | null; agent: string | null; address: string | null };
+export type WebSessionRow = { idHash: string; account: string; csrf: string; role: "approver" | "viewer"; generation: number; createdAt: number; lastSeen: number; project: string | null; projectRevision: number; ssoAt: number | null; agent: string | null; address: string | null;
+  /** v147: the session's authority (saved rows read 'full'); a local owner's local-mode generation; the console start its
+   * mutation key belongs to and a hash of that key (never the key). */
+  authority: Authority; localGeneration: number | null; keyEpoch: string | null; keyHash: string | null };
 
 /** v100: which account each identity-provider identity (issuer + subject) signs in as. */
 const SSO_SCHEMA = `
@@ -5264,6 +5303,11 @@ export function databasePath(env: Record<string, string | undefined>, home: stri
 export type OpenOptions = {
   /** Substituted in tests; production opens node:sqlite itself. */
   connect?: (file: string) => Database;
+  /** v147: who created a NEW database. "laptop" (`up --laptop`) records installation_fact created-by=laptop in the same
+   * transaction as installed-at, the one fact initLocalMode starts from. Ignored for a database that already exists. */
+  createdBy?: "laptop";
+  /** Test seam only: told after each v147 migration step (V147_STEPS); a throw stops the open there, as a crash would. */
+  migrationStep?: (step: MigrationStep) => void;
 };
 
 /** Every connection's wait at SQLite's lock boundary, in milliseconds. */
@@ -5351,7 +5395,7 @@ export function openStore(file: string, options: OpenOptions = {}): Store {
   const db = connect(file);
   try {
     waitForConcurrentWriter(db);
-    return initializeStore(db, file);
+    return initializeStore(db, file, options);
   } catch (error) {
     // An unsuccessful open must not retain an unfinished migration's lock
     // for the lifetime of a long-running caller.
@@ -5427,7 +5471,7 @@ CREATE TABLE IF NOT EXISTS team_request (
 );
 `;
 
-function initializeStore(db: Database, file: string): Store {
+function initializeStore(db: Database, file: string, options: OpenOptions = {}): Store {
   // THE PREFLIGHT (v48 integrity): the version is read as EXACTLY ONE
   // safe, supported integer before any DDL — one row, a safe integer,
   // its magnitude between 1 and this build's version. A database with no
@@ -5441,7 +5485,7 @@ function initializeStore(db: Database, file: string): Store {
   if (read !== null && Math.abs(read) < BASELINE_SCHEMA_VERSION) throw new Error(olderThanBaseline(file, read));
   // A fresh file becomes the v107 baseline first, then takes the same steps an installation from 0.5.0 takes.
   const fresh = read === null;
-  const preflight = fresh ? createBaseline(db, file) : read;
+  const preflight = fresh ? createBaseline(db, file, options.createdBy) : read;
   // History every database since v107 keeps: an open that finds it missing refuses rather than recreate it empty.
   if (!tableExists(db, "service_cursor")) {
     throw new Error(`${file}: service progress is missing; refusing to silently reset worker cursors`);
@@ -5523,6 +5567,8 @@ function initializeStore(db: Database, file: string): Store {
       throw new Error(`${file}: refusing to open — the schema version moved from v${preflight} between the preflight and the epoch stamp (another process is migrating it); this build speaks schema v${SCHEMA_VERSION} and alters nothing it cannot name`);
     }
   }
+  const step = options.migrationStep ?? (() => {});
+  step("epoch");
   // v117 renames first, before any step below names a table: they all speak today's names (the lead's, the subagents').
   // A fresh file is the v107 baseline by now, under the old names, so it takes the same renames.
   renameForV117(db);
@@ -5829,6 +5875,16 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   db.exec(V145_SCHEMA);
   // v146: pull request checks' own timing and release steps (new tables only).
   db.exec(V146_SCHEMA);
+  // v147: local mode (a new table) and the password flag, session authority and key columns (V147_ADDED_COLUMNS: saved
+  // rows read their declared values). Each step is idempotent: a crash between them resumes here on the next open.
+  db.exec(LOCAL_MODE_SCHEMA);
+  step("local-mode");
+  for (const [column, { definition }] of Object.entries(V147_ADDED_COLUMNS["approver"]!)) addColumn(db, "approver", column, definition);
+  step("password-set");
+  for (const [column, { definition }] of Object.entries(V147_ADDED_COLUMNS["web_session"]!)) addColumn(db, "web_session", column, definition);
+  step("web-session");
+  for (const [column, { definition }] of Object.entries(V147_ADDED_COLUMNS["console_instance"]!)) addColumn(db, "console_instance", column, definition);
+  step("console-instance");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -5861,7 +5917,7 @@ function olderThanBaseline(file: string, version: number): string {
  * file is looked at again under the write lock: a second opener that waited
  * on the first finds its tables there and refuses rather than recreating them.
  */
-function createBaseline(db: Database, file: string): number {
+function createBaseline(db: Database, file: string, createdBy?: "laptop"): number {
   db.exec("BEGIN IMMEDIATE");
   try {
     if (Number(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master").get()?.["n"]) !== 0) {
@@ -5871,6 +5927,8 @@ function createBaseline(db: Database, file: string): number {
     db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(BASELINE_SCHEMA_VERSION);
     const installedAt = new Date().toISOString();
     db.prepare("INSERT INTO installation_fact (key, value, created_at) VALUES ('installed-at', ?, ?)").run(installedAt, installedAt);
+    // v147: who made this database, in the same transaction as installed-at (initLocalMode starts only from this fact).
+    if (createdBy === "laptop") db.prepare("INSERT INTO installation_fact (key, value, created_at) VALUES ('created-by', 'laptop', ?)").run(installedAt);
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -6269,7 +6327,10 @@ function tokenProjectsOf(value: unknown): string[] | null {
 function readWebSession(row: Record<string, unknown>): WebSessionRow {
   return { idHash: String(row["id_hash"]), account: String(row["account"]), csrf: String(row["csrf"]), role: row["role"] === "viewer" ? "viewer" : "approver", generation: Number(row["generation"]),
     createdAt: Number(row["created_at"]), lastSeen: Number(row["last_seen"]), project: row["project"] == null ? null : String(row["project"]), projectRevision: Number(row["project_revision"]),
-    ssoAt: row["sso_at"] == null ? null : Number(row["sso_at"]), agent: row["agent"] == null ? null : String(row["agent"]), address: row["address"] == null ? null : String(row["address"]) };
+    ssoAt: row["sso_at"] == null ? null : Number(row["sso_at"]), agent: row["agent"] == null ? null : String(row["agent"]), address: row["address"] == null ? null : String(row["address"]),
+    // A value this build can't name is never full authority: it reads local-owner, whose binding (NULL here) stands nowhere.
+    authority: row["authority"] === "full" ? "full" : "local-owner", localGeneration: row["local_generation"] == null ? null : Number(row["local_generation"]),
+    keyEpoch: row["key_epoch"] == null ? null : String(row["key_epoch"]), keyHash: row["key_hash"] == null ? null : String(row["key_hash"]) };
 }
 
 /**
@@ -7788,6 +7849,10 @@ export class Store {
     this.transacting = true;
     let result: T;
     try {
+      // Easy-start C1, the write-time re-check: a local owner's chain writes only while it still stands (local mode on
+      // at its generation, the owner active, its session saved), read inside this same transaction.
+      const local = currentLocalOwner();
+      if (local !== null && localOwnerInFlight(local) && !localOwnerStandsNow(this, local)) throw new Error(LOCAL_OWNER_LAPSED);
       result = body();
       this.db.exec("COMMIT");
     } catch (error) {
@@ -9106,14 +9171,17 @@ export class Store {
 
   /** The full account row for identity checks (v29): hash, role,
    * generation, revocation — one read, no inference. */
-  accountOf(name: string): { credentialHash: string; role: "approver" | "viewer"; generation: number; revokedAt: string | null; projects: ProjectAccess } | null {
+  accountOf(name: string): { credentialHash: string; passwordSet: boolean; role: "approver" | "viewer"; generation: number; revokedAt: string | null; projects: ProjectAccess } | null {
     const row = this.db
-      .prepare("SELECT credential_hash, role, generation, revoked_at, projects_json FROM approver WHERE name = ?")
+      .prepare("SELECT credential_hash, password_set, role, generation, revoked_at, projects_json FROM approver WHERE name = ?")
       .get(name);
     if (row === undefined) return null;
     return {
       projects: readProjectAccess(row["projects_json"]),
       credentialHash: String(row["credential_hash"]),
+      // v147: a local-mode owner has no password yet (0); its stored hash is random and must never verify. Anything
+      // but exactly 1 reads as no password (fail closed).
+      passwordSet: Number(row["password_set"]) === 1,
       role: String(row["role"]) === "viewer" ? "viewer" : "approver",
       generation: Number(row["generation"]),
       revokedAt: row["revoked_at"] === null || row["revoked_at"] === undefined ? null : String(row["revoked_at"]),
@@ -10255,9 +10323,12 @@ export class Store {
   }
 
   saveWebSession(session: WebSessionRow): void {
-    this.db.prepare(`INSERT INTO web_session (id_hash, account, csrf, role, generation, created_at, last_seen, project, project_revision, sso_at, agent, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    // v147: authority, local generation, key epoch and key hash are set when the session is made and never changed by a
+    // later save of the same id (ON CONFLICT leaves them): a cached copy can't widen or rebind a kept session.
+    this.db.prepare(`INSERT INTO web_session (id_hash, account, csrf, role, generation, created_at, last_seen, project, project_revision, sso_at, agent, address, authority, local_generation, key_epoch, key_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id_hash) DO UPDATE SET last_seen = excluded.last_seen, project = excluded.project, project_revision = excluded.project_revision, sso_at = excluded.sso_at`)
-      .run(session.idHash, session.account, session.csrf, session.role, session.generation, session.createdAt, session.lastSeen, session.project, session.projectRevision, session.ssoAt, session.agent, session.address);
+      .run(session.idHash, session.account, session.csrf, session.role, session.generation, session.createdAt, session.lastSeen, session.project, session.projectRevision, session.ssoAt, session.agent, session.address,
+        session.authority, session.localGeneration, session.keyEpoch, session.keyHash);
   }
 
   webSession(idHash: string): WebSessionRow | null {
@@ -22395,11 +22466,15 @@ export class Store {
 
   /** Whether this installation lets an agent run where no OS confinement exists (off unless an operator said so). */
   unfencedAgentsAllowed(): boolean {
+    // Easy-start C5: while local mode is on, this installation always confines, whatever is stored (one chokepoint for
+    // every unconfined fallback: agents, the planner, setup and build commands, checks, flow code, project tools).
+    if (localModeOn(this)) return false;
     return Number(this.db.prepare("SELECT unfenced_allowed FROM confinement_setting WHERE id = 1").get()?.["unfenced_allowed"] ?? 0) === 1;
   }
 
   setUnfencedAgentsAllowed(allowed: boolean, by: string, now: Date): void {
     this.transact(() => {
+      if (allowed && localModeOn(this)) throw new Error(LOCAL_MODE_CONFINES);
       const before = this.unfencedAgentsAllowed();
       this.db.prepare("UPDATE confinement_setting SET unfenced_allowed = ?, updated_at = ?, updated_by = ? WHERE id = 1").run(allowed ? 1 : 0, now.toISOString(), by);
       this.recordPolicy(by, null, "unconfined agents", before ? "allowed" : "refused", allowed ? "allowed" : "refused", now);
@@ -23464,6 +23539,8 @@ export class Store {
       const account = this.accountOf(by);
       if (account === null || account.revokedAt !== null || account.role !== "approver" || !this.accountCanAccess(by, repo)) return null;
       if (widerThan(level, before) && (authority.may !== "widen" || !this.isInstanceOperator(by))) return null;
+      // Easy-start C5: while local mode is on, no project's checks run unsandboxed (callers say "Turn off local mode first").
+      if (level === "unsandboxed" && localModeOn(this)) return null;
       this.db.prepare(`INSERT INTO project_check_access (repo, level, updated_at, updated_by) VALUES (?, ?, ?, ?)
         ON CONFLICT (repo) DO UPDATE SET level = excluded.level, updated_at = excluded.updated_at, updated_by = excluded.updated_by`).run(repo, level, now.toISOString(), by);
       const after = this.projectCheckAccess(repo);
@@ -26001,4 +26078,113 @@ export function elapsedSeconds(startedAt: string | null, endedAt: string | null,
   if (startedAt === null) return null;
   const start = Date.parse(startedAt), end = endedAt === null ? now.getTime() : Date.parse(endedAt);
   return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, Math.round((end - start) / 1000)) : null;
+}
+
+// ---- v147: local mode (easy-start plan F and C4) ------------------------------------------------------------------
+
+/** Local mode as saved, or null when this installation never had it (absent is off). */
+export function localModeOf(store: Store): LocalMode | null {
+  const row = store.handle.prepare("SELECT owner, generation, enabled, initialized_at, changed_at FROM local_mode WHERE id = 1").get();
+  if (row === undefined) return null;
+  const generation = Number(row["generation"]);
+  return { owner: String(row["owner"]), generation: Number.isSafeInteger(generation) ? generation : -1, enabled: Number(row["enabled"]) === 1,
+    initializedAt: String(row["initialized_at"]), changedAt: String(row["changed_at"]) };
+}
+
+/** Who made this database (installation_fact created-by), or null: every database made before v147, or by `serve`. */
+export function installationCreatedBy(store: Store): string | null {
+  const row = store.handle.prepare("SELECT value FROM installation_fact WHERE key = 'created-by'").get();
+  return row === undefined ? null : String(row["value"]);
+}
+
+export type InitLocalModeResult =
+  | { ok: true; owner: string; generation: number }
+  | { ok: false; reason: "not-laptop" | "no-fence" | "has-accounts" | "already" };
+
+/**
+ * Turn local mode on for a database `up --laptop` made, once (plan F). Only when: that database records created-by
+ * laptop, it has no account yet, it never had local mode, and the caller found a fence on this machine (diagnostic
+ * only: it decides whether local mode is offered). One transaction: the owner (no password: a hash of random bytes
+ * that are thrown away, password_set 0), the local_mode row and one ledger line, each inserted only if nothing is
+ * there. A retry or a racing start inserts nothing and writes no second ledger line. Migration and the update
+ * rehearsal never call this.
+ */
+export function initLocalMode(store: Store, input: { owner: string; fenceAvailable: boolean; now: Date }): InitLocalModeResult {
+  if (!input.fenceAvailable) return { ok: false, reason: "no-fence" };
+  // Hashed before the transaction (scrypt is slow); the random bytes are never kept anywhere.
+  const unusable = hashPassword(randomBytes(32).toString("hex"));
+  return store.transact((): InitLocalModeResult => {
+    if (installationCreatedBy(store) !== "laptop") return { ok: false, reason: "not-laptop" };
+    if (store.handle.prepare("SELECT 1 FROM local_mode WHERE id = 1").get() !== undefined) return { ok: false, reason: "already" };
+    const stamp = input.now.toISOString();
+    const made = store.handle.prepare(`INSERT INTO approver (name, credential_hash, added_at, generation, password_set)
+      SELECT ?, ?, ?, 1, 0 WHERE NOT EXISTS (SELECT 1 FROM approver) AND NOT EXISTS (SELECT 1 FROM local_mode)`).run(input.owner, unusable, stamp);
+    if (Number(made.changes) !== 1) return { ok: false, reason: "has-accounts" };
+    store.handle.prepare("INSERT INTO local_mode (id, owner, generation, enabled, initialized_at, changed_at) VALUES (1, ?, 1, 1, ?, ?)").run(input.owner, stamp, stamp);
+    store.recordAction({ at: stamp, actor: input.owner, repo: null, taskId: null, runId: null, action: "local mode on", outcome: "initialized", source: "access", detail: "a new laptop install: the owner has no password yet" });
+    return { ok: true, owner: input.owner, generation: 1 };
+  });
+}
+
+export type EnrollOwnerResult =
+  | { ok: true; generation: number }
+  | { ok: false; reason: "already-set" | "local-mode-changed" | "not-owner" };
+
+/**
+ * The local owner sets their first password (plan C4), in one IMMEDIATE transaction: the account still has none,
+ * local mode is on at the generation the caller's session was bound to, and the account is the active owner. Then the
+ * hash is written with password_set 1 and the account's generation moves, every derived authority from before ends
+ * (credential-rotation: every browser session of the account, local-owner ones included), and the ledger says so.
+ * Local mode stays on. A second, concurrent enrollment finds password_set 1 and gets "already-set" ("A password was
+ * just set — sign in"). `credentialHash` is hashPassword's output; the password itself never reaches the store.
+ */
+export function enrollOwnerPassword(store: Store, owner: string, credentialHash: string, expectedLocalGeneration: number, now: Date): EnrollOwnerResult {
+  return store.transact((): EnrollOwnerResult => {
+    const account = store.accountOf(owner);
+    if (account === null || account.revokedAt !== null || account.role !== "approver") return { ok: false, reason: "not-owner" };
+    if (account.passwordSet) return { ok: false, reason: "already-set" };
+    const mode = localModeOf(store);
+    if (mode === null || mode.owner !== owner) return { ok: false, reason: "not-owner" };
+    if (!mode.enabled || mode.generation !== expectedLocalGeneration) return { ok: false, reason: "local-mode-changed" };
+    const written = store.handle.prepare(`UPDATE approver SET credential_hash = ?, password_set = 1, generation = generation + 1
+      WHERE name = ? AND password_set = 0 AND revoked_at IS NULL AND role = 'approver'`).run(credentialHash, owner);
+    if (Number(written.changes) !== 1) return { ok: false, reason: "already-set" };
+    store.revokeDerivedAuthority(owner, "credential-rotation", now);
+    store.recordAction({ at: now.toISOString(), actor: owner, repo: null, taskId: null, runId: null, action: "password set", outcome: "enrolled", source: "access", detail: `local mode stays on (generation ${mode.generation})` });
+    return { ok: true, generation: account.generation + 1 };
+  });
+}
+
+export type SetLocalModeOffResult = { ok: true; generation: number } | { ok: false; reason: "not-on" | "not-allowed" };
+
+/**
+ * Turn local mode off (plan C5: one click in Settings for a full session). The caller passes the authority it proved
+ * for this request; only full authority of an active instance operator turns it off. In one transaction: the row reads
+ * off and its generation moves (every local-owner session, link and approval bound to the old one stops standing),
+ * the account's local-owner sessions are deleted, and the ledger says who. Turning it back on is not offered.
+ */
+export function setLocalModeOff(store: Store, by: { name: string; authority: Authority }, now: Date): SetLocalModeOffResult {
+  if (by.authority !== "full") return { ok: false, reason: "not-allowed" };
+  return store.transact((): SetLocalModeOffResult => {
+    if (!store.isInstanceOperator(by.name)) return { ok: false, reason: "not-allowed" };
+    const stamp = now.toISOString();
+    const moved = store.handle.prepare("UPDATE local_mode SET enabled = 0, generation = generation + 1, changed_at = ? WHERE id = 1 AND enabled = 1").run(stamp);
+    if (Number(moved.changes) !== 1) return { ok: false, reason: "not-on" };
+    store.handle.prepare("DELETE FROM web_session WHERE authority <> 'full'").run();
+    const mode = localModeOf(store)!;
+    store.recordAction({ at: stamp, actor: by.name, repo: null, taskId: null, runId: null, action: "local mode off", outcome: "changed", source: "access", detail: `generation ${mode.generation}` });
+    return { ok: true, generation: mode.generation };
+  });
+}
+
+/**
+ * What a local sign-in link is bound to, read now (plan C4): local mode on, and its owner an active approver. Null
+ * otherwise. The console's mintLocalLink records this; redemption reads it again and compares every field.
+ */
+export function localOwnerBinding(store: Store): { account: string; localGeneration: number; accountGeneration: number } | null {
+  const mode = localModeOf(store);
+  if (mode === null || !mode.enabled || mode.generation < 1) return null;
+  const account = store.accountOf(mode.owner);
+  if (account === null || account.revokedAt !== null || account.role !== "approver") return null;
+  return { account: mode.owner, localGeneration: mode.generation, accountGeneration: account.generation };
 }

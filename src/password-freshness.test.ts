@@ -78,6 +78,26 @@ test("a session past its idle or absolute lifetime is not live (the one reading 
   expect(readFileSync("src/server/guards.ts", "utf8")).toContain("if (!sessionWithinLifetime(session, now)) {");
 });
 
+test("up's worker gate (easy-start C4): a runner registers under a verified password or local mode's owner, decided before any login file is read", () => {
+  const operate = readFileSync("src/operate.ts", "utf8");
+  const tree = /async function resolveUpApprover\([\s\S]*?\n\}\n/.exec(operate)![0];
+  // Local mode is decided first: before the legacy login moves, any login file is read, or anything is prompted.
+  const local = tree.indexOf("const local = localOwnerBinding(store);");
+  expect(local).toBeGreaterThan(0);
+  for (const later of ["migrateLegacyLogin(", "readLoginFile(", "askHidden(", "savedLoginFile("]) expect(tree.indexOf(later), later).toBeGreaterThan(local);
+  expect(tree).toContain('if (local !== null) return { approver: local.account, approvers: [local.account], verified: false, passwordFile: null, mintedPassword: null, notes, startAuthority: "local" };');
+  // Every other answer is full only with a verified password; the tree's last word is none without one.
+  expect(tree.match(/startAuthority: "full"/g)).toHaveLength(3);
+  expect(tree).toContain('startAuthority: verified ? "full" : "none" };');
+  // The one gate, on the start authority; nothing else stands in for it.
+  const up = /async function upCommand\([\s\S]*?\n\}\n/.exec(operate)![0];
+  expect(up.match(/approverPlan\.startAuthority === "none"\) return fail\(write, json, "up", "login"/g)).toHaveLength(1);
+  expect(up).not.toContain("approverPlan.verified)");
+  // The console mints a link only through consoleSignInLink, by the kind its own start was authorised for.
+  expect(operate.match(/\.mintSignInLink\(|\.mintLocalLink\(/g)).toHaveLength(2);
+  expect(/export function consoleSignInLink\([\s\S]*?\n\}\n/.exec(operate)![0]).toMatch(/message\.kind === "local"\) return startAuthority === "local" \? server\.mintLocalLink\(\) : null;\n  return startAuthority === "full" \? server\.mintSignInLink\(message\.account\) : null;/);
+});
+
 describe("an explicit identity-provider re-check", () => {
   test("stands in for ONE step-up of any kind within five minutes, and is spent by it", () => {
     const at = Date.now() - 60_000;
@@ -618,6 +638,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveApprover@147>once(mutation,saveApprover,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.saveRunner@232": 1,
     "src/store.ts#Store.saveRunner@232>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
+    // Easy-start C4: the local owner's first password, written with password_set 1 in the one enrollment transaction
+    // (its preconditions re-read there); the caller hashes it. It authenticates no one itself.
+    "src/store.ts#enrollOwnerPassword@1170": 1,
+    "src/store.ts#enrollOwnerPassword@1170>store.transact(_)@1": 1,
   },
   "credential_hash": {
     "src/export.ts#<module>": 2,
@@ -631,6 +655,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveApprover@147>once(mutation,saveApprover,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.saveRunner@232>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.signInWithSso@226>transact(_)@1": 1,
+    // Easy-start F and C4: the laptop owner's unusable hash (random bytes thrown away, password_set 0) and enrollment.
+    "src/store.ts#enrollOwnerPassword@1170>store.transact(_)@1": 1,
+    "src/store.ts#initLocalMode@1169>store.transact(_)@1": 1,
     "src/store.ts#mergeCredentialsForV118@61": 1,
   },
   "fresh": {

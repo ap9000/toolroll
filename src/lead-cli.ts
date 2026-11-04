@@ -1,3 +1,4 @@
+import { currentLocalOwner } from "./local-owner.js";
 import { parseFeedbackImage } from "./result-review.js";
 import { configureLeadFollow, leadFollowStatus } from './lead-follow.js';
 import { closedQuestionWords } from "./decision.js";
@@ -343,7 +344,7 @@ export async function runLeadCli(input: LeadCliInput): Promise<LeadCliResult> {
         emit({ ok: done, act: "dismiss", proposal: proposal.id });
         say(done ? `dismissed ${act[2]}` : "that proposal was already acted on");
       } else {
-        const outcome = confirmLeadProposal(store, who, proposal.id, now, { confirm: act[3] !== undefined, via: "cli", chatProvider: () => {
+        const outcome = confirmLeadProposal(store, who, proposal.id, now, { authority: currentLocalOwner() === null ? "full" : "local-owner", confirm: act[3] !== undefined, via: "cli", chatProvider: () => {
           const current = store.getChatConfig();
           return current === null ? null : { config: current, key: isDirectChatProvider(current.provider) ? keyFor(current as ChatConfig & { provider: DirectChatProviderId }, input.databaseFile, env) : null };
         }, ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }) });

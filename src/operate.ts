@@ -114,7 +114,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
-  openStore, openStoreNoMigrate, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
+  openStore, openStoreNoMigrate, initLocalMode, installationCreatedBy, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -124,7 +124,7 @@ import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
 import { addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry, registryRemovals } from "./repos.js";
 import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
 import { pushPass } from "./push.js";
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync } from "node:fs";
 import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, taskBranches } from "./names.js";
 import { claimActor, currentActor, withActor, type Actor } from "./actor.js";
 import { parseLeadToken } from "./api-tokens.js";
@@ -132,6 +132,8 @@ import { MAX_NETWORK_HOSTS, normalizeHost, type ProjectNetwork } from "./egress.
 import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
+import { LOCAL_POLICY } from "./surface.js";
+import { asLocalOwner, currentLocalOwner, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
@@ -141,7 +143,7 @@ import { spawn as spawnChild } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { superviseController } from "./controller-supervisor.js";
-import { buildIdentity, memoryChannel, RoleGenerations, roleMessage, type ParentToRole, type RolePort, type RoleToParent, type UpConsoleConfig, type UpRoleName, type UpRoleStart, type UpWorkerConfig } from "./up-processes.js";
+import { buildIdentity, memoryChannel, RoleGenerations, roleMessage, type ParentToRole, type RolePort, type RoleToParent, type UpConsoleConfig, type UpRoleName, type UpRoleStart, type UpStartAuthority, type UpWorkerConfig } from "./up-processes.js";
 // Every envelope is checked against its command's schema (logged, never refused), then serialized unchanged.
 import { checkedEnvelopeJson as envelopeJson } from "./contracts/cli.js";
 import { auditCommand } from "./audit-cli.js";
@@ -188,7 +190,7 @@ import {
   scopeApprovedForDispatch,
 } from "./dispatch.js";
 
-import { createDecisionServer } from "./serve.js";
+import { createDecisionServer, type DecisionServer } from "./serve.js";
 import { readTailnetNames } from "./tailnet.js";
 import {
   daemonLaunchCommand,
@@ -404,7 +406,7 @@ export type OperateOptions = {
   /** Injected by tests: `onboard`'s home folder, terminal and probes. */
   onboardSeams?: OnboardSeams;
   /** Injected by tests: whether `up` has a person at a terminal, and how it opens a browser. */
-  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void };
+  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void; home?: string; fenceAvailable?: () => boolean };
   /** Injected by tests: the classifier that sizes filed tasks (none by default under test). */
   filingSizer?: Sizer;
   /** Set only by up-role-child.ts: this process is one role of a `toolroll up` (the console or the worker). */
@@ -611,6 +613,10 @@ External trackers — build what a tracker nominates, under local approvals
                                         app; they start without a restart.
                                         --repo still adds an exact path;
                                         --no-open skips the browser;
+                                        --laptop: this computer only, with
+                                        ~/Projects when no folder is
+                                        chosen (a new install signs in
+                                        here without a password);
                                         the app and the builder run as two
                                         processes (--single-process: one);
                                         --host 0.0.0.0 --allow-host name:port
@@ -905,7 +911,7 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "no-carry",
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file",
   "clear", "follow", "ready", "all-tasks", "inbound-only", "help", "undo", "anyone", "allow-dispatch", "allow-merge", "merge-delete-branch",
-  "no-open", "single-process", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
+  "no-open", "single-process", "laptop", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
   "self-heal", "plan-auto", "chat-approve", "full-access", "repair-auto", "review-retry-auto", "no-local",
   "html", "csv", "alerts-only",
   // project network: what its builds may reach (--open | --allowlist).
@@ -1029,6 +1035,11 @@ async function runOperateLocal(
     return EXIT.ok;
   }
 
+  // Easy-start C3: the terminal UI's local owner runs only commands marked for it — decided here, before any command
+  // that answers without the database (mcp, a public-address check, restore) could run. Bound after the database opens.
+  if (localOwnerRequested() && localOwnerRowAct(command, positional, flags) === null) {
+    return fail(write, json, command, "refused", "Set a password, or sign in with your password, to do this.", EXIT.refused);
+  }
   const file = text(flags, "db") ?? options.databaseFile ?? databasePath(process.env, homedir());
   const now = options.now ?? new Date();
   try { applyProjectProfile(command, positional, flags, file); }
@@ -1062,12 +1073,28 @@ async function runOperateLocal(
 
   let store: Store;
   try {
-    store = (options.openDatabase ?? openStore)(file);
+    // v147: `up --laptop` records who made a NEW database (installation_fact created-by), the fact local mode starts from.
+    const laptop = command === "up" && flags.has("laptop") && options.upRole === undefined;
+    store = options.openDatabase !== undefined ? options.openDatabase(file) : openStore(file, laptop ? { createdBy: "laptop" } : {});
   } catch (error) {
     return databaseFailure(write, json, command, file, error);
   }
   // Toolroll's folder for the secrets it holds, beside this database: made before any build can run.
   if (file !== ":memory:") startToolSecrets(store, file, () => new Date(), { eager: SECRETS_FIRST.has(command) });
+  // Easy-start C3: the terminal UI's commands run as the local owner (runAsLocalOwner; never argv or the environment):
+  // bound here from local mode as it reads now, and only a command marked for the local owner (surface.ts LOCAL_ALLOW).
+  if (localOwnerRequested()) {
+    const admitted = localOwnerCommand(store, command, positional, flags);
+    if (!admitted.ok) {
+      store.close();
+      return fail(write, json, command, "refused", admitted.message, EXIT.refused);
+    }
+    try {
+      return await dispatchOn(command, positional, flags, parsed.repoList, { store, write, json, file, now }, options, run => asLocalOwner(admitted.principal, run));
+    } finally {
+      store.close();
+    }
+  }
   // The lead (a lead token, as --token or TOOLROLL_LEAD_TOKEN) acts for its owner in single commands; its work
   // pings nobody. Anyone else who signs in inside one of these commands is who acted. Services name nobody.
   const presentedFlag = text(flags, "token");
@@ -1341,7 +1368,7 @@ type Context = {
   releaseIo?: ReleaseIo;
   installBin?: string;
   onboardSeams?: OnboardSeams;
-  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void };
+  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void; home?: string; fenceAvailable?: () => boolean };
   /** This process is one role of a `toolroll up`, started by it (never from the command line). */
   upRole?: UpRoleHost;
   /** In-memory seams a child process can't receive: `up` runs its console and worker in this one process. */
@@ -4371,6 +4398,8 @@ async function startConsole(options: {
   editorLinks?: "vscode";
   instanceSecret?: () => string | null;
   draining?: () => boolean;
+  /** v147: this start's key epoch (absent: the server mints its own). */
+  keyEpoch?: string;
 }): Promise<{ server: ReturnType<typeof createDecisionServer>; port: number; url: string }> {
   const { context } = options;
   // A git incident (teardown-git.ts) raises an attention notification in this console's outbox.
@@ -4409,6 +4438,7 @@ async function startConsole(options: {
     ...(options.editorLinks === undefined ? {} : { editorLinks: options.editorLinks }),
     ...(options.instanceSecret === undefined ? {} : { instanceSecret: options.instanceSecret }),
     ...(options.draining === undefined ? {} : { draining: options.draining }),
+    ...(options.keyEpoch === undefined ? {} : { keyEpoch: options.keyEpoch }),
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -7356,6 +7386,9 @@ type UpApprover = {
   /** The password to print once — set ONLY when this run minted it. */
   mintedPassword: string | null;
   notes: string[];
+  /** Easy-start C4: how this start is authorised. "local": local mode's owner (no password asked or read); "full": a
+   * password verified (the saved login, or typed); "none": nothing — the worker gate refuses. */
+  startAuthority: UpStartAuthority;
 };
 
 /** The approver decision tree (arc 2 findings 8/21/29/32), exhaustively. */
@@ -7367,6 +7400,10 @@ async function resolveUpApprover(
   const { store, clock } = context;
   const stateDir = dirname(context.databaseFile);
   const notes: string[] = [];
+  // Easy-start C4: local mode first, before any login file is read or moved and before any prompt. Its owner, active,
+  // starts this `up` with local authority: the console can mint only a local-owner link from it, never a full one.
+  const local = localOwnerBinding(store);
+  if (local !== null) return { approver: local.account, approvers: [local.account], verified: false, passwordFile: null, mintedPassword: null, notes, startAuthority: "local" };
   // An older version's login beside the database moves into the reserved folder every fence denies (login-secrets.ts).
   const migration = migrateLegacyLogin(stateDir);
   if (migration.kind === "moved") notes.push(`moved your saved login into ${migration.to} (owner-only, kept from agents)`);
@@ -7384,7 +7421,7 @@ async function resolveUpApprover(
       const adopted = store.bootstrapApproverIfNone(orphan.name, hashApproverToken(orphan.password), clock());
       if (adopted.ok) {
         notes.push(`adopted the login from ${UP_LOGIN_FILE} — a previous start was interrupted before it finished`);
-        return { approver: orphan.name, approvers: [orphan.name], verified: true, passwordFile: loginFile, mintedPassword: null, notes };
+        return { approver: orphan.name, approvers: [orphan.name], verified: true, passwordFile: loginFile, mintedPassword: null, notes, startAuthority: "full" };
       }
       names = store.listApprovers().map(one => one.name); // a winner appeared; fall through
     } else {
@@ -7403,12 +7440,12 @@ async function resolveUpApprover(
       }
       const made = store.bootstrapApproverIfNone(name, hashApproverToken(password), clock());
       if (made.ok) {
-        return { approver: name, approvers: [name], verified: true, passwordFile: loginFile, mintedPassword: password, notes };
+        return { approver: name, approvers: [name], verified: true, passwordFile: loginFile, mintedPassword: password, notes, startAuthority: "full" };
       }
       // Lost the race. Keep the file if the winner IS our identity (an
       // adopter beat us to our own file); otherwise it is ours to remove.
       if (authenticateApprover(store, name, password).ok) {
-        return { approver: name, approvers: store.listApprovers().map(one => one.name), verified: true, passwordFile: loginFile, mintedPassword: null, notes };
+        return { approver: name, approvers: store.listApprovers().map(one => one.name), verified: true, passwordFile: loginFile, mintedPassword: null, notes, startAuthority: "full" };
       }
       try {
         unlinkSync(loginFile);
@@ -7476,7 +7513,7 @@ async function resolveUpApprover(
       );
     }
   }
-  return { approver: selected, approvers: names, verified, passwordFile, mintedPassword: null, notes };
+  return { approver: selected, approvers: names, verified, passwordFile, mintedPassword: null, notes, startAuthority: verified ? "full" : "none" };
 }
 
 /** The platform browser opener — detached, silent, never load-bearing. */
@@ -7639,6 +7676,11 @@ async function upCommand(
   const allowFlag = text(flags, "allow-host");
   // --public-url: `up` serves a real domain exactly as `serve` does (one process is the whole team server).
   const publicUrlFlag = text(flags, "public-url");
+  // --laptop (easy-start A): this computer only. A laptop start never listens beyond loopback or names another address.
+  const laptop = flags.has("laptop");
+  if (laptop && (!["127.0.0.1", "localhost", "::1"].includes(hostFlag) || allowFlag !== undefined || publicUrlFlag !== undefined)) {
+    return fail(write, json, "up", "usage", "--laptop serves this computer only: leave out --host, --allow-host and --public-url", EXIT.usage);
+  }
 
   const progress = (line: string): void => {
     // v99: with TOOLROLL_LOG_FORMAT=json, each line is one JSON event on stderr for a log shipper.
@@ -7715,7 +7757,12 @@ async function upCommand(
   }
   // Saved projects that are only away for now still start the service: it serves an empty, restrictive set until they
   // answer (never the unscoped mode), and connects each as it comes back.
-  if (repos.length === 0 && projectRoots.length === 0 && deferredRepos.length === 0) return fail(write, json, "up", "no-projects", "choose where your projects live once: `toolroll up --project-root <dir>`", EXIT.refused);
+  if (repos.length === 0 && projectRoots.length === 0 && deferredRepos.length === 0) {
+    // A laptop start with nowhere chosen yet uses ~/Projects (made if it isn't there) instead of refusing.
+    const fallback = laptop ? upLaptopProjectsRoot(context.upSeams?.home ?? homedir()) : null;
+    if (fallback === null) return fail(write, json, "up", "no-projects", "choose where your projects live once: `toolroll up --project-root <dir>`", EXIT.refused);
+    projectRoots.push(fallback);
+  }
   // A person at a terminal reads three lines (onboarding); the folders are for --verbose, a service log, or an agent.
   const quietStart = !json && !flags.has("verbose") && (context.upSeams?.terminal ?? process.stdout.isTTY === true) && !underAgent(context.upSeams?.env ?? process.env);
   if (!quietStart) {
@@ -7745,7 +7792,12 @@ async function upCommand(
   let runnerToken = "";
   let approver: UpApprover | null = null;
   try {
-    // 4. The approver (findings 2/8/17/21/27/29/32).
+    // 4. The approver (findings 2/8/17/21/27/29/32). A laptop start first turns local mode on for a database it just
+    // made with no account yet, when this machine has a fence (easy-start plan F); anywhere else this changes nothing.
+    if (flags.has("laptop")) {
+      const made = upLaptopLocalMode(context, text(flags, "as"));
+      if (made.ok) progress("local mode is on: this computer's browser signs in without a password");
+    }
     const approverPlan = await resolveUpApprover(context, flags, canPrompt);
     if ("refusal" in approverPlan) return fail(write, json, "up", "login", approverPlan.refusal, EXIT.refused);
     approver = approverPlan;
@@ -7755,7 +7807,8 @@ async function upCommand(
     // recovering runner authority on an UNVERIFIED operator identity was a
     // registration road around the ceremony. No verified password, no
     // runner — the login file or another approver restores the road.
-    if (!approverPlan.verified) return fail(write, json, "up", "login", `${approverPlan.approver}'s password could not be verified — a runner only registers under a proven operator. Type it correctly, restore ${UP_LOGIN_FILE}, or have another approver re-add you.`, EXIT.refused);
+    // Easy-start C4: local mode's owner is the other start authority (no password exists to verify); "none" refuses.
+    if (approverPlan.startAuthority === "none") return fail(write, json, "up", "login", `${approverPlan.approver}'s password could not be verified — a runner only registers under a proven operator. Type it correctly, restore ${UP_LOGIN_FILE}, or have another approver re-add you.`, EXIT.refused);
 
     // 5. The runner, through the atomic door (findings 1/16/26/31), with
     // the suffix budget (finding 24) for generated names only.
@@ -7905,6 +7958,7 @@ async function upCommand(
   const consoleConfig: UpConsoleConfig = {
     host: hostFlag, port, allowedHosts: allowFlag === undefined ? null : allowFlag.split(",").map(one => one.trim()).filter(one => one !== ""),
     publicUrl: publicUrlFlag ?? null, localRunner: runnerName, poolRoot: pool, repos: [...repos], projectRoots, registryPath, editor: editorGiven !== undefined,
+    startAuthority: (approver as UpApprover | null)?.startAuthority ?? "none",
   };
   const pendingLinks = new Map<number, (link: string | null) => void>();
   let linkRequests = 0;
@@ -8036,12 +8090,16 @@ async function upCommand(
       // one-time sign-in link (single use, ten minutes, this computer only); it is never printed. The password stays
       // saved beside the database, for later and for other devices, and is never printed either.
       const account = approverPlan2.approver;
-      // The console mints it (its sign-in secrets stay there); it comes back only to be opened, never printed.
-      const link = account === null || flags.has("no-open") ? null : await new Promise<string | null>(resolveLink => {
+      const localStart = approverPlan2.startAuthority === "local";
+      // The console mints it (its sign-in secrets stay there); it comes back only to be opened, never printed. Its kind
+      // is this start's authority: a local start asks for a local owner's link (it names no account), a full one for the
+      // account's; the console mints only the kind it was started with.
+      const request = upLinkRequest(approverPlan2.startAuthority, account);
+      const link = request === null || flags.has("no-open") ? null : await new Promise<string | null>(resolveLink => {
         const id = ++linkRequests;
         const timer = setTimeout(() => { pendingLinks.delete(id); resolveLink(null); }, 10_000);
         pendingLinks.set(id, value => { clearTimeout(timer); resolveLink(value); });
-        consoleRole?.send({ type: "sign-in-link", id, account });
+        consoleRole?.send({ type: "sign-in-link", id, ...request });
       });
       // Every start says where the saved password is and the exact command that shows it, browser or not (Settings
       // revamp S4, D2). Only the path is printed, never what the file holds: absolute (a relative --db names this
@@ -8053,7 +8111,14 @@ async function upCommand(
         : showCommand === null ? `sign in as ${account} with your password` : `sign in as ${account}`;
       write("");
       write(`Toolroll is on ${url}`);
-      if (link !== null) {
+      if (localStart) {
+        // Local mode (easy-start C4): there is no password to point at; a new start opens a new one-time link.
+        if (link !== null) {
+          write("Opening it in your browser now, already signed in.");
+          write("If it doesn't open, stop it with Ctrl-C and run the same command again.");
+          (context.upSeams?.openBrowser ?? openBrowser)(new URL(link, url).toString());
+        } else write("To sign in from this computer's browser, run the same command again without --no-open.");
+      } else if (link !== null) {
         write("Opening it in your browser now, already signed in.");
         write(`If it doesn't open, go to that address and ${signInWords}.`);
         (context.upSeams?.openBrowser ?? openBrowser)(new URL(link, url).toString());
@@ -10869,7 +10934,7 @@ async function proposalsCommand(positional: readonly string[], flags: Map<string
   if (row !== null && row.kind === "answer" && !json) {
     for (const line of answerContextLines(store, row.payload)) write(line);
   }
-  const outcome = confirmCoordinatorProposal(store, verified.who, id, now, { confirm: flags.has("yes"), via: "cli" });
+  const outcome = confirmCoordinatorProposal(store, verified.who, id, now, { authority: currentLocalOwner() === null ? "full" : "local-owner", confirm: flags.has("yes"), via: "cli" });
   if (!outcome.ok) return fail(write, json, "proposals confirm", outcome.reason, outcome.reason === "needs-confirm" ? `${outcome.said} — read the consequences above, then pass --yes` : outcome.said, EXIT.refused);
   return succeed(write, json, "proposals confirm", { proposal: id, kind: outcome.kind, said: outcome.said, ...(outcome.taskId === null ? {} : { task: outcome.taskId }) }, () => [
     outcome.said,
@@ -10931,6 +10996,9 @@ function credentialsFrom(
   // A remote run is its token's person, whatever the flags or this machine's saved login say.
   const remote = activeRemote();
   if (remote !== null) return { name: remote.account, token: remote.secret };
+  // Easy-start C3: the terminal UI's local owner has no password; the prover proves its allowlisted act instead.
+  const local = currentLocalOwner();
+  if (local !== null) return { name: local.account, token: "" };
   // The lead signs in as its owner with its own token, never the owner's password.
   const lead = currentActor();
   if (context.leadToken !== undefined && lead?.lead === true) return { name: lead.account, token: context.leadToken };
@@ -10954,6 +11022,9 @@ async function askCredentials(
   context: Context,
 ): Promise<{ name: string; token: string } | null> {
   let { name, token } = credentialsFrom(flags, context);
+  // Easy-start C3: the local owner is never asked for a password (the prover decides its act, refusing all others).
+  const local = currentLocalOwner();
+  if (local !== null) return { name: local.account, token: "" };
   if ((name === undefined || token === undefined) && interactive() && !context.json) {
     name ??= await ask("username: ");
     token ??= await askHidden("password: ");
@@ -11398,6 +11469,8 @@ async function unconfinedAgentsCommand(positional: readonly string[], flags: Map
     ? "Builds run even where this machine can't confine them (each such run says \"Not confined\")."
     : "Builds this machine can't confine at the OS don't start."];
   if (wanted === undefined) return succeed(write, json, command, { allowed: store.unfencedAgentsAllowed() }, () => words(store.unfencedAgentsAllowed()));
+  // Easy-start C5: while local mode is on, this installation always confines; said before any password is asked for.
+  if (wanted === "allow" && localModeOn(store)) return fail(write, json, command, "refused", LOCAL_MODE_CONFINES, EXIT.refused);
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : credentialApprover(store, acting.name, acting.token);
   if (acting === null || !verified?.ok || !store.isInstanceOperator(acting.name)) return fail(write, json, command, "refused", "An instance operator changes this, with their password: pass --as and --token.", EXIT.refused);
@@ -12247,7 +12320,7 @@ async function projectCheckAccessCommand(positional: readonly string[], flags: M
   // How it actually runs here: with no OS fence and unconfined running allowed, without a sandbox whatever is saved; on
   // a saved sign-ins level (off for now) runs sandboxed. Said, never hidden.
   const fenced = context.fenceAvailable?.() ?? (macosFenceAvailable() || linuxFenceAvailable());
-  const runsAs = (one: CheckAccess): CheckAccess => checkAccessRunsAs(one, { platform, fenced, unconfinedAllowed: context.store.unfencedAgentsAllowed() });
+  const runsAs = (one: CheckAccess): CheckAccess => checkAccessRunsAs(one, { platform, fenced, unconfinedAllowed: context.store.unfencedAgentsAllowed(), localMode: localModeOn(context.store) });
   const here = runsAs(current);
   const words = (one: CheckAccess): string[] => {
     if (runsAs(one) === "unsandboxed" && one !== "unsandboxed") return [`${repo}: saved as ${checkAccessWords(one)}, but this machine can't sandbox checks, so they run without a sandbox.`];
@@ -12262,6 +12335,8 @@ async function projectCheckAccessCommand(positional: readonly string[], flags: M
   const unavailable = wanted === "sign-ins" ? signInsUnavailableWords(platform) : null;
   if (unavailable !== null) return fail(context.write, context.json, command, "refused", unavailable, EXIT.refused);
   const widening = widerThan(wanted, current);
+  // Easy-start C5: while local mode is on, this installation always confines; said before any password is asked for.
+  if (wanted === "unsandboxed" && localModeOn(context.store)) return fail(context.write, context.json, command, "refused", LOCAL_MODE_CONFINES, EXIT.refused);
   const acting = await askCredentials(flags, context);
   const proved = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token, repo);
   if (widening) {
@@ -12593,9 +12668,13 @@ async function runUpConsoleRole(context: Context, config: UpConsoleConfig, port:
   // v137: this console's lifecycle (service_lifecycle "console:<port>"): started, a short heartbeat, draining once
   // its `up` stops, stopped at the end. While draining, /healthz and every page say Toolroll is restarting.
   let draining = false;
+  // v147 (easy-start C2): this start's key epoch, minted once and recorded with the instance claim below. A browser's
+  // mutation key from any other start is stale.
+  const keyEpoch = randomBytes(16).toString("hex");
   let console_: Awaited<ReturnType<typeof startConsole>>;
   try {
     console_ = await startConsole({
+      keyEpoch,
       instanceSecret: () => instanceSecret,
       draining: () => draining,
       context,
@@ -12642,7 +12721,7 @@ async function runUpConsoleRole(context: Context, config: UpConsoleConfig, port:
     }
     else if (message.type === "sign-in-link") {
       let link: string | null = null;
-      try { link = console_.server.mintSignInLink(message.account); } catch { link = null; }
+      try { link = consoleSignInLink(console_.server, config.startAuthority, message); } catch { link = null; }
       port.send({ type: "sign-in-link", id: message.id, link });
     }
   });
@@ -12655,7 +12734,7 @@ async function runUpConsoleRole(context: Context, config: UpConsoleConfig, port:
   const instanceSocket = await openInstanceSocket(context.databaseFile,
     { pid: process.pid, build: packageVersion(), database: context.databaseFile, port: console_.port }, () => mintedSecret);
   if (instanceSocket.ok) {
-    mintedSecret = await claimInstance(store, context.databaseFile, { pid: process.pid, port: console_.port, build: packageVersion(), socket: instanceSocket.name }, clock());
+    mintedSecret = await claimInstance(store, context.databaseFile, { pid: process.pid, port: console_.port, build: packageVersion(), socket: instanceSocket.name, keyEpoch: console_.server.keyEpoch }, clock());
     instanceSecret = mintedSecret;
     if (mintedSecret === null) progress("attach: another console is running on this database — `toolroll` in a repository opens that one");
   } else progress(`attach: ${instanceSocket.problem} — \`toolroll\` in a repository won't find this console`);
@@ -13408,4 +13487,71 @@ function taskShipCommand(positional: readonly string[], context: Context): numbe
     `Pull request #${ship.prNumber} (${ship.githubRepo}) at ${ship.headSha.slice(0, 7)}: checks ${overall} · ${passed} of ${checks.length} passed`,
     ...checks.map(one => `  ${(one.workflow === null ? one.name : `${one.workflow} / ${one.name}`).padEnd(32)} ${(SHIP_CHECK_WORDS[one.state] ?? one.state).padEnd(9)} ${one.seconds === null ? "–" : dur(one.seconds)}`),
   ]);
+}
+
+// ---- easy-start wave 1a: the laptop start and its start authority (plan A, C4, F) ---------------------------------
+
+/** `up --laptop` with no projects folder chosen yet: ~/Projects, made owner-only if it isn't there, as its real path.
+ * Null when it can't be made or isn't a folder (the ordinary refusal then applies). */
+function upLaptopProjectsRoot(home: string): string | null {
+  const folder = join(home, "Projects");
+  try { mkdirSync(folder, { recursive: true, mode: 0o700 }); } catch { return null; }
+  return canonicalProject(folder);
+}
+
+/**
+ * Local mode for a laptop start (plan F): only for a database this start's `--laptop` made (created-by laptop) with no
+ * account yet, and only where this machine has a fence (diagnostic: on Linux without bubblewrap the ordinary password
+ * flow runs). The owner is named like today's minted login: --as, else the user's name. Idempotent: a later start, a
+ * racing start or an install with accounts changes nothing.
+ */
+function upLaptopLocalMode(context: Context, asFlag: string | undefined): InitLocalModeResult {
+  const fence = context.upSeams?.fenceAvailable ?? (() => process.platform === "darwin" ? macosFenceAvailable() : linuxFenceAvailable());
+  const owner = asFlag ?? process.env["USER"] ?? process.env["USERNAME"] ?? "operator";
+  // Cheap reads first: the fence probe runs only for a database that could still be initialized.
+  if (installationCreatedBy(context.store) !== "laptop" || localModeOf(context.store) !== null || context.store.listApprovers().length > 0) return { ok: false, reason: "already" };
+  return initLocalMode(context.store, { owner, fenceAvailable: fence(), now: context.clock() });
+}
+
+/** The sign-in link `up` asks its console for, by this start's authority: none for "none". */
+export function upLinkRequest(authority: UpStartAuthority, account: string | null): { kind: "full"; account: string } | { kind: "local" } | null {
+  if (authority === "local") return { kind: "local" };
+  if (authority === "full" && account !== null) return { kind: "full", account };
+  return null;
+}
+
+/**
+ * The console's answer to a link request (plan C4): only the kind its own start was authorised for, whatever the
+ * request says. A local start mints only a local owner's link (mintLocalLink names no account); a full start only the
+ * named account's; "none", or a request of the other kind, mints nothing.
+ */
+export function consoleSignInLink(server: Pick<DecisionServer, "mintSignInLink" | "mintLocalLink">, startAuthority: UpStartAuthority, message: Extract<ParentToRole, { type: "sign-in-link" }>): string | null {
+  if (message.kind === "local") return startAuthority === "local" ? server.mintLocalLink() : null;
+  return startAuthority === "full" ? server.mintSignInLink(message.account) : null;
+}
+
+/**
+ * Easy-start C3: whether the terminal UI's local owner may run this command, and as whom. The row is read from the
+ * parsed words (like a remote run's): a command with no row, or a row not marked for the local owner (surface.ts
+ * LOCAL_POLICY), is refused before any command code runs. So are credentials named on the command line (a lead token,
+ * a password): the local owner's authority is its own. Bound to local mode as it reads now; every write it then makes
+ * re-proves that (Store.transact).
+ */
+function localOwnerCommand(store: Store, command: string, positional: readonly string[], flags: Map<string, string | true>): { ok: true; principal: LocalPrincipal } | { ok: false; message: string } {
+  const binding = localOwnerBinding(store);
+  if (binding === null) return { ok: false, message: "Local mode is off. Sign in with your password in the browser." };
+  const act = localOwnerRowAct(command, positional, flags);
+  if (act === null) return { ok: false, message: localOwnerRefusal(store.accountOf(binding.account)?.passwordSet === true, "/").message };
+  return { ok: true, principal: { account: binding.account, localGeneration: binding.localGeneration, accountGeneration: binding.accountGeneration, transport: "terminal", act, sessionHash: null, request: null } };
+}
+
+/** The act a command is for the local owner (surface.ts LOCAL_POLICY, its row read from the parsed words), or null:
+ * no row, a row not marked for it, or credentials named on the command line. */
+function localOwnerRowAct(command: string, positional: readonly string[], flags: Map<string, string | true>): LocalOwnerAct | null {
+  if (["as", "token", "token-file", "token-env"].some(name => flags.has(name))) return null;
+  const row = remoteRowOf(command, positional);
+  // A project's trusted remote (whose main may complete landed work) is set with full authority only.
+  if (row?.invocation === "repos add" && flags.has("remote")) return null;
+  const mark = row === null ? undefined : LOCAL_POLICY.get(row.invocation);
+  return mark === undefined || mark.local !== "allow" ? null : mark.act;
 }

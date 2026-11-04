@@ -155,7 +155,7 @@ describe("lead sweeps", () => {
     const review = secure
       ? mintSharedActionReview(store, who, id, root, now)
       : null;
-    return confirmLeadProposal(store, who, id, now, {
+    return confirmLeadProposal(store, who, id, now, { authority: "full", 
       via: secure ? "web" : "telegram",
       evidenceRoot: root,
       ...(review

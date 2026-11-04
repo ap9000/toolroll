@@ -21,6 +21,7 @@ const COOKIE_ONLY_POSTS = [
   'chat.config', 'chat.mate-mint', 'chat.mate-follow', 'chat.mate-end', 'chat.mate-stop',
   // The lead queue: removing your own waiting message, from a browser.
   'chat.queued-remove',
+  'agents.seen', 'agents.watch',
   'chat.send', 'chat.file', 'chat.ack-send',
   // Cockpit E: Show in Finder reveals a proved checkout — a person's act in their own browser.
   'run.act.reveal',
