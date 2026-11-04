@@ -161,5 +161,8 @@ export function createBrowserKeys(deps: {
 export const KEY_FILL_SCRIPT = `(function(){if(window.soKeyHeaders)return;` +
   `function k(){try{var v=JSON.parse(localStorage.getItem(${JSON.stringify(KEY_STORAGE)})||"null");return v&&typeof v.key==="string"&&/^[0-9a-f]{64}$/.test(v.key)?v.key:null}catch(e){return null}}` +
   `window.soKeyHeaders=function(h){h=h||{};var x=k();if(x)h[${JSON.stringify(KEY_HEADER)}]=x;return h};` +
-  `document.addEventListener("formdata",function(e){var f=e.target;if(!f||String(f.method).toLowerCase()!=="post")return;` +
-  `try{if(new URL(f.action,location.href).origin!==location.origin)return}catch(x){return}var x=k();if(x)e.formData.set(${JSON.stringify(KEY_FIELD)},x)},true);})();`;
+  // The form's own method and action through HTMLFormElement's getters: a control named "method" or "action" (the
+  // skill form's <select name="method">) shadows f.method / f.action, which would skip the key or misread the target.
+  `var P=HTMLFormElement.prototype,G=function(n){return Object.getOwnPropertyDescriptor(P,n).get};var M=G("method"),A=G("action");` +
+  `document.addEventListener("formdata",function(e){var f=e.target,m,a;try{m=M.call(f);a=A.call(f)}catch(x){return}if(String(m).toLowerCase()!=="post")return;` +
+  `try{if(new URL(a,location.href).origin!==location.origin)return}catch(x){return}var x=k();if(x)e.formData.set(${JSON.stringify(KEY_FIELD)},x)},true);})();`;
