@@ -8,7 +8,7 @@
  * computes what that definition would be, whether an installed one matches,
  * and which existing services would conflict with it. Nothing here writes a
  * unit, loads one, or calls launchctl or systemctl; the handoff that does
- * (`toolroll background on`) is a later wave.
+ * (`toolroll background on`) is laptop-background.ts.
  *
  * The command is pinned with absolute paths, as daemon.ts pins its services:
  * launchd and systemd do not inherit an interactive shell's PATH, so the unit
@@ -291,4 +291,16 @@ function systemdExecStart(text: string): string[] {
 
 function unxml(text: string): string {
   return text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+}
+
+/** The command an installed unit runs, argument by argument (a plist's ProgramArguments, a unit's ExecStart). */
+export function unitCommand(text: string, platform: "darwin" | "linux"): string[] {
+  return platform === "darwin" ? plistProgramArguments(text) : systemdExecStart(text);
+}
+
+/** The value after `flag` in an installed unit's command, or null. */
+export function unitFlag(text: string, platform: "darwin" | "linux", flag: string): string | null {
+  const argv = unitCommand(text, platform);
+  const at = argv.indexOf(flag);
+  return at >= 0 && argv[at + 1] !== undefined ? argv[at + 1]! : null;
 }

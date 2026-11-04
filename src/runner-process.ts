@@ -190,3 +190,18 @@ export function recordedHolderProvedGone(file: string, holder: { runner: Runner;
   if (after === null || JSON.stringify(after) !== JSON.stringify(record)) return { gone: false, why: "its process record changed during the exit proof" };
   return proof;
 }
+
+/**
+ * Whether a record is authentic for exactly this registration on this host (the checks holderProvedGone makes before
+ * it looks at any process): sealed with the stored credential hash, for this runner, host, registration and
+ * credential. Null when it stands; otherwise why not. It says nothing about which processes still run.
+ */
+export function recordStandsFor(record: RunnerProcessRecord | null, holder: { runner: Runner; credentialHash: string }, host: string): string | null {
+  if (record === null) return "no readable record of its processes";
+  const expected = sealRunnerProcessRecord(record, holder.credentialHash).signature!;
+  if (typeof record.signature !== "string" || !/^[a-f0-9]{64}$/.test(record.signature)
+    || !timingSafeEqual(Buffer.from(record.signature, "hex"), Buffer.from(expected, "hex"))) return "its process record is not authenticated";
+  if (record.runner !== holder.runner.name || record.host !== holder.runner.host || record.host !== host) return "its record is for another worker or machine";
+  if (record.registeredAt !== holder.runner.registeredAt || record.credential !== credentialDigest(holder.credentialHash)) return "its record is from an earlier start";
+  return null;
+}

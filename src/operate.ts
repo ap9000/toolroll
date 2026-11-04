@@ -118,6 +118,7 @@ import {
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
+import { backgroundOff, backgroundOn, backgroundShow, laptopStatus, laptopStop, type LaptopSeams } from "./laptop-background.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
@@ -405,6 +406,8 @@ export type OperateOptions = {
   onboardSeams?: OnboardSeams;
   /** Injected by tests: whether `up` has a person at a terminal, and how it opens a browser. */
   upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void; home?: string; fenceAvailable?: () => boolean };
+  /** Injected by tests: the background service handoff's supervisor, HOME, processes and console proof (laptop-background.ts). */
+  laptopSeams?: LaptopSeams;
   /** Injected by tests: the classifier that sizes filed tasks (none by default under test). */
   filingSizer?: Sizer;
   /** Set only by up-role-child.ts: this process is one role of a `toolroll up` (the console or the worker). */
@@ -600,6 +603,9 @@ External trackers — build what a tracker nominates, under local approvals
                                         [--max <n>] tasks (default 1),
                                         [--base <ref>] for first attempts.
                                         Never pushes.
+  toolroll background on|off|show    keep this computer's Toolroll running when you log in (on), stop
+                                        that (off, only Toolroll's own login item), or how it stands
+  toolroll stop                      stop this computer's Toolroll once its running work is saved
   toolroll up [--project-root <dir>] one command to a working cockpit:
                                         app + builder + browser. Mints
                                         your login on first run (saved to
@@ -1170,6 +1176,7 @@ async function dispatchOn(
       ...(options.installBin === undefined ? {} : { installBin: options.installBin }),
       ...(options.onboardSeams === undefined ? {} : { onboardSeams: options.onboardSeams }),
       ...(options.upSeams === undefined ? {} : { upSeams: options.upSeams }),
+      ...(options.laptopSeams === undefined ? {} : { laptopSeams: options.laptopSeams }),
       ...(options.upRole === undefined ? {} : { upRole: options.upRole }),
       ...(options.folderLook === undefined ? {} : { folderLook: options.folderLook }),
       ...(upNeedsOneProcess(options) ? { upOneProcess: true } : {}),
@@ -1348,6 +1355,8 @@ type Context = {
   installBin?: string;
   onboardSeams?: OnboardSeams;
   upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void; home?: string; fenceAvailable?: () => boolean };
+  /** Injected by tests: the background service handoff's supervisor, HOME, processes and console proof (laptop-background.ts). */
+  laptopSeams?: LaptopSeams;
   /** This process is one role of a `toolroll up`, started by it (never from the command line). */
   upRole?: UpRoleHost;
   /** In-memory seams a child process can't receive: `up` runs its console and worker in this one process. */
@@ -1613,6 +1622,10 @@ async function dispatch(
       return onboardCommand(flags, context);
     case "daemon":
       return daemonCommand(positional, flags, context);
+    case "background":
+      return backgroundCommand(positional, flags, context);
+    case "stop":
+      return stopCommand(positional, flags, context);
     case "bridge":
       return bridgeCommand(positional, flags, context);
     case "publish":
@@ -9007,7 +9020,10 @@ async function statusCommand(
   const unsent = context.store.unsentTelegramReplies(null, null, new Date(context.clock().getTime() - UNSENT_REPLY_MS));
   const unsentLine = unsentRepliesLine(unsent);
   const unsentReplies = unsent.length === 0 ? {} : { unsentReplies: unsent.map(one => ({ ...one, retry: "toolroll bridge telegram retry" })) };
-  return succeed(context.write, context.json, command, { ...status, projects, ...update, ...integrations, ...updateWaiting, ...unsentReplies, ...(legacyWebhookWarning === null ? {} : { legacyWebhookWarning }) }, () => [...(waiting === null ? [] : [waiting.words]), ...(unsentLine === null ? [] : [unsentLine]), ...renderInstallationStatus(status), ...(projectsLine === null ? [] : [projectsLine]), ...(line === null ? [] : [line]), ...(brokenLine === null ? [] : [brokenLine]), ...(legacyWebhookWarning === null ? [] : [legacyWebhookWarning])]);
+  // This installation's console and background service (easy-start D), beside its updates and integrations: a person
+  // limited to some projects returned above without it; an all-project caller reads what a local one does.
+  const laptop = { laptop: await laptopStatus(context.store, context.databaseFile, context.laptopSeams) };
+  return succeed(context.write, context.json, command, { ...status, projects, ...laptop, ...update, ...integrations, ...updateWaiting, ...unsentReplies, ...(legacyWebhookWarning === null ? {} : { legacyWebhookWarning }) }, () => [...(waiting === null ? [] : [waiting.words]), ...(unsentLine === null ? [] : [unsentLine]), ...renderInstallationStatus(status), ...(projectsLine === null ? [] : [projectsLine]), ...(line === null ? [] : [line]), ...(brokenLine === null ? [] : [brokenLine]), ...(legacyWebhookWarning === null ? [] : [legacyWebhookWarning])]);
 }
 
 function unsentRepliesLine(unsent: readonly { since: string; error: string | null }[]): string | null {
@@ -13497,4 +13513,79 @@ export function upLinkRequest(authority: UpStartAuthority, account: string | nul
 export function consoleSignInLink(server: Pick<DecisionServer, "mintSignInLink" | "mintLocalLink">, startAuthority: UpStartAuthority, message: Extract<ParentToRole, { type: "sign-in-link" }>): string | null {
   if (message.kind === "local") return startAuthority === "local" ? server.mintLocalLink() : null;
   return startAuthority === "full" ? server.mintSignInLink(message.account) : null;
+}
+
+// ---- easy-start wave 2c: the background service and `stop` (plan D) ---------------------------------------------------
+
+/** The handoff's seams: the test's own, else this process's terminal (a person may confirm only at one) and prompt. */
+function laptopSeamsOf(context: Context): LaptopSeams {
+  const terminal = !context.json && process.stdin.isTTY === true && process.stdout.isTTY === true && !underAgent(process.env);
+  return { terminal, confirm: promptConfirm, ...context.laptopSeams };
+}
+
+/**
+ * `toolroll background on|off|show`: keep this computer's Toolroll running in the background (a login item), stop
+ * doing that, or say how it stands. This computer's own service: never for a remote caller, never on a demo database.
+ */
+async function backgroundCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json } = context;
+  const [action = "show", ...rest] = positional;
+  const command = `background ${action}`;
+  if (!["on", "off", "show"].includes(action) || rest.length > 0) return fail(write, json, "background", "usage", "Use `toolroll background on|off|show [--port <n>]`.", EXIT.usage);
+  for (const name of flags.keys()) if (!["db", "json", "port"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a background option.`, EXIT.usage);
+  if (context.principal !== undefined) return fail(write, json, command, "not-remote", "The background service is this computer's own; run it there.", EXIT.refused);
+  const portGiven = text(flags, "port");
+  const port = portGiven === undefined ? null : Number(portGiven);
+  if (port !== null && (!Number.isInteger(port) || port < 1 || port >= 65536)) return fail(write, json, command, "usage", "--port is a whole number under 65536", EXIT.usage);
+  const seams = laptopSeamsOf(context);
+
+  if (action === "show") {
+    const shown = await backgroundShow(context.store, context.databaseFile, port, seams);
+    if (!shown.ok) return fail(write, json, command, shown.reason, shown.message, EXIT.refused);
+    const show = shown.show;
+    const state = show.installed === "absent" ? "off" : show.loaded ? "on" : "installed, not running";
+    return succeed(write, json, command, { ...show, background: show.installed === "absent" ? "off" : "on" }, () => [
+      `Background: ${state}${show.installed === "different" ? " (set up for a different version or port; `toolroll background on` updates it)" : ""}`,
+      show.running === null ? "Toolroll isn't running." : `Toolroll is running at ${show.running.url}`,
+      ...show.conflicts.map(one => `Also here: ${one.reason}`),
+    ]);
+  }
+  const demo = refuseDemo(context, command);
+  if (demo !== null) return demo;
+
+  if (action === "off") {
+    const off = await backgroundOff(context.store, context.databaseFile, seams);
+    if (!off.ok) return fail(write, json, command, off.reason, off.message, off.reason === "supervisor" || off.reason === "still-running" ? EXIT.failed : EXIT.refused);
+    return succeed(write, json, command, off, () => [off.action === "already-off" ? "Toolroll wasn't set to run in the background." : "Toolroll no longer runs in the background. Start it with `toolroll` when you need it."]);
+  }
+
+  const on = await backgroundOn(context.store, context.databaseFile, port, seams);
+  if (!on.ok) {
+    const code = ["agent", "conflict", "declined", "running-elsewhere", "unsupported", "console-unproven", "invalid-unit", "unreadable"].includes(on.reason) ? EXIT.refused : EXIT.failed;
+    if (json) { write(envelopeJson({ ok: false, command, reason: on.reason, message: on.message, ...(on.rolledBack === undefined ? {} : { rolledBack: on.rolledBack }) })); return code; }
+    write(`✗ ${on.message}.`);
+    for (const line of on.rolledBack ?? []) write(`  ${line}`);
+    return code;
+  }
+  return succeed(write, json, command, on, () => [on.action === "unchanged" ? `Toolroll already runs in the background at ${on.url}.` : `Toolroll now runs in the background at ${on.url}. It starts when you log in.`]);
+}
+
+/**
+ * `toolroll stop`: the background service stopped through its supervisor (it comes back at login), or else the
+ * foreground `up` that runs this database's console, stopped by SIGTERM to its controller (found and proved through
+ * its signed process record), waited for until every process it named has exited. Never the console child itself.
+ */
+async function stopCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json } = context;
+  const command = "stop";
+  if (positional.length > 0) return fail(write, json, command, "usage", "Use `toolroll stop`.", EXIT.usage);
+  for (const name of flags.keys()) if (!["db", "json"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a stop option.`, EXIT.usage);
+  if (context.principal !== undefined) return fail(write, json, command, "not-remote", "Stopping Toolroll is done on its own computer.", EXIT.refused);
+  const stopped = await laptopStop(context.store, context.databaseFile, laptopSeamsOf(context));
+  if (!stopped.ok) return fail(write, json, command, stopped.reason, stopped.message, stopped.reason === "still-running" || stopped.reason === "supervisor" ? EXIT.failed : EXIT.refused);
+  return succeed(write, json, command, stopped, () => [
+    stopped.action === "not-running" ? "Toolroll isn't running."
+      : stopped.action === "service-stopped" ? "Toolroll stopped. It starts again when you log in — run `toolroll background off` to stop that."
+        : "Toolroll stopped.",
+  ]);
 }
