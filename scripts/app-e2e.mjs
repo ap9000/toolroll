@@ -2903,7 +2903,12 @@ await journey("easy-start", SCRIPTED, "A revision with long words, then a build 
   await laptopReady(revision);
   // A build that fails: a long title, and the failure said plainly.
   script({ role: "builder", when: [/currency symbol/], answer: { fail: "The agent stopped: it couldn't run the project's tests." } });
-  const failing = await fileLocally(on, install.base, "Format prices with a currency symbol everywhere they are shown, including the README's examples, the error messages and every test name that mentions an amount, without changing what any function returns");
+  // The box stops at a title's 200 characters (so nothing typed is lost): a long title, within it, files whole.
+  const longTitle = "Format prices with a currency symbol everywhere they are shown, including the README's examples and every test name that mentions an amount, without changing what any function returns";
+  await on.goto(`${install.base}/tasks/new`);
+  const cap = await on.locator('form[action="/tasks/add"] textarea[name="title"]').getAttribute("maxlength");
+  if (cap !== "200") throw new Error(`the New task box takes up to ${cap} characters, not a title's 200`);
+  const failing = await fileLocally(on, install.base, longTitle);
   await approveLocally(on, install.base, failing);
   await until(`${failing}'s build to fail`, async () => { const run = laptopBuild(failing); return run?.finished_at && run.outcome !== "built" ? run : null; }, { timeoutMs: 300_000, everyMs: 1000, seen: () => JSON.stringify(laptopBuild(failing)) });
   await on.goto(`${install.base}/t/${encodeURIComponent(failing)}`);
@@ -2913,9 +2918,9 @@ await journey("easy-start", SCRIPTED, "A revision with long words, then a build 
   if (!/fail|stopped|couldn.t|didn.t|tries again/i.test(status)) throw new Error(`the failed task's status says: ${status.slice(0, 300)}`);
   if (/tries again/.test(status) && !/Retry scheduled/.test(status)) throw new Error(`a retry's heading doesn't say so: ${status.slice(0, 300)}`);
   if (/Queued\s+Queued/.test(status) || /\d{4}-\d\d-\d\dT\d\d:/.test(status)) throw new Error(`the failed task's status repeats itself or shows a raw time: ${status.slice(0, 300)}`);
-  // Its long title is cut at a whole word, with an ellipsis.
+  // Its long title is filed whole: every word the person typed.
   const titled = laptopRows(`SELECT title FROM task WHERE id = '${failing}'`)[0]?.title ?? "";
-  if (!titled.endsWith("without changing what any function…")) throw new Error(`the long title reads: ${titled}`);
+  if (titled !== longTitle) throw new Error(`the long title reads: ${titled}`);
   await bothSizes(on, "13-failed", "easy-start");
   return { revision, failed: failing, status: status.slice(0, 160) };
 });

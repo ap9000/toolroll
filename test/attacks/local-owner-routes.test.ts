@@ -42,7 +42,15 @@ describe("the console's rows, as a local owner", () => {
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM task WHERE title = 'Fix the footer'").get()?.["n"]).toBe(1);
   });
 
-  test("a description longer than a title is filed with a whole-word title and an ellipsis", async () => {
+  test("the New task box stops at a title's 200 characters: no-goal words past it would never reach the planner", async () => {
+    const { cookie } = await world.localSession();
+    const page = await world.send("/tasks/new", "GET", { cookie });
+    expect(page.status).toBe(200);
+    const box = page.body.match(/<textarea[^>]*name="title"[^>]*>/)?.[0] ?? "";
+    expect(box).toMatch(/maxlength="200"/);
+  });
+
+  test("a direct POST longer than a title (the belt) is filed with a whole-word title and an ellipsis", async () => {
     const { cookie, csrf } = await world.localSession();
     const words = "Format prices with a currency symbol everywhere they are shown, including the README's examples, the error messages and every test name that mentions an amount, without changing what any function returns";
     const filed = await world.post("/tasks/add", cookie, { csrf, repo: world.repo, title: words });

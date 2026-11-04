@@ -1053,8 +1053,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       }
     }
     const id = (body.get("id") ?? "").trim();
-    // Words longer than a title are cut at a whole word, with an ellipsis (task-text.ts titleWithin); a refusal keeps
-    // the person's own words (the draft below).
+    // The New task box stops at a title's length (render-new-task.ts): the title is all the planner reads of a no-goal
+    // filing. A direct POST longer than that is cut at a whole word, with an ellipsis (task-text.ts titleWithin), as a
+    // belt; a refusal keeps the person's own words (the draft below).
     const typed = body.get("title") ?? "";
     const title = titleWithin(typed);
     // The EFFECTIVE placement (repo onboarding, findings 15/35): the

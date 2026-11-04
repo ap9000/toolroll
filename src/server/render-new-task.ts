@@ -74,8 +74,10 @@ export function newTaskPage(
     value: text, rows: 4, maxRows: 10, before: bar, error: problem,
     send: sendButton({ label: "File task" }),
     note: html`<span class="k-on-note">${PLAN_ON}</span><span class="k-off-note">${PLAN_OFF}</span>`,
-    // Longer words are kept to a whole-word title with an ellipsis when filed (task-text.ts titleWithin).
-    textAttrs: { maxlength: TASK_TEXT_LIMITS.text, autofocus: true },
+    // The box holds what a title holds: a task's words are its title, and the planner reads nothing else of them when no
+    // goal is given, so longer words would be lost, not kept. Filing's whole-word cut (task-text.ts titleWithin) is a
+    // belt for other callers only.
+    textAttrs: { maxlength: TASK_TEXT_LIMITS.title, autofocus: true },
   });
   const options = html`<div class="k-form">\
 ${field({ id: "nt-quality", label: "Checks", control: select({ id: "nt-quality", name: "quality-mode", items: [["default", "Default checks"], ["strict", "Strict (release)"]], current: quality, wide: true }) })}\
