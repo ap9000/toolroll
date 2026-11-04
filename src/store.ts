@@ -7204,7 +7204,7 @@ export class Store {
       // v102: who filed it, set once with the filing (separation of duties reads it; nothing changes it).
       if (spec.filedBy !== undefined) {
         this.db.prepare("UPDATE task_ref SET filed_by = ?, filed_by_kind = ? WHERE id = ?").run(spec.filedBy.name, spec.filedBy.kind, ref.id);
-        this.recordAction({ at: stamp, actor: spec.filedBy.name ?? "system", repo: null, taskId: spec.id, runId: null, action: "task filed", outcome: "recorded", source: "work", detail: spec.filedBy.kind === "person" ? null : spec.filedBy.kind });
+        this.recordAction({ at: stamp, actor: spec.filedBy.name ?? "system", repo: null, taskId: spec.id, runId: null, action: "task filed", outcome: "recorded", source: "work", detail: spec.filedBy.kind === "person" ? localFilingProvenance(spec.filedBy.name) : spec.filedBy.kind });
       }
       // The deliverable (v34) lands in the SAME transaction as the filing,
       // and there is no API to change it afterwards.
@@ -26209,4 +26209,16 @@ export function recordBackgroundAsked(store: Store, answer: BackgroundAnswer, no
     store.recordInstallationFact(BACKGROUND_ASKED_FACT, answer, now);
     return true;
   });
+}
+
+/**
+ * Easy-start C5 provenance: a task a laptop's local owner files (no password, inside its admitted act) says so in its
+ * filing ledger line — `filed via local-owner · local <generation> <browser|terminal>` — so the record shows which local
+ * mode generation and which road it came by. Null for every other filing (a person with a password, the lead, a
+ * machine), which keeps the line as it was. task_ref.filed_via is left to the road it came by (console, mate, cli…).
+ */
+export function localFilingProvenance(filer: string | null): string | null {
+  const local = currentLocalOwner();
+  if (local === null || !localOwnerInFlight(local) || local.account !== filer) return null;
+  return `filed via local-owner · local ${local.localGeneration} ${local.transport}`;
 }

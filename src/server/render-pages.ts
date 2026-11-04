@@ -1077,7 +1077,7 @@ export function portfolioOverview(data: {
 
 export type OnboardCardState =
   | { enabled: false; why: string }
-  | { enabled: true; roots: readonly string[]; record: [string, { nameWithOwner: string; rootIndex: number; target: string; diskUsageKib: number | null; large: boolean; mintedAt: number }] | null };
+  | { enabled: true; roots: readonly string[]; /** Easy-start: the local owner's own session (no password to type; the prover's local-owner branch proves the clone). */ localOwner?: boolean; record: [string, { nameWithOwner: string; rootIndex: number; target: string; diskUsageKib: number | null; large: boolean; mintedAt: number }] | null };
 
 export type ProjectPeek = { waiting: number; queued: number; running: number; doneRecently: number };
 

@@ -85,7 +85,9 @@ export function cloneReviewHtml(onboard: OnboardCardState | null, problem: strin
   if (onboard === null || !onboard.enabled || onboard.record === null) return null;
   const [nonce, record] = onboard.record;
   const kind = "step-up" as const;
-  const factsNow = approvalFactsNow();
+  // The local owner has no password to type: the clone is its own act (add-project), proved by the session at confirm.
+  const local = onboard.localOwner === true;
+  const factsNow = local ? { ...approvalFactsNow(), passwordless: true } : approvalFactsNow();
   const size = record.diskUsageKib === null ? "Unknown" : `${Math.max(1, Math.round(record.diskUsageKib / 1024))} MiB`;
   const bigOk = record.large
     ? html`<div class="k-checks"><label><input type="checkbox" name="big-ok" value="1" required>${record.nameWithOwner} is ${record.diskUsageKib === null ? "of unknown size" : size}. Clone it anyway</label></div>`
@@ -94,7 +96,7 @@ export function cloneReviewHtml(onboard: OnboardCardState | null, problem: strin
     status: html`<h2>Clone ${record.nameWithOwner}</h2>`,
     text: html`Review before anything is downloaded. Clones into ${mono(shortPathOf(record.target))} and adds it as a project. Large-file (LFS) objects aren’t downloaded.`,
     acts: approveForm({ action: "/projects/onboard-confirm", kind, facts: factsNow, label: "Clone and add", form: { hidden: { nonce } }, before: bigOk }),
-    terms: `${approvalTerms(kind, factsNow)} The review expires in 10 minutes.`,
+    terms: `${local ? "No password needed on this computer." : approvalTerms(kind, factsNow)} The review expires in 10 minutes.`,
     err: problem === null ? null : refused(problem),
     attrs: { "aria-label": `Clone ${record.nameWithOwner}` },
   })}${facts([["Repository", mono(`github.com/${record.nameWithOwner}`)], ["Size", size], ["Into", mono(shortPathOf(record.target))]])}`;

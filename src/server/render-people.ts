@@ -112,6 +112,42 @@ export function reconnectPage(problem: string | null, returnTo: string, how: { k
   }), { nav: false });
 }
 
+/** Which /password/set field a refusal is about (null: the page itself). */
+export type PasswordSetProblem = { field: "password" | "again" | null; text: string };
+
+/**
+ * Easy-start C4: the local owner's first password. Two fields and one button; the form carries the session's CSRF token
+ * (render it inside withFormToken) and, through the page's key fill, the browser key and the act that was refused, to continue there. Neither typed
+ * password ever comes back on a refusal.
+ */
+export function passwordSetPage(view: { returnTo: string; problem: PasswordSetProblem | null }): Html {
+  const problem = view.problem;
+  const error = (field: "password" | "again"): string | null => problem !== null && problem.field === field ? problem.text : null;
+  const back = view.returnTo === "/" ? null : view.returnTo;
+  const form = postForm("/password/set", joinHtml([
+    outField({ id: "password-new", label: "Password", name: "password", type: "password", hint: `At least ${SIGNUP_PASSWORD_MIN} characters.`, error: error("password"),
+      attrs: { autocomplete: "new-password", required: true, minlength: SIGNUP_PASSWORD_MIN, ...(problem === null ? { autofocus: true } : {}) } }),
+    outField({ id: "password-again", label: "Type it again", name: "again", type: "password", error: error("again"),
+      attrs: { autocomplete: "new-password", required: true, minlength: SIGNUP_PASSWORD_MIN } }),
+    btn("Set password", { variant: "primary", type: "submit", className: "k-wide" }),
+  ]), { returnTo: back, attrs: { class: "k-form" } });
+  return shell("Set a password · Toolroll", outPage({
+    brand: BRAND_HTML, brandHref: "/", title: "Set a password",
+    sub: "Agents can work on their own, merge and release only after you set a password.",
+    body: joinHtml([problem !== null && problem.field === null ? html`<div class="k-refusal">${notice(problem.text)}</div>` : "", form,
+      html`<div class="k-acts">${btn("Not now", { variant: "ghost", href: view.returnTo, className: "k-wide" })}</div>`]),
+  }), { nav: false });
+}
+
+/** /password/set once a password exists (set earlier, or just now in another tab): sign in with it, and come back. */
+export function passwordAlreadySetPage(title: string, returnTo: string, signedIn = false): Html {
+  return shell(`${title} · Toolroll`, outPage({
+    brand: BRAND_HTML, brandHref: "/", title, sub: signedIn ? "You're signed in with it." : "Sign in with it to continue.",
+    body: html`<div class="k-acts">${signedIn ? btn("Continue", { variant: "primary", href: returnTo, className: "k-wide" })
+      : btn("Sign in", { variant: "primary", href: returnTo === "/" ? "/login" : `/login?return=${encodeURIComponent(returnTo)}`, className: "k-wide" })}</div>`,
+  }), { nav: false });
+}
+
 /**
  * The page for an address the console doesn't answer to (onboarding): what was opened, where it answers, and the exact
  * command that admits this address. It stands alone (styles inline, no script, no font), because every other asset
