@@ -59,10 +59,11 @@ const tui = await build({
   // Bundled CommonJS (signal-exit, stack-utils) requires Node built-ins, which an ESM bundle has no `require` for.
   banner: { js: 'import { createRequire as __tuiCreateRequire } from "node:module"; const require = __tuiCreateRequire(import.meta.url); /*! Third-party notices: browser/THIRD_PARTY_NOTICES.txt */' },
   plugins: [{
-    // Ink imports React DevTools only when DEV=true; the bundle ships without it, so that import is an empty module.
+    // Ink imports React DevTools only when DEV=true; the bundle ships without it, so that import is an empty module
+    // (on Windows esbuild's resolveDir uses backslashes, so the match takes either separator).
     name: "ink-no-devtools",
     setup(builder) {
-      builder.onResolve({ filter: /^\.\/devtools\.js$/ }, args => /node_modules\/ink\/build$/.test(args.resolveDir) ? { path: "ink-devtools", namespace: "ink-no-devtools" } : undefined);
+      builder.onResolve({ filter: /^\.\/devtools\.js$/ }, args => /node_modules[\\/]ink[\\/]build$/.test(args.resolveDir) ? { path: "ink-devtools", namespace: "ink-no-devtools" } : undefined);
       builder.onLoad({ filter: /.*/, namespace: "ink-no-devtools" }, () => ({ contents: "export {};", loader: "js" }));
     },
   }],
