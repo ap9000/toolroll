@@ -302,7 +302,7 @@ ${AUTHORITY_LINE}
 - One command, inside the repository: \`npx toolroll up\` (or
   \`bunx toolroll up\`; Node 22.13+ must be installed — Bun's own
   runtime cannot host it). \`up\` mints the first login and saves it beside the
-  database as \`up-login.txt\` (every start prints that path and the
+  database in \`.toolroll-secrets/up-login.txt\` (every start prints that path and the
   \`cat\` command that shows the password, never the password itself),
   registers the machine as a worker, runs the console, opens the browser. Later starts ask for the
   password at most once and remember it on that machine.

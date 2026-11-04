@@ -10,6 +10,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
 import { authenticateApprover, hashPassword } from "./scope.js";
 import { runOperate, writeLoginFileDurably } from "./operate.js";
+import { ensureSecretsDir, migrateLegacyLogin, savedLoginFile } from "./login-secrets.js";
 import { daemonStatus, installLaunchdService, planDesktopService, stopLaunchdService, type ServiceDefinition, type SupervisorRunner } from "./daemon.js";
 import { run as execRun } from "./exec.js";
 import { containmentStatus, effectiveContainment, parseContainmentPolicy, probeContainmentCapability, type ContainmentPolicy } from "./containment.js";
@@ -143,7 +144,7 @@ export function pairDesktopLogin(store: Store, file: string, login: { name: stri
     // File before row, as in `up`: a crashed bootstrap can adopt the same intent.
     writeLoginFileDurably(file, login.name, login.password);
   } else if (!(first && remembered.name === login.name && remembered.password === login.password) && !authenticateApprover(store, remembered.name, remembered.password).ok) {
-    throw new Error("The existing up-login.txt is stale. Restore its valid login before starting the desktop service.");
+    throw new Error("The saved login (up-login.txt) is stale. Restore its valid login before starting the desktop service.");
   }
   if (first) store.bootstrapApproverIfNone(login.name, hashPassword(login.password), new Date());
   if (!authenticateApprover(store, login.name, login.password).ok) throw new Error("Another operator was created during setup. Sign in again.");
@@ -302,7 +303,8 @@ export async function desktopMain(argv: string[], supervise: SupervisorRunner = 
   }
   // Inspection and launch must never migrate another running controller.
   const store = openConfiguredDesktopStore(stateDir);
-  const legacyFile = join(dirname(config.databaseFile), "up-login.txt");
+  // The saved login: in the reserved folder every agent fence denies (login-secrets.ts), else where older versions kept it.
+  const legacyFile = savedLoginFile(dirname(config.databaseFile));
   if (argv[0] !== "serve-controller") {
     try {
       if (argv[0] === "inspect") {
@@ -315,7 +317,10 @@ export async function desktopMain(argv: string[], supervise: SupervisorRunner = 
         console.log(JSON.stringify(legacy));
       } else if (argv[0] === "pair") {
         const login = await readInput();
-        pairDesktopLogin(store, legacyFile, login);
+        // A login saved here goes into the reserved folder, made and proven first; an older one moves in.
+        migrateLegacyLogin(dirname(config.databaseFile));
+        ensureSecretsDir(dirname(config.databaseFile));
+        pairDesktopLogin(store, savedLoginFile(dirname(config.databaseFile)), login);
         console.log(JSON.stringify({ ok: true }));
       } else if (argv[0] === "add-repo" || argv[0] === "add-repos") {
         config = await addDesktopProjects(stateDir, store, argv.slice(1, stateArg < 0 ? undefined : stateArg));

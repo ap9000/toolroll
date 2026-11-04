@@ -28,6 +28,8 @@ import { pathToFileURL } from "node:url";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
 import { flag, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
+/** The saved login `up` writes: in the reserved secrets folder, else (an older install) beside the database. */
+const savedLoginOf = state => existsSync(join(state, ".toolroll-secrets", "up-login.txt")) ? join(state, ".toolroll-secrets", "up-login.txt") : join(state, "up-login.txt");
 
 const skipBuild = flag("--skip-build");
 
@@ -2310,7 +2312,7 @@ async function freshInstall(name, { claude, crewModels = false }) {
     // routing, so a first task would wait at Plan) and no project check (so a result could never be Ready). The setup a
     // person does once, from the terminal, before anything is filed.
     if (crewModels) {
-      const [who, secret] = readFileSync(join(state, "up-login.txt"), "utf8").trim().split(" ");
+      const [who, secret] = readFileSync(savedLoginOf(state), "utf8").trim().split(" ");
       const toolroll = (...args) => execFileSync(process.execPath, [w.bin, ...args, "--as", who, "--token", secret, "--db", join(state, "orders.db")], { stdio: "ignore", env: { ...process.env, HOME: home } });
       for (const phase of ["plan", "build", "repair", "review"]) toolroll("config", "set", phase, "--provider", "claude", "--model", "sonnet");
       toolroll("verify", "set", "--repo", realpathSync(shop), "--command", "npm test", "--timeout-seconds", "120", "--yes");
@@ -2392,7 +2394,7 @@ await journey("onboarding", SCRIPTED, "A fresh install with Claude Code signed i
   // 1. Three lines: where it is, that it opens signed in, and what to do if it doesn't. No password, no link.
   await until("the three-line greeting", async () => /Opening it in your browser now/.test(install.terminal()), { timeoutMs: 30_000, seen: install.terminal });
   const said = install.terminal().split("\n").filter(one => one.trim() !== "");
-  const [account, password] = readFileSync(join(install.state, "up-login.txt"), "utf8").trim().split(" ");
+  const [account, password] = readFileSync(savedLoginOf(install.state), "utf8").trim().split(" ");
   // Four lines (#276): the password line is an exact, quoted command to read the saved file, never the password.
   const greeting = said.slice(said.findIndex(one => one.startsWith("Toolroll is on ")), said.findIndex(one => one.startsWith("Toolroll is on ")) + 4);
   if (greeting.length !== 4 || greeting[0] !== `Toolroll is on ${install.base}/` || greeting[1] !== "Opening it in your browser now, already signed in." || greeting[2] !== `If it doesn't open, go to that address and sign in as ${account}.`
@@ -2468,7 +2470,7 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   const shotAt = new Set();
   const capture = async step => { if (shotAt.has(step)) return; shotAt.add(step); await bothSizes(on, `3-task-${step}`); };
   await capture(await stepNow() ?? "plan");
-  const [, secret] = readFileSync(join(install.state, "up-login.txt"), "utf8").trim().split(" ");
+  const [, secret] = readFileSync(savedLoginOf(install.state), "utf8").trim().split(" ");
   await until("the plan to be ready to approve", async () => (await stepNow()) === "approve" || freshRows(install.db, "SELECT state FROM task WHERE state IN ('failed','cancelled')").length > 0, { timeoutMs: 6 * 60_000, everyMs: 3000, seen: stepNow });
   if (await stepNow() !== "approve") throw new Error(`the first task stopped at ${await stepNow()}`);
   await capture("approve");

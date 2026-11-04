@@ -127,6 +127,23 @@ describe("toolroll up", () => {
     expect(String(again["passwordFile"]).endsWith("up-login.txt")).toBe(true);
   });
 
+  test("an older install's login beside the database moves into the reserved folder on the next start", async () => {
+    await up();
+    const moved = join(base, ".toolroll-secrets", "up-login.txt");
+    const legacy = join(base, "up-login.txt");
+    // As an older version left it: the login beside the database, nothing in the reserved folder.
+    const saved = readFileSync(moved, "utf8");
+    rmSync(join(base, ".toolroll-secrets"), { recursive: true });
+    writeFileSync(legacy, saved, { mode: 0o600 });
+    lines = [];
+    expect(await up()).toBe(0);
+    expect(envelope()).toMatchObject({ ok: true, approverVerified: true, passwordFile: moved });
+    expect(existsSync(legacy)).toBe(false);
+    expect(readFileSync(moved, "utf8")).toBe(saved);
+    expect(statSync(moved).mode & 0o777).toBe(0o600);
+    expect(statSync(join(base, ".toolroll-secrets")).mode & 0o777).toBe(0o700);
+  });
+
   test.each([0, 3])("--capacity is recorded and a built-in worker restart keeps saved capacity %s", async savedCapacity => {
     expect(await up(["--capacity", "3"], PORT + 11, line => {
       if (savedCapacity !== 0) return;
@@ -163,7 +180,7 @@ describe("toolroll up", () => {
       expect(await up(["--capacity", bad], PORT + 13)).toBe(2);
       expect(envelope()).toMatchObject({ ok: false, reason: "usage" });
     }
-    expect(existsSync(join(base, "up-login.txt"))).toBe(false);
+    expect(existsSync(join(base, ".toolroll-secrets", "up-login.txt"))).toBe(false);
   });
 
   test("the saved projects folder reconnects projects when started outside a repository", async () => {
@@ -202,7 +219,7 @@ describe("toolroll up", () => {
       } finally {
         store.close();
       }
-      expect(existsSync(join(base, "up-login.txt"))).toBe(false);
+      expect(existsSync(join(base, ".toolroll-secrets", "up-login.txt"))).toBe(false);
     } finally {
       await new Promise<void>(done => squatter.close(() => done()));
     }
@@ -238,7 +255,7 @@ describe("toolroll up", () => {
     });
     expect(code).toBe(0);
     const text = lines.join("\n");
-    const [, password = ""] = readFileSync(join(base, "up-login.txt"), "utf8").trim().split(" ");
+    const [, password = ""] = readFileSync(join(base, ".toolroll-secrets", "up-login.txt"), "utf8").trim().split(" ");
     expect(text).not.toContain(password);
     expect(opened).toEqual([]);
     // A log (no terminal) keeps the exact containment status.
@@ -254,12 +271,12 @@ describe("toolroll up", () => {
     expect(opened).toHaveLength(1);
     expect(opened[0]).toMatch(new RegExp(`^http://127\\.0\\.0\\.1:${PORT + 15}/login/once/[A-Za-z0-9_-]{43}$`));
     const greeting = lines.join("\n");
-    const [, secret = ""] = readFileSync(join(base, "up-login.txt"), "utf8").trim().split(" ");
+    const [, secret = ""] = readFileSync(join(base, ".toolroll-secrets", "up-login.txt"), "utf8").trim().split(" ");
     expect(greeting).not.toContain(secret);
     expect(greeting).not.toContain("/login/once/");
     // Every start says where the password is saved and the exact command that shows it, whether or not the browser
     // opened, and never the password itself.
-    const showsPassword = (said: string, file = join(base, "up-login.txt")): void => {
+    const showsPassword = (said: string, file = join(base, ".toolroll-secrets", "up-login.txt")): void => {
       expect(said).toContain(`Your password: run \`cat -- '${file}'\``);
     };
     showsPassword(greeting);
@@ -287,7 +304,7 @@ describe("toolroll up", () => {
         expect(await runOperate("up", [`--db=${relative}`, "--repo", repo, "--port", String(PORT + 19 + index), "--for", "1200", "--no-open"], line => lines.push(line), {
           upSeams: { terminal: true, env: {} },
         })).toBe(0);
-        const file = join(realpathSync(base), dirname(relative), "up-login.txt");
+        const file = join(realpathSync(base), dirname(relative), ".toolroll-secrets", "up-login.txt");
         const [, own = ""] = readFileSync(file, "utf8").trim().split(" ");
         showsPassword(lines.join("\n"), file);
         expect(own).not.toBe("");
@@ -318,7 +335,7 @@ describe("toolroll up", () => {
 
   test("under a coding agent, even at a terminal, it prints the handoff and never the password", async () => {
     for (const env of [{ CLAUDECODE: "1" }, { CODEX_SANDBOX: "seatbelt" }]) {
-      rmSync(join(base, "up-login.txt"), { force: true });
+      rmSync(join(base, ".toolroll-secrets", "up-login.txt"), { force: true });
       for (const file of [db, `${db}-wal`, `${db}-shm`]) rmSync(file, { force: true });
       lines = [];
       const opened: string[] = [];
@@ -327,8 +344,8 @@ describe("toolroll up", () => {
         upSeams: { terminal: true, env, openBrowser: url => opened.push(url) },
       })).toBe(0);
       const text = lines.join("\n");
-      const [account = "", password = ""] = readFileSync(join(base, "up-login.txt"), "utf8").trim().split(" ");
-      expect(text).toContain(`  login     ${account} — the password is in ${join(base, "up-login.txt")}`);
+      const [account = "", password = ""] = readFileSync(join(base, ".toolroll-secrets", "up-login.txt"), "utf8").trim().split(" ");
+      expect(text).toContain(`  login     ${account} — the password is in ${join(base, ".toolroll-secrets", "up-login.txt")}`);
       expect(text).not.toContain(password);
       expect(text).not.toContain("Ctrl-C stops Toolroll");
       expect(opened).toEqual([]);

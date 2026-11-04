@@ -63,7 +63,9 @@ approved ones keep what they were approved with.
 What Toolroll adds to the runtime's config, and nothing else:
 
 - **Toolroll's own folders** are denied to read and write: the state folder
-  beside the database (your remembered login `up-login.txt`, runner and
+  beside the database (your remembered login, kept in the owner-only
+  `.toolroll-secrets` folder that every launch denies whole, even when the
+  login is first saved after the launch started; runner and
   coordinator tokens, chat bot tokens, the database and its backups, other runs'
   evidence) except the checkout pool, and `~/.toolroll` (stored provider keys and
   project tool secrets); other launches' private folders are unread.

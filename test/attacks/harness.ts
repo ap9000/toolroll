@@ -28,6 +28,7 @@ import "../../src/checkout-cleanup.js";
 import "../../src/flow-unattended.js";
 import "../../src/invoke.js";
 import "../../src/landed-cleanup.js";
+import "../../src/login-secrets.js";
 import "../../src/project-tools.js";
 import "../../src/provider-home.js";
 import "../../src/teardown-git.js";
