@@ -15,7 +15,8 @@ import { consoleSignInLink, runOperate, parseOperateArgs, upLinkRequest, upNarro
 import { run as execRun } from "./exec.js";
 import { type Runner as CommandRunner } from "./builder.js";
 import { sweepServiceRunning } from "./storage-sweep-schedule.js";
-import { enrollOwnerPassword, openStore } from "./store.js";
+import { enrollOwnerPassword, laptopPortOf, openStore } from "./store.js";
+import { backgroundShow } from "./laptop-background.js";
 import { register } from "./runner.js";
 import { addApprover, authenticateApprover, hashPassword } from "./scope.js";
 import { addRepos, loadProjectRegistry, registryRemovals, updateRepos } from "./repos.js";
@@ -818,6 +819,57 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
     lines = [];
     expect(await runOperate("up", ["--laptop", "--host", "0.0.0.0", "--port", String(PORT + 47), "--json"], line => lines.push(line), { databaseFile: db })).not.toBe(0);
     expect(envelope()).toMatchObject({ ok: false, reason: "usage" });
+  });
+
+  test("a NEW laptop install steps past a port another program holds, saves it, and keeps it; other installs never move", async () => {
+    // Something that isn't this database's console holds the first port (another Toolroll, the desktop app's).
+    const foreign = createServer();
+    await new Promise<void>(resolve => foreign.listen(PORT + 48, "127.0.0.1", () => resolve()));
+    try {
+      const ports = [PORT + 48, PORT + 49, PORT + 50];
+      const start = async (extra: string[] = []): Promise<number> => {
+        lines = [];
+        return runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1500", "--json", ...extra], line => lines.push(line), {
+          databaseFile: db, inferProjectFromCwd: false,
+          upSeams: { terminal: false, env: {}, home: join(base, "home"), fenceAvailable: () => true, laptopPorts: ports },
+        });
+      };
+      expect(await start(), lines.join("\n")).toBe(0);
+      expect(String(envelope()["url"])).toContain(`:${PORT + 49}`);
+      const saved = openStore(db);
+      try {
+        expect(laptopPortOf(saved)).toBe(PORT + 49);
+        // The background service's unit (and its show) name the saved port when nothing is running.
+        const shown = await backgroundShow(saved, db, null, { platform: "linux", home: join(base, "home"), node: process.execPath, dist: base, proveConsole: async () => ({ ok: false, state: "none", message: "no console is running" }), supervisor: async () => ({ code: 1, stdout: "", stderr: "" }) as never });
+        expect(shown.ok && shown.show.port).toBe(PORT + 49);
+      } finally { saved.close(); }
+      // The next start keeps the saved port, even with the first one free again.
+      foreign.close();
+      expect(await start(), lines.join("\n")).toBe(0);
+      expect(String(envelope()["url"])).toContain(`:${PORT + 49}`);
+      // --port still wins, and saves nothing new.
+      expect(await start(["--port", String(PORT + 50)]), lines.join("\n")).toBe(0);
+      expect(String(envelope()["url"])).toContain(`:${PORT + 50}`);
+      const after = openStore(db);
+      try { expect(laptopPortOf(after)).toBe(PORT + 49); } finally { after.close(); }
+    } finally { foreign.close(); }
+  });
+
+  test("an install not made by `up --laptop` keeps up's default port: a held port refuses, as before", async () => {
+    expect(await up([], PORT + 51)).toBe(0);
+    const foreign = createServer();
+    await new Promise<void>(resolve => foreign.listen(PORT + 52, "127.0.0.1", () => resolve()));
+    try {
+      lines = [];
+      const code = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1500", "--json"], line => lines.push(line), {
+        databaseFile: db, inferProjectFromCwd: false,
+        upSeams: { terminal: false, env: {}, home: join(base, "home"), fenceAvailable: () => true, laptopPorts: [PORT + 52, PORT + 53] },
+      });
+      expect(code).not.toBe(0);
+      expect(envelope()).toMatchObject({ ok: false, reason: "port-busy" });
+      const store = openStore(db);
+      try { expect(laptopPortOf(store)).toBeNull(); } finally { store.close(); }
+    } finally { foreign.close(); }
   });
 
   test("the console mints only the kind of link its own start was authorised for; a request of another kind gets none", () => {

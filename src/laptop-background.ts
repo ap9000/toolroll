@@ -33,7 +33,7 @@ import { packageVersion } from "./monitoring.js";
 import { underAgent } from "./prompt.js";
 import { processGone, readRunnerProcessRecord, realProcessProbe, recordedHolderProvedGone, recordStandsFor, runnerProcessFile, type ProcessProbe } from "./runner-process.js";
 import type { Runner } from "./runner.js";
-import type { Store } from "./store.js";
+import { laptopPortOf, type Store } from "./store.js";
 
 /** Everything outside this process that the background handoff touches. Tests replace all of it. */
 export type LaptopSeams = {
@@ -298,7 +298,7 @@ export async function backgroundShow(store: Store, databaseFile: string, request
   const platform = s.platform;
   const live = await s.proveConsole(databaseFile, store);
   const running = live.ok ? { url: live.url, pid: live.pid } : null;
-  const port = requestedPort ?? (live.ok ? live.port : DEFAULT_PORT);
+  const port = requestedPort ?? (live.ok ? live.port : laptopPortOf(store) ?? DEFAULT_PORT);
   if (platform !== "darwin" && platform !== "linux") return { ok: true, show: { platform, label: null, unit: null, installed: "absent", loaded: false, running, conflicts: [], port } };
   const definition = definitionFor(s, platform, databaseFile, port);
   if ("error" in definition) return { ok: false, reason: "unsupported", message: definition.error };
@@ -313,7 +313,7 @@ export type BackgroundOn =
   | { ok: true; action: "unchanged" | "installed" | "replaced"; label: string; unit: string; url: string; pid: number; stoppedForeground: boolean }
   | { ok: false; reason: string; message: string; rolledBack?: string[] };
 
-/** `requestedPort`: --port, else the running console's, else `up`'s default. */
+/** `requestedPort`: --port, else the running console's, else the port this laptop install saved, else `up`'s default. */
 export async function backgroundOn(store: Store, databaseFile: string, requestedPort: number | null, seams: LaptopSeams = {}): Promise<BackgroundOn> {
   const s = resolveSeams(seams);
   const platform = s.platform;
@@ -321,7 +321,7 @@ export async function backgroundOn(store: Store, databaseFile: string, requested
   // A login item runs at every login: something a person sets up, never a coding agent on their behalf.
   if (s.agent) return { ok: false, reason: "agent", message: "a coding agent can't set Toolroll to start at login; run `toolroll background on` yourself at a terminal" };
   const first = await s.proveConsole(databaseFile, store);
-  const port = requestedPort ?? (first.ok ? first.port : DEFAULT_PORT);
+  const port = requestedPort ?? (first.ok ? first.port : laptopPortOf(store) ?? DEFAULT_PORT);
   const definition = definitionFor(s, platform, databaseFile, port);
   if ("error" in definition) return { ok: false, reason: "unsupported", message: definition.error };
   if (!existsSync(definition.command[1]!)) return { ok: false, reason: "unsupported", message: `${definition.command[1]} does not exist: run \`toolroll background on\` from an installed Toolroll` };

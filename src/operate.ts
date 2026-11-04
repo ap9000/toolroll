@@ -114,7 +114,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
-  openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
+  openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -408,7 +408,7 @@ export type OperateOptions = {
   /** Injected by tests: `onboard`'s home folder, terminal and probes. */
   onboardSeams?: OnboardSeams;
   /** Injected by tests: whether `up` has a person at a terminal, and how it opens a browser. */
-  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void; home?: string; fenceAvailable?: () => boolean };
+  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void; home?: string; fenceAvailable?: () => boolean; laptopPorts?: readonly number[] };
   /** Injected by tests: the background service handoff's supervisor, HOME, processes and console proof (laptop-background.ts). */
   laptopSeams?: LaptopSeams;
   /** Injected by tests: `open`, `welcome` and `password set` — the terminal, the easy start's seams, the prompts. */
@@ -1379,7 +1379,7 @@ type Context = {
   releaseIo?: ReleaseIo;
   installBin?: string;
   onboardSeams?: OnboardSeams;
-  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void; home?: string; fenceAvailable?: () => boolean };
+  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void; home?: string; fenceAvailable?: () => boolean; laptopPorts?: readonly number[] };
   /** Injected by tests: the background service handoff's supervisor, HOME, processes and console proof (laptop-background.ts). */
   laptopSeams?: LaptopSeams;
   easySeams?: EasyCommandSeams;
@@ -7684,7 +7684,7 @@ async function upCommand(
 
   // 1. Validation, before anything at all.
   const portGiven = text(flags, "port");
-  const port = Number(portGiven ?? 4180);
+  let port = Number(portGiven ?? 4180);
   if (portGiven !== undefined && (!Number.isInteger(port) || port < 1 || port >= 65536)) return fail(write, json, "up", "usage", "--port is a whole number under 65536", EXIT.usage);
   const editorGiven = text(flags, "editor");
   if (editorGiven !== undefined && editorGiven !== "vscode") return fail(write, json, "up", "usage", "--editor supports: vscode", EXIT.usage);
@@ -7798,11 +7798,26 @@ async function upCommand(
 
   // 3. Reserve the port BEFORE any identity or enrollment mutation
   // (finding 7/19): a busy port must refuse while the world is untouched.
-  const probe = createNetServer();
-  const reserved = await new Promise<boolean>(resolveProbe => {
-    probe.once("error", () => resolveProbe(false));
-    probe.listen(port, "127.0.0.1", () => resolveProbe(true));
-  });
+  // A laptop start with no --port: the port this install saved, else (a NEW laptop install only) the first free one from
+  // `up`'s default on (upLaptopPortCandidates), saved once it is reserved. Every other install keeps its port.
+  const candidates = laptop && portGiven === undefined ? upLaptopPortCandidates(store, context.upSeams?.laptopPorts) : [port];
+  let probe = createNetServer();
+  let reserved = false;
+  for (const candidate of candidates) {
+    // A port this database's own console has held is never stepped past: that is this install, restarting or running.
+    if (candidate !== candidates[0] && lifecycleOf(store, `console:${candidate}`) !== null) break;
+    probe = createNetServer();
+    port = candidate;
+    reserved = await new Promise<boolean>(resolveProbe => {
+      probe.once("error", () => resolveProbe(false));
+      probe.listen(candidate, "127.0.0.1", () => resolveProbe(true));
+    });
+    if (reserved || lifecycleOf(store, `console:${candidate}`) !== null) break;
+  }
+  if (reserved && laptop && portGiven === undefined && candidates.length > 1) {
+    recordLaptopPort(store, port, new Date());
+    if (port !== candidates[0]) progress(`port ${candidates[0]} is in use by another program, so Toolroll uses ${port} on this computer`);
+  }
   if (!reserved) {
     // The console that holds it said it is stopping: a restart is under way, so say that instead of "another one runs".
     const holder = lifecycleOf(store, `console:${port}`);
@@ -13762,4 +13777,18 @@ async function passwordCommand(positional: readonly string[], flags: Map<string,
     "Password set.",
     "Open browser tabs and the terminal UI sign in again: run `toolroll open`, or sign in with your password.",
   ]);
+}
+
+/**
+ * Easy start: the ports `up --laptop` (no --port) tries, in order. The port this install saved, alone; else, for a NEW
+ * laptop install (made by `up --laptop`, nothing saved yet), `up`'s default and the next nineteen, so a console that
+ * isn't this database's (another Toolroll, the desktop app's) never stops a first start; else (an install made any other
+ * way) `up`'s default alone, as before. `fromSeam` replaces the default range in tests.
+ */
+export function upLaptopPortCandidates(store: Store, fromSeam?: readonly number[]): number[] {
+  const saved = laptopPortOf(store);
+  if (saved !== null) return [saved];
+  const range = fromSeam ?? Array.from({ length: 20 }, (_, index) => 4180 + index);
+  if (installationCreatedBy(store) !== "laptop") return [range[0] ?? 4180];
+  return [...range];
 }

@@ -26222,3 +26222,24 @@ export function localFilingProvenance(filer: string | null): string | null {
   if (local === null || !localOwnerInFlight(local) || local.account !== filer) return null;
   return `filed via local-owner · local ${local.localGeneration} ${local.transport}`;
 }
+
+/**
+ * Easy start: the port a NEW laptop install chose when `up`'s default (4180) was already held by something that isn't
+ * this database's console (another Toolroll, the desktop app, any program). Saved once, the first time `up --laptop`
+ * reserves a port on a database `up --laptop` made, so later starts, the background service's unit and `toolroll open`
+ * all find the same address. Installs made any other way never record one: their port stays `up`'s default.
+ */
+export const LAPTOP_PORT_FACT = "laptop-port";
+
+/** The saved laptop port, or null (none saved, or a value that isn't a port). */
+export function laptopPortOf(store: Store): number | null {
+  const value = store.installationFact(LAPTOP_PORT_FACT);
+  if (value === null || !/^\d{1,5}$/.test(value)) return null;
+  const port = Number(value);
+  return port >= 1 && port < 65536 ? port : null;
+}
+
+/** Record the laptop port, once (installation facts are never updated). */
+export function recordLaptopPort(store: Store, port: number, now: Date): void {
+  store.recordInstallationFact(LAPTOP_PORT_FACT, String(port), now);
+}
