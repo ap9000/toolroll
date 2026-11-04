@@ -317,3 +317,48 @@ test("a person who can't sign reads why, and a flow without a schedule shows not
   await act(async () => root!.render(createElement(FlowView, { view: { ...refused, unattended: { ...refused.unattended, scheduled: false } }, csrf: "fixture" })));
   expect(await menuItem("Run on its own…")).toBeUndefined();
 });
+
+test.each([false, true])("the primary never changes its act under a press: New card pressed as a card starts waiting still opens New card; Review after the settle (phone=%s)", async phone => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  try {
+    vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: phone && query === "(max-width: 760px)", media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+    const editable = (live: string, waits: boolean): BrowserFlowView => {
+      const base = view(waits ? "Waiting on you: approve the rounding?" : "Building · step 1 of 6", live);
+      return { ...base, canEdit: true, cards: base.cards.map(card => ({ ...card, canDecide: waits })) };
+    };
+    const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    await act(async () => root!.render(createElement(FlowView, { view: editable("first", false), csrf: "fixture" })));
+    const primary = () => [...document.querySelectorAll<HTMLButtonElement>(".k-btn-primary")].filter(one => one.hasAttribute("data-flow-new-card") || one.hasAttribute("data-flow-review")).at(-1)!;
+    const update = async (next: BrowserFlowView) => {
+      vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => next })));
+      await act(async () => { streams.at(-1)!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ at: next.live }) })); await vi.advanceTimersByTimeAsync(0); });
+    };
+    const press = async (button: HTMLButtonElement, between?: () => Promise<void>) => {
+      await act(async () => { button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+      if (between) await between();
+      await act(async () => { button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })); });
+    };
+    const said = () => document.querySelector("[data-flow-primary-said]")!.textContent;
+    expect(primary().textContent).toBe("New card");
+
+    // The press starts on New card; the card starts waiting before the click lands: New card opens, not the card.
+    const pressed = primary();
+    await press(pressed, () => update(editable("second", true)));
+    expect(document.querySelector("[data-flow-card-panel]")).toBeNull();
+    expect([...document.querySelectorAll("button")].some(one => one.textContent === "Add card")).toBe(true);
+    // Meanwhile the label held still and the change was said politely, not swapped under the finger.
+    expect(primary().textContent).toBe("New card");
+    expect(said()).toBe("Review is next.");
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    // A press right after the change, still inside the settle window, still does what it says (New card).
+    expect(primary().textContent).toBe("New card");
+
+    // After the settle window the need shows: Review, and a press there opens the waiting card.
+    await act(async () => vi.advanceTimersByTimeAsync(400));
+    expect(primary().textContent).toBe("Review");
+    expect(said()).toBe("");
+    await press(primary());
+    expect(document.querySelector("[data-flow-card-panel]")).not.toBeNull();
+  } finally { vi.useRealTimers(); }
+});

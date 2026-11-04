@@ -360,7 +360,7 @@ export function installKitBehavior(): void {
     for (const form of document.querySelectorAll<HTMLFormElement>("form[aria-busy=true]")) {
       // Every busy button the form owns, its own and any outside it tied to it by form="…" (a phone dock's copy).
       form.removeAttribute("aria-busy");
-      for (const button of Array.from(form.elements)) {
+      for (const button of Array.from(Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, "elements")!.get!.call(form) as HTMLFormControlsCollection)) {
         if (!(button instanceof HTMLButtonElement) || !button.classList.contains("busy") || button.dataset["kBusy"] === undefined) continue;
         button.classList.remove("busy");
         const face = button.querySelector(".k-face");

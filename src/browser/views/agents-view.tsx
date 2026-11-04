@@ -213,7 +213,7 @@ function RegisterForm({ onCancel }: { onCancel: () => void }) {
   // The token page is the handler's own (shown once, no script on it): the form goes there natively.
   const register = async (password: string | null): Promise<string | null> => {
     const form = document.createElement("form");
-    form.method = "post"; form.action = "/fleet/runner/register"; form.hidden = true;
+    form.setAttribute("method", "post"); form.setAttribute("action", "/fleet/runner/register"); form.hidden = true;
     for (const [key, value] of Object.entries({ csrf, name: trimmed, capacity, token: password ?? "" })) {
       const input = document.createElement("input");
       input.type = "hidden"; input.name = key; input.value = value;

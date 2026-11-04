@@ -956,7 +956,7 @@ try {
   // leave the document in place. No synthetic submit event can hide the bug.
   const lost = await page.evaluate(async () => {
     const form = document.getElementById('comment-form');
-    const r = await fetch(form.action, { method: 'POST', body: new URLSearchParams(new FormData(form)), redirect: 'manual' });
+    const r = await fetch(new URL(HTMLFormElement.prototype.getAttribute.call(form, 'action') ?? '', location.href).href, { method: 'POST', body: new URLSearchParams(new FormData(form)), redirect: 'manual' });
     return { status: r.status, type: r.type };
   });
   const draftAfterLost = await page.evaluate(() => JSON.parse(sessionStorage.getItem(Object.keys(sessionStorage).find(k => k.startsWith('standing-orders:review-draft:')) ?? '') ?? 'null'));
