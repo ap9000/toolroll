@@ -459,7 +459,7 @@ test("c3: restoreDatabase runs only after the stopped service's process is gone 
   try {
     const launchctl = scriptedLaunchctl();
     let exitsAfter = 0, checkedWhileAlive = 0, stops = 0;
-    const machine = machineSystem(join(f.root, "home"), {}, { run: launchctl.run as never, alive: pid => {
+    const machine = machineSystem(join(f.root, "home"), {}, { platform: "darwin", run: launchctl.run as never, alive: pid => {
       if (pid !== SERVICE_PID && pid !== RESTARTED_SERVICE_PID) return false;
       // Each stop leaves its process running for a few more checks; the database must not change meanwhile.
       if (exitsAfter-- > 0) { checkedWhileAlive++; if (stops > 1) expect(f.tasks()).toContain("T-new"); return true; }
@@ -487,7 +487,7 @@ test("the stopped service's processes include its `up` child, the one that owns 
     const run = async (file: string, args: readonly string[]) => file === "pgrep"
       ? { code: 0, stdout: `${args[1] === String(service) ? `${up}\n` : ""}`, stderr: "", timedOut: false }
       : { code: 0, stdout: `com.toolroll.browser = {\n\tstate = running\n\tpid = ${service}\n}`, stderr: "", timedOut: false };
-    const machine = machineSystem(join(f.root, "home"), {}, { run: run as never });
+    const machine = machineSystem(join(f.root, "home"), {}, { platform: "darwin", run: run as never });
     expect(await machine.servicePids(f.unit)).toEqual([service, up]);
   } finally { f.close(); }
 });
@@ -497,7 +497,7 @@ test("c3: a service process that never exits is never written under: the databas
   try {
     const launchctl = scriptedLaunchctl();
     let stops = 0;
-    const machine = machineSystem(join(f.root, "home"), {}, { run: launchctl.run as never, alive: pid => stops > 1 && pid === RESTARTED_SERVICE_PID });
+    const machine = machineSystem(join(f.root, "home"), {}, { platform: "darwin", run: launchctl.run as never, alive: pid => stops > 1 && pid === RESTARTED_SERVICE_PID });
     const outcome = await f.start({
       servicePids: machine.servicePids, processAlive: machine.processAlive, exitTimeoutMs: 5000,
       stopService: async unit => { stops++; await machine.stopService(unit); },

@@ -314,9 +314,9 @@ test("r5: the stop waits as long as toolroll up takes to exit, and a stop that t
     };
     // A watch daemon's up takes 30 s to exit: longer than the 5 s launchd default, within 45 s.
     const slow = launch(300);
-    await expect(machineSystem(join(f.root, "home"), {}, { run: slow.run as never, sleep: async () => {} }).stopService(f.unit)).resolves.toBeUndefined();
+    await expect(machineSystem(join(f.root, "home"), {}, { platform: "darwin", run: slow.run as never, sleep: async () => {} }).stopService(f.unit)).resolves.toBeUndefined();
     const never = launch(Number.MAX_SAFE_INTEGER);
-    await expect(machineSystem(join(f.root, "home"), {}, { run: never.run as never, sleep: async () => {} }).stopService(f.unit)).rejects.toThrow(/did not stop/);
+    await expect(machineSystem(join(f.root, "home"), {}, { platform: "darwin", run: never.run as never, sleep: async () => {} }).stopService(f.unit)).rejects.toThrow(/did not stop/);
     expect(never.log.filter(verb => verb !== "print")).toEqual(["disable", "bootout", "enable"]);
     expect(never.log.filter(verb => verb === "print").length).toBe(450);
   } finally { f.close(); }
