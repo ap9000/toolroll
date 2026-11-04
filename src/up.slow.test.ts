@@ -751,7 +751,16 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
       upSeams: { terminal: true, env: {}, home: seams.home ?? join(base, "home"), fenceAvailable: () => true, openBrowser: url => { opened.push(url); spent.push(fetch(url, { redirect: "manual" })); } },
     });
     const answers = await Promise.all(spent) as Response[];
-    for (const answer of answers) expect(answer.status).toBe(303);
+    // Signed in either way: a redirect to Chat, or, on a protected loopback install (no tailnet names: CI), the
+    // mutation key's one-time delivery page that moves on to Chat (easy-start C2). Both set the session cookie.
+    for (const answer of answers) {
+      expect(answer.headers.get("set-cookie") ?? "").toMatch(/HttpOnly/);
+      if (answer.status === 303) expect(answer.headers.get("location")).toBe("/chat");
+      else {
+        expect(answer.status).toBe(200);
+        expect(await answer.text()).toContain('"to":"/chat"');
+      }
+    }
     const store = openStore(db);
     try {
       return { code, opened, sessions: store.webSessions(null).map(one => ({ authority: one.authority, localGeneration: one.localGeneration })) };
