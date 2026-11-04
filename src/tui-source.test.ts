@@ -129,3 +129,26 @@ describe("the terminal UI on a laptop database", () => {
     for (const argv of [["task", "list"], ["task", "show", "one"], ["welcome"], ["status"]]) expect((await asOwner(argv)).code, argv.join(" ")).toBe(0);
   }, 60_000);
 });
+
+describe("text someone else wrote reaches the screen clean", () => {
+  test("a title and a plan line carrying escapes and overwrite tricks come out of the source as plain text, the whole plan kept", async () => {
+    const hostile = "Make the footer link work.\x1b[2J\x1b]8;;https://evil.example\x07 see docs\x1b]8;;\x07\x1b[1A\x9b2K done\rhidden";
+    const store = openStore(file);
+    try {
+      store.handle.prepare("UPDATE task SET title = ? WHERE id = 'one'").run("Fix the footer link\x1b[31m\x1b]0;owned\x07");
+      store.handle.prepare("UPDATE task_scope SET goal = ? WHERE task_id = 'one'").run(hostile);
+    } finally { store.close(); }
+    const source = createTuiSource({ databaseFile: file, operate: { now }, check });
+    try {
+      const control = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/;
+      const listed = await source.snapshot();
+      const row = listed.rows.find(one => one.id === "one")!;
+      expect(row.title).toBe("Fix the footer link");
+      const task = (await source.task("one"))!;
+      expect(task.title).toBe("Fix the footer link");
+      const lines = task.plan!.lines;
+      expect(lines.some(line => line.includes("Make the footer link work. see docs donehidden"))).toBe(true);
+      for (const text of [row.title, row.status, row.detail, task.title, task.status, task.detail, ...lines]) expect(text, text).not.toMatch(control);
+    } finally { source.close(); }
+  });
+});

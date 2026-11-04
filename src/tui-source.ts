@@ -17,6 +17,7 @@ import { loadProjectRegistry } from "./repos.js";
 import { describeScope } from "./scope.js";
 import { localModeOf, openStoreReadOnly, type Store } from "./store.js";
 import type { TuiAct, TuiActResult, TuiDecision, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
+import { terminalText } from "./terminal-text.js";
 import { welcomeHere, welcomeLines } from "./welcome-facts.js";
 
 export type TuiSourceOptions = {
@@ -31,10 +32,13 @@ export type TuiSourceOptions = {
 type Envelope = Record<string, unknown> & { ok?: boolean; reason?: string; message?: string };
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const words = (value: unknown, fallback = ""): string => typeof value === "string" ? value : fallback;
+/** Text for the screen: whatever wrote it (an agent, a person, a project's name), escapes and controls never reach the
+ * terminal (terminal-text.ts). Every displayed string below goes through here; ids and digests are only acted on. */
+const shown = (value: unknown, fallback = ""): string => terminalText(words(value, fallback));
 
 /** What a refused write says, and whether it is a local-owner refusal (the screen then leads to a password). */
 function refusalOf(envelope: Envelope): TuiActResult {
-  const message = words(envelope.message, "That was refused.");
+  const message = shown(envelope.message, "That was refused.");
   return { ok: false, message, needsPassword: envelope.reason === "refused" || envelope.reason === "machine-proof" || envelope.reason === "person-required" || /password/i.test(message) };
 }
 
@@ -72,7 +76,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         const row = record(one), status = record(row["status"]);
         const views = Array.isArray(status["views"]) ? status["views"] as unknown[] : [];
         return {
-          id: words(row["id"], words(row["rootId"])), title: words(row["title"]), status: words(status["label"], words(row["state"])), detail: words(status["detail"]),
+          id: words(row["id"], words(row["rootId"])), title: shown(row["title"]), status: shown(status["label"], words(row["state"])), detail: shown(status["detail"]),
           needsYou: views.includes("needs-you"), liveRunId: typeof row["liveRunId"] === "number" ? row["liveRunId"] : null, repo: typeof row["repo"] === "string" ? row["repo"] : null,
         };
       });
@@ -86,18 +90,18 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
     },
 
     async task(id: string): Promise<TuiTask | null> {
-      const shown = await command(["task", "show", id]);
-      if (shown.ok !== true) return null;
-      const task = record(shown["task"]), work = record(shown["work"]), status = record(work["status"]);
+      const answer = await command(["task", "show", id]);
+      if (answer.ok !== true) return null;
+      const task = record(answer["task"]), work = record(answer["work"]), status = record(work["status"]);
       const store = read();
       const scope = store === null ? null : store.getScope(id);
-      const plan = scope === null || scope.approvedDigest === scope.digest ? null : { digest: scope.digest, lines: describeScope(scope) };
+      const plan = scope === null || scope.approvedDigest === scope.digest ? null : { digest: scope.digest, lines: describeScope(scope).map(line => terminalText(line)) };
       let hasResult = false;
       try { hasResult = store !== null && assignmentOf(store, id, clock(), { principal: "operator", repos: null })?.receipt != null; } catch { hasResult = false; }
       const decisions: TuiDecision[] = store === null ? [] : store.listDecisions("unanswered").filter(one => one.taskId === id)
-        .map(one => ({ id: one.id, question: one.question, options: one.options.map(option => ({ id: option.id, label: option.label })) }));
+        .map(one => ({ id: one.id, question: terminalText(one.question), options: one.options.map(option => ({ id: option.id, label: terminalText(option.label) })) }));
       return {
-        id, title: words(task["title"], id), status: words(status["label"], words(work["state"])), detail: words(status["detail"]),
+        id, title: shown(task["title"], id), status: shown(status["label"], words(work["state"])), detail: shown(status["detail"]),
         plan, liveRunId: typeof work["liveRunId"] === "number" ? work["liveRunId"] : null, hasResult, decisions,
       };
     },
@@ -105,7 +109,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
     live(id: string): readonly string[] {
       const store = read();
       if (store === null) return [];
-      try { return snapshotLiveRuns(store, evidenceRoot, clock(), tails).find(one => one.taskId === id)?.lines ?? []; } catch { return []; }
+      try { return snapshotLiveRuns(store, evidenceRoot, clock(), tails).find(one => one.taskId === id)?.lines.map(line => terminalText(line)) ?? []; } catch { return []; }
     },
 
     changed(): number {
@@ -140,7 +144,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       const store = read();
       if (store === null) return null;
       const here = await welcomeHere(store, file, clock(), options.check === undefined ? {} : { check: options.check });
-      const value = here.model.left === 0 ? null : { left: here.model.left, lines: welcomeLines(here.model) };
+      const value = here.model.left === 0 ? null : { left: here.model.left, lines: welcomeLines(here.model).map(line => terminalText(line)) };
       setupCache = { at: Date.now(), value };
       return value;
     },

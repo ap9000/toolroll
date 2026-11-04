@@ -8,7 +8,15 @@
  */
 import { Box, Text, useApp, useInput, type Key } from "ink";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ComponentProps } from "react";
+import { terminalText } from "../terminal-text.js";
 import type { TuiAct, TuiExit, TuiRow, TuiSession, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./data.js";
+
+/** Text that came from outside this screen (an agent, a person, a project), as the terminal shows it: escapes and
+ * controls never reach it (terminal-text.ts). The source cleans it first; this is the second layer. */
+function SafeText({ children, ...props }: Omit<ComponentProps<typeof Text>, "children"> & { children: string }) {
+  return <Text {...props}>{terminalText(children)}</Text>;
+}
 
 export interface AppProps {
   readonly source: TuiSource;
@@ -217,10 +225,10 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     <Box flexDirection="column">
       <Box justifyContent="space-between">
         <Text bold>Toolroll</Text>
-        {snapshot?.needsYou ? <Text color="yellow">{snapshot.needsYou}</Text> : <Text dimColor>Nothing needs you</Text>}
+        {snapshot?.needsYou ? <SafeText color="yellow">{snapshot.needsYou}</SafeText> : <Text dimColor>Nothing needs you</Text>}
       </Box>
       {body()}
-      {footer === null ? null : <Text>{footer}</Text>}
+      {footer === null ? null : <SafeText>{footer}</SafeText>}
       <Text dimColor>{hints()}</Text>
     </Box>
   );
@@ -245,7 +253,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
         return (
           <Box flexDirection="column" borderStyle="single" paddingX={1}>
             <Text bold>This needs your password</Text>
-            <Text>{screen.message}</Text>
+            <SafeText>{screen.message}</SafeText>
             {snapshot?.passwordSet ? <Text>Sign in in the browser, then do it there.</Text> : <Text>Set a password: run `toolroll password set`</Text>}
           </Box>
         );
@@ -264,16 +272,16 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
         return (
           <Box flexDirection="column" borderStyle="round" paddingX={1}>
             <Text bold>{screen.purpose === "new" ? "New task" : "What should change?"}</Text>
-            {screen.purpose === "new" && project !== null ? <Text dimColor>In {project}</Text> : null}
-            <Text>{screen.text}<Text inverse> </Text></Text>
+            {screen.purpose === "new" && project !== null ? <SafeText dimColor>{`In ${project}`}</SafeText> : null}
+            <Text><SafeText>{screen.text}</SafeText><Text inverse> </Text></Text>
           </Box>
         );
       }
       case "approve":
         return (
           <Box flexDirection="column" borderStyle="single" paddingX={1}>
-            <Text bold>Approve this plan? {screen.task.title}</Text>
-            {screen.task.plan!.lines.map((line, index) => <Text key={index}>{line}</Text>)}
+            <SafeText bold>{`Approve this plan? ${screen.task.title}`}</SafeText>
+            {screen.task.plan!.lines.map((line, index) => <SafeText key={index}>{line}</SafeText>)}
           </Box>
         );
       case "task": {
@@ -281,16 +289,16 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
         const question = task.decisions[0];
         return (
           <Box flexDirection="column" borderStyle="single" paddingX={1}>
-            <Text bold>{task.title}</Text>
-            <Text>{task.status}{task.detail === "" ? "" : ` · ${task.detail}`}</Text>
+            <SafeText bold>{task.title}</SafeText>
+            <SafeText>{`${task.status}${task.detail === "" ? "" : ` · ${task.detail}`}`}</SafeText>
             {task.plan === null ? null : <Text>A plan waits for your approval (a).</Text>}
             {question === undefined ? null : (
               <Box flexDirection="column" marginTop={1}>
-                <Text bold>{question.question}</Text>
-                {question.options.map((option, index) => <Text key={option.id}>{index + 1}  {option.label}</Text>)}
+                <SafeText bold>{question.question}</SafeText>
+                {question.options.map((option, index) => <SafeText key={option.id}>{`${index + 1}  ${option.label}`}</SafeText>)}
               </Box>
             )}
-            {live.length === 0 ? null : <Box flexDirection="column" marginTop={1}>{live.slice(-12).map((line, index) => <Text key={index} dimColor>{line}</Text>)}</Box>}
+            {live.length === 0 ? null : <Box flexDirection="column" marginTop={1}>{live.slice(-12).map((line, index) => <SafeText key={index} dimColor>{line}</SafeText>)}</Box>}
           </Box>
         );
       }
@@ -300,7 +308,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
           return (
             <Box flexDirection="column" borderStyle="single" paddingX={1}>
               <Text bold>Get to your first result</Text>
-              {(setup?.lines ?? ["No tasks yet. Press n to write one."]).map((line, index) => <Text key={index}>{line}</Text>)}
+              {(setup?.lines ?? ["No tasks yet. Press n to write one."]).map((line, index) => <SafeText key={index}>{line}</SafeText>)}
             </Box>
           );
         }
@@ -310,17 +318,17 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
               <Text bold>Tasks</Text>
               {rows.map((row, index) => (
                 <Text key={row.id} inverse={row === current} wrap="truncate-end">
-                  {row === current ? "> " : "  "}{row.title} <Text {...(row.needsYou ? { color: "yellow" } : { dimColor: true })}>{row.status}</Text>
+                  {row === current ? "> " : "  "}<SafeText>{row.title}</SafeText> <SafeText {...(row.needsYou ? { color: "yellow" } : { dimColor: true })}>{row.status}</SafeText>
                 </Text>
               ))}
             </Box>
             <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>
               {current === undefined ? <Text dimColor>Nothing selected</Text> : (
                 <>
-                  <Text bold wrap="truncate-end">{current.title}</Text>
-                  <Text>{current.status}{current.detail === "" ? "" : ` · ${current.detail}`}</Text>
+                  <SafeText bold wrap="truncate-end">{current.title}</SafeText>
+                  <SafeText>{`${current.status}${current.detail === "" ? "" : ` · ${current.detail}`}`}</SafeText>
                   {live.length === 0 ? <Text dimColor>{current.liveRunId === null ? "No agent is working on it now." : "Waiting for output…"}</Text>
-                    : live.slice(-12).map((line, index) => <Text key={index} dimColor wrap="truncate-end">{line}</Text>)}
+                    : live.slice(-12).map((line, index) => <SafeText key={index} dimColor wrap="truncate-end">{line}</SafeText>)}
                 </>
               )}
             </Box>

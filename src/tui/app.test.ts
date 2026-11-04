@@ -104,4 +104,27 @@ describe("terminal UI", () => {
     app.stdin.write("q");
     await vi.waitFor(() => expect(onExit).toHaveBeenCalledWith("leave"));
   });
+
+  it("text an agent wrote can't redraw or hide the approval screen: escapes and controls show as nothing, the whole plan shows", async () => {
+    const hostile = ["Goal: tidy the footer\x1b[2J", "\x1b]8;;https://evil.example\x07Read the docs\x1b]8;;\x07 first", "\x1b[1A\x1b[2KTouches: src/footer.ts", "\x9b2JAcceptance: the footer reads 2026", "Risk: none\rApproved already"];
+    const base = sampleSource();
+    const source = scripted({
+      task: async id => {
+        const task = await base.task(id);
+        return task === null ? null : { ...task, title: `${task.title}\x1b[2J\x1b]0;owned\x07`, plan: task.plan === null ? null : { digest: "sample", lines: hostile } };
+      },
+    });
+    const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));
+    const shows = show(app);
+    await shows("> Sample: fix");
+    await mounted();
+    app.stdin.write("j"); app.stdin.write("j");
+    await shows("> Sample: upgrade the test runner");
+    app.stdin.write("a");
+    await shows("Approve this plan? Sample: upgrade the test runner");
+    for (const line of ["Goal: tidy the footer", "Read the docs first", "Touches: src/footer.ts", "Acceptance: the footer reads 2026", "Risk: noneApproved already"]) await shows(line);
+    const frame = app.lastFrame() ?? "";
+    for (const trick of ["\x1b[2J", "\x1b]8;;", "\x1b]0;", "\x1b[1A", "\x1b[2K", "\x9b", "\r", "evil.example"]) expect(frame).not.toContain(trick);
+  });
 });
+
