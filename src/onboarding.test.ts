@@ -292,6 +292,8 @@ test("the welcome: Use this one turns on exactly the agent named, only when it i
   expect((await use("codex")).headers.get("location")).toBe("/welcome");
   expect(store.getChatConfig()?.provider).toBe("codex-subscription");
   expect((await use("gemini")).status).toBe(400);
+  // A full session's choice is as before: its models stay Settings → Models' step-up.
+  expect(store.phaseConfig("installation", "build")).toBeNull();
 
   const sample = await fetch(`${base}/welcome/sample`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf }) });
   expect(sample.headers.get("location")).toBe("/welcome");
@@ -300,4 +302,34 @@ test("the welcome: Use this one turns on exactly the agent named, only when it i
   const after = await (await fetch(`${base}/welcome`, { headers: { cookie } })).text();
   expect(after).toContain("toolroll-sample");
   expect(after).toContain("Round prices to whole cents");
+}, 20_000);
+
+test("a laptop install: choosing the agent starts its models on that agent's default preset, once, and never overwrites", async () => {
+  store.close();
+  store = openStore(join(dir, "laptop.db"), { createdBy: "laptop" });
+  expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: new Date() }).ok).toBe(true);
+  // The first start chooses the agent signed in here (Codex), and its models with it.
+  signedIn = "codex";
+  await start({ leadByDefault: true });
+  await until(() => store.getChatConfig() !== null && store.phaseConfig("installation", "build") !== null);
+  expect(store.getChatConfig()?.provider).toBe("codex-subscription");
+  expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "codex", model: "gpt-6-sol" });
+  expect(store.phaseConfig("installation", "plan")).toMatchObject({ provider: "codex", model: "gpt-6-astra" });
+  // The local owner's "Use this one" for Claude Code moves the lead, and leaves the models as they are.
+  signedIn = "claude";
+  const cookie = cookieOf((await raw(server.mintLocalLink()!)).headers);
+  const csrf = (await workspace(cookie)).csrf;
+  const use = (agent: string) => fetch(`${base}/settings/lead/on`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf, agent, return: "/welcome" }) });
+  expect((await use("claude")).headers.get("location")).toBe("/welcome");
+  expect(store.getChatConfig()?.provider).toBe("claude-subscription");
+  expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "codex", model: "gpt-6-sol" });
+  // With nothing set, the same act fills Claude Code's Sized by job in the same write.
+  store.handle.exec("DELETE FROM phase_config; DELETE FROM phase_tier_config;");
+  expect((await use("claude")).headers.get("location")).toBe("/welcome");
+  expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "claude", model: "claude-sonnet-5-5" });
+  expect(store.phaseTierConfig("installation", "build", "light")).toMatchObject({ provider: "claude", model: "claude-haiku-5-5" });
+  // Settings → Models stays an operator's step-up: the local owner can't apply a preset there.
+  const models = await fetch(`${base}/settings/models/apply`, { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams({ csrf, preset: "opus" }) });
+  expect(models.status).toBe(403);
+  expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "claude", model: "claude-sonnet-5-5" });
 }, 20_000);

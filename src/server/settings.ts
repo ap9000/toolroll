@@ -84,7 +84,7 @@ import { startConnect } from "../mcp-connect.js";
 import { decideProposal,listProposals,memoryStatus } from "../memory-pass.js";
 import { checkModels,isNewModel,modelOptions,modelWords,RUNTIME_TOOLS,runtimeStates,seenModels,setWatch,updateRuntime,watchState,type RuntimeTool } from "../model-catalog.js";
 import { modelsHtml,modelsScript,type RoleView } from "../models-ui.js";
-import { ALL_SLOTS,applyModelChoices,browserWords,checkScope,DEFAULT_PRESET,isPresetName,newerModels,PRESETS,presetChange,presetInUse,previewModelChange,recentRuns,rowAt,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
+import { ALL_SLOTS,applyModelChoices,browserWords,checkScope,DEFAULT_PRESET,defaultAgentOf,fillDefaultRouting,isPresetName,newerModels,PRESETS,presetChange,presetInUse,previewModelChange,recentRuns,rowAt,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
 import { HEADROOM_FIVE_HOUR_LIMIT,HEADROOM_WEEKLY_LIMIT,exactModelId } from "../phase-routing.js";
 import { RISKY_MEANS,SIZE_MEANS,SIZING_CLAUDE_MODEL } from "../task-sizing.js";
 import { CHAT_APPROVE_ALL,MODE_MAX_DAYS,modeDigestOf,modeTermsJson,modeWords,presetTerms,type ModeName,type ModeTerms } from "../modes.js";
@@ -2128,8 +2128,15 @@ ${postForm("/settings/chat-approval/save", html`\
       const words = asked === null ? `No agent is signed in on this computer yet. Run ${agentSignInCommand()}, then try again.` : `${asked === "claude" ? "Claude Code" : "Codex"} isn't signed in on this computer yet.`;
       return redirect(response, back ?? chatReturnWithSaid("/settings/lead", words));
     }
-    // Choosing the one already in use changes nothing (its daily turns and the rest stay as set).
-    if (store.getChatConfig()?.provider !== provider) store.setChatConfig({ provider, model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, who.name, now);
+    // Choosing the one already in use changes nothing (its daily turns and the rest stay as set). The local owner's
+    // choice also starts the installation's models on that agent's default preset, in the same write, while nothing
+    // is chosen yet (model-choices.ts fillDefaultRouting): its first task can then be planned and approved without a
+    // password. A full session's choice is as before: its models are Settings → Models'.
+    store.transact(() => {
+      if (store.getChatConfig()?.provider !== provider) store.setChatConfig({ provider, model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, who.name, now);
+      const agent = defaultAgentOf(provider);
+      if (who.via === "cookie" && who.authority === "local-owner" && agent !== null) fillDefaultRouting(store, agent, who.name, { kind: "local-owner" }, now);
+    });
     return redirect(response, back ?? "/chat");
   }
 

@@ -184,7 +184,8 @@ import type { RouteDeclaration } from './server/route-table.js';
 import type { ServerRuntime } from './server/runtime.js';
 import { createSettingsHandlers } from './server/settings.js';
 import { requestContext } from "./server/request-context.js";
-import { asLocalOwner,localOwnerRefusal,localOwnerStandsNow,type LocalPrincipal } from "./local-owner.js";
+import { asLocalOwner,localModeOn,localOwnerRefusal,localOwnerStandsNow,type LocalPrincipal } from "./local-owner.js";
+import { defaultAgentOf,fillDefaultRouting } from "./model-choices.js";
 import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
 import { BODY_CAP,form,loginHref,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
 import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,NOT_STARTED_SESSION,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
@@ -1199,8 +1200,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const provider = localSignIn?.states.claude === "connected" ? "claude-subscription" : localSignIn?.states.codex === "connected" ? "codex-subscription" : null;
     if (provider === null) return;
     const now = clock();
-    store.setChatConfig({ provider, model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "toolroll", now);
-    store.recordInstallationFact(LEAD_BY_DEFAULT_FACT, provider, now);
+    store.transact(() => {
+      store.setChatConfig({ provider, model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "toolroll", now);
+      store.recordInstallationFact(LEAD_BY_DEFAULT_FACT, provider, now);
+      // A laptop install (local mode on): the agent chosen here also starts the models, on its default preset, while
+      // nothing is chosen yet, so the owner's first task plans without a password (model-choices.ts fillDefaultRouting).
+      const agent = defaultAgentOf(provider);
+      if (agent !== null && localModeOn(store)) fillDefaultRouting(store, agent, "toolroll", { kind: "first-start" }, now);
+    });
   }
   // Look once at start, so the lead is on by the time the browser opens.
   if (options.leadByDefault === true && !store.isDemo() && store.getChatConfig() === null) void checkLocalAgents();

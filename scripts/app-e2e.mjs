@@ -2714,25 +2714,6 @@ async function restartLaptop(install) {
   if (ended !== null) throw new Error(`toolroll up --laptop didn't start again: ${ended}`);
   install.link = readFileSync(install.opened, "utf8");
 }
-/**
- * NOT A PRODUCT PATH (an open gap, reported with this arc): a new installation has no exact models, approvals bind exact
- * routing, so a first task waits at Plan; a laptop's owner without a password has no way to choose them (Settings →
- * Models is an operator's step-up). Until that is decided, the journey sets the default preset the way Settings →
- * Models' "Start with Sized by job" would, through the same write path, from outside the console.
- */
-function seedLaptopModels(install) {
-  const dist = dirname(w.bin);
-  const code = `const { openStore } = await import(${JSON.stringify(pathToFileURL(join(dist, "store.js")).href)});
-const { applyModelChoices, presetChange, DEFAULT_PRESET } = await import(${JSON.stringify(pathToFileURL(join(dist, "model-choices.js")).href)});
-const { INSTALLATION_SCOPE } = await import(${JSON.stringify(pathToFileURL(join(dist, "agentconfig.js")).href)});
-const store = openStore(${JSON.stringify(install.db)});
-const owner = store.listApprovers()[0].name;
-const applied = applyModelChoices(store, { scope: INSTALLATION_SCOPE, change: presetChange(DEFAULT_PRESET), expected: null, strict: true, knownProject: () => false },
-  { actor: owner, generation: store.accountOf(owner).generation, method: "password-now", live: () => true }, new Date());
-store.close();
-if (!applied.ok) { console.error(applied.problem); process.exit(1); }`;
-  execFileSync(process.execPath, ["--input-type=module", "-e", code], { env: { ...install.env, PATH: process.env.PATH }, stdio: ["ignore", "ignore", "pipe"] });
-}
 /** Wait for a laptop task's build to end Ready (built, the task done). */
 async function laptopReady(id, after = 0) {
   const run = await until(`${id} to be built`, async () => { const one = laptopBuild(id); return one?.finished_at && one.id > after ? one : null; }, { timeoutMs: 300_000, everyMs: 1000, seen: () => JSON.stringify(laptopBuild(id)) });
@@ -2822,7 +2803,10 @@ await journey("easy-start", SCRIPTED, "A new laptop install opens signed in with
   }, { timeoutMs: 90_000, everyMs: 1000, seen: () => saysNow(on) });
   w.say(`the sample project was taking work ${Math.round((Date.now() - addedAt) / 1000)} s after it was added`);
   if (laptopRows("SELECT action, detail FROM action_ledger WHERE action LIKE '%project%' OR action LIKE '%repo%'").length === 0) w.say("note: no ledger line names the project added");
-  seedLaptopModels(install);
+  // Choosing the agent (the first start's own choice, or "Use this one") started the models on its default preset:
+  // the first task plans and is approved with no password and nothing set from outside.
+  const models = laptopRows("SELECT phase, provider, model FROM phase_config WHERE scope = 'installation' ORDER BY phase");
+  if (!models.some(one => one.phase === "build" && one.provider === "claude") || !models.some(one => one.phase === "plan")) throw new Error(`the agent chosen started no models: ${JSON.stringify(models)}`);
   // 3. First task: a starter, drafted into New task and sent.
   // Briefs carry the sample's README (which lists every starter), so each answer matches its own task's exact words.
   script({ role: "builder", when: [/Round priceWithDiscount's result to whole cents/], unless: [/every price is rounded/, /a clear error, and test it/], answer: { files: roundedPriceFiles(), conclusion: "priceWithDiscount now rounds to whole cents, with a test." } });
