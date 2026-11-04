@@ -6,6 +6,7 @@
 import { constants, closeSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { savedLoginFile } from './login-secrets.js';
 import { randomBytes } from 'node:crypto';
 import { envelopeJson } from './envelope.js';
 import { databasePath } from './store.js';
@@ -194,7 +195,7 @@ export async function maybeRunConnectCommand(argv: readonly string[], write: (li
     if (flags['login-file'] && !flags['local-login']) throw new UsageError('--login-file requires --local-login.');
     let account = value(flags, 'as');
     if (flags['local-login']) {
-      const login = privateFile(value(flags, 'login-file') || join(dirname(databasePath(options.env ?? process.env, options.home ?? homedir())), 'up-login.txt'), 8192).trim().split(/\s+/);
+      const login = privateFile(value(flags, 'login-file') || savedLoginFile(dirname(databasePath(options.env ?? process.env, options.home ?? homedir()))), 8192).trim().split(/\s+/);
       if (login.length !== 2 || account && account !== login[0]) throw new UsageError('The local sign-in does not match the requested account.');
       account = login[0]!; secret = login[1]!;
     } else secret = (flags['token-file'] ? privateFile(value(flags, 'token-file'), 8192) : await (options.readStdin ?? stdinSecret)()).trim();

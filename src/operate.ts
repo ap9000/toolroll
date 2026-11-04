@@ -335,6 +335,7 @@ import { latestRelease, newerRelease, notifySecurityRelease, notifyVersionLive, 
 import { installMethod } from "./install-method.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { machineActing } from "./scope.js";
+import { loginFileOf, migrateLegacyLogin, savedLoginFile, writableLoginFile } from "./login-secrets.js";
 
 export type Write = (line: string) => void;
 
@@ -602,7 +603,8 @@ External trackers — build what a tracker nominates, under local approvals
   toolroll up [--project-root <dir>] one command to a working cockpit:
                                         app + builder + browser. Mints
                                         your login on first run (saved to
-                                        up-login.txt beside the database),
+                                        .toolroll-secrets/up-login.txt
+                                        beside the database),
                                         remembers the projects folder, and
                                         reconnects every saved repository.
                                         Add local or GitHub projects in the
@@ -1573,7 +1575,7 @@ async function dispatch(
       return runTokensCommand(positional, flags, {
         store: context.store, write: context.write, json: context.json, clock: context.clock,
         caller: activeRemote() !== null ? "remote" : currentActor()?.lead === true || context.leadToken !== undefined ? "lead" : "local",
-        rememberedName: readLoginFile(join(dirname(context.databaseFile), UP_LOGIN_FILE))?.name ?? null,
+        rememberedName: readLoginFile(savedLoginFile(dirname(context.databaseFile)))?.name ?? null,
         interactive, ask, askHidden, readStdin: readBoundedStdin,
       });
     case "keys":
@@ -7363,9 +7365,15 @@ async function resolveUpApprover(
   canPrompt: boolean,
 ): Promise<UpApprover | { refusal: string }> {
   const { store, clock } = context;
-  const loginFile = join(dirname(context.databaseFile), UP_LOGIN_FILE);
-  const asFlag = text(flags, "as");
+  const stateDir = dirname(context.databaseFile);
   const notes: string[] = [];
+  // An older version's login beside the database moves into the reserved folder every fence denies (login-secrets.ts).
+  const migration = migrateLegacyLogin(stateDir);
+  if (migration.kind === "moved") notes.push(`moved your saved login into ${migration.to} (owner-only, kept from agents)`);
+  else if (migration.kind === "both") notes.push(`${migration.from} was left in place: ${migration.to} already holds a different login, and that one is used`);
+  else if (migration.kind === "refused" || migration.kind === "failed") notes.push(`your saved login stays at ${migration.from} for now: ${migration.reason}`);
+  let loginFile = savedLoginFile(stateDir);
+  const asFlag = text(flags, "as");
 
   let names = store.listApprovers().map(one => one.name);
   if (names.length === 0) {
@@ -7386,10 +7394,11 @@ async function resolveUpApprover(
       const name = asFlag ?? process.env["USER"] ?? process.env["USERNAME"] ?? "operator";
       const password = mintSecret(12);
       try {
+        loginFile = writableLoginFile(stateDir);
         writeLoginFileDurably(loginFile, name, password);
       } catch (error) {
         return {
-          refusal: `could not create ${UP_LOGIN_FILE} beside the database (${describe(error)}) — if a file is already there, another \`up\` may be starting; wait a moment, your login will be in it`,
+          refusal: `could not create ${loginFileOf(stateDir)} (${describe(error)}) — if a file is already there, another \`up\` may be starting; wait a moment, your login will be in it`,
         };
       }
       const made = store.bootstrapApproverIfNone(name, hashApproverToken(password), clock());
@@ -7453,11 +7462,12 @@ async function resolveUpApprover(
     // nothing typed. An account that predates `up` joins the same road.
     if (verified && remembered !== null && readLoginFile(loginFile) === null) {
       try {
+        loginFile = writableLoginFile(stateDir);
         writeLoginFileDurably(loginFile, selected, remembered);
         passwordFile = loginFile;
-        notes.push(`remembered your login on this machine in ${UP_LOGIN_FILE} (owner-only) — the next \`up\` asks for nothing`);
+        notes.push(`remembered your login on this machine in ${loginFile} (owner-only) — the next \`up\` asks for nothing`);
       } catch {
-        notes.push(`could not save your login beside the database — the next \`up\` will ask again`);
+        notes.push(`could not save your login in ${loginFileOf(stateDir)} — the next \`up\` will ask again`);
       }
     }
     if (!verified) {
@@ -7523,7 +7533,7 @@ async function onboardCommand(flags: Map<string, string | true>, context: Contex
   const served = portGiven === undefined ? readUpConsoleUrl(dirname(context.databaseFile)) : null;
   const home = seams.home ?? homedir();
   const env = seams.env ?? process.env;
-  const loginFile = join(dirname(context.databaseFile), UP_LOGIN_FILE);
+  const loginFile = savedLoginFile(dirname(context.databaseFile));
   const gitRun = context.gitRunner ?? ((file: string, args: readonly string[], opts?: { cwd?: string }) => run(file, [...args], { ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }), timeoutMs: 10_000 }));
   const registryPath = registryPathOf(context);
   const checker = createConnectionChecker({ home, env });
@@ -8922,7 +8932,7 @@ async function statusCommand(
   }
   if (positional.length > 0) return fail(context.write, context.json, command, "usage", "Use `toolroll status [--json]`.", EXIT.usage);
   // Whose lead the status line follows: the lead's own person, else the remembered login; nobody shows no lead.
-  const viewer = currentActor()?.account ?? readLoginFile(join(dirname(context.databaseFile), UP_LOGIN_FILE))?.name ?? null;
+  const viewer = currentActor()?.account ?? readLoginFile(savedLoginFile(dirname(context.databaseFile)))?.name ?? null;
   // A remote person limited to some projects sees only those (remoteLensOf): their tasks and counts, and nothing
   // that belongs to the installation or other projects (updates, integrations, builds by project, unsent replies).
   const lens = context.principal?.lens ?? null;
@@ -9957,7 +9967,7 @@ function noteActingPerson(flags: Map<string, string | true>, context: Context): 
     if (name !== undefined && name !== "" && token !== "") authenticateAccount(context.store, name, token);
     return;
   }
-  const remembered = readLoginFile(join(dirname(context.databaseFile), UP_LOGIN_FILE));
+  const remembered = readLoginFile(savedLoginFile(dirname(context.databaseFile)));
   if (remembered !== null && (name === undefined || name === remembered.name)) claimActor(remembered.name);
 }
 
@@ -10927,7 +10937,7 @@ function credentialsFrom(
   let name = text(flags, "as");
   let token = text(flags, "token");
   if (token === undefined) {
-    const remembered = readLoginFile(join(dirname(context.databaseFile), UP_LOGIN_FILE));
+    const remembered = readLoginFile(savedLoginFile(dirname(context.databaseFile)));
     if (remembered !== null && (name === undefined || name === remembered.name)) {
       name = remembered.name;
       token = remembered.password;
@@ -13316,7 +13326,7 @@ async function tidyTasksCommand(positional: readonly string[], flags: Map<string
   // the apply reads the same person's projects, so an unchanged list keeps its digest.
   // Whose lists: `--as <you>`, else this machine's saved login (`toolroll up`), else everything (an unrestricted
   // person's list; a person limited to some projects previews with --as).
-  const previewAs = text(flags, "as") ?? readLoginFile(join(dirname(context.databaseFile), UP_LOGIN_FILE))?.name;
+  const previewAs = text(flags, "as") ?? readLoginFile(savedLoginFile(dirname(context.databaseFile)))?.name;
   const daysArg = `${days === TIDY_DEFAULT_DAYS ? "" : ` --days ${days}`}${previewAs === undefined ? "" : ` --as ${previewAs}`}`;
   // `--as` only ever narrows: the named person's projects within the caller's own lens, never beyond it.
   const lens = context.principal?.lens ?? null;

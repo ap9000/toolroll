@@ -129,7 +129,7 @@ describe("toolroll up as two processes", () => {
       const second = join(base, "second");
       mkdirSync(second);
       execFileSync("git", ["init", "-q"], { cwd: second, env: gitEnv });
-      const [account = "", password = ""] = readFileSync(join(base, "up-login.txt"), "utf8").trim().split(" ");
+      const [account = "", password = ""] = readFileSync(join(base, ".toolroll-secrets", "up-login.txt"), "utf8").trim().split(" ");
       const cookie = ((await fetch(new URL("/login", envelope.url), { method: "POST", body: new URLSearchParams({ name: account, token: password }), redirect: "manual" })).headers.get("set-cookie") ?? "").split(";")[0]!;
       const tools = async () => (await fetch(new URL(`/settings/tools?repo=${encodeURIComponent(second)}`, envelope.url), { headers: { cookie } })).status;
       expect(await tools()).toBe(403);

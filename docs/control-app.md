@@ -46,7 +46,7 @@ release may need one new approval.
 
 The first launch imports a valid existing local login, or asks for an operator
 account, then lets the operator choose Git projects. Sign-in is saved in
-Keychain. The background controller uses its existing owner-only `up-login.txt`
+Keychain. The background controller uses its existing owner-only saved login (`.toolroll-secrets/up-login.txt`)
 restart credential. Pairing never replaces another valid remembered login.
 Approval screens still require the operator's password and an exact preview.
 
