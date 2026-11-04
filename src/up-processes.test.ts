@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { buildIdentity, memoryChannel, parentMessage, RoleGenerations, ROLE_NOT_READY_REPLACEMENTS, roleMessage, startMessage, type RoleToParent } from "./up-processes.js";
 import { fakePid } from "../test/fake-pid.js";
 
-const consoleConfig = { host: "127.0.0.1", port: 4180, allowedHosts: null, publicUrl: null, localRunner: "mac", poolRoot: "/s/worktrees", repos: ["/r"], projectRoots: [], registryPath: "/s/repos.json", editor: false };
+const consoleConfig = { host: "127.0.0.1", port: 4180, allowedHosts: null, publicUrl: null, localRunner: "mac", poolRoot: "/s/worktrees", repos: ["/r"], projectRoots: [], registryPath: "/s/repos.json", editor: false, startAuthority: "full" };
 const workerConfig = { runner: "mac", token: "runner-token", repos: ["/r"], pinnedRepos: [], projectRoots: [], registryPath: "/s/repos.json", pool: "/s/worktrees",
   forMs: null, publicUrl: null, stopGraceMs: 30_000, verbose: false, terminal: false, leaseWaitMs: 105_000 };
 const start = (role: string, config: unknown) => ({ type: "start", role, databaseFile: "/s/orders.db", containment: null, build: "1.0.0+abc", config });
@@ -21,6 +21,10 @@ describe("the messages between up and its two roles", () => {
       { ...start("console", consoleConfig), build: 7 },
       start("console", { ...consoleConfig, repos: ["/r", 3] }),
       start("console", { ...consoleConfig, port: 70_000 }),
+      // Easy-start C4: a console start names how `up` was authorised, as exactly one of three words.
+      start("console", { ...consoleConfig, startAuthority: undefined }),
+      start("console", { ...consoleConfig, startAuthority: "local-owner" }),
+      start("console", { ...consoleConfig, startAuthority: true }),
       null, "start", [],
     ]) expect(startMessage(bad), JSON.stringify(bad)).toBeNull();
   });
@@ -35,7 +39,13 @@ describe("the messages between up and its two roles", () => {
     expect(roleMessage({ type: "log", line: "x".repeat(20_000) }, "worker")).toBeNull();
     expect(parentMessage({ type: "repos", repos: ["/r"] })).toEqual({ type: "repos", repos: ["/r"] });
     expect(parentMessage({ type: "run-builds" })).toBeNull();
-    expect(parentMessage({ type: "sign-in-link", id: -1, account: "a" })).toBeNull();
+    expect(parentMessage({ type: "sign-in-link", id: -1, kind: "full", account: "a" })).toBeNull();
+    // A link request is a full one naming its account, or a local one naming none: anything else asks for nothing.
+    expect(parentMessage({ type: "sign-in-link", id: 1, kind: "full", account: "a" })).toEqual({ type: "sign-in-link", id: 1, kind: "full", account: "a" });
+    expect(parentMessage({ type: "sign-in-link", id: 1, kind: "local" })).toEqual({ type: "sign-in-link", id: 1, kind: "local" });
+    for (const bad of [{ id: 1, account: "a" }, { id: 1, kind: "full" }, { id: 1, kind: "local", account: "a" }, { id: 1, kind: "local-owner" }, { id: 1, kind: "none", account: "a" }]) {
+      expect(parentMessage({ type: "sign-in-link", ...bad }), JSON.stringify(bad)).toBeNull();
+    }
   });
 
   test("in one process the same checks apply, delivered on a later turn", async () => {

@@ -16,7 +16,7 @@ test("a touch after the saved session was ended drops it instead of saving it ag
   const sessions = new PersistentSessions(store);
   const id = "a".repeat(64);
   const now = Date.now();
-  const session: Session = { name: "alex", csrf: "c", role: "approver", generation: store.accountOf("alex")!.generation, createdAt: now, lastSeen: now, project: null, projectRevision: 0, sawBoardAt: null };
+  const session: Session = { name: "alex", csrf: "c", role: "approver", generation: store.accountOf("alex")!.generation, createdAt: now, lastSeen: now, project: null, projectRevision: 0, sawBoardAt: null, authority: "full", localGeneration: null, keyEpoch: null, keyHash: null };
   sessions.set(id, session);
   const hash = PersistentSessions.hash(id);
   expect(store.webSession(hash)).not.toBeNull();
@@ -36,7 +36,7 @@ test("a touch of a kept session still saves it", () => {
   const sessions = new PersistentSessions(store);
   const id = "b".repeat(64);
   const now = Date.now();
-  const session: Session = { name: "alex", csrf: "c", role: "approver", generation: store.accountOf("alex")!.generation, createdAt: now, lastSeen: now, project: null, projectRevision: 0, sawBoardAt: null };
+  const session: Session = { name: "alex", csrf: "c", role: "approver", generation: store.accountOf("alex")!.generation, createdAt: now, lastSeen: now, project: null, projectRevision: 0, sawBoardAt: null, authority: "full", localGeneration: null, keyEpoch: null, keyHash: null };
   sessions.set(id, session);
   vi.spyOn(Date, "now").mockReturnValue(now + 61_000);
   session.lastSeen = now + 61_000;
@@ -52,7 +52,7 @@ test("a project switch (an ordinary save) never brings back a session ended else
   const sessions = new PersistentSessions(store);
   const id = "c".repeat(64);
   const now = Date.now();
-  const session: Session = { name: "alex", csrf: "c", role: "approver", generation: store.accountOf("alex")!.generation, createdAt: now, lastSeen: now, project: null, projectRevision: 0, sawBoardAt: null };
+  const session: Session = { name: "alex", csrf: "c", role: "approver", generation: store.accountOf("alex")!.generation, createdAt: now, lastSeen: now, project: null, projectRevision: 0, sawBoardAt: null, authority: "full", localGeneration: null, keyEpoch: null, keyHash: null };
   sessions.set(id, session);
   store.dropWebSession(PersistentSessions.hash(id));
   expect(sessions.stillSaved(id)).toBe(false);

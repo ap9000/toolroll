@@ -11,13 +11,13 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { createServer } from "node:net";
 import { execFileSync } from "node:child_process";
-import { runOperate, parseOperateArgs, upNarrowDeferred } from "./operate.js";
+import { consoleSignInLink, runOperate, parseOperateArgs, upLinkRequest, upNarrowDeferred } from "./operate.js";
 import { run as execRun } from "./exec.js";
 import { type Runner as CommandRunner } from "./builder.js";
 import { sweepServiceRunning } from "./storage-sweep-schedule.js";
-import { openStore } from "./store.js";
+import { enrollOwnerPassword, openStore } from "./store.js";
 import { register } from "./runner.js";
-import { addApprover, authenticateApprover } from "./scope.js";
+import { addApprover, authenticateApprover, hashPassword } from "./scope.js";
 import { addRepos, loadProjectRegistry, registryRemovals, updateRepos } from "./repos.js";
 import { instanceRunDir, proveLiveConsole, readInstance } from "./console-instance.js";
 import { packageVersion } from "./monitoring.js";
@@ -737,4 +737,103 @@ describe("parser compatibility (finding 22)", () => {
 
 
 
+});
+
+describe("start authority (easy-start C4): a laptop start, local mode's link, and the full road unchanged", () => {
+  /** One interactive `up`: the link it opens is spent at once (as the browser would), and the session it made is read. */
+  async function interactive(extra: string[], port: number, seams: { home?: string } = {}): Promise<{ code: number; opened: string[]; sessions: { authority: string; localGeneration: number | null }[] }> {
+    const opened: string[] = [];
+    const spent: Promise<unknown>[] = [];
+    lines = [];
+    const code = await runOperate("up", ["--port", String(port), "--for", "3000", ...extra], line => lines.push(line), {
+      databaseFile: db, inferProjectFromCwd: false,
+      upSeams: { terminal: true, env: {}, home: seams.home ?? join(base, "home"), fenceAvailable: () => true, openBrowser: url => { opened.push(url); spent.push(fetch(url, { redirect: "manual" })); } },
+    });
+    const answers = await Promise.all(spent) as Response[];
+    for (const answer of answers) expect(answer.status).toBe(303);
+    const store = openStore(db);
+    try {
+      return { code, opened, sessions: store.webSessions(null).map(one => ({ authority: one.authority, localGeneration: one.localGeneration })) };
+    } finally { store.close(); }
+  }
+  const loginFile = () => join(base, ".toolroll-secrets", "up-login.txt");
+
+  test("a new laptop install opens signed in as its owner with no password, before and after a password is set", async () => {
+    const first = await interactive(["--laptop", "--repo", repo], PORT + 40);
+    expect(first.code, lines.join("\n")).toBe(0);
+    expect(first.opened).toHaveLength(1);
+    expect(first.sessions).toEqual([{ authority: "local-owner", localGeneration: 1 }]);
+    // No login is minted, saved or shown: there is no password.
+    expect(existsSync(loginFile())).toBe(false);
+    expect(lines.join("\n")).not.toContain("Your password");
+    const store = openStore(db);
+    try {
+      expect(store.listApprovers().map(one => one.name)).toHaveLength(1);
+      expect(store.accountOf(store.listApprovers()[0]!.name)?.passwordSet).toBe(false);
+    } finally { store.close(); }
+
+    // The next start: local again, nothing asked or written.
+    const second = await interactive(["--laptop", "--repo", repo], PORT + 41);
+    expect(second.code).toBe(0);
+    expect(second.sessions.filter(one => one.authority === "local-owner")).toHaveLength(2);
+    expect(existsSync(loginFile())).toBe(false);
+
+    // After the owner sets a password, local mode stays on: `up` still asks nothing and opens a local link, never a
+    // full one (a full session comes only from typing the password in the browser).
+    const enrolled = openStore(db);
+    try {
+      const owner = enrolled.listApprovers()[0]!.name;
+      expect(enrollOwnerPassword(enrolled, owner, hashPassword("set-later"), 1, new Date()).ok).toBe(true);
+    } finally { enrolled.close(); }
+    const third = await interactive(["--repo", repo], PORT + 42);
+    expect(third.code).toBe(0);
+    expect(third.opened).toHaveLength(1);
+    expect(third.sessions).toEqual([{ authority: "local-owner", localGeneration: 1 }]);
+    expect(existsSync(loginFile())).toBe(false);
+
+    // --no-open: no link at all.
+    const quiet = await interactive(["--laptop", "--repo", repo, "--no-open"], PORT + 43);
+    expect(quiet.code).toBe(0);
+    expect(quiet.opened).toEqual([]);
+  });
+
+  test("an existing install with a saved login keeps the full link; --laptop changes nothing there", async () => {
+    expect(await up([], PORT + 44)).toBe(0);
+    expect(existsSync(loginFile())).toBe(true);
+    const again = await interactive(["--laptop", "--repo", repo], PORT + 45);
+    expect(again.code).toBe(0);
+    expect(again.opened).toHaveLength(1);
+    expect(again.sessions).toEqual([{ authority: "full", localGeneration: null }]);
+    const store = openStore(db);
+    try { expect(store.handle.prepare("SELECT count(*) AS n FROM local_mode").get()!["n"]).toBe(0); } finally { store.close(); }
+  });
+
+  test("a laptop start with no projects folder uses ~/Projects; it serves this computer only", async () => {
+    const home = join(base, "home");
+    mkdirSync(home);
+    const started = await interactive(["--laptop", "--no-open"], PORT + 46, { home });
+    expect(started.code, lines.join("\n")).toBe(0);
+    expect(statSync(join(home, "Projects")).isDirectory()).toBe(true);
+    expect((await loadProjectRegistry(join(base, "repos.json")) as { roots: string[] }).roots).toEqual([realpathSync(join(home, "Projects"))]);
+    lines = [];
+    expect(await runOperate("up", ["--laptop", "--host", "0.0.0.0", "--port", String(PORT + 47), "--json"], line => lines.push(line), { databaseFile: db })).not.toBe(0);
+    expect(envelope()).toMatchObject({ ok: false, reason: "usage" });
+  });
+
+  test("the console mints only the kind of link its own start was authorised for; a request of another kind gets none", () => {
+    const minted: string[] = [];
+    const server = { mintSignInLink: (account: string) => { minted.push(`full:${account}`); return "/login/once/full"; }, mintLocalLink: () => { minted.push("local"); return "/login/once/local"; } };
+    expect(consoleSignInLink(server, "local", { type: "sign-in-link", id: 1, kind: "local" })).toBe("/login/once/local");
+    expect(consoleSignInLink(server, "full", { type: "sign-in-link", id: 2, kind: "full", account: "alex" })).toBe("/login/once/full");
+    // Forged: a local start asked for a full link, a full start asked for a local one, or a start with no authority.
+    expect(consoleSignInLink(server, "local", { type: "sign-in-link", id: 3, kind: "full", account: "alex" })).toBeNull();
+    expect(consoleSignInLink(server, "full", { type: "sign-in-link", id: 4, kind: "local" })).toBeNull();
+    expect(consoleSignInLink(server, "none", { type: "sign-in-link", id: 5, kind: "full", account: "alex" })).toBeNull();
+    expect(consoleSignInLink(server, "none", { type: "sign-in-link", id: 6, kind: "local" })).toBeNull();
+    expect(minted).toEqual(["local", "full:alex"]);
+    expect(upLinkRequest("local", "alex")).toEqual({ kind: "local" });
+    expect(upLinkRequest("full", "alex")).toEqual({ kind: "full", account: "alex" });
+    expect(upLinkRequest("full", null)).toBeNull();
+    expect(upLinkRequest("none", "alex")).toBeNull();
+  });
 });

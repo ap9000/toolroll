@@ -69,6 +69,12 @@ export function readInstance(store: Store): InstanceRecord | null {
   return read.state === "ok" ? read.record : null;
 }
 
+/** v147: the key epoch the running console recorded with its claim (easy-start C2), or null: none recorded. */
+export function instanceKeyEpoch(store: Store): string | null {
+  const row = store.handle.prepare("SELECT key_epoch FROM console_instance WHERE id = 1").get();
+  return row === undefined || row["key_epoch"] == null ? null : String(row["key_epoch"]);
+}
+
 /** A stopping console forgets itself — only its own record, never a newer start's. */
 export function clearInstance(store: Store, secret: string): void {
   store.handle.prepare("DELETE FROM console_instance WHERE id = 1 AND secret = ?").run(secret);
@@ -207,7 +213,7 @@ export async function recordLiveness(databaseFile: string, record: InstanceRecor
  * database, by any spelling of its path). The write is a compare-and-set on the record it checked: two starts racing
  * can't both win. Null: not claimed (this console runs, but `toolroll` won't attach to it).
  */
-export async function claimInstance(store: Store, databaseFile: string, facts: { pid: number; port: number; build: string; socket: string }, now: Date, liveness: (record: InstanceRecord) => Promise<"live" | "gone" | "unknown"> = record => recordLiveness(databaseFile, record)): Promise<string | null> {
+export async function claimInstance(store: Store, databaseFile: string, facts: { pid: number; port: number; build: string; socket: string; keyEpoch?: string }, now: Date, liveness: (record: InstanceRecord) => Promise<"live" | "gone" | "unknown"> = record => recordLiveness(databaseFile, record)): Promise<string | null> {
   const rawSecret = (): string | null => { const row = store.handle.prepare("SELECT secret FROM console_instance WHERE id = 1").get(); return row === undefined ? null : String(row["secret"]); };
   const checked = rawSecret();
   // Taken only from nobody, or from a console confirmed gone: never on a check that merely failed, and never over a
@@ -219,8 +225,9 @@ export async function claimInstance(store: Store, databaseFile: string, facts: {
   return store.transact(() => {
     // Exactly the record that was checked (or none): anything else is another start's newer claim.
     if (rawSecret() !== checked) return null;
-    store.handle.prepare("INSERT INTO console_instance (id, secret, pid, port, build, socket, started_at) VALUES (1, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET secret = excluded.secret, pid = excluded.pid, port = excluded.port, build = excluded.build, socket = excluded.socket, started_at = excluded.started_at")
-      .run(secret, facts.pid, facts.port, facts.build, facts.socket, now.toISOString());
+    // v147: the start's key epoch (easy-start C2) is recorded with its claim; a claim without one records none.
+    store.handle.prepare("INSERT INTO console_instance (id, secret, pid, port, build, socket, started_at, key_epoch) VALUES (1, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET secret = excluded.secret, pid = excluded.pid, port = excluded.port, build = excluded.build, socket = excluded.socket, started_at = excluded.started_at, key_epoch = excluded.key_epoch")
+      .run(secret, facts.pid, facts.port, facts.build, facts.socket, now.toISOString(), facts.keyEpoch ?? null);
     return secret;
   });
 }

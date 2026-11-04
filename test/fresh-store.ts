@@ -22,7 +22,8 @@ export function freshStoreOpener(real: typeof OpenStore, dir: string): typeof Op
   let template: string | null = null;
   let memory: string | null = null;
   return (file, options = {}) => {
-    if (options.connect !== undefined) return real(file, options);
+    // A database made with a creator's fact, or under the migration seam, is never a template copy.
+    if (options.connect !== undefined || options.createdBy !== undefined || options.migrationStep !== undefined) return real(file, options);
     if (file === ":memory:") {
       if (memory === null) {
         const store = real(file, options);

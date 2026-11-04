@@ -28,8 +28,8 @@ import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
 import { credentialProof,hashPassword,proveAccountNow } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
 import { joinDeadPage,joinFormPage,loginPage,SIGNUP_NAME,SIGNUP_PASSWORD_MIN,signupPage } from "./render-people.js";
-import { liveInviteTerms } from "../store.js";
-import { SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
+import { liveInviteTerms, localOwnerBinding } from "../store.js";
+import { FULL_SESSION,SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
 import { setupCodeMatches,signupCookie,signupFromHere } from "./signup-gate.js";
 
 /** Clock skew allowed between the provider and this server when reading auth_time — forward only (a provider clock
@@ -278,9 +278,24 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     if (account === null || account.role !== "approver" || account.revokedAt !== null) return page(response, 403, loginPage("That account can't sign in here any more.", "/chat", ssoOffer()));
     if (!passwordAllowed(held.account)) return page(response, 403, loginPage(`Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`, "/chat", ssoOffer()));
     const id = randomBytes(32).toString("hex");
-    sessions.set(id, { ...arrival(request), name: held.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
-      project: runtime.defaultProject, projectRevision: 1 });
-    recordSignIn(held.account, "signed in", "one-time link");
+    const base = { ...arrival(request), name: held.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
+      project: runtime.defaultProject, projectRevision: 1 };
+    if (held.kind === "local-owner") {
+      // Easy-start C4: a local owner's link becomes only a local-owner session, and only if local mode, read again in
+      // the same transaction as the session is saved, is still on at the link's generation for the same owner, and the
+      // owner's account generation hasn't moved (a password set since ended this road).
+      const made = store.transact(() => {
+        const now = localOwnerBinding(store);
+        if (now === null || now.account !== held.account || now.localGeneration !== held.localGeneration || now.accountGeneration !== held.accountGeneration) return false;
+        sessions.set(id, { ...base, generation: now.accountGeneration, authority: "local-owner", localGeneration: now.localGeneration, keyEpoch: null, keyHash: null });
+        return true;
+      });
+      if (!made) return page(response, 410, loginPage("That sign-in link no longer works. Run toolroll again to open Toolroll.", "/chat", ssoOffer()));
+      recordSignIn(held.account, "signed in", "local link");
+    } else {
+      sessions.set(id, { ...base, ...FULL_SESSION });
+      recordSignIn(held.account, "signed in", "one-time link");
+    }
     response.setHeader("Set-Cookie", `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`);
     return redirect(response, "/chat");
   }
@@ -362,7 +377,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     }
     const account = store.accountOf(signedIn.account)!;
     const id = randomBytes(32).toString("hex");
-    sessions.set(id, { ...arrival(request), name: signedIn.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
+    sessions.set(id, { ...arrival(request), ...FULL_SESSION, name: signedIn.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
       project: runtime.defaultProject, projectRevision: 1, sso: { at: handoff.checkedAt ?? 0 } });
     recordSignIn(signedIn.account, "signed in", settings.label);
     response.setHeader("Set-Cookie", [signInSpent("/login/sso/finish"), `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
@@ -417,6 +432,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const id = randomBytes(32).toString("hex");
     sessions.set(id, {
       ...arrival(request),
+      ...FULL_SESSION,
       name,
       csrf: randomBytes(32).toString("hex"),
       role: authenticated.role,
@@ -470,6 +486,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const id = randomBytes(32).toString("hex");
     sessions.set(id, {
       ...arrival(request),
+      ...FULL_SESSION,
       name: name as string,
       csrf: randomBytes(32).toString("hex"),
       role: authenticated.role,
@@ -561,6 +578,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const id = randomBytes(32).toString("hex");
     sessions.set(id, {
       ...arrival(request),
+      ...FULL_SESSION,
       name,
       csrf: randomBytes(32).toString("hex"),
       role: made.role,

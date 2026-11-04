@@ -189,7 +189,7 @@ import { BODY_CAP,form,loginHref,matchTaskPath,page,projectChatHref,redactedPath
 import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,NOT_STARTED_SESSION,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
 import { type ProjectPeek } from "./server/render-pages.js";
 import { serverErrorPage,ssoStepUps,wrongHostPage } from "./server/render-people.js";
-import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,sessionWithinLifetime,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SsoIntent,type Who } from "./server/session.js";
+import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,sessionWithinLifetime,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SignInLink,type SsoIntent,type Who } from "./server/session.js";
 import { createTasksHandlers } from './server/tasks.js';
 import { KIT_BEHAVIOR_MARKUP, KIT_STANDALONE_SCRIPT } from './server/kit-standalone.js';
 import { createWelcomeHandlers } from './server/welcome.js';
@@ -199,6 +199,7 @@ import { readSsoSettings } from "./sso-settings.js";
 import type { ChatConfig,CoordinatorProposal,DirectChatProviderId,LeadMessage,LeadProposal,LeadTurn,SubscriptionChatProviderId } from "./store.js";
 import {
 LEAD_THREAD,
+localOwnerBinding,
 type Decision,
 type LeadAsk,type LeadThreadScope
 } from "./store.js";
@@ -384,17 +385,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** A step-up within this long of the provider checking someone needs no password. */
   // The one-time sign-in link `up` opens in the browser: single use, ten minutes, from this computer only. Only a hash
   // of the code is kept, in memory; the code itself is never written to a log or the ledger.
-  const signInLinks = new Map<string, { account: string; expires: number }>();
+  const signInLinks = new Map<string, SignInLink>();
   const linkKey = (code: string) => createHash("sha256").update(code).digest("hex");
   function mintSignInLink(account: string): string | null {
     const known = store.accountOf(account);
-    if (known === null || known.role !== "approver" || known.revokedAt !== null) return null;
-    for (const [key, one] of signInLinks) if (one.expires < Date.now()) signInLinks.delete(key);
-    while (signInLinks.size >= 20) signInLinks.delete(signInLinks.keys().next().value!);
-    const code = randomBytes(32).toString("base64url");
-    signInLinks.set(linkKey(code), { account, expires: Date.now() + SIGN_IN_LINK_MS });
-    return `${SIGN_IN_LINK_PATH}${code}`;
+    // A full link is for an account with a password: a local owner without one gets only mintLocalLink's.
+    if (known === null || known.role !== "approver" || known.revokedAt !== null || !known.passwordSet) return null;
+    return holdSignInLink({ kind: "full", account, expires: Date.now() + SIGN_IN_LINK_MS });
   }
+  /** v147: this console start's key epoch (easy-start C2): the browser-key wave binds each session's mutation key to it. */
+  const keyEpoch = options.keyEpoch ?? randomBytes(16).toString("hex");
   /** This computer, and nothing in front of it: a loopback peer that names a loopback address, with no sign of a proxy —
    * any forwarding header at all (Forwarded, X-Forwarded-*, X-Real-IP, Via, …) disqualifies the request. */
   const fromThisComputer = (request: IncomingMessage): boolean => {
@@ -2215,6 +2215,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get firstTasks(): ServerRuntime['firstTasks'] { return firstTasks; },
     get authenticateCredential(): ServerRuntime['authenticateCredential'] { return authenticateCredential; },
     get identities(): ServerRuntime['identities'] { return identities; },
+    get keyEpoch(): ServerRuntime['keyEpoch'] { return keyEpoch; },
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime);
@@ -2283,7 +2284,22 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return withEdgePolicy(route, () => registry.edge(route, { ...ctx, route }));
   }
 
-  return Object.assign(server, { mintSignInLink, closeCoding });
+  // Defined last, so the reviewed functions above keep their places (password-freshness.test.ts).
+  function holdSignInLink(link: SignInLink): string {
+    for (const [key, one] of signInLinks) if (one.expires < Date.now()) signInLinks.delete(key);
+    while (signInLinks.size >= 20) signInLinks.delete(signInLinks.keys().next().value!);
+    const code = randomBytes(32).toString("base64url");
+    signInLinks.set(linkKey(code), link);
+    return `${SIGN_IN_LINK_PATH}${code}`;
+  }
+  /** Easy-start C4: a local owner's one-time link. It names no account: local mode's own owner, read now, while local
+   * mode is on and the owner is active. Redemption reads local mode again and issues only a local-owner session. */
+  function mintLocalLink(): string | null {
+    const binding = localOwnerBinding(store);
+    if (binding === null) return null;
+    return holdSignInLink({ kind: "local-owner", ...binding, expires: Date.now() + SIGN_IN_LINK_MS });
+  }
+  return Object.assign(server, { mintSignInLink, mintLocalLink, keyEpoch, closeCoding });
 }
 
 export { PAGE_CSS,pinnedTheme,SENSITIVE_INPUT } from "./server/chrome.js";

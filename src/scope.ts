@@ -1223,7 +1223,9 @@ export function authenticateAccount(
   const dummy = `scrypt$${"0".repeat(32)}$${"0".repeat(64)}`;
   const hash = account?.credentialHash ?? dummy;
   if (!hash.startsWith("scrypt$")) verifyCredential(dummy, secret);
-  const matches = verifyCredential(hash, secret);
+  // v147: an account with no password set (a local-mode owner) has a random hash; the KDF still runs (same timing), and
+  // nothing it is given ever matches.
+  const matches = verifyCredential(hash, secret) && account !== null && account.passwordSet;
   if (account === null || !matches) {
     guard.failed(by, now, source, account !== null);
     return { ok: false, reason: "unknown" };
