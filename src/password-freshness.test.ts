@@ -395,7 +395,7 @@ describe("where freshness may be honoured", () => {
 
   test("a password is checked only at known places, and every console empty-field step-up goes through proveAccountNow", () => {
     expect(hits["authenticateAccount()"]).toEqual({
-      "src/operate.ts": 1, "src/principal.ts": 1, "src/scope.ts": 1, "src/server/guards.ts": 1, "src/server/people-tokens.ts": 2,
+      "src/operate.ts": 1, "src/principal.ts": 1, "src/scope.ts": 1, "src/server/guards.ts": 1, "src/server/people-tokens.ts": 3,
       "src/server/settings.ts": 2, "src/tokens-cli.ts": 1,
     });
     // The two settings checks are typed-now ceremonies (they also compare the generation); never an empty field.
@@ -424,7 +424,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "FreshFacts": {
     "src/scope.ts#<module>": 2,
     "src/serve.ts#<module>": 2,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54": 1,
     "src/server/remote.ts#<module>": 3,
     "src/server/runtime.ts#<module>": 3,
   },
@@ -447,6 +447,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/guards.ts#createSharedGuards@1>identify@15": 1,
     "src/server/people-tokens.ts#<module>": 2,
     "src/server/people-tokens.ts#createPeopleHandlers@2>loginSend@14": 1,
+    // Easy-start C2: Reconnect takes the session's own password (a typed one, never freshness) for a fresh browser key.
+    "src/server/people-tokens.ts#createPeopleHandlers@2>rekeySend@26": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>signupSend@13": 1,
     "src/server/settings.ts#<module>": 2,
     "src/server/settings.ts#createSettingsHandlers@1>chatApprovalAct@77><anonymous>@1": 1,
@@ -527,7 +529,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/scope.ts#approve@46>store.transact(_)@1": 1,
     "src/scope.ts#authenticateApprover@42": 1,
     "src/serve.ts#createDecisionServer@1": 3,
-    "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateApprover@241": 2,
+    "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateApprover@243": 2,
     "src/server/chat.ts#createChatHandlers@1": 2,
     "src/server/chat.ts#createChatHandlers@1>chatAckSend@26": 1,
     "src/server/chat.ts#createChatHandlers@1>chatConfig@16": 1,
@@ -591,7 +593,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createTidyHandlers@3": 2,
     "src/server/tasks.ts#createTidyHandlers@3>applyPutAway@2": 1,
     // Live terminals: starting one is a step-up (a fresh password every time; never a remembered one).
-    "src/server/terminals.ts#createTerminalHandlers@2>start@10": 1,
+    "src/server/terminals.ts#createTerminalHandlers@2>start@11": 1,
     "src/task-outcome-cli.ts#<module>": 2,
     "src/task-outcome-cli.ts#runTaskMergeCommand@2": 1,
     // Passwordless (docs/plans/passwordless.md): reviewed new sites.
@@ -609,7 +611,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "consumeSsoNow": {
     "src/scope.ts#<module>": 1,
     "src/scope.ts#proveAccountNow@38": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54": 1,
   },
   "credentialHash": {
     // Deploy robustness (runner-process.ts): a digest of the runner's own stored hash names the incarnation in the
@@ -722,12 +724,12 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/run-closeout.ts#closeOutCheckouts@11": 4,
     "src/runner.ts#recoverDead@17>recovery:store.transact(_)@1": 3,
     "src/scope.ts#proveAccountNow@38": 4,
-    "src/serve.ts#createDecisionServer@1>checkLocalAgents@107": 1,
-    "src/serve.ts#createDecisionServer@1>checkLocalAgents@107>localSignInChecking:Promise.all(map(_)):map(_)@1": 1,
-    "src/serve.ts#createDecisionServer@1>connectionCheck@43": 2,
-    "src/serve.ts#createDecisionServer@1>handle@102": 4,
-    "src/serve.ts#createDecisionServer@1>sendScreen@126": 2,
-    "src/serve.ts#createDecisionServer@1>sendScreen@126>workspace@6": 1,
+    "src/serve.ts#createDecisionServer@1>checkLocalAgents@109": 1,
+    "src/serve.ts#createDecisionServer@1>checkLocalAgents@109>localSignInChecking:Promise.all(map(_)):map(_)@1": 1,
+    "src/serve.ts#createDecisionServer@1>connectionCheck@44": 2,
+    "src/serve.ts#createDecisionServer@1>handle@104": 4,
+    "src/serve.ts#createDecisionServer@1>sendScreen@128": 2,
+    "src/serve.ts#createDecisionServer@1>sendScreen@128>workspace@6": 1,
     "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2": 3,
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@10": 1,
     "src/server/render-people.ts#ssoStepUps@3": 1,
@@ -760,11 +762,11 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/scope.ts#proveAccountNow@38": 1,
     "src/scope.ts#ssoNowAvailable@37": 1,
     "src/serve.ts#<module>": 2,
-    "src/serve.ts#createDecisionServer@1>handle@102": 2,
-    "src/serve.ts#createDecisionServer@1>handle@102>requestFacts.sso.fresh@4": 1,
-    "src/serve.ts#createDecisionServer@1>sendScreen@126>workspace@6": 1,
+    "src/serve.ts#createDecisionServer@1>handle@104": 2,
+    "src/serve.ts#createDecisionServer@1>handle@104>requestFacts.sso.fresh@4": 1,
+    "src/serve.ts#createDecisionServer@1>sendScreen@128>workspace@6": 1,
     "src/server/remote.ts#<module>": 2,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@12": 1,
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@14": 1,
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@10": 1,
     // Passwordless (docs/plans/passwordless.md): reviewed new sites.
     "src/scope.ts#passwordlessSessionFor@39": 1,
@@ -772,7 +774,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#createChatHandlers@1>chatSend@24": 1,
   },
   "freshFloor": {
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>floor@6": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>floor@6": 1,
     "src/server/session.ts#<module>": 1,
     "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@39": 1,
   },
@@ -807,10 +809,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "passwordAt": {
     "src/scope.ts#<module>": 1,
     "src/scope.ts#freshnessFor@36": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>passwordAt@2": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>stamp@7": 1,
-    "src/serve.ts#createDecisionServer@1>sendScreen@126>workspace@6": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>passwordAt@2": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>stamp@7": 1,
+    "src/serve.ts#createDecisionServer@1>sendScreen@128>workspace@6": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>loginSend@14": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>signupSend@13": 1,
     "src/server/session.ts#<module>": 1,
@@ -822,7 +824,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts#<module>": 2,
     "src/server/people-tokens.ts#createPeopleHandlers@2>sessionsSend@3": 1,
     "src/server/remote.ts#<module>": 2,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@12>freshFacts.run(runtime.freshFactsOf(request,who),_)@1": 1,
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@14>freshFacts.run(runtime.freshFactsOf(request,who),_)@1": 1,
   },
   "scryptSync": {
     "src/scope.ts#<module>": 2,
@@ -843,12 +845,12 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/scope.ts#<module>": 1,
     "src/scope.ts#proveAccountNow@38": 1,
     "src/scope.ts#ssoNowAvailable@37": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54": 1,
   },
   "ssoNowAt": {
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>consumeSsoNow@5": 2,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>consumeSsoNow@5><anonymous>@1": 2,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>ssoNow@4": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>consumeSsoNow@5": 2,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>consumeSsoNow@5><anonymous>@1": 2,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>ssoNow@4": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>ssoFinish@12": 1,
     "src/server/session.ts#<module>": 1,
     "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@39": 1,
@@ -859,7 +861,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/scope.ts#proveAccountNow@38": 1,
     "src/scope.ts#ssoNowAvailable@37": 1,
     "src/serve.ts#<module>": 2,
-    "src/serve.ts#createDecisionServer@1>handle@102>requestFacts.sso.fresh@4": 1,
+    "src/serve.ts#createDecisionServer@1>handle@104>requestFacts.sso.fresh@4": 1,
     "src/server/remote.ts#<module>": 2,
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@10>sso.fresh:freshFacts.run(runtime.freshFactsOf(request,who),_)@1": 1,
     "src/server/tasks.ts#<module>": 2,
@@ -868,8 +870,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "ssoReauthAt": {
     "src/scope.ts#<module>": 1,
     "src/scope.ts#freshnessFor@36": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>ssoReauthAt@3": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>ssoReauthAt@3": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>ssoFinish@12": 1,
     "src/server/session.ts#<module>": 1,
     "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@39": 1,
@@ -912,7 +914,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   // Passwordless (docs/plans/passwordless.md): the credential checks and the session reading, each site reviewed.
   authenticateCredential: {
     "src/serve.ts#createDecisionServer@1": 3,
-    "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateCredential@300": 2,
+    "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateCredential@302": 2,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
     "src/server/flows.ts#createFlowsHandlers@1>triggerAct@32><anonymous>@1": 2,
     "src/server/guards.ts#createSharedGuards@1>authenticateCredential@1": 1,

@@ -20,6 +20,7 @@ import { ConversationPane } from "./agent-conversation.js";
 import { LiveGrid } from "./agents-live-view.js";
 import { freshDraft, loadDraft, saveDraft, type SteerDraft } from "./steer-composer.js";
 import "./agents.css";
+import { keyed, markAgentSeen, watchAgent } from "../mutation-key.js";
 
 /** "38 s", "4 min", "1 h 12 min". */
 export function elapsedWords(fromIso: string, to: number): string {
@@ -146,7 +147,7 @@ function ComputerDrawer({ one, computers, trigger, onClose }: { one: BrowserComp
   // The same handler /fleet posted to; the server proves the password (or Passwordless) again.
   const retire = async (password: string | null): Promise<string | null> => {
     try {
-      const answer = await fetch("/fleet/runner/retire", { method: "POST", credentials: "same-origin", redirect: "manual",
+      const answer = await fetch("/fleet/runner/retire", { method: "POST", credentials: "same-origin", redirect: "manual", headers: keyed({}),
         body: new URLSearchParams({ csrf, name: one.name, token: password ?? "" }) });
       if (answer.type === "opaqueredirect" || (answer.status >= 300 && answer.status < 400)) { location.assign(`/agents?retired=${encodeURIComponent(one.name)}#computers`); return null; }
       if (answer.status === 404) return "There's no computer by that name any more. Nothing changed.";
@@ -523,6 +524,10 @@ function AgentTabs({ detail }: { detail: BrowserAgentDetail }) {
 function AgentPage({ detail }: { detail: BrowserAgentDetail }) {
   // The opened agent's own room: a change reads the page again in place; while open, this person is watching it.
   useLiveRoom(detail.room, event => { if (event === "change" || event === "reload") window.dispatchEvent(new Event(WORKSPACE_NUDGE)); });
+  // Easy-start C2: viewing is a keyed act, never a page read's side effect: a finished agent opened here is seen; a
+  // running one is watched (chat pings hold off) while this page stays open.
+  const csrf = useContext(FormToken);
+  useEffect(() => detail.live ? watchAgent(detail.runId, csrf) : (markAgentSeen(detail.runId, csrf), undefined), [detail.runId, detail.live, csrf]);
   const meta = [detail.project, `run ${detail.runId}`, detail.agent].filter(Boolean).join(" · ");
   const task = detail.task ?? null;
   return <div className="agents-agent" id="agents-view" data-agent-detail={detail.runId}>

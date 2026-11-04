@@ -43,6 +43,8 @@ export interface RemoteRuntime {
   teamsSourceBudget: SourceAdmission;
   teamsTenantBudget: SourceAdmission;
   freshFactsOf: (request: IncomingMessage, who: Who | null) => FreshFacts | null;
+  /** Easy-start C2: the browser mutation key (server/mutation-key.ts). */
+  browserKeys: import("./mutation-key.js").BrowserKeys;
 }
 export function createRemoteHandlers(runtime: RemoteRuntime) {
   const { identify, store, admitPasswordSource, admitBearer, allowedHost, team, teamBrowserReply, requestBudget, options, clock, evidenceRoot, consoleOrigin, managedRepos, joinSourceOf, ssoSettings, oauthTokenBudget, hookContext, teamsSourceBudget, teamsTenantBudget } = runtime;
@@ -109,7 +111,9 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       const origin = request.headers.origin, referer = request.headers.referer;
       const named = typeof origin === 'string' && origin !== 'null' ? origin : typeof referer === 'string' ? referer : null;
       if (named !== null && !allowedHost(named.replace(/^https?:\/\//, '').split('/')[0])) return false;
-      return request.headers['x-csrf-token'] === who.session.csrf;
+      // Easy-start C2: and, on a protected loopback install, the session's key (its header), which a cookie holder on
+      // another port can't read.
+      return request.headers['x-csrf-token'] === who.session.csrf && runtime.browserKeys.check(who, request, null) === null;
     },
     execute: async (actor, input) => {
       const reply = await team.execute(actor, input);
@@ -148,6 +152,13 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       const named = typeof origin === "string" && origin !== "null" ? origin : typeof referer === "string" ? referer : null;
       return named !== null && allowedHost(named.replace(/^https?:\/\//, "").split("/")[0]);
     },
+    // Easy-start C2: the consent's own post presents the session's key too (its form carries it, filled by the page's
+    // one nonce'd script while the key is required).
+    keyed: (request, form) => {
+      const who = identify(request, false);
+      return who !== null && who.via === "cookie" && runtime.browserKeys.check(who, request, form) === null;
+    },
+    keyFill: () => runtime.browserKeys.required(),
     // The step-up for a credential: the person's password, or (empty) a fresh identity-provider check. What they may
     // grant (their role, their projects) is checked beside it.
     // Proved on this request's live session at the moment of consent (signed in here still, same generation), through

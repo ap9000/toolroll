@@ -4439,6 +4439,8 @@ async function startConsole(options: {
     ...(options.instanceSecret === undefined ? {} : { instanceSecret: options.instanceSecret }),
     ...(options.draining === undefined ? {} : { draining: options.draining }),
     ...(options.keyEpoch === undefined ? {} : { keyEpoch: options.keyEpoch }),
+    // Easy-start C2: on a protected loopback install, every browser mutation also presents the session's key.
+    browserKey: true,
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

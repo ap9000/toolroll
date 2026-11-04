@@ -159,7 +159,7 @@ export interface ServerRuntime {
   revisionDestination: (child: string, back: string) => string;
   deletedRepos: Set<string>;
   lookupSession: (candidate: string, touch?: boolean) => Session | null;
-  authorizeMutation: (request: IncomingMessage, who: Who, body: FormView<FormFieldOf<"mutationGuard">>) => { status: number; message: string; } | null;
+  authorizeMutation: (request: IncomingMessage, who: Who, body: FormView<FormFieldOf<"mutationGuard">>) => { status: number; message: string; reconnect?: import("./mutation-key.js").Reconnect } | null;
   leadSaid: Map<string, { turn: number | null; message: string; }>;
   armTaskResume: (response: ServerResponse, who: Who, taskId: string, named: string, returnTo: "chat" | "task", now: Date) => void;
   chatFetcher: { (input: RequestInfo | URL, init?: RequestInit): Promise<Response>; (input: string | URL | Request, init?: RequestInit): Promise<Response>; };
@@ -178,6 +178,8 @@ export interface ServerRuntime {
   signInLinks: Map<string, import("./session.js").SignInLink>;
   /** v147: this console start's key epoch (easy-start C2). */
   keyEpoch: string;
+  /** Easy-start C2: the browser mutation key (server/mutation-key.ts): the one check, issuing and delivering a key. */
+  browserKeys: import("./mutation-key.js").BrowserKeys;
   linkKey: (code: string) => string;
   fromThisComputer: (request: IncomingMessage) => boolean;
   /** Cockpit B2: the request's live password-freshness facts (null off a browser session). */

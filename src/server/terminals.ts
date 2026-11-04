@@ -18,6 +18,7 @@ import { randomBytes } from "node:crypto";
 import { STATUS_CODES, type IncomingMessage, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import type { Duplex } from "node:stream";
+import { KEY_PROTOCOL } from "./mutation-key.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { readForm, CONSOLE_FORMS } from "../contracts/console-api.js";
 import { html, htmlString } from "../html.js";
@@ -77,7 +78,10 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
   const transportOfRequest = (request: IncomingMessage): Transport => transportOf({ peer: request.socket.remoteAddress, joinSource: deps.forwardedSourceOf(request),
     forwardedProto: request.headers["x-forwarded-proto"], forwarded: request.headers["forwarded"] });
   const sockets = new Set<WebSocket>();
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES, perMessageDeflate: false });
+  // Easy-start C2: a page offers `toolroll` and, on a protected loopback install, `toolroll.key.<key>`; only `toolroll` is
+  // ever selected, so the key is never echoed.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES, perMessageDeflate: false,
+    handleProtocols: protocols => protocols.has(KEY_PROTOCOL) ? KEY_PROTOCOL : false });
 
   /** An operator signed in with a browser, of the generation they signed in with; else null. */
   const operatorOf = (who: Who | null): Operator | null =>
@@ -223,6 +227,10 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     // Read without touching: a session ended elsewhere is never written back by being seen (round 2, finding 1).
     const who = operatorOf(runtime.identify(request, false));
     if (who === null || rereadBrowser(runtime, request, who) === null) { refuseUpgrade(socket, 401, "Sign in as an installation-wide operator."); return true; }
+    // Easy-start C2: typing into a terminal is a mutation: on a protected loopback install the socket offers the session's
+    // key (its protocol list), which a cookie holder on another port can't read.
+    const keyed = runtime.browserKeys.check(who, request, null);
+    if (keyed !== null) { refuseUpgrade(socket, keyed.status, keyed.message); return true; }
     const terminal = deps.host?.get(id) ?? null;
     if (!owned(who, terminal) || !projectAllowed(who.name, terminal.repo)) { refuseUpgrade(socket, 404, "No such terminal."); return true; }
     if (deps.host!.viewerCount(id) >= MAX_VIEWERS) { refuseUpgrade(socket, 429, `This terminal is open in ${MAX_VIEWERS} places already.`); return true; }

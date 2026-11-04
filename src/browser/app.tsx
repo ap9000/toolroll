@@ -35,6 +35,7 @@ import { LeadChat, returnSends } from "./lead-chat.js";
 import { NeedsDock, PhoneHeader, Rail, useNeeds, useNeedsRefresh } from "./shell.js";
 import { SearchMenu } from "./search.js";
 import "./workspace.css";
+import { keyed, markAgentSeen } from "./mutation-key.js";
 
 export { GuardedHtml, regionIsEditing };
 export { REPLACED_THREAD_DIVIDER, replyTook } from "./lead-chat.js";
@@ -658,6 +659,9 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const [teamSnapshot, setTeamSnapshot] = useState<TeamSnapshot | undefined>(initial.team);
   const workspace = teamSnapshot?.tasks ? { ...controller.workspace, ...browserCrewFromIndex(teamSnapshot.tasks, teamSnapshot.selected?.id) } : controller.workspace;
   const [phoneView, setPhoneView] = useState<"chat" | "work">(workspace.result || workspace.focus ? "work" : "chat");
+  // Easy-start C2: a result opened here is seen (a keyed act, never the page read's side effect).
+  const seenRun = workspace.result?.runId ?? null;
+  useEffect(() => { if (seenRun !== null) markAgentSeen(seenRun, workspace.csrf); }, [seenRun, workspace.csrf]);
   const hasWork = workspace.focus !== null || workspace.result !== null;
   const selectedTask = workspace.crew.find(item => item.id === workspace.focus?.id);
   const isChat = new URL(workspace.path, window.location.origin).pathname === "/chat";
@@ -737,8 +741,14 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
         : <h1>{isChat ? workspace.leadName ?? "Lead" : section}</h1>}
         {workspace.focus && isChat && <span className="so-focus-label" title={workspace.focus.title}>{workspace.focus.title}</span>}
       </header>}
-      {(workspace.notices.length > 0 || (workspace.signIn?.length ?? 0) > 0 || update !== null || phone !== null || (demo !== undefined && !pageScrolls)) && <div className="so-workspace-notices">
+      {(workspace.notices.length > 0 || (workspace.signIn?.length ?? 0) > 0 || update !== null || phone !== null || workspace.reconnect !== undefined || (demo !== undefined && !pageScrolls)) && <div className="so-workspace-notices">
         {!pageScrolls && <DemoNotice demo={demo} />}
+        {/* Easy-start C2: Toolroll restarted since this tab got its key: it reads, and reconnects to make changes. */}
+        {workspace.reconnect !== undefined && <Alert className="so-update" data-reconnect={workspace.reconnect.kind}>
+          {workspace.reconnect.kind === "password"
+            ? <p><span>Toolroll restarted</span> · <a href={workspace.reconnect.href}>Reconnect</a></p>
+            : <p><span>Toolroll restarted. Run <code>{workspace.reconnect.command}</code> to reconnect.</span></p>}
+        </Alert>}
         {workspace.signIn?.map(item => <Alert key={item.provider} className="so-sign-in" data-sign-in={item.provider}>
           <p className="so-sign-in-title">{item.title}</p>
           <p className="so-sign-in-detail">Run <code>{item.command}</code> on this computer, then resume.{item.detail === "" ? "" : ` ${item.detail}`}</p>
@@ -751,7 +761,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
             // Dismissed at once; the cookie that keeps it dismissed is saved in the background.
             event.preventDefault();
             setDismissedUpdate(update.version);
-            void fetch(update.dismissHref, { method: "POST", body: new URLSearchParams({ csrf: workspace.csrf, version: update.version, quiet: "1" }) }).catch(() => {});
+            void fetch(update.dismissHref, { method: "POST", headers: keyed({}), body: new URLSearchParams({ csrf: workspace.csrf, version: update.version, quiet: "1" }) }).catch(() => {});
           }}>
             <input type="hidden" name="version" value={update.version} />
             <ViewButton className="max-[761px]:size-11 max-[761px]:min-h-11" variant="ghost" size="icon" type="submit" aria-label={`Dismiss the notice about ${update.version}`}><Icon name="close" /></ViewButton>
@@ -763,7 +773,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
             // The same installation-wide put-away as before; the setup stays in Settings → Chat apps.
             event.preventDefault();
             setPhoneDismissed(true);
-            void fetch(phone.dismissHref, { method: "POST", body: new URLSearchParams({ csrf: workspace.csrf, quiet: "1" }) }).catch(() => {});
+            void fetch(phone.dismissHref, { method: "POST", headers: keyed({}), body: new URLSearchParams({ csrf: workspace.csrf, quiet: "1" }) }).catch(() => {});
           }}>
             <ViewButton className="max-[761px]:size-11 max-[761px]:min-h-11" variant="ghost" size="icon" type="submit" aria-label="Dismiss the phone notice"><Icon name="close" /></ViewButton>
           </PostForm>

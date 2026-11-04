@@ -27,7 +27,7 @@ import { personAuditHtml,personHref } from "../people-audit-ui.js";
 import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
 import { credentialProof,hashPassword,proveAccountNow } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
-import { joinDeadPage,joinFormPage,loginPage,SIGNUP_NAME,SIGNUP_PASSWORD_MIN,signupPage } from "./render-people.js";
+import { joinDeadPage,joinFormPage,loginPage,reconnectPage,SIGNUP_NAME,SIGNUP_PASSWORD_MIN,signupPage } from "./render-people.js";
 import { liveInviteTerms, localOwnerBinding } from "../store.js";
 import { FULL_SESSION,SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
 import { setupCodeMatches,signupCookie,signupFromHere } from "./signup-gate.js";
@@ -45,7 +45,7 @@ export function sameVisitCheck(authTime: number | null, startedAt: number, now: 
   return Math.min(Math.max(at, startedAt), now);
 }
 export function createPeopleHandlers(runtime: ServerRuntime) {
-  const { joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, authenticateCredential, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, cookieSecure, consoleOrigin, providerFor, providerKnown, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
+  const { joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, authenticateCredential, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, cookieSecure, consoleOrigin, providerFor, providerKnown, joinSourceOf, signInBudget, signInActor, minutesWords, browserKeys } = runtime;
 
   // v101: Settings → Sessions & tokens: where you're signed in, and your API tokens. An instance operator can see everyone's.
   async function sessionsPage(ctx: HandlerContext): Promise<void> {
@@ -278,6 +278,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     if (account === null || account.role !== "approver" || account.revokedAt !== null) return page(response, 403, loginPage("That account can't sign in here any more.", "/chat", ssoOffer()));
     if (!passwordAllowed(held.account)) return page(response, 403, loginPage(`Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`, "/chat", ssoOffer()));
     const id = randomBytes(32).toString("hex");
+    const keyed = keyFor(request);
     const base = { ...arrival(request), name: held.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
       project: runtime.defaultProject, projectRevision: 1 };
     if (held.kind === "local-owner") {
@@ -287,17 +288,16 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       const made = store.transact(() => {
         const now = localOwnerBinding(store);
         if (now === null || now.account !== held.account || now.localGeneration !== held.localGeneration || now.accountGeneration !== held.accountGeneration) return false;
-        sessions.set(id, { ...base, generation: now.accountGeneration, authority: "local-owner", localGeneration: now.localGeneration, keyEpoch: null, keyHash: null });
+        sessions.set(id, { ...base, generation: now.accountGeneration, authority: "local-owner", localGeneration: now.localGeneration, ...keyed.fields });
         return true;
       });
       if (!made) return page(response, 410, loginPage("That sign-in link no longer works. Run toolroll again to open Toolroll.", "/chat", ssoOffer()));
       recordSignIn(held.account, "signed in", "local link");
     } else {
-      sessions.set(id, { ...base, ...FULL_SESSION });
+      sessions.set(id, { ...base, ...FULL_SESSION, ...keyed.fields });
       recordSignIn(held.account, "signed in", "one-time link");
     }
-    response.setHeader("Set-Cookie", `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`);
-    return redirect(response, "/chat");
+    return signedInTo(response, keyed.key, "/chat", [`${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
   }
 
   // v100: sign-in with the identity provider. ?reauth=1 asks it to check the person again (a step-up);
@@ -377,11 +377,11 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     }
     const account = store.accountOf(signedIn.account)!;
     const id = randomBytes(32).toString("hex");
-    sessions.set(id, { ...arrival(request), ...FULL_SESSION, name: signedIn.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
+    const keyed = keyFor(request);
+    sessions.set(id, { ...arrival(request), ...FULL_SESSION, ...keyed.fields, name: signedIn.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
       project: runtime.defaultProject, projectRevision: 1, sso: { at: handoff.checkedAt ?? 0 } });
     recordSignIn(signedIn.account, "signed in", settings.label);
-    response.setHeader("Set-Cookie", [signInSpent("/login/sso/finish"), `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
-    return redirect(response, handoff.returnTo);
+    return signedInTo(response, keyed.key, handoff.returnTo, [signInSpent("/login/sso/finish"), `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
   }
 
   async function signupSend(ctx: EdgeContext): Promise<void> {
@@ -430,9 +430,11 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const authenticated = authenticateAccount(store, name, password);
     if (authenticated === null || !authenticated.ok) return page(response, 500, loginPage("The account was created, but signing in failed. Sign in with it now."));
     const id = randomBytes(32).toString("hex");
+    const keyed = keyFor(request);
     sessions.set(id, {
       ...arrival(request),
       ...FULL_SESSION,
+      ...keyed.fields,
       name,
       csrf: randomBytes(32).toString("hex"),
       role: authenticated.role,
@@ -445,8 +447,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       // A password typed on this computer starts this session's freshness window (cockpit B2); from anywhere else, never.
       ...(fromThisComputer(request) ? { passwordAt: Date.now() } : {}),
     });
-    response.setHeader("Set-Cookie", `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`);
-    return redirect(response, "/");
+    return signedInTo(response, keyed.key, "/", [`${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
   }
 
   async function loginSend(ctx: EdgeContext): Promise<void> {
@@ -484,9 +485,11 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     }
     recordSignIn(name as string, "signed in", "browser");
     const id = randomBytes(32).toString("hex");
+    const keyed = keyFor(request);
     sessions.set(id, {
       ...arrival(request),
       ...FULL_SESSION,
+      ...keyed.fields,
       name: name as string,
       csrf: randomBytes(32).toString("hex"),
       role: authenticated.role,
@@ -500,11 +503,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       // else (a phone, a proxy) it signs in and proves nothing more.
       ...(fromThisComputer(request) ? { passwordAt: Date.now() } : {}),
     });
-    response.setHeader(
-      "Set-Cookie",
-      `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`,
-    );
-    return redirect(response, returnTo);
+    return signedInTo(response, keyed.key, returnTo, [`${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
   }
 
   async function logout(ctx: EdgeContext): Promise<void> {
@@ -576,9 +575,11 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     }
     // The cookie mints only AFTER the commit — same shape as login.
     const id = randomBytes(32).toString("hex");
+    const keyed = keyFor(request);
     sessions.set(id, {
       ...arrival(request),
       ...FULL_SESSION,
+      ...keyed.fields,
       name,
       csrf: randomBytes(32).toString("hex"),
       role: made.role,
@@ -589,11 +590,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       project: runtime.defaultProject,
       projectRevision: 1,
     });
-    response.setHeader(
-      "Set-Cookie",
-      `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`,
-    );
-    return redirect(response, "/");
+    return signedInTo(response, keyed.key, "/", [`${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
   }
 
   /** The invite code in /join/:code (the route's pattern has already proven its shape). */
@@ -672,6 +669,79 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     if (projects.length > 100 || projects.some(repo => !allowed.has(repo))) return { ok: false, message: "Choose projects available on this instance." };
     return { ok: true, projects };
   }
+  /** Easy-start C2: a session's key fields when it is made: on a protected loopback install, a fresh key (only its hash
+   * and this start's epoch kept) to deliver once; else none. */
+  function keyFor(request: IncomingMessage): { fields: { keyEpoch: string | null; keyHash: string | null }; key: string | null } {
+    const fields: { keyEpoch: string | null; keyHash: string | null } = { keyEpoch: null, keyHash: null };
+    const key = browserKeys.issue(fields, request);
+    return { fields, key };
+  }
+  /** A sign-in's answer: its cookies, then on to `to` — through the key's one delivery when there is a key. */
+  function signedInTo(response: ServerResponse, key: string | null, to: string, cookies: readonly string[]): void {
+    if (key !== null) return browserKeys.deliver(response, key, to, cookies);
+    response.setHeader("Set-Cookie", cookies.length === 1 ? cookies[0]! : [...cookies]);
+    return redirect(response, to);
+  }
+
+  // Easy-start C2: Reconnect. A browser session keeps reading after a restart, but its mutation key was bound to the
+  // console start that issued it. A full session gets a fresh key here by typing its password again (a cookie alone
+  // never does: a cookie holder on another port has the cookie); a local owner, by running `toolroll open`.
+  async function rekeyPage(ctx: EdgeContext): Promise<void> {
+    const { url, who, response } = ctx;
+    const returnTo = loginReturn(url.searchParams.get("return"));
+    if (who?.via !== "cookie") return redirect(response, loginHref(returnTo));
+    if (!browserKeys.required()) return redirect(response, returnTo);
+    return page(response, 200, reconnectPage(null, returnTo, howToReconnect(who)));
+  }
+
+  function howToReconnect(who: Extract<NonNullable<EdgeContext["who"]>, { via: "cookie" }>): Parameters<typeof reconnectPage>[2] {
+    if (who.authority !== "full") return { kind: "command" };
+    if (!passwordAllowed(who.name)) return { kind: "sso", label: ssoSettings()?.label ?? "your identity provider" };
+    return { kind: "password", name: who.name };
+  }
+
+  async function rekeySend(ctx: EdgeContext): Promise<void> {
+    const { who, request, response } = ctx;
+    const body = readForm(await form(request), CONSOLE_FORMS.rekey);
+    const returnTo = loginReturn(body.get("return"));
+    if (who?.via !== "cookie") return redirect(response, loginHref(returnTo));
+    if (!browserKeys.required()) return redirect(response, returnTo);
+    // Only this console's own page: a present Origin must name it (the password below is the proof either way).
+    const origin = request.headers.origin;
+    if (typeof origin === "string" && origin !== "null" && origin !== `http://${browserKeys.canonicalHost()}`) {
+      return page(response, 403, reconnectPage("Reconnect from Toolroll's own page.", returnTo, howToReconnect(who)));
+    }
+    const how = howToReconnect(who);
+    if (how.kind !== "password") return page(response, 403, reconnectPage(null, returnTo, how));
+    const source = joinSourceOf(request), at = Date.now();
+    const wait = signInBudget.waitFor(source, at);
+    if (wait > 0) {
+      recordSignIn(who.name, "sign-in refused", "too many tries", "reconnect");
+      response.setHeader("Retry-After", String(Math.ceil(wait / 1000)));
+      return page(response, 429, reconnectPage(`Too many tries. Try again in ${minutesWords(wait)}.`, returnTo, how));
+    }
+    // Only a password typed now: never a session, Passwordless or a remembered password (an empty one simply fails).
+    const proved = authenticateAccount(store, who.name, body.get("token") ?? "");
+    if (!proved.ok) {
+      if (proved.reason === "locked") {
+        recordSignIn(who.name, "sign-in refused", "locked", "reconnect");
+        response.setHeader("Retry-After", String(Math.ceil(proved.retryAfterMs! / 1000)));
+        return page(response, 429, reconnectPage(`Too many wrong passwords. Try again in ${minutesWords(proved.retryAfterMs!)}.`, returnTo, how));
+      }
+      signInBudget.failed(source, at);
+      recordSignIn(who.name, "sign-in refused", "wrong password", "reconnect");
+      return page(response, 403, reconnectPage("That password isn't right.", returnTo, how));
+    }
+    // The same person under the same credential generation and standing this session signed in with; anything else
+    // signs in again instead.
+    if (proved.generation !== who.session.generation || proved.role !== who.session.role) return redirect(response, loginHref(returnTo));
+    const key = browserKeys.issue(who.session, request);
+    if (key === null) return page(response, 421, reconnectPage(`Open Toolroll at http://${browserKeys.canonicalHost()} to reconnect.`, returnTo, how));
+    sessions.persist(who.session);
+    recordSignIn(who.name, "reconnected", "browser");
+    return browserKeys.deliver(response, key, returnTo);
+  }
+
   const registrations = handlersOf("people", {
     "people.page": peoplePage,
     "settings.sessions": sessionsPage,
@@ -689,6 +759,8 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     "edge.signup": signupSend,
     "edge.login": loginSend,
     "edge.logout": logout,
+    "edge.rekey-page": rekeyPage,
+    "edge.rekey": rekeySend,
     "edge.join": joinPage,
     "edge.join-send": joinSend,
   });

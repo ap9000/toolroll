@@ -35,6 +35,10 @@ export type RequestFacts = {
   passwordless?: boolean;
   /** The browser session's open project (display only: the sidebar's picker names it). */
   openProject?: string | null;
+  /** Easy-start C2: the browser mutation key is required here, so every page that posts carries the key fill script. */
+  keyFill?: boolean;
+  /** Easy-start C2: this session's key is from an earlier console start (or it has none): how to reconnect. */
+  reconnect?: import("./mutation-key.js").Reconnect | null;
 };
 
 /**

@@ -152,6 +152,8 @@ export function codingWorkspaceScript(): string {
   const draftKey = () => 'standing-orders:coding-draft:' + root.dataset.codingOwner + ':' + (session || 'new:' + (composer.querySelector('[name="repo"]')?.value || root.dataset.codingProject));
   const storage = (operation, key, value) => { try { return sessionStorage[operation](key, value); } catch { return null; } };
   const requestSignal = () => typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(30000) : undefined;
+  // Easy-start C2: the browser mutation key, when the page's key fill offers one.
+  const keyed = headers => typeof window.soKeyHeaders === 'function' ? window.soKeyHeaders(headers) : headers;
   const saveDraft = () => {
     if (!prompt || !root.dataset.codingOwner) return;
     storage('setItem', draftKey(), JSON.stringify({text:prompt.value, requestId:requestField.value, pending:pendingSend, at:Date.now()}));
@@ -286,7 +288,7 @@ export function codingWorkspaceScript(): string {
     const area = root.querySelector('#coding-change-content');
     const button = root.querySelector('#coding-refresh-changes'); button.disabled = true;
     try {
-      const response = await fetch(base + '/changes', {method:'POST',headers:{accept:'application/json'},body:new URLSearchParams({csrf}),credentials:'same-origin',cache:'no-store',signal:requestSignal()});
+      const response = await fetch(base + '/changes', {method:'POST',headers:keyed({accept:'application/json'}),body:new URLSearchParams({csrf}),credentials:'same-origin',cache:'no-store',signal:requestSignal()});
       if (response.status === 401 || response.redirected) { signedOut(); return; }
       if (!response.ok) throw new Error('Could not load changes. Try Refresh changes.');
       const changes = await response.json();
@@ -348,7 +350,7 @@ export function codingWorkspaceScript(): string {
     form.dataset.busy = 'true';
     const buttons = Array.from(form.querySelectorAll('button')); buttons.forEach(button => button.disabled = true);
     try {
-      const response = await fetch(form.getAttribute('action'), {method:'POST',headers:{accept:'application/json','content-type':'application/x-www-form-urlencoded'},credentials:'same-origin',body:data.toString(),signal:requestSignal()});
+      const response = await fetch(form.getAttribute('action'), {method:'POST',headers:keyed({accept:'application/json','content-type':'application/x-www-form-urlencoded'}),credentials:'same-origin',body:data.toString(),signal:requestSignal()});
       if (response.status === 401 || response.redirected) { signedOut(); return; }
       const result = await response.json();
       if (!response.ok || !result.ok) {

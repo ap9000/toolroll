@@ -107,9 +107,10 @@ export const CONSOLE_FORMS = {
   signup: formContract("POST /signup", ["code", "name", "password"]),
   login: formContract("POST /login", ["name", "token", "return"]),
   join: formContract("POST /join/<invite>", ["name", "password"]),
+  rekey: formContract("POST /login/rekey", ["token", "return"]),
 
   // Shared by every signed-in POST.
-  mutationGuard: formContract("POST (every signed-in form)", ["csrf", "token", "digest", "nonce", "confirm"]),
+  mutationGuard: formContract("POST (every signed-in form)", ["csrf", "token", "digest", "nonce", "confirm", "toolroll-key"]),
   ledgerTarget: formContract("POST (the action ledger's project)", ["repo"]),
   projectCeiling: formContract("POST (project ceiling)", ["repo"]),
 

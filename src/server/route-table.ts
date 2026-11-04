@@ -218,6 +218,8 @@ export const EDGE_LOCAL: Readonly<Record<string, { local: "allow" | "deny"; why:
   "edge.logout": { local: "allow", why: "only narrows: ends this session" },
   "edge.join": { local: "allow", why: "before sign-in: an invitation" },
   "edge.join-send": { local: "allow", why: "before sign-in: an invitation" },
+  "edge.rekey-page": { local: "allow", why: "reads only: a local owner is told to run `toolroll open`" },
+  "edge.rekey": { local: "allow", why: "only a password typed now re-keys a full session; a local owner is told to run `toolroll open` and gets no key" },
   live: { local: "allow", why: "observational only; the agent watch lease is a keyed POST (agents.watch)" },
 });
 function localMarkOf(stage: Stage, method: RouteMethod, id: string): Pick<RouteDeclaration, "local" | "localAct"> {
@@ -289,6 +291,9 @@ edge("people", "edge.sso-finish", "GET", "/login/sso/finish");
 edge("people", "edge.signup", "POST", "/signup");
 edge("people", "edge.login", "POST", "/login");
 edge("people", "edge.logout", "POST", "/logout", { callers: ["anonymous", "cookie"] });
+// Easy-start C2: a browser session's fresh mutation key after a restart: its own password again (the handler proves both).
+edge("people", "edge.rekey-page", "GET", "/login/rekey", { callers: ["anonymous", "cookie"] });
+edge("people", "edge.rekey", "POST", "/login/rekey", { callers: ["anonymous", "cookie"] });
 edge("people", "edge.join", "GET", "^\\/join\\/[A-Za-z0-9_-]{16,64}$", { sample: "/join/abcdefghijklmnop" });
 edge("people", "edge.join-send", "POST", "^\\/join\\/[A-Za-z0-9_-]{16,64}$", { sample: "/join/abcdefghijklmnop" });
 

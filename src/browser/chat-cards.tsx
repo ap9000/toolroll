@@ -10,6 +10,7 @@ import { GuardedHtml } from "./guarded-html.js";
 import { Button, cn, toast } from "./components/ui/index.js";
 import { KButton, KChip, KIcon, KLinkButton } from "./kit/index.js";
 import type { ChipTone, KitIcon } from "../design/kit.js";
+import { keyed } from "./mutation-key.js";
 
 const sentence = (words: string): string => words.charAt(0).toUpperCase() + words.slice(1);
 
@@ -17,7 +18,7 @@ async function act(card: BrowserActionCard, verb: "confirm" | "dismiss", csrf: s
   const body = new URLSearchParams({ csrf });
   if (verb === "confirm" && confirmed) body.set("confirm", "yes");
   try {
-    const response = await fetch(`/chat/proposal/${card.id}/${verb}`, { method: "POST", body, credentials: "same-origin", headers: { accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
+    const response = await fetch(`/chat/proposal/${card.id}/${verb}`, { method: "POST", body, credentials: "same-origin", headers: keyed({ accept: "application/json" }), signal: AbortSignal.timeout(20_000) });
     if (!response.headers.get("content-type")?.includes("application/json")) return { ok: false, said: "That didn't go through. Reload the conversation and try again." };
     const data: unknown = await response.json();
     const record = typeof data === "object" && data !== null ? data as Record<string, unknown> : {};
