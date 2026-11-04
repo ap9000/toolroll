@@ -206,6 +206,8 @@ export const OPERATE_COMMANDS = new Set([
   "serve",
   "watch",
   "daemon",
+  "background",
+  "stop",
   "bridge",
   "publish",
   "reconcile",

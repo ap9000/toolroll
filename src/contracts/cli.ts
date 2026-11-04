@@ -107,6 +107,9 @@ const statusOutput = answers("status", {
   integrations: z.looseObject({ broken: rows({ key: str, name: str, fix: nullable(str) }) }).optional(),
   updateWaiting: z.looseObject({}).optional(),
   unsentReplies: rows({ since: str, error: nullable(str), retry: str }).optional(),
+  // This computer's console (easy-start D): proven live or not, its address and console process, and whether a
+  // background service runs it — ours, another on this database or the desktop app's, or none. Not for a person limited to some projects.
+  laptop: z.looseObject({ running: z.boolean(), url: nullable(str), pid: nullable(int), background: z.enum(["on", "off", "other-service"]) }).optional(),
 });
 
 /** One integration (`integrations.ts` Integration): never a secret. */

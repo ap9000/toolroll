@@ -26188,3 +26188,25 @@ export function localOwnerBinding(store: Store): { account: string; localGenerat
   if (account === null || account.revokedAt !== null || account.role !== "approver") return null;
   return { account: mode.owner, localGeneration: mode.generation, accountGeneration: account.generation };
 }
+
+/** easy-start D: "Keep Toolroll running in the background?" is asked once per installation; this fact records it. */
+export const BACKGROUND_ASKED_FACT = "background-asked";
+export type BackgroundAnswer = "yes" | "no";
+
+/** The person's one answer to the background question and when it was given, or null when it was never asked. */
+export function backgroundAsked(store: Store): { answer: BackgroundAnswer; at: string } | null {
+  const row = store.handle.prepare("SELECT value, created_at FROM installation_fact WHERE key = ?").get(BACKGROUND_ASKED_FACT);
+  if (row === undefined) return null;
+  const value = String(row["value"]);
+  // A value this build doesn't know still means "asked": never ask again on the strength of a word it can't read.
+  return { answer: value === "yes" ? "yes" : "no", at: String(row["created_at"]) };
+}
+
+/** Record the answer, once: the first write wins (installation facts are never updated). True when this call recorded it. */
+export function recordBackgroundAsked(store: Store, answer: BackgroundAnswer, now: Date): boolean {
+  return store.transact(() => {
+    if (backgroundAsked(store) !== null) return false;
+    store.recordInstallationFact(BACKGROUND_ASKED_FACT, answer, now);
+    return true;
+  });
+}

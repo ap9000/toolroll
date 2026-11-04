@@ -5104,6 +5104,38 @@ $ contract --commands --json → 0
       "remote": "no"
     },
     {
+      "invocation": "background on",
+      "synopsis": "keep this computer's Toolroll running: a login item that starts `up --laptop` when you log in; hands over from the `up` this terminal runs and puts everything back if the service doesn't answer (--port)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
+    },
+    {
+      "invocation": "background off",
+      "synopsis": "stop running in the background: unloads and removes only Toolroll's own login item",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
+    },
+    {
+      "invocation": "background show",
+      "synopsis": "whether Toolroll runs in the background here, whether it is running now, and any other service on this database",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "remote": "no"
+    },
+    {
+      "invocation": "stop",
+      "synopsis": "stop this computer's Toolroll after its running work is saved: the background service (until the next login), or the `up` running in a terminal",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
+    },
+    {
       "invocation": "doctor",
       "synopsis": "check that Toolroll's service holds no key, token or password a build could read; names what it finds and the steps to fix it, never a value, and changes nothing",
       "audience": "operator",
@@ -5650,7 +5682,13 @@ $ status --json → 0
       "running": 0,
       "limit": 2
     }
-  ]
+  ],
+  "laptop": {
+    "running": false,
+    "url": null,
+    "pid": null,
+    "background": "off"
+  }
 }
 
 $ status --bogus --json → 2

@@ -26,7 +26,7 @@ import { inReadOnlyRequest } from "./read-only-request.js";
 import { createHash, randomUUID, verify as signatureValid, X509Certificate } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { accessSync, chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
+import { homedir, hostname, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
@@ -37,6 +37,9 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { removeTerminalUpdateGate } from "./terminal-catalog.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
+import { LAPTOP_LABEL_DARWIN, LAPTOP_LABEL_LINUX, unitFlag } from "./laptop-service.js";
+import { processGone, readRunnerProcessRecord, realProcessProbe, recordStandsFor, RUNNER_PROCESS_DIR, type ProcessProbe, type RunnerProcess } from "./runner-process.js";
+import type { Runner } from "./runner.js";
 import { NAME } from "./names.js";
 import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS } from "./store.js";
 import { isNewer, REGISTRY } from "./releases.js";
@@ -1264,7 +1267,7 @@ export function markWhatsNewSeen(stateDir: string): void {
 type Exec = (command: string, args: string[], options?: { cwd?: string; timeout?: number; input?: string }) => { status: number | null; stdout: string; stderr: string };
 const exec: Exec = (command, args, options = {}) =>
   spawnSync(command, args, { encoding: "utf8", timeout: options.timeout ?? 300_000, maxBuffer: 16 * 1024 * 1024, ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.input !== undefined ? { input: options.input } : {}) });
-const LABELS = ["com.toolroll.browser", "com.standing-orders.browser"];
+const LABELS = ["com.toolroll.browser", "com.standing-orders.browser", LAPTOP_LABEL_DARWIN];
 
 export function currentRuntime(version: string): RuntimeRef {
   return { version, dist: dirname(fileURLToPath(import.meta.url)) };
@@ -1280,8 +1283,11 @@ function processAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
-/** Seams for tests: npm, node and ps (`exec`), launchctl (`run`), process liveness, and launchd's waits (`sleep`). */
-export type MachineSeams = { exec?: Exec; run?: SupervisorRunner; alive?: (pid: number) => boolean; sleep?: (ms: number) => Promise<void>; execPath?: string };
+/** Seams for tests: npm, node and ps (`exec`), launchctl or systemctl (`run`), process liveness, and launchd's waits
+ * (`sleep`); for the laptop service on Linux, the platform, process identity (`probe`), the host name its process
+ * record names, and the console proof (`consoleProof`: the database's console is live at that version). */
+export type MachineSeams = { exec?: Exec; run?: SupervisorRunner; alive?: (pid: number) => boolean; sleep?: (ms: number) => Promise<void>; execPath?: string;
+  platform?: NodeJS.Platform; probe?: ProcessProbe; host?: string; consoleProof?: (databaseFile: string, version: string) => Promise<boolean> };
 
 /** The Sigstore verifier npm itself ships (npm install and npm audit signatures use it): no dependency of Toolroll's.
  * It checks the certificate chain, the transparency log entry and that the certificate names this identity. */
@@ -1292,6 +1298,8 @@ require(input.verifier).verify(input.bundle, { certificateIssuer: input.issuer, 
 export function machineSystem(home = homedir(), env: Record<string, string | undefined> = process.env, seams: MachineSeams = {}): UpdateSystem {
   const sh = seams.exec ?? exec;
   const supervise = seams.run ?? (async (file, args, options) => (await import("./exec.js")).run(file, args, options));
+  // Linux: the laptop service is a systemd user unit; nothing else here runs under systemd (watches use launchd's road).
+  if ((seams.platform ?? process.platform) === "linux") return { ...machineSystem(home, env, { ...seams, platform: "darwin" }), ...systemdLaptopService(home, sh, supervise, seams) };
   const unitFor = (from: RuntimeRef) => {
     for (const label of LABELS) {
       const unit = join(home, "Library", "LaunchAgents", `${label}.plist`);
@@ -1475,4 +1483,103 @@ export async function launchRuntimeUpdate(args: { databaseFile: string; id: stri
 export function retireUpdateJob(id: string, home = homedir()): void {
   const unit = jobUnit(home);
   try { if (readFileSync(unit, "utf8").includes(`<string>${id}</string>`)) rmSync(unit, { force: true }); } catch { /* none */ }
+}
+
+// ---- the laptop service under systemd (easy-start D) --------------------------------------------------------------
+
+/**
+ * The parts of the update's machine that differ for toolroll-up.service, the laptop service on Linux: finding the
+ * unit, which processes it runs, stopping it and proving its controller exited through the controller's own signed
+ * process record (by start identity, never a pid alone), starting it again, and the health check (the unit active,
+ * running the new runtime, and its console proved live at the new version). Every outside effect is `supervise`
+ * (systemctl), `sh` (ps) or a seam, so a test scripts all of it.
+ */
+function systemdLaptopService(home: string, sh: Exec, supervise: SupervisorRunner, seams: MachineSeams): Partial<UpdateSystem> {
+  const unitPath = join(home, ".config", "systemd", "user", `${LAPTOP_LABEL_LINUX}.service`);
+  const name = `${LAPTOP_LABEL_LINUX}.service`;
+  const probe = seams.probe ?? realProcessProbe;
+  const host = seams.host ?? hostname();
+  const mainPid = async (): Promise<number | null> => {
+    const shown = await supervise("systemctl", ["--user", "show", "--property=MainPID", name]);
+    const pid = Number(/MainPID=(\d+)/.exec(shown.stdout)?.[1] ?? 0);
+    return shown.code === 0 && pid > 1 ? pid : null;
+  };
+  const active = async (): Promise<boolean> => (await supervise("systemctl", ["--user", "is-active", name])).stdout.trim() === "active";
+  /** The processes the controller's signed record names, when that record is authentic for its registration and its
+   * `up` is the unit's main process by start identity. Null: no such proof (the stop then waits on the pid alone). */
+  const recorded = (unit: string, pid: number): RunnerProcess[] | null => {
+    const db = unitFlag(readFileSync(unit, "utf8"), "linux", "--db");
+    if (db === null || !isAbsolute(db)) return null;
+    let names: string[];
+    const folder = join(dirname(db), RUNNER_PROCESS_DIR);
+    try { names = readdirSync(folder).filter(one => one.endsWith(".json")); } catch { return null; }
+    let handle: DatabaseSync | null = null;
+    try {
+      handle = new (sqlite().DatabaseSync)(db, { readOnly: true });
+      for (const file of names) {
+        const record = readRunnerProcessRecord(join(folder, file));
+        const up = record?.processes.find(one => one.role === "up" && one.pid === pid);
+        if (record === null || up === undefined) continue;
+        const row = handle.prepare("SELECT name, host, registered_at, credential_hash FROM runner WHERE name = ?").get(record.runner);
+        if (row === undefined) continue;
+        const holder = { runner: { name: String(row["name"]), host: String(row["host"]), registeredAt: String(row["registered_at"]) } as Runner, credentialHash: String(row["credential_hash"]) };
+        if (recordStandsFor(record, holder, host) !== null || probe.start(pid) !== up.started) continue;
+        return record.processes;
+      }
+    } catch { return null; }
+    finally { handle?.close(); }
+    return null;
+  };
+  return {
+    serviceUnit: from => { try { return readFileSync(unitPath, "utf8").includes(from.dist) ? unitPath : null; } catch { return null; } },
+    // `daemon install` watches keep launchd's road; on Linux the update switches only the laptop service.
+    watchUnits: () => [],
+    serviceLoaded: async () => active(),
+    servicePids: async () => {
+      const pid = await mainPid();
+      if (pid === null) return [];
+      const children = await supervise("pgrep", ["-P", String(pid)]);
+      return [pid, ...(children.code === 0 ? children.stdout.trim().split(/\s+/).map(Number).filter(one => Number.isSafeInteger(one) && one > 1) : [])];
+    },
+    stopService: async unit => {
+      const pid = await mainPid();
+      const processes = pid === null ? null : recorded(unit, pid);
+      const stopped = await supervise("systemctl", ["--user", "stop", name]);
+      if (stopped.code !== 0) throw Error(`systemctl could not stop ${LAPTOP_LABEL_LINUX}: ${(stopped.stderr || `exit ${stopped.code}`).trim().split("\n")[0]}. Nothing was replaced.`);
+      if (processes === null) return;
+      // The controller drains and exits; every process its record names must be proved gone before anything is replaced.
+      for (let waited = 0; ; waited += 250) {
+        const left = processes.filter(one => !processGone(one, probe));
+        if (left.length === 0) return;
+        if (waited >= UP_EXIT_MS) throw Error(`Toolroll's background service is still running (process ${left.map(one => one.pid).join(", ")}) after it was stopped. Nothing was replaced.`);
+        await (seams.sleep ?? sleep)(250);
+      }
+    },
+    restartService: async () => {
+      // The switch rewrote the unit on disk: systemd reads it again before starting it.
+      const reload = await supervise("systemctl", ["--user", "daemon-reload"]);
+      if (reload.code !== 0) throw Error(`systemctl daemon-reload failed: ${(reload.stderr || `exit ${reload.code}`).trim()}`);
+      const started = await supervise("systemctl", ["--user", "start", name]);
+      if (started.code !== 0) throw Error(`systemctl could not start ${LAPTOP_LABEL_LINUX}: ${(started.stderr || `exit ${started.code}`).trim()}`);
+    },
+    healthy: async j => {
+      const version = sh(process.execPath, [join(j.to.dist, "bin.js"), "--version"], { timeout: 30_000 });
+      if (version.status !== 0 || version.stdout.trim() !== j.to.version) return false;
+      for (const link of j.switched?.links ?? []) { try { if (realpathSync(link.path) !== realpathSync(join(j.to.dist, "bin.js"))) return false; } catch { return false; } }
+      if (!j.switched?.unit?.path) return true;
+      if (!(await active())) return false;
+      const pid = await mainPid();
+      if (pid === null || !sh("/bin/ps", ["-p", String(pid), "-o", "command="]).stdout.includes(j.to.dist)) return false;
+      return (seams.consoleProof ?? liveConsoleAt)(j.databaseFile, j.to.version);
+    },
+  };
+}
+
+/** The database's console is proved live (socket and HTTP) and says it is `version`. */
+async function liveConsoleAt(databaseFile: string, version: string): Promise<boolean> {
+  const { proveLiveConsole } = await import("./console-instance.js");
+  const handle = new (sqlite().DatabaseSync)(databaseFile, { readOnly: true });
+  try { return (await proveLiveConsole(databaseFile, { handle } as unknown as Parameters<typeof proveLiveConsole>[1], version)).ok; }
+  catch { return false; }
+  finally { handle.close(); }
 }

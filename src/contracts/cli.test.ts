@@ -150,7 +150,8 @@ describe("the CLI's --json bytes", () => {
     const db = join(dir, "orders.db"), repo = join(dir, "shop");
     execFileSync("git", ["init", "-q", "-b", "main", repo]);
     const out: string[] = [];
-    const options = { databaseFile: db, now: T0, gitRunner: quickGit, releaseIo: offline, integrationIo: { env: {}, repos: [repo] } } as Parameters<typeof runOperate>[3];
+    // The laptop status key reads this test's own HOME, never the machine's login items.
+    const options = { databaseFile: db, now: T0, gitRunner: quickGit, releaseIo: offline, integrationIo: { env: {}, repos: [repo] }, laptopSeams: { home: dir } } as Parameters<typeof runOperate>[3];
     const record = async (argv: readonly string[], run: (write: (line: string) => void) => Promise<number>) => {
       const lines: string[] = [];
       const code = await run(line => lines.push(line));

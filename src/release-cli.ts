@@ -276,7 +276,8 @@ function installedGateWorld(): GateReleaseWorld {
       db.exec("PRAGMA busy_timeout=5000");
       return db;
     },
-    servicePlists: () => ["com.toolroll.browser", "com.standing-orders.browser"].map(label => join(agents, `${label}.plist`))
+    // The laptop service too: two services on one database is a conflict the gate names, never one it skips.
+    servicePlists: () => ["com.toolroll.browser", "com.standing-orders.browser", "com.toolroll.up"].map(label => join(agents, `${label}.plist`))
       .filter(path => existsSync(path)).map(path => ({ path, text: readFileSync(path, "utf8") })),
   };
 }
