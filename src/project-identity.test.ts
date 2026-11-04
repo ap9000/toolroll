@@ -189,3 +189,38 @@ test.each([
   const path = where === "inside" ? join(project, "src") : where === "beside" ? join(base, "elsewhere") : join(own, "state.db");
   expect(gate(path)).toBe(reads);
 });
+
+test("the gate decides on real paths: an alias to \"/\" reaches neither a folder that didn't answer nor anything \"/\" would vouch for", async () => {
+  const hung = join(base, "hung"), project = join(base, "project"), alias = join(base, "root-alias");
+  mkdirSync(hung); mkdirSync(project);
+  symlinkSync("/", alias);
+  let stuck = false;
+  const runner: FolderLookRunner = request => stuck && request.op === "identities" && request.paths.includes(hung)
+    ? { answer: new Promise(() => {}), ended: Promise.resolve() }
+    : { answer: Promise.resolve({ ok: true, value: { paths: request.op === "identities" ? request.paths.map(one => ({ path: one, real: realpathSync(one) })) : [] } }), ended: Promise.resolve() };
+  const identities = projectIdentities({ runner, deadlineMs: 50 });
+  await identities.refresh([alias, project, hung]);
+  stuck = true;
+  expect(await identities.resolveNow(hung)).toBe("no-answer");
+  expect(identities.answering(join(hung, "file"))).toBe(false);
+  expect(identities.answering(join(alias, hung.slice(1), "file"))).toBe(false);
+  // Through the alias, a path no project holds: "/" vouches for nothing below it.
+  expect(identities.answering(join(alias, "Volumes", "Drive"))).toBe(false);
+  expect(identities.answering(join(alias, project.slice(1), "src"))).toBe(true);
+});
+
+test("the newest answer for a folder decides: an old alias never shadows a fresh direct answer", async () => {
+  const project = join(base, "project"), alias = join(base, "alias");
+  mkdirSync(project);
+  symlinkSync(project, alias);
+  let clock = 1_000_000;
+  const runner: FolderLookRunner = request => ({ answer: Promise.resolve({ ok: true, value: { paths: request.op === "identities" ? request.paths.map(one => ({ path: one, real: realpathSync(one) })) : [] } }), ended: Promise.resolve() });
+  const identities = projectIdentities({ runner, deadlineMs: 50 }, () => clock);
+  await identities.resolveNow(alias);
+  clock += 4 * 60_000;
+  expect(identities.answering(project)).toBe(false);
+  await identities.resolveNow(project);
+  expect(identities.answering(join(project, "src"))).toBe(true);
+  // The stale alias spelling itself waits for its own look.
+  expect(identities.answering(join(alias, "src"))).toBe(false);
+});

@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isAbsolute, resolve } from "node:path";
 import { canonicalProject } from "./project.js";
+import { FolderUnavailable } from "./folder-gate.js";
 
 /** null explicitly means instance access; [] grants no project access. */
 export type ProjectAccess = readonly string[] | null;
@@ -28,7 +29,11 @@ export function readProjectAccess(value: unknown): ProjectAccess {
 }
 
 export function projectAccessAllows(access: ProjectAccess, repo: string | null): boolean {
-  return access === null || (repo !== null && access.includes(canonicalProject(repo) ?? resolve(repo)));
+  if (access === null) return true;
+  if (repo === null) return false;
+  // A folder the console's gate holds back (folder-gate.ts) is unavailable: access to it is denied, never decided by
+  // its spelling.
+  try { return access.includes(canonicalProject(repo) ?? resolve(repo)); } catch (error) { if (error instanceof FolderUnavailable) return false; throw error; }
 }
 
 /** SQL: projectAccessAllows for an `approver` row (`alias`) and a project path expression, for the dispatch belts. A

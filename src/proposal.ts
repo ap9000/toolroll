@@ -36,6 +36,7 @@ import type { UnattendedPermissionMode } from "./scope.js";
 import type { QualityMode } from "./quality.js";
 import type { TaskSizing } from "./phase-routing.js";
 import { heuristicSizing, planningSignals, refineFiledSizing } from "./task-sizing.js";
+import { FolderUnavailable } from "./folder-gate.js";
 
 /** Provenance tokens are part of the audit surface: lowercase, bounded,
  * nothing that could render as anything but itself. */
@@ -148,7 +149,10 @@ function checkRepo(
   // directory resolves through symlinks; a path that does not exist yet
   // still normalizes, because filing must not depend on this machine
   // seeing every repo the plane knows about.
-  const canonical = canonicalProject(given) ?? resolve(given);
+  let canonical: string;
+  // A folder the console's gate holds back (folder-gate.ts) is unavailable: refused, never filed by its spelling.
+  try { canonical = canonicalProject(given) ?? resolve(given); }
+  catch (error) { if (error instanceof FolderUnavailable) return refuse("bad-repo", "that repository's folder didn't answer — it may be on a drive that's disconnected; try again in a moment"); throw error; }
   if (admitted !== undefined && !admitted.includes(canonical)) {
     return refuse("outside-ceiling", "that repository is outside what this surface was configured to show");
   }

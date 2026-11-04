@@ -18,7 +18,7 @@
  */
 
 import { resolve } from "node:path";
-import { insideFolder } from "./folder-gate.js";
+import { insideFolder, type FolderGate } from "./folder-gate.js";
 import { lookIdentities, type FolderLookOptions } from "./folder-look.js";
 import { canonicalProject } from "./project.js";
 
@@ -152,23 +152,29 @@ export function projectIdentities(look: FolderLookOptions = {}, now: () => numbe
       return pass;
     },
     answering: path => {
-      const at = resolve(path), when = now();
-      // A folder whose last look didn't answer holds back every read inside it, whatever older answer stands.
-      for (const key of suspect) {
-        const real = answers.get(key)?.real ?? null;
-        if (insideFolder(at, key) || (real !== null && insideFolder(at, real))) return false;
-      }
-      // Otherwise the nearest folder an answer names decides (a project, not a parent some request asked about), and
-      // "/" vouches for nothing below it.
-      let nearest: { folder: string; fresh: boolean } | null = null;
+      const when = now();
+      const recent = (at: number): boolean => when - at < ANSWERING_MS;
+      // Decided on real paths only. First the spelling: a path under an answered spelling (the longest) is read where
+      // that answer says it leads, and only while that answer is recent, since a link can be pointed elsewhere.
+      let real = resolve(path);
+      let spelled: { key: string; real: string; at: number } | null = null;
       for (const [key, answer] of answers) {
-        if (answer.real === null) continue;
-        for (const folder of new Set([key, answer.real])) {
-          if (folder === "/" && at !== "/") continue;
-          if (insideFolder(at, folder) && (nearest === null || folder.length > nearest.folder.length)) nearest = { folder, fresh: when - answer.at < ANSWERING_MS };
-        }
+        if (answer.real !== null && insideFolder(real, key) && (spelled === null || key.length > spelled.key.length)) spelled = { key, real: answer.real, at: answer.at };
       }
-      return nearest?.fresh === true;
+      if (spelled !== null) {
+        if (!recent(spelled.at)) return false;
+        real = resolve(spelled.real, `.${real.slice(spelled.key.length)}`);
+      }
+      // A folder whose last look didn't answer holds back every read inside where it leads, whatever older answer stands.
+      for (const key of suspect) if (insideFolder(real, answers.get(key)?.real ?? key)) return false;
+      // Otherwise the nearest real folder an answer names decides, by its newest answer; "/" vouches for nothing below it.
+      let nearest: { folder: string; at: number } | null = null;
+      for (const answer of answers.values()) {
+        const folder = answer.real;
+        if (folder === null || (folder === "/" && real !== "/") || !insideFolder(real, folder)) continue;
+        if (nearest === null || folder.length > nearest.folder.length || (folder.length === nearest.folder.length && answer.at > nearest.at)) nearest = { folder, at: answer.at };
+      }
+      return nearest !== null && recent(nearest.at);
     },
   };
 }
@@ -188,8 +194,9 @@ export function syncProjectIdentities(): ProjectIdentities {
 }
 
 /** The console's folder gate (folder-gate.ts): its own data folders (the database's, evidence, build checkouts) are read
- * freely; anything else only while `answering` vouches for the folder it is in. */
-export function consoleFolderGate(identities: ProjectIdentities, own: readonly (string | undefined)[]): (path: string) => boolean {
+ * freely when the console names them; a path read from a file a build can write (`pointer`), and anything else, only
+ * while `answering` vouches for where it leads. */
+export function consoleFolderGate(identities: ProjectIdentities, own: readonly (string | undefined)[]): FolderGate {
   const folders = [...new Set(own.filter((one): one is string => typeof one === "string" && one !== "").map(one => resolve(one)))];
-  return path => folders.some(folder => insideFolder(path, folder)) || identities.answering(path);
+  return (path, pointer) => (!pointer && folders.some(folder => insideFolder(path, folder))) || identities.answering(path);
 }

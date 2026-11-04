@@ -19,6 +19,7 @@ import { canonicalProject, projectName, sameRepo, type ProjectExec } from "./pro
 import { remoteUrlProblem } from "./remote-main.js";
 import { addRepos, loadProjectRegistry, removeRepos, updateRepos } from "./repos.js";
 import type { Store } from "./store.js";
+import { FolderUnavailable } from "./folder-gate.js";
 
 /** Where an addition or removal came from, as the ledger says it. */
 export type AdmissionOrigin = "cli" | "lead" | "console";
@@ -144,11 +145,16 @@ export async function admitProject(store: Store, input: {
 export async function releaseProject(store: Store, input: {
   registryFile: string | null; path: string; actor: AdmissionActor; now: Date;
 }): Promise<Released | AdmissionFailure> {
-  const asked = canonicalProject(input.path) ?? resolve(input.path);
+  // Removing only narrows: a folder the console's gate holds back (folder-gate.ts) is removed by its exact saved path,
+  // and matches no other spelling.
+  const unavailable = (error: unknown): boolean => error instanceof FolderUnavailable;
+  let asked: string;
+  try { asked = canonicalProject(input.path) ?? resolve(input.path); } catch (error) { if (!unavailable(error)) throw error; asked = resolve(input.path); }
+  const same = (one: string): boolean => { try { return sameRepo(one, asked); } catch (error) { if (unavailable(error)) return false; throw error; } };
   const loaded = input.registryFile === null ? { repos: [] } : await loadProjectRegistry(input.registryFile);
   if ("error" in loaded) return { ok: false, reason: "registry", message: loaded.error };
-  const entries = loaded.repos.filter(one => one === asked || sameRepo(one, asked));
-  const rows = store.listProjects().filter(one => one.path === asked || sameRepo(one.path, asked)).map(one => one.path);
+  const entries = loaded.repos.filter(one => one === asked || same(one));
+  const rows = store.listProjects().filter(one => one.path === asked || same(one.path)).map(one => one.path);
   const repo = entries[0] ?? rows[0] ?? asked;
   if (entries.length === 0 && rows.length === 0) return { ok: true, repo, name: projectName(repo), removed: false };
   if (entries.length > 0 && input.registryFile !== null) {

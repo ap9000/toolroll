@@ -1,42 +1,46 @@
 /**
- * Whether this process may read a folder synchronously right now.
+ * Whether the console may read a folder synchronously right now.
  *
  * The console answers every page on one thread, so one synchronous read of a folder that has stopped answering (a
  * drive that hangs, a folder macOS holds in iCloud) freezes the console with it: it listens and answers nothing, not
- * even /healthz (the 0.9.82 and 0.9.87 deploys). The console therefore installs a gate as it starts (serve.ts): a
- * synchronous read of a person's folder goes ahead only when that folder answered an off-thread look lately
- * (project-identity.ts `answering`), or it lies in the console's own data. Otherwise the read is not made and its caller
- * says the folder didn't answer, as it would for a folder that is gone.
+ * even /healthz (the 0.9.82 and 0.9.87 deploys). So the console's own work (its request handling and its background
+ * pass, serve.ts) runs inside a folder scope: there, a synchronous read of a person's folder goes ahead only when that
+ * folder answered an off-thread look lately (project-identity.ts `answering`), or it lies in the console's own data.
+ * Otherwise the read isn't made and its caller refuses, says the folder is unavailable, or throws FolderUnavailable.
  *
- * The reads that consult it are the ones that reach a project's folder from a page or the background pass:
- * project.ts canonicalProject (every project identity resolved inline), teardown-git.ts viewedGitSync (the git views a
- * page reads), egress.ts repositoryEcosystems, and the small file reads of flows and setup. A process with no gate
- * (the worker, `up` itself, the CLI) reads as it always did.
+ * Availability never decides authorization: a held-back canonicalization throws FolderUnavailable (project.ts), never
+ * answers null, so no caller falls back to a path's spelling because a folder didn't answer.
+ *
+ * Work outside a console scope (the worker, even in the same process as the console; `up`; the CLI) reads as it
+ * always did.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { resolve, sep } from "node:path";
 
-/** One gate's answer for a resolved path: true lets the read go ahead. */
-export type FolderGate = (path: string) => boolean;
+/** One console's answer for a resolved path. `pointer`: the path came from a file a build can write (a checkout's
+ * `.git` or `commondir`), so the console's own folders (build checkouts among them) don't vouch for it by spelling. */
+export type FolderGate = (path: string, pointer: boolean) => boolean;
 
-const gates = new Set<FolderGate>();
+const scope = new AsyncLocalStorage<FolderGate>();
 
 /** What a caller says, and throws, when the gate holds a read back. */
 export const FOLDER_DIDNT_ANSWER = "the folder didn't answer";
 
-/** Installs a gate for this process (a console as it starts); the returned function removes it (as it closes). With
- * more than one installed (several consoles in one test process), a read goes ahead when any of them lets it. */
-export function installFolderGate(gate: FolderGate): () => void {
-  gates.add(gate);
-  return () => { gates.delete(gate); };
+/** A synchronous read the console's folder gate held back: the folder is unavailable now, which is never a "no". */
+export class FolderUnavailable extends Error {
+  constructor(readonly path: string) { super(FOLDER_DIDNT_ANSWER); this.name = "FolderUnavailable"; }
 }
 
-/** Whether a synchronous read of `path` may happen now. No gate installed: always. */
-export function folderAnswers(path: string): boolean {
-  if (gates.size === 0) return true;
-  const at = resolve(path);
-  for (const gate of gates) if (gate(at)) return true;
-  return false;
+/** Runs `work` (and everything it starts) inside the console's folder scope. */
+export function inFolderScope<T>(gate: FolderGate, work: () => T): T {
+  return scope.run(gate, work);
+}
+
+/** Whether a synchronous read of `path` may happen now. Outside a console's folder scope: always. */
+export function folderAnswers(path: string, pointer = false): boolean {
+  const gate = scope.getStore();
+  return gate === undefined || gate(resolve(path), pointer);
 }
 
 /** `path` is `folder` or inside it (both resolved). */

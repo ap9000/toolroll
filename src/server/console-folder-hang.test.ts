@@ -103,27 +103,39 @@ test("a project folder that stops answering after it was resolved: every GET and
   const { world: w, identities } = await open(false);
   await identities.refresh([w.repo]);
   const { cookie, csrf } = await w.signIn();
-  // The folder stops answering; the console learns it the way production does, from a look that didn't answer.
-  hang.on = true;
-  await identities.refresh([w.repo]).catch(() => false);
-  expect(await identities.resolveNow(w.repo)).toBe("no-answer");
   const project = encodeURIComponent(w.repo);
   const deeper = [`/settings/knowledge?repo=${project}&q=refunds`, `/settings/skills?repo=${project}`, `/settings/learning?repo=${project}`,
     `/settings/tools?repo=${project}`, `/settings/project?repo=${project}`, `/settings/pull-requests?repo=${project}`, "/t/one", "/chat?task=one", "/workbench?t=one"];
   const targets = [...ROUTES.filter(row => row.method !== "POST").flatMap(row => (row.method === "GET,HEAD" ? ["GET", "HEAD"] : ["GET"]).map(method => ({ method, path: row.sample }))),
     ...deeper.map(path => ({ method: "GET", path }))];
+  // How each page answers while the folder answers.
+  const before = new Map<string, number>();
+  for (const { method, path } of targets) before.set(`${method} ${path}`, (await w.send(path, method, { cookie })).status);
+  // The folder stops answering; the console learns it the way production does, from a look that didn't answer.
+  hang.on = true;
+  await identities.refresh([w.repo]).catch(() => false);
+  expect(await identities.resolveNow(w.repo)).toBe("no-answer");
   const reachedBy: string[] = [];
+  const changed: string[] = [];
   for (const { method, path } of targets) {
     hang.reached.length = 0;
     const answer = await w.send(path, method, { cookie });
     await new Promise(done => setTimeout(done, 5));
-    expect(answer.status, `${method} ${path}`).toBeLessThan(500);
+    // Each page renders as it did, or says plainly that the folder didn't answer: never an error page.
+    const was = before.get(`${method} ${path}`)!;
+    const saysSo = answer.status === 503 && (method === "HEAD" || /didn(?:'|&#39;|’)t answer/.test(answer.body));
+    if (answer.status !== was && !saysSo) changed.push(`${method} ${path}: ${was} -> ${answer.status} ${answer.body.slice(0, 160)}`);
+    if (answer.status === 200 && method === "GET" && answer.body.length === 0) changed.push(`${method} ${path}: empty`);
     if (hang.reached.length > 0) reachedBy.push(`${method} ${path}\n  ${hang.reached[0]!.replace(/\n/g, "\n  ")}`);
   }
-  // Filing work there (a POST: its sealed network names the repository's ecosystems, egress.ts) doesn't read it either.
+  expect(changed).toEqual([]);
+  // Filing work there (a POST) doesn't read it either.
   hang.reached.length = 0;
   const filed = await w.post("/tasks/add", cookie, { csrf, id: "two", title: "filed while the folder hangs", repo: w.repo });
-  expect(filed.status).toBeLessThan(500);
+  // It is refused in words (the folder is unavailable, so nothing is filed by the path's spelling).
+  expect(filed.status).toBe(400);
+  expect(filed.body).toMatch(/didn(?:'|&#39;|’)t answer/);
+  expect(w.store.lookupRef("two")).toBeNull();
   if (hang.reached.length > 0) reachedBy.push(`POST /tasks/add\n  ${hang.reached[0]!.replace(/\n/g, "\n  ")}`);
   expect(reachedBy).toEqual([]);
   // And while one of those pages is asked for, the health check doesn't wait for it.
