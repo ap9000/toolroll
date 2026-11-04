@@ -1538,7 +1538,15 @@ await journey("maya", SCRIPTED, "The lead queue: a message sent while the lead a
   await page.waitForSelector("[data-workspace-composer] textarea");
   const messages = page.locator("[data-workspace-chat] [data-message-id]");
   const before = await messages.count();
-  const say = async text => { await page.fill("[data-workspace-composer] textarea", text); await page.click('[data-workspace-composer] button[type="submit"]'); };
+  // Send takes the message once the box is ready for it: while the previous message's delivery is still being
+  // confirmed, Send is marked disabled and a press does nothing (as a person sees it). Then the box empties.
+  const say = async text => {
+    await page.fill("[data-workspace-composer] textarea", text);
+    const send = page.locator('[data-workspace-composer] button[type="submit"].k-send:not(.k-stop):not([aria-disabled="true"])');
+    await waitFor(send, `Send to take "${text}"`, { timeoutMs: 15_000 });
+    await send.click();
+    await until(`"${text}" to leave the box`, async () => (await page.inputValue("[data-workspace-composer] textarea")) === "", { timeoutMs: 15_000, everyMs: 200 });
+  };
   await say("Summarise the refunds, slowly.");
   await until("the first reply to be running", async () => rows("SELECT 1 FROM mate_turn WHERE state = 'running'").length === 1, { timeoutMs: 15_000 });
   // The composer stays usable while the lead answers; the second message is saved and waits its turn.

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.89 — 2026-11-03
+
+- **The app no longer freezes when a drive stops answering.** If an external
+  or network drive holding one of your projects stalls, every other page keeps
+  working: that project's pages say its folder is unavailable instead of
+  hanging the whole app. Filing a task into a project whose folder isn't
+  answering is refused with a plain explanation, so nothing waits forever.
+- **A flow's main button no longer changes under your tap.** When a card starts
+  waiting on you, the flow page's main button turns from New card into Review.
+  A tap at that moment now does what the button showed when you pressed it,
+  and the switch happens a moment later with a short note ("Review is next.").
+- **Every Settings save goes to the right place.** Each Settings form, on
+  every page, is now checked to post where it should, so a save can't quietly
+  go to the wrong address again.
+
+### For developers
+
+- **Every walkthrough runs on every pull request.** All the scripted
+  end-to-end journeys (task, stop, mail and onboarding included) now run on
+  Linux in pull request CI, not only in the Mac release check.
+
 ## 0.9.88 — 2026-11-03
 
 - **Every text box looks the same, and calmer.** Wherever you type or pick
