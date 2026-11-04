@@ -301,7 +301,9 @@ export type BrowserTaskView = {
   approve?: { action: string; fields: Record<string, string>; label: string; heading: string; text: string;
     kind: import("./design/kit.js").ApprovalKind; facts: { passwordless: boolean; remembered: boolean; automatic?: boolean };
     /** When a remembered password stops counting (ISO); the page words it in the viewer's zone. */
-    rememberedUntil: string | null; planHtml: string } | null;
+    rememberedUntil: string | null; planHtml: string;
+    /** The terms line in words, when the rule isn't one of the kit's (easy-start C5: a laptop's own owner). */
+    termsWords?: string } | null;
   /** Ship: the pull request's checks, each on one time axis (task ship's twin). Null: no checks read yet. */
   ship?: { pr: number; head: string; state: "running" | "passed" | "failed" | "none"; rows: import("./design/kit.js").TimingRow[]; summary: string; observedAt: string } | null;
   /** A release's own steps (release status's twin). Null: this task is no release, or nothing recorded. */

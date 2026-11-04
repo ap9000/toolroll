@@ -889,6 +889,8 @@ export function approvalProofWords(proof: { method: string; at: string } | null 
   if (proof.method === "cli-login") return " (passwordless: this computer's remembered login)";
   if (proof.method === "chat") return " (from your paired chat)";
   if (proof.method === "carried") return " (carried from the release approval)";
+  // Easy-start C5: this computer's owner approving attended work in local mode, with no password.
+  if (proof.method === "local-owner") return " (on this computer, no password)";
   return "";
 }
 const whenText = (iso: string): string => new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
@@ -3072,6 +3074,8 @@ export function approveKitOf(input: ApprovalSheetInput, freshSince: string | nul
     kind: "standard",
     facts: { passwordless: passwordlessRendering() || input.localOwner?.eligible === true, remembered: until !== null },
     rememberedUntil: until,
+    // Easy-start C5: the owner approving on this computer needs no password, and the line says so (not "Passwordless").
+    ...(input.localOwner?.eligible === true ? { termsWords: "No password needed on this computer." } : {}),
     planHtml: htmlString(joinHtml([parts.lead, parts.rows, parts.editor ?? "", parts.details, parts.editorForm])),
   };
 }
