@@ -18,7 +18,7 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
-import { boardRunOf, holdAgentView, releaseAgentView } from "../agent-board.js";
+import { boardRunOf } from "../agent-board.js";
 import { agentRunFingerprint } from "../agents-board.js";
 import { createLiveRooms, LiveConnection, type LiveBus, type LiveViewer } from "../live-bus.js";
 import { reproveRemote } from "../operate-remote.js";
@@ -271,14 +271,10 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
         const repo = run === null ? null : store.refForId(run.taskRef)?.repo ?? null;
         if (run === null || repo === null || !visible(repo) || !store.accountCanAccess(who.name, repo)) return json(response, 404, { error: "run" });
         // A repair is its build's own activity: its room is the build's.
-        const signedIn = sameBrowser(request, browser), runId = boardRunOf(store, run.id), view = randomBytes(12).toString("hex");
-        // The watch is a short lease in the database, renewed on every keep-alive and released when the page goes:
-        // the process that sends chat pings reads it there (agent-board.ts watchingAgent).
-        const watch = () => { try { holdAgentView(store, view, who.name, runId, clock()); } catch { /* a missed renewal only lets a ping through */ } };
+        const signedIn = sameBrowser(request, browser), runId = boardRunOf(store, run.id);
+        // The watch lease (agent-board.ts watchingAgent) is held by the shell's keyed POST /agents/watch on each keep-alive
+        // and released on unload (easy-start N1): this stream only reads, so a stolen cookie can't hold one to quiet pings.
         joins.push(connection => {
-          watch();
-          connection.onKeepAlive(watch);
-          connection.onClose(() => { try { releaseAgentView(store, view, clock()); } catch { /* it lapses on its own */ } });
           agentRooms.join(runId, { name: who.name, room: name, connection,
             valid: () => signedIn() && rowVisible(liveCeiling(), repo) && store.accountCanAccess(who.name, repo) });
         });

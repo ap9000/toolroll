@@ -184,6 +184,7 @@ import type { RouteDeclaration } from './server/route-table.js';
 import type { ServerRuntime } from './server/runtime.js';
 import { createSettingsHandlers } from './server/settings.js';
 import { requestContext } from "./server/request-context.js";
+import { asLocalOwner,localOwnerRefusal,localOwnerStandsNow,type LocalPrincipal } from "./local-owner.js";
 import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
 import { BODY_CAP,form,loginHref,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
 import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,NOT_STARTED_SESSION,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
@@ -915,6 +916,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (route === null) return restricted()
           ? refuse(response, who, 403, "This area requires instance access. Your account operates within its assigned projects.", "/projects")
           : refuse(response, who, 404, "There's no page at this address.", "/chat");
+        // Easy-start C1: a local owner's session reaches only the rows marked for it (route-table.ts `local`), decided
+        // first, before the route's policy reads anything and before any handler runs, GET and POST alike.
+        if (who.via === "cookie" && who.authority !== "full" && (route.local !== "allow" || localPrincipalOf(who, route) === null)) {
+          request.resume();
+          return refuseLocalOwner(response, who, method, url, request.headers.accept);
+        }
         const policy = evaluateRoutePolicy(route, { caller: who.via, capability: who.via === "bearer" && who.principal !== undefined ? who.principal.scope : who.role === "approver" ? "act" : "read", viewer: who.role === "viewer", token: who.via === "bearer" && who.principal !== undefined },
           source => projectRequestAllowed(route, source, url, who, request, response, body));
         if (!policy.ok) {
@@ -964,13 +971,18 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         }
         return handlePost(route, url, who, request, response, body!);
       };
-      if (method === "GET") return projectAuthority.run({ actor: who.name, repo: target.repo }, execute);
+      // Easy-start C1: an allowed row runs as the local owner, in the act the row is (execute refuses every other): the
+      // prover answers "local-owner" only for that act, and every write it makes re-proves it still stands.
+      const local = who.via === "cookie" && who.authority !== "full" && matchedRoute?.stage === "console" && matchedRoute.local === "allow" ? localPrincipalOf(who, matchedRoute) : null;
+      if (local !== null) response.once("close", () => { local.request!.ended = true; });
+      const run = (): Promise<void> => local === null ? execute() : asLocalOwner(local, execute);
+      if (method === "GET") return projectAuthority.run({ actor: who.name, repo: target.repo }, run);
       // Request acceptance is separate from durable work completion. Never
       // persist a body, query string, token, password, or arbitrary URL.
       const entry = { at: clock().toISOString(), actor: who.name, ...target, source: "request" as const, ...(who.via === "bearer" && who.token !== undefined ? { detail: `API token: ${who.token}` } : {}) };
       store.recordAction({ ...entry, outcome: "requested" });
       try {
-        await projectAuthority.run({ actor: who.name, repo: target.repo }, execute);
+        await projectAuthority.run({ actor: who.name, repo: target.repo }, run);
         const createdTask = requestContext.getStore()?.createdTask;
         const placement = createdTask === undefined ? null : store.lookupRef(createdTask);
         store.recordAction({ ...entry, ...(placement === null ? {} : { repo: placement.repo, taskId: placement.externalId }), at: clock().toISOString(), outcome: response.statusCode >= 500 ? "error" : response.statusCode >= 400 ? "refused" : "accepted" });
@@ -2282,6 +2294,24 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (!policy.ok) return respond(ctx.response, policy.status, 'text/plain; charset=utf-8', 'This address needs a browser sign-in.');
     }
     return withEdgePolicy(route, () => registry.edge(route, { ...ctx, route }));
+  }
+
+  /** Easy-start C1: the local owner a browser session acts as on an allowed row, bound to its session's saved row and
+   * the generations it was made under; null when it no longer stands (refused like any other row). */
+  function localPrincipalOf(who: Extract<Who, { via: "cookie" }>, route: RouteDeclaration): LocalPrincipal | null {
+    const sessionHash = sessions.hashOf(who.session);
+    if (route.localAct === null || who.session.localGeneration === null || sessionHash === null) return null;
+    const principal: LocalPrincipal = { account: who.name, localGeneration: who.session.localGeneration, accountGeneration: who.session.generation,
+      transport: "browser", act: route.localAct, sessionHash, request: { ended: false } };
+    return localOwnerStandsNow(store, principal) ? principal : null;
+  }
+  /** What a local owner hears on a row not marked for it: set a first password, or sign in with the one set. */
+  function refuseLocalOwner(response: ServerResponse, who: Who, method: string, url: URL, accept: string | undefined): void {
+    const words = localOwnerRefusal(store.accountOf(who.name)?.passwordSet === true, method === "GET" ? url.pathname + url.search : "/");
+    // Which refusal this was, for the shell (it offers the same way on) and the route inventory's rule table.
+    response.setHeader("x-toolroll-refused", "local-owner");
+    if (String(accept ?? "").includes("application/json")) return respond(response, 403, "application/json", JSON.stringify({ ok: false, said: words.message, href: words.href }));
+    return refuse(response, who, 403, words.message, words.href, words.action);
   }
 
   // Defined last, so the reviewed functions above keep their places (password-freshness.test.ts).

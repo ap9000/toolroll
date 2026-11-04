@@ -97,6 +97,7 @@ import { parseProjectConcurrency,saveProjectConcurrency } from "../project-concu
 import { MAX_NETWORK_HOSTS, normalizeHost } from "../egress.js";
 import { isWritesMode } from "../writes-mode.js";
 import { isCheckAccess, signInsUnavailableWords, widerThan } from "../check-access.js";
+import { LOCAL_MODE_CONFINES, localModeOn } from "../local-owner.js";
 import { parseMachLookup, parseReadDeny } from "../project-sandbox.js";
 import { projectDeleteConfirmHtml,projectSettingsHtml } from "../project-delete-ui.js";
 import { deleteProject,holdingsWords } from "../project-delete.js";
@@ -2445,6 +2446,8 @@ ${postForm("/settings/chat-approval/save", html`\
     const unavailable = wanted === "sign-ins" ? signInsUnavailableWords(options.platform ?? process.platform) : null;
     if (unavailable !== null) return back("problem", `${unavailable} Nothing changed.`);
     const widening = widerThan(wanted, store.projectCheckAccess(repo));
+    // Easy-start C5: while local mode is on, this installation always confines; said before the password.
+    if (wanted === "unsandboxed" && localModeOn(store)) return back("problem", `${LOCAL_MODE_CONFINES} Nothing changed.`);
     // Sign-ins with an open network: a second, explicit yes, said before the password.
     if (wanted === "sign-ins" && widening && store.projectNetwork(repo).mode === "open" && body.get("confirm-open") !== "yes") {
       return back("problem", "This project's network is open: confirm that its checks could send your sign-ins to any host. Nothing changed.");

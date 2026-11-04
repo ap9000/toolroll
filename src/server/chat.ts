@@ -1,4 +1,6 @@
 import { freshFacts, freshlyApprovable, freshnessFor, spendingOnlyOnSuccess, withFreshness } from "../scope.js";
+import { CHAT_ACTION_LOCAL_ACTS, localOwnerRefusal } from "../local-owner.js";
+import { localApprovalEligible } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 import { DEPRECATED_PAGE } from "../deprecations.js";
 /** chat handlers, moved without changing their route bodies. */
@@ -424,7 +426,12 @@ export function createChatHandlers(runtime: ServerRuntime) {
         const gate=store.approvalGate(task,who.name,'person');
         return freshlyApprovable(store,task,scope,gate.verdict==='seal'&&!gate.protectedWork)?new Date(fresh.at):null;
       })();
-      const passwordField=!CHAT_ACTIONS[action.operation].password?'':reauth(freshSince===null
+      // Easy-start C5: a laptop's local owner confirms its own acts without a password (an approval only when it is
+      // eligible: localApprovalEligible, the rule the seal applies again); anything else says how to get a password.
+      const reviewTask=typeof action.request['task']==='string'?action.request['task']:null;
+      const localOk=who.authority==='local-owner'&&CHAT_ACTION_LOCAL_ACTS[action.operation]!==null&&(action.operation!=='scope_approve'||(reviewTask!==null&&localApprovalEligible(store,who.name,reviewTask).ok));
+      const localWords=who.authority==='local-owner'&&!localOk?localOwnerRefusal(store.accountOf(who.name)?.passwordSet===true,'/chat'):null;
+      const passwordField=!CHAT_ACTIONS[action.operation].password||localOk?'':localWords!==null?html`<p class="approval-password-note">${localWords.message} <a href="${localWords.href}">${localWords.action}</a></p>`:reauth(freshSince===null
         ?html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`
         :html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label><p class="approval-password-note" data-approval-fresh>Your password from ${whenTime(freshSince.toISOString())} is remembered on this computer — leave this blank to approve with it, or type it again.</p>`);
       const content=html`<section class="shared-action"><h1>${action.title}</h1>${evidenceLink}${terms}${postForm(`/chat/proposal/${id}/confirm`,html`<label class="arm"><input type="checkbox" name="confirm" value="yes" required>I confirm this exact action</label>${passwordField}<button>${CHAT_ACTIONS[action.operation].label}</button>`,{returnTo:'/chat',hidden:{nonce:review.nonce}})}</section>`;
@@ -756,7 +763,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     }
     // A scope approval's re-check is spent only if the whole confirmation commits (one transaction: the proposal's
     // settlement included). Any other action spends it whatever comes of it (its effects aren't all in the database).
-    const confirmIt = () => confirmLeadProposal(store, principal, id, now, { chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
+    const confirmIt = () => confirmLeadProposal(store, principal, id, now, { authority: who.authority, chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
     const proposed = store.getLeadProposal(id);
     const approving = proposed?.kind === "action" && sharedActionPayload(proposed.payload)?.operation === "scope_approve";
     const outcome = approving ? spendingOnlyOnSuccess(confirmIt, result => !result.ok || ("already" in result && result.already === true)) : confirmIt();
@@ -816,7 +823,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
       dismissCoordinatorProposal(store, principal, id, now);
       return redirect(response, back);
     }
-    const outcome = confirmCoordinatorProposal(store, principal, id, now, { confirm: body.get("confirm") === "yes", via: "web" });
+    const outcome = confirmCoordinatorProposal(store, principal, id, now, { authority: who.authority, confirm: body.get("confirm") === "yes", via: "web" });
     if (!outcome.ok && (outcome.reason === "not-yours" || outcome.reason === "standing")) {
       return refuse(response, who, outcome.reason === "standing" ? 403 : 404, outcome.said, back);
     }

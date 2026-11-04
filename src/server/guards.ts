@@ -22,7 +22,7 @@ localModeOf,
 type Run,
 type Store
 } from "../store.js";
-import { localBindingStands } from "../local-owner.js";
+import { currentLocalOwner, localBindingStands, localOwnerStandsNow } from "../local-owner.js";
 import type { RouteDeclaration } from './route-table.js';
 import { requestContext } from "./request-context.js";
 import { refuse } from "./chrome.js";
@@ -117,9 +117,12 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     if (current === null || current.revokedAt !== null || current.role !== who.role || current.generation !== (who.via === "cookie" ? who.session.generation : who.generation)) {
       return { status: 403, message: "Your access changed. Sign in again." };
     }
-    // Easy-start wave 1a, fail closed: a local owner's session may change nothing here until the local-owner allowlist
-    // (route marks, wave 1b) decides which console acts it may do.
-    if (who.via === "cookie" && who.authority !== "full") return { status: 403, message: "Set a password to do this." };
+    // Easy-start C1: a local owner's session mutates only inside the console's admission of a row marked for it (which
+    // set the local owner this chain acts as), and only while that still stands; anywhere else it is refused.
+    if (who.via === "cookie" && who.authority !== "full") {
+      const local = currentLocalOwner();
+      if (local === null || local.account !== who.name || !localOwnerStandsNow(runtime.store, local)) return { status: 403, message: "Set a password to do this." };
+    }
     const type = request.headers["content-type"] ?? "";
     if (!type.startsWith("application/x-www-form-urlencoded")) {
       return { status: 415, message: "forms only" };

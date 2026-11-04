@@ -215,6 +215,9 @@ export const CONSOLE_FORMS = {
   leadEnd: formContract("POST /chat/mate/end", ["return"]),
   leadStop: formContract("POST /chat/mate/stop", ["return", "turn"]),
   leadQueuedRemove: formContract("POST /chat/queued/<message>/remove", ["return"]),
+  // Easy-start C1 (N1): what a page load used to write, now a keyed POST from the shell.
+  agentSeen: formContract("POST /agents/seen", ["run"]),
+  agentWatch: formContract("POST /agents/watch", ["run", "view", "op"]),
   leadProposal: formContract("POST /chat/proposal/<id>/confirm|dismiss", ["return", "nonce", "confirm", "token"]),
   coordinatorProposal: formContract("POST /proposals/<id>/confirm|dismiss", ["return", "confirm"]),
   chat: formContract("POST /chat", ["task", "project", "result", "mode", "request", "request-session", "message", "token"]),

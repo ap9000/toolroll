@@ -17,7 +17,7 @@ import { accountReachesSql } from "./project-access.js";
 import { autoSealSql } from "./release-authority.js";
 
 /** The proofs a person gives (src/person-proof.ts), as an SQL list. */
-const PERSON_PROOFS = "('password-now', 'sso-now', 'fresh-password', 'fresh-sso', 'session', 'cli-login', 'chat', 'passkey')";
+const PERSON_PROOFS = "('password-now', 'sso-now', 'fresh-password', 'fresh-sso', 'session', 'cli-login', 'chat', 'passkey', 'local-owner')";
 
 /** SQL over a `task_scope` alias and a repo expression: whether that row's approval authority stands at `now` (an SQL
  * expression, used exactly three times: the mode and grant clauses, and the release's expiry). It never asks whether the row is approved.
@@ -33,7 +33,20 @@ export const authorityStandsSql = (scope: string, repo: string, now: string): st
     OR (${scope}.approval_basis = 'grant' AND ${grantStandsSql(`${scope}.mode_digest`, now, repo)})
     OR (${scope}.approval_basis = 'schedule' AND ${approverStandsSql(scope, repo)})
     OR (${scope}.approval_basis IN ('auto-check', 'auto-green') AND ${autoSealSql(scope, repo)} AND ${approverStandsSql(scope, repo)}))
-    AND ${releaseStandsSql(scope, now)}), 0)`;
+    AND ${releaseStandsSql(scope, now)} AND ${localSealStandsSql(scope, repo)}), 0)`;
+
+/**
+ * SQL, conjunctive with every alternative above (easy-start plan C5): a seal a local owner gave (its proof row at the
+ * seal's instant says `local-owner`) stands only while local mode is on, for that owner, at the local generation its
+ * proof names (approvalProofDetail's " · local <generation> <transport> · "), and while its project's checks aren't
+ * stored as unsandboxed. Turning local mode off, or moving its generation, stops every such seal dispatching.
+ */
+export const localSealStandsSql = (scope: string, repo: string): string =>
+  `NOT EXISTS (SELECT 1 FROM action_ledger lp WHERE lp.task_id = ${scope}.task_id AND lp.action = 'approval proved'
+      AND lp.actor = ${scope}.approved_by AND lp.at = ${scope}.approved_at AND lp.outcome = 'local-owner'
+      AND NOT (EXISTS (SELECT 1 FROM local_mode lm WHERE lm.id = 1 AND lm.enabled = 1 AND lm.owner = lp.actor
+                   AND lp.detail LIKE '% · local ' || lm.generation || ' %')
+               AND NOT EXISTS (SELECT 1 FROM project_check_access lca WHERE lca.repo = ${repo} AND lca.level = 'unsandboxed')))`;
 
 /** SQL: a `carried` seal stands only on its own carry row — this task, this approved digest, this candidate, and the
  * reference `<authority>:<carry>` the carry transaction wrote (release-once.md). */

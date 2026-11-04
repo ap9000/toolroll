@@ -277,13 +277,13 @@ describe("the lead's propose_steer modes", () => {
       return id;
     };
     const card = pending(drafted[0]!.payload);
-    expect(confirmLeadProposal(store, ctx.who, card, T0, { via: "web" })).toMatchObject({ ok: true, said: expect.stringContaining("Resuming") });
+    expect(confirmLeadProposal(store, ctx.who, card, T0, { authority: "full", via: "web" })).toMatchObject({ ok: true, said: expect.stringContaining("Resuming") });
     expect(store.resumesForTask(taskRef)).toMatchObject([{ run: runId, requestedVia: "chat" }]);
     expect(store.listSteerNotes(taskRef)).toEqual([]);
     // Once the build went on, a second card for the same pause is stale.
     store.markResumeSent(store.unsentResumes(runId)[0]!.id, runId, T0);
     const stale = pending({ ...drafted[0]!.payload, request: "lead-resume-stale-1" });
-    expect(confirmLeadProposal(store, ctx.who, stale, T0, { via: "web" })).toMatchObject({ ok: false });
+    expect(confirmLeadProposal(store, ctx.who, stale, T0, { authority: "full", via: "web" })).toMatchObject({ ok: false });
     expect(store.resumesForTask(taskRef)).toHaveLength(1);
   });
 

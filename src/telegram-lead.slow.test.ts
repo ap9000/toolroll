@@ -262,7 +262,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(urlButtons(script.sends().at(-1))).toEqual([["Review action",`https://console.example/chat/action/${id}`]]);
     expect(protectedCard.rows.flat().some(button=>/Confirm/.test(button.text))).toBe(false);expect(store.getTask("shared-cancel")?.state).not.toBe("cancelled");
     const review=mintSharedActionReview(store,who(),id,evidenceRoot,now);
-    expect(confirmLeadProposal(store,who(),id,now,{via:"web",evidenceRoot,confirm:true,actionReview:{nonce:review.nonce,password:""}})).toMatchObject({ok:true});
+    expect(confirmLeadProposal(store,who(),id,now,{ authority: "full", via:"web",evidenceRoot,confirm:true,actionReview:{nonce:review.nonce,password:""}})).toMatchObject({ok:true});
     expect(store.getLeadProposal(id)?.outcome).toMatchObject({ok:true,via:"web",said:"Task cancelled."});
     expect(executeLeadTool({store,who:who(),now,step:1,readDecisions:new Map(),draft:()=>null},"get_action_status",{proposal:id})).toMatchObject({ok:true,body:{state:"confirmed",outcome:{ok:true,via:"web"}}});
   });
@@ -959,7 +959,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       script.updates.push([textUpdate(2, "add a payout limit")]);
       expect(await pass()).toMatchObject({ ok: true, report: { chatQueued: 1 } });
       const proposal = store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["pending"])[0]!;
-      expect(confirmLeadProposal(store, who(), proposal.id, now, { via: "web" })).toMatchObject({ ok: true, kind: "task" });
+      expect(confirmLeadProposal(store, who(), proposal.id, now, { authority: "full", via: "web" })).toMatchObject({ ok: true, kind: "task" });
       script.fault = null;
       later(PART_RETRY_MS[0]);
       expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
@@ -1047,7 +1047,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
     const sent = script.card();
     const proposal = store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["pending"])[0]!;
-    expect(confirmLeadProposal(store, who(), proposal.id, now, { via: "web" })).toMatchObject({ ok: true, kind: "task" });
+    expect(confirmLeadProposal(store, who(), proposal.id, now, { authority: "full", via: "web" })).toMatchObject({ ok: true, kind: "task" });
     const tasks = () => store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"];
     const before = tasks();
     const raced = await tapPass(sent.button(/^Confirm$/), sent.messageId);
@@ -1080,7 +1080,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     const proposal = store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["pending"])[0]!;
     expect(await tapPass(sent.button(/^Confirm$/), sent.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
     const tasks = Number(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]);
-    expect(confirmLeadProposal(store, who(), proposal.id, now, { via: "web" })).toMatchObject({ ok: false, reason: "not-pending" });
+    expect(confirmLeadProposal(store, who(), proposal.id, now, { authority: "full", via: "web" })).toMatchObject({ ok: false, reason: "not-pending" });
     expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"])).toBe(tasks);
     expect(store.getLeadProposal(proposal.id)?.outcome).toMatchObject({ ok: true, via: "telegram" });
   });
@@ -1741,7 +1741,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(shown.body).toContain(typed);
       expect(shown.body).toContain(saved);
       expect(shown.body).toContain(`Screenshot ${first} · result #${run}`);
-      expect(confirmLeadProposal(store, who(), pending[0]!.id, now, { via: "web", evidenceRoot })).toMatchObject({ ok: true });
+      expect(confirmLeadProposal(store, who(), pending[0]!.id, now, { authority: "full", via: "web", evidenceRoot })).toMatchObject({ ok: true });
       const child = (store.getLeadProposal(pending[0]!.id)!.outcome as { taskId: string }).taskId;
       const image = { run, artifact: first, sha256: createHash("sha256").update(PNG).digest("hex") };
       expect(store.allDiffComments(run).map(one => [one.note, one.image ?? null, one.consumedBy])).toEqual([[saved, null, child], [typed, image, child]]);

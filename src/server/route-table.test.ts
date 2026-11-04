@@ -52,7 +52,7 @@ const LIMITED_ACCESS = {
   'settings.telegram-retry': 'self', 'settings.chat-approval-confirm': 'self',
   'settings.chat-approval-save': 'self', 'settings.chat-approval-off': 'self',
   'settings.telegram-pair': 'self', 'settings.telegram-unpair': 'self',
-  'projects.select': 'unscoped', 'agents': 'unscoped', 'agents.live': 'unscoped', 'agents.live.read': 'unscoped', 'tasks.add': 'collection', 'decision.answer': 'resource',
+  'projects.select': 'unscoped', 'agents': 'unscoped', 'agents.live': 'unscoped', 'agents.live.read': 'unscoped', 'agents.seen': 'unscoped', 'agents.watch': 'unscoped', 'tasks.add': 'collection', 'decision.answer': 'resource',
   'task.act.hold': 'resource', 'task.act.unhold': 'resource', 'task.act.requeue': 'resource',
   'task.act.cancel': 'resource', 'task.act.scope': 'resource', 'task.act.approve': 'resource',
   'task.act.plan': 'resource', 'task.act.plan-edit': 'resource', 'task.act.next': 'resource',
@@ -110,7 +110,7 @@ describe("the route table", () => {
     for (const route of ROUTES.filter(one => one.limited !== "deny")) expect(route.stage, route.id).toBe("console");
     for (const route of ROUTES.filter(one => one.needsProject)) expect([route.stage, route.method], route.id).toEqual(["console", "GET"]);
     for (const route of ROUTES.filter(one => one.viewer)) expect([route.method, route.callers.includes("cookie")], route.id).toEqual(["POST", true]);
-    expect(ids(consoleRoutes.filter(one => one.viewer))).toEqual(["session.forget-password", "projects.select", "session.editor-links"]);
+    expect(ids(consoleRoutes.filter(one => one.viewer))).toEqual(["session.forget-password", "projects.select", "session.editor-links", "agents.seen", "agents.watch"]);
     // Each limited kind names how its object is found.
     for (const route of ROUTES.filter(one => one.limited === "self")) expect(["coding", "session"], route.id).toContain(route.project);
     expect(ids(ROUTES.filter(one => one.limited === "proposal"))).toEqual(ids(ROUTES.filter(one => one.project === "proposal")));

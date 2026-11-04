@@ -81,7 +81,8 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
 
   /** An operator signed in with a browser, of the generation they signed in with; else null. */
   const operatorOf = (who: Who | null): Operator | null =>
-    who?.via === "cookie" && who.role === "approver" && !store.isDemo() && codingActorAllowed({ name: who.name, generation: who.session.generation }) ? who : null;
+    // Easy-start C1: never a local owner's session (a laptop's passwordless owner), for a new terminal or an existing one.
+    who?.via === "cookie" && who.authority === "full" && who.role === "approver" && !store.isDemo() && codingActorAllowed({ name: who.name, generation: who.session.generation }) ? who : null;
   /** The project a terminal works in is one the coding workspace admits for this person, now. */
   const projectAllowed = (name: string, repo: string): boolean =>
     rowVisible(liveCeiling(), repo) && store.accountCanAccess(name, repo) && codingProjectAllowed(repo);

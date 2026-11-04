@@ -81,7 +81,7 @@ import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
 import { hashPassword, liveReleaseOf } from "./scope.js";
-import type { Authority, LocalMode } from "./local-owner.js";
+import { currentLocalOwner, LOCAL_MODE_CONFINES, LOCAL_OWNER_LAPSED, localModeOn, localOwnerInFlight, localOwnerStandsNow, type Authority, type LocalMode } from "./local-owner.js";
 import { nightlyDebtHold } from "./nightly-github.js";
 import { releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { APPROVAL_BASES, approvalOf, machineActing, personProof, proofDetailOf, quarantinedAuthor, sealOriginOf, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
@@ -7849,6 +7849,10 @@ export class Store {
     this.transacting = true;
     let result: T;
     try {
+      // Easy-start C1, the write-time re-check: a local owner's chain writes only while it still stands (local mode on
+      // at its generation, the owner active, its session saved), read inside this same transaction.
+      const local = currentLocalOwner();
+      if (local !== null && localOwnerInFlight(local) && !localOwnerStandsNow(this, local)) throw new Error(LOCAL_OWNER_LAPSED);
       result = body();
       this.db.exec("COMMIT");
     } catch (error) {
@@ -22462,11 +22466,15 @@ export class Store {
 
   /** Whether this installation lets an agent run where no OS confinement exists (off unless an operator said so). */
   unfencedAgentsAllowed(): boolean {
+    // Easy-start C5: while local mode is on, this installation always confines, whatever is stored (one chokepoint for
+    // every unconfined fallback: agents, the planner, setup and build commands, checks, flow code, project tools).
+    if (localModeOn(this)) return false;
     return Number(this.db.prepare("SELECT unfenced_allowed FROM confinement_setting WHERE id = 1").get()?.["unfenced_allowed"] ?? 0) === 1;
   }
 
   setUnfencedAgentsAllowed(allowed: boolean, by: string, now: Date): void {
     this.transact(() => {
+      if (allowed && localModeOn(this)) throw new Error(LOCAL_MODE_CONFINES);
       const before = this.unfencedAgentsAllowed();
       this.db.prepare("UPDATE confinement_setting SET unfenced_allowed = ?, updated_at = ?, updated_by = ? WHERE id = 1").run(allowed ? 1 : 0, now.toISOString(), by);
       this.recordPolicy(by, null, "unconfined agents", before ? "allowed" : "refused", allowed ? "allowed" : "refused", now);
@@ -23531,6 +23539,8 @@ export class Store {
       const account = this.accountOf(by);
       if (account === null || account.revokedAt !== null || account.role !== "approver" || !this.accountCanAccess(by, repo)) return null;
       if (widerThan(level, before) && (authority.may !== "widen" || !this.isInstanceOperator(by))) return null;
+      // Easy-start C5: while local mode is on, no project's checks run unsandboxed (callers say "Turn off local mode first").
+      if (level === "unsandboxed" && localModeOn(this)) return null;
       this.db.prepare(`INSERT INTO project_check_access (repo, level, updated_at, updated_by) VALUES (?, ?, ?, ?)
         ON CONFLICT (repo) DO UPDATE SET level = excluded.level, updated_at = excluded.updated_at, updated_by = excluded.updated_by`).run(repo, level, now.toISOString(), by);
       const after = this.projectCheckAccess(repo);

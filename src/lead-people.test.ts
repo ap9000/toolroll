@@ -72,7 +72,7 @@ describe("the lead knows you and the people you work with", () => {
     expect(store.leadAbout(who.name)).toEqual([]);
     expect(bundle(at(1)).aboutYou).toEqual([]);
 
-    expect(confirmLeadProposal(store, who, card, at(2), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Your lead will remember this." });
+    expect(confirmLeadProposal(store, who, card, at(2), { authority: "full", via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Your lead will remember this." });
     expect(store.leadAbout(who.name)).toEqual(["Keep copy terse."]);
     // Stored beside the lead's name and persona, which stay the defaults when never named: nothing frozen.
     expect(store.leadConfig(who.name)).toBeNull();
@@ -100,11 +100,11 @@ describe("the lead knows you and the people you work with", () => {
     expect(store.getLeadProposal(added)!.payload).toMatchObject({ title: "Remember about you", terms: ["Write copy in full sentences, not terse notes.", expect.any(String)] });
     expect(store.getLeadProposal(replacing)!.payload).toMatchObject({ title: "Update what your lead knows about you",
       terms: ["Was: Keep copy terse.", "Now: Copy for the store can be playful.", expect.any(String)] });
-    expect(confirmLeadProposal(store, who, replacing, at(1), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, replacing, at(1), { authority: "full", via: "web", evidenceRoot: root })).toMatchObject({ ok: true });
     expect(store.leadAbout(who.name)).toEqual(["Copy for the store can be playful.", "I test changes myself."]);
     // A card replacing a line that changed since is refused, not applied to the wrong line; an added line still saves.
-    expect(confirmLeadProposal(store, who, named, at(2), { via: "web", evidenceRoot: root })).toMatchObject({ ok: false, reason: "stale" });
-    expect(confirmLeadProposal(store, who, added, at(2), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, named, at(2), { authority: "full", via: "web", evidenceRoot: root })).toMatchObject({ ok: false, reason: "stale" });
+    expect(confirmLeadProposal(store, who, added, at(2), { authority: "full", via: "web", evidenceRoot: root })).toMatchObject({ ok: true });
     expect(store.leadAbout(who.name)).toEqual(["Copy for the store can be playful.", "I test changes myself.", "Write copy in full sentences, not terse notes."]);
   });
 
@@ -116,16 +116,16 @@ describe("the lead knows you and the people you work with", () => {
       second = Number(call(ctx, "remember", { kind: "about-you", text: "I review on my phone." })["proposal"]);
       replacing = Number(call(ctx, "remember", { kind: "about-you", text: "Run the full checks for me.", replaces: 2 })["proposal"]);
     });
-    expect(confirmLeadProposal(store, who, first, at(1), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Your lead will remember this." });
-    expect(confirmLeadProposal(store, who, second, at(2), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Your lead will remember this." });
+    expect(confirmLeadProposal(store, who, first, at(1), { authority: "full", via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Your lead will remember this." });
+    expect(confirmLeadProposal(store, who, second, at(2), { authority: "full", via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Your lead will remember this." });
     // Added lines go on the end, so the line a replacing card names is still the line it showed.
-    expect(confirmLeadProposal(store, who, replacing, at(3), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Updated what your lead knows about you." });
+    expect(confirmLeadProposal(store, who, replacing, at(3), { authority: "full", via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Updated what your lead knows about you." });
     expect(store.leadAbout(who.name)).toEqual(["Keep copy terse.", "Run the full checks for me.", "Don't ping me for releases.", "I review on my phone."]);
     // An edit in Settings → Lead between drafting and confirming doesn't stop an added line either.
     let third = 0;
     turn(at(4), ctx => { third = Number(call(ctx, "remember", { kind: "about-you", text: "Mornings are best." })["proposal"]); });
     saveAboutYou(store, who.name, ["Keep copy terse."], at(5));
-    expect(confirmLeadProposal(store, who, third, at(6), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, third, at(6), { authority: "full", via: "web", evidenceRoot: root })).toMatchObject({ ok: true });
     expect(store.leadAbout(who.name)).toEqual(["Keep copy terse.", "Mornings are best."]);
   });
 

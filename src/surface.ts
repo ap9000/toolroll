@@ -21,6 +21,7 @@ import { FLOWS_DESCRIPTORS } from "./flows-cli.js";
  */
 
 import { commandEntries, type CommandFlag, type CommandRow, type RemotePolicy } from './contracts/cli.js';
+import type { LocalOwnerAct } from './local-owner.js';
 
 /** A guide row and its flags are derived from their schemas in src/contracts/cli.ts. */
 export type { CommandFlag, CommandRow, RemotePolicy };
@@ -517,6 +518,39 @@ export const REMOTE_POLICY: ReadonlyMap<string, RemotePolicy> = new Map([
 ]);
 /** How many times each invocation was classified — the contract test refuses a row stated twice. */
 export const REMOTE_POLICY_COUNT: number = REMOTE_NO.length + REMOTE_STEP_UP.length + REMOTE_YES.length;
+
+/**
+ * Easy-start C3: the commands a laptop's local owner may run through the terminal UI (local-owner.ts runAsLocalOwner),
+ * each with the act it is; every other row (and every command with no row) is refused to the local owner before any
+ * command code runs. Credential, people, policy and infrastructure commands are never here.
+ */
+const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
+  // Reads.
+  pulls: "read", graph: "read", repos: "read", status: "read", ready: "read", gaps: "read", contract: "read", "skills list": "read", "skills get": "read",
+  "task list": "read", "task show": "read", "task state": "read", "task wait": "read", "check-progress": "read", "review show": "read",
+  // Acts (plan C1's list).
+  "task add": "file-task",
+  chat: "lead-send",
+  "task steer": "lead-send",
+  "task approve": "approve-plan",
+  decide: "answer-question",
+  "task stop": "stop-run",
+  "task pause": "pause-run",
+  "task hold": "pause-run",
+  "task resume": "resume-run",
+  "task continue": "resume-run",
+  "task unhold": "resume-run",
+  "task complete": "complete-task",
+  "task revise": "request-revision",
+  "task archive": "archive-task",
+  "task restore": "archive-task",
+  "repos add": "add-project",
+};
+/** Every guide row's local-owner mark, by invocation: `allow` with its act, else `deny`. Exported for the inventory test. */
+export const LOCAL_POLICY: ReadonlyMap<string, { local: "allow"; act: LocalOwnerAct } | { local: "deny" }> = new Map(GUIDE_ROWS.map(row => [row.invocation,
+  Object.prototype.hasOwnProperty.call(LOCAL_ALLOW, row.invocation) ? { local: "allow" as const, act: LOCAL_ALLOW[row.invocation]! } : { local: "deny" as const }]));
+/** The invocations LOCAL_ALLOW names, for the inventory test (one naming no row is stale). */
+export const LOCAL_ALLOWED_INVOCATIONS: readonly string[] = Object.keys(LOCAL_ALLOW);
 
 /** Every declared command, in guide order, paired with the schema of its `--json` answer (src/contracts/cli.ts).
  * An unclassified row is "no": nothing runs remotely by omission. */

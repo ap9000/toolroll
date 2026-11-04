@@ -85,6 +85,10 @@ export const checkAccessHere = (level: CheckAccess, platform: NodeJS.Platform = 
 /** How a project's checks actually run here, as the settings page and `project check-access` say it: with no OS fence
  * on this machine and unconfined running allowed by an operator, without a sandbox whatever is saved (never said to be
  * sandboxed); otherwise the saved level as this platform can give it. */
-export function checkAccessRunsAs(level: CheckAccess, here: { platform: NodeJS.Platform; fenced: boolean; unconfinedAllowed: boolean }): CheckAccess {
-  return !here.fenced && here.unconfinedAllowed ? "unsandboxed" : checkAccessHere(level, here.platform);
+export function checkAccessRunsAs(level: CheckAccess, here: { platform: NodeJS.Platform; fenced: boolean; unconfinedAllowed: boolean; localMode?: boolean }): CheckAccess {
+  const runs = !here.fenced && here.unconfinedAllowed ? "unsandboxed" : checkAccessHere(level, here.platform);
+  return here.localMode === true ? localModeCap(runs) : runs;
 }
+
+/** Easy-start C5: while local mode is on, a project's checks reach at most its sign-ins, never unsandboxed. */
+export const localModeCap = (level: CheckAccess): CheckAccess => level === "unsandboxed" ? "sign-ins" : level;

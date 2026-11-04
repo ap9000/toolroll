@@ -29,7 +29,6 @@ import { LEDGER_CSV_HEADER,ledgerCsvRows } from "../ledger-csv.js";
 import { ledgerBody } from "../ledger-view.js";
 import { agentRowOf, agentsListOf, agentFactsFor, sealedDiffOf } from "../agents-board.js";
 import { computersOf, phasesOf, systemOf } from "./agents-computers.js";
-import { markAgentSeen } from "../agent-board.js";
 import { agentsLiveOf } from "../agents-live.js";
 import { readChildWindow } from "../live-children-read.js";
 import { leadFiledLinks } from "./agents-live-filed.js";
@@ -473,8 +472,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       const run = store.getRun(Number(asked));
       const facts = run === null || !runVisible(run) ? null : agentFactsFor(store, run.id, access, who.name);
       if (facts !== null) {
-        // Opening a finished agent is viewing it: it leaves this person's unread Done.
-        if (facts.outcome !== null && markAgentSeen(store, who.name, facts.runId, now)) facts.seen = true;
+        // Opening a finished agent is viewing it: the shell says so with a keyed POST /agents/seen (easy-start N1: a page
+        // load never writes), which leaves this person's unread Done.
         const live = facts.outcome === null;
         const composer = live ? steerControlsFor(store, facts.taskId, facts.runId, now, who.role === "approver") : null;
         const sealed = live ? null : sealedDiffOf(store, evidenceRoot, facts.runId);

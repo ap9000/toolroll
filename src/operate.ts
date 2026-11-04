@@ -132,6 +132,8 @@ import { MAX_NETWORK_HOSTS, normalizeHost, type ProjectNetwork } from "./egress.
 import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
+import { LOCAL_POLICY } from "./surface.js";
+import { asLocalOwner, currentLocalOwner, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
@@ -1033,6 +1035,11 @@ async function runOperateLocal(
     return EXIT.ok;
   }
 
+  // Easy-start C3: the terminal UI's local owner runs only commands marked for it — decided here, before any command
+  // that answers without the database (mcp, a public-address check, restore) could run. Bound after the database opens.
+  if (localOwnerRequested() && localOwnerRowAct(command, positional, flags) === null) {
+    return fail(write, json, command, "refused", "Set a password, or sign in with your password, to do this.", EXIT.refused);
+  }
   const file = text(flags, "db") ?? options.databaseFile ?? databasePath(process.env, homedir());
   const now = options.now ?? new Date();
   try { applyProjectProfile(command, positional, flags, file); }
@@ -1074,6 +1081,20 @@ async function runOperateLocal(
   }
   // Toolroll's folder for the secrets it holds, beside this database: made before any build can run.
   if (file !== ":memory:") startToolSecrets(store, file, () => new Date(), { eager: SECRETS_FIRST.has(command) });
+  // Easy-start C3: the terminal UI's commands run as the local owner (runAsLocalOwner; never argv or the environment):
+  // bound here from local mode as it reads now, and only a command marked for the local owner (surface.ts LOCAL_ALLOW).
+  if (localOwnerRequested()) {
+    const admitted = localOwnerCommand(store, command, positional, flags);
+    if (!admitted.ok) {
+      store.close();
+      return fail(write, json, command, "refused", admitted.message, EXIT.refused);
+    }
+    try {
+      return await dispatchOn(command, positional, flags, parsed.repoList, { store, write, json, file, now }, options, run => asLocalOwner(admitted.principal, run));
+    } finally {
+      store.close();
+    }
+  }
   // The lead (a lead token, as --token or TOOLROLL_LEAD_TOKEN) acts for its owner in single commands; its work
   // pings nobody. Anyone else who signs in inside one of these commands is who acted. Services name nobody.
   const presentedFlag = text(flags, "token");
@@ -10913,7 +10934,7 @@ async function proposalsCommand(positional: readonly string[], flags: Map<string
   if (row !== null && row.kind === "answer" && !json) {
     for (const line of answerContextLines(store, row.payload)) write(line);
   }
-  const outcome = confirmCoordinatorProposal(store, verified.who, id, now, { confirm: flags.has("yes"), via: "cli" });
+  const outcome = confirmCoordinatorProposal(store, verified.who, id, now, { authority: currentLocalOwner() === null ? "full" : "local-owner", confirm: flags.has("yes"), via: "cli" });
   if (!outcome.ok) return fail(write, json, "proposals confirm", outcome.reason, outcome.reason === "needs-confirm" ? `${outcome.said} — read the consequences above, then pass --yes` : outcome.said, EXIT.refused);
   return succeed(write, json, "proposals confirm", { proposal: id, kind: outcome.kind, said: outcome.said, ...(outcome.taskId === null ? {} : { task: outcome.taskId }) }, () => [
     outcome.said,
@@ -10975,6 +10996,9 @@ function credentialsFrom(
   // A remote run is its token's person, whatever the flags or this machine's saved login say.
   const remote = activeRemote();
   if (remote !== null) return { name: remote.account, token: remote.secret };
+  // Easy-start C3: the terminal UI's local owner has no password; the prover proves its allowlisted act instead.
+  const local = currentLocalOwner();
+  if (local !== null) return { name: local.account, token: "" };
   // The lead signs in as its owner with its own token, never the owner's password.
   const lead = currentActor();
   if (context.leadToken !== undefined && lead?.lead === true) return { name: lead.account, token: context.leadToken };
@@ -10998,6 +11022,9 @@ async function askCredentials(
   context: Context,
 ): Promise<{ name: string; token: string } | null> {
   let { name, token } = credentialsFrom(flags, context);
+  // Easy-start C3: the local owner is never asked for a password (the prover decides its act, refusing all others).
+  const local = currentLocalOwner();
+  if (local !== null) return { name: local.account, token: "" };
   if ((name === undefined || token === undefined) && interactive() && !context.json) {
     name ??= await ask("username: ");
     token ??= await askHidden("password: ");
@@ -11442,6 +11469,8 @@ async function unconfinedAgentsCommand(positional: readonly string[], flags: Map
     ? "Builds run even where this machine can't confine them (each such run says \"Not confined\")."
     : "Builds this machine can't confine at the OS don't start."];
   if (wanted === undefined) return succeed(write, json, command, { allowed: store.unfencedAgentsAllowed() }, () => words(store.unfencedAgentsAllowed()));
+  // Easy-start C5: while local mode is on, this installation always confines; said before any password is asked for.
+  if (wanted === "allow" && localModeOn(store)) return fail(write, json, command, "refused", LOCAL_MODE_CONFINES, EXIT.refused);
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : credentialApprover(store, acting.name, acting.token);
   if (acting === null || !verified?.ok || !store.isInstanceOperator(acting.name)) return fail(write, json, command, "refused", "An instance operator changes this, with their password: pass --as and --token.", EXIT.refused);
@@ -12291,7 +12320,7 @@ async function projectCheckAccessCommand(positional: readonly string[], flags: M
   // How it actually runs here: with no OS fence and unconfined running allowed, without a sandbox whatever is saved; on
   // a saved sign-ins level (off for now) runs sandboxed. Said, never hidden.
   const fenced = context.fenceAvailable?.() ?? (macosFenceAvailable() || linuxFenceAvailable());
-  const runsAs = (one: CheckAccess): CheckAccess => checkAccessRunsAs(one, { platform, fenced, unconfinedAllowed: context.store.unfencedAgentsAllowed() });
+  const runsAs = (one: CheckAccess): CheckAccess => checkAccessRunsAs(one, { platform, fenced, unconfinedAllowed: context.store.unfencedAgentsAllowed(), localMode: localModeOn(context.store) });
   const here = runsAs(current);
   const words = (one: CheckAccess): string[] => {
     if (runsAs(one) === "unsandboxed" && one !== "unsandboxed") return [`${repo}: saved as ${checkAccessWords(one)}, but this machine can't sandbox checks, so they run without a sandbox.`];
@@ -12306,6 +12335,8 @@ async function projectCheckAccessCommand(positional: readonly string[], flags: M
   const unavailable = wanted === "sign-ins" ? signInsUnavailableWords(platform) : null;
   if (unavailable !== null) return fail(context.write, context.json, command, "refused", unavailable, EXIT.refused);
   const widening = widerThan(wanted, current);
+  // Easy-start C5: while local mode is on, this installation always confines; said before any password is asked for.
+  if (wanted === "unsandboxed" && localModeOn(context.store)) return fail(context.write, context.json, command, "refused", LOCAL_MODE_CONFINES, EXIT.refused);
   const acting = await askCredentials(flags, context);
   const proved = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token, repo);
   if (widening) {
@@ -13497,4 +13528,30 @@ export function upLinkRequest(authority: UpStartAuthority, account: string | nul
 export function consoleSignInLink(server: Pick<DecisionServer, "mintSignInLink" | "mintLocalLink">, startAuthority: UpStartAuthority, message: Extract<ParentToRole, { type: "sign-in-link" }>): string | null {
   if (message.kind === "local") return startAuthority === "local" ? server.mintLocalLink() : null;
   return startAuthority === "full" ? server.mintSignInLink(message.account) : null;
+}
+
+/**
+ * Easy-start C3: whether the terminal UI's local owner may run this command, and as whom. The row is read from the
+ * parsed words (like a remote run's): a command with no row, or a row not marked for the local owner (surface.ts
+ * LOCAL_POLICY), is refused before any command code runs. So are credentials named on the command line (a lead token,
+ * a password): the local owner's authority is its own. Bound to local mode as it reads now; every write it then makes
+ * re-proves that (Store.transact).
+ */
+function localOwnerCommand(store: Store, command: string, positional: readonly string[], flags: Map<string, string | true>): { ok: true; principal: LocalPrincipal } | { ok: false; message: string } {
+  const binding = localOwnerBinding(store);
+  if (binding === null) return { ok: false, message: "Local mode is off. Sign in with your password in the browser." };
+  const act = localOwnerRowAct(command, positional, flags);
+  if (act === null) return { ok: false, message: localOwnerRefusal(store.accountOf(binding.account)?.passwordSet === true, "/").message };
+  return { ok: true, principal: { account: binding.account, localGeneration: binding.localGeneration, accountGeneration: binding.accountGeneration, transport: "terminal", act, sessionHash: null, request: null } };
+}
+
+/** The act a command is for the local owner (surface.ts LOCAL_POLICY, its row read from the parsed words), or null:
+ * no row, a row not marked for it, or credentials named on the command line. */
+function localOwnerRowAct(command: string, positional: readonly string[], flags: Map<string, string | true>): LocalOwnerAct | null {
+  if (["as", "token", "token-file", "token-env"].some(name => flags.has(name))) return null;
+  const row = remoteRowOf(command, positional);
+  // A project's trusted remote (whose main may complete landed work) is set with full authority only.
+  if (row?.invocation === "repos add" && flags.has("remote")) return null;
+  const mark = row === null ? undefined : LOCAL_POLICY.get(row.invocation);
+  return mark === undefined || mark.local !== "allow" ? null : mark.act;
 }
