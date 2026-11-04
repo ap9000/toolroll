@@ -187,6 +187,52 @@ describe("the release adapters", () => {
     expect(await failed.recoverDeploy(input)).toEqual({ ok: false, message: expect.stringMatching(/^recovery timed out \(the deployment journal is at an unreadable phase;/) });
   });
 
+  test("a deployment whose new service started is finished forward, never sent to recovery", async () => {
+    const stage = root(), database = join(stage, "orders.db"), { project, head: approved } = projectAt(stage);
+    const { runId } = provableCandidate(database, "deploy-me", "person", approved, project);
+    const input = { stage, run: runId, worktree: "/w/7" };
+    const phases: string[][] = [];
+    const answer = { code: 0, stdout: "", stderr: "" };
+    const run: Exec = async (command, args) => {
+      const extracted = extracting(command, args);
+      if (extracted) return extracted;
+      phases.push(args.slice(args.indexOf("--git-dir") + 2));
+      return answer;
+    };
+    const adapter = releaseAdapters({ checkout: "/rv", run, database, processes: () => [] }).toolroll;
+    for (const phase of ["started", "healthy"]) {
+      writeFileSync(join(stage, "deployment.json"), JSON.stringify({ phase }));
+      expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
+    }
+    // Before the new service started, recovery is still the way back.
+    writeFileSync(join(stage, "deployment.json"), JSON.stringify({ phase: "stopping" }));
+    expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
+    expect(phases).toEqual([["--yes", "--phase", "finish"], ["--yes", "--phase", "finish"], ["--phase", "recover"]]);
+    // A finish that can't prove the new service says so, with the phase it left the journal at.
+    Object.assign(answer, { code: 1, stderr: "✗ The configured HTTPS console is unavailable." });
+    writeFileSync(join(stage, "deployment.json"), JSON.stringify({ phase: "started" }));
+    expect(await adapter.recoverDeploy(input)).toEqual({ ok: false, message: expect.stringMatching(/^✗ The configured HTTPS console is unavailable\. \(the deployment journal is at started; finishing it forward stopped;/) });
+  });
+
+  test("finishing forward deploys, so it proves the candidate first", async () => {
+    const stage = root(), database = join(stage, "orders.db"), { project, head } = projectAt(stage);
+    // Recorded, so recovery could run its script, but approved by the lead, not a person: not a deployable candidate.
+    const { runId } = provableCandidate(database, "deploy-me", "lead", head, project);
+    const calls: unknown[] = [];
+    const run: Exec = async (command, args) => { calls.push(args); return extracting(command, args) ?? { code: 0, stdout: "", stderr: "" }; };
+    writeFileSync(join(stage, "deployment.json"), JSON.stringify({ phase: "started" }));
+    const unproven = await releaseAdapters({ checkout: "/rv", run, database, processes: () => [] }).toolroll.recoverDeploy({ stage, run: runId, worktree: "/w/7" });
+    expect(unproven.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  test("calls the CLI of the build running the release, not the first toolroll on PATH", async () => {
+    const calls: { command: string; args: readonly string[] }[] = [];
+    const run: Exec = async (command, args) => { calls.push({ command, args }); return { code: 0, stdout: JSON.stringify({ ok: true, scope: {} }), stderr: "" }; };
+    await releaseAdapters({ checkout: "/rv", run, cli: ["/node", "/new/dist/bin.js"] }).toolroll.gate("release-x");
+    expect(calls).toEqual([{ command: "/node", args: ["/new/dist/bin.js", "task", "show", "release-x", "--json"] }]);
+  });
+
   test("reads the runtime from the deployer's last JSON line, and only a dist folder", () => {
     expect(deployedRuntime(`• healthy\n{"deployed":"${SHA}","runtime":"/s/runtime/node_modules/toolroll/dist","at":"x"}\n`)).toBe("/s/runtime/node_modules/toolroll/dist");
     expect(deployedRuntime(`{"runtime":"/old/dist"}\n• note\n{"runtime":"/new/dist"}`)).toBe("/new/dist");
