@@ -209,6 +209,8 @@ export const CONSOLE_FORMS = {
   leadAbout: formContract("POST /settings/lead/about", ["about"]),
   leadPromiseCancel: formContract("POST /settings/lead/promise/cancel", ["promise"]),
   leadCheck: formContract("POST /lead/check", ["return"]),
+  leadOn: formContract("POST /settings/lead/on", ["agent", "return"]),
+  welcomeSample: formContract("POST /welcome/sample", []),
   chatConfig: formContract("POST /chat/config", ["return", "token", "off", "forget-key", "provider", "model", "weekly-usd", "daily-turns", "key"]),
   leadMint: formContract("POST /chat/mate/mint", ["return", "ceiling-usd", "token", "follow"]),
   leadFollow: formContract("POST /chat/mate/follow", ["enabled", "return"]),
@@ -262,7 +264,6 @@ export type ConsoleFormName = keyof typeof CONSOLE_FORMS;
 /** The console POSTs whose handlers read no field (sign-out not even the shared guard): their contract is the empty form. */
 export const BODILESS_POSTS = [
   "POST /settings/models/<unknown action>",
-  "POST /settings/lead/on",
   "POST /r/<run>/draft-repair",
   "POST /ledger/checkpoint",
   "POST /settings/backups/now",

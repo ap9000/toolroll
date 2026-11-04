@@ -820,6 +820,8 @@ export type BrowserHomeView = {
   /** The lead's message box, where chat is allowed for this person: a POST to /chat in this scope. */
   ask: { project: string | null; placeholder: string } | null;
   empty: { title: string; text: string } | null;
+  /** While the first run is open (no first result yet): the welcome's address, linked as Finish setup. */
+  setup?: string | null;
 };
 export type BrowserHomeRow = {
   id: string; title: string; href: string; project: string | null; age: string;

@@ -2783,3 +2783,13 @@ html.so-swap::view-transition-old(*):only-child { animation: so-card-out 160ms e
   .put-away-item { min-height: 44px; }
   .put-away-days button, .task-archived button, .work-row-status form.inline button { min-height: 44px; }
 }
+/* The welcome (/welcome): three steps from the kit's pieces. A form holding one button sits in its row of acts. */
+.welcome-step .k-note { margin: 0; }
+.welcome-rows { display: grid; }
+.welcome-rows .k-sl-t { display: block; overflow-wrap: anywhere; }
+.welcome-rows .k-mono { overflow-wrap: anywhere; }
+.welcome-form, .welcome .k-srec-a form { display: contents; }
+.welcome .k-btn { min-height: 0; }
+@media (max-width: 40rem) { .welcome form > .k-btn[type=submit] { width: auto; } }
+/* On a phone the step's primary lives in the dock: its copy in the step is hidden. */
+@media (max-width: 760px) { .welcome .k-btn.k-docked { display: none; } }
