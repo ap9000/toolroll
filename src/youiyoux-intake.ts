@@ -78,6 +78,7 @@ import { completionProblem, type Git } from "./landed-cleanup.js";
 import { COMPLETION_ACTION, LANDED_ACTOR } from "./result-completion.js";
 import { optionsProblem, PROPOSAL_ID, proposalFileOf, proposalIdOf, readYouiyouxProposal, readYouiyouxRequest, readYouiyouxRequestTask, YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH,
   type YouiyouxRequest, type YouiyouxRequestTask, type YouiyouxTaskStatus } from "./contracts/youiyoux-request.js";
+import { FolderUnavailable } from "./folder-gate.js";
 
 export { YOUIYOUX_FILED_VIA };
 /** Who files the tasks: an automation, like a flow trigger. */
@@ -540,7 +541,9 @@ function intake(store: Store, given: string, now: Date, io: YouiyouxIo, options:
   const pass = NOTHING();
   const none = { pass, repo: null };
   // The project as Toolroll recorded it, resolved: a folder that isn't one of its projects is never read.
-  const repo = canonicalProject(given);
+  let repo: string | null;
+  // A folder the console's gate holds back (folder-gate.ts) isn't read this pass.
+  try { repo = canonicalProject(given); } catch (error) { if (error instanceof FolderUnavailable) return none; throw error; }
   if (repo === null || !store.listProjects().some(one => one.path === repo)) return none;
   const row = intakeRow(store, repo);
   if (row.enabled === false) return none;

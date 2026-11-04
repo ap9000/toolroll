@@ -29,6 +29,7 @@ import {
   CHAT_CONTROLS, chatControlHref, isChatControl, type ChatControl,
 } from "./chat-controls.js";
 import { CHAT_TASK_ACTIONS, isChatTaskAction } from "./chat-task-actions.js";
+import { FolderUnavailable } from "./folder-gate.js";
 export function channelRepos(
   store: Store,
   approver: string,
@@ -37,7 +38,9 @@ export function channelRepos(
   const seen = new Set<string>();
   const repos: string[] = [];
   for (const path of registry) {
-    const canonical = canonicalProject(path) ?? path;
+    let canonical: string;
+    // A folder the console's gate holds back (folder-gate.ts) is left out, never matched by its spelling.
+    try { canonical = canonicalProject(path) ?? path; } catch (error) { if (error instanceof FolderUnavailable) continue; throw error; }
     if (seen.has(canonical) || !store.accountCanAccess(approver, canonical))
       continue;
     seen.add(canonical);

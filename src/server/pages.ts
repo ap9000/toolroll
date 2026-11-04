@@ -719,7 +719,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // connects its builder; there is no separate restart or binding step.
     // The admission asks again, inside its registry lock and its transaction, about the repo it proves.
     const stillAllowed = (repo: string): boolean => identities.generation() === decidedOn && visible(repo);
-    const admitted = await admitProject(store, { registryFile: options.registryPath ?? null, path: canonical, actor: { label: who.name, origin: "console" }, now, stillAllowed });
+    const admitted = await admitProject(store, { registryFile: options.registryPath ?? null, path: canonical, actor: { label: who.name, origin: "console" }, now, stillAllowed, resolveFolder: identities.resolveNow });
     if (!admitted.ok) {
       return void projectsScreen(response, who, admitted.reason === "not-git" ? "that path is not a git repository" : `that project is valid, but it could not be added — ${admitted.message}`, admitted.reason === "moved" ? 409 : 400, safeReturn(body.get("return")), "open");
     }
@@ -895,7 +895,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return projectsScreen(response, who, `the clone landed at ${cloned.target} but did not prove under the ceiling — it was left in place; enroll it by hand`, 400, "/", "clone");
     }
     const stillAllowed = (repo: string): boolean => identities.generation() === decidedOn && visible(repo);
-    const joined = await admitProject(store, { registryFile: options.registryPath ?? null, path: admitted, actor: { label: who.name, origin: "console" }, now, stillAllowed });
+    const joined = await admitProject(store, { registryFile: options.registryPath ?? null, path: admitted, actor: { label: who.name, origin: "console" }, now, stillAllowed, resolveFolder: identities.resolveNow });
     if (!joined.ok) {
       return projectsScreen(response, who, `${cloned.target} is cloned but not added — ${joined.message}`, joined.reason === "moved" ? 409 : 400, "/", "clone");
     }

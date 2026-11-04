@@ -12,6 +12,7 @@ import { flowFromSteps, ISSUE_LABEL, type FlowStepInput } from "./flows.js";
 import type { TriggerInput } from "./contracts/flow.js";
 import { publishingOf } from "./pull-request-flow.js";
 import type { FlowRow, Store } from "./store.js";
+import { folderAnswers } from "./folder-gate.js";
 
 export const STARTER_IDS = ["ci-fix", "issue-task", "overnight", "plane-review"] as const;
 export type StarterId = (typeof STARTER_IDS)[number];
@@ -111,6 +112,7 @@ export function planeReviewSteps(own: boolean): FlowStepInput[] {
 
 /** Whether a project is Toolroll's own source. */
 export function isToolrollRepo(repo: string): boolean {
+  if (!folderAnswers(repo)) return false;
   try { return (JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as { name?: unknown }).name === "toolroll"; } catch { return false; }
 }
 

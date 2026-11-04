@@ -14,6 +14,7 @@ import { canonicalProject } from "./project.js";
 import type { ContractIssue } from "./contracts/contract.js";
 import { RECIPE_FORMAT, RECIPE_LIMITS, readRecipeDocument, type RecipeDocument, type RecipeInput } from "./contracts/recipes.js";
 import { resolve } from "node:path";
+import { FolderUnavailable } from "./folder-gate.js";
 
 export const RECIPE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS workflow_recipe (
@@ -51,7 +52,11 @@ export class RecipeError extends Error {
   constructor(message: string, public readonly status = 400) { super(message); }
 }
 const honest = (text: string) => !hasForbiddenControls(text) && !hasDisguisedText(text);
-const recipeProject = (repo: string) => canonicalProject(repo) ?? resolve(repo);
+const recipeProject = (repo: string): string => {
+  // A project folder the console's gate holds back (folder-gate.ts) is unavailable, never matched by its spelling.
+  try { return canonicalProject(repo) ?? resolve(repo); }
+  catch (error) { if (error instanceof FolderUnavailable) throw new RecipeError("This project's folder didn't answer. Try again in a moment.", 503); throw error; }
+};
 
 /** What a refusal at each top-level field tells the person, after the path-named line. */
 const FIELD_ADVICE: Record<string, string> = {

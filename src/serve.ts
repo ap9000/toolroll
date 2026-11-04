@@ -1,6 +1,7 @@
 import { secretFolder } from "./tool-secret-store.js";
 import { acceptedIdentities, recoverLearning } from "./project-learning.js";
-import { syncProjectIdentities, type ProjectIdentities } from "./project-identity.js";
+import { consoleFolderGate, syncProjectIdentities, type ProjectIdentities } from "./project-identity.js";
+import { inFolderScope, type FolderGate } from "./folder-gate.js";
 import { firstTasksOffThread, recoverLearningOffThread } from "./learning-look.js";
 import { loadOrCreateVapidKeys } from "./push.js";
 import { checkoutPlan } from "./checkout-cleanup.js";
@@ -666,7 +667,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     instrumentRequest(store.telemetry, request, response);
     // Every password checked while answering counts against where this request came from (sign-in-guard.ts).
     // A GET or HEAD only reads (docs/plans/get-side-effects.md): store reads that would tidy up as they go don't.
-    const answer = () => handle(request, response);
+    const answer = () => consoleFolders(options, identities, () => handle(request, response));
     void withPasswordSource(joinSourceOf(request), () => request.method === "GET" || request.method === "HEAD" ? asReadOnlyRequest(answer) : answer()).catch(error => {
       // Every unhandled error is logged (v99): the path and the message, never the request's body or query. The reference
       // is what a person's error page shows, so the log line can be found from it.
@@ -1924,7 +1925,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // deterministic scan is idle without new meaningful work; shutdown drains it.
   let leadMaintenance: ReturnType<typeof startMaintenance> | null = null;
   let leadClosing = false;
-  server.once('listening', () => {
+  // Started in the console's folder scope (folder-gate.ts), so their own timers and the personal queue's kick (which
+  // restores the context it was started in, never a request's) read folders as the console's work does.
+  server.once('listening', () => consoleFolders(options, identities, () => {
     team.start();
     personalQueue.start();
     leadMaintenance = startMaintenance({ intervalMs: 5_000, shouldStop: () => leadClosing,
@@ -1934,7 +1937,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // Pending delivery is durable and is read again on the next pass; a failure is said where follow status is read.
       onError: error => recordLeadFollowFailure(store, error, clock()),
     });
-  });
+  }));
   // Background checks (docs/plans/get-side-effects.md): what pages show about this computer's agent sign-ins and the
   // services Toolroll uses is asked here, on a timer, and a page reads the last answer. A page visit never starts a
   // process or a network call, and never acts on what a check finds: lifting a sign-in pause and the lead-by-default
@@ -1945,7 +1948,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // This Toolroll's folder for secrets, checked once now, so a page can read which are set without preparing it.
     try { secretFolder(); } catch { /* a page says secrets can't be read; the next action reports why */ }
     backgroundChecks = startMaintenance({ intervalMs: options.backgroundChecksMs ?? BACKGROUND_CHECKS_MS, shouldStop: () => leadClosing,
-      run: async () => {
+      run: () => consoleFolders(options, identities, async () => {
         const now = Date.now();
         const waits: Promise<unknown>[] = [];
         if (now - agentsCheckedAt >= (options.backgroundChecksMs ?? LOCAL_AGENTS_EVERY_MS)) {
@@ -2021,7 +2024,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // desktop update in every folder the chrome looks in.
         if (databaseFile !== null) { try { waitingUpdate(databaseFile, run => store.stopQuiescenceProblem(run) !== null, at); } catch { /* shown as last saved */ } }
         await Promise.all(waits);
-      },
+      }),
       onError: () => { /* each check keeps its own last answer; the next pass asks again */ },
     });
     void backgroundChecks.runNow();
@@ -2335,4 +2338,23 @@ function startupCeiling(repos: readonly string[], roots: readonly string[], iden
     configured,
     configuredPaths,
   };
+}
+
+/** Each console's folder gate (folder-gate.ts), made once for its options. */
+const consoleGates = new WeakMap<ServeOptions, FolderGate>();
+/**
+ * Runs the console's own work (a request, a background pass) in its folder scope: with identities resolved off its
+ * thread (up and serve), it reads a person's folder synchronously only while that folder answered a look lately; its
+ * own data (the database's folder, evidence, build checkouts) is read freely. Without identities (embedders, tests):
+ * as before. Work that isn't the console's (a worker in the same process) never runs in it.
+ */
+function consoleFolders<T>(options: ServeOptions, identities: ProjectIdentities, work: () => T): T {
+  if (options.identities === undefined) return work();
+  let gate = consoleGates.get(options);
+  if (gate === undefined) {
+    const databaseFile = options.store.databaseFile();
+    gate = consoleFolderGate(identities, [options.configDir, options.evidenceRoot, options.poolRoot, databaseFile === null ? undefined : dirname(databaseFile)]);
+    consoleGates.set(options, gate);
+  }
+  return inFolderScope(gate, work);
 }

@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { validModelId, type ProviderId } from "./provider.js";
 import { planInstall, applyInstall, skillContent, SKILL_DIR, SKILL_FILE } from "./skills.js";
+import { folderAnswers } from "./folder-gate.js";
 
 export const ASSISTANTS: Record<ProviderId, { name: string; description: string }> = withAcp<KeyedProviderId, { name: string; description: string }>({
   claude: { name: "Claude", description: "Use Claude Code for your tasks." },
@@ -39,6 +40,8 @@ export function modelChoices(provider: ProviderId, configured: string | null, ho
 }
 
 export function detectPreparation(repo: string): { command: string; label: string; evidence: string } | null {
+  // In the console, a folder that hasn't answered a look lately is not read on its thread (folder-gate.ts).
+  if (!folderAnswers(repo)) return null;
   const has = (file: string) => existsSync(join(repo, file));
   if (has("package.json")) {
     if (has("pnpm-lock.yaml")) return { command: "pnpm install --frozen-lockfile", label: "Install project dependencies with pnpm", evidence: "pnpm-lock.yaml" };
@@ -55,6 +58,7 @@ export function detectPreparation(repo: string): { command: string; label: strin
 
 /** Browser installation may write only this known file inside its project. */
 export function previewProjectInstructions(repo: string) {
+  if (!folderAnswers(repo)) return { ok: false as const, message: "This project folder didn't answer. Try again in a moment." };
   try {
     if (!lstatSync(repo).isDirectory()) return { ok: false as const, message: "This project folder is unavailable. Reconnect it before adding instructions." };
   } catch { return { ok: false as const, message: "This project folder is unavailable. Reconnect it before adding instructions." }; }

@@ -19,6 +19,7 @@ import { canonicalProject, projectName, sameRepo, type ProjectExec } from "./pro
 import { remoteUrlProblem } from "./remote-main.js";
 import { addRepos, loadProjectRegistry, removeRepos, updateRepos } from "./repos.js";
 import type { Store } from "./store.js";
+import { FolderUnavailable } from "./folder-gate.js";
 
 /** Where an addition or removal came from, as the ledger says it. */
 export type AdmissionOrigin = "cli" | "lead" | "console";
@@ -40,17 +41,26 @@ const ADMISSION_GIT = {
 };
 
 export const PROJECT_ADDED = "project added";
+
+/** A folder's real path (a folder), null (not one), or "no-answer" (it didn't answer in time). */
+export type FolderResolver = (path: string) => Promise<string | null | "no-answer">;
 export const PROJECT_REMOVED = "project removed";
 
 /** The checkout root a folder belongs to, canonical; never a shell. */
-export async function proveProjectRoot(path: string, exec: ProjectExec = run): Promise<{ ok: true; repo: string } | AdmissionFailure> {
+export async function proveProjectRoot(path: string, exec: ProjectExec = run, resolveFolder?: FolderResolver): Promise<{ ok: true; repo: string } | AdmissionFailure> {
   if (path.trim() === "" || path.length > 4096 || /[\x00-\x1f]/.test(path)) {
     return { ok: false, reason: "unavailable", message: "Choose a valid project folder." };
   }
-  const canonical = canonicalProject(path);
+  // The console resolves both folders off its thread (project-identity.ts resolveNow): its thread never waits on one.
+  const canon = async (one: string): Promise<string | null | "no-answer"> => resolveFolder === undefined ? canonicalProject(one) : resolveFolder(one);
+  const didntAnswer = (one: string): AdmissionFailure => ({ ok: false, reason: "unavailable", message: `${one} didn't answer. It may be on a drive that's disconnected, or waiting on macOS; try again in a moment.` });
+  const canonical = await canon(path);
+  if (canonical === "no-answer") return didntAnswer(path);
   if (canonical === null) return { ok: false, reason: "unavailable", message: `${path} isn't a folder on this computer.` };
   const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: canonical, timeoutMs: 5_000, ...ADMISSION_GIT });
-  const repo = top.code === 0 ? canonicalProject(top.stdout.trim()) : null;
+  const topReal = top.code === 0 ? await canon(top.stdout.trim()) : null;
+  if (topReal === "no-answer") return didntAnswer(top.stdout.trim());
+  const repo = topReal;
   if (repo === null) return { ok: false, reason: "not-git", message: `${path} isn't a Git repository. Run git init there first, or choose a folder inside one.` };
   return { ok: true, repo };
 }
@@ -75,8 +85,11 @@ export async function admitProject(store: Store, input: {
   /** The caller's authority, asked again about the proved repo inside the locked registry update and inside the
    * database transaction (the console: nothing it proved before an await moved, and the repo is still visible). */
   stillAllowed?: (repo: string) => boolean;
+  /** How the folder and its checkout root are resolved (the console: off its thread, under a deadline). Absent:
+   * canonicalProject. */
+  resolveFolder?: FolderResolver;
 }): Promise<Admitted | AdmissionFailure> {
-  const proved = await proveProjectRoot(input.path, input.exec);
+  const proved = await proveProjectRoot(input.path, input.exec, input.resolveFolder);
   if (!proved.ok) return proved;
   const { repo } = proved;
   if (input.remoteUrl !== undefined && (input.actor.origin === "console" || remoteUrlProblem(input.remoteUrl) !== null)) {
@@ -132,11 +145,21 @@ export async function admitProject(store: Store, input: {
 export async function releaseProject(store: Store, input: {
   registryFile: string | null; path: string; actor: AdmissionActor; now: Date;
 }): Promise<Released | AdmissionFailure> {
-  const asked = canonicalProject(input.path) ?? resolve(input.path);
+  // Removing only narrows: a folder the console's gate holds back (folder-gate.ts) is removed by its exact saved path,
+  // and matches no other spelling.
+  // Latched for the whole removal: once its folder was unavailable, a later answer (during an await below) never
+  // widens it to other spellings.
+  const unavailable = (error: unknown): boolean => error instanceof FolderUnavailable;
+  let asked: string, exactOnly = false;
+  try { asked = canonicalProject(input.path) ?? resolve(input.path); } catch (error) { if (!unavailable(error)) throw error; asked = resolve(input.path); exactOnly = true; }
+  const same = (one: string): boolean => {
+    if (exactOnly) return false;
+    try { return sameRepo(one, asked); } catch (error) { if (unavailable(error)) { exactOnly = true; return false; } throw error; }
+  };
   const loaded = input.registryFile === null ? { repos: [] } : await loadProjectRegistry(input.registryFile);
   if ("error" in loaded) return { ok: false, reason: "registry", message: loaded.error };
-  const entries = loaded.repos.filter(one => one === asked || sameRepo(one, asked));
-  const rows = store.listProjects().filter(one => one.path === asked || sameRepo(one.path, asked)).map(one => one.path);
+  const entries = loaded.repos.filter(one => one === asked || same(one));
+  const rows = store.listProjects().filter(one => one.path === asked || same(one.path)).map(one => one.path);
   const repo = entries[0] ?? rows[0] ?? asked;
   if (entries.length === 0 && rows.length === 0) return { ok: true, repo, name: projectName(repo), removed: false };
   if (entries.length > 0 && input.registryFile !== null) {

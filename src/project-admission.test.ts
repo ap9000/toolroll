@@ -6,13 +6,14 @@
  */
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { admitProject, commandLineActor, releaseProject } from "./project-admission.js";
 import { loadProjectRegistry } from "./repos.js";
+import { inFolderScope } from "./folder-gate.js";
 
 const NOW = new Date("2026-10-05T12:00:00.000Z");
 let base: string, store: Store, registryFile: string, databaseFile: string, repo: string;
@@ -188,4 +189,20 @@ test("authority that moves between the registry and the store takes back the reg
   expect(moved).toMatchObject({ ok: false, reason: "moved" });
   expect(await loadProjectRegistry(registryFile)).toEqual({ repos: [other], roots: [] });
   expect(store.listProjects().map(one => one.path)).toEqual([other]);
+});
+
+test("removing a project whose folder didn't answer removes that exact saved path only, even when it answers again mid-removal", async () => {
+  const outside = join(base, "outside"), granted = join(base, "granted");
+  mkdirSync(outside);
+  symlinkSync(outside, granted);
+  writeFileSync(registryFile, JSON.stringify({ version: 2, repos: [granted, outside], roots: [] }));
+  for (const path of [granted, outside]) store.upsertProject(path, path.slice(base.length + 1), NOW, { remoteUrl: null });
+  // The console's gate holds the folder back as the removal starts; its look answers again while the registry is read.
+  let answering = false;
+  const removing = inFolderScope(() => answering, () => releaseProject(store, { registryFile, path: granted, actor: owner, now: NOW }));
+  answering = true;
+  expect(await removing).toMatchObject({ ok: true, repo: granted, removed: true });
+  const registry = await loadProjectRegistry(registryFile);
+  expect("error" in registry ? registry : registry.repos).toEqual([outside]);
+  expect(store.listProjects().map(one => one.path)).toEqual([outside]);
 });

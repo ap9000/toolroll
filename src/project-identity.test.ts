@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { authorizedProject, rowVisible } from "./project.js";
-import { IDENTITY_LOOKS, projectIdentities } from "./project-identity.js";
+import { consoleFolderGate, IDENTITY_LOOKS, projectIdentities } from "./project-identity.js";
 import { folderLooksRunning, type FolderLookRunner } from "./folder-look.js";
 
 let base: string;
@@ -163,4 +163,64 @@ test("a caller that joins an older look gets that look's age: its old answer nev
   expect(await old).toBe(b);
   expect(identities.strict(alias)).toBe(b);
   expect(identities.known(a)).toBeUndefined();
+});
+
+test.each([
+  ["a folder that answered a look just now, and a path inside it", "answered", "inside", true],
+  ["a folder no look has answered yet", "never", "inside", false],
+  ["a folder whose last look didn't answer, though an older one did", "stalled", "inside", false],
+  ["an answer older than three minutes", "old", "inside", false],
+  ["a folder that answered, but a path beside it", "answered", "beside", false],
+  ["the console's own data, whatever the looks say", "never", "own", true],
+  ["a look a request asked at \"/\", for a path no project holds", "root", "beside", false],
+])("the console's folder gate: %s (reads: %s)", async (_, state, where, reads) => {
+  const project = join(base, "project"), own = join(base, "config");
+  mkdirSync(join(project, "src"), { recursive: true });
+  mkdirSync(own);
+  let clock = 1_000_000, hung = false;
+  const runner: FolderLookRunner = request => hung
+    ? { answer: new Promise(() => {}), ended: Promise.resolve() }
+    : { answer: Promise.resolve({ ok: true, value: { paths: request.op === "identities" ? request.paths.map(one => ({ path: one, real: realpathSync(one) })) : [] } }), ended: Promise.resolve() };
+  const identities = projectIdentities({ runner, deadlineMs: 50 }, () => clock);
+  if (state !== "never") await identities.refresh(state === "root" ? ["/", project] : [project]);
+  if (state === "stalled") { hung = true; expect(await identities.resolveNow(project)).toBe("no-answer"); }
+  if (state === "old") clock += 3 * 60_000;
+  const gate = consoleFolderGate(identities, [own, undefined]);
+  const path = where === "inside" ? join(project, "src") : where === "beside" ? join(base, "elsewhere") : join(own, "state.db");
+  expect(gate(path)).toBe(reads);
+});
+
+test("the gate decides on real paths: an alias to \"/\" reaches neither a folder that didn't answer nor anything \"/\" would vouch for", async () => {
+  const hung = join(base, "hung"), project = join(base, "project"), alias = join(base, "root-alias");
+  mkdirSync(hung); mkdirSync(project);
+  symlinkSync("/", alias);
+  let stuck = false;
+  const runner: FolderLookRunner = request => stuck && request.op === "identities" && request.paths.includes(hung)
+    ? { answer: new Promise(() => {}), ended: Promise.resolve() }
+    : { answer: Promise.resolve({ ok: true, value: { paths: request.op === "identities" ? request.paths.map(one => ({ path: one, real: realpathSync(one) })) : [] } }), ended: Promise.resolve() };
+  const identities = projectIdentities({ runner, deadlineMs: 50 });
+  await identities.refresh([alias, project, hung]);
+  stuck = true;
+  expect(await identities.resolveNow(hung)).toBe("no-answer");
+  expect(identities.answering(join(hung, "file"))).toBe(false);
+  expect(identities.answering(join(alias, hung.slice(1), "file"))).toBe(false);
+  // Through the alias, a path no project holds: "/" vouches for nothing below it.
+  expect(identities.answering(join(alias, "Volumes", "Drive"))).toBe(false);
+  expect(identities.answering(join(alias, project.slice(1), "src"))).toBe(true);
+});
+
+test("the newest answer for a folder decides: an old alias never shadows a fresh direct answer", async () => {
+  const project = join(base, "project"), alias = join(base, "alias");
+  mkdirSync(project);
+  symlinkSync(project, alias);
+  let clock = 1_000_000;
+  const runner: FolderLookRunner = request => ({ answer: Promise.resolve({ ok: true, value: { paths: request.op === "identities" ? request.paths.map(one => ({ path: one, real: realpathSync(one) })) : [] } }), ended: Promise.resolve() });
+  const identities = projectIdentities({ runner, deadlineMs: 50 }, () => clock);
+  await identities.resolveNow(alias);
+  clock += 4 * 60_000;
+  expect(identities.answering(project)).toBe(false);
+  await identities.resolveNow(project);
+  expect(identities.answering(join(project, "src"))).toBe(true);
+  // The stale alias spelling itself waits for its own look.
+  expect(identities.answering(join(alias, "src"))).toBe(false);
 });

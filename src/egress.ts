@@ -18,6 +18,7 @@ import { readdirSync, type Dirent } from "node:fs";
 import { basename, join } from "node:path";
 import { connectFirst, isPublicAddress, type Lookup } from "./scout-net.js";
 import { lookup as dnsLookup } from "node:dns/promises";
+import { folderAnswers } from "./folder-gate.js";
 
 /** The policy's shape version: a worker enforces the versions it knows and refuses any other. */
 export const NETWORK_POLICY_VERSION = 1;
@@ -134,6 +135,9 @@ const WALK_SKIP = new Set(["node_modules", "vendor", "target", "dist", "build", 
  * project's own hosts only.
  */
 export function repositoryEcosystems(repo: string): Ecosystem[] {
+  // In the console, a folder that hasn't answered a look lately is not walked on its thread (folder-gate.ts): it names
+  // none, as an unreadable folder does.
+  if (!folderAnswers(repo)) return [];
   const paths: string[] = [];
   const walk = (folder: string, depth: number): void => {
     let entries: Dirent[];

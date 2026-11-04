@@ -20,6 +20,7 @@ import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:pa
 import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { WORKTREE_TIMEOUT_MS, type Runner } from "./worktree.js";
+import { FOLDER_DIDNT_ANSWER, folderAnswers } from "./folder-gate.js";
 
 export type Git = (cwd: string, args: readonly string[]) => Promise<ExecResult>;
 
@@ -331,8 +332,14 @@ function gitDirsOf(checkout: string): { gitdir: string; common: string } | null 
       gitdir = resolve(checkout, pointer);
     }
   } catch { return null; }
+  // Where the checkout's own files point (a build can write both): read, in the console, only while that folder
+  // answered a look lately, and never vouched for by the checkout pool's spelling (folder-gate.ts). Held back: not one
+  // git would read the same way, so every caller refuses.
+  if (gitdir !== join(checkout, ".git") && !folderAnswers(gitdir, true)) return null;
   const named = regularFile(join(gitdir, "commondir"))?.trim();
-  return { gitdir, common: named === undefined || named === "" ? gitdir : resolve(gitdir, named) };
+  const common = named === undefined || named === "" ? gitdir : resolve(gitdir, named);
+  if (common !== gitdir && !folderAnswers(common, true)) return null;
+  return { gitdir, common };
 }
 
 
@@ -827,6 +834,8 @@ export function checkoutGit(inner: Runner = run, mode: "build" | "read" = "build
   return async (file, args, options) => {
     if (file !== "git") return inner(file, args, options);
     const cwd = options?.cwd;
+    // In the console, a checkout whose folder hasn't answered a look lately is not read on its thread (folder-gate.ts).
+    if (cwd !== undefined && !folderAnswers(cwd)) return refused(FOLDER_DIDNT_ANSWER);
     if (cwd === undefined || checkoutIncludes(cwd)) return refused("the checkout's git config includes another file, or couldn't be read as a plain file");
     // git-lfs also reads .lfsconfig from the checkout: one that names an extension (a command it would run) is refused.
     if (lfsExtensionIn(cwd)) return refused("the checkout's .lfsconfig sets a git-lfs key that can run a command");
@@ -913,6 +922,8 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
   const limit: Limit | undefined = deadline === undefined ? undefined : () => deadline - Date.now();
   const expire = () => { if (limit !== undefined && limit() <= 0) throw new Error("the read's deadline passed"); };
   expire();
+  // In the console, a checkout whose folder hasn't answered a look lately is not read on its thread (folder-gate.ts).
+  if (!folderAnswers(cwd)) throw new Error(FOLDER_DIDNT_ANSWER);
   if (checkoutIncludes(cwd, gitFile, limit)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
   expire();
   if (lfsExtensionIn(cwd, gitFile, limit)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
