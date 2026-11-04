@@ -39,6 +39,7 @@ import type { LoopbackMode } from "./egress.js";
 import type { ExecutionProfile } from "./scope.js";
 import { SEATBELT_PROBE, sandboxRuntimeProblem, srtSpawn, type SrtTerms } from "./sandbox-runtime.js";
 import { protectedStorageDenies, protectedStorageNames } from "./protected-storage.js";
+import { ensureSecretsDir, legacyLoginFileOf, SECRETS_DIR, secretsDirOf } from "./login-secrets.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime";
 
 /** How a launch was fenced, as recorded on the run and said on the task. */
@@ -155,6 +156,19 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     try { mkdirSync(backups, { mode: 0o700 }); } catch { /* name and target remain denied */ }
     fence.add(backups);
     fence.add(real(backups));
+    // Saved credentials (the remembered login, login-secrets.ts) live in a reserved owner-only folder, made here before
+    // any launch and denied whole, so one first written after this launch is behind this fence too: a listing can't
+    // name a file that isn't there yet, and bubblewrap can't deny one. If it can't be made or proven, its name is
+    // denied anyway (and nothing is saved there).
+    const secrets = secretsDirOf(state);
+    try { ensureSecretsDir(state); } catch { /* name and target remain denied */ }
+    fence.add(secrets);
+    fence.add(real(secrets));
+    // An older version's login beside the database: listed below when it is there; by name, there or not, where the
+    // sandbox denies a missing path without making it (Seatbelt; Codex's profile gets the same list). On Linux a
+    // missing path would be stubbed into being for the launch, and nothing writes that name any more.
+    const legacyLogin = legacyLoginFileOf(state);
+    if (process.platform === "darwin" || existsSync(legacyLogin)) fence.add(legacyLogin);
     // Only a folder that is Toolroll's own (~/.config/toolroll or an older name,
     // the desktop app's "Toolroll") is fenced whole: a database kept
     // in a shared folder (a projects folder, a test's temp folder) must not
@@ -187,7 +201,7 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   for (const path of options.extra ?? []) fence.add(real(path));
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
-  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || [RUNNER_PROCESS_DIR, "backups"].includes(basename(path)) ? [path, real(path)] : [real(path)]));
+  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || [RUNNER_PROCESS_DIR, "backups", SECRETS_DIR].includes(basename(path)) ? [path, real(path)] : [real(path)]));
   // Protected storage (chat apps, browser profiles, password managers): every launch, every policy, never exemptible,
   // kept by the name it was resolved under as well as where it leads.
   const storage = options.protectedStorage ?? protectedStorageDenies(home);
@@ -195,7 +209,7 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   const binding = options.binding;
   const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
-  return [...new Set([...[...fence].flatMap(path => path === runFolder || [RUNNER_PROCESS_DIR, "backups"].includes(basename(path)) ? [path, real(path)] : [real(path)]), ...storage.flatMap(path => [path, real(path)])])].filter(path => {
+  return [...new Set([...[...fence].flatMap(path => path === runFolder || [RUNNER_PROCESS_DIR, "backups", SECRETS_DIR].includes(basename(path)) ? [path, real(path)] : [real(path)]), ...storage.flatMap(path => [path, real(path)])])].filter(path => {
     if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
     console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;

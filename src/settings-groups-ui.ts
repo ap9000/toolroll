@@ -198,7 +198,7 @@ export function generalGroup(facts: SettingsFacts, flags: Record<string, boolean
     id: "your-password", title: "Your password",
     body: joinHtml([
       formRow("Where it is", "If you started Toolroll with toolroll up, your password is saved on the computer running Toolroll. Toolroll never shows it in a browser. To read it, run this there:", html``, "wide"),
-      codeLine("cat ~/.config/toolroll/up-login.txt"),
+      codeLine("cat ~/.config/toolroll/.toolroll-secrets/up-login.txt"),
       facts.passwordless === null ? "" : formRow("Passwordless", "Sign in once; most approvals then need no password.", btn(`${facts.passwordless ? "On" : "Off"} · Change`, { sm: true, href: "/settings/passwordless" }), "inline"),
     ]),
   });

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, chmodSync, copyFileSync, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { savedLoginFile } from "./login-secrets.js";
 import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
 import { bundleHash, readDesktopBundle, verifyDesktopUpdateBundles, type DesktopBundle } from "./desktop-bundle.js";
@@ -411,7 +412,7 @@ async function verifiedBackup(j: UpdateJournal): Promise<void> {
   const backupHash = await verifiedDatabaseBackup(j.databaseFile, backupPath, j.id, async () => {
     await verifiedCodingBackup(j);
   }, () => {
-    for (const [source, name] of [[join(j.stateDir, "desktop.json"), "desktop.json"], [join(dirname(j.databaseFile), "repos.json"), "repos.json"], [join(dirname(j.databaseFile), "up-login.txt"), "up-login.txt"]]) {
+    for (const [source, name] of [[join(j.stateDir, "desktop.json"), "desktop.json"], [join(dirname(j.databaseFile), "repos.json"), "repos.json"], [savedLoginFile(dirname(j.databaseFile)), "up-login.txt"]]) {
       if (source && name && existsSync(source)) {
         if (!lstatSync(source).isFile() || lstatSync(source).isSymbolicLink()) throw Error("A saved configuration file is linked or not a regular file. Nothing was replaced.");
         if (name === "up-login.txt") privateFile(source);

@@ -333,7 +333,7 @@ export function browserDeployment({
         "The installed service identity changed since preparation. Preserve the journal and inspect it.");
       if (!resumed) r.oldService = currentService;
       save(r, "preparing");
-      for (const [input, output] of [[plist, "browser.saved.plist"], [join(stateDir, "repos.json"), "repos.saved.json"], [join(stateDir, "up-login.txt"), "up-login.saved.txt"], [join(stateDir, "console-url"), "console-url.saved.txt"]]) {
+      for (const [input, output] of [[plist, "browser.saved.plist"], [join(stateDir, "repos.json"), "repos.saved.json"], [join(stateDir, "up-login.txt"), "up-login.saved.txt"], [join(stateDir, ".toolroll-secrets", "up-login.txt"), "up-login.secrets.saved.txt"], [join(stateDir, "console-url"), "console-url.saved.txt"]]) {
         const retained = join(stageDir, output);
         if (!existsSync(input)) { requireTrue(!existsSync(retained), `Saved configuration disappeared: ${input}`); continue; }
         requireTrue(lstatSync(input).isFile() && !lstatSync(input).isSymbolicLink(), `Unexpected configuration path: ${input}`);

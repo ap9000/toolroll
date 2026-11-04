@@ -13,10 +13,10 @@ It installs the `toolroll` command and starts it with your projects in
 it without installing: `npx toolroll up`.
 
 The first start creates your login, saves the password in
-`~/.config/toolroll/up-login.txt` and opens the console at
+`~/.config/toolroll/.toolroll-secrets/up-login.txt` and opens the console at
 http://127.0.0.1:4180, already signed in. Every start prints where that
 file is and the command that shows the password
-(`cat ~/.config/toolroll/up-login.txt`); the password itself is never
+(`cat ~/.config/toolroll/.toolroll-secrets/up-login.txt`); the password itself is never
 printed.
 
 To look around first, `npx toolroll demo` opens a throwaway sandbox
@@ -56,7 +56,8 @@ Choose your projects folder the first time:
 npx toolroll up --project-root ~/Projects
 ```
 
-`up` saves your password beside the database as `up-login.txt` (every
+`up` saves your password beside the database in
+`.toolroll-secrets/up-login.txt`, a private folder no agent can read (every
 start prints where, and the `cat` command that shows it; never the password
 itself), opens the app in your browser, and connects this machine as
 the builder. Add an existing folder or a GitHub repository from **Projects**;

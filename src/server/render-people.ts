@@ -87,7 +87,7 @@ export function loginPage(problem: string | null, returnTo = "/", sso: { label: 
       ]);
   return shell("Sign in · Toolroll", outPage({
     brand: BRAND_HTML, brandHref: "/login", title: "Sign in", body,
-    foot: html`${sso === null ? html`Forgot it? Your first login was shown when Toolroll started, and saved beside its database as <code>up-login.txt</code> on the computer running it.<br>` : ""}No account? Ask whoever runs this Toolroll for an invite link.`,
+    foot: html`${sso === null ? html`Forgot it? Your first login was shown when Toolroll started, and saved beside its database in <code>.toolroll-secrets/up-login.txt</code> on the computer running it.<br>` : ""}No account? Ask whoever runs this Toolroll for an invite link.`,
   }), { nav: false });
 }
 
