@@ -5,11 +5,11 @@
 #
 # It checks what it needs (Node.js 22.13 or newer, git), installs the
 # `toolroll` command with npm (`standing-orders`, the older name, still
-# works), and starts it with your projects in ~/Projects. Nothing runs as root, and nothing is installed but the one npm
+# works), and opens it in this terminal with your projects in ~/Projects. Nothing runs as root, and nothing is installed but the one npm
 # package. Settings:
 #   SO_PROJECTS=/path/to/projects   where your repositories live (default ~/Projects)
 #   SO_VERSION=0.5.0                a particular release (default: the latest)
-#   SO_NO_START=1                   install only; start later with `toolroll up`
+#   SO_NO_START=1                   install only; it prints the command that starts it
 set -eu
 
 say() { printf '%s\n' "$*"; }
@@ -61,18 +61,27 @@ if [ -z "$agents" ]; then
 fi
 if [ "$(uname -s)" = "Linux" ] && ! command -v bwrap >/dev/null 2>&1; then
   say ""
-  say "Tip: install bubblewrap (apt install bubblewrap) so Claude and Gemini agents can't read"
+  say "Tip: install bubblewrap (apt install bubblewrap) so Claude agents can't read"
   say "Toolroll's own secrets on this computer. Codex is fenced without it."
 fi
 
+projects="${SO_PROJECTS:-$HOME/Projects}"
+# The start command, with the folder single-quoted for a shell (a ' inside it becomes '\'').
+q() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
+
 if [ "${SO_NO_START:-}" = "1" ]; then
   say ""
-  say "Start it with: $cli up --project-root \"${SO_PROJECTS:-$HOME/Projects}\""
+  say "Start it with: $cli --project-root $(q "$projects")"
   exit 0
 fi
 
-projects="${SO_PROJECTS:-$HOME/Projects}"
 mkdir -p "$projects"
+# Piped into sh, this script's input is the download, not you: Toolroll opens on the terminal itself. With no terminal
+# (a script, CI), it says how to start instead.
+if ( : </dev/tty >/dev/tty ) 2>/dev/null; then
+  say ""
+  say "Starting Toolroll with your projects in $projects …"
+  exec "$cli" --project-root "$projects" </dev/tty >/dev/tty 2>&1
+fi
 say ""
-say "Starting Toolroll with your projects in $projects …"
-exec "$cli" up --project-root "$projects"
+say "Start it with: $cli --project-root $(q "$projects")"
