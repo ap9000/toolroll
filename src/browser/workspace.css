@@ -951,3 +951,4 @@ details.result-request-open > summary::marker { content: ""; }
 /* The task conversation's message box: the kit composer's filled object (KIT.md "Composer"); focus turns its edge
    ink-grey, never a ring on the textarea. */
 .so-task-composer-box:focus-within { border-color: color-mix(in srgb, var(--so-ink) 50%, var(--so-composer)) !important; }
+.so-first-run-setup { margin: 0; font-size: 13px; }

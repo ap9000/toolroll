@@ -34,7 +34,7 @@ command -v git >/dev/null 2>&1 || stop "it needs git. Install it, then run this 
 command -v npm >/dev/null 2>&1 || stop "it needs npm, which comes with Node.js."
 
 agents=""
-for one in claude codex gemini; do
+for one in claude codex; do
   if command -v "$one" >/dev/null 2>&1; then agents="$agents $one"; fi
 done
 
@@ -55,8 +55,9 @@ say "Installed $("$cli" --version 2>/dev/null || echo "$cli")."
 
 if [ -z "$agents" ]; then
   say ""
-  say "No coding agent was found (claude, codex or gemini). The app works without one;"
-  say "install one when you want work built, for example: npm install -g @anthropic-ai/claude-code"
+  say "No coding agent was found (Claude Code or Codex). The app works without one;"
+  say "install one when you want work built: npm install -g @anthropic-ai/claude-code"
+  say "(or npm install -g @openai/codex), then sign in with claude auth login (or codex login)."
 fi
 if [ "$(uname -s)" = "Linux" ] && ! command -v bwrap >/dev/null 2>&1; then
   say ""

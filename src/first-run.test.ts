@@ -6,7 +6,8 @@ import { describe, expect, test, vi } from "vitest";
 import { run } from "./exec.js";
 import type { ExecResult, RunOptions } from "./exec.js";
 import {
-  findFirstTasks, firstRunSteps, firstTaskSuggestions, GENERIC_FIRST_TASKS, parseTodoLines, signInCommandFor, withBuilderStep,
+  findFirstTasks, firstRunSteps, firstTaskSuggestions, GENERIC_FIRST_TASKS, parseTodoLines, signInCommandFor, welcomeModel, withBuilderStep,
+  type WelcomeFacts,
 } from "./first-run.js";
 
 const result = (stdout: string, code = 0): ExecResult => ({ code, stdout, stderr: "", timedOut: false, notFound: false });
@@ -154,5 +155,67 @@ describe("the one command that gets an agent signed in here", () => {
   test("the first-run step shows that command", () => {
     const steps = firstRunSteps({ agentSignedIn: false, projects: 1, hasTask: false, firstResultAt: null, signInCommand: "codex login" })!;
     expect(steps[0]!.action).toEqual({ kind: "command", command: "codex login" });
+  });
+});
+
+describe("the welcome's one model (web, terminal and --json read the same facts)", () => {
+  const base: WelcomeFacts = {
+    agents: { claude: "connected", codex: "not-installed" }, inUse: "claude", buildsOn: "claude", canChoose: true,
+    projects: [], projectRoot: "/home/sam/Projects", ready: false, hasTask: false, starters: GENERIC_FIRST_TASKS, platform: "darwin",
+  };
+
+  test("only Claude Code and Codex, each with its state and the exact command that signs it in", () => {
+    const model = welcomeModel({ ...base, agents: { claude: "signed-out", codex: "not-installed" }, inUse: null });
+    expect(model.agent.agents.map(one => [one.id, one.name, one.state, one.command, one.canUse])).toEqual([
+      ["claude", "Claude Code", "signed-out", "claude auth login", false],
+      ["codex", "Codex", "not-installed", "npm install -g @openai/codex && codex login", false],
+    ]);
+    expect(model.agent.done).toBe(false);
+    expect(welcomeModel({ ...base, agents: { claude: "not-installed", codex: null }, platform: "win32" }).agent.agents[0]!.command)
+      .toBe("npm install -g @anthropic-ai/claude-code; claude auth login");
+  });
+
+  test("an agent is choosable only when signed in with its account, not in use, and the person may choose", () => {
+    const both = welcomeModel({ ...base, agents: { claude: "connected", codex: "connected" } });
+    expect(both.agent.agents.map(one => [one.id, one.inUse, one.canUse])).toEqual([["claude", true, false], ["codex", false, true]]);
+    expect(welcomeModel({ ...base, agents: { claude: "connected", codex: "connected" }, canChoose: false }).agent.agents.every(one => !one.canUse)).toBe(true);
+    // An API key counts as signed in, but isn't a choice here (the chat runs on an account's sign-in).
+    const keyed = welcomeModel({ ...base, agents: { claude: "key-works", codex: "signed-out" }, inUse: null });
+    expect([keyed.agent.done, keyed.agent.agents[0]!.canUse]).toEqual([true, false]);
+  });
+
+  test("until a check answers, the agent step is checking, never done", () => {
+    const model = welcomeModel({ ...base, agents: { claude: null, codex: null }, inUse: null });
+    expect([model.agent.done, model.agent.checking, model.agent.agents.map(one => one.command)]).toEqual([false, true, [null, null]]);
+  });
+
+  test("tasks built with another agent than the one in use say which", () => {
+    expect(welcomeModel({ ...base, inUse: "codex", agents: { claude: "connected", codex: "connected" } }).agent.buildsWith).toBe("Claude Code");
+    expect(welcomeModel(base).agent.buildsWith).toBeNull();
+  });
+
+  test("the sample project lives in the project folder, offered until it is added; none without a folder", () => {
+    expect(welcomeModel(base).project.sample).toBe("/home/sam/Projects/toolroll-sample");
+    expect(welcomeModel({ ...base, projects: [{ name: "toolroll-sample", path: "/home/sam/Projects/toolroll-sample" }] }).project.sample).toBeNull();
+    expect(welcomeModel({ ...base, projectRoot: null }).project.sample).toBeNull();
+  });
+
+  test("starters only appear with a project, and only draft words (a New task address, never a filing)", () => {
+    expect(welcomeModel(base).task).toEqual({ done: false, open: false, starters: [] });
+    const model = welcomeModel({ ...base, projects: [{ name: "shop", path: "/home/sam/Projects/shop" }], ready: true });
+    expect(model.task.starters).toHaveLength(3);
+    for (const one of model.task.starters) expect(one.href).toBe(`/tasks/new?text=${encodeURIComponent(one.draft)}`);
+  });
+
+  test("the next step is the first one a page can move, and the count says what is left", () => {
+    // Nobody signed in: the sign-in is a command, so the project leads.
+    expect(welcomeModel({ ...base, agents: { claude: "signed-out", codex: "signed-out" }, inUse: null })).toMatchObject({ next: "project", left: 3 });
+    // Signed in but not chosen: Use this one leads.
+    expect(welcomeModel({ ...base, inUse: null }).next).toBe("agent");
+    // A project nothing on this computer takes work for: still the project step.
+    const waiting = welcomeModel({ ...base, projects: [{ name: "shop", path: "/p/shop" }] });
+    expect([waiting.next, waiting.project.done, waiting.project.notTakingWork]).toEqual(["project", false, true]);
+    expect(welcomeModel({ ...base, projects: [{ name: "shop", path: "/p/shop" }], ready: true })).toMatchObject({ next: "task", left: 1 });
+    expect(welcomeModel({ ...base, projects: [{ name: "shop", path: "/p/shop" }], ready: true, hasTask: true })).toMatchObject({ next: null, left: 0 });
   });
 });

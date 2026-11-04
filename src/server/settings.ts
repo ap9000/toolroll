@@ -2106,13 +2106,25 @@ ${postForm("/settings/chat-approval/save", html`\
   }
   // Turn the lead on with the agent signed in on this computer: its membership spends no dollars, so like starting a
   // conversation it needs no second password; the full form (Advanced) still asks for one.
+  // The welcome's "Use this one" names the agent (`agent`, claude or codex: only one signed in with its account here)
+  // and comes back to the welcome (`return`, that one address only).
   async function leadOn(ctx: HandlerContext): Promise<void> {
-    const { who, response, now } = ctx;
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.leadOn);
+    const asked = body.get("agent");
+    if (body.sent.getAll("agent").length > 1 || (asked !== null && asked !== "claude" && asked !== "codex")) return refuse(response, who, 400, "Choose Claude Code or Codex.", "/settings/lead");
+    const back = body.get("return") === "/welcome" ? "/welcome" : null;
     await checkLocalAgents(true);
-    const provider = runtime.localSignIn?.states.claude === "connected" ? "claude-subscription" : runtime.localSignIn?.states.codex === "connected" ? "codex-subscription" : null;
-    if (provider === null) return redirect(response, chatReturnWithSaid("/settings/lead", `No agent is signed in on this computer yet. Run ${agentSignInCommand()}, then try again.`));
-    store.setChatConfig({ provider, model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, who.name, now);
-    return redirect(response, "/chat");
+    const states = runtime.localSignIn?.states;
+    const provider = asked !== null ? (states?.[asked] === "connected" ? (`${asked}-subscription` as const) : null)
+      : states?.claude === "connected" ? "claude-subscription" : states?.codex === "connected" ? "codex-subscription" : null;
+    if (provider === null) {
+      const words = asked === null ? `No agent is signed in on this computer yet. Run ${agentSignInCommand()}, then try again.` : `${asked === "claude" ? "Claude Code" : "Codex"} isn't signed in on this computer yet.`;
+      return redirect(response, back ?? chatReturnWithSaid("/settings/lead", words));
+    }
+    // Choosing the one already in use changes nothing (its daily turns and the rest stay as set).
+    if (store.getChatConfig()?.provider !== provider) store.setChatConfig({ provider, model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, who.name, now);
+    return redirect(response, back ?? "/chat");
   }
 
   /** Settings → Models, read from the saved catalog and the role rows at the scope being edited (the installation,

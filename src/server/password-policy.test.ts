@@ -38,6 +38,8 @@ const COOKIE_ONLY_POSTS = [
   'code.changes-read', 'code.ship-preview',
   // Putting tasks away and restoring them (task-tidy.md): a person's act, from a browser.
   'work.put-away.apply', 'task.act.archive', 'task.act.restore',
+  // The welcome's Try a sample project: makes and adds a project, from a browser.
+  'welcome.sample',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {

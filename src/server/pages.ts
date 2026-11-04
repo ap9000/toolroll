@@ -205,7 +205,9 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // One scope for the page and the chrome around it: the project its address names (proved by the router), else all.
     const chrome = chromeFor(project, "none");
     const projects = chrome.projects ?? [];
-    const view = homeView({ store, now, access: workAccess(), evidenceRoot, project, projects, chat: chrome.chat === true, canAnswer: who.role === "approver" });
+    const view = { ...homeView({ store, now, access: workAccess(), evidenceRoot, project, projects, chat: chrome.chat === true, canAnswer: who.role === "approver" }),
+      // Until the first result: the welcome's three steps stay one link away.
+      setup: firstRunStepsNow(now) !== null ? "/welcome" : null };
     return sendScreen(response, 200, screen("Home", html`<div data-kit-page><h1>Home</h1><p>${view.say}</p><p><a href="/work">Tasks</a></p></div>`, { chrome, workspace: { view } }));
   }
 

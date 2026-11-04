@@ -105,6 +105,7 @@ export function FirstRun({ firstRun }: { firstRun: BrowserFirstRun }) {
   const waiting = firstRun.recheck != null;
   return <section className="so-first-run" aria-labelledby="first-run-title" data-first-run>
     <h2 id="first-run-title">Get to your first result</h2>
+    <p className="so-first-run-setup" data-first-run-setup><a className="k-link" href="/welcome">Open setup</a></p>
     <ol className="so-first-run-steps">
       {firstRun.steps.map(step => <li key={step.key} data-step={step.key} data-done={step.done}>
         <span className="so-first-run-mark" aria-hidden="true">{step.done ? "✓" : ""}</span>

@@ -5,7 +5,7 @@
  * Settings → Lead. Real console, stubbed sign-in checks: no model, no network.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -226,3 +226,33 @@ test("Settings → Lead: one line, the full form under Advanced, and a lead turn
   expect(on.headers.get("location")).toBe("/chat");
   expect(store.getChatConfig()?.provider).toBe("claude-subscription");
 }, 15_000);
+
+test("the welcome: Use this one turns on exactly the agent named, only when it is signed in, and comes back; the sample project is made and added", async () => {
+  signedIn = "codex";
+  const root = join(dir, "Projects");
+  mkdirSync(root);
+  // A project folder beside the one project: nothing filed yet, so the first run is open and the sample has somewhere to go.
+  await start({ projectRoots: [root], registryPath: join(dir, "repos.json") });
+  const cookie = await signIn();
+  // A page never checks; the welcome's own check button would. Ask once, as the background check does.
+  await fetch(`${base}/lead/check`, { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams({ csrf: (await workspace(cookie)).csrf }) });
+  const page = await (await fetch(`${base}/welcome`, { headers: { cookie } })).text();
+  expect([...page.matchAll(/data-step="([a-z]+)"/g)].map(one => one[1])).toEqual(["agent", "project", "task"]);
+  const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
+  store.setChatConfig({ provider: "claude-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", new Date());
+  const use = (agent: string) => fetch(`${base}/settings/lead/on`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf, agent, return: "/welcome" }) });
+  // Claude isn't signed in here: nothing changes, back to the welcome.
+  expect((await use("claude")).headers.get("location")).toBe("/welcome");
+  expect(store.getChatConfig()?.provider).toBe("claude-subscription");
+  expect((await use("codex")).headers.get("location")).toBe("/welcome");
+  expect(store.getChatConfig()?.provider).toBe("codex-subscription");
+  expect((await use("gemini")).status).toBe(400);
+
+  const sample = await fetch(`${base}/welcome/sample`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf }) });
+  expect(sample.headers.get("location")).toBe("/welcome");
+  const added = realpathSync(join(root, "toolroll-sample"));
+  expect(existsSync(join(added, ".git"))).toBe(true);
+  const after = await (await fetch(`${base}/welcome`, { headers: { cookie } })).text();
+  expect(after).toContain("toolroll-sample");
+  expect(after).toContain("Round prices to whole cents");
+}, 20_000);

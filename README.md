@@ -29,8 +29,8 @@ Approve the exact scope once. Get results back Ready with the diff, the passing 
 
 ## Quick start
 
-macOS or Linux, Node.js 22.13+, git 2.41+, and a signed-in `claude`, `codex` or
-`gemini` CLI.
+macOS or Linux, Node.js 22.13+, git 2.41+, and a signed-in `claude` or `codex`
+CLI.
 
 ```sh
 npm install -g toolroll    # or: brew install ap9000/toolroll/toolroll

@@ -118,10 +118,12 @@ export function HomeView({ view }: { view: BrowserHomeView }) {
     <KPageHeader title="Home" right={<>{scopes}<KLinkButton sm lead="plus" label="New task" href={view.newTask} /></>} />
     {view.empty ? <section className="so-hello so-hello-empty">
       <p className="so-say" data-home-say>{view.empty.title}</p><p className="so-hello-x">{view.empty.text}</p>
+      {view.setup && <p className="so-hello-x" data-home-setup><a className="k-link" href={view.setup}>Finish setup</a></p>}
       <KLinkButton variant="primary" label="New task" lead="plus" href={view.newTask} className="k-desk-only" />
     </section> : <>
       <section className="so-hello" aria-label="At a glance">
         <p className="so-say" data-home-say>{view.say}</p>
+        {view.setup && <p className="so-hello-x" data-home-setup><a className="k-link" href={view.setup}>Finish setup</a></p>}
         <div className="so-counts">{view.counts.map(count =>
           <a key={count.key} className="so-count" href={count.href} data-home-count={count.key}>
             <span className="so-count-k">{count.key === "needs" && <span className="k-dot needs" aria-hidden="true" />}{count.label}</span>

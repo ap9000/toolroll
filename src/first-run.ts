@@ -233,3 +233,96 @@ export function taskRoad(read: Parameters<typeof firstTaskJourney>[0], approved:
   const waiting = read.stage === "needs-you";
   return steps.map(step => waiting && (step.state === "current" || step.state === "stuck") ? { ...step, needsYou: true } : step);
 }
+
+// ---- the welcome (/welcome, a future terminal screen, `toolroll welcome --json`) ---------------------------------
+
+/** The agents setup offers: the two whose sign-in check, readiness and chat are supported end to end. */
+export type WelcomeAgentId = "claude" | "codex";
+export const WELCOME_AGENTS: readonly { id: WelcomeAgentId; name: string; signIn: string; install: string }[] = [
+  { id: "claude", name: "Claude Code", signIn: SIGN_IN_COMMAND, install: "npm install -g @anthropic-ai/claude-code" },
+  { id: "codex", name: "Codex", signIn: "codex login", install: "npm install -g @openai/codex" },
+];
+/** The sample project's folder name under the project folder. */
+export const SAMPLE_PROJECT_NAME = "toolroll-sample";
+
+export type WelcomeAgentState = "signed-in" | "signed-out" | "not-installed" | "checking";
+export type WelcomeAgent = {
+  id: WelcomeAgentId; name: string; state: WelcomeAgentState;
+  /** The exact command that signs it in on this computer (installing it first when it isn't there); null once signed in or while checking. */
+  command: string | null;
+  inUse: boolean;
+  /** "Use this one" can choose it: signed in with an account, not already in use, and this person may choose. */
+  canUse: boolean;
+};
+export type WelcomeStarter = { label: string; draft: string; href: string };
+export type WelcomeModel = {
+  agent: { done: boolean; checking: boolean; agents: WelcomeAgent[]; inUse: WelcomeAgentId | null;
+    /** Tasks are built with another agent than the one in use (Settings → Models decides): say so, with where to change it. */
+    buildsWith: string | null };
+  project: { done: boolean; projects: { name: string; path: string }[];
+    /** Where "Try a sample project" puts it; null when there is no project folder or it is already added. */
+    sample: string | null;
+    /** A project is added but nothing on this computer takes its tasks yet. */
+    notTakingWork: boolean };
+  task: { done: boolean; open: boolean; starters: WelcomeStarter[] };
+  /** The step the screen's one primary belongs to, or null when nothing is left that a page can do. */
+  next: "agent" | "project" | "task" | null;
+  left: number;
+};
+export type WelcomeFacts = {
+  /** Each agent's last sign-in check on this computer; null until one has answered. */
+  agents: Record<WelcomeAgentId, SignInState | null>;
+  inUse: WelcomeAgentId | null;
+  /** The provider routine builds run on now (claude by default). */
+  buildsOn: string | null;
+  canChoose: boolean;
+  projects: readonly { name: string; path: string }[];
+  /** The folder new projects go in; null when this console has none. */
+  projectRoot: string | null;
+  ready: boolean;
+  hasTask: boolean;
+  starters: readonly FirstTaskSuggestion[];
+  platform: NodeJS.Platform;
+};
+
+const SIGNED_IN: ReadonlySet<SignInState> = new Set(["connected", "key-works", "key-present"]);
+
+/** The welcome's three steps (Agent · Project · First task) from live facts, the same for every screen that shows them. */
+export function welcomeModel(facts: WelcomeFacts): WelcomeModel {
+  const join = facts.platform === "win32" ? ";" : " &&";
+  const agents = WELCOME_AGENTS.map((one): WelcomeAgent => {
+    const seen = facts.agents[one.id];
+    const state: WelcomeAgentState = seen === null ? "checking" : SIGNED_IN.has(seen) ? "signed-in" : seen === "not-installed" ? "not-installed" : "signed-out";
+    const command = state === "signed-in" || state === "checking" ? null : state === "not-installed" ? `${one.install}${join} ${one.signIn}` : one.signIn;
+    const inUse = facts.inUse === one.id;
+    return { id: one.id, name: one.name, state, command, inUse, canUse: facts.canChoose && !inUse && seen === "connected" };
+  });
+  const signedIn = agents.some(one => one.state === "signed-in");
+  const checking = !signedIn && agents.some(one => one.state === "checking");
+  const builds = facts.buildsOn === null ? null : WELCOME_AGENTS.find(one => one.id === facts.buildsOn)?.name ?? facts.buildsOn;
+  const buildsWith = facts.inUse !== null && facts.buildsOn !== null && facts.buildsOn !== facts.inUse ? builds : null;
+  const hasProject = facts.projects.length > 0;
+  const samplePath = facts.projectRoot === null ? null : `${facts.projectRoot.replace(/\/+$/, "")}/${SAMPLE_PROJECT_NAME}`;
+  const sample = samplePath !== null && !facts.projects.some(one => one.path === samplePath) ? samplePath : null;
+  const projectDone = hasProject && facts.ready;
+  const taskOpen = hasProject;
+  const starters = facts.starters.slice(0, 3).map(one => ({ label: one.label, draft: one.draft, href: `/tasks/new?text=${encodeURIComponent(one.draft)}` }));
+  const model: Omit<WelcomeModel, "next" | "left"> = {
+    agent: { done: signedIn, checking, agents, inUse: facts.inUse, buildsWith },
+    project: { done: projectDone, projects: [...facts.projects], sample, notTakingWork: hasProject && !facts.ready },
+    task: { done: facts.hasTask, open: taskOpen, starters: taskOpen ? starters : [] },
+  };
+  // The next step a page can move: the agent only when there is something to click (Use this one); its sign-in is a
+  // command on the computer, so a project or the first task leads meanwhile.
+  const agentAct = !signedIn ? false : facts.inUse === null && agents.some(one => one.canUse);
+  const next = agentAct ? "agent" : !projectDone ? "project" : !facts.hasTask ? "task" : null;
+  const left = [model.agent.done, model.project.done, model.task.done].filter(done => !done).length;
+  return { ...model, next, left };
+}
+
+/** First tasks for the sample project: the changes its README suggests. */
+export const SAMPLE_FIRST_TASKS: readonly FirstTaskSuggestion[] = [
+  { source: "generic", label: "Round prices to whole cents", draft: "Round priceWithDiscount's result to whole cents and add a test for it." },
+  { source: "generic", label: "Refuse a negative discount", draft: "Make priceWithDiscount refuse a negative discount with a clear error, and test it." },
+  { source: "generic", label: "Add a usage example to the README", draft: "Add a short usage example for priceWithDiscount to the README." },
+];
