@@ -14,6 +14,7 @@ import { run, type ExecResult, type RunOptions } from "./exec.js";
 import { SAMPLE_PROJECT_NAME } from "./first-run.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { TEARDOWN_FLAGS } from "./teardown-git.js";
+import type { Store } from "./store.js";
 
 export type GitRun = (file: string, args: readonly string[], options: RunOptions) => Promise<ExecResult>;
 export type SampleOutcome =
@@ -111,4 +112,25 @@ export async function createSampleProject(root: string | null, git: GitRun = run
     return fail();
   }
   return { ok: true, path: target, created: true };
+}
+
+/** The sample's own check: its one test file, run by Node's test runner. Fixed here; never anyone's input. */
+export const SAMPLE_CHECK_COMMAND = "node --test";
+const SAMPLE_CHECK_TIMEOUT_MS = 60_000;
+
+/**
+ * The sample project's check, set as part of adding it, so its first result reads checked: the fixed command above,
+ * for the folder only when it is the sample this made (our marker in its .git), and only while the project has no
+ * check of its own (a check someone approved is never replaced). It takes no command: this is not a way to set a
+ * project's check. True when it set one now.
+ */
+export function registerSampleCheck(store: Pick<Store, "transact" | "liveVerifyCommand" | "setVerifyCommand" | "recordAction">, repo: string, by: string, now: Date): boolean {
+  if (!isAbsolute(repo) || !isOurs(repo)) return false;
+  return store.transact(() => {
+    if (store.liveVerifyCommand(repo) !== null) return false;
+    store.setVerifyCommand({ repo, command: SAMPLE_CHECK_COMMAND, timeoutMs: SAMPLE_CHECK_TIMEOUT_MS, approvedBy: by }, now);
+    store.recordAction({ at: now.toISOString(), actor: by, repo, taskId: null, runId: null, action: "check approved", outcome: "approved", source: "policy",
+      detail: `the sample project's own test (${SAMPLE_CHECK_COMMAND}), set by Toolroll` });
+    return true;
+  });
 }

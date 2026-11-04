@@ -299,6 +299,8 @@ test("the welcome: Use this one turns on exactly the agent named, only when it i
   expect(sample.headers.get("location")).toBe("/welcome");
   const added = realpathSync(join(root, "toolroll-sample"));
   expect(existsSync(join(added, ".git"))).toBe(true);
+  // Added with its own fixed check, so its first result reads checked.
+  expect(store.liveVerifyCommand(added)).toMatchObject({ command: "node --test", approvedBy: "alex" });
   const after = await (await fetch(`${base}/welcome`, { headers: { cookie } })).text();
   expect(after).toContain("toolroll-sample");
   expect(after).toContain("Round prices to whole cents");

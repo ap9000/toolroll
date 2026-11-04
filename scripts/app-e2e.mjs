@@ -2836,11 +2836,10 @@ await journey("easy-start", SCRIPTED, "A new laptop install opens signed in with
   const approvedLine = (await on.locator("[data-task-status]").first().innerText()).replace(/\s+/g, " ");
   if (!/on this computer, no password/.test(approvedLine)) throw new Error(`the approval reads: ${approvedLine.slice(0, 300)}`);
   await bothSizes(on, "4-ready", "easy-start");
-  // A first laptop install has no project check yet (choosing one is an operator's step-up): what the check would have
-  // shown is accepted with a reason, as the page asks.
+  // The sample came with its own check (its one test): the result says the checks passed, and accepting asks for no reason.
+  if (!/Checks passed/.test(approvedLine)) throw new Error(`the sample's checks didn't read passed: ${approvedLine.slice(0, 300)}`);
   for (const looks of await on.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
-  const reason = on.locator('[data-result-decision] form[action$="/complete"] input[name="note"]');
-  if (await reason.count() > 0) await reason.first().fill("Read the diff: it rounds to cents and adds the test.");
+  if (await on.locator('[data-result-decision] form[action$="/complete"] input[name="note"]').count() > 0) throw new Error(`accepting asks for a reason: ${await saysNow(on)}`);
   await Promise.all([on.waitForNavigation(), accept.click()]);
   await until("the task to read complete", async () => (await on.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500, seen: () => saysNow(on) });
   await bothSizes(on, "5-complete", "easy-start");
