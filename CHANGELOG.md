@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A deploy checks your HTTPS console before it changes anything.** If the
+  console you reach Toolroll through (over Tailscale, say) doesn't answer, the
+  deploy now stops before it pauses new work or stops the running service,
+  and says to bring the console back. It used to find out only at the end,
+  with the new version already running and new work paused.
 - **A release finishes a deploy that stopped after the new version started.**
   If a deploy's last check failed once the new version was already running
   (an HTTPS console that didn't answer, say), `toolroll release` sent you to
