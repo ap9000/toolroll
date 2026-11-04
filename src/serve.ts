@@ -187,7 +187,7 @@ import { requestContext } from "./server/request-context.js";
 import { asLocalOwner,localModeOn,localOwnerRefusal,localOwnerStandsNow,type LocalPrincipal } from "./local-owner.js";
 import { defaultAgentOf,fillDefaultRouting } from "./model-choices.js";
 import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
-import { BODY_CAP,form,loginHref,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
+import { BODY_CAP,form,loginHref,refusalNext,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
 import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,NOT_STARTED_SESSION,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
 import { type ProjectPeek } from "./server/render-pages.js";
 import { serverErrorPage,ssoStepUps,wrongHostPage } from "./server/render-people.js";
@@ -2354,7 +2354,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   }
   /** What a local owner hears on a row not marked for it: set a first password, or sign in with the one set. */
   function refuseLocalOwner(response: ServerResponse, who: Who, method: string, url: URL, accept: string | undefined): void {
-    const words = localOwnerRefusal(store.accountOf(who.name)?.passwordSet === true, method === "GET" ? url.pathname + url.search : "/");
+    // The page it was refused on, built here from the request (never from a header): a form's nearest page above it.
+    const words = localOwnerRefusal(store.accountOf(who.name)?.passwordSet === true, refusalNext(method, url));
     // Which refusal this was, for the shell (it offers the same way on) and the route inventory's rule table.
     response.setHeader("x-toolroll-refused", "local-owner");
     if (String(accept ?? "").includes("application/json")) return respond(response, 403, "application/json", JSON.stringify({ ok: false, said: words.message, href: words.href }));

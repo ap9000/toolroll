@@ -145,7 +145,7 @@ function localModeSection(facts: SettingsFacts): Html {
   if (local.owner) {
     return local.passwordSet ? html`` : settingsSection({ id: "set-password", title: "Let agents work on their own",
       lead: "Agents can work on their own, merge and release only after you set a password.",
-      body: html`<div class="k-acts">${btn("Set a password", { sm: true, href: "/password/set?return=%2Fsettings" })}</div>` });
+      body: html`<div class="k-acts">${btn("Set a password", { sm: true, href: "/password/set?next=%2Fsettings" })}</div>` });
   }
   if (!local.canTurnOff) return html``;
   return settingsSection({ id: "local-mode", title: "Local mode", state: " · on",

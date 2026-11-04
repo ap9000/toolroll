@@ -21,6 +21,7 @@ import { type launchRuntimeUpdate } from "../toolroll-update.js";
 import { timingSafeEqual } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { SIGN_IN_LINK_PATH } from "./session.js";
+import { matchRoute } from "./route-table.js";
 import { type FolderLookRunner } from "../folder-look.js";
 import { type ProjectIdentities } from "../project-identity.js";
 import { type LearningRunner } from "../learning-look.js";
@@ -460,4 +461,43 @@ export async function form(request: IncomingMessage, cap = BODY_CAP): Promise<UR
  * shows in place with the edits kept; elsewhere it stays the chat's said line. */
 export function chatRefusal(back: string, words: string): string {
   return back === "/settings/lead" ? `/settings/lead?problem=${encodeURIComponent(words)}` : chatReturnWithSaid(back, words);
+}
+
+/** The longest page a refusal's "Set a password" link carries on to. */
+export const PASSWORD_SET_NEXT_MAX = 512;
+/**
+ * Where /password/set continues once the first password is set (easy-start C4): a page of this console a browser can
+ * open, as path and query only — one leading slash, never two, no backslash, no scheme or host (also once decoded),
+ * no control characters, at most PASSWORD_SET_NEXT_MAX characters, never the sign-in, sign-out, sign-up, join or
+ * password roads, never a region fetch, query keys that could carry a secret dropped. Anything else is home ("/").
+ */
+export function passwordSetNext(raw: string | null | undefined): string {
+  if (typeof raw !== "string" || raw === "" || raw.length > PASSWORD_SET_NEXT_MAX) return "/";
+  if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("\\") || /[\u0000-\u001f\u007f]/.test(raw)) return "/";
+  let parsed: URL;
+  try { parsed = new URL(raw, "http://standing-orders.local"); } catch { return "/"; }
+  if (parsed.origin !== "http://standing-orders.local" || parsed.username !== "" || parsed.password !== "") return "/";
+  let decoded: string;
+  try { decoded = decodeURIComponent(parsed.pathname); } catch { return "/"; }
+  if (/^\/\/|\\|[\u0000-\u001f\u007f]|^\/[a-z][a-z0-9+.-]*:/i.test(decoded) || /^\/(login|logout|signup|join|password)(\/|$)/.test(decoded)) return "/";
+  if (parsed.searchParams.has("fragment") || matchRoute("GET", parsed.pathname, "console") === null) return "/";
+  for (const key of [...parsed.searchParams.keys()]) if (/token|password|secret|csrf|code|key|auth/i.test(key)) parsed.searchParams.delete(key);
+  const query = parsed.searchParams.toString();
+  const next = `${parsed.pathname}${query === "" ? "" : `?${query}`}`;
+  return next.length > PASSWORD_SET_NEXT_MAX ? "/" : next;
+}
+/**
+ * The page a refused request was on, for its "Set a password" link: a page read is itself; a refused form is its own
+ * address when a browser can open it (a settings page posting to itself), else the nearest page above it
+ * (`/t/x/complete` → `/t/x`, `/flows/example` → `/flows`), since
+ * the console sends no Referer to name the page the form was on. Checked by passwordSetNext; else home.
+ */
+export function refusalNext(method: string, url: URL): string {
+  if (method === "GET" || method === "HEAD") return passwordSetNext(url.pathname + url.search);
+  const parts = url.pathname.split("/").filter(part => part !== "");
+  for (; parts.length > 0; parts.pop()) {
+    const page = passwordSetNext(`/${parts.join("/")}`);
+    if (page !== "/") return page;
+  }
+  return "/";
 }

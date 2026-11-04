@@ -227,8 +227,8 @@ export function proposalLocalAct(kind: unknown, operation: unknown): LocalOwnerA
 export function localOwnerRefusal(passwordSet: boolean, returnTo: string): { message: string; action: string; href: string } {
   return passwordSet
     ? { message: "Sign in with your password to do this.", action: "Sign in with your password", href: `/login?return=${encodeURIComponent(returnTo)}` }
-    // /password/set continues to the refused page once the password is set (loginReturn re-checks it there).
-    : { message: "Set a password to do this.", action: "Set a password", href: returnTo === "/" ? "/password/set" : `/password/set?return=${encodeURIComponent(returnTo)}` };
+    // /password/set continues to the refused page once the password is set (http.ts passwordSetNext re-checks it there).
+    : { message: "Set a password to do this.", action: "Set a password", href: returnTo === "/" ? "/password/set" : `/password/set?next=${encodeURIComponent(returnTo)}` };
 }
 
 /** Whether local mode is on now (absent is off). Read straight from its one row, so the store's own checks can use it. */

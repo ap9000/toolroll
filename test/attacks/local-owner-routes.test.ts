@@ -27,9 +27,9 @@ describe("the console's rows, as a local owner", () => {
       const answer = await world.post(path, cookie, { csrf, ...form });
       expect(answer.headers["x-toolroll-refused"], path).toBe("local-owner");
     }
-    // A JSON caller hears the same refusal, with where to go.
+    // A JSON caller hears the same refusal, with where to go: set a password, then on to the page the form belongs to.
     const json = await world.post("/people/invite", cookie, { csrf }, "application/json");
-    expect(JSON.parse(json.body)).toEqual({ ok: false, said: "Set a password to do this.", href: "/password/set" });
+    expect(JSON.parse(json.body)).toEqual({ ok: false, said: "Set a password to do this.", href: "/password/set?next=%2Fpeople" });
     expect(JSON.stringify([world.store.handle.prepare("SELECT * FROM approver").all(), world.store.handle.prepare("SELECT * FROM credential").all(),
       world.store.handle.prepare("SELECT * FROM confinement_setting").all(), world.store.handle.prepare("SELECT * FROM project_check_access").all()])).toBe(before);
   });
@@ -49,7 +49,7 @@ describe("the console's rows, as a local owner", () => {
     const page = await world.send("/settings/models?tab=x", "GET", { cookie });
     expect(page.headers["x-toolroll-refused"]).toBeUndefined();
     const refused = await world.post("/people/invite", cookie, { csrf }, "application/json");
-    expect(JSON.parse(refused.body)).toEqual({ ok: false, said: "Sign in with your password to do this.", href: "/login?return=%2F" });
+    expect(JSON.parse(refused.body)).toEqual({ ok: false, said: "Sign in with your password to do this.", href: "/login?return=%2Fpeople" });
   });
 
   test("local mode turned off mid-session: the cookie no longer signs in, and nothing it sends acts", async () => {

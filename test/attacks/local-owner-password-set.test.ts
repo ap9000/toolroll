@@ -41,7 +41,7 @@ describe("setting the first password", () => {
     const form = await formOf(first.cookie, "/password/set?return=%2Fsettings%2Fpasswordless");
     expect(form.status).toBe(200);
     expect(form.body).toContain("Agents can work on their own, merge and release only after you set a password.");
-    expect(form.body).toContain('name="return" value="/settings/passwordless"');
+    expect(form.body).toContain('name="next" value="/settings/passwordless"');
     expect(form.csrf).toBe(first.csrf);
     // Too short, then two that differ: refused, nothing set, nothing echoed.
     const short = await setPassword(first.cookie, { csrf: first.csrf, password: "short", again: "short" });
@@ -59,7 +59,7 @@ describe("setting the first password", () => {
     expect(world.store.accountOf("alex")!.passwordSet).toBe(false);
 
     const generation = world.store.accountOf("alex")!.generation;
-    const set = await setPassword(first.cookie, { csrf: first.csrf, password: PASSWORD, again: PASSWORD, return: "/settings/passwordless" });
+    const set = await setPassword(first.cookie, { csrf: first.csrf, password: PASSWORD, again: PASSWORD, next: "/settings/passwordless" });
     expect(set.status).toBe(303);
     expect(set.headers["location"]).toBe("/settings/passwordless");
     const fresh = cookieOf({ status: set.status, headers: set.headers, body: set.body });
@@ -169,6 +169,10 @@ describe("only once", () => {
   });
 });
 
+/** The page each refused form below belongs to: its own address when a browser can open it, else the nearest above. */
+const NEXT_OF: Record<string, string> = { "/settings/passwordless": "/settings/passwordless", "/settings/sessions": "/settings/sessions", "/settings/sign-in": "/settings/sign-in",
+  "/settings/local-mode/off": "/settings", "/settings/chat-approval/save": "/settings", "/settings/telegram/pair": "/settings/telegram", "/people/invite": "/people", "/people/projects": "/people" };
+
 test("a local owner is refused on every other credential row under Settings, and led to set a password", async () => {
   world = await openLocalWorld();
   const { cookie, csrf } = await world.localSession();
@@ -176,12 +180,13 @@ test("a local owner is refused on every other credential row under Settings, and
   for (const path of ["/settings/passwordless", "/settings/sessions", "/settings/sign-in", "/settings/local-mode/off", "/settings/chat-approval/save", "/settings/telegram/pair", "/people/invite", "/people/projects"]) {
     const answer = await world.post(path, cookie, { csrf, password: "", token: "", action: "on" }, "application/json");
     expect(answer.headers["x-toolroll-refused"], path).toBe("local-owner");
-    expect(JSON.parse(answer.body), path).toEqual({ ok: false, said: "Set a password to do this.", href: "/password/set" });
+    // Its link carries the page the form belongs to, built from the refused request.
+    expect(JSON.parse(answer.body), path).toEqual({ ok: false, said: "Set a password to do this.", href: `/password/set?next=${encodeURIComponent(NEXT_OF[path]!)}` });
   }
   // A refused page leads to setting a password and back to it.
   const settings = await world.send("/settings", "GET", { cookie });
   expect(settings.body).toContain("Let agents work on their own");
-  expect(settings.body).toContain('href="/password/set?return=%2Fsettings"');
+  expect(settings.body).toContain('href="/password/set?next=%2Fsettings"');
   expect(JSON.stringify([world.store.handle.prepare("SELECT * FROM approver").all(), world.store.handle.prepare("SELECT * FROM local_mode").all(), world.store.handle.prepare("SELECT * FROM credential").all()])).toBe(before);
 });
 
@@ -283,4 +288,43 @@ test("provenance: a task the local owner files says so in its filing line; a ful
   const csrf = (JSON.parse((await world.send("/chat?format=workspace", "GET", { cookie: full })).body) as { csrf: string }).csrf;
   expect((await world.post("/tasks/add", full, { csrf, repo: world.repo, title: "Fix the header" })).status).toBe(303);
   expect(line("Fix the header")).toEqual({ actor: "alex", detail: null });
+});
+
+describe("the refusal's way on (?next=)", () => {
+  test("a refused form's Set a password carries its page; setting the password lands there", async () => {
+    world = await openLocalWorld();
+    const { cookie, csrf } = await world.localSession();
+    const refused = await world.post("/flows/example", cookie, { csrf });
+    expect(refused.headers["x-toolroll-refused"]).toBe("local-owner");
+    expect(refused.body).toContain('href="/password/set?next=%2Fflows"');
+    const form = await formOf(cookie, "/password/set?next=%2Fflows");
+    expect(form.body).toContain('name="next" value="/flows"');
+    const set = await setPassword(cookie, { csrf, password: PASSWORD, again: PASSWORD, next: "/flows" });
+    expect(set.status).toBe(303);
+    expect(set.headers["location"]).toBe("/flows");
+  });
+
+  test("hostile next values go home, on the page and after setting the password", async () => {
+    world = await openLocalWorld();
+    for (const next of ["//evil.example/x", "https://evil.example/", "/\\evil.example", "/%2F%2Fevil.example", "javascript:alert(1)", "/login/once/abc", "/password/set", `/${"a".repeat(600)}`, "/chat?fragment=1", "/no-such-page"]) {
+      const { cookie } = await world.localSession();
+      const page = await formOf(cookie, `/password/set?next=${encodeURIComponent(next)}`);
+      expect(page.body, next).not.toContain('name="next"');
+      expect(page.body, next).toContain('href="/"');
+      expect(page.body, next).not.toContain("evil.example");
+    }
+    const { cookie, csrf } = await world.localSession();
+    const set = await setPassword(cookie, { csrf, password: PASSWORD, again: PASSWORD, next: "//evil.example/x" });
+    expect(set.status).toBe(303);
+    expect(set.headers["location"]).toBe("/");
+  });
+
+  test("two next fields are refused, and nothing is set", async () => {
+    world = await openLocalWorld();
+    const { cookie, csrf } = await world.localSession();
+    const answer = await world.send("/password/set", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded" },
+      `csrf=${csrf}&password=${encodeURIComponent(PASSWORD)}&again=${encodeURIComponent(PASSWORD)}&next=%2Fflows&next=%2F%2Fevil.example`);
+    expect(answer.status).toBe(400);
+    expect(world.store.accountOf("alex")!.passwordSet).toBe(false);
+  });
 });

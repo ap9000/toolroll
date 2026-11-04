@@ -2934,9 +2934,8 @@ await journey("easy-start", SCRIPTED, "A refused act offers Set a password; sett
     const setLink = on.locator('a[href^="/password/set"]', { hasText: "Set a password" }).first();
     await waitFor(setLink, "Set a password", { timeoutMs: 10_000 });
     const href = await setLink.getAttribute("href");
-    // A refused form's way on (the console sends no Referer, so it can't name the page the form was on): set a password,
-    // then the act again.
-    if (href !== "/password/set") throw new Error(`Set a password leads to ${href}`);
+    // A refused form's way on: set a password, then back to the page the form belongs to (built from the refused request).
+    if (href !== "/password/set?next=%2Fflows") throw new Error(`Set a password leads to ${href}`);
     await bothSizes(on, "8-refused", "easy-start");
     await Promise.all([on.waitForNavigation(), setLink.click()]);
     await waitFor(on.locator('form[action="/password/set"]'), "the Set a password page", { timeoutMs: 15_000, seen: () => saysNow(on) });
@@ -2952,7 +2951,7 @@ await journey("easy-start", SCRIPTED, "A refused act offers Set a password; sett
     await on.fill('form[action="/password/set"] input[name="password"]', password);
     await on.fill('form[action="/password/set"] input[name="again"]', password);
     await Promise.all([on.waitForNavigation(), on.locator('form[action="/password/set"] button[type="submit"]').click()]);
-    await until("signed in again, at home", async () => !/^\/(password|login)/.test(new URL(on.url()).pathname), { timeoutMs: 15_000, everyMs: 200, seen: () => on.url() });
+    await until("signed in again, back on Flows", async () => new URL(on.url()).pathname === "/flows", { timeoutMs: 15_000, everyMs: 200, seen: () => on.url() });
     const sessions = laptopRows("SELECT authority FROM web_session");
     if (sessions.length !== 1 || sessions[0].authority !== "full") throw new Error(`after setting it, sessions are ${JSON.stringify(sessions)}`);
     if (laptopRows("SELECT password_set FROM approver")[0]?.password_set !== 1) throw new Error("the password wasn't recorded as set");

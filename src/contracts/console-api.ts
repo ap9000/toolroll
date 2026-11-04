@@ -108,7 +108,7 @@ export const CONSOLE_FORMS = {
   login: formContract("POST /login", ["name", "token", "return"]),
   join: formContract("POST /join/<invite>", ["name", "password"]),
   rekey: formContract("POST /login/rekey", ["token", "return"]),
-  passwordSet: formContract("POST /password/set", ["csrf", "password", "again", "return", "toolroll-key"]),
+  passwordSet: formContract("POST /password/set", ["csrf", "password", "again", "next", "return", "toolroll-key"]),
 
   // Shared by every signed-in POST.
   mutationGuard: formContract("POST (every signed-in form)", ["csrf", "token", "digest", "nonce", "confirm", "toolroll-key"]),

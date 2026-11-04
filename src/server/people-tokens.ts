@@ -26,7 +26,7 @@ import { accessFromGroups,accountNameFor,exchangeOidcCode,newOidcVisit,oidcAutho
 import { personAuditHtml,personHref } from "../people-audit-ui.js";
 import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
 import { credentialProof,hashPassword,proveAccountNow } from "../scope.js";
-import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
+import { form,HANDOFF_STYLE,loginHref,loginReturn,page,passwordSetNext,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
 import { joinDeadPage,joinFormPage,loginPage,passwordAlreadySetPage,passwordSetPage,reconnectPage,SIGNUP_NAME,SIGNUP_PASSWORD_MIN,signupPage,type PasswordSetProblem } from "./render-people.js";
 import { enrollOwnerPassword, liveInviteTerms, localOwnerBinding } from "../store.js";
 import { KEY_FILL_SCRIPT } from "./mutation-key.js";
@@ -758,7 +758,8 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
 
   async function passwordSetForm(ctx: EdgeContext): Promise<void> {
     const { url, who, response } = ctx;
-    const returnTo = loginReturn(url.searchParams.get("return"));
+    // Where to go once it is set: `next` (a refusal's link), or `return` (older links), checked either way.
+    const returnTo = passwordSetNext(url.searchParams.get("next") ?? url.searchParams.get("return"));
     if (who === null || who === undefined) return redirect(response, loginHref(returnTo));
     if (who.via !== "cookie") return respond(response, 403, "text/plain; charset=utf-8", "This address needs a browser sign-in.");
     if (who.authority === "full" || store.accountOf(who.name)?.passwordSet !== false) return passwordSetAnswer(response, 200, passwordAlreadySetPage("A password is already set", returnTo, who.authority === "full"));
@@ -770,10 +771,10 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const media = String(request.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
     if (media !== "application/x-www-form-urlencoded") { request.resume(); return respond(response, 415, "text/plain; charset=utf-8", "forms only"); }
     const body = readForm(await form(request), CONSOLE_FORMS.passwordSet);
-    const returnTo = loginReturn(body.get("return"));
+    const returnTo = passwordSetNext(body.get("next") ?? body.get("return"));
     if (who === null || who === undefined) return redirect(response, loginHref(returnTo));
     if (who.via !== "cookie") return respond(response, 403, "text/plain; charset=utf-8", "This address needs a browser sign-in.");
-    for (const field of ["csrf", "password", "again", "return"] as const) {
+    for (const field of ["csrf", "password", "again", "next", "return"] as const) {
       if (body.getAll(field).length > 1) return respond(response, 400, "text/plain; charset=utf-8", `duplicated ${field} field`);
     }
     const account = store.accountOf(who.name);

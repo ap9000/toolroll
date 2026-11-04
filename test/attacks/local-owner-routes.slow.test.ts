@@ -29,7 +29,7 @@ for (const passwordless of [false, true]) {
         expect(answer.status, row.id).toBe(403);
         // Before a password exists, the refusal leads to setting one.
         expect(answer.body, row.id).toContain("Set a password to do this.");
-        expect(answer.body, row.id).toContain('href="/password/set"');
+        expect(answer.body, row.id).toMatch(/href="\/password\/set(\?next=%2F[^"]*)?"/);
       }
     }
     expect(wrong).toEqual([]);

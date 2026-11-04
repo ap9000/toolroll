@@ -130,7 +130,7 @@ export function passwordSetPage(view: { returnTo: string; problem: PasswordSetPr
     outField({ id: "password-again", label: "Type it again", name: "again", type: "password", error: error("again"),
       attrs: { autocomplete: "new-password", required: true, minlength: SIGNUP_PASSWORD_MIN } }),
     btn("Set password", { variant: "primary", type: "submit", className: "k-wide" }),
-  ]), { returnTo: back, attrs: { class: "k-form" } });
+  ]), { hidden: { next: back }, attrs: { class: "k-form" } });
   return shell("Set a password · Toolroll", outPage({
     brand: BRAND_HTML, brandHref: "/", title: "Set a password",
     sub: "Agents can work on their own, merge and release only after you set a password.",
