@@ -1925,7 +1925,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // deterministic scan is idle without new meaningful work; shutdown drains it.
   let leadMaintenance: ReturnType<typeof startMaintenance> | null = null;
   let leadClosing = false;
-  server.once('listening', () => {
+  // Started in the console's folder scope (folder-gate.ts), so their own timers and the personal queue's kick (which
+  // restores the context it was started in, never a request's) read folders as the console's work does.
+  server.once('listening', () => consoleFolders(options, identities, () => {
     team.start();
     personalQueue.start();
     leadMaintenance = startMaintenance({ intervalMs: 5_000, shouldStop: () => leadClosing,
@@ -1935,7 +1937,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // Pending delivery is durable and is read again on the next pass; a failure is said where follow status is read.
       onError: error => recordLeadFollowFailure(store, error, clock()),
     });
-  });
+  }));
   // Background checks (docs/plans/get-side-effects.md): what pages show about this computer's agent sign-ins and the
   // services Toolroll uses is asked here, on a timer, and a page reads the last answer. A page visit never starts a
   // process or a network call, and never acts on what a check finds: lifting a sign-in pause and the lead-by-default

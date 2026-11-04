@@ -17,6 +17,9 @@ const hang = vi.hoisted(() => ({
   blockMs: 0,
   /** Synchronous reads that reached it, or reached "/" or /Volumes, with where they came from. */
   reached: [] as string[],
+  /** What the console's long-lived runtimes' own passes are told about the project folder (folder-gate.ts). */
+  passes: [] as { runtime: string; answers: boolean }[],
+  probe: null as string | null,
 }));
 // The world's project folder (test/quiet-world.ts names it so); its setup only writes there.
 const PROJECT = /\/so-getquiet-[^/]+\/repo(\/|$)/;
@@ -50,7 +53,19 @@ vi.mock("node:fs", async original => {
   return { ...real, ...wrapped, default: { ...real, ...wrapped } };
 });
 
+// The lead's follow pass, started by the console as it listens: what its own context says about the project folder.
+vi.mock("../lead-follow.js", async original => {
+  const real = await original<typeof import("../lead-follow.js")>();
+  const { folderAnswers } = await import("../folder-gate.js");
+  return { ...real, runLeadFollowPass: (...args: Parameters<typeof real.runLeadFollowPass>) => {
+    if (hang.probe !== null) hang.passes.push({ runtime: "lead-follow", answers: folderAnswers(hang.probe) });
+    return real.runLeadFollowPass(...args);
+  } };
+});
+
 import { childLook, type FolderLookRunner } from "../folder-look.js";
+import { folderAnswers, inFolderScope } from "../folder-gate.js";
+import { PersonalQueue } from "../lead-queue.js";
 import { projectIdentities } from "../project-identity.js";
 import { ROUTES } from "./route-table.js";
 import { openQuietWorld, type QuietWorld } from "../../test/quiet-world.js";
@@ -64,7 +79,7 @@ const looks: FolderLookRunner = (request, deadlineMs) => {
 
 let world: QuietWorld | null = null;
 afterEach(async () => {
-  hang.on = false; hang.blockMs = 0; hang.reached.length = 0;
+  hang.on = false; hang.blockMs = 0; hang.reached.length = 0; hang.passes.length = 0; hang.probe = null;
   vi.restoreAllMocks();
   await world?.close();
   world = null;
@@ -143,3 +158,25 @@ test("a project folder that stops answering after it was resolved: every GET and
   const [, health] = await Promise.all([w.send(`/settings/knowledge?repo=${project}&q=refunds`, "GET", { cookie }), timed(() => w.send("/healthz", "GET"))]);
   expect(health.ms).toBeLessThan(2_000);
 }, 120_000);
+
+test("the console's long-lived runtimes run in its folder scope: the personal queue (whose kick restores its start's context) and the lead's follow pass never read a folder that stopped answering", async () => {
+  // Each pass of the personal queue starts with reconcile, in the context the queue restores (its start's, never a request's).
+  const reconcile = PersonalQueue.prototype.reconcile;
+  vi.spyOn(PersonalQueue.prototype, "reconcile").mockImplementation(function (this: PersonalQueue, ...args: Parameters<PersonalQueue["reconcile"]>) {
+    if (hang.probe !== null) hang.passes.push({ runtime: "personal-queue", answers: folderAnswers(hang.probe) });
+    return reconcile.apply(this, args);
+  });
+  const { world: w, identities } = await open(false);
+  await identities.refresh([w.repo]);
+  hang.on = true;
+  expect(await identities.resolveNow(w.repo)).toBe("no-answer");
+  hang.probe = w.repo;
+  // The queue's timer and its kick() both run a pass in the one context the queue captured at start (kick restores it
+  // explicitly, leaving the waking request's behind), so a timer pass shows what a kick's pass is told.
+  await vi.waitFor(() => {
+    expect(hang.passes.some(one => one.runtime === "personal-queue")).toBe(true);
+    expect(hang.passes.some(one => one.runtime === "lead-follow")).toBe(true);
+  }, { timeout: 15_000, interval: 50 });
+  expect(hang.passes.filter(one => one.answers)).toEqual([]);
+  expect(hang.reached).toEqual([]);
+}, 30_000);

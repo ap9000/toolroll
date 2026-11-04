@@ -147,10 +147,15 @@ export async function releaseProject(store: Store, input: {
 }): Promise<Released | AdmissionFailure> {
   // Removing only narrows: a folder the console's gate holds back (folder-gate.ts) is removed by its exact saved path,
   // and matches no other spelling.
+  // Latched for the whole removal: once its folder was unavailable, a later answer (during an await below) never
+  // widens it to other spellings.
   const unavailable = (error: unknown): boolean => error instanceof FolderUnavailable;
-  let asked: string;
-  try { asked = canonicalProject(input.path) ?? resolve(input.path); } catch (error) { if (!unavailable(error)) throw error; asked = resolve(input.path); }
-  const same = (one: string): boolean => { try { return sameRepo(one, asked); } catch (error) { if (unavailable(error)) return false; throw error; } };
+  let asked: string, exactOnly = false;
+  try { asked = canonicalProject(input.path) ?? resolve(input.path); } catch (error) { if (!unavailable(error)) throw error; asked = resolve(input.path); exactOnly = true; }
+  const same = (one: string): boolean => {
+    if (exactOnly) return false;
+    try { return sameRepo(one, asked); } catch (error) { if (unavailable(error)) { exactOnly = true; return false; } throw error; }
+  };
   const loaded = input.registryFile === null ? { repos: [] } : await loadProjectRegistry(input.registryFile);
   if ("error" in loaded) return { ok: false, reason: "registry", message: loaded.error };
   const entries = loaded.repos.filter(one => one === asked || same(one));
