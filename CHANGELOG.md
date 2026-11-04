@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.90 — 2026-11-04
 
 - **Type `toolroll` and you're in.** At your own terminal, bare `toolroll`
   starts Toolroll on this computer (or opens the one already running) and
@@ -38,6 +38,11 @@
   once.
 - **Port 4180 already taken?** A new install picks the next free port and
   keeps it, instead of failing to start.
+- **Your saved login stays out of every build.** Builds could never read your
+  saved login, but one saved after a build had already started was missed.
+  Saved logins now live in a private folder next to the database that every
+  build is denied as a whole, on macOS, Linux and with Codex. The next start
+  moves an existing saved login there for you.
 
 ## 0.9.89 — 2026-11-03
 
