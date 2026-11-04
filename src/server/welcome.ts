@@ -162,8 +162,9 @@ export function createWelcomeHandlers(runtime: ServerRuntime) {
     const stillAllowed = (repo: string): boolean => identities.generation() === decidedOn && visible(repo);
     const admitted = await admitProject(store, { registryFile: options.registryPath ?? null, path: canonical, actor: { label: who.name, origin: "console" }, now, stillAllowed, resolveFolder: identities.resolveNow });
     if (!admitted.ok || !stillAllowed(admitted.repo)) return back("not-added");
-    // Its own fixed check (sample-project.ts), so the first result reads checked rather than "Checks not run".
-    registerSampleCheck(store, admitted.repo, who.name, now);
+    // Its own fixed check (sample-project.ts), so the first result reads checked rather than "Checks not run": only for a
+    // sample this request just made, never one found again.
+    registerSampleCheck(store, made, admitted.repo, who.name, now);
     deletedRepos.delete(admitted.repo);
     who.session.project = admitted.repo;
     who.session.projectRevision++;

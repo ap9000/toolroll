@@ -300,7 +300,11 @@ test("the welcome: Use this one turns on exactly the agent named, only when it i
   const added = realpathSync(join(root, "toolroll-sample"));
   expect(existsSync(join(added, ".git"))).toBe(true);
   // Added with its own fixed check, so its first result reads checked.
-  expect(store.liveVerifyCommand(added)).toMatchObject({ command: "node --test", approvedBy: "alex" });
+  expect(store.liveVerifyCommand(added)).toMatchObject({ command: "node --test", approvedBy: "toolroll" });
+  // Cleared, then the sample added again (found, not made): the clear stays.
+  store.clearVerifyCommand(added, "alex", new Date());
+  await fetch(`${base}/welcome/sample`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf }) });
+  expect(store.liveVerifyCommand(added)).toBeNull();
   const after = await (await fetch(`${base}/welcome`, { headers: { cookie } })).text();
   expect(after).toContain("toolroll-sample");
   expect(after).toContain("Round prices to whole cents");
