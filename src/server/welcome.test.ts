@@ -55,6 +55,17 @@ describe("the welcome page", () => {
     expect(out).not.toContain("/settings/lead/on");
   });
 
+  test("the agent in use reads In use with no button; only the other signed-in one offers Use this one, as a secondary act", () => {
+    const { body, primary } = render({ agents: { claude: "connected", codex: "connected" }, inUse: "claude" });
+    const claude = /data-agent="claude"[\s\S]*?(?=data-agent="codex")/.exec(body)![0];
+    expect(claude).toContain("In use");
+    expect(claude).not.toMatch(/<button|\/settings\/lead\/on/);
+    const codex = body.slice(body.indexOf('data-agent="codex"'));
+    expect(codex).toMatch(/name="agent" value="codex"/);
+    expect(codex.slice(0, codex.indexOf("</form>"))).not.toContain("k-btn-primary");
+    expect(primary ?? "").not.toContain("Use ");
+  });
+
   test("Project: a folder, GitHub and the sample; a failed sample says so in fixed words", () => {
     const { body, primary } = render({ agents: { claude: "signed-out", codex: "signed-out" }, inUse: null });
     expect(body).toContain('href="/projects?return=%2Fwelcome"');
