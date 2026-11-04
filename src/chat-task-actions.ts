@@ -18,6 +18,7 @@ export const CHAT_TASK_ACTIONS = {
   run_full_checks: { label: "Run full checks", detail: "Runs the project's full check on this result's exact commit. A pass upgrades its status; a failure stays visible." },
   add_tests: { label: "Add tests", detail: "Files a small task to write tests for this change. Nothing runs until it is approved." },
 } as const;
+export type ChatTaskAction = keyof typeof CHAT_TASK_ACTIONS;
 export function isChatTaskAction(value: unknown): value is keyof typeof CHAT_TASK_ACTIONS {
   return typeof value === "string" && Object.hasOwn(CHAT_TASK_ACTIONS, value);
 }

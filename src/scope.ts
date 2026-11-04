@@ -6,6 +6,7 @@ import { currentPasswordSource, passwordGuardOf, provenPasswordAccount } from ".
 import { validateScopeText } from "./task-text.js";
 import { contractChangesOf } from "./contract-changes.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { currentLocalOwner, localModeOn, localOwnerInFlight, localOwnerRefusal, localOwnerStandsNow, type LocalTransport } from "./local-owner.js";
 import { projectAuthority } from "./project-access.js";
 import { activeRemote } from "./remote-run.js";
 import { claimActor, currentActor } from "./actor.js";
@@ -1223,7 +1224,9 @@ export function authenticateAccount(
   const dummy = `scrypt$${"0".repeat(32)}$${"0".repeat(64)}`;
   const hash = account?.credentialHash ?? dummy;
   if (!hash.startsWith("scrypt$")) verifyCredential(dummy, secret);
-  const matches = verifyCredential(hash, secret);
+  // v147: an account with no password set (a local-mode owner) has a random hash; the KDF still runs (same timing), and
+  // nothing it is given ever matches.
+  const matches = verifyCredential(hash, secret) && account !== null && account.passwordSet;
   if (account === null || !matches) {
     guard.failed(by, now, source, account !== null);
     return { ok: false, reason: "unknown" };
@@ -1259,7 +1262,9 @@ export type FreshOp = "approve-standard" | "chat-send" | "reply-question";
 /** "session": Passwordless is on and this is the person's own live browser session (docs/plans/passwordless.md). */
 /** "remote-token" / "lead-token": a machine credential stood in for the person (a remote run's API token, a lead's
  * token) — fine for ordinary acts it is allowed, never for a credential act (it would mint a way in with no password). */
-export type AuthMethod = "password-now" | "sso-now" | "fresh-password" | "fresh-sso" | "session" | "cli-login" | "remote-token" | "lead-token";
+/** "local-owner" (easy-start C1): the local owner of a laptop install, in an allowlisted act (local-owner.ts) — a person,
+ * never a credential act, and its approvals stand only while local mode stays on at their generation. */
+export type AuthMethod = "password-now" | "sso-now" | "fresh-password" | "fresh-sso" | "session" | "cli-login" | "remote-token" | "lead-token" | "local-owner";
 
 /**
  * The local CLI's remembered login, marked for the one command that read it (operate.ts credentialsFrom): with
@@ -1337,6 +1342,15 @@ export function ssoNowAvailable(by: string, now = Date.now()): boolean {
  */
 export function proveAccountNow(store: Store, by: string, token: string, options: { credential?: boolean } = {}): { ok: true; method: AuthMethod; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" } {
   const now = Date.now();
+  // Easy-start C1: a local owner is decided FIRST, before Passwordless and freshness, whatever was typed. An allowlisted
+  // act of its own, still standing (re-read here, inside the caller's transaction), is "local-owner"; anything else —
+  // a credential act, a read, another person, local mode moved — proves nothing. It never upgrades to a typed password.
+  // A lead's token or a remote API token in that chain is never the local owner (it stays a machine's proof below).
+  const local = activeRemote() === null && currentActor()?.lead !== true ? currentLocalOwner() : null;
+  if (local !== null) {
+    if (options.credential === true || local.account !== by || local.act === "read" || !localOwnerInFlight(local) || !localOwnerStandsNow(store, local)) return { ok: false, reason: "not-an-approver" };
+    return { ok: true, method: "local-owner", at: now };
+  }
   const facts = freshFacts.getStore();
   if (facts != null && facts.actor === by && !facts.live()) return { ok: false, reason: "not-an-approver" };
   // An empty password is never checked as a password (and never counts toward a lockout).
@@ -1521,6 +1535,14 @@ export function approve(
     // ONLY A PERSON APPROVES (docs/plans/approval-policy.md, phase 1): a lead token or a remote API token proves the
     // credential, not a person at a ceremony. Refused before any vote or proof row is written.
     if (!personProof(authenticated.method)) return { ok: false as const, reason: "machine-proof" as const };
+    // Easy-start C5: a local owner approves only as the approve-plan act, and only eligible work (one shared rule:
+    // localApprovalEligible, read again here inside the seal's transaction).
+    const local = authenticated.method === "local-owner" ? currentLocalOwner() : null;
+    if (authenticated.method === "local-owner") {
+      if (local === null || local.act !== "approve-plan") return { ok: false as const, reason: "policy" as const, message: localOwnerRefusal(store.accountOf(by)?.passwordSet === true, "/").message };
+      const eligible = localApprovalEligible(store, by, taskId);
+      if (!eligible.ok) return { ok: false as const, reason: "policy" as const, message: eligible.message };
+    }
 
     const scope = store.getScope(taskId);
     if (scope === null) return { ok: false as const, reason: "no-scope" as const };
@@ -1567,7 +1589,8 @@ export function approve(
     // How the person was proved, beside every yes they give (a vote kept for protected work, or the seal): a password
     // typed now, a re-check now, or a remembered one — with when, the credential generation and the exact digest.
     const proved = () => store.recordAction({ at: now.toISOString(), actor: by, repo: store.lookupRef(taskId)?.repo ?? null, taskId, runId: null, action: APPROVAL_PROOF,
-      outcome: authenticated.method, source: "work", detail: approvalProofDetail(authenticated.at, store.accountOf(by)?.generation ?? 0, scope.digest) });
+      outcome: authenticated.method, source: "work", detail: approvalProofDetail(authenticated.at, store.accountOf(by)?.generation ?? 0, scope.digest,
+        local === null ? undefined : { generation: local.localGeneration, transport: local.transport }) });
     if (gate.verdict === "vote") {
       // The same person again adds nothing: no new vote, no proof row (and the approval roads refund a re-check).
       if (gate.already) return { ok: false as const, reason: "second-approver" as const, have: gate.have, need: gate.need, already: true };
@@ -1601,7 +1624,8 @@ export function approve(
 /** The ledger act that records how an approval's person was proved (password-now, sso-now, fresh-password, fresh-sso). */
 export const APPROVAL_PROOF = "approval proved";
 /** The proof row's detail: when the person was proved, the generation, and the exact digest they said yes to. */
-export const approvalProofDetail = (at: number, generation: number, digest: string): string => `${new Date(at).toISOString()} · generation ${generation} · digest ${digest}`;
+export const approvalProofDetail = (at: number, generation: number, digest: string, local?: { generation: number; transport: LocalTransport }): string =>
+  `${new Date(at).toISOString()} · generation ${generation}${local === undefined ? "" : ` · local ${local.generation} ${local.transport}`} · digest ${digest}`;
 /** The proof of THIS approval: the approver's own row for these exact bytes (never another approval's words). */
 export function approvalProofOf(store: Store, taskId: string, by: string, digest: string): { method: string; at: string } | null {
   const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? AND actor = ? ORDER BY id DESC LIMIT 50").all(taskId, APPROVAL_PROOF, by);
@@ -1865,6 +1889,9 @@ export function proofDetailOf(detail: unknown): { at: string; digest: string } |
     } catch { return null; }
   }
   const parts = detail.split(" · ");
+  // Easy-start C5: a local owner's proof names its local generation and transport between the two (approvalProofDetail).
+  const local = parts.length === 4 ? parts.splice(2, 1)[0]! : null;
+  if (local !== null && !/^local \d+ (browser|terminal)$/.test(local)) return null;
   if (parts.length !== 3 || !parts[2]!.startsWith("digest ") || !/^generation \d+$/.test(parts[1]!) || Number.isNaN(Date.parse(parts[0]!))) return null;
   return { at: parts[0]!, digest: parts[2]!.slice("digest ".length) };
 }
@@ -2063,4 +2090,45 @@ export function releaseApprovalOf(store: Store, taskId: string, _now: Date = new
 export function freshUntil(at: string): string | null {
   const ms = Date.parse(at);
   return Number.isFinite(ms) ? new Date(ms + FRESH_WINDOW_MS).toISOString() : null;
+}
+
+// ---- easy-start C5: what a local owner may approve ------------------------------------------------------------------
+
+export type LocalApprovalRefusal = "local-mode-off" | "not-owner" | "no-scope" | "release" | "protected" | "escalated" | "coordinator" | "unsandboxed";
+const LOCAL_APPROVAL_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
+  "local-mode-off": "Local mode is off: approve with your password.",
+  "not-owner": "Only this computer's owner approves here without a password.",
+  "no-scope": "This task has no plan to approve yet.",
+  release: "Releases and deploys need your password.",
+  protected: "Protected work needs your password and a second approver.",
+  escalated: "Work with wider permissions needs your password.",
+  coordinator: "Work a coordinator filed needs your password.",
+  unsandboxed: "This project's checks run without a sandbox, so approving needs your password.",
+};
+
+/**
+ * Whether the local owner may approve this task without a password (easy-start plan C5). ONE rule, read by the
+ * preview (the task page's approve form and the chat review render no password field when it is ok), the chat
+ * precheck (an empty field passes) and the seal itself (approve(), inside its transaction). Refused: local mode off or
+ * another person; no plan; release or deploy terms; protected or two-person work; an escalated profile; work a
+ * coordinator filed; a project whose checks are stored as unsandboxed (or a plan that sealed that). Plans a lead or
+ * a scout proposed are allowed.
+ */
+export function localApprovalEligible(store: Store, by: string, taskId: string): { ok: true } | { ok: false; reason: LocalApprovalRefusal; message: string } {
+  const no = (reason: LocalApprovalRefusal) => ({ ok: false as const, reason, message: LOCAL_APPROVAL_WORDS[reason] });
+  if (!localModeOn(store)) return no("local-mode-off");
+  const owner = store.handle.prepare("SELECT owner FROM local_mode WHERE id = 1").get()?.["owner"];
+  if (owner !== by) return no("not-owner");
+  const scope = store.getScope(taskId);
+  if (scope === null) return no("no-scope");
+  if (deployGateScope(scope) || releaseCheckScope(scope)) return no("release");
+  const gate = store.approvalGate(taskId, by, "person");
+  if (gate.verdict !== "seal" || gate.protectedWork) return no("protected");
+  if (scope.profile == null || levelOfProfile(scope.profile) === "escalated") return no("escalated");
+  const ref = store.handle.prepare("SELECT repo, coordinator_cid FROM task_ref WHERE backend = 'built-in' AND external_id = ?").get(taskId);
+  if (ref === undefined || ref["coordinator_cid"] != null) return no("coordinator");
+  // The stored level, never the launch cap: a project saved as unsandboxed is refused even though local mode confines it.
+  const stored = ref["repo"] == null ? undefined : store.handle.prepare("SELECT level FROM project_check_access WHERE repo = ?").get(ref["repo"])?.["level"];
+  if (stored === "unsandboxed" || scope.profile.checkAccess === "unsandboxed") return no("unsandboxed");
+  return { ok: true };
 }

@@ -1,4 +1,5 @@
 import type { BrowserWorkspace } from "../browser-workspace.js";
+import { keyed } from "./mutation-key.js";
 
 export const DRAFT_TTL = 86_400_000;
 const DRAFT_PREFIX = "standing-orders:workspace-draft:";
@@ -213,8 +214,10 @@ export async function sendMessage(workspace: BrowserWorkspace, message: PendingM
   if (chat.taskId) body.set("task", chat.taskId);
   else if (chat.project) body.set("project", chat.project);
   if (chat.resultRunId !== null) body.set("result", String(chat.resultRunId));
-  const response = await fetcher("/chat", { method: "POST", credentials: "same-origin", body, headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
+  const response = await fetcher("/chat", { method: "POST", credentials: "same-origin", body, headers: keyed({ accept: "application/json" }), signal: AbortSignal.timeout(15_000) });
   if (response.status === 401 || response.status === 403) throw new WorkspaceAuthError("Sign in again to reconnect. Your draft stays in this tab.");
+  // Easy-start C2: Toolroll restarted since this tab got its key.
+  if (response.status === 409 && !response.headers.get("content-type")?.includes("application/json")) throw new WorkspaceAuthError("Toolroll restarted. Reconnect to send; your draft stays in this tab.");
   if (response.headers.get("content-type")?.includes("application/json")) {
     const data: unknown = await response.json();
     if (record(data) && data.ok === false) return { refused: true, message: typeof data.said === "string" ? data.said : "Message not sent. Your draft is saved." };

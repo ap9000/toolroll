@@ -45,6 +45,12 @@ const args = process.argv.slice(2);
 export const flag = name => args.includes(name);
 export const option = (name, fallback) => { const at = args.indexOf(name); return at === -1 ? fallback : args[at + 1]; };
 export const sleep = ms => new Promise(done => setTimeout(done, ms));
+/** Easy-start C2: a request made beside a page (page.request) carries that page's browser mutation key, which the
+ * console delivered into its origin's localStorage at sign-in (a protected loopback install asks every mutation for it). */
+export async function keyedHeaders(on, headers = {}) {
+  const key = await on.evaluate(() => { try { return JSON.parse(localStorage.getItem("toolroll.key") || "null")?.key ?? null; } catch { return null; } }).catch(() => null);
+  return typeof key === "string" ? { ...headers, "x-toolroll-key": key } : headers;
+}
 export const freePort = () => new Promise(done => { const server = createServer(); server.listen(0, "127.0.0.1", () => { const { port } = server.address(); server.close(() => done(port)); }); });
 
 /**
@@ -438,6 +444,8 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
     await page.fill('input[name="name"]', who);
     await page.fill('input[name="token"]', passwords[who]);
     await Promise.all([page.waitForNavigation(), page.press('input[name="token"]', "Enter")]);
+    // A protected loopback install answers with the key's one delivery page, which stores it and moves on by itself.
+    await page.waitForURL(url => !url.pathname.startsWith("/login"), { timeout: 30_000 });
     openPages.push(page);
     return page;
   }

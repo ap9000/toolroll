@@ -18,9 +18,11 @@ authenticateApprover as checkApproverPassword, credentialProof
 } from "../scope.js";
 import { SourceBudget } from "../sign-in-guard.js";
 import {
+localModeOf,
 type Run,
 type Store
 } from "../store.js";
+import { currentLocalOwner, localBindingStands, localOwnerStandsNow } from "../local-owner.js";
 import type { RouteDeclaration } from './route-table.js';
 import { requestContext } from "./request-context.js";
 import { refuse } from "./chrome.js";
@@ -44,6 +46,8 @@ export interface GuardsRuntime {
   signInBudget: SourceBudget;
   passwordAllowed: (name: string) => boolean;
   sessions: PersistentSessions;
+  /** Easy-start C2: the browser mutation key's one check (server/mutation-key.ts). */
+  browserKeys: Pick<import("./mutation-key.js").BrowserKeys, "check">;
 }
 export function createSharedGuards(runtime: GuardsRuntime) {
   const syncIdentities = syncProjectIdentities();
@@ -102,7 +106,7 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     request: IncomingMessage,
     who: Who,
     body: FormView<FormFieldOf<"mutationGuard">>,
-  ): { status: number; message: string } | null {
+  ): { status: number; message: string; reconnect?: import("./mutation-key.js").Reconnect } | null {
     // A read token never mutates, whatever its person's role (operate-remote.ts says the same to the remote CLI).
     if (who.via === "bearer") {
       if (who.principal !== undefined) {
@@ -139,6 +143,17 @@ export function createSharedGuards(runtime: GuardsRuntime) {
       }
       if (body.get("csrf") !== who.session.csrf) {
         return { status: 403, message: "stale form — reload and try again" };
+      }
+      // Easy-start C2: on a protected loopback install the CSRF token is rendered into pages any cookie holder can read,
+      // so a mutation also presents the session's key, which only this console's own origin holds.
+      const keyed = runtime.browserKeys.check(who, request, body.sent);
+      if (keyed !== null) return keyed;
+      // Easy-start C1 (after the CSRF and key proofs, so a forged post learns nothing more): a local owner's session
+      // mutates only inside the console's admission of a row marked for it (which set the local owner this chain acts
+      // as), and only while that still stands; anywhere else it is refused.
+      if (who.authority !== "full") {
+        const local = currentLocalOwner();
+        if (local === null || local.account !== who.name || !localOwnerStandsNow(runtime.store, local)) return { status: 403, message: "Set a password to do this." };
       }
     }
     return null;
@@ -321,7 +336,7 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     const match = new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([0-9a-f]{64})`).exec(cookies);
     if (match === null) return null;
     const session = lookupSession(match[1] as string, touch);
-    return session === null ? null : { name: session.name, via: "cookie", session, role: session.role };
+    return session === null ? null : { name: session.name, via: "cookie", session, role: session.role, authority: session.authority };
   }
 
   /**
@@ -346,6 +361,12 @@ export function createSharedGuards(runtime: GuardsRuntime) {
         return null;
       }
       if (runtime.store.approverGeneration(session.name) !== session.generation) {
+        runtime.sessions.delete(id);
+        return null;
+      }
+      // v147: a local owner's session stands only while local mode is on, at the generation it was made under, for its
+      // owner. Off, moved or changed hands: the session is ended, never read as full.
+      if (session.authority !== "full" && !localBindingStands(localModeOf(runtime.store), { account: session.name, localGeneration: session.localGeneration })) {
         runtime.sessions.delete(id);
         return null;
       }

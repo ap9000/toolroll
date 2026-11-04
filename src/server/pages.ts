@@ -29,7 +29,6 @@ import { LEDGER_CSV_HEADER,ledgerCsvRows } from "../ledger-csv.js";
 import { ledgerBody } from "../ledger-view.js";
 import { agentRowOf, agentsListOf, agentFactsFor, sealedDiffOf } from "../agents-board.js";
 import { computersOf, phasesOf, systemOf } from "./agents-computers.js";
-import { markAgentSeen } from "../agent-board.js";
 import { agentsLiveOf } from "../agents-live.js";
 import { readChildWindow } from "../live-children-read.js";
 import { leadFiledLinks } from "./agents-live-filed.js";
@@ -475,8 +474,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       const run = store.getRun(Number(asked));
       const facts = run === null || !runVisible(run) ? null : agentFactsFor(store, run.id, access, who.name);
       if (facts !== null) {
-        // Opening a finished agent is viewing it: it leaves this person's unread Done.
-        if (facts.outcome !== null && markAgentSeen(store, who.name, facts.runId, now)) facts.seen = true;
+        // Opening a finished agent is viewing it: the shell says so with a keyed POST /agents/seen (easy-start N1: a page
+        // load never writes), which leaves this person's unread Done.
         const live = facts.outcome === null;
         const composer = live ? steerControlsFor(store, facts.taskId, facts.runId, now, who.role === "approver") : null;
         const sealed = live ? null : sealedDiffOf(store, evidenceRoot, facts.runId);
@@ -853,7 +852,10 @@ export function createPagesHandlers(runtime: ServerRuntime) {
 
     // CONFIRM: password, then session liveness AGAIN via lookupSession
     // (finding 22/33) — the record is consumed from the RETURNED live
-    // session, synchronously, before the first await.
+    // session, synchronously, before the first await. A full session types
+    // its password (or Passwordless stands in); a laptop's local owner has
+    // none: inside this row's add-project admission the prover's local-owner
+    // branch proves it (scope.ts proveAccountNow), whatever the field holds.
     const password = body.get("token") ?? "";
     if (!authenticateApprover(who, password).ok) {
       return projectsScreen(response, who, "cloning takes your password, typed again", 403, "/", "clone");
@@ -974,7 +976,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
                     ? "Choose a projects folder once: toolroll up --project-root <dir>"
                     : "choose which folder this server may use with --project-root <dir>",
                 }
-              : { enabled: true as const, roots: ceiling.roots, record: [...(who.session.onboard?.entries() ?? [])][0] ?? null };
+              : { enabled: true as const, roots: ceiling.roots, localOwner: who.authority !== "full", record: [...(who.session.onboard?.entries() ?? [])][0] ?? null };
     const peeks: Record<string, ProjectPeek | null> = {};
     for (const one of recent) peeks[one.path] = peekOf(one.path, now);
     for (const path of candidates) peeks[path] = peekOf(path, now);

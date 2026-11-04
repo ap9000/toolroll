@@ -300,7 +300,7 @@ describe("toolroll up as two processes", () => {
       one.on("exit", code => resolve({ code, messages }));
       one.send(start);
     });
-    const consoleConfig = { host: "127.0.0.1", port: PORT + 2, allowedHosts: null, publicUrl: null, localRunner: "w", poolRoot: base, repos: [], projectRoots: [], registryPath: join(base, "repos.json"), editor: false };
+    const consoleConfig = { host: "127.0.0.1", port: PORT + 2, allowedHosts: null, publicUrl: null, localRunner: "w", poolRoot: base, repos: [], projectRoots: [], registryPath: join(base, "repos.json"), editor: false, startAuthority: "none" };
     // A console never holds the runner token: a start that hands it one is not a start at all.
     expect(await child("console", { type: "start", role: "console", databaseFile: db, containment: null, build: "x", config: { ...consoleConfig, token: "secret" } })).toMatchObject({ code: 2, messages: [] });
     // The role on the command line and the one started must agree.

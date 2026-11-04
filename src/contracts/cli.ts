@@ -107,6 +107,9 @@ const statusOutput = answers("status", {
   integrations: z.looseObject({ broken: rows({ key: str, name: str, fix: nullable(str) }) }).optional(),
   updateWaiting: z.looseObject({}).optional(),
   unsentReplies: rows({ since: str, error: nullable(str), retry: str }).optional(),
+  // This computer's console (easy-start D): proven live or not, its address and console process, and whether a
+  // background service runs it — ours, another on this database or the desktop app's, or none. Not for a person limited to some projects.
+  laptop: z.looseObject({ running: z.boolean(), url: nullable(str), pid: nullable(int), background: z.enum(["on", "off", "other-service"]) }).optional(),
 });
 
 /** One integration (`integrations.ts` Integration): never a secret. */
@@ -227,6 +230,16 @@ export const COMMAND_OUTPUTS = {
   reap: answers("reap", { count: int, released: list }),
   audit: auditOutput,
   "skills list": answers("skills list", { guides: rows({ name: str, title: str, oneLiner: str }) }),
+  // The welcome's three steps (first-run.ts welcomeModel), the same model the console's /welcome shows.
+  welcome: answers("welcome", {
+    agent: z.looseObject({ done: z.boolean(), checking: z.boolean(), agents: rows({ id: str, name: str, state: str, command: nullable(str), inUse: z.boolean(), canUse: z.boolean() }), inUse: nullable(str), buildsWith: nullable(str) }),
+    project: z.looseObject({ done: z.boolean(), projects: rows({ name: str, path: str }), sample: nullable(str), notTakingWork: z.boolean() }),
+    task: z.looseObject({ done: z.boolean(), open: z.boolean(), starters: rows({ label: str, draft: str, href: str }) }),
+    next: nullable(z.enum(["agent", "project", "task"])),
+    left: int,
+  }),
+  // The first password set: whose, and the account generation every older session was bound to before it.
+  "password set": answers("password set", { account: str, generation: int }),
 } as const satisfies Record<string, z.ZodType>;
 
 const declared = new Map<string, z.ZodType>(Object.entries(COMMAND_OUTPUTS));

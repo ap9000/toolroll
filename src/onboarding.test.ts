@@ -12,9 +12,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ExecResult } from "./exec.js";
 import { htmlString } from "./html.js";
-import { addApprover } from "./scope.js";
+import { addApprover, hashPassword } from "./scope.js";
 import { createDecisionServer, redactedPath, SIGN_IN_LINK_MS, wrongHostPage, type DecisionServer } from "./serve.js";
-import { openStore, type Store } from "./store.js";
+import { enrollOwnerPassword, initLocalMode, openStore, setLocalModeOff, type Store } from "./store.js";
 
 const answer = (stdout: string, code = 0): ExecResult => ({ code, stdout, stderr: "", timedOut: false, notFound: false });
 const notInstalled: ExecResult = { code: -1, stdout: "", stderr: "", timedOut: false, notFound: true };
@@ -114,6 +114,51 @@ test("the one-time sign-in link: this computer only, once, for ten minutes, and 
   expect(ledger).toContain("one-time link");
   for (const one of [link, forwarded, elsewhere, late]) expect(ledger).not.toContain(one.slice("/login/once/".length));
   expect(redactedPath(link)).toBe("/login/once/…");
+});
+
+test("local mode's one-time link (easy-start C4): a local-owner session only, bound to local mode and the owner as they are when it is spent", async () => {
+  // A laptop install: the owner has no password; local mode is on at generation 1.
+  store.close();
+  store = openStore(join(dir, "laptop.db"), { createdBy: "laptop" });
+  expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: new Date() }).ok).toBe(true);
+  await start();
+  // No full link for an account with no password; the local link names no account.
+  expect(server.mintSignInLink("alex")).toBeNull();
+  const link = server.mintLocalLink()!;
+  expect(link).toMatch(/^\/login\/once\/[A-Za-z0-9_-]{43}$/);
+  const first = await raw(link);
+  expect(first.status).toBe(303);
+  const cookie = cookieOf(first.headers);
+  expect(store.webSessions("alex")).toMatchObject([{ authority: "local-owner", localGeneration: 1, keyEpoch: null, keyHash: null }]);
+  expect((await fetch(`${base}/chat`, { headers: { cookie }, redirect: "manual" })).status).toBe(200);
+  expect((await raw(link)).status).toBe(410);
+  expect(JSON.stringify(store.handle.prepare("SELECT * FROM action_ledger").all())).toContain("local link");
+  // Until the local owner's allowlist lands (wave 1b), its session changes nothing through the console's one POST gate.
+  const csrf = (await workspace(cookie)).csrf;
+  expect(csrf).not.toBe("");
+  const posted = await fetch(`${base}/lead/check`, { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams({ csrf }) });
+  expect(posted.status).toBe(403);
+  expect(await posted.text()).toContain("Set a password to do this.");
+  expect(store.getChatConfig()).toBeNull();
+
+  // The owner's account moved (a password was set) between minting and spending: the link is dead, and so is the session.
+  const stale = server.mintLocalLink()!;
+  expect(enrollOwnerPassword(store, "alex", hashPassword("pw"), 1, new Date()).ok).toBe(true);
+  expect((await raw(stale)).status).toBe(410);
+  expect((await fetch(`${base}/chat`, { headers: { cookie }, redirect: "manual" })).status).toBe(303);
+
+  // Local mode turned off (or moved on): a link minted before is refused, a local session made before is dropped at
+  // its next request, and no new local link is minted.
+  const before = server.mintLocalLink()!;
+  const kept = cookieOf((await raw(server.mintLocalLink()!)).headers);
+  expect((await fetch(`${base}/chat`, { headers: { cookie: kept }, redirect: "manual" })).status).toBe(200);
+  store.handle.prepare("UPDATE local_mode SET generation = generation + 1").run();
+  expect((await raw(before)).status).toBe(410);
+  expect((await fetch(`${base}/chat`, { headers: { cookie: kept }, redirect: "manual" })).status).toBe(303);
+  expect(setLocalModeOff(store, { name: "alex", authority: "full" }, new Date()).ok).toBe(true);
+  expect(server.mintLocalLink()).toBeNull();
+  // Every start has its own key epoch (C2), minted by the server unless the start gives it one.
+  expect(server.keyEpoch).toMatch(/^[0-9a-f]{32}$/);
 });
 
 test("a wrong host explains itself: the address opened, where it answers, and the exact command", async () => {
@@ -247,12 +292,50 @@ test("the welcome: Use this one turns on exactly the agent named, only when it i
   expect((await use("codex")).headers.get("location")).toBe("/welcome");
   expect(store.getChatConfig()?.provider).toBe("codex-subscription");
   expect((await use("gemini")).status).toBe(400);
+  // A full session's choice is as before: its models stay Settings → Models' step-up.
+  expect(store.phaseConfig("installation", "build")).toBeNull();
 
   const sample = await fetch(`${base}/welcome/sample`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf }) });
   expect(sample.headers.get("location")).toBe("/welcome");
   const added = realpathSync(join(root, "toolroll-sample"));
   expect(existsSync(join(added, ".git"))).toBe(true);
+  // Added with its own fixed check, so its first result reads checked.
+  expect(store.liveVerifyCommand(added)).toMatchObject({ command: "node --test", approvedBy: "toolroll" });
+  // Cleared, then the sample added again (found, not made): the clear stays.
+  store.clearVerifyCommand(added, "alex", new Date());
+  await fetch(`${base}/welcome/sample`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf }) });
+  expect(store.liveVerifyCommand(added)).toBeNull();
   const after = await (await fetch(`${base}/welcome`, { headers: { cookie } })).text();
   expect(after).toContain("toolroll-sample");
   expect(after).toContain("Round prices to whole cents");
+}, 20_000);
+
+test("a laptop install: choosing the agent starts its models on that agent's default preset, once, and never overwrites", async () => {
+  store.close();
+  store = openStore(join(dir, "laptop.db"), { createdBy: "laptop" });
+  expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: new Date() }).ok).toBe(true);
+  // The first start chooses the agent signed in here (Codex), and its models with it.
+  signedIn = "codex";
+  await start({ leadByDefault: true });
+  await until(() => store.getChatConfig() !== null && store.phaseConfig("installation", "build") !== null);
+  expect(store.getChatConfig()?.provider).toBe("codex-subscription");
+  expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "codex", model: "gpt-6-sol" });
+  expect(store.phaseConfig("installation", "plan")).toMatchObject({ provider: "codex", model: "gpt-6-astra" });
+  // The local owner's "Use this one" for Claude Code moves the lead, and leaves the models as they are.
+  signedIn = "claude";
+  const cookie = cookieOf((await raw(server.mintLocalLink()!)).headers);
+  const csrf = (await workspace(cookie)).csrf;
+  const use = (agent: string) => fetch(`${base}/settings/lead/on`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf, agent, return: "/welcome" }) });
+  expect((await use("claude")).headers.get("location")).toBe("/welcome");
+  expect(store.getChatConfig()?.provider).toBe("claude-subscription");
+  expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "codex", model: "gpt-6-sol" });
+  // With nothing set, the same act fills Claude Code's Sized by job in the same write.
+  store.handle.exec("DELETE FROM phase_config; DELETE FROM phase_tier_config;");
+  expect((await use("claude")).headers.get("location")).toBe("/welcome");
+  expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "claude", model: "claude-sonnet-5-5" });
+  expect(store.phaseTierConfig("installation", "build", "light")).toMatchObject({ provider: "claude", model: "claude-haiku-5-5" });
+  // Settings → Models stays an operator's step-up: the local owner can't apply a preset there.
+  const models = await fetch(`${base}/settings/models/apply`, { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams({ csrf, preset: "opus" }) });
+  expect(models.status).toBe(403);
+  expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "claude", model: "claude-sonnet-5-5" });
 }, 20_000);

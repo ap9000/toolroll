@@ -78,6 +78,29 @@ test("a session past its idle or absolute lifetime is not live (the one reading 
   expect(readFileSync("src/server/guards.ts", "utf8")).toContain("if (!sessionWithinLifetime(session, now)) {");
 });
 
+test("up's worker gate (easy-start C4): a runner registers under a verified password or local mode's owner, decided before any login file is read", () => {
+  const operate = readFileSync("src/operate.ts", "utf8");
+  const tree = /async function resolveUpApprover\([\s\S]*?\n\}\n/.exec(operate)![0];
+  // Local mode is decided first: before the legacy login moves, any login file is read, or anything is prompted.
+  const local = tree.indexOf("const local = localOwnerBinding(store);");
+  expect(local).toBeGreaterThan(0);
+  for (const later of ["migrateLegacyLogin(", "readLoginFile(", "askHidden(", "savedLoginFile("]) expect(tree.indexOf(later), later).toBeGreaterThan(local);
+  expect(tree).toContain('if (local !== null) return { approver: local.account, approvers: [local.account], verified: false, passwordFile: null, mintedPassword: null, notes, startAuthority: "local" };');
+  // Every other answer is full only with a verified password; the tree's last word is none without one.
+  expect(tree.match(/startAuthority: "full"/g)).toHaveLength(3);
+  expect(tree).toContain('startAuthority: verified ? "full" : "none" };');
+  // The one gate, on the start authority; nothing else stands in for it.
+  const up = /async function upCommand\([\s\S]*?\n\}\n/.exec(operate)![0];
+  expect(up.match(/approverPlan\.startAuthority === "none"\) return fail\(write, json, "up", "login"/g)).toHaveLength(1);
+  expect(up).not.toContain("approverPlan.verified)");
+  // The console mints a link only through consoleSignInLink, by the kind its own start was authorised for.
+  expect(operate.match(/\.mintSignInLink\(|\.mintLocalLink\(/g)).toHaveLength(3);
+  // The third is the console socket's `link` verb (easy start D, `toolroll open`): only ever a local owner's link, which
+  // mintLocalLink mints only while local mode is on; it names no account.
+  expect(operate).toContain("    () => console_.server.mintLocalLink());");
+  expect(/export function consoleSignInLink\([\s\S]*?\n\}\n/.exec(operate)![0]).toMatch(/message\.kind === "local"\) return startAuthority === "local" \? server\.mintLocalLink\(\) : null;\n  return startAuthority === "full" \? server\.mintSignInLink\(message\.account\) : null;/);
+});
+
 describe("an explicit identity-provider re-check", () => {
   test("stands in for ONE step-up of any kind within five minutes, and is spent by it", () => {
     const at = Date.now() - 60_000;
@@ -338,7 +361,8 @@ describe("where freshness may be honoured", () => {
     expect(hits[".ssoNowAt"]).toEqual({ "src/serve.ts": 5, "src/server/people-tokens.ts": 1, "src/server/settings.ts": 1 });
     expect(hits[".freshFloor"]).toEqual({ "src/serve.ts": 1, "src/server/settings.ts": 1 });
     for (const name of FACT_NAMES) expect(hits[`{${name}}`]).toBeUndefined();
-    expect((files.find(one => one.path === "src/server/people-tokens.ts")!.text.match(/passwordAt: Date\.now\(\)/g) ?? []).length).toBe(2);
+    // Signing in, signing up, and (easy-start C4) setting the first password on /password/set.
+    expect((files.find(one => one.path === "src/server/people-tokens.ts")!.text.match(/passwordAt: Date\.now\(\)/g) ?? []).length).toBe(3);
     for (const line of files.find(one => one.path === "src/server/people-tokens.ts")!.text.split("\n").filter(one => one.includes("passwordAt: Date.now()"))) {
       expect(line).toContain("fromThisComputer(request) ?");
     }
@@ -364,7 +388,7 @@ describe("where freshness may be honoured", () => {
       "src/nightly-github.ts": 1, "src/operate.ts": 61, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
-      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 10, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 25,
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 10, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 26,
       "src/server/tasks.ts": 7, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -375,7 +399,7 @@ describe("where freshness may be honoured", () => {
 
   test("a password is checked only at known places, and every console empty-field step-up goes through proveAccountNow", () => {
     expect(hits["authenticateAccount()"]).toEqual({
-      "src/operate.ts": 1, "src/principal.ts": 1, "src/scope.ts": 1, "src/server/guards.ts": 1, "src/server/people-tokens.ts": 2,
+      "src/operate.ts": 1, "src/principal.ts": 1, "src/scope.ts": 1, "src/server/guards.ts": 1, "src/server/people-tokens.ts": 3,
       "src/server/settings.ts": 2, "src/tokens-cli.ts": 1,
     });
     // The two settings checks are typed-now ceremonies (they also compare the generation); never an empty field.
@@ -404,7 +428,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "FreshFacts": {
     "src/scope.ts#<module>": 2,
     "src/serve.ts#<module>": 2,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54": 1,
     "src/server/remote.ts#<module>": 3,
     "src/server/runtime.ts#<module>": 3,
   },
@@ -427,6 +451,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/guards.ts#createSharedGuards@1>identify@15": 1,
     "src/server/people-tokens.ts#<module>": 2,
     "src/server/people-tokens.ts#createPeopleHandlers@2>loginSend@14": 1,
+    // Easy-start C2: Reconnect takes the session's own password (a typed one, never freshness) for a fresh browser key.
+    "src/server/people-tokens.ts#createPeopleHandlers@2>rekeySend@26": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>signupSend@13": 1,
     "src/server/settings.ts#<module>": 2,
     "src/server/settings.ts#createSettingsHandlers@1>chatApprovalAct@77><anonymous>@1": 1,
@@ -507,7 +533,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/scope.ts#approve@46>store.transact(_)@1": 1,
     "src/scope.ts#authenticateApprover@42": 1,
     "src/serve.ts#createDecisionServer@1": 3,
-    "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateApprover@241": 2,
+    "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateApprover@243": 2,
     "src/server/chat.ts#createChatHandlers@1": 2,
     "src/server/chat.ts#createChatHandlers@1>chatAckSend@26": 1,
     "src/server/chat.ts#createChatHandlers@1>chatConfig@16": 1,
@@ -547,6 +573,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>modeAct@91><anonymous>@1": 1,
     // Settings → Models (spend-dashboard slice 3): the editor's save and a preset's or switch's apply.
     "src/server/settings.ts#createSettingsHandlers@1>modelsApply@109": 1,
+    // Easy-start C5: turning local mode off is an operator's step-up from a full session, proved inside the write's transaction.
+    "src/server/settings.ts#createSettingsHandlers@1>localModeOff@110>turned:store.transact(_)@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>modelsSave@108": 1,
     "src/server/settings.ts#createSettingsHandlers@1>monitoringSave@64": 1,
     "src/server/settings.ts#createSettingsHandlers@1>permissionDefaultSave@82": 1,
@@ -571,7 +599,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createTidyHandlers@3": 2,
     "src/server/tasks.ts#createTidyHandlers@3>applyPutAway@2": 1,
     // Live terminals: starting one is a step-up (a fresh password every time; never a remembered one).
-    "src/server/terminals.ts#createTerminalHandlers@2>start@10": 1,
+    "src/server/terminals.ts#createTerminalHandlers@2>start@11": 1,
     "src/task-outcome-cli.ts#<module>": 2,
     "src/task-outcome-cli.ts#runTaskMergeCommand@2": 1,
     // Passwordless (docs/plans/passwordless.md): reviewed new sites.
@@ -589,17 +617,21 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "consumeSsoNow": {
     "src/scope.ts#<module>": 1,
     "src/scope.ts#proveAccountNow@38": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54": 1,
   },
   "credentialHash": {
     // Deploy robustness (runner-process.ts): a digest of the runner's own stored hash names the incarnation in the
     // process record, and `up` compares its own token's hash to confirm the registration is still its own. Neither
     // authenticates anyone; a proof only retires a holder whose every process has exited (reviewed new sites).
+    "src/laptop-background.ts#<module>": 1,
     "src/operate.ts#recordRunnerProcess@185": 4,
     "src/operate.ts#upCommand@67": 1,
     "src/operate.ts#upCommand@67>roleSpawned@22": 1,
     "src/runner-process.ts#credentialDigest@4": 2,
     "src/runner-process.ts#holderProvedGone@12": 3,
+    // Easy-start D: a runner's process record is checked against its stored credential hash (an HMAC key, never a
+    // password): the background handoff and `toolroll stop` find the controller by it, the Linux update proves exit by it.
+    "src/runner-process.ts#recordStandsFor@14": 3,
       // Codex review of 0.9.78: the record is sealed with an HMAC keyed by the plane-held hash (a build can't read it),
       // and checked before a holder is retired; neither authenticates a person or grants anything.
       "src/runner-process.ts#recordedHolderProvedGone@13": 1,
@@ -618,6 +650,11 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveApprover@147>once(mutation,saveApprover,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.saveRunner@232": 1,
     "src/store.ts#Store.saveRunner@232>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
+    // Easy-start C4: the local owner's first password, written with password_set 1 in the one enrollment transaction
+    // (its preconditions re-read there); the caller hashes it. It authenticates no one itself.
+    "src/store.ts#enrollOwnerPassword@1170": 1,
+    "src/store.ts#enrollOwnerPassword@1170>store.transact(_)@1": 1,
+    "src/toolroll-update.ts#systemdLaptopService@106>recorded@3": 1,
   },
   "credential_hash": {
     "src/export.ts#<module>": 2,
@@ -631,7 +668,12 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveApprover@147>once(mutation,saveApprover,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.saveRunner@232>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.signInWithSso@226>transact(_)@1": 1,
+    // Easy-start F and C4: the laptop owner's unusable hash (random bytes thrown away, password_set 0) and enrollment.
+    "src/store.ts#enrollOwnerPassword@1170>store.transact(_)@1": 1,
+    "src/store.ts#initLocalMode@1169>store.transact(_)@1": 1,
     "src/store.ts#mergeCredentialsForV118@61": 1,
+    // Easy-start D: the Linux update reads a runner's stored hash to authenticate its process record (never a password).
+    "src/toolroll-update.ts#systemdLaptopService@106>recorded@3": 2,
   },
   "fresh": {
     "src/acp-check.ts#settleChecks@2": 4,
@@ -695,12 +737,12 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/run-closeout.ts#closeOutCheckouts@11": 4,
     "src/runner.ts#recoverDead@17>recovery:store.transact(_)@1": 3,
     "src/scope.ts#proveAccountNow@38": 4,
-    "src/serve.ts#createDecisionServer@1>checkLocalAgents@107": 1,
-    "src/serve.ts#createDecisionServer@1>checkLocalAgents@107>localSignInChecking:Promise.all(map(_)):map(_)@1": 1,
-    "src/serve.ts#createDecisionServer@1>connectionCheck@43": 2,
-    "src/serve.ts#createDecisionServer@1>handle@102": 4,
-    "src/serve.ts#createDecisionServer@1>sendScreen@126": 2,
-    "src/serve.ts#createDecisionServer@1>sendScreen@126>workspace@6": 1,
+    "src/serve.ts#createDecisionServer@1>checkLocalAgents@109": 1,
+    "src/serve.ts#createDecisionServer@1>checkLocalAgents@109>localSignInChecking:Promise.all(map(_)):map(_)@1": 1,
+    "src/serve.ts#createDecisionServer@1>connectionCheck@44": 2,
+    "src/serve.ts#createDecisionServer@1>handle@104": 4,
+    "src/serve.ts#createDecisionServer@1>sendScreen@128": 2,
+    "src/serve.ts#createDecisionServer@1>sendScreen@128>workspace@6": 1,
     "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2": 3,
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@10": 1,
     "src/server/render-people.ts#ssoStepUps@3": 1,
@@ -733,11 +775,11 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/scope.ts#proveAccountNow@38": 1,
     "src/scope.ts#ssoNowAvailable@37": 1,
     "src/serve.ts#<module>": 2,
-    "src/serve.ts#createDecisionServer@1>handle@102": 2,
-    "src/serve.ts#createDecisionServer@1>handle@102>requestFacts.sso.fresh@4": 1,
-    "src/serve.ts#createDecisionServer@1>sendScreen@126>workspace@6": 1,
+    "src/serve.ts#createDecisionServer@1>handle@104": 2,
+    "src/serve.ts#createDecisionServer@1>handle@104>requestFacts.sso.fresh@4": 1,
+    "src/serve.ts#createDecisionServer@1>sendScreen@128>workspace@6": 1,
     "src/server/remote.ts#<module>": 2,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@12": 1,
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@14": 1,
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@10": 1,
     // Passwordless (docs/plans/passwordless.md): reviewed new sites.
     "src/scope.ts#passwordlessSessionFor@39": 1,
@@ -745,7 +787,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#createChatHandlers@1>chatSend@24": 1,
   },
   "freshFloor": {
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>floor@6": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>floor@6": 1,
     "src/server/session.ts#<module>": 1,
     "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@39": 1,
   },
@@ -780,11 +822,13 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "passwordAt": {
     "src/scope.ts#<module>": 1,
     "src/scope.ts#freshnessFor@36": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>passwordAt@2": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>stamp@7": 1,
-    "src/serve.ts#createDecisionServer@1>sendScreen@126>workspace@6": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>passwordAt@2": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>stamp@7": 1,
+    "src/serve.ts#createDecisionServer@1>sendScreen@128>workspace@6": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>loginSend@14": 1,
+    // Easy-start C4: the first password typed on /password/set starts the fresh full session's window, as signing in does.
+    "src/server/people-tokens.ts#createPeopleHandlers@2>passwordSetSend@29": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>signupSend@13": 1,
     "src/server/session.ts#<module>": 1,
     "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@39": 1,
@@ -795,7 +839,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts#<module>": 2,
     "src/server/people-tokens.ts#createPeopleHandlers@2>sessionsSend@3": 1,
     "src/server/remote.ts#<module>": 2,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@12>freshFacts.run(runtime.freshFactsOf(request,who),_)@1": 1,
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@14>freshFacts.run(runtime.freshFactsOf(request,who),_)@1": 1,
   },
   "scryptSync": {
     "src/scope.ts#<module>": 2,
@@ -816,12 +860,12 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/scope.ts#<module>": 1,
     "src/scope.ts#proveAccountNow@38": 1,
     "src/scope.ts#ssoNowAvailable@37": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54": 1,
   },
   "ssoNowAt": {
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>consumeSsoNow@5": 2,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>consumeSsoNow@5><anonymous>@1": 2,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>ssoNow@4": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>consumeSsoNow@5": 2,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>consumeSsoNow@5><anonymous>@1": 2,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>ssoNow@4": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>ssoFinish@12": 1,
     "src/server/session.ts#<module>": 1,
     "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@39": 1,
@@ -832,7 +876,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/scope.ts#proveAccountNow@38": 1,
     "src/scope.ts#ssoNowAvailable@37": 1,
     "src/serve.ts#<module>": 2,
-    "src/serve.ts#createDecisionServer@1>handle@102>requestFacts.sso.fresh@4": 1,
+    "src/serve.ts#createDecisionServer@1>handle@104>requestFacts.sso.fresh@4": 1,
     "src/server/remote.ts#<module>": 2,
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@10>sso.fresh:freshFacts.run(runtime.freshFactsOf(request,who),_)@1": 1,
     "src/server/tasks.ts#<module>": 2,
@@ -841,8 +885,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "ssoReauthAt": {
     "src/scope.ts#<module>": 1,
     "src/scope.ts#freshnessFor@36": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@53>ssoReauthAt@3": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54": 1,
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@54>ssoReauthAt@3": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>ssoFinish@12": 1,
     "src/server/session.ts#<module>": 1,
     "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@39": 1,
@@ -885,7 +929,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   // Passwordless (docs/plans/passwordless.md): the credential checks and the session reading, each site reviewed.
   authenticateCredential: {
     "src/serve.ts#createDecisionServer@1": 3,
-    "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateCredential@300": 2,
+    "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateCredential@302": 2,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
     "src/server/flows.ts#createFlowsHandlers@1>triggerAct@32><anonymous>@1": 2,
     "src/server/guards.ts#createSharedGuards@1>authenticateCredential@1": 1,

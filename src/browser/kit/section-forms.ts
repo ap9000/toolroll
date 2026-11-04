@@ -24,6 +24,7 @@
  */
 import { KIT_ICONS, type IconShape } from "../../design/kit.js";
 import { openOverlay } from "./behavior.js";
+import { keyed } from "../mutation-key.js";
 
 type SForm = HTMLFormElement & {
   kPrepped?: boolean;
@@ -282,7 +283,7 @@ async function post(form: SForm, snapshot: readonly [string, string][], proof: r
   const action = actionOf(form, submitter);
   let response: Response;
   try {
-    response = await fetch(action, { method: "POST", body, credentials: "same-origin", redirect: "follow", headers: { accept: "text/html" } });
+    response = await fetch(action, { method: "POST", body, credentials: "same-origin", redirect: "follow", headers: keyed({ accept: "text/html" }) });
   } catch {
     unconfirmed(form);
     return;

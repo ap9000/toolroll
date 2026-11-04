@@ -67,6 +67,9 @@ export type SettingsFacts = {
   sso: string | null;
   access: { sessions: number; tokens: number };
   backup: { failed: boolean; words: string } | null;
+  /** Easy-start: local mode is on for this laptop install. `owner`: this is the local owner's own session (no password);
+   * `passwordSet`: the owner has set one; `canTurnOff`: a full session of an instance operator. Absent when it is off. */
+  local?: { owner: boolean; passwordSet: boolean; canTurnOff: boolean } | null;
 };
 
 const CHAT_APPS = [["telegram", "Telegram"], ["slack", "Slack"], ["discord", "Discord"], ["teams", "Teams"]] as const;
@@ -132,6 +135,25 @@ function systemWords(facts: SettingsFacts): string {
 }
 
 /** The overview: what waits on this person, then one row per group with its state. Viewers see the groups they can open. */
+/**
+ * Easy-start C5: local mode, said once. The local owner without a password is offered the one way to more ("Let agents
+ * work on their own" → /password/set); a full session of an operator sees it on, and can turn it off (a step-up, confirmed).
+ */
+function localModeSection(facts: SettingsFacts): Html {
+  const local = facts.local;
+  if (local === undefined || local === null) return html``;
+  if (local.owner) {
+    return local.passwordSet ? html`` : settingsSection({ id: "set-password", title: "Let agents work on their own",
+      lead: "Agents can work on their own, merge and release only after you set a password.",
+      body: html`<div class="k-acts">${btn("Set a password", { sm: true, href: "/password/set?next=%2Fsettings" })}</div>` });
+  }
+  if (!local.canTurnOff) return html``;
+  return settingsSection({ id: "local-mode", title: "Local mode", state: " · on",
+    lead: "A browser on this computer can file tasks, approve plans and add projects without your password.",
+    body: kitSectionForm({ proof: "local-mode-off", action: "/settings/local-mode/off", id: "local-mode-form", save: { label: "Turn off", variant: "outline" },
+      confirm: "Turn off local mode", body: html`` }) });
+}
+
 export function settingsHub(facts: SettingsFacts): Html {
   const items = settingsNeeds(facts);
   const counts = needsByGroup(items);
@@ -152,6 +174,7 @@ export function settingsHub(facts: SettingsFacts): Html {
     body: joinHtml([
       answered(facts),
       panel,
+      facts.local?.owner === true ? localModeSection(facts) : "",
       settingsLinks(null, shown.map(([label, slug, href]) => settingsLink({ href, title: label, status: words[slug] ?? "", icon: SETTINGS_GROUP_ICONS[slug]!, needs: counts[slug] ?? 0 }))),
     ]),
   });
@@ -491,7 +514,7 @@ export function accessGroup(facts: SettingsFacts, flags: Record<string, boolean>
     ] : []),
   ];
   return settingsShell({ group: "access", title: "People and sign-in", lead: "Who can get in, how they sign in, and the ways in they hold.", flags,
-    body: joinHtml([answered(facts), settingsLinks(null, links, { label: "People and sign-in" })]) });
+    body: joinHtml([answered(facts), localModeSection(facts), settingsLinks(null, links, { label: "People and sign-in" })]) });
 }
 
 function updatesSection(updates: BrowserUpdates): Html {

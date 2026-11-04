@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+- **Type `toolroll` and you're in.** At your own terminal, bare `toolroll`
+  starts Toolroll on this computer (or opens the one already running) and
+  shows your tasks, what each agent is doing and what needs you, right in the
+  terminal: file a task, read the full plan and approve it, stop, revise,
+  complete, answer a question, or press `w` for the browser. `toolroll --web`
+  opens the browser instead, `toolroll open` gets you back in signed in, and
+  `toolroll welcome` walks the three setup steps. Scripts, agents and
+  `--json` see exactly what they did before.
+- **No password on your own computer.** A new install started with
+  `toolroll` has one owner and no password or login file. You can file
+  tasks, chat with the lead, approve plans for work you start, answer
+  questions, stop, revise and complete work, and add projects. Hands-off
+  modes, merging, releases, people and access, and most settings ask you to
+  set a password first: the page says **Set a password**, or run
+  `toolroll password set`. Agents always run inside the fence while this is
+  on. Existing installs keep their passwords and work as before.
+- **A first result in three steps.** The welcome page (and
+  `toolroll welcome`) asks for your agent (Claude Code or Codex, with the
+  command that signs each in), a project (a folder, one of your GitHub
+  repositories, or a small sample project) and a first task from a few
+  starters.
+- **One-line install opens Toolroll.** `curl … | sh` now opens Toolroll in
+  your terminal when it finishes. Without a terminal it prints the exact
+  command to start it.
+- **Keep it running, or stop it.** Quitting asks once whether Toolroll
+  should keep running in the background. `toolroll background on|off|show`
+  changes that later (a login item on macOS, a user service on Linux), and
+  `toolroll stop` stops it with running work saved.
+- **Browser changes need this browser's key.** On an install that only
+  listens on this computer, a signed-in cookie alone can no longer change
+  anything: a page on another port can read but not act. After Toolroll
+  restarts, an open tab says **Reconnect**: run `toolroll open`, or type
+  your password. The first start of this version asks open tabs to reconnect
+  once.
+- **Port 4180 already taken?** A new install picks the next free port and
+  keeps it, instead of failing to start.
+
 ## 0.9.89 — 2026-11-03
 
 - **The app no longer freezes when a drive stops answering.** If an external

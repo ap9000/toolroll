@@ -10,6 +10,7 @@ import type { QualityMode } from "../quality.js";
 import type { UnattendedPermissionMode } from "../scope.js";
 import { type Chrome, screen, type Screen } from "./chrome.js";
 import { btn, composer, disclose, doc, docHeader, dock, field, ideas, input, note, phoneHeader, radios, select, sendButton, textarea, toggleChip } from "./kit.js";
+import { TASK_TEXT_LIMITS } from "../task-text.js";
 
 export type TaskComposerPrefill = { title: string; goal: string; not: string; touches: string; acceptance: string; values?: URLSearchParams };
 
@@ -73,7 +74,10 @@ export function newTaskPage(
     value: text, rows: 4, maxRows: 10, before: bar, error: problem,
     send: sendButton({ label: "File task" }),
     note: html`<span class="k-on-note">${PLAN_ON}</span><span class="k-off-note">${PLAN_OFF}</span>`,
-    textAttrs: { maxlength: 200, autofocus: true },
+    // The box holds what a title holds: a task's words are its title, and the planner reads nothing else of them when no
+    // goal is given, so longer words would be lost, not kept. Filing's whole-word cut (task-text.ts titleWithin) is a
+    // belt for other callers only.
+    textAttrs: { maxlength: TASK_TEXT_LIMITS.title, autofocus: true },
   });
   const options = html`<div class="k-form">\
 ${field({ id: "nt-quality", label: "Checks", control: select({ id: "nt-quality", name: "quality-mode", items: [["default", "Default checks"], ["strict", "Strict (release)"]], current: quality, wide: true }) })}\

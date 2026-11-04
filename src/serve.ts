@@ -184,21 +184,25 @@ import type { RouteDeclaration } from './server/route-table.js';
 import type { ServerRuntime } from './server/runtime.js';
 import { createSettingsHandlers } from './server/settings.js';
 import { requestContext } from "./server/request-context.js";
+import { asLocalOwner,localModeOn,localOwnerRefusal,localOwnerStandsNow,type LocalPrincipal } from "./local-owner.js";
+import { defaultAgentOf,fillDefaultRouting } from "./model-choices.js";
 import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
-import { BODY_CAP,form,loginHref,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
+import { BODY_CAP,form,loginHref,passwordSetNext,refusalNext,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
 import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,NOT_STARTED_SESSION,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
 import { type ProjectPeek } from "./server/render-pages.js";
-import { serverErrorPage,ssoStepUps,wrongHostPage } from "./server/render-people.js";
-import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,sessionWithinLifetime,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SsoIntent,type Who } from "./server/session.js";
+import { localOwnerStepUps,serverErrorPage,ssoStepUps,wrongHostPage } from "./server/render-people.js";
+import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,sessionWithinLifetime,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SignInLink,type SsoIntent,type Who } from "./server/session.js";
 import { createTasksHandlers } from './server/tasks.js';
 import { KIT_BEHAVIOR_MARKUP, KIT_STANDALONE_SCRIPT } from './server/kit-standalone.js';
 import { createWelcomeHandlers } from './server/welcome.js';
+import { createBrowserKeys, KEY_FILL_SCRIPT, pagePathOf } from './server/mutation-key.js';
 import { DEFAULT_GUARD_POLICY,passwordGuardOf,provenPasswordAccount,SourceBudget,withPasswordSource } from "./sign-in-guard.js";
 import { sourceKey } from "./source-key.js";
 import { readSsoSettings } from "./sso-settings.js";
 import type { ChatConfig,CoordinatorProposal,DirectChatProviderId,LeadMessage,LeadProposal,LeadTurn,SubscriptionChatProviderId } from "./store.js";
 import {
 LEAD_THREAD,
+localOwnerBinding,
 type Decision,
 type LeadAsk,type LeadThreadScope
 } from "./store.js";
@@ -250,6 +254,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get signInBudget() { return signInBudget; },
     get passwordAllowed() { return passwordAllowed; },
     get sessions() { return sessions; },
+    get browserKeys() { return browserKeys; },
   });
 
   const { store, evidenceRoot } = options;
@@ -384,17 +389,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** A step-up within this long of the provider checking someone needs no password. */
   // The one-time sign-in link `up` opens in the browser: single use, ten minutes, from this computer only. Only a hash
   // of the code is kept, in memory; the code itself is never written to a log or the ledger.
-  const signInLinks = new Map<string, { account: string; expires: number }>();
+  const signInLinks = new Map<string, SignInLink>();
   const linkKey = (code: string) => createHash("sha256").update(code).digest("hex");
   function mintSignInLink(account: string): string | null {
     const known = store.accountOf(account);
-    if (known === null || known.role !== "approver" || known.revokedAt !== null) return null;
-    for (const [key, one] of signInLinks) if (one.expires < Date.now()) signInLinks.delete(key);
-    while (signInLinks.size >= 20) signInLinks.delete(signInLinks.keys().next().value!);
-    const code = randomBytes(32).toString("base64url");
-    signInLinks.set(linkKey(code), { account, expires: Date.now() + SIGN_IN_LINK_MS });
-    return `${SIGN_IN_LINK_PATH}${code}`;
+    // A full link is for an account with a password: a local owner without one gets only mintLocalLink's.
+    if (known === null || known.role !== "approver" || known.revokedAt !== null || !known.passwordSet) return null;
+    return holdSignInLink({ kind: "full", account, expires: Date.now() + SIGN_IN_LINK_MS });
   }
+  /** v147: this console start's key epoch (easy-start C2): the browser-key wave binds each session's mutation key to it. */
+  const keyEpoch = options.keyEpoch ?? randomBytes(16).toString("hex");
   /** This computer, and nothing in front of it: a loopback peer that names a loopback address, with no sign of a proxy —
    * any forwarding header at all (Forwarded, X-Forwarded-*, X-Real-IP, Via, …) disqualifies the request. */
   const fromThisComputer = (request: IncomingMessage): boolean => {
@@ -744,6 +748,18 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       port === null ? [] : [`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`, ...tailnet.map(name => `${name}:${port}`)];
     return [...locals, ...(options.allowedHosts ?? []), ...(publicOrigin === null ? [] : [publicOrigin.host])].includes(host);
   };
+  /** Easy-start C2: a protected loopback install (bound to loopback only, no --allow-host, no public URL, no tailnet
+   * names) has one browser host, and there every browser mutation also presents the session's key (mutation-key.ts). */
+  const browserKeys = createBrowserKeys({
+    enabled: options.browserKey === true,
+    epoch: keyEpoch,
+    protectedHost: () => {
+      const address = server.address(), port = servedPort();
+      if (typeof address !== "object" || address === null || port === null) return null;
+      if ((options.allowedHosts ?? []).length > 0 || publicOrigin !== null || tailnet.length > 0) return null;
+      return address.address === "127.0.0.1" ? `127.0.0.1:${port}` : address.address === "::1" ? `[::1]:${port}` : null;
+    },
+  });
   /** The exact command that starts this console again as it runs now, plus a listening address or one more allowed host. */
   const consoleCommand = (change: { host?: string; allow?: string }): string => {
     const port = servedPort() ?? 4180;
@@ -814,6 +830,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (wrongMethodEdge?.host === 'before') return refuseEdge(request, response, hook.pathname, wrongMethodEdge);
     if (!allowedHost(request.headers.host)) {
       return respond(response, 421, "text/html; charset=utf-8", wrongHostPage(wrongHost(request.headers.host)));
+    }
+    // Easy-start C2: a protected loopback install has one browser origin, whose storage holds the session's mutation key.
+    // A browser's page read at another loopback name (localhost, [::1]) moves there; machine callers and protocol
+    // adapters (an API token, MCP's own addresses) are left where they are.
+    const canonical = browserKeys.canonicalHost();
+    if (canonical !== null && request.headers.host !== canonical && (method === "GET" || method === "HEAD") && request.headers.authorization === undefined
+      && (edgeRoute === null || edgeRoute.domain === "people")) {
+      request.resume();
+      response.writeHead(308, { location: `http://${canonical}${hook.pathname}${hook.search}`, "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" });
+      response.end();
+      return;
     }
     // A real domain (public-access.ts): HSTS for the public https host reached over HTTPS, and no API token over
     // plain HTTP from outside this computer and the tailnet — refused before anything reads or checks it.
@@ -901,6 +928,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       ...(workspaceRead && typeof request.headers['if-none-match'] === 'string' ? { workspaceIfNoneMatch: request.headers['if-none-match'] } : {}),
       workspaceRequest: url.searchParams.get('request'),
       timeline,
+      // Easy-start C2: every page that posts carries the key fill while the key is required; a session whose key is from
+      // an earlier start (or has none) is told to reconnect.
+      keyFill: browserKeys.required(),
+      // Easy start: a local owner with no password sees "Set a password to do this." where a step-up field would be.
+      ...(who.via === "cookie" && who.authority === "local-owner" && store.accountOf(who.name)?.passwordSet === false
+        ? { localStepUp: localOwnerRefusal(false, method === "GET" ? passwordSetNext(pagePathOf(url)) : "/").href } : {}),
+      reconnect: browserKeys.stale(who, method === "GET" ? safeReturn(pagePathOf(url)) : "/"),
     };
     response.once("finish", () => keepSlowRequest(store, timeline, matchedRoute?.id ?? "unmatched", response.statusCode, clock()));
     if (method === "GET" || method === "POST") return freshFacts.run(fresh, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
@@ -915,6 +949,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (route === null) return restricted()
           ? refuse(response, who, 403, "This area requires instance access. Your account operates within its assigned projects.", "/projects")
           : refuse(response, who, 404, "There's no page at this address.", "/chat");
+        // Easy-start C1: a local owner's session reaches only the rows marked for it (route-table.ts `local`), decided
+        // first, before the route's policy reads anything and before any handler runs, GET and POST alike.
+        if (who.via === "cookie" && who.authority !== "full" && (route.local !== "allow" || localPrincipalOf(who, route) === null)) {
+          request.resume();
+          return refuseLocalOwner(response, who, method, url, request.headers.accept);
+        }
         const policy = evaluateRoutePolicy(route, { caller: who.via, capability: who.via === "bearer" && who.principal !== undefined ? who.principal.scope : who.role === "approver" ? "act" : "read", viewer: who.role === "viewer", token: who.via === "bearer" && who.principal !== undefined },
           source => projectRequestAllowed(route, source, url, who, request, response, body));
         if (!policy.ok) {
@@ -964,13 +1004,18 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         }
         return handlePost(route, url, who, request, response, body!);
       };
-      if (method === "GET") return projectAuthority.run({ actor: who.name, repo: target.repo }, execute);
+      // Easy-start C1: an allowed row runs as the local owner, in the act the row is (execute refuses every other): the
+      // prover answers "local-owner" only for that act, and every write it makes re-proves it still stands.
+      const local = who.via === "cookie" && who.authority !== "full" && matchedRoute?.stage === "console" && matchedRoute.local === "allow" ? localPrincipalOf(who, matchedRoute) : null;
+      if (local !== null) response.once("close", () => { local.request!.ended = true; });
+      const run = (): Promise<void> => local === null ? execute() : asLocalOwner(local, execute);
+      if (method === "GET") return projectAuthority.run({ actor: who.name, repo: target.repo }, run);
       // Request acceptance is separate from durable work completion. Never
       // persist a body, query string, token, password, or arbitrary URL.
       const entry = { at: clock().toISOString(), actor: who.name, ...target, source: "request" as const, ...(who.via === "bearer" && who.token !== undefined ? { detail: `API token: ${who.token}` } : {}) };
       store.recordAction({ ...entry, outcome: "requested" });
       try {
-        await projectAuthority.run({ actor: who.name, repo: target.repo }, execute);
+        await projectAuthority.run({ actor: who.name, repo: target.repo }, run);
         const createdTask = requestContext.getStore()?.createdTask;
         const placement = createdTask === undefined ? null : store.lookupRef(createdTask);
         store.recordAction({ ...entry, ...(placement === null ? {} : { repo: placement.repo, taskId: placement.externalId }), at: clock().toISOString(), outcome: response.statusCode >= 500 ? "error" : response.statusCode >= 400 ? "refused" : "accepted" });
@@ -1158,8 +1203,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const provider = localSignIn?.states.claude === "connected" ? "claude-subscription" : localSignIn?.states.codex === "connected" ? "codex-subscription" : null;
     if (provider === null) return;
     const now = clock();
-    store.setChatConfig({ provider, model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "toolroll", now);
-    store.recordInstallationFact(LEAD_BY_DEFAULT_FACT, provider, now);
+    store.transact(() => {
+      store.setChatConfig({ provider, model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "toolroll", now);
+      store.recordInstallationFact(LEAD_BY_DEFAULT_FACT, provider, now);
+      // A laptop install (local mode on): the agent chosen here also starts the models, on its default preset, while
+      // nothing is chosen yet, so the owner's first task plans without a password (model-choices.ts fillDefaultRouting).
+      const agent = defaultAgentOf(provider);
+      if (agent !== null && localModeOn(store)) fillDefaultRouting(store, agent, "toolroll", { kind: "first-start" }, now);
+    });
   }
   // Look once at start, so the lead is on by the time the browser opens.
   if (options.leadByDefault === true && !store.isDemo() && store.getChatConfig() === null) void checkLocalAgents();
@@ -1480,9 +1531,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       s = { ...s, body: keepTypedFields(s.body, ssoStepUps, ssoFacts, back), ...(s.workspace?.pageHtml == null ? {} : { workspace: { ...s.workspace, pageHtml: keepTypedFields(s.workspace.pageHtml, ssoStepUps, ssoFacts, back) } }) };
       if (s.workspace?.view?.kind === "flow") s = { ...s, workspace: { ...s.workspace, view: { ...s.workspace.view, stepUp: { label: ssoFacts.label, fresh: ssoFacts.fresh, confirmHref: `/login/sso?reauth=1&return=${encodeURIComponent(back)}` } } } };
     }
+    // Easy start: a local owner with no password has none to type: each step-up field says how to set one instead.
+    const localStepUp = requestContext.getStore()?.localStepUp;
+    if (localStepUp !== undefined) {
+      s = { ...s, body: localOwnerStepUps(s.body, localStepUp), ...(s.workspace?.pageHtml == null ? {} : { workspace: { ...s.workspace, pageHtml: localOwnerStepUps(s.workspace.pageHtml, localStepUp) } }) };
+    }
     // D5: team chat (the central team service) is deprecated; /chat?team=1 still opens this release, but nothing links to it.
     const sensitive = authored || s.forceSensitive === true;
     const requestFacts = requestContext.getStore();
+    // Easy-start C2: while the browser mutation key is required, every page's one nonce'd script also fills the key.
+    const keyFill = requestFacts?.keyFill === true ? KEY_FILL_SCRIPT : "";
     // The settings frame (settings-kit.ts): its breadcrumb, for the shell and the workspace alike.
     if (s.chrome !== undefined && s.chrome.crumbs === undefined) {
       const crumbs = settingsCrumbs(new URL(requestFacts?.returnTo ?? '/', 'http://standing-orders.local').pathname, s.title, htmlString(s.body));
@@ -1596,6 +1654,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         ...(extras.firstRun === undefined ? {} : { firstRun: extras.firstRun }),
         ...(extras.phone === undefined ? {} : { phone: extras.phone }),
         ...(extras.home == null ? {} : { home: extras.home }),
+        // Easy-start C2: this tab's key is from an earlier start (or it has none): one way to reconnect.
+        ...(requestFacts.reconnect == null ? {} : { reconnect: requestFacts.reconnect }),
       };
       if (requestFacts.workspaceRead) {
         const validator = requestFacts.workspaceValidator;
@@ -1621,12 +1681,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const functional = conversation === null || extras.view ? (s.functional?.script ?? '') : RESULT_REVIEW_SCRIPT;
       const document = shell(s.title, s.body, { chrome: s.chrome, sensitive });
       return page(response, status, browserWorkspaceDocument(document, workspace, nonce,
-        functional + MOBILE_VIEWPORT_SCRIPT), nonce, true);
+        functional + MOBILE_VIEWPORT_SCRIPT + keyFill), nonce, true);
     }
     // A one-time secret on screen (a token, an invite link, a pairing code): the
     // page carries no script of any kind, so it leaves the workspace for a
     // focused page in the same look: the brand, the one card, and the way back.
-    if (s.forceSensitive === true) return page(response, status, focusDocument(s.title, s.body));
+    // Easy-start C2: but for the key fill when it has a form that posts (the fill reads nothing on the page).
+    if (s.forceSensitive === true) {
+      if (keyFill === "" || !/<form\b[^>]*method="post"/i.test(htmlString(s.body))) return page(response, status, focusDocument(s.title, s.body));
+      const nonce = randomBytes(16).toString("base64");
+      return page(response, status, focusDocument(s.title, s.body, { nonce, script: keyFill }), nonce);
+    }
     const chromeLayer = !sensitive && s.chrome !== undefined;
     const functional = s.functional?.script ?? "";
     // Sensitive pages strip the palette and keys but keep the sidebar toggle.
@@ -1634,7 +1699,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Kit markup the workspace bundle would have wired (a composer, an overlay, a switch, an idea) gets the kit's own small
     // behaviour here (kit-standalone.ts); never on a sensitive page, which carries no chrome additions.
     const kitBehavior = chromeLayer && KIT_BEHAVIOR_MARKUP.test(htmlString(s.body)) ? KIT_STANDALONE_SCRIPT : "";
-    const script = functional + (chromeLayer ? chromeScript() + WORKSPACE_MOTION_SCRIPT + kitBehavior : sensitiveChrome);
+    const script = functional + (chromeLayer ? chromeScript() + WORKSPACE_MOTION_SCRIPT + kitBehavior : sensitiveChrome) + keyFill;
     const nonce = script === "" ? undefined : randomBytes(16).toString("base64");
     const body = chromeLayer
       ? html`${s.body}\n${paletteTagCached(s.chrome?.project ?? null)}\n${KBD_HELP}`
@@ -1910,7 +1975,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Every POST passes the shared mutation guard. Caller, scope, project (including a limited account's posted repo)
     // and role were admitted by the route table.
     const denied = authorizeMutation(request, who, readForm(posted, CONSOLE_FORMS.mutationGuard));
-    if (denied !== null) return refuse(response, who, denied.status, denied.message);
+    if (denied !== null) return refuse(response, who, denied.status, denied.message, "/", denied.reconnect?.kind === "password" ? { label: "Reconnect", href: denied.reconnect.href } : undefined);
     // Standing can change after a token was minted: a viewer's act stays refused, cookie and bearer alike, except
     // the row's session-local acts.
     if (who.role === "viewer" && !route.viewer) return refuse(response, who, 403, "your login can watch, not act — ask an approver to upgrade you");
@@ -2215,6 +2280,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get firstTasks(): ServerRuntime['firstTasks'] { return firstTasks; },
     get authenticateCredential(): ServerRuntime['authenticateCredential'] { return authenticateCredential; },
     get identities(): ServerRuntime['identities'] { return identities; },
+    get keyEpoch(): ServerRuntime['keyEpoch'] { return keyEpoch; },
+    get browserKeys(): ServerRuntime['browserKeys'] { return browserKeys; },
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime);
@@ -2225,6 +2292,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
   const remoteRuntime: RemoteRuntime = {
     get identify() { return identify; },
+    get browserKeys() { return browserKeys; },
     get freshFactsOf() { return freshFactsOf; },
     get store() { return store; },
     get admitPasswordSource() { return admitPasswordSource; },
@@ -2283,7 +2351,41 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return withEdgePolicy(route, () => registry.edge(route, { ...ctx, route }));
   }
 
-  return Object.assign(server, { mintSignInLink, closeCoding });
+  /** Easy-start C1: the local owner a browser session acts as on an allowed row, bound to its session's saved row and
+   * the generations it was made under; null when it no longer stands (refused like any other row). */
+  function localPrincipalOf(who: Extract<Who, { via: "cookie" }>, route: RouteDeclaration): LocalPrincipal | null {
+    const sessionHash = sessions.hashOf(who.session);
+    if (route.localAct === null || who.session.localGeneration === null || sessionHash === null) return null;
+    const principal: LocalPrincipal = { account: who.name, localGeneration: who.session.localGeneration, accountGeneration: who.session.generation,
+      transport: "browser", act: route.localAct, sessionHash, request: { ended: false } };
+    return localOwnerStandsNow(store, principal) ? principal : null;
+  }
+  /** What a local owner hears on a row not marked for it: set a first password, or sign in with the one set. */
+  function refuseLocalOwner(response: ServerResponse, who: Who, method: string, url: URL, accept: string | undefined): void {
+    // The page it was refused on, built here from the request (never from a header): a form's nearest page above it.
+    const words = localOwnerRefusal(store.accountOf(who.name)?.passwordSet === true, refusalNext(method, url));
+    // Which refusal this was, for the shell (it offers the same way on) and the route inventory's rule table.
+    response.setHeader("x-toolroll-refused", "local-owner");
+    if (String(accept ?? "").includes("application/json")) return respond(response, 403, "application/json", JSON.stringify({ ok: false, said: words.message, href: words.href }));
+    return refuse(response, who, 403, words.message, words.href, { label: words.action, href: words.href });
+  }
+
+  // Defined last, so the reviewed functions above keep their places (password-freshness.test.ts).
+  function holdSignInLink(link: SignInLink): string {
+    for (const [key, one] of signInLinks) if (one.expires < Date.now()) signInLinks.delete(key);
+    while (signInLinks.size >= 20) signInLinks.delete(signInLinks.keys().next().value!);
+    const code = randomBytes(32).toString("base64url");
+    signInLinks.set(linkKey(code), link);
+    return `${SIGN_IN_LINK_PATH}${code}`;
+  }
+  /** Easy-start C4: a local owner's one-time link. It names no account: local mode's own owner, read now, while local
+   * mode is on and the owner is active. Redemption reads local mode again and issues only a local-owner session. */
+  function mintLocalLink(): string | null {
+    const binding = localOwnerBinding(store);
+    if (binding === null) return null;
+    return holdSignInLink({ kind: "local-owner", ...binding, expires: Date.now() + SIGN_IN_LINK_MS });
+  }
+  return Object.assign(server, { mintSignInLink, mintLocalLink, keyEpoch, closeCoding });
 }
 
 export { PAGE_CSS,pinnedTheme,SENSITIVE_INPUT } from "./server/chrome.js";

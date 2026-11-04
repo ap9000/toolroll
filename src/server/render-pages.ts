@@ -1077,7 +1077,7 @@ export function portfolioOverview(data: {
 
 export type OnboardCardState =
   | { enabled: false; why: string }
-  | { enabled: true; roots: readonly string[]; record: [string, { nameWithOwner: string; rootIndex: number; target: string; diskUsageKib: number | null; large: boolean; mintedAt: number }] | null };
+  | { enabled: true; roots: readonly string[]; /** Easy-start: the local owner's own session (no password to type; the prover's local-owner branch proves the clone). */ localOwner?: boolean; record: [string, { nameWithOwner: string; rootIndex: number; target: string; diskUsageKib: number | null; large: boolean; mintedAt: number }] | null };
 
 export type ProjectPeek = { waiting: number; queued: number; running: number; doneRecently: number };
 
@@ -1221,7 +1221,7 @@ export function queueScript(): string {
     `function problem(task,text){var card=region.querySelector('.queue-card[data-task="'+task.replace(/["\\\\]/g,"")+'"]');if(!card)return false;` +
     `var old=card.querySelector(".queue-problem");if(old)old.remove();` +
     `var row=document.createElement("p");row.className="problem queue-problem";row.setAttribute("role","alert");row.textContent=text;card.appendChild(row);return true;}` +
-    `fetch("/queue/move",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:post.toString(),redirect:"manual"})` +
+    `fetch("/queue/move",{method:"POST",headers:(window.soKeyHeaders||function(h){return h})({"Content-Type":"application/x-www-form-urlencoded"}),body:post.toString(),redirect:"manual"})` +
     `.then(function(r){if(r.ok)return fetch("/queue?fragment=1",{redirect:"manual",cache:"no-store"}).then(function(f){` +
     `if(f.type==="opaqueredirect"||f.status===401||f.status===403){location.href="/login";return false;}return f.ok?f.text():null;});` +
     `if(r.type==="opaqueredirect"||r.status===401||r.status===403){location.href="/login";return false;}` +

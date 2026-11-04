@@ -84,7 +84,7 @@ import { startConnect } from "../mcp-connect.js";
 import { decideProposal,listProposals,memoryStatus } from "../memory-pass.js";
 import { checkModels,isNewModel,modelOptions,modelWords,RUNTIME_TOOLS,runtimeStates,seenModels,setWatch,updateRuntime,watchState,type RuntimeTool } from "../model-catalog.js";
 import { modelsHtml,modelsScript,type RoleView } from "../models-ui.js";
-import { ALL_SLOTS,applyModelChoices,browserWords,checkScope,DEFAULT_PRESET,isPresetName,newerModels,PRESETS,presetChange,presetInUse,previewModelChange,recentRuns,rowAt,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
+import { ALL_SLOTS,applyModelChoices,browserWords,checkScope,DEFAULT_PRESET,defaultAgentOf,fillDefaultRouting,isPresetName,newerModels,PRESETS,presetChange,presetInUse,previewModelChange,recentRuns,rowAt,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
 import { HEADROOM_FIVE_HOUR_LIMIT,HEADROOM_WEEKLY_LIMIT,exactModelId } from "../phase-routing.js";
 import { RISKY_MEANS,SIZE_MEANS,SIZING_CLAUDE_MODEL } from "../task-sizing.js";
 import { CHAT_APPROVE_ALL,MODE_MAX_DAYS,modeDigestOf,modeTermsJson,modeWords,presetTerms,type ModeName,type ModeTerms } from "../modes.js";
@@ -97,6 +97,7 @@ import { parseProjectConcurrency,saveProjectConcurrency } from "../project-concu
 import { MAX_NETWORK_HOSTS, normalizeHost } from "../egress.js";
 import { isWritesMode } from "../writes-mode.js";
 import { isCheckAccess, signInsUnavailableWords, widerThan } from "../check-access.js";
+import { LOCAL_MODE_CONFINES, localModeOn } from "../local-owner.js";
 import { parseMachLookup, parseReadDeny } from "../project-sandbox.js";
 import { projectDeleteConfirmHtml,projectSettingsHtml } from "../project-delete-ui.js";
 import { deleteProject,holdingsWords } from "../project-delete.js";
@@ -134,7 +135,7 @@ import { sweepSchedule } from "../storage-sweep-schedule.js";
 import { storageHtml } from "../storage-ui.js";
 import { landedSummary } from "../landed-cleanup.js";
 import { bytesWords,parseCleanup } from "../storage.js";
-import { isDigestTime,liveBackupState,RESULT_SCREENSHOTS,setLiveBackupSettings,type ResultScreenshots } from "../store.js";
+import { isDigestTime,liveBackupState,localModeOf,RESULT_SCREENSHOTS,setLiveBackupSettings,setLocalModeOff,type ResultScreenshots } from "../store.js";
 import { defaultLiveFolder,liveFolderOf,liveFolderProblem } from "../live-backup.js";
 import { LIVE_EVERY } from "../backup-ui.js";
 import { checkTeamsCredentials,clearTeamsCredentials,loadTeamsCredentials,saveTeamsCredentials,TeamsError } from "../teams-api.js";
@@ -734,6 +735,11 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       passwordless,
       sso: operator ? (() => { try { const sso = ssoSettings(); return sso === null ? null : sso.label ?? "your identity provider"; } catch { return null; } })() : null,
       access: { sessions: store.webSessions(who.name).length, tokens: store.apiTokens(who.name).filter(one => one.revokedAt === null && Date.parse(one.expiresAt) > now.getTime()).length },
+      local: (() => {
+        const mode = localModeOf(store);
+        if (mode === null || !mode.enabled || who.via !== "cookie") return null;
+        return { owner: who.authority !== "full", passwordSet: store.accountOf(who.name)?.passwordSet === true, canTurnOff: who.authority === "full" && operator };
+      })(),
       backup: lastBackup === null ? null : lastBackup.ok === false
         ? { failed: true, words: `Failed ${when(lastBackup.startedAt)}${lastBackup.error === null ? "" : `: ${lastBackup.error}`}` }
         : { failed: false, words: lastBackup.finishedAt === null ? "Backing up now" : `Backed up ${when(lastBackup.finishedAt)}` },
@@ -2122,8 +2128,15 @@ ${postForm("/settings/chat-approval/save", html`\
       const words = asked === null ? `No agent is signed in on this computer yet. Run ${agentSignInCommand()}, then try again.` : `${asked === "claude" ? "Claude Code" : "Codex"} isn't signed in on this computer yet.`;
       return redirect(response, back ?? chatReturnWithSaid("/settings/lead", words));
     }
-    // Choosing the one already in use changes nothing (its daily turns and the rest stay as set).
-    if (store.getChatConfig()?.provider !== provider) store.setChatConfig({ provider, model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, who.name, now);
+    // Choosing the one already in use changes nothing (its daily turns and the rest stay as set). The local owner's
+    // choice also starts the installation's models on that agent's default preset, in the same write, while nothing
+    // is chosen yet (model-choices.ts fillDefaultRouting): its first task can then be planned and approved without a
+    // password. A full session's choice is as before: its models are Settings → Models'.
+    store.transact(() => {
+      if (store.getChatConfig()?.provider !== provider) store.setChatConfig({ provider, model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, who.name, now);
+      const agent = defaultAgentOf(provider);
+      if (who.via === "cookie" && who.authority === "local-owner" && agent !== null) fillDefaultRouting(store, agent, who.name, { kind: "local-owner" }, now);
+    });
     return redirect(response, back ?? "/chat");
   }
 
@@ -2308,6 +2321,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.sign-in": signInPage,
     "settings.passwordless": passwordlessPage,
     "settings.passwordless-send": passwordlessSave,
+    "settings.local-mode-off": localModeOff,
     "settings.release-approval-send": releaseApprovalSave,
     "settings.lead": leadPage,
     "settings.teams": teamsPage,
@@ -2457,6 +2471,8 @@ ${postForm("/settings/chat-approval/save", html`\
     const unavailable = wanted === "sign-ins" ? signInsUnavailableWords(options.platform ?? process.platform) : null;
     if (unavailable !== null) return back("problem", `${unavailable} Nothing changed.`);
     const widening = widerThan(wanted, store.projectCheckAccess(repo));
+    // Easy-start C5: while local mode is on, this installation always confines; said before the password.
+    if (wanted === "unsandboxed" && localModeOn(store)) return back("problem", `${LOCAL_MODE_CONFINES} Nothing changed.`);
     // Sign-ins with an open network: a second, explicit yes, said before the password.
     if (wanted === "sign-ins" && widening && store.projectNetwork(repo).mode === "open" && body.get("confirm-open") !== "yes") {
       return back("problem", "This project's network is open: confirm that its checks could send your sign-ins to any host. Nothing changed.");
@@ -2581,6 +2597,24 @@ ${postForm("/settings/chat-approval/save", html`\
     const result = applyModelChoices(store, { scope, change, expected: { state: body.get("digest") ?? "", change: body.get("change") ?? "" }, strict: true, knownProject: repo => consoleProjects().includes(repo) }, modelsAuthority(who, proved.method), now);
     const said = modelsSaid(result, isPresetName(preset) ? PRESETS[preset].label : `Switched to ${to}`);
     return back(said.key, said.words);
+  }
+  // Easy-start C5: turning local mode off (Settings → People and sign-in), from a full session only: an instance
+  // operator's step-up, proved and written in one transaction. It bumps local mode's generation, so every local-owner
+  // session, link and approval bound to the old one stops standing. It is never turned back on here.
+  async function localModeOff(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.localModeOff);
+    const back = sayTo(response, "/settings/access", "#local-mode");
+    if (body.sent.getAll("password").length > 1) return back("problem", "That form was sent twice over. Nothing changed.");
+    if (who.authority !== "full") return back("problem", "Sign in with your password to turn off local mode.");
+    const turned = store.transact(() => {
+      if (!authenticateApprover(who, body.get("password") ?? "").ok) return null;
+      return setLocalModeOff(store, { name: who.name, authority: who.authority }, now);
+    });
+    if (turned === null) return back("problem", "Enter your Toolroll password to turn off local mode.");
+    if (!turned.ok) return back("problem", turned.reason === "not-on" ? "Local mode is already off." : "Only an instance operator can turn off local mode.");
+    return back("said", "Local mode is off. This computer's browser signs in with your password now.");
   }
   return { registrations, modelsView };
 }

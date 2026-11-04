@@ -21,6 +21,7 @@ const COOKIE_ONLY_POSTS = [
   'chat.config', 'chat.mate-mint', 'chat.mate-follow', 'chat.mate-end', 'chat.mate-stop',
   // The lead queue: removing your own waiting message, from a browser.
   'chat.queued-remove',
+  'agents.seen', 'agents.watch',
   'chat.send', 'chat.file', 'chat.ack-send',
   // Cockpit E: Show in Finder reveals a proved checkout — a person's act in their own browser.
   'run.act.reveal',
@@ -29,6 +30,8 @@ const COOKIE_ONLY_POSTS = [
   'term.start', 'term.close', 'term.remove',
   // Passwordless: an operator's switch, from a browser (on proves a typed password in the handler; off is one click).
   'settings.passwordless-send',
+  // Easy-start C5: turning local mode off, an operator's step-up from a full browser session.
+  'settings.local-mode-off',
   // Release approval: an approver's project switch, from a browser (automatic proves a typed password in the handler).
   'settings.release-approval-send',
   // Quiet page visits (docs/plans/get-side-effects.md): asking this computer's agent CLIs again, listing GitHub
@@ -60,7 +63,7 @@ const PASSWORD_CEREMONIES = [
   '/settings/chat-approval/confirm', '/settings/chat-approval/save', '/settings/project/live-view',
   '/control/instructions-approve', '/control/setup-approve', '/fleet/runner/register', '/fleet/runner/retire',
   '/mode/sign', '/mode/confirm', '/people/projects', '/people/invite', '/people/invite-revoke', '/people/revoke',
-  '/projects/onboard-confirm', '/push/subscribe',
+  '/projects/onboard-confirm', '/push/subscribe', '/settings/local-mode/off',
   '/chat/config', '/chat', `/chat/file/${'a'.repeat(32)}`, '/chat/ack/1',
   '/t/guarded/confirm-stopped', '/t/guarded/reopen', '/t/guarded/accept-revision', '/t/guarded/resume', '/t/guarded/approve',
 ];

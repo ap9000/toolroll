@@ -7,6 +7,57 @@ full and approved before anything is built, and the approval is bound to
 exactly those terms. Results wait for a person to accept them. Releases pass
 the project's own check command before they can be deployed.
 
+## Toolroll on your own computer
+
+A new install started with `toolroll` (or `toolroll up --laptop`) has one
+owner and no password. The browser on this computer and the terminal screen
+act as that owner. This is **local mode**.
+
+**Who it protects you from.** Programs you run yourself, as your own user and
+outside Toolroll's fence, are you: they can already read your files and use
+your browser, so Toolroll doesn't pretend to stop them. Its checks for "a
+coding agent is running this" or "this is a terminal" keep you from mistakes;
+they are not walls. Agents Toolroll starts are a different matter: while
+local mode is on, every agent, check, setup command and flow script runs
+inside the fence, whatever was saved before, and anything that would run
+outside it is refused.
+
+**What the owner can do without a password:** file tasks and chat with the
+lead, approve a plan, answer an agent's question, stop, pause or resume a
+build, mark a result Complete, ask for a revision, archive a task, add a
+project, and choose Claude Code or Codex as the default agent. A plan
+approved this way is attended work only: protected (two-person) work, raised
+permissions, releases and deployments, work a coordinator filed, and
+projects whose checks run outside the fence all need a password. A local
+approval stops counting the moment local mode is turned off.
+
+**What always needs a password:** hands-off modes, merging and publishing,
+releases, people and access, API tokens, credentials and secrets, settings
+changes, browser terminals, team conversations, and letting an MCP client
+sign in. Where one of these is refused, the page offers **Set a password**
+(or `toolroll password set` at your terminal). Setting it signs every tab
+and the terminal in again; local mode stays on, so attended work still
+needs none. An instance operator can turn local mode off in **Settings →
+People and sign-in**, with the password; it is never turned back on from
+there.
+
+**The browser key.** On an install that listens only on this computer, a
+signed-in cookie isn't enough to change anything. When you sign in (the
+link `toolroll` and `toolroll open` use, your password, or a reconnect),
+Toolroll hands the browser a key, once, that only pages at
+`http://127.0.0.1:<port>` can read. Every change sends it. A page on another
+port, even one holding your cookie, can read but not act. Each restart of
+Toolroll makes the old keys stale: an open tab then says **Toolroll
+restarted — reconnect**. As the owner, run `toolroll open`; with a password,
+type it to reconnect.
+
+**What remains.**
+
+- An agent that controls your real browser can act as you there.
+- A stolen cookie can read pages and sign you out, but can't change
+  anything.
+- On these installs, making changes in the browser needs JavaScript.
+
 ## Agents can't read Toolroll's secrets
 
 Agents run as your own user, so without a fence they could read your saved

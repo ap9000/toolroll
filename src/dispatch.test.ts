@@ -5,6 +5,7 @@ import {
   diagnosisIsDispatchable,
   taskReadinessBlocker,
   withDispatchDiagnoses,
+  retryWhenWords,
 } from "./dispatch.js";
 import { register } from "./runner.js";
 import { addApprover, approve } from "./scope.js";
@@ -269,7 +270,7 @@ describe("Never Stuck dispatch diagnosis", () => {
     expect(store.activeHold(ref, T0)?.reason).toMatch(/^The agent stopped before handing off; its work was kept and it is being resumed/);
     expect(diagnoseTaskDispatch(store, "t-handoff", T0)).toMatchObject({
       code: "retry-scheduled",
-      detail: expect.stringMatching(/^The agent stopped before handing off; its work was kept and it is being resumed\. The next attempt is eligible at /),
+      detail: expect.stringMatching(/^The agent stopped before handing off; its work was kept and it is being resumed\. It tries again (in under a minute|in \d+ minutes)\.$/),
     });
   });
 
@@ -289,5 +290,20 @@ describe("Never Stuck dispatch diagnosis", () => {
     store.touchRunner("worker", after);
     expect(diagnoseTaskDispatch(store, "t-quota", after)?.code).toBe("ready");
     expect(store.handle.prepare("SELECT state FROM quota").get()?.["state"]).toBe("exhausted");
+  });
+});
+
+describe("retryWhenWords: when a backed-off task tries again, in words", () => {
+  const now = new Date("2026-11-04T10:15:00.000Z");
+  const at = (ms: number) => new Date(now.getTime() + ms).toISOString();
+  test("soon, minutes, later today, tomorrow, further out; never a raw stamp", () => {
+    expect(retryWhenWords(at(20_000), now)).toBe("in under a minute");
+    expect(retryWhenWords(at(-5_000), now)).toBe("in under a minute");
+    expect(retryWhenWords(at(5 * 60_000 + 22_591), now)).toBe("in 6 minutes");
+    expect(retryWhenWords(at(3 * 3_600_000), now)).toBe("at 13:15 UTC");
+    expect(retryWhenWords(at(20 * 3_600_000), now)).toBe("tomorrow at 06:15 UTC");
+    expect(retryWhenWords(at(5 * 86_400_000), now)).toBe("on Nov 9 10:15 UTC");
+    expect(retryWhenWords("not a time", now)).toBe("soon");
+    for (const ms of [20_000, 6 * 60_000, 3 * 3_600_000, 5 * 86_400_000]) expect(retryWhenWords(at(ms), now)).not.toMatch(/\dT\d|Z$/);
   });
 });

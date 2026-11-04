@@ -329,6 +329,8 @@ export function applyProposalTap(
     return { effects, confirmed: false, ignored: true };
   }
   const outcome = confirmLeadProposal(store, who, proposal.id, now, {
+    // The paired phone speaks for its account's full authority (pairing is a full session's act).
+    authority: "full",
     via: "telegram",
     evidenceRoot: options.evidenceRoot,
     confirm: action.phase === "yes",

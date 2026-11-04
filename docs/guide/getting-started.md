@@ -2,26 +2,64 @@
 
 ## Install
 
-On macOS or Linux, with Node.js 22.13 or newer and git 2.41 or newer:
+On macOS or Linux, with Node.js 22.13 or newer, git 2.41 or newer, and
+Claude Code (`claude`) or Codex (`codex`) signed in on this computer:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
 ```
 
-It installs the `toolroll` command and starts it with your projects in
-`~/Projects`. `standing-orders`, the older name, still works. You can also run
-it without installing: `npx toolroll up`.
+It installs the `toolroll` command and opens Toolroll in this terminal with
+your projects in `~/Projects`. If it can't reach a terminal (a script, CI),
+it prints the command that starts it instead. `standing-orders`, the older
+name, still works. With npm instead:
 
-The first start creates your login, saves the password in
-`~/.config/toolroll/.toolroll-secrets/up-login.txt` and opens the console at
-http://127.0.0.1:4180, already signed in. Every start prints where that
-file is and the command that shows the password
-(`cat ~/.config/toolroll/.toolroll-secrets/up-login.txt`); the password itself is never
-printed.
+```sh
+npm install -g toolroll
+toolroll
+```
 
 To look around first, `npx toolroll demo` opens a throwaway sandbox
 with tasks and two flows already mid-flight. It never spends and never
 reaches outside.
+
+## Your first run
+
+Type `toolroll` at your terminal. It starts Toolroll on this computer, or
+opens the one already running, and shows it right there: your tasks, what
+each agent is doing and what needs you.
+
+- **No password.** A new install on your own computer signs you in as its
+  owner. There is no login file to find. You can watch and drive your work,
+  approve plans and add projects without one.
+- **Three steps to a first result.** Pick the agent (Claude Code or Codex;
+  each shows the command that signs it in), a project (a folder, one of your
+  GitHub repositories, or a small sample project), and a first task from a
+  few starters. `toolroll welcome` shows the same steps; in the browser they
+  are on the welcome page.
+- **Approve and collect.** The plan shows in full; approve it with `a`, with
+  no password. The result comes back **Ready**: mark it Complete with `c`, or
+  ask for a revision with `r`. `?` lists every key.
+- **The browser.** Press `w`, or run `toolroll --web`. It opens signed in.
+  `toolroll open` gets you back in from any terminal, signed in again.
+- **Quitting.** `q` asks whether to stop the agents (running work is saved)
+  or keep Toolroll running in the background. The first time, Toolroll asks
+  once whether to keep running in the background; change it later with
+  `toolroll background on` or `off` (see
+  [Running unattended](unattended.md#keeping-it-running)).
+
+Toolroll is at `http://127.0.0.1:4180`. If another program already uses that
+port when you first start, a new install takes the next free one and keeps
+it.
+
+### Letting agents work on their own
+
+Work you start and approve on this computer needs no password. Hands-off
+modes, merging, releasing, people and access, and most settings ask you to
+set one first. When you reach one, the page says **Set a password**; or run
+`toolroll password set` at your terminal (typed twice, never a flag or a
+file). Every open tab and the terminal then sign in again, and approving
+your own work still needs no password.
 
 ### Other ways to install
 
@@ -48,9 +86,11 @@ clone (`git clone --filter=…`) is refused for Toolroll's protected reads: use
 git 2.45 or newer for those, or a full clone. CI runs the git tests on 2.41
 and on 2.47.
 
-### More about `up`
+### Starting with `toolroll up`
 
-Choose your projects folder the first time:
+`toolroll up` is the start for a team server, a computer reached from a
+phone, or an install made before the bare `toolroll` start. Choose your
+projects folder the first time:
 
 ```sh
 npx toolroll up --project-root ~/Projects
@@ -98,8 +138,8 @@ again. How an agent then drives Toolroll is in [Toolroll for agents](../agents.m
 Open **Projects** and add a folder or a GitHub repository. Any repository you
 put in the projects folder later connects by itself.
 
-Agents need a coding CLI signed in on this computer: Claude Code (`claude`),
-Codex (`codex`) or Gemini. Settings → AI providers shows which are connected.
+Agents need a coding CLI signed in on this computer: Claude Code (`claude`)
+or Codex (`codex`). Settings → AI providers shows which are connected.
 
 ## Your first task
 
@@ -204,12 +244,14 @@ upgrades itself on the first start; back it up first if you like:
 
 ## Step by step in the console
 
-There is one normal road: keep one `toolroll up` running on the machine. It
-is the app and the builder for every saved project. The separate console,
+There is one normal road: keep Toolroll running on the machine (`toolroll`
+at your terminal, or `toolroll up`). It is the app and the builder for every
+saved project. The separate console,
 worker and OS service commands are advanced deployment tools for people
 splitting those parts across machines (see [Running unattended](unattended.md)).
 
-1. **Sign in** with the login `up` printed. You land on the **inbox**:
+1. **Sign in.** A laptop install opens already signed in; otherwise use the
+   login `up` printed. You land on the **inbox**:
    everything that waits on you, and nothing else.
 2. **Describe the outcome** with **+ new task**. The normal path is one
    ChatGPT-style prompt: the planner inspects the open repository, drafts the
@@ -223,8 +265,11 @@ splitting those parts across machines (see [Running unattended](unattended.md)).
    can be signed. The task page leads with a concise approval card; the full
    structured, editable execution plan and full contract remain one click
    away. It restates the exact scope and rubric you are signing, the provider
-   and model it will run on, and asks for your password. Nothing spends a
-   token until this yes.
+   and model it will run on. On a laptop install, approving work you
+   started on this computer needs no password; protected work, raised
+   permissions and releases ask you to set one (or type it, once set).
+   Elsewhere it asks for your password. Nothing spends a token until this
+   yes.
 4. **Watch it build.** The **board** moves the card to *building*; the
    card's own page shows the stage, the live transcript, and, once the
    agent checkpoints one, which milestone is pending, in progress, done,
@@ -311,8 +356,11 @@ building right now refuses to be cancelled out from under it.
 
 Approving a scope is deliberately heavier than a click: the form restates
 the goal, the exclusions, and the touched paths (exactly the fields the
-approval digest binds) and requires your approver token typed again. A
-logged-in session alone can read everything and approve nothing.
+approval digest binds). On a laptop install, approving attended work on this
+computer needs no password; hands-off work, merges and releases ask you to
+set one first. On a console like this one, every approval asks for your
+password typed again, and a signed-in session alone can read everything and
+approve nothing.
 
 Plain HTTP, so keep it on localhost or a tailnet and put TLS in front for
 anything else. For a whole team on one host, see

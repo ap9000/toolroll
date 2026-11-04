@@ -9,6 +9,9 @@ import type { AuthMethod } from "./scope.js";
 const METHOD_IS_PERSON: Record<AuthMethod, boolean> = {
   "password-now": true, "sso-now": true, "fresh-password": true, "fresh-sso": true, "session": true, "cli-login": true,
   "remote-token": false, "lead-token": false,
+  // Easy-start C1: the laptop's own owner in an allowlisted act — a person, standing only while local mode stays on at
+  // the generation it was given under (approval-authority.ts localSealStandsSql).
+  "local-owner": true,
 };
 /** Proofs that aren't credential methods: the paired-chat tap, and the phone plan's passkey ceremony. */
 const OTHER_PERSON_PROOFS: ReadonlySet<string> = new Set(["chat", "passkey"]);

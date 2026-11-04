@@ -286,7 +286,10 @@ export type ApprovalSheetInput = {
   edit: { action: string; draft: URLSearchParams | null; problem: string | null; open: boolean; stepsHref: string | null } | null;
   /** Cockpit B2: this person's password is remembered (when, ISO) and these terms may stand on it. */
   freshSince?: string | null;
+  /** Easy-start C5: a laptop's local owner — eligible (no password field), or why not and where to go. */
+  localOwner?: LocalApprovalView | null;
 };
+export type LocalApprovalView = { eligible: true } | { eligible: false; message: string; href: string; action: string };
 
 /** The approval sheet: one form that restates every term it signs, the password, and Approve & start. */
 export function approvalSheetHtml(input: ApprovalSheetInput): Html {
@@ -297,8 +300,10 @@ export function approvalSheetHtml(input: ApprovalSheetInput): Html {
       parts.lead,
       parts.rows,
       html`<div class="approval-act" id="${input.surface === "task" ? "approval-confirm" : "chat-approval-confirm"}">`,
-      html`${reauth(html`<label class="approval-password"><span class="visually-hidden">Your password</span><input type="password" name="token" autocomplete="current-password" placeholder="Your password" aria-describedby="${parts.passwordNote}"></label>`)}`,
-      input.freshSince == null ? html`<p class="approval-password-note" id="${parts.passwordNote}">Your password signs this approval.</p>`
+      input.localOwner != null ? html`` : html`${reauth(html`<label class="approval-password"><span class="visually-hidden">Your password</span><input type="password" name="token" autocomplete="current-password" placeholder="Your password" aria-describedby="${parts.passwordNote}"></label>`)}`,
+      input.localOwner?.eligible === true ? html``
+        : input.localOwner != null ? html`<p class="approval-password-note" id="${parts.passwordNote}">${input.localOwner.message} <a href="${input.localOwner.href}">${input.localOwner.action}</a></p>`
+        : input.freshSince == null ? html`<p class="approval-password-note" id="${parts.passwordNote}">Your password signs this approval.</p>`
         : html`<p class="approval-password-note" id="${parts.passwordNote}" data-approval-fresh>Your password from ${whenTime(input.freshSince)} is remembered on this computer — leave this blank to approve with it, or type it again.</p>`,
       html`<button type="submit" data-primary-action>${parts.submit}</button></div>`,
       html`<p class="approval-after">${parts.after}</p>`,
@@ -884,6 +889,8 @@ export function approvalProofWords(proof: { method: string; at: string } | null 
   if (proof.method === "cli-login") return " (passwordless: this computer's remembered login)";
   if (proof.method === "chat") return " (from your paired chat)";
   if (proof.method === "carried") return " (carried from the release approval)";
+  // Easy-start C5: this computer's owner approving attended work in local mode, with no password.
+  if (proof.method === "local-owner") return " (on this computer, no password)";
   return "";
 }
 const whenText = (iso: string): string => new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
@@ -1513,6 +1520,8 @@ export function taskBodyParts(data: {
   steerRecent?: number[];
   /** Cockpit B2: when this person's remembered password was given, when it may approve these terms. */
   approvalFresh?: string | null;
+  /** Easy-start C5: the viewer is a laptop's local owner — whether this plan is one it approves without a password. */
+  approvalLocal?: LocalApprovalView | null;
   /** Cockpit B2: how the current approval's person was proved (approval proved ledger), when it was a remembered one. */
   approvalProof?: { method: string; at: string } | null;
   /** A release task the plane approved (or is checking) itself (docs/plans/auto-approve-green.md): its candidate. */
@@ -2101,6 +2110,7 @@ export function taskBodyParts(data: {
           nonce: data.nonce,
           digest: data.approvalDigest ?? scope.digest,
           freshSince: data.approvalFresh ?? null,
+          localOwner: data.approvalLocal ?? null,
           returnTo: null,
           scope,
           planDocument: data.plan === "drafted" ? data.planDocument : null,
@@ -3062,8 +3072,10 @@ export function approveKitOf(input: ApprovalSheetInput, freshSince: string | nul
     heading: rebuild !== null ? "The plan changed" : input.deliverable === "report" ? "Investigation ready" : "Plan ready",
     text: `Approving signs plan version ${input.scope.digest.slice(0, 12)} and ${after}.${allowing}`,
     kind: "standard",
-    facts: { passwordless: passwordlessRendering(), remembered: until !== null },
+    facts: { passwordless: passwordlessRendering() || input.localOwner?.eligible === true, remembered: until !== null },
     rememberedUntil: until,
+    // Easy-start C5: the owner approving on this computer needs no password, and the line says so (not "Passwordless").
+    ...(input.localOwner?.eligible === true ? { termsWords: "No password needed on this computer." } : {}),
     planHtml: htmlString(joinHtml([parts.lead, parts.rows, parts.editor ?? "", parts.details, parts.editorForm])),
   };
 }

@@ -517,3 +517,25 @@ export function watchedPing(store: Store, row: { kind: string; run: number | nul
   const seen = store.handle.prepare("SELECT 1 AS hit FROM agent_seen WHERE account = ? AND run = ?").get(account, boardRunOf(store, row.run));
   return seen === undefined ? "send" : "skip";
 }
+
+// ---- easy-start C1 (N1): the watch lease and the seen mark, from keyed POSTs only -------------------------------------
+
+/** A page's own watch id: 24 hex characters the shell makes (never a database row id). */
+export const AGENT_VIEW_ID = /^[0-9a-f]{24}$/;
+
+/**
+ * POST /agents/watch, hold: this person's page watches a run (renewed on each keep-alive). A view id another person
+ * already holds is never taken over or renewed: only the holder's own row moves. False when nothing was held.
+ */
+export function holdOwnAgentView(store: Store, view: string, account: string, run: number, at: Date): boolean {
+  if (!AGENT_VIEW_ID.test(view)) return false;
+  return Number(store.handle.prepare(`INSERT INTO agent_view (view, account, run, expires_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT (view) DO UPDATE SET expires_at = excluded.expires_at WHERE agent_view.account = excluded.account AND agent_view.run = excluded.run`)
+    .run(view, account, boardRunOf(store, run), new Date(at.getTime() + VIEW_LEASE_MS).toISOString()).changes) > 0;
+}
+
+/** POST /agents/watch, release: this person's page went away. Only their own view is released (and lapsed ones swept). */
+export function releaseOwnAgentView(store: Store, view: string, account: string, at: Date): void {
+  if (!AGENT_VIEW_ID.test(view)) return;
+  store.handle.prepare("DELETE FROM agent_view WHERE (view = ? AND account = ?) OR expires_at < ?").run(view, account, at.toISOString());
+}

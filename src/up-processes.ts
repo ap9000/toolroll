@@ -29,7 +29,13 @@ export type UpConsoleConfig = {
   projectRoots: string[];
   registryPath: string;
   editor: boolean;
+  /** Easy-start C4: how `up` itself was authorised at this start ("full": a password verified; "local": local mode's
+   * owner; "none": nothing). The console mints a sign-in link only of this kind, whatever a later message asks for. */
+  startAuthority: UpStartAuthority;
 };
+
+/** How an `up` start was authorised (resolveUpApprover). */
+export type UpStartAuthority = "full" | "local" | "none";
 
 export type UpWorkerConfig = {
   runner: string;
@@ -64,7 +70,9 @@ export type ParentToRole =
   | { type: "repos"; repos: string[] }
   | { type: "stopping" }
   | { type: "hard-stop" }
-  | { type: "sign-in-link"; id: number; account: string };
+  /** A full link names its account; a local one names none (the console reads local mode's owner itself). */
+  | { type: "sign-in-link"; id: number; kind: "full"; account: string }
+  | { type: "sign-in-link"; id: number; kind: "local" };
 
 export type RoleToParent =
   | { type: "ready"; role: UpRoleName; build: string; pid: number; url: string | null; port: number | null }
@@ -101,7 +109,13 @@ export function parentMessage(value: unknown): ParentToRole | null {
     case "repos": return texts(value["repos"]) ? { type: "repos", repos: [...value["repos"]] } : null;
     case "stopping": return { type: "stopping" };
     case "hard-stop": return { type: "hard-stop" };
-    case "sign-in-link": return whole(value["id"]) && nonEmpty(value["account"], 256) ? { type: "sign-in-link", id: value["id"], account: value["account"] } : null;
+    case "sign-in-link": {
+      if (!whole(value["id"])) return null;
+      // Exactly one of two shapes: a kind this build doesn't name, or a local request carrying an account, is no request.
+      if (value["kind"] === "full") return nonEmpty(value["account"], 256) ? { type: "sign-in-link", id: value["id"], kind: "full", account: value["account"] } : null;
+      if (value["kind"] === "local") return value["account"] === undefined ? { type: "sign-in-link", id: value["id"], kind: "local" } : null;
+      return null;
+    }
     default: return null;
   }
 }
@@ -135,10 +149,11 @@ export function startMessage(value: unknown): UpRoleStart | null {
   if (!isObject(config)) return null;
   const base = { type: "start" as const, databaseFile: value["databaseFile"], containment: value["containment"] as string | null, build: value["build"] };
   if (value["role"] === "console") {
-    const keys = ["host", "port", "allowedHosts", "publicUrl", "localRunner", "poolRoot", "repos", "projectRoots", "registryPath", "editor"];
+    const keys = ["host", "port", "allowedHosts", "publicUrl", "localRunner", "poolRoot", "repos", "projectRoots", "registryPath", "editor", "startAuthority"];
     if (Object.keys(config).some(key => !keys.includes(key))) return null;
     if (!nonEmpty(config["host"], 253) || !whole(config["port"], 0, 65_535) || !orNull(config["allowedHosts"], texts) || !orNull(config["publicUrl"], (one): one is string => nonEmpty(one, 2_048)) ||
-      !nonEmpty(config["localRunner"], 256) || !nonEmpty(config["poolRoot"], 4_096) || !texts(config["repos"]) || !texts(config["projectRoots"]) || !nonEmpty(config["registryPath"], 4_096) || typeof config["editor"] !== "boolean") return null;
+      !nonEmpty(config["localRunner"], 256) || !nonEmpty(config["poolRoot"], 4_096) || !texts(config["repos"]) || !texts(config["projectRoots"]) || !nonEmpty(config["registryPath"], 4_096) || typeof config["editor"] !== "boolean" ||
+      !(config["startAuthority"] === "full" || config["startAuthority"] === "local" || config["startAuthority"] === "none")) return null;
     return { ...base, role: "console", config: config as unknown as UpConsoleConfig };
   }
   if (value["role"] === "worker") {

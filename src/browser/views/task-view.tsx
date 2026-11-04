@@ -189,7 +189,7 @@ function ApprovalBox({ approve, latest, onEdit }: { approve: NonNullable<Browser
   const changed = latest == null || latest.fields["digest"] !== approve.fields["digest"];
   const until = approve.rememberedUntil === null ? null : new Date(approve.rememberedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const facts = { ...approve.facts, rememberedUntil: until };
-  const terms = termsOf(approve.kind, facts);
+  const terms = approve.termsWords ?? termsOf(approve.kind, facts);
   // Belt and braces: a press that lands while the editor opened is refused in place, never sent.
   const approveNow = (password: string | null) => editorOpen()
     ? Promise.resolve("Save or cancel your edit first: approving now would sign the plan as it was. Nothing changed.")
@@ -246,6 +246,9 @@ function headingOf(card: AssignmentCard): string {
     case "Ready for review": return "Ready for your review";
     case "Failed": return "A requirement was missed";
     case "Complete": return "Finished";
+    // The chip already says Queued: the heading says why it waits, never Queued again. A task that has run already
+    // waits to try again; one that hasn't, to start.
+    case "Queued": return card.attempts.some(one => one.runId !== null) ? "Retry scheduled" : "Waiting to start";
     default: return card.status.headline;
   }
 }

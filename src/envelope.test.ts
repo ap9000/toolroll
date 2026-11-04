@@ -140,6 +140,12 @@ describe("the machine envelope", () => {
       serve: ["--port", "99999999", "--json"], // invalid port: throws into the catch-all, which must envelope
       watch: ["--json"],
       daemon: ["--json"],
+      // The usage roads: nothing reaches a supervisor or signals a process.
+      background: ["sideways", "--json"],
+      stop: ["now", "--json"],
+      open: ["now", "--json"],
+      welcome: ["now", "--json"],
+      password: ["sideways", "--json"],
       bridge: ["--json"],
       publish: ["status", "--json"],
       reconcile: ["--json"],

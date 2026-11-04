@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
-import { createSampleProject } from "./sample-project.js";
+import { createSampleProject, registerSampleCheck, SAMPLE_CHECK_ACTOR, SAMPLE_CHECK_COMMAND } from "./sample-project.js";
+import { openStore } from "./store.js";
 
 let dir: string, root: string;
 beforeEach(() => {
@@ -78,5 +79,78 @@ describe("createSampleProject", () => {
     expect(await createSampleProject(null)).toMatchObject({ ok: false, reason: "no-root" });
     expect(await createSampleProject("relative/path")).toMatchObject({ ok: false, reason: "no-root" });
     expect(await createSampleProject(join(dir, "missing"))).toMatchObject({ ok: false, reason: "no-root" });
+  });
+});
+
+describe("registerSampleCheck", () => {
+  const T0 = new Date("2026-11-04T12:00:00.000Z");
+  test("the sample's own fixed check, recorded as Toolroll's, set once, and its one test passes under it", async () => {
+    const made = await createSampleProject(root);
+    if (!made.ok) throw new Error("sample");
+    const store = openStore(join(dir, "orders.db"));
+    try {
+      expect(registerSampleCheck(store, made, made.path, "alex", T0)).toBe(true);
+      expect(store.liveVerifyCommand(made.path)).toMatchObject({ command: SAMPLE_CHECK_COMMAND, approvedBy: SAMPLE_CHECK_ACTOR });
+      expect(SAMPLE_CHECK_ACTOR).toBe("toolroll");
+      const line = store.actionLedger({ repos: [made.path], instance: false, limit: 10 }).find(one => one.action === "check approved");
+      expect(line).toMatchObject({ actor: "toolroll", source: "policy" });
+      expect(line?.detail).toMatch(/sample project's own test .* when alex added the sample/);
+      // Again: nothing changes (one live check, not a second approval).
+      const first = store.liveVerifyCommand(made.path)!;
+      expect(registerSampleCheck(store, made, made.path, "alex", T0)).toBe(false);
+      expect(store.liveVerifyCommand(made.path)).toEqual(first);
+      // The command really is the sample's test.
+      const ran = await run("/bin/sh", ["-c", SAMPLE_CHECK_COMMAND], { cwd: made.path, env: { PATH: process.env["PATH"] ?? "" }, timeoutMs: 60_000 });
+      expect(ran.code, ran.stdout + ran.stderr).toBe(0);
+    } finally { store.close(); }
+  }, 60_000);
+
+  test("a sample found again (not made by this call) is never armed", async () => {
+    const first = await createSampleProject(root);
+    const again = await createSampleProject(root);
+    if (!first.ok || !again.ok) throw new Error("sample");
+    expect(again.created).toBe(false);
+    const store = openStore(join(dir, "orders.db"));
+    try {
+      expect(registerSampleCheck(store, again, again.path, "alex", T0)).toBe(false);
+      expect(store.liveVerifyCommand(again.path)).toBeNull();
+    } finally { store.close(); }
+  });
+
+  test("a check that was cleared stays cleared; one someone approved is never replaced", async () => {
+    const made = await createSampleProject(root);
+    if (!made.ok) throw new Error("sample");
+    const store = openStore(join(dir, "orders.db"));
+    try {
+      store.setVerifyCommand({ repo: made.path, command: "npm test", timeoutMs: 120_000, approvedBy: "sam" }, T0);
+      expect(registerSampleCheck(store, made, made.path, "alex", T0)).toBe(false);
+      expect(store.liveVerifyCommand(made.path)).toMatchObject({ command: "npm test", approvedBy: "sam" });
+      store.clearVerifyCommand(made.path, "sam", T0);
+      expect(registerSampleCheck(store, made, made.path, "alex", T0)).toBe(false);
+      expect(store.liveVerifyCommand(made.path)).toBeNull();
+      // A cleared quick check counts too.
+      const other = openStore(join(dir, "other.db"));
+      try {
+        other.setVerifyCommand({ repo: `quick:${made.path}`, command: "npm test", timeoutMs: 60_000, approvedBy: "sam" }, T0);
+        other.clearVerifyCommand(`quick:${made.path}`, "sam", T0);
+        expect(registerSampleCheck(other, made, made.path, "alex", T0)).toBe(false);
+        expect(other.liveVerifyCommand(made.path)).toBeNull();
+      } finally { other.close(); }
+    } finally { store.close(); }
+  });
+
+  test("only for the sample this made: any other folder, a link to the sample, or a relative path sets nothing", async () => {
+    const made = await createSampleProject(root);
+    if (!made.ok) throw new Error("sample");
+    const other = join(root, "shop");
+    mkdirSync(join(other, ".git"), { recursive: true });
+    symlinkSync(made.path, join(root, "linked"));
+    const store = openStore(join(dir, "orders.db"));
+    try {
+      for (const repo of [other, join(root, "linked"), "toolroll-sample", join(root, "missing")]) {
+        expect(registerSampleCheck(store, made, repo, "alex", T0), repo).toBe(false);
+        expect(store.liveVerifyCommand(repo), repo).toBeNull();
+      }
+    } finally { store.close(); }
   });
 });

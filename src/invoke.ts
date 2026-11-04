@@ -41,7 +41,8 @@ import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
 import { checkLaunchRoot, signInGrants, signInIsItself, type NetworkFence, type SignInGrants } from "./agent-fence.js";
-import { CHECK_ACCESS_DEFAULT, checkAccessHere, narrowestAccess, narrowestNetwork, signInsAvailable, type CheckAccess } from "./check-access.js";
+import { localModeOn } from "./local-owner.js";
+import { CHECK_ACCESS_DEFAULT, checkAccessHere, localModeCap, narrowestAccess, narrowestNetwork, signInsAvailable, type CheckAccess } from "./check-access.js";
 import { readDenyPath } from "./project-sandbox.js";
 import { sandboxRuntimeWords } from "./sandbox-runtime.js";
 import { canonicalJson } from "./canonical-json.js";
@@ -1099,8 +1100,9 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
     try {
       const temp = join(own, "tmp");
       mkdirSync(temp, { mode: 0o700 });
-      // Not sandboxed (check-access.ts): the project's checks are trusted by the whole instance, as before 0.9.66.
-      if (access === "unsandboxed") return await inner(file, args, { ...options, env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp } });
+      // Not sandboxed (check-access.ts): the project's checks are trusted by the whole instance, as before 0.9.66. Never
+      // while local mode is on (easy-start C5): then they run in the fence, sandboxed.
+      if (access === "unsandboxed" && !localModeOn(store)) return await inner(file, args, { ...options, env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp } });
       const fenced = runFence(store, runId, "command", undefined, own, writes, sandbox);
       if (fenced.problem !== undefined) return { code: 1, stdout: "", stderr: `${fenced.problem}\n`, timedOut: false, notFound: false };
       if (fenced.fence.length === 0) return inner(file, args, options);
@@ -1153,8 +1155,9 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
     try {
       const temp = join(own, "tmp");
       mkdirSync(temp, { mode: 0o700 });
-      // Not sandboxed (check-access.ts): the project's checks are trusted by the whole instance, as before 0.9.66.
-      if (access === "unsandboxed") return await inner(file, args, { ...options, env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp } });
+      // Not sandboxed (check-access.ts): the project's checks are trusted by the whole instance, as before 0.9.66. Never
+      // while local mode is on (easy-start C5): then they run in the fence, sandboxed.
+      if (access === "unsandboxed" && !localModeOn(store)) return await inner(file, args, { ...options, env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp } });
       let binding: WorktreeBinding;
       try { binding = trustedWorktreeBinding(repo, checkout); } catch {
         return { code: 1, stdout: "", stderr: "The check's checkout couldn't be bound to its project, so nothing ran.\n", timedOut: false, notFound: false };
@@ -1341,7 +1344,9 @@ export function actualCheckAccess(store: Store, access: CheckAccess): CheckAcces
  */
 export function checkoutLaunchOf(store: Store, repo: string, runIds: readonly number[], platform: NodeJS.Platform = process.platform): { access: CheckAccess; network: NetworkProfile | undefined } {
   // As checks can get it: sign-ins (off for now; a stamp or setting from before, or another database) run sandboxed.
-  const access = checkAccessHere(narrowestAccess([store.projectCheckAccess(repo), ...runIds.map(id => store.runCheckAccess(id))]), platform);
+  const asked = checkAccessHere(narrowestAccess([store.projectCheckAccess(repo), ...runIds.map(id => store.runCheckAccess(id))]), platform);
+  // Easy-start C5: while local mode is on, never unsandboxed (re-read here, at launch).
+  const access = localModeOn(store) ? localModeCap(asked) : asked;
   if (access !== "sign-ins") return { access, network: undefined };
   const sealed = runIds.map(id => store.runCheckNetwork(id));
   if (sealed.length === 0 || sealed.some(one => one === null)) return { access: CHECK_ACCESS_DEFAULT, network: undefined };

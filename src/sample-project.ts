@@ -14,6 +14,7 @@ import { run, type ExecResult, type RunOptions } from "./exec.js";
 import { SAMPLE_PROJECT_NAME } from "./first-run.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { TEARDOWN_FLAGS } from "./teardown-git.js";
+import type { Store } from "./store.js";
 
 export type GitRun = (file: string, args: readonly string[], options: RunOptions) => Promise<ExecResult>;
 export type SampleOutcome =
@@ -111,4 +112,31 @@ export async function createSampleProject(root: string | null, git: GitRun = run
     return fail();
   }
   return { ok: true, path: target, created: true };
+}
+
+/** The sample's own check: its one test file, run by Node's test runner. Fixed here; never anyone's input. */
+export const SAMPLE_CHECK_COMMAND = "node --test";
+const SAMPLE_CHECK_TIMEOUT_MS = 60_000;
+
+/** Who the sample's check is recorded as approved by: Toolroll itself, never the person who clicked (no step-up). */
+export const SAMPLE_CHECK_ACTOR = "toolroll";
+
+/**
+ * The sample project's check, set as part of making it, so its first result reads checked: the fixed command above,
+ * recorded as Toolroll's (SAMPLE_CHECK_ACTOR), with the person who added the sample named in the ledger line. Only
+ * for a sample this request just made (the caller passes createSampleProject's `created: true`; a folder found again
+ * is never armed), only for the folder this made (our marker in its .git), and only while the project has never had
+ * a check at all (no verify_command row, live or revoked, for it or its quick check): a check someone cleared stays
+ * cleared, and one someone approved is never replaced. It takes no command: this is not a way to set a project's
+ * check. True when it set one now.
+ */
+export function registerSampleCheck(store: Pick<Store, "transact" | "handle" | "setVerifyCommand" | "recordAction">, made: { path: string; created: boolean }, repo: string, addedBy: string, now: Date): boolean {
+  if (!made.created || !isAbsolute(repo) || !isOurs(repo)) return false;
+  return store.transact(() => {
+    if (store.handle.prepare("SELECT 1 FROM verify_command WHERE repo IN (?, ?) LIMIT 1").get(repo, `quick:${repo}`) !== undefined) return false;
+    store.setVerifyCommand({ repo, command: SAMPLE_CHECK_COMMAND, timeoutMs: SAMPLE_CHECK_TIMEOUT_MS, approvedBy: SAMPLE_CHECK_ACTOR }, now);
+    store.recordAction({ at: now.toISOString(), actor: SAMPLE_CHECK_ACTOR, repo, taskId: null, runId: null, action: "check approved", outcome: "approved", source: "policy",
+      detail: `the sample project's own test (${SAMPLE_CHECK_COMMAND}), set by Toolroll when ${addedBy} added the sample` });
+    return true;
+  });
 }

@@ -11,6 +11,7 @@ import { StatusGlyph, type GlyphKind } from "./components/ui/status-glyph.js";
 import { Button } from "./components/ui/button.js";
 import { FormToken, PostForm } from "./ui/index.js";
 import { KButton } from "./kit/index.js";
+import { keyed } from "./mutation-key.js";
 
 function Command({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
@@ -64,7 +65,7 @@ function useRecheck(href: string | null | undefined) {
     const later = (ms: number) => { window.clearTimeout(timer); if (!stopped) timer = window.setTimeout(() => { void ask(); }, ms); };
     const ask = async () => {
       try {
-        const answer = await fetch(href, { method: "POST", headers: { accept: "application/json" }, body: new URLSearchParams({ csrf }), cache: "no-store" });
+        const answer = await fetch(href, { method: "POST", headers: keyed({ accept: "application/json" }), body: new URLSearchParams({ csrf }), cache: "no-store" });
         const on = answer.ok && rechecked(await answer.json());
         if (stopped) return;
         // On, and the person is on their way elsewhere: ask again once the hold lapses (the new page, when it comes, ends this).
@@ -163,7 +164,7 @@ export function PhoneCard({ phone, csrf, dismissable = true }: { phone: BrowserP
     {dismissable && <PostForm action={phone.dismissHref} className="px-1.5 pb-0.5" onSubmit={event => {
       event.preventDefault();
       setHidden(true);
-      void fetch(phone.dismissHref, { method: "POST", body: new URLSearchParams({ csrf, quiet: "1" }) }).catch(() => {});
+      void fetch(phone.dismissHref, { method: "POST", headers: keyed({}), body: new URLSearchParams({ csrf, quiet: "1" }) }).catch(() => {});
     }}><Button className="max-[901px]:h-11 max-[901px]:min-h-11" variant="ghost" size="sm" type="submit">Not now</Button></PostForm>}
   </Frame></section>;
 }

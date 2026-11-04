@@ -1,3 +1,4 @@
+import { titleWithin } from "../task-text.js";
 import { parseFeedbackImage, sameFeedbackImage } from "../result-review.js";
 import { archiveTaskFamily, dropFeedbackImage, releaseAuthorityOfTask, restoreTaskFamily, revokeRelease, runLiveCommands } from "../store.js";
 import { applyTidy, approverStandsNow, familyRepoOf, releaseFactsOf, tidyDays, tidyDigest, tidyPreview, TIDY_DEFAULT_DAYS } from "../tidy.js";
@@ -71,7 +72,7 @@ acceptanceLinesToInput,
 acceptanceToLines,
 approvalOf,
 approve as approveScope,
-freshnessFor, spendingOnlyOnSuccess, ssoNowAvailable, withFreshness,
+freshnessFor, localApprovalEligible, spendingOnlyOnSuccess, ssoNowAvailable, withFreshness,
 modeFilingCoverage,PLACEHOLDER_RUBRIC,
 proposeGuarded,
 type UnattendedPermissionMode
@@ -88,7 +89,7 @@ import { runCostWords } from "../summary.js";
 import { requestTaskStop,resumeTaskStop } from "../task-control.js";
 import { templateByName } from "../templates.js";
 import { TEXT_LIMITS } from "../text-limits.js";
-import { agentQuestion,answerAgentQuestion,markAgentSeen } from "../agent-board.js";
+import { AGENT_VIEW_ID,agentQuestion,answerAgentQuestion,holdOwnAgentView,markAgentSeen,releaseOwnAgentView } from "../agent-board.js";
 import { WorkIndexCursorError,workIndexPage,type WorkIndexItem,type WorkIndexPage } from "../work-index.js";
 import {
 buildProgressOf,
@@ -614,9 +615,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       return sendScreen(response, 409, screen("Result changed", html`<h1>Result changed</h1><p>This acceptance link no longer matches the current result. Review the current task before accepting.</p><p class="refusal-back"><a class="button-link" href="/review">Review results</a></p>`, { chrome: chromeFor(project, "runs") }));
     }
     const selected = picked !== null ? picked.selected : selectedRow === null ? null : reviewCockpitViewOf(selectedRow, who, now);
-    // Opening a run's own result page is viewing it: it leaves this person's unread Done on the Agents board — but only
-    // once the run has finished (cockpit §3): a page shown while it was still running saw no finished version.
-    if (wantedId !== null && selected?.run != null && store.getRun(selected.run.id)?.finishedAt != null) markAgentSeen(store, who.name, selected.run.id, now);
+    // Opening a run's own result page is viewing it: the shell says so with a keyed POST /agents/seen (easy-start N1:
+    // a page load never writes), which leaves this person's unread Done once the run has finished.
     const reviewPage = reviewCockpitPage(chromeFor(wantedId === null ? project : chosenProject, "runs"), {
         queue: ranked,
         queueCap: REVIEW_QUEUE_CAP,
@@ -1053,7 +1053,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       }
     }
     const id = (body.get("id") ?? "").trim();
-    const title = body.get("title") ?? "";
+    // The New task box stops at a title's length (render-new-task.ts): the title is all the planner reads of a no-goal
+    // filing. A direct POST longer than that is cut at a whole word, with an ellipsis (task-text.ts titleWithin), as a
+    // belt; a refusal keeps the person's own words (the draft below).
+    const typed = body.get("title") ?? "";
+    const title = titleWithin(typed);
     // The EFFECTIVE placement (repo onboarding, findings 15/35): the
     // trimmed, nonempty posted repo, else the open project — an empty
     // input falls through correctly. In root mode the effective path is
@@ -1069,7 +1073,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // direct POST with no project open must not mint an unplaced task
     // under a ceiling. Unscoped mode keeps its historic unplaced filings.
     // A refusal from here on is the add page again with the person's own words (the old task list kept them too).
-    const draft: TaskComposerPrefill = { title, goal: body.get("goal") ?? "", not: body.get("not") ?? "", touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent };
+    const draft: TaskComposerPrefill = { title: typed, goal: body.get("goal") ?? "", not: body.get("not") ?? "", touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent };
     if (!unscopedMode && effective === "") {
       return newTaskScreen(ctx, 400, "name a repository — no project is open, so the task must say where it belongs", draft);
     }
@@ -2486,7 +2490,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         }
         // An empty password stands for an explicit identity-provider re-check not yet spent, or (cockpit B2) a password
         // remembered on this session; approve() decides whether these terms may stand on a remembered one.
-        if (token === "" && !passwordlessSessionFor(store, who.name) && !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null) {
+        // Easy-start C5: a laptop's local owner approves eligible work with no password (approve() proves it again).
+        if (token === "" && !passwordlessSessionFor(store, who.name) && !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null
+          && !(who.authority === "local-owner" && localApprovalEligible(store, who.name, taskId).ok)) {
           return approvalProblem("approval requires your password, typed again", 400);
         }
         const scopeRow = store.getScope(taskId);
@@ -3067,6 +3073,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
 
   const registrations = handlersOf("tasks", {
     ...tidyHandlers,
+    ...createAgentSignalHandlers(runtime),
     "code.page": showCode("workspace"),
     "code.session": showCode("session"),
     "code.state": showCode("state"),
@@ -3240,3 +3247,41 @@ export function retiredTasksAddress(route: "board" | "done", url: URL): string |
 
 /** How many cards a Board column shows; the column's count covers them all and its "View all" opens the list. */
 export const BOARD_COLUMN_LIMIT = 40;
+
+/**
+ * Easy-start C1 (N1): the two writes a page load used to make, as keyed POSTs the shell sends (wave 1c wires the
+ * browser). `agents.seen`: a finished result this person opened leaves their unread Done. `agents.watch`: hold (on each
+ * keep-alive) or release (on unload) the short lease that quiets chat pings while this person's page shows the agent.
+ * Each re-proves the run is in the person's projects; a reply carries nothing else.
+ */
+export function createAgentSignalHandlers(runtime: ServerRuntime) {
+  const { store, runVisible } = runtime;
+  const answer = (response: ServerResponse, status: number, ok: boolean) => respond(response, status, "application/json", JSON.stringify({ ok }));
+  const visibleRun = (who: HandlerContext["who"], raw: string | null) => {
+    const id = raw !== null && /^[1-9][0-9]{0,14}$/.test(raw) ? Number(raw) : null;
+    const run = id === null ? null : store.getRun(id);
+    const repo = run === null ? null : store.refForId(run.taskRef)?.repo ?? null;
+    return run === null || !runVisible(run) || !store.accountCanAccess(who.name, repo) ? null : run;
+  };
+  async function agentSeen(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const run = visibleRun(who, readForm(posted, CONSOLE_FORMS.agentSeen).get("run"));
+    if (run === null) return answer(response, 404, false);
+    // Only once it finished: a page shown while it ran saw no finished version (cockpit §3).
+    if (run.finishedAt === null) return answer(response, 409, false);
+    markAgentSeen(store, who.name, run.id, now);
+    return answer(response, 200, true);
+  }
+  async function agentWatch(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.agentWatch);
+    const view = body.get("view") ?? "", op = body.get("op");
+    if (!AGENT_VIEW_ID.test(view) || (op !== "hold" && op !== "release")) return answer(response, 400, false);
+    if (op === "release") { releaseOwnAgentView(store, view, who.name, now); return answer(response, 200, true); }
+    const run = visibleRun(who, body.get("run"));
+    if (run === null) return answer(response, 404, false);
+    const held = holdOwnAgentView(store, view, who.name, run.id, now);
+    return answer(response, held ? 200 : 409, held);
+  }
+  return { "agents.seen": agentSeen, "agents.watch": agentWatch };
+}

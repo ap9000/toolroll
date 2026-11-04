@@ -1,5 +1,6 @@
 /** Shared, exact-state actions. Models may prepare; only the existing human
  * confirmation door executes. Protected actions use a one-use review receipt. */
+import { CHAT_ACTION_LOCAL_ACTS, currentLocalOwner, type Authority } from "./local-owner.js";
 import { fileTaskProposal } from "./proposal.js";
 import { heuristicSizing } from "./task-sizing.js";
 import { cancelSweepRest, sweepOpen, sweepTable, VERDICT_RULE, type SweepOpenItem } from "./lead-sweep.js";
@@ -37,6 +38,7 @@ import { passwordlessSessionFor,
   scopeAuthorityOf,
   type ExecutionProfile,
   freshnessFor,
+  localApprovalEligible,
   spendingOnlyOnSuccess,
   ssoNowAvailable,
   withFreshness,
@@ -1140,6 +1142,8 @@ export function mintSharedActionReview(
 }
 export type SharedActionOptions = {
   via: "web" | "cli" | "telegram" | "slack" | "discord" | "teams";
+  /** Easy-start C5: a laptop's local owner confirms (the door decided the operation is one of its acts). */
+  authority?: Authority;
   root?: string;
   review?: { nonce: string; password: string };
   confirm?: boolean;
@@ -1161,6 +1165,9 @@ export function executeSharedAction(
     said: string,
   ) => ({ ok: false as const, reason, said });
   if (store.isDemo()) return refuse("refused", "The demo authorizes nothing.");
+  // Easy-start C1, a belt under the confirm door's own gate: a local owner runs only an operation that is one of its acts.
+  if ((options.authority === "local-owner" || currentLocalOwner() !== null) && (!isChatAction(payload.operation) || CHAT_ACTION_LOCAL_ACTS[payload.operation] === null))
+    return refuse("refused", "Set a password to do this.");
   let live: SharedAction;
   try {
     const saved = savedActionContext(store, who, id, "confirming");
@@ -1228,6 +1235,8 @@ export function executeSharedAction(
       config.password &&
       (emptyApproval
         ? !passwordlessSessionFor(store, who.name) && !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null
+          // Easy-start C5: a local owner's eligible approval takes no password (approve() proves it again in the seal).
+          && !(options.authority === "local-owner" && currentLocalOwner()?.act === "approve-plan" && typeof req["task"] === "string" && localApprovalEligible(store, who.name, req["task"]).ok)
         : proved?.ok !== true)
     )
       return refuse(

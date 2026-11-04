@@ -8,6 +8,7 @@ import { Input, Label, Textarea } from './components/ui/form-controls.js';
 import { Alert, Disclosure } from './ui/index.js';
 import { ActionCards } from './chat-cards.js';
 import { leaveFor } from './first-run.js';
+import { keyed } from './mutation-key.js';
 
 type Draft = { text: string; requestId: string; uncertain: boolean };
 const fresh = (): Draft => ({ text: '', requestId: crypto.randomUUID(), uncertain: false });
@@ -90,13 +91,13 @@ export function TeamChat({ initial, user, csrf, onSnapshot }: { initial: TeamSna
   useEffect(() => {
     if (!conversation || !lastMessage || revoked || document.hidden) return;
     // Personal reading does not wake a model or invalidate the shared stream.
-    void fetch('/api/team', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf }, body: JSON.stringify({ operation: 'read', args: { conversationId: conversation.id, messageId: lastMessage } }) }).catch(() => undefined);
+    void fetch('/api/team', { method: 'POST', credentials: 'same-origin', headers: keyed({ 'content-type': 'application/json', 'x-csrf-token': csrf }), body: JSON.stringify({ operation: 'read', args: { conversationId: conversation.id, messageId: lastMessage } }) }).catch(() => undefined);
   }, [conversation?.id, lastMessage, revoked, csrf]);
   async function execute(operation: TeamOperation, args: Record<string, unknown>): Promise<TeamResponse | null> {
     if (busyRef.current || revoked) return null;
     busyRef.current = true; setBusy(true); setProblem('');
     try {
-      const response = await fetch('/api/team', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf }, body: JSON.stringify({ operation, args }) });
+      const response = await fetch('/api/team', { method: 'POST', credentials: 'same-origin', headers: keyed({ 'content-type': 'application/json', 'x-csrf-token': csrf }), body: JSON.stringify({ operation, args }) });
       const value = await response.json() as TeamResponse;
       if (value.snapshot) accept(value.snapshot);
       if (!value.ok) { setProblem(value.message); if (value.code === 'delivery-unconfirmed' && operation === 'send') storeDraft({ ...state.current.draft, uncertain: true }); return null; }

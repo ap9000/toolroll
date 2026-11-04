@@ -1,5 +1,6 @@
 import { legacyNetwork, repositoryEcosystems, type NetworkProfile } from "./egress.js";
-import { CHECK_ACCESS_DEFAULT, checkAccessHere, checkNetworkOf, type CheckAccess } from "./check-access.js";
+import { CHECK_ACCESS_DEFAULT, checkAccessHere, checkNetworkOf, localModeCap, type CheckAccess } from "./check-access.js";
+import { localModeOn } from "./local-owner.js";
 import { checkoutGit } from "./teardown-git.js";
 import type { WritesMode } from "./writes-mode.js";
 import type { LaunchNetwork } from "./invoke.js";
@@ -559,7 +560,9 @@ function commandRunner(store: Store, runId: number, profile: ExecutionProfile, i
  * run sandboxed while sign-ins are off, and the run is stamped with that, what actually ran), and under sign-ins the network its
  * approval sealed less its agent's own provider hosts (never its checks'). */
 export function checkLaunchOf(store: Store, runId: number, profile: ExecutionProfile, platform: NodeJS.Platform = process.platform): { access: CheckAccess; network: NetworkProfile | null } {
-  const access = checkAccessHere(profile.checkAccess ?? CHECK_ACCESS_DEFAULT, platform);
+  // Easy-start C5: while local mode is on, a sealed unsandboxed level launches with at most sign-ins (re-read here, at launch).
+  const asked = checkAccessHere(profile.checkAccess ?? CHECK_ACCESS_DEFAULT, platform);
+  const access = localModeOn(store) ? localModeCap(asked) : asked;
   if (access !== "sign-ins") return { access, network: null };
   const taskRef = store.getRun(runId)?.taskRef;
   const sealed = taskRef === undefined ? undefined : launchNetworkOf(store, taskRef, profile);

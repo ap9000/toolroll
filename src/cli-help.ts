@@ -8,8 +8,12 @@ import { DEFAULT_MAX_DEPTH } from "./scan.js";
 export const HELP = `toolroll — a control plane for unattended coding agents
 
 Usage
-  toolroll                  in a repository: start Toolroll for it, or open the one already running
-                                   (under an agent or with --json: only says what it would do)
+  toolroll                  at your terminal: start Toolroll here (or attach) and open it in the terminal
+                                   (--web: the browser; --project-root <dir>: where projects live)
+                                   in a repository without a terminal, under an agent or with --json: only says what it would do
+  toolroll open [--web]     open this computer's Toolroll again, signed in
+  toolroll welcome          the three steps to a first result (--json: the model)
+  toolroll password set     add a password (typed twice, at your terminal)
   toolroll scan [path...]   report what is in flight (also bare \`toolroll\` outside a repository)
   toolroll [path...]        the same report for the paths given
   toolroll pulls            report what is waiting on a person

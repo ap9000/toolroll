@@ -64,6 +64,21 @@ export function ssoStepUps(page: Html, sso: { label: string; fresh: boolean }, r
   return replaceMarkup(labelled, /<input\b([^>]*)>/g, (_whole, attributes) => stepUp(attributes) ? swap(attributes) : null);
 }
 
+/**
+ * Easy start: for a local owner who has no password yet, every step-up password field (type=password with
+ * autocomplete="current-password", typed-only ones included) becomes "Set a password to do this." and the Set a
+ * password link, carrying this page on: there is no password to type. A new password, a secret or a key field is
+ * never one. The field's own label and hint go with it.
+ */
+export function localOwnerStepUps(page: Html, setHref: string): Html {
+  const stepUp = (attributes: string) => /\btype="password"/.test(attributes) && /\bautocomplete="current-password"/.test(attributes);
+  const instead = (): Html => html`<p class="k-note" data-local-step-up>Set a password to do this. <a class="k-link" href="${setHref}">Set a password</a></p>`;
+  const fields = replaceMarkup(page, /<div class="k-field"><label class="k-label" for="[^"]*">[^<]*<\/label><input\b([^>]*)>(?:<p class="k-hint"[^>]*>[^<]*<\/p>)?(?:<span class="k-err"[^>]*>[^<]*<\/span>)?<\/div>/g,
+    (_whole, attributes) => stepUp(attributes) ? instead() : null);
+  const labelled = replaceMarkup(fields, /<label\b[^>]*>[^<]*(?:<span\b[^>]*>[^<]*<\/span>)?[^<]*<input\b([^>]*)>\s*<\/label>/g, (_whole, attributes) => stepUp(attributes) ? instead() : null);
+  return replaceMarkup(labelled, /<input\b([^>]*)>/g, (_whole, attributes) => stepUp(attributes) ? instead() : null);
+}
+
 /** An expiry as a person reads it: "Thu 5 Nov, 10:42". */
 function expiryWords(iso: string): string {
   const at = new Date(iso);
@@ -88,6 +103,63 @@ export function loginPage(problem: string | null, returnTo = "/", sso: { label: 
   return shell("Sign in · Toolroll", outPage({
     brand: BRAND_HTML, brandHref: "/login", title: "Sign in", body,
     foot: html`${sso === null ? html`Forgot it? Your first login was shown when Toolroll started, and saved beside its database in <code>.toolroll-secrets/up-login.txt</code> on the computer running it.<br>` : ""}No account? Ask whoever runs this Toolroll for an invite link.`,
+  }), { nav: false });
+}
+
+/**
+ * Easy-start C2: reconnect this tab after a restart (or when it lost its key): the password again for a full session, an
+ * identity-provider sign-in for one that signs in there, or the terminal for a local owner (no password exists).
+ */
+export function reconnectPage(problem: string | null, returnTo: string, how: { kind: "password"; name: string } | { kind: "sso"; label: string } | { kind: "command" }): Html {
+  const back = returnTo === "/" ? null : returnTo;
+  const body = how.kind === "command"
+    ? html`<p>Run <code>toolroll open</code> on this computer to reconnect.</p>`
+    : how.kind === "sso"
+      ? btn(`Sign in with ${how.label}`, { variant: "primary", href: `/login/sso${back === null ? "" : `?return=${encodeURIComponent(back)}`}`, className: "k-wide" })
+      : postForm("/login/rekey", joinHtml([
+        outField({ id: "rekey-password", label: `Password for ${how.name}`, name: "token", type: "password", attrs: { autocomplete: "current-password", required: true, autofocus: true } }),
+        btn("Reconnect", { variant: "primary", type: "submit", className: "k-wide" }),
+      ]), { signedOut: true, returnTo: back, attrs: { class: "k-form" } });
+  return shell("Reconnect · Toolroll", outPage({
+    brand: BRAND_HTML, brandHref: "/", title: "Reconnect",
+    body: joinHtml([problem === null ? "" : html`<div class="k-refusal">${notice(problem)}</div>`, body]),
+    foot: html`Toolroll restarted, so this tab needs a fresh connection before it can make changes.`,
+  }), { nav: false });
+}
+
+/** Which /password/set field a refusal is about (null: the page itself). */
+export type PasswordSetProblem = { field: "password" | "again" | null; text: string };
+
+/**
+ * Easy-start C4: the local owner's first password. Two fields and one button; the form carries the session's CSRF token
+ * (render it inside withFormToken) and, through the page's key fill, the browser key and the act that was refused, to continue there. Neither typed
+ * password ever comes back on a refusal.
+ */
+export function passwordSetPage(view: { returnTo: string; problem: PasswordSetProblem | null }): Html {
+  const problem = view.problem;
+  const error = (field: "password" | "again"): string | null => problem !== null && problem.field === field ? problem.text : null;
+  const back = view.returnTo === "/" ? null : view.returnTo;
+  const form = postForm("/password/set", joinHtml([
+    outField({ id: "password-new", label: "Password", name: "password", type: "password", hint: `At least ${SIGNUP_PASSWORD_MIN} characters.`, error: error("password"),
+      attrs: { autocomplete: "new-password", required: true, minlength: SIGNUP_PASSWORD_MIN, ...(problem === null ? { autofocus: true } : {}) } }),
+    outField({ id: "password-again", label: "Type it again", name: "again", type: "password", error: error("again"),
+      attrs: { autocomplete: "new-password", required: true, minlength: SIGNUP_PASSWORD_MIN } }),
+    btn("Set password", { variant: "primary", type: "submit", className: "k-wide" }),
+  ]), { hidden: { next: back }, attrs: { class: "k-form" } });
+  return shell("Set a password · Toolroll", outPage({
+    brand: BRAND_HTML, brandHref: "/", title: "Set a password",
+    sub: "Agents can work on their own, merge and release only after you set a password.",
+    body: joinHtml([problem !== null && problem.field === null ? html`<div class="k-refusal">${notice(problem.text)}</div>` : "", form,
+      html`<div class="k-acts">${btn("Not now", { variant: "ghost", href: view.returnTo, className: "k-wide" })}</div>`]),
+  }), { nav: false });
+}
+
+/** /password/set once a password exists (set earlier, or just now in another tab): sign in with it, and come back. */
+export function passwordAlreadySetPage(title: string, returnTo: string, signedIn = false): Html {
+  return shell(`${title} · Toolroll`, outPage({
+    brand: BRAND_HTML, brandHref: "/", title, sub: signedIn ? "You're signed in with it." : "Sign in with it to continue.",
+    body: html`<div class="k-acts">${signedIn ? btn("Continue", { variant: "primary", href: returnTo, className: "k-wide" })
+      : btn("Sign in", { variant: "primary", href: returnTo === "/" ? "/login" : `/login?return=${encodeURIComponent(returnTo)}`, className: "k-wide" })}</div>`,
   }), { nav: false });
 }
 

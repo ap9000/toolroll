@@ -32,7 +32,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { flag, kitSave, groupList, mailSink, option, REAL_MODEL, SCRIPTED, Skip, sleep, world } from "./e2e-kit.mjs";
+import { flag, keyedHeaders, kitSave, groupList, mailSink, option, REAL_MODEL, SCRIPTED, Skip, sleep, world } from "./e2e-kit.mjs";
 
 /** The groups, in the order they're listed, with how many journeys each has (the first-run setup included), how many of
  * those are real-model, and how many scripted ones every group shares (checked at the end of every run). */
@@ -201,7 +201,7 @@ await journey("steps", SCRIPTED, "A Draft step writes a reply with Claude, and t
     { ...base0, id: "post", title: "Post it", kind: "notify", zone: zone(900, "green"), message: "{{stage.reply}}", next: "done", onFail: null },
     { ...view.stages.find(one => one.id === "done"), zone: zone(1200, "green") },
   ] };
-  const saved = await page.request.post(`${base}/flows/${id}/save`, { form: { csrf, name: "Replies", owner: "alex", revision: String(view.flow.revision), definition: JSON.stringify(drawing) }, headers: { accept: "application/json", origin: base } });
+  const saved = await page.request.post(`${base}/flows/${id}/save`, { form: { csrf, name: "Replies", owner: "alex", revision: String(view.flow.revision), definition: JSON.stringify(drawing) }, headers: await keyedHeaders(page, { accept: "application/json", origin: base }) });
   if (!saved.ok()) throw new Error(`the drawing wasn't saved: ${await saved.text()}`);
   await page.reload(); await page.waitForSelector("[data-zone]");
   await page.click('button:has-text("New card")');
@@ -285,7 +285,7 @@ createInterface({ input: process.stdin }).on("line", line => {
     // A project tool, added the way the Tools page adds one, and tested.
     const csrf = await page.locator('input[name="csrf"]').first().inputValue();
     for (const form of [{ action: "add-custom", name: "chat", transport: "stdio", target: `${process.execPath} ${echo}`, password: alexPassword }, { action: "test", name: "chat" }]) {
-      const answered = await page.request.post(`${base}/settings/tools/change`, { form: { csrf, repo, shown: repo, ...form }, headers: { origin: base }, maxRedirects: 0 });
+      const answered = await page.request.post(`${base}/settings/tools/change`, { form: { csrf, repo, shown: repo, ...form }, headers: await keyedHeaders(page, { origin: base }), maxRedirects: 0 });
       if (answered.status() >= 400) throw new Error(`the Tools page refused ${form.action}: ${answered.status()}`);
     }
     // The flow: call the web server, post to the tool, email whoever asked.
@@ -304,10 +304,10 @@ createInterface({ input: process.stdin }).on("line", line => {
       { ...view.stages.find(one => one.id === "inbox"), next: null, zone: { x: 300, y: 380, w: 260, h: 300, color: "slate" } },
       { ...view.stages.find(one => one.id === "done"), zone: zone(900) },
     ] };
-    const saved = await page.request.post(`${base}/flows/${id}/save`, { form: { csrf, name: "Intake", owner: "alex", revision: String(view.flow.revision), definition: JSON.stringify(drawing) }, headers: { accept: "application/json", origin: base } });
+    const saved = await page.request.post(`${base}/flows/${id}/save`, { form: { csrf, name: "Intake", owner: "alex", revision: String(view.flow.revision), definition: JSON.stringify(drawing) }, headers: await keyedHeaders(page, { accept: "application/json", origin: base }) });
     if (!saved.ok()) throw new Error(`the drawing wasn't saved: ${await saved.text()}`);
     const secret = `desk-${randomBytes(6).toString("hex")}`;
-    const kept = await page.request.post(`${base}/flows/${id}/secrets`, { form: { csrf, name: "DESK_TOKEN", value: secret }, headers: { accept: "application/json", origin: base } });
+    const kept = await page.request.post(`${base}/flows/${id}/secrets`, { form: { csrf, name: "DESK_TOKEN", value: secret }, headers: await keyedHeaders(page, { accept: "application/json", origin: base }) });
     if (!kept.ok()) throw new Error(`the secret wasn't saved: ${await kept.text()}`);
     await page.reload(); await page.waitForSelector("[data-zone]");
     await page.click('button:has-text("New card")');
@@ -406,7 +406,7 @@ await journey("triggers", SCRIPTED, "A failing script sends the card back, and I
     { id: "lint", title: "Lint", kind: "check", zone: { x: 300, y: 0, w: 260, h: 300, color: "blue" }, instructions: null, planning: null, approver: null, message: null, close: null, script: "lint", next: "done", onFail: "inbox" },
     { ...view.stages.find(one => one.id === "done"), zone: { x: 600, y: 0, w: 260, h: 300, color: "green" } },
   ] };
-  const saved = await page.request.post(`${base}/flows/${checksFlow}/save`, { form: { csrf, name: "Checks", revision: String(view.flow.revision), definition: JSON.stringify(drawing) }, headers: { accept: "application/json", origin: base } });
+  const saved = await page.request.post(`${base}/flows/${checksFlow}/save`, { form: { csrf, name: "Checks", revision: String(view.flow.revision), definition: JSON.stringify(drawing) }, headers: await keyedHeaders(page, { accept: "application/json", origin: base }) });
   if (!saved.ok()) throw new Error(`saving the drawing answered ${saved.status()}: ${await saved.text()}`);
   await page.reload(); await page.waitForSelector('[data-zone="lint"]');
   // A card moved into Lint by hand.
@@ -437,13 +437,13 @@ await journey("triggers", SCRIPTED, "A script that starts a browser waits until 
   await page.goto(`${base}/flows/new/blank`);
   const token = await page.locator('input[name="csrf"]').first().inputValue();
   // A script saved on the Scripts panel's endpoint, and a zone that says it starts a browser (the editor's "Starts a browser").
-  const savedScript = await page.request.post(`${base}/flows/${checksFlow}/scripts`, { form: { csrf: token, name: "smoke", about: "Opens the app in a browser", body: "echo opened the app", timeoutMinutes: "2", language: "shell" }, headers: { accept: "application/json", origin: base } });
+  const savedScript = await page.request.post(`${base}/flows/${checksFlow}/scripts`, { form: { csrf: token, name: "smoke", about: "Opens the app in a browser", body: "echo opened the app", timeoutMinutes: "2", language: "shell" }, headers: await keyedHeaders(page, { accept: "application/json", origin: base }) });
   if (!savedScript.ok()) throw new Error(`saving the script answered ${savedScript.status()}: ${await savedScript.text()}`);
   const view = await flowView(checksFlow);
   const drawing = { version: 1, start: view.start, stages: [...view.stages.filter(one => one.id !== "done"),
     { id: "smoke", title: "Smoke test", kind: "check", zone: { x: 300, y: 360, w: 260, h: 300, color: "violet" }, instructions: null, planning: null, approver: null, message: null, close: null, script: "smoke", runIn: "folder", browser: true, next: "done", onFail: "inbox" },
     view.stages.find(one => one.id === "done")] };
-  const saved = await page.request.post(`${base}/flows/${checksFlow}/save`, { form: { csrf: token, name: view.flow.name, revision: String(view.flow.revision), definition: JSON.stringify(drawing) }, headers: { accept: "application/json", origin: base } });
+  const saved = await page.request.post(`${base}/flows/${checksFlow}/save`, { form: { csrf: token, name: view.flow.name, revision: String(view.flow.revision), definition: JSON.stringify(drawing) }, headers: await keyedHeaders(page, { accept: "application/json", origin: base }) });
   if (!saved.ok()) throw new Error(`saving the drawing answered ${saved.status()}: ${await saved.text()}`);
   await page.goto(`${base}/flows/${checksFlow}`); await page.waitForSelector('[data-zone="smoke"]');
   if (!/Starts a browser · not allowed/.test(await page.locator('[data-zone="smoke"] [data-zone-browser]').innerText())) throw new Error("the browser zone doesn't say it isn't allowed");

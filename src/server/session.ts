@@ -2,6 +2,7 @@
 import { type ChatDraft } from "../converse.js";
 import { type Principal } from "../operate-remote.js";
 import { type Store } from "../store.js";
+import { type Authority } from "../local-owner.js";
 import { createHash } from "node:crypto";
 import { type Server } from "node:http";
 
@@ -38,6 +39,14 @@ export const NO_TOUCH_FRAGMENTS: ReadonlySet<string> = new Set(["1", "facts", "p
 export type Session = {
   name: string;
   csrf: string;
+  /** v147 (easy-start C1): full, or the local owner's restricted authority. Set when the session is made; never changed. */
+  authority: Authority;
+  /** v147: a local owner's session stands only while local mode is on at this generation (null for a full session). */
+  localGeneration: number | null;
+  /** v147 (C2, filled in by the browser-key wave): the console start whose mutation key this session holds, and a hash of
+   * that key (never the key). Null: no key yet, or a session saved before v147 — stale, so mutations ask to reconnect. */
+  keyEpoch: string | null;
+  keyHash: string | null;
   /** v29: the account's standing at login — the central gate reads it;
    * the revocation cascade kills the session outright. */
   role: "approver" | "viewer";
@@ -105,8 +114,17 @@ export type ApprovalNonce = {
   expiresAt: number;
 };
 
-export type Who = { name: string; via: "cookie"; session: Session; role: "approver" | "viewer" } | { name: string; via: "bearer"; role: "approver" | "viewer"; /** v101: the API token it came with. */ token?: string;
+export type Who = { name: string; via: "cookie"; session: Session; role: "approver" | "viewer"; /** v147: the session's own authority. */ authority: Authority } | { name: string; via: "bearer"; role: "approver" | "viewer"; /** v101: the API token it came with. */ token?: string;
   /** The complete proved API-token authority, retained across body reads. */ principal?: Principal; generation: number };
+
+/** A full session's authority fields when it is made (a password, an identity-provider sign-in, a sign-up or join).
+ * The browser-key wave adds the key epoch and hash here. */
+export const FULL_SESSION: Pick<Session, "authority" | "localGeneration" | "keyEpoch" | "keyHash"> = Object.freeze({ authority: "full", localGeneration: null, keyEpoch: null, keyHash: null });
+
+/** A caller's authority: a browser session's own, or full for a bearer credential (an API token or a password). */
+export function authorityOfWho(who: Who): Authority {
+  return who.via === "cookie" ? who.authority : "full";
+}
 
 /** The browser session of a caller its route admits only through a browser sign-in (the row's callers or role). */
 export function browserCaller(who: Who): Extract<Who, { via: "cookie" }> {
@@ -130,7 +148,8 @@ export class PersistentSessions extends Map<string, Session> {
     this.ids.set(session, id);
     this.savedAt.set(session, Date.now());
     this.db.saveWebSession({ idHash: PersistentSessions.hash(id), account: session.name, csrf: session.csrf, role: session.role, generation: session.generation, createdAt: session.createdAt,
-      lastSeen: session.lastSeen, project: session.project, projectRevision: session.projectRevision, ssoAt: session.sso?.at ?? null, agent: session.agent ?? null, address: session.address ?? null });
+      lastSeen: session.lastSeen, project: session.project, projectRevision: session.projectRevision, ssoAt: session.sso?.at ?? null, agent: session.agent ?? null, address: session.address ?? null,
+      authority: session.authority, localGeneration: session.localGeneration, keyEpoch: session.keyEpoch, keyHash: session.keyHash });
     return this;
   }
   override delete(id: string): boolean {
@@ -157,7 +176,8 @@ export class PersistentSessions extends Map<string, Session> {
     const row = this.db.webSession(PersistentSessions.hash(id));
     if (row === null) return null;
     const session: Session = { name: row.account, csrf: row.csrf, role: row.role, generation: row.generation, createdAt: row.createdAt, lastSeen: row.lastSeen, sawBoardAt: null,
-      project: row.project, projectRevision: row.projectRevision, agent: row.agent, address: row.address, ...(row.ssoAt === null ? {} : { sso: { at: row.ssoAt } }) };
+      project: row.project, projectRevision: row.projectRevision, agent: row.agent, address: row.address, ...(row.ssoAt === null ? {} : { sso: { at: row.ssoAt } }),
+      authority: row.authority, localGeneration: row.localGeneration, keyEpoch: row.keyEpoch, keyHash: row.keyHash };
     super.set(id, session);
     this.ids.set(session, id);
     this.savedAt.set(session, Date.now());
@@ -175,7 +195,12 @@ export class PersistentSessions extends Map<string, Session> {
 
 /** The console's server, and the one-time sign-in link `up` opens: a path on this server, or null for no such approver.
  * closeCoding starts the coding shutdown on its own, ahead of the rest of a stop; close() awaits the same promise. */
-export type DecisionServer = Server & { mintSignInLink(account: string): string | null; closeCoding(): Promise<void> };
+export type DecisionServer = Server & { mintSignInLink(account: string): string | null; mintLocalLink(): string | null; readonly keyEpoch: string; closeCoding(): Promise<void> };
+/** A one-time sign-in link as the console holds it (only a hash of its code is the key): a full one for an account,
+ * or a local owner's (easy-start C4), bound to local mode's generation and the owner's account generation when minted. */
+export type SignInLink =
+  | { kind: "full"; account: string; expires: number }
+  | { kind: "local-owner"; account: string; localGeneration: number; accountGeneration: number; expires: number };
   // v100: sign-in with the identity provider. A visit waits for the provider (15 minutes); a hand-off
   // carries the proved person from the callback (reached from the provider's site, so without the
   // Strict session cookie) to /login/sso/finish on this site (a minute).

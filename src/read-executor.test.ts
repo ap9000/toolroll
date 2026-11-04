@@ -158,7 +158,7 @@ test.each(["session ended", "account revoked", "project access removed", "consol
   expect(addApprover(store, "admin", now, { name: "alex", token: added.token }).ok).toBe(true);
   const sessionId = "a".repeat(64), at = Date.now();
   store.saveWebSession({ idHash: PersistentSessions.hash(sessionId), account: "alex", csrf: "b".repeat(64), role: "approver",
-    generation: store.approverGeneration("alex")!, createdAt: at, lastSeen: at, project, projectRevision: 0, ssoAt: null, agent: null, address: null });
+    generation: store.approverGeneration("alex")!, createdAt: at, lastSeen: at, project, projectRevision: 0, ssoAt: null, agent: null, address: null, authority: "full", localGeneration: null, keyEpoch: null, keyHash: null });
   let admitted = [project];
   const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repos: [project], admittedRepos: () => admitted, allowedHosts: ["127.0.0.1:4180"], readWorkers: 1 });
   let release!: () => void;
@@ -189,7 +189,7 @@ test("chrome completed before another worker job is revalidated at render after 
   if (!added.ok) throw new Error("account fixture");
   const sessionId = "a".repeat(64), at = Date.now();
   store.saveWebSession({ idHash: PersistentSessions.hash(sessionId), account: "alex", csrf: "b".repeat(64), role: "approver",
-    generation: store.approverGeneration("alex")!, createdAt: at, lastSeen: at, project, projectRevision: 0, ssoAt: null, agent: null, address: null });
+    generation: store.approverGeneration("alex")!, createdAt: at, lastSeen: at, project, projectRevision: 0, ssoAt: null, agent: null, address: null, authority: "full", localGeneration: null, keyEpoch: null, keyHash: null });
   const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repos: [project], allowedHosts: ["127.0.0.1:4180"], readWorkers: 2, clock: () => now });
   let release!: () => void;
   try {

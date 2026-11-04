@@ -93,7 +93,7 @@ describe("lead tiles: the owner's own turns only", () => {
   let store: Store;
   let liveTurns: Map<number, LiveTurn>;
   let digest: string | null;
-  const who = (name: string, role: "approver" | "viewer" = "approver"): Who => ({ name, via: "cookie", role, session: {} as Session });
+  const who = (name: string, role: "approver" | "viewer" = "approver"): Who => ({ name, via: "cookie", role, authority: "full", session: {} as Session });
   const families = new Map<string, TaskFamily>();
   const deps = () => ({
     store, liveTurns, managedRepos: () => [REPO, OTHER], visible: (repo: string | null) => repo === REPO || repo === OTHER,

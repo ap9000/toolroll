@@ -9,6 +9,7 @@
  */
 import { createHash } from "node:crypto";
 import { isAcpProvider } from "./acp-agents.js";
+import { currentLocalOwner, localModeOn, localOwnerInFlight, localOwnerStandsNow } from "./local-owner.js";
 import { INSTALLATION_SCOPE, resolvePhaseAgent, resolveRouteCandidates } from "./agentconfig.js";
 import { seenModels, type SeenModel } from "./model-catalog.js";
 import { passwordlessOn } from "./passwordless.js";
@@ -427,4 +428,91 @@ function extraWrite(store: Store, scope: string, repo: string | null, op: ExtraW
   store.setPhaseTierAlternate(scope, op.phase, op.tier, op.provider, op.model, actor, now);
   ledger(`other-provider ${op.tier} agent for ${op.phase} changed`, `${pairWords(before)} → ${pairWords({ provider: op.provider, model: op.model })}`);
   return 1;
+}
+
+// ---- a first agent's default routing (easy start) -------------------------------
+
+/** Codex's exact ids for its "Sized by job" preset: the frontier model plans, reviews and builds large or risky
+ * work, the workhorse builds routine work, the small model builds small work (the ids Codex lists as of 2026-11). */
+export const CODEX_FRONTIER = "gpt-6-astra";
+export const CODEX_WORKHORSE = "gpt-6-sol";
+export const CODEX_SMALL = "gpt-6-luna";
+/** The agents a first choice can name ("Use this one", the lead chosen at a first start). */
+export type DefaultAgent = "claude" | "codex";
+/** Each agent's default preset: what a new installation runs on once that agent is chosen and nothing is set yet. */
+export const AGENT_PRESETS: Readonly<Record<DefaultAgent, { label: string; words: string; rows: Record<string, string | null> }>> = Object.freeze({
+  claude: PRESETS[DEFAULT_PRESET],
+  codex: {
+    label: "Sized by job",
+    words: `Small tasks build on ${CODEX_SMALL}, routine tasks on ${CODEX_WORKHORSE}, large or risky tasks on ${CODEX_FRONTIER}. Planning and review always use ${CODEX_FRONTIER}.`,
+    rows: { plan: CODEX_FRONTIER, "plan-strong": CODEX_FRONTIER, "build-light": CODEX_SMALL, build: CODEX_WORKHORSE, "build-strong": CODEX_FRONTIER, repair: null, "repair-strong": null, review: CODEX_FRONTIER, "review-strong": CODEX_FRONTIER },
+  },
+});
+/** An agent's default preset as a change: every slot, exact ids, repairs following each size's builder. */
+export function agentPresetChange(agent: DefaultAgent): ModelChange[] {
+  return ALL_SLOTS.map(slot => {
+    const model = AGENT_PRESETS[agent].rows[slotKey(slot)];
+    return { slot, to: model === null || model === undefined ? null : { provider: agent, model } };
+  });
+}
+/** The chat provider a lead runs on, as the agent whose preset it brings; null for a direct API. */
+export function defaultAgentOf(provider: string): DefaultAgent | null {
+  return provider === "claude-subscription" ? "claude" : provider === "codex-subscription" ? "codex" : null;
+}
+
+/**
+ * Who may fill: the local owner choosing its agent now (a browser's "Use this one", act `choose-default-agent`, still
+ * standing, re-checked here), or a laptop install's own first start choosing the agent signed in on this computer
+ * (local mode on). Nothing else: every other change of models is Settings → Models'
+ * operator step-up (applyModelChoices).
+ */
+export type DefaultRoutingDoor = { kind: "local-owner" } | { kind: "first-start" };
+export type DefaultRoutingResult = { filled: true; rows: number } | { filled: false; reason: "authority" | "already-set" | "invalid"; problem: string };
+
+/**
+ * A new installation's first routing: the chosen agent's default preset, written only while NOTHING is set — no role
+ * row, tier row or other-provider candidate at the installation or any project — so it never overwrites a choice.
+ * Checked and written in one transaction (the caller's, when it has one: the lead's own write rides with it), each row
+ * ledgered, the result checked like any apply; a refusal writes nothing.
+ */
+export function fillDefaultRouting(store: Store, agent: DefaultAgent, actor: string, door: DefaultRoutingDoor, now: Date): DefaultRoutingResult {
+  const refused = (reason: "authority" | "already-set" | "invalid", problem: string): DefaultRoutingResult => ({ filled: false, reason, problem });
+  return store.transact(() => {
+    const local = currentLocalOwner();
+    if (door.kind === "local-owner") {
+      if (local === null || !localOwnerInFlight(local) || local.act !== "choose-default-agent" || local.account !== actor || !localOwnerStandsNow(store, local)) {
+        return refused("authority", "Only this computer's owner, choosing an agent now, starts its models.");
+      }
+    } else if (!localModeOn(store)) {
+      // The first start's own choice (serve.ts leadByDefault): it may run inside whichever request asked this computer's
+      // agents again, so it reads no principal; local mode on, and nothing set (below), is what admits it.
+      return refused("authority", "Only a laptop install's first start chooses its models by itself.");
+    }
+    const anyRow = store.handle.prepare("SELECT 1 FROM phase_config UNION ALL SELECT 1 FROM phase_tier_config UNION ALL SELECT 1 FROM phase_tier_alternate LIMIT 1").get();
+    if (anyRow !== undefined) return refused("already-set", "Models are already chosen here.");
+    store.handle.exec("SAVEPOINT default_routing");
+    try {
+      let rows = 0;
+      for (const { slot, to } of agentPresetChange(agent)) {
+        if (to === null) continue;
+        if (slot.tier === "routine") store.setPhaseConfig(INSTALLATION_SCOPE, slot.phase, to.provider, to.model, actor, now);
+        else store.setPhaseTierConfig(INSTALLATION_SCOPE, slot.phase, slot.tier, to.provider, to.model, actor, now);
+        store.recordAction({ at: now.toISOString(), actor, repo: null, taskId: null, runId: null, action: ACTION_OF(slot), outcome: "changed", source: "policy",
+          detail: `not set → ${pairWords(to)} (${AGENT_PRESETS[agent].label}, the default for the agent chosen)` });
+        rows++;
+      }
+      const checked = checkScope(store, null);
+      if (checked.kind !== "ok") {
+        store.handle.exec("ROLLBACK TO default_routing");
+        store.handle.exec("RELEASE default_routing");
+        return refused("invalid", checked.problem);
+      }
+      store.handle.exec("RELEASE default_routing");
+      return { filled: true as const, rows };
+    } catch (error) {
+      store.handle.exec("ROLLBACK TO default_routing");
+      store.handle.exec("RELEASE default_routing");
+      throw error;
+    }
+  });
 }

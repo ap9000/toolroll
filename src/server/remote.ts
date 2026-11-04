@@ -43,6 +43,8 @@ export interface RemoteRuntime {
   teamsSourceBudget: SourceAdmission;
   teamsTenantBudget: SourceAdmission;
   freshFactsOf: (request: IncomingMessage, who: Who | null) => FreshFacts | null;
+  /** Easy-start C2: the browser mutation key (server/mutation-key.ts). */
+  browserKeys: import("./mutation-key.js").BrowserKeys;
 }
 export function createRemoteHandlers(runtime: RemoteRuntime) {
   const { identify, store, admitPasswordSource, admitBearer, allowedHost, team, teamBrowserReply, requestBudget, options, clock, evidenceRoot, consoleOrigin, managedRepos, joinSourceOf, ssoSettings, oauthTokenBudget, hookContext, teamsSourceBudget, teamsTenantBudget } = runtime;
@@ -68,6 +70,8 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       const who = identify(request, request.method === 'POST');
       const account = who === null ? null : store.accountOf(who.name);
       if (!who || !account || account.revokedAt !== null) return null;
+      // Easy-start C1: team conversations are a remote feature; a laptop's local owner (no password) never reaches them.
+      if (who.via === 'cookie' && who.authority !== 'full') return null;
       if (who.via === 'bearer') passwordProvedAt.set(request, clock().getTime());
       return { name: who.name, generation: account.generation, role: account.role };
     },
@@ -96,17 +100,20 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
         return true;
       }
       const who = identify(request, false);
-      return who?.name === actor.name && who.via === 'cookie' && who.session.generation === actor.generation;
+      return who?.name === actor.name && who.via === 'cookie' && who.authority === 'full' && who.session.generation === actor.generation;
     },
     authorizeMutation: (request, actor) => {
       if (actor.principal !== undefined) return request.headers.origin === undefined;
       const who = identify(request, false);
       if (!who || who.name !== actor.name) return false;
       if (who.via === 'bearer') return request.headers.origin === undefined;
+      if (who.authority !== 'full') return false;
       const origin = request.headers.origin, referer = request.headers.referer;
       const named = typeof origin === 'string' && origin !== 'null' ? origin : typeof referer === 'string' ? referer : null;
       if (named !== null && !allowedHost(named.replace(/^https?:\/\//, '').split('/')[0])) return false;
-      return request.headers['x-csrf-token'] === who.session.csrf;
+      // Easy-start C2: and, on a protected loopback install, the session's key (its header), which a cookie holder on
+      // another port can't read.
+      return request.headers['x-csrf-token'] === who.session.csrf && runtime.browserKeys.check(who, request, null) === null;
     },
     execute: async (actor, input) => {
       const reply = await team.execute(actor, input);
@@ -134,7 +141,8 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     requesterKey: joinSourceOf,
     session: request => {
       const who = identify(request, false);
-      if (who === null || who.via !== "cookie") return null;
+      // Easy-start C1: connecting an outside app is a credential act; a local owner's session is never one that consents.
+      if (who === null || who.via !== "cookie" || who.authority !== "full") return null;
       return { name: who.name, role: who.role, csrf: who.session.csrf, generation: who.session.generation,
         sso: who.session.sso === undefined ? null : { label: ssoSettings()?.label ?? "your identity provider",
           fresh: freshFacts.run(runtime.freshFactsOf(request, who), () => ssoNowAvailable(who.name)) } };
@@ -144,13 +152,20 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       const named = typeof origin === "string" && origin !== "null" ? origin : typeof referer === "string" ? referer : null;
       return named !== null && allowedHost(named.replace(/^https?:\/\//, "").split("/")[0]);
     },
+    // Easy-start C2: the consent's own post presents the session's key too (its form carries it, filled by the page's
+    // one nonce'd script while the key is required).
+    keyed: (request, form) => {
+      const who = identify(request, false);
+      return who !== null && who.via === "cookie" && runtime.browserKeys.check(who, request, form) === null;
+    },
+    keyFill: () => runtime.browserKeys.required(),
     // The step-up for a credential: the person's password, or (empty) a fresh identity-provider check. What they may
     // grant (their role, their projects) is checked beside it.
     // Proved on this request's live session at the moment of consent (signed in here still, same generation), through
     // the one account step-up: a password typed now, or an explicit re-check (spent). Never a remembered password.
     confirm: (request, session, typed) => {
       const who = identify(request, false);
-      if (who === null || who.via !== "cookie" || who.name !== session.name || who.session.generation !== session.generation) return false;
+      if (who === null || who.via !== "cookie" || who.authority !== "full" || who.name !== session.name || who.session.generation !== session.generation) return false;
       // Connecting an outside app is a credential act: never a session (Passwordless) or a remembered password.
       return freshFacts.run(runtime.freshFactsOf(request, who), () => { const proved = proveAccountNow(store, who.name, typed, { credential: true }); return proved.ok && credentialProof(proved.method); });
     },

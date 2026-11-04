@@ -26,7 +26,7 @@ import { basename, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
-import { flag, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
+import { flag, keyedHeaders, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
 /** The saved login `up` writes: in the reserved secrets folder, else (an older install) beside the database. */
 const savedLoginOf = state => existsSync(join(state, ".toolroll-secrets", "up-login.txt")) ? join(state, ".toolroll-secrets", "up-login.txt") : join(state, "up-login.txt");
@@ -48,6 +48,7 @@ const GROUPS = {
   memory: { journeys: 2, shared: 1, about: "A subagent that acts with a real tool: its memory, and the looser rule it suggests" },
   mail: { journeys: 2, about: "A real mail server: the email inbox and follow-ups (needs Docker)" },
   flows: { journeys: 5, about: "Code steps and schedules in flows, the live canvas, starter kits and one-click connections" },
+  "easy-start": { journeys: 4, about: "A laptop install with no password: the welcome, a sample project and a starter approved with no password to Complete; a refused act, Set a password and on; a restart and Reconnect; a revision, long words and a failed build, on desktop and phone" },
   onboarding: { journeys: 4, about: "From an empty home folder: toolroll up opens Chat signed in with the lead on, a first task filed and followed to Ready, no agent shows the command and turns on by itself, the wrong-host page" },
 };
 const group = option("--group", null);
@@ -201,7 +202,7 @@ function journey(name, mode, title, needs, body) {
 const flowView = id => json(`/flows/${id}?format=json`);
 const csrfOf = async on => on.locator('input[name="csrf"]').first().inputValue();
 const post = async (path, form, on = page) => {
-  const answer = await on.request.post(`${base}${path}`, { form: { csrf: await csrfOf(on), ...form }, headers: { accept: "application/json", origin: base }, maxRedirects: 0 });
+  const answer = await on.request.post(`${base}${path}`, { form: { csrf: await csrfOf(on), ...form }, headers: await keyedHeaders(on, { accept: "application/json", origin: base }), maxRedirects: 0 });
   return { status: answer.status(), body: await answer.text() };
 };
 /** A flow drawn from steps the way the canvas saves one. */
@@ -310,10 +311,10 @@ await journey("console", SCRIPTED, "Sign-in hardening and the audit trail: five 
   // A policy change, the way Settings makes it, and back. Widening to Full access takes the password (back to Auto
   // needs none): without it nothing changes.
   await page.goto(`${base}/settings`);
-  const unproved = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": "bypassPermissions" }, headers: { origin: base }, maxRedirects: 0 });
+  const unproved = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": "bypassPermissions" }, headers: await keyedHeaders(page, { origin: base }), maxRedirects: 0 });
   if (!/Enter(%20|\+| )your(%20|\+| )Toolroll(%20|\+| )password/.test(unproved.headers()["location"] ?? "")) throw new Error(`Full access without the password: ${unproved.status()} ${unproved.headers()["location"]}`);
   for (const mode of ["bypassPermissions", "auto"]) {
-    const changed = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": mode, password: w.passwords.alex }, headers: { origin: base }, maxRedirects: 0 });
+    const changed = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": mode, password: w.passwords.alex }, headers: await keyedHeaders(page, { origin: base }), maxRedirects: 0 });
     if (changed.status() !== 303) throw new Error(`the permission default refused ${mode}: ${changed.status()}`);
   }
   await page.goto(`${base}/ledger?source=sign-in`); await page.waitForSelector("[data-ledger-id]");
@@ -1715,7 +1716,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   // The project tool, the way the Tools page adds one (with your password), and tested.
   await page.goto(`${base}/settings/tools?repo=${encodeURIComponent(repo)}`);
   for (const form of [{ action: "add-custom", name: "store", transport: "stdio", target: `${process.execPath} ${shop}`, password: w.passwords.alex }, { action: "test", name: "store" }]) {
-    const answered = await page.request.post(`${base}/settings/tools/change`, { form: { csrf: await csrfOf(page), repo, shown: repo, ...form }, headers: { origin: base }, maxRedirects: 0 });
+    const answered = await page.request.post(`${base}/settings/tools/change`, { form: { csrf: await csrfOf(page), repo, shown: repo, ...form }, headers: await keyedHeaders(page, { origin: base }), maxRedirects: 0 });
     if (answered.status() >= 400) throw new Error(`the Tools page refused ${form.action}: ${answered.status()}`);
   }
   // Rosa, from the Support rep template; on her page she's let use the store.
@@ -2258,8 +2259,10 @@ const realClaude = (() => { try { return execFileSync("/bin/sh", ["-c", "command
 const fresh = {};
 /** Every fresh install started, so each one is stopped whichever journeys pass, fail or time out. */
 const installs = [];
-async function freshInstall(name, { claude, crewModels = false }) {
-  const root = realpathSync(makeTempRoot(`toolroll-onboarding-${name}-`, { keep: flag("--keep") }));
+async function freshInstall(name, { claude, crewModels = false, laptop = false }) {
+  // A laptop install's console socket lives under its home folder: a short root keeps it under the socket path limit
+  // (macOS's own temp folder is too deep), so `toolroll open` finds the console as it would on a real laptop.
+  const root = realpathSync(laptop ? makeTempRoot("tr-es-", { keep: flag("--keep"), parent: "/tmp" }) : makeTempRoot(`toolroll-onboarding-${name}-`, { keep: flag("--keep") }));
   const home = join(root, "home"), shop = join(root, "shop"), bin = join(root, "bin"), opened = join(root, "opened.txt"), log = join(root, "terminal.log");
   for (const one of [home, shop, bin]) mkdirSync(one);
   // The PATH a stranger's shell might have, minus every agent CLI: node and npm, git, the system's own tools.
@@ -2276,6 +2279,13 @@ async function freshInstall(name, { claude, crewModels = false }) {
   // The browser `up` opens: the one-time link is handed to this program, never printed. The journey's browser opens it.
   writeFileSync(join(bin, "open-browser"), `#!/bin/sh\nprintf '%s' "$1" > ${JSON.stringify(opened)}\n`);
   chmodSync(join(bin, "open-browser"), 0o755);
+  // A laptop install's console is a PROTECTED loopback install only with no tailnet names (mutation-key.ts): this
+  // computer's own Tailscale would name some, so this install's PATH answers "Tailscale isn't running" (tailnet.ts reads
+  // the PATH's `tailscale` first). Only this install's console sees it; nothing in Toolroll changes.
+  if (laptop) {
+    writeFileSync(join(bin, "tailscale"), `#!/bin/sh\necho '{"BackendState":"Stopped"}'\n`);
+    chmodSync(join(bin, "tailscale"), 0o755);
+  }
   // A small project with a test and one note to fix.
   writeFileSync(join(shop, "package.json"), JSON.stringify({ name: "shop", version: "1.0.0", type: "module", scripts: { test: "node --test" } }, null, 2) + "\n");
   mkdirSync(join(shop, "src")); mkdirSync(join(shop, "test"));
@@ -2289,7 +2299,8 @@ async function freshInstall(name, { claude, crewModels = false }) {
     GIT_AUTHOR_NAME: "Sam Rivera", GIT_AUTHOR_EMAIL: "sam@example.invalid", GIT_COMMITTER_NAME: "Sam Rivera", GIT_COMMITTER_EMAIL: "sam@example.invalid" };
   mkdirSync(env.TMPDIR);
   const terminal = () => existsSync(log) ? readFileSync(log, "utf8").replace(/\r/g, "").replace(/\^D\x08\x08/g, "") : "";
-  const install = { root, home, shop, bin, terminal, signIn, groups: [], stopped: false };
+  // A laptop install starts from the home folder (no repository: `up --laptop` uses ~/Projects), as bare `toolroll` would.
+  const install = { root, home, shop, bin, terminal, signIn, env, log, opened, laptop, cwd: laptop ? home : shop, groups: [], stopped: false };
   // Stops `script` and `up`, each with its whole process group; once is enough, and it is safe to ask again.
   install.stop = async () => { if (install.stopped) return; install.stopped = true; await stopGroups(install.groups); };
   installs.push(install);
@@ -2308,6 +2319,7 @@ async function freshInstall(name, { claude, crewModels = false }) {
     }
     const state = (() => { for (const one of [join(home, ".config", "toolroll"), join(home, ".toolroll"), join(home, ".config", "standing-orders")]) if (existsSync(join(one, "orders.db"))) return one; throw new Error(`no database under ${home}`); })();
     Object.assign(install, { state, db: join(state, "orders.db"), link: readFileSync(opened, "utf8") });
+    if (laptop) return install;
     // Not yet automatic (see the onboarding handoff): a fresh install has no exact crew models (approvals bind exact
     // routing, so a first task would wait at Plan) and no project check (so a result could never be Ready). The setup a
     // person does once, from the terminal, before anything is filed.
@@ -2345,9 +2357,9 @@ const scriptCommand = inner => process.platform === "darwin" || process.platform
  */
 async function startUp(install, { name, env, log, opened, upPid, go }) {
   for (const one of [opened, upPid, go, log]) rmSync(one, { force: true });
-  const up = [process.execPath, w.bin, "up", "--port", String(install.port), "--for", String(40 * 60_000)].map(shellWord).join(" ");
+  const up = [process.execPath, w.bin, "up", ...(install.laptop ? ["--laptop"] : []), "--port", String(install.port), "--for", String(40 * 60_000)].map(shellWord).join(" ");
   const inner = `echo $$ > ${shellWord(upPid)}; while [ ! -e ${shellWord(go)} ]; do sleep 0.05; done; exec ${up}`;
-  const shell = spawnOwned(`script for toolroll up (${name})`, "/bin/sh", ["-c", `cd ${shellWord(install.shop)} && exec ${scriptCommand(inner)} < /dev/null > ${shellWord(log)} 2>&1 &`], { stdio: "ignore", env });
+  const shell = spawnOwned(`script for toolroll up (${name})`, "/bin/sh", ["-c", `cd ${shellWord(install.cwd ?? install.shop)} && exec ${scriptCommand(inner)} < /dev/null > ${shellWord(log)} 2>&1 &`], { stdio: "ignore", env });
   install.groups.push(shell.pid);
   await new Promise(done => { if (shell.exitCode !== null) done(); else shell.once("exit", done); });
   const running = () => groupAlive(shell.pid);
@@ -2364,14 +2376,14 @@ async function startUp(install, { name, env, log, opened, upPid, go }) {
   return ended;
 }
 /** A screenshot at 1440 and at 390 of the same page, settled. */
-async function bothSizes(on, name) {
+async function bothSizes(on, name, prefix = "onboarding") {
   for (const [width, height] of [[1440, 900], [390, 844]]) {
     await on.setViewportSize({ width, height });
     // Laid out at the new size: two frames after the resize, then any animation it started.
     await settle(on);
     const overflow = await on.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     if (overflow > 1) throw new Error(`${name} scrolls sideways by ${overflow}px at ${width} wide`);
-    await on.screenshot({ path: join(w.out, `onboarding-${name}-${width}.png`) });
+    await on.screenshot({ path: join(w.out, `${prefix}-${name}-${width}.png`) });
   }
   await on.setViewportSize({ width: 1440, height: 900 });
 }
@@ -2661,6 +2673,307 @@ await journey("onboarding", SCRIPTED, "Another address shows what it is, where T
     await other.close();
     // The last onboarding journey: every install stops here, the host one included, however the journeys went.
     for (const one of installs) await one.stop();
+  }
+});
+
+// ------------------------------------------------------------------ easy start: a laptop install (local mode)
+
+/**
+ * A new laptop install, as bare `toolroll` makes one: `up --laptop` at a real terminal in an empty home folder, its
+ * console a PROTECTED loopback install (freshInstall's `tailscale` stand-in hides this computer's tailnet names from it,
+ * and from nothing else), so every change the browser makes also presents the browser's key. One owner, no password.
+ */
+const laptopRows = query => freshRows(fresh.laptop.db, query);
+const laptopTask = id => laptopRows(`SELECT t.state, s.approved_by, s.goal FROM task t LEFT JOIN task_scope s ON s.task_id = t.id WHERE t.id = '${id}'`)[0] ?? null;
+const laptopBuild = id => laptopRows(`SELECT r.id, r.outcome, r.reason, r.finished_at FROM run r JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${id}' AND r.role = 'builder' ORDER BY r.id DESC LIMIT 1`)[0] ?? null;
+/** What the page says, for a failure message. */
+const saysNow = async on => (await on.locator("body").innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 500);
+/** `toolroll <argv>` typed at this install's own terminal (script's pseudo-terminal; nothing of this run above it, as
+ * startUp does); resolves with what it printed once it has ended. */
+async function atLaptopTerminal(install, argv, name) {
+  const dir = join(install.root, `terminal-${name}`);
+  mkdirSync(dir, { recursive: true });
+  const pid = join(dir, "pid"), go = join(dir, "go"), log = join(dir, "out.log");
+  const command = [process.execPath, w.bin, ...argv, "--db", install.db].map(shellWord).join(" ");
+  const inner = `echo $$ > ${shellWord(pid)}; while [ ! -e ${shellWord(go)} ]; do sleep 0.05; done; exec ${command}`;
+  const shell = spawnOwned(`script for toolroll ${argv.join(" ")} (${name})`, "/bin/sh", ["-c", `cd ${shellWord(install.home)} && exec ${scriptCommand(inner)} < /dev/null > ${shellWord(log)} 2>&1 &`], { stdio: "ignore", env: install.env });
+  install.groups.push(shell.pid);
+  await new Promise(done => { if (shell.exitCode !== null) done(); else shell.once("exit", done); });
+  const printed = () => existsSync(log) ? readFileSync(log, "utf8").replace(/\r/g, "") : "";
+  await until(`toolroll ${argv.join(" ")} to start`, async () => existsSync(pid) && readFileSync(pid, "utf8").endsWith("\n"), { timeoutMs: 30_000, everyMs: 100 });
+  const ran = Number(readFileSync(pid, "utf8"));
+  install.groups.push(own(ran, `toolroll ${argv.join(" ")} (${name})`));
+  writeFileSync(go, "");
+  await until(`toolroll ${argv.join(" ")} to finish`, async () => !groupAlive(ran) && !groupAlive(shell.pid), { timeoutMs: 90_000, everyMs: 200, seen: printed });
+  return printed();
+}
+/** Stop the laptop install's `up` (its drain) and start it again on the same port and database, as a restart would. */
+async function restartLaptop(install) {
+  await stopGroups(install.groups.splice(0));
+  const ended = await startUp(install, { name: "laptop-again", env: install.env, log: install.log, opened: install.opened, upPid: join(install.root, "up.pid"), go: join(install.root, "up.go") });
+  if (ended !== null) throw new Error(`toolroll up --laptop didn't start again: ${ended}`);
+  install.link = readFileSync(install.opened, "utf8");
+}
+/** Wait for a laptop task's build to end Ready (built, the task done). */
+async function laptopReady(id, after = 0) {
+  const run = await until(`${id} to be built`, async () => { const one = laptopBuild(id); return one?.finished_at && one.id > after ? one : null; }, { timeoutMs: 300_000, everyMs: 1000, seen: () => JSON.stringify(laptopBuild(id)) });
+  if (run.outcome !== "built") throw new Error(`${id}'s build ended ${run.outcome} (${run.reason})`);
+  await until(`${id} to be Ready`, async () => laptopTask(id)?.state === "done", { timeoutMs: 120_000, everyMs: 500, seen: () => JSON.stringify(laptopTask(id)) });
+  return run;
+}
+/** Approve a laptop task's plan on its page as the local owner: no password field, no password dialog. */
+async function approveLocally(on, base, id) {
+  await until(`${id}'s plan`, async () => laptopRows(`SELECT 1 FROM task_scope WHERE task_id = '${id}'`).length > 0 && laptopRows(`SELECT plan FROM task_ref WHERE external_id = '${id}'`)[0]?.plan === "drafted",
+    { timeoutMs: 120_000, everyMs: 500, seen: () => JSON.stringify(laptopRows(`SELECT plan FROM task_ref WHERE external_id = '${id}'`)) });
+  await on.goto(`${base}/t/${encodeURIComponent(id)}`);
+  const form = on.locator("form[data-task-approval]");
+  await waitFor(form, "the plan's approval", { timeoutMs: 30_000, seen: () => saysNow(on) });
+  const terms = (await form.innerText()).replace(/\s+/g, " ");
+  if (await form.locator('input[type="password"]').count() > 0 || !terms.includes("No password needed on this computer.")) throw new Error(`approving attended work on this computer asks for a password: ${terms.slice(0, 600)}`);
+  const navigated = on.waitForNavigation({ timeout: 30_000 });
+  await form.locator(".k-slots button.k-btn-primary:visible, button.k-btn-primary:visible").first().click();
+  if (await on.getByRole("dialog", { name: "Confirm with your password" }).waitFor({ state: "visible", timeout: 2_000 }).then(() => true, () => false)) throw new Error("approving asked for a password");
+  await navigated;
+  await until(`${id} to be approved`, async () => laptopTask(id)?.approved_by != null, { timeoutMs: 15_000, everyMs: 300, seen: () => saysNow(on) });
+}
+/** File a task from New task with these words; returns its id. */
+async function fileLocally(on, base, words) {
+  await on.goto(`${base}/tasks/new`);
+  await waitFor(on.locator('form[action="/tasks/add"] textarea[name="title"]'), "New task", { timeoutMs: 15_000, seen: () => saysNow(on) });
+  await on.fill('form[action="/tasks/add"] textarea[name="title"]', words);
+  await Promise.all([on.waitForNavigation(), on.click('form[action="/tasks/add"] button.k-send')]);
+  const id = /\/t\/([^/?#]+)/.exec(on.url())?.[1];
+  if (!id) throw new Error(`filing didn't open the task: ${on.url()} — ${await saysNow(on)}`);
+  return decodeURIComponent(id);
+}
+/** The sample project's files after a build that rounds to whole cents. */
+const roundedPriceFiles = (negative = false, named = false) => ({
+  "src/price.js": ["/** The price after a percentage discount, in whole cents: priceWithDiscount(80, 25) is 60. */", "export function priceWithDiscount(price, percent) {",
+    ...(negative ? [named ? "  if (percent < 0) throw new RangeError(`A discount can't be negative (got ${percent}%).`);" : "  if (percent < 0) throw new RangeError(\"A discount can't be negative.\");"] : []), "  return Math.round((price - (price * percent) / 100) * 100) / 100;", "}", ""].join("\n"),
+  "test/price.test.js": ["import assert from \"node:assert/strict\";", "import { test } from \"node:test\";", "import { priceWithDiscount } from \"../src/price.js\";", "",
+    "test(\"takes the discount off the price\", () => {", "  assert.equal(priceWithDiscount(80, 25), 60);", "});", "test(\"rounds to whole cents\", () => {", "  assert.equal(priceWithDiscount(9.99, 33), 6.69);", "});",
+    ...(negative ? ["test(\"refuses a negative discount\", () => {", "  assert.throws(() => priceWithDiscount(10, -5), RangeError);", "});"] : []), ""].join("\n"),
+});
+
+await journey("easy-start", SCRIPTED, "A new laptop install opens signed in with no password: the welcome, the sample project, a starter approved with no password, Ready, Complete", [], async () => {
+  if (realClaude === null) throw new Skip("needs the claude command (scripted in this run) on the PATH");
+  const install = fresh.laptop = await freshInstall("laptop", { claude: true, laptop: true });
+  // No password and no login file anywhere.
+  if (existsSync(savedLoginOf(install.state))) throw new Error("a laptop install saved a login file");
+  if (/Your password|up-login\.txt|\/login\/once\//.test(install.terminal())) throw new Error(`the terminal shows a password, a login file or a sign-in link: ${install.terminal().slice(-400)}`);
+  if (/too long for a socket/.test(install.terminal())) throw new Error(`the console's socket couldn't be made: ${install.terminal().slice(-300)}`);
+  const context = await w.browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+  const on = await context.newPage();
+  install.page = on;
+  w.openPages.push(on);
+  on.on("pageerror", error => { if (!SKIPPED_FADE.test(String(error))) w.problems.push(`laptop install on ${on.url()}: ${String(error)}`); });
+  const visited = [];
+  on.on("framenavigated", frame => { if (frame === on.mainFrame()) visited.push(new URL(frame.url()).pathname); });
+  await on.goto(install.link);
+  if (visited.includes("/login") || new URL(on.url()).pathname === "/login") throw new Error(`a sign-in page came up: ${visited.join(" → ")}`);
+  const sessions = laptopRows("SELECT authority, local_generation FROM web_session");
+  if (sessions.length !== 1 || sessions[0].authority !== "local-owner") throw new Error(`sessions: ${JSON.stringify(sessions)}`);
+  // The browser's key: handed over once, in this origin's own storage (never in a page).
+  const key = await on.evaluate(() => localStorage.getItem("toolroll.key"));
+  if (!/"key":"[0-9a-f]{64}"/.test(key ?? "")) throw new Error(`no browser key was stored: ${key}`);
+  const html = await (await on.request.get(`${install.base}/welcome`)).text();
+  if (html.includes(JSON.parse(key).key)) throw new Error("a page shows the browser key");
+
+  // 1. Agent: Claude Code, signed in; "Use this one" if it isn't the one in use yet.
+  await on.goto(`${install.base}/welcome`);
+  await waitFor(on.locator("[data-welcome]"), "the welcome", { timeoutMs: 30_000, seen: () => saysNow(on) });
+  await until("Claude Code's sign-in check", async () => {
+    const state = await on.locator('[data-agent="claude"]').getAttribute("data-state").catch(() => null);
+    if (state === "signed-in") return true;
+    await on.reload();
+    return false;
+  }, { timeoutMs: 60_000, everyMs: 1000, seen: () => saysNow(on) });
+  await bothSizes(on, "1-welcome", "easy-start");
+  const use = on.locator('[data-agent="claude"] button', { hasText: "Use this one" });
+  if (await use.count() > 0) await Promise.all([on.waitForNavigation(), use.click()]);
+  await waitFor(on.locator('[data-step="agent"][data-done="1"]'), "the agent step done", { timeoutMs: 30_000, seen: () => saysNow(on) });
+  // 2. Project: the sample.
+  await Promise.all([on.waitForNavigation(), on.locator('form[action="/welcome/sample"] button').click()]);
+  // Added at once; the builder `up` runs takes it on within a moment (no "Start taking work" for a person to press).
+  const addedAt = Date.now();
+  await until("the project step done", async () => {
+    if (await on.locator('[data-step="project"][data-done="1"]').count() > 0) return true;
+    await on.reload();
+    return false;
+  }, { timeoutMs: 90_000, everyMs: 1000, seen: () => saysNow(on) });
+  w.say(`the sample project was taking work ${Math.round((Date.now() - addedAt) / 1000)} s after it was added`);
+  if (laptopRows("SELECT action, detail FROM action_ledger WHERE action LIKE '%project%' OR action LIKE '%repo%'").length === 0) w.say("note: no ledger line names the project added");
+  // Choosing the agent (the first start's own choice, or "Use this one") started the models on its default preset:
+  // the first task plans and is approved with no password and nothing set from outside.
+  const models = laptopRows("SELECT phase, provider, model FROM phase_config WHERE scope = 'installation' ORDER BY phase");
+  if (!models.some(one => one.phase === "build" && one.provider === "claude") || !models.some(one => one.phase === "plan")) throw new Error(`the agent chosen started no models: ${JSON.stringify(models)}`);
+  // 3. First task: a starter, drafted into New task and sent.
+  // Briefs carry the sample's README (which lists every starter), so each answer matches its own task's exact words.
+  script({ role: "builder", when: [/Round priceWithDiscount's result to whole cents/], unless: [/every price is rounded/, /a clear error, and test it/], answer: { files: roundedPriceFiles(), conclusion: "priceWithDiscount now rounds to whole cents, with a test." } });
+  const starter = on.locator("[data-starters] a", { hasText: "Round prices to whole cents" });
+  await waitFor(starter, "the sample's starters", { timeoutMs: 15_000, seen: () => saysNow(on) });
+  await bothSizes(on, "2-welcome-starters", "easy-start");
+  await Promise.all([on.waitForNavigation(), starter.click()]);
+  const drafted = await on.inputValue('form[action="/tasks/add"] textarea[name="title"]');
+  if (!/whole cents/.test(drafted)) throw new Error(`the starter drafted: ${drafted}`);
+  await Promise.all([on.waitForNavigation(), on.click('form[action="/tasks/add"] button.k-send')]);
+  const id = decodeURIComponent(/\/t\/([^/?#]+)/.exec(on.url())?.[1] ?? "");
+  if (id === "") throw new Error(`filing didn't open the task: ${on.url()}`);
+  install.task = id;
+  const filed = laptopRows(`SELECT detail FROM action_ledger WHERE task_id = '${id}' AND action = 'task filed'`)[0];
+  if (!/^filed via local-owner · local 1 browser$/.test(filed?.detail ?? "")) throw new Error(`the filing's ledger line: ${JSON.stringify(filed)}`);
+  // Approve, with no password.
+  await approveLocally(on, install.base, id);
+  await bothSizes(on, "3-approved", "easy-start");
+  const proof = laptopRows(`SELECT detail FROM action_ledger WHERE task_id = '${id}' AND action LIKE '%approv%' ORDER BY rowid DESC LIMIT 1`)[0];
+  // Ready, then Complete.
+  const run = await laptopReady(id);
+  await on.goto(`${install.base}/t/${encodeURIComponent(id)}`);
+  await on.locator("[data-task-status] a[data-primary-action]").first().click();
+  const accept = on.locator(`[data-result-decision] form[action="/t/${id}/complete"] button[data-accept-result]`);
+  await waitFor(accept, "Accept on the result", { timeoutMs: 30_000, seen: () => saysNow(on) });
+  // How it was approved, in its own words (never "password typed").
+  const approvedLine = (await on.locator("[data-task-status]").first().innerText()).replace(/\s+/g, " ");
+  if (!/on this computer, no password/.test(approvedLine)) throw new Error(`the approval reads: ${approvedLine.slice(0, 300)}`);
+  await bothSizes(on, "4-ready", "easy-start");
+  // The sample came with its own check (its one test): the result says the checks passed, and accepting asks for no reason.
+  if (!/Checks passed/.test(approvedLine)) throw new Error(`the sample's checks didn't read passed: ${approvedLine.slice(0, 300)}`);
+  for (const looks of await on.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
+  if (await on.locator('[data-result-decision] form[action$="/complete"] input[name="note"]').count() > 0) throw new Error(`accepting asks for a reason: ${await saysNow(on)}`);
+  await Promise.all([on.waitForNavigation(), accept.click()]);
+  await until("the task to read complete", async () => (await on.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500, seen: () => saysNow(on) });
+  await bothSizes(on, "5-complete", "easy-start");
+  return { task: id, run: run.id, approval: proof?.detail ?? null };
+});
+
+await journey("easy-start", SCRIPTED, "After a restart an open tab says how to reconnect; the local owner runs `toolroll open` and carries on", ["A new laptop install opens signed in with no password: the welcome, the sample project, a starter approved with no password, Ready, Complete"], async () => {
+  const install = fresh.laptop, on = install.page;
+  await restartLaptop(install);
+  // A page read still works; the workspace says what to run.
+  await on.goto(`${install.base}/chat`);
+  const notice = on.locator('[data-reconnect="command"]');
+  await waitFor(notice, "the reconnect notice", { timeoutMs: 30_000, seen: () => saysNow(on) });
+  const said = await notice.innerText();
+  if (!/Toolroll restarted\. Run toolroll open to reconnect\./.test(said.replace(/\s+/g, " "))) throw new Error(`the notice says: ${said}`);
+  await bothSizes(on, "6-restarted", "easy-start");
+  // A change is refused with the same words, and nothing is filed.
+  const before = laptopRows("SELECT COUNT(*) AS n FROM task")[0].n;
+  await on.goto(`${install.base}/tasks/new`);
+  await on.fill('form[action="/tasks/add"] textarea[name="title"]', "Refuse a negative discount with a clear error, and test it.");
+  const [answer] = await Promise.all([on.waitForNavigation(), on.click('form[action="/tasks/add"] button.k-send')]);
+  if (answer?.status() !== 409) throw new Error(`a change after the restart answered ${answer?.status()}: ${await saysNow(on)}`);
+  if (!(await saysNow(on)).includes("Toolroll restarted — run `toolroll open` to reconnect.") && !(await saysNow(on)).includes("Toolroll restarted — run toolroll open to reconnect.")) throw new Error(`the refusal says: ${await saysNow(on)}`);
+  if (laptopRows("SELECT COUNT(*) AS n FROM task")[0].n !== before) throw new Error("a task was filed after the restart without reconnecting");
+  await bothSizes(on, "7-restarted-refused", "easy-start");
+  // `toolroll open --web` at this computer's terminal: a fresh one-time link, opened in the browser.
+  const linkBefore = install.link;
+  const printed = await atLaptopTerminal(install, ["open", "--web"], "open");
+  const link = readFileSync(install.opened, "utf8");
+  if (link === linkBefore || !link.startsWith(install.base)) throw new Error(`toolroll open opened ${link}: ${printed.slice(-300)}`);
+  if (printed.includes("/login/once/")) throw new Error("toolroll open printed the sign-in link");
+  await on.goto(link);
+  const id = await fileLocally(on, install.base, "Refuse a negative discount with a clear error, and test it.");
+  install.second = id;
+  return { reconnected: true, task: id };
+});
+
+await journey("easy-start", SCRIPTED, "A revision with long words, then a build that fails: each says what happened, on desktop and phone", ["After a restart an open tab says how to reconnect; the local owner runs `toolroll open` and carries on"], async () => {
+  const install = fresh.laptop, on = install.page;
+  // The second task (filed after reconnecting): built, then sent back with a long note.
+  script(
+    { role: "builder", when: [/every price is rounded/], answer: { files: roundedPriceFiles(true, true), conclusion: "The error message now names the discount that was refused; the README says so too." } },
+    { role: "builder", when: [/a clear error, and test it/], unless: [/every price is rounded/], answer: { files: roundedPriceFiles(true), conclusion: "priceWithDiscount refuses a negative discount with a RangeError, with a test." } },
+  );
+  const id = install.second;
+  if (laptopTask(id)?.approved_by == null) await approveLocally(on, install.base, id);
+  const first = await laptopReady(id);
+  const note = "Please make the error message name the discount that was refused, so a person reading a log knows what went wrong, " +
+    "and say in the README that every price is rounded to whole cents after the discount is taken off. " + "Keep the existing tests exactly as they are. ".repeat(6);
+  await on.goto(`${install.base}/review?result=${encodeURIComponent(id)}&run=${first.id}`);
+  await on.locator('a[href="#request-changes"]').first().click();
+  const box = on.locator('#comment-form textarea[name="note"]');
+  await waitFor(box, "the revision note", { timeoutMs: 15_000, seen: () => saysNow(on) });
+  await box.fill(note);
+  await Promise.all([on.waitForNavigation(), on.locator("button[data-request-changes]").click()]);
+  const revision = new URL(on.url()).searchParams.get("version") ?? laptopRows(`SELECT external_id AS id FROM task_ref WHERE revision_of IS NOT NULL ORDER BY id DESC LIMIT 1`)[0]?.id;
+  if (!revision || revision === id) throw new Error(`no revision was made: ${on.url()} — ${await saysNow(on)}`);
+  await approveLocally(on, install.base, revision);
+  await on.goto(`${install.base}/t/${encodeURIComponent(revision)}`);
+  await bothSizes(on, "12-revision-long", "easy-start");
+  await laptopReady(revision);
+  // A build that fails: a long title, and the failure said plainly.
+  script({ role: "builder", when: [/currency symbol/], answer: { fail: "The agent stopped: it couldn't run the project's tests." } });
+  // The box stops at a title's 200 characters (so nothing typed is lost): a long title, within it, files whole.
+  const longTitle = "Format prices with a currency symbol everywhere they are shown, including the README's examples and every test name that mentions an amount, without changing what any function returns";
+  await on.goto(`${install.base}/tasks/new`);
+  const cap = await on.locator('form[action="/tasks/add"] textarea[name="title"]').getAttribute("maxlength");
+  if (cap !== "200") throw new Error(`the New task box takes up to ${cap} characters, not a title's 200`);
+  const failing = await fileLocally(on, install.base, longTitle);
+  await approveLocally(on, install.base, failing);
+  await until(`${failing}'s build to fail`, async () => { const run = laptopBuild(failing); return run?.finished_at && run.outcome !== "built" ? run : null; }, { timeoutMs: 300_000, everyMs: 1000, seen: () => JSON.stringify(laptopBuild(failing)) });
+  await on.goto(`${install.base}/t/${encodeURIComponent(failing)}`);
+  await waitFor(on.locator("[data-task-status]").first(), "the failed task's status", { timeoutMs: 30_000, seen: () => saysNow(on) });
+  const status = (await on.locator("[data-task-status]").first().innerText()).replace(/\s+/g, " ");
+  // The worker tries a failed build again after a pause: the status says when, once, in words (never a raw stamp).
+  if (!/fail|stopped|couldn.t|didn.t|tries again/i.test(status)) throw new Error(`the failed task's status says: ${status.slice(0, 300)}`);
+  if (/tries again/.test(status) && !/Retry scheduled/.test(status)) throw new Error(`a retry's heading doesn't say so: ${status.slice(0, 300)}`);
+  if (/Queued\s+Queued/.test(status) || /\d{4}-\d\d-\d\dT\d\d:/.test(status)) throw new Error(`the failed task's status repeats itself or shows a raw time: ${status.slice(0, 300)}`);
+  // Its long title is filed whole: every word the person typed.
+  const titled = laptopRows(`SELECT title FROM task WHERE id = '${failing}'`)[0]?.title ?? "";
+  if (titled !== longTitle) throw new Error(`the long title reads: ${titled}`);
+  await bothSizes(on, "13-failed", "easy-start");
+  return { revision, failed: failing, status: status.slice(0, 160) };
+});
+
+await journey("easy-start", SCRIPTED, "A refused act offers Set a password; setting it signs in fully and goes back to the act", ["A new laptop install opens signed in with no password: the welcome, the sample project, a starter approved with no password, Ready, Complete"], async () => {
+  const install = fresh.laptop, on = install.page;
+  try {
+    if (laptopRows("SELECT COUNT(*) AS n FROM web_session WHERE authority = 'local-owner'")[0].n === 0) await on.goto(install.link);
+    // Flows → Try an example: making a flow is more than attended work on a task, which a local owner can't do.
+    const flowsBefore = laptopRows("SELECT COUNT(*) AS n FROM flow")[0].n;
+    const tryExample = async () => {
+      await on.goto(`${install.base}/flows`);
+      const button = on.locator('form[action="/flows/example"] button[type="submit"]');
+      await waitFor(button, "Try an example", { timeoutMs: 15_000, seen: () => saysNow(on) });
+      return Promise.all([on.waitForNavigation(), button.click()]);
+    };
+    await tryExample();
+    const refused = await saysNow(on);
+    if (!refused.includes("Set a password to do this.")) throw new Error(`the refusal says: ${refused}`);
+    if (laptopRows("SELECT COUNT(*) AS n FROM flow")[0].n !== flowsBefore) throw new Error("a refused act made a flow");
+    const setLink = on.locator('a[href^="/password/set"]', { hasText: "Set a password" }).first();
+    await waitFor(setLink, "Set a password", { timeoutMs: 10_000 });
+    const href = await setLink.getAttribute("href");
+    // A refused form's way on: set a password, then back to the page the form belongs to (built from the refused request).
+    if (href !== "/password/set?next=%2Fflows") throw new Error(`Set a password leads to ${href}`);
+    await bothSizes(on, "8-refused", "easy-start");
+    await Promise.all([on.waitForNavigation(), setLink.click()]);
+    await waitFor(on.locator('form[action="/password/set"]'), "the Set a password page", { timeoutMs: 15_000, seen: () => saysNow(on) });
+    await bothSizes(on, "9-set-password", "easy-start");
+    const password = "a long laptop password";
+    // Typed differently the second time: said plainly, nothing set.
+    await on.fill('form[action="/password/set"] input[name="password"]', password);
+    await on.fill('form[action="/password/set"] input[name="again"]', `${password}!`);
+    await Promise.all([on.waitForNavigation(), on.locator('form[action="/password/set"] button[type="submit"]').click()]);
+    if (!/don.t match/.test(await saysNow(on))) throw new Error(`two different passwords: ${await saysNow(on)}`);
+    if (laptopRows("SELECT password_set FROM approver")[0]?.password_set !== 0) throw new Error("a mismatched password was set");
+    await bothSizes(on, "10-set-password-mismatch", "easy-start");
+    await on.fill('form[action="/password/set"] input[name="password"]', password);
+    await on.fill('form[action="/password/set"] input[name="again"]', password);
+    await Promise.all([on.waitForNavigation(), on.locator('form[action="/password/set"] button[type="submit"]').click()]);
+    await until("signed in again, back on Flows", async () => new URL(on.url()).pathname === "/flows", { timeoutMs: 15_000, everyMs: 200, seen: () => on.url() });
+    const sessions = laptopRows("SELECT authority FROM web_session");
+    if (sessions.length !== 1 || sessions[0].authority !== "full") throw new Error(`after setting it, sessions are ${JSON.stringify(sessions)}`);
+    if (laptopRows("SELECT password_set FROM approver")[0]?.password_set !== 1) throw new Error("the password wasn't recorded as set");
+    // The act, again: now it goes through, as a full session with this browser's fresh key.
+    await tryExample();
+    if (!/^\/flows\/\d+/.test(new URL(on.url()).pathname)) throw new Error(`Try an example went to ${on.url()}: ${await saysNow(on)}`);
+    if (laptopRows("SELECT COUNT(*) AS n FROM flow")[0].n !== flowsBefore + 1) throw new Error("no flow was made after setting a password");
+    await bothSizes(on, "11-act-done", "easy-start");
+    return { password: "set", flow: new URL(on.url()).pathname };
+  } finally {
+    // The last easy-start journey: the laptop install stops here, however the journeys went.
+    await install.stop();
   }
 });
 

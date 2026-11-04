@@ -221,18 +221,34 @@ describe("the Agents board", () => {
     const ping = store.listNotifications("all").find(one => one.kind === "agent-question")!;
     expect(watchedPing(store, ping, "alex", new Date())).toBe("send");
 
+    // The live stream only reads (easy-start N1): a cookie alone holds no watch.
     const controller = new AbortController();
     const response = await fetch(url(`/live?room=${encodeURIComponent(`agent:${run}`)}`), { headers: { cookie, accept: "text/event-stream" }, signal: controller.signal });
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
     const first = new TextDecoder().decode((await reader.read()).value);
     expect(first).toContain(`"room":"agent:${run}"`);
+    expect(watchingAgent(store, "alex", run, new Date())).toBe(false);
+    controller.abort();
+    // The page's shell holds the watch with a keyed POST on each keep-alive, and releases it on unload.
+    const csrf = (await page(`/agents?run=${run}`, cookie)).csrf;
+    const watch = (fields: Record<string, string>, who = cookie) => fetch(url("/agents/watch"), { method: "POST", headers: { cookie: who, "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: new URLSearchParams({ csrf, ...fields }).toString() });
+    const view = "a1".repeat(12);
+    expect((await watch({ op: "hold", run: String(run), view })).status).toBe(200);
     expect(watchingAgent(store, "alex", run, new Date())).toBe(true);
     expect(watchedPing(store, ping, "alex", new Date())).toEqual({ hold: expect.any(String) });
     expect(watchedPing(store, ping, "robin", new Date())).toBe("send");
+    // Someone else's page can neither renew nor release this watch (robin can't see this project's run either).
+    const robin = await login("robin", robinToken);
+    const robinCsrf = (await page("/agents", robin)).csrf;
+    expect((await fetch(url("/agents/watch"), { method: "POST", headers: { cookie: robin, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf: robinCsrf, op: "release", view }).toString() })).status).toBe(200);
+    expect(watchingAgent(store, "alex", run, new Date())).toBe(true);
+    expect((await watch({ op: "hold", run: "x", view })).status).toBe(404);
+    expect((await watch({ op: "hold", run: String(run), view: "not-hex" })).status).toBe(400);
 
-    controller.abort();
-    for (let i = 0; i < 200 && watchingAgent(store, "alex", run, new Date()); i++) await new Promise(resolve => setTimeout(resolve, 5));
+    expect((await watch({ op: "release", view })).status).toBe(200);
     expect(watchingAgent(store, "alex", run, new Date())).toBe(false);
     // The question is still open, so the held ping now goes.
     expect(watchedPing(store, ping, "alex", new Date())).toBe("send");
@@ -459,9 +475,9 @@ describe("the Live grid (docs/plans/agents-view.md §3)", () => {
     await tiles(cookie);
     expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
     expect(store.handle.prepare("SELECT count(*) AS n FROM agent_view").get()?.["n"]).toBe(0);
-    // The List view still opens it, and that is a view.
+    // The List view still opens it (a read: the shell's keyed POST /agents/seen marks it, easy-start N1).
     expect((await board(`/agents?run=${run}`, cookie)).selected).not.toBeNull();
-    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(1);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
   });
 });
 

@@ -15,7 +15,7 @@ import { html, joinHtml, postForm, type Html } from "../html.js";
 import { START_BUILDER_HREF } from "../needs-you.js";
 import { admitProject } from "../project-admission.js";
 import { authorizedProject } from "../project.js";
-import { createSampleProject } from "../sample-project.js";
+import { createSampleProject, registerSampleCheck } from "../sample-project.js";
 import { type Chrome, refuse, screen, type Screen } from "./chrome.js";
 import type { HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
@@ -162,6 +162,9 @@ export function createWelcomeHandlers(runtime: ServerRuntime) {
     const stillAllowed = (repo: string): boolean => identities.generation() === decidedOn && visible(repo);
     const admitted = await admitProject(store, { registryFile: options.registryPath ?? null, path: canonical, actor: { label: who.name, origin: "console" }, now, stillAllowed, resolveFolder: identities.resolveNow });
     if (!admitted.ok || !stillAllowed(admitted.repo)) return back("not-added");
+    // Its own fixed check (sample-project.ts), so the first result reads checked rather than "Checks not run": only for a
+    // sample this request just made, never one found again.
+    registerSampleCheck(store, made, admitted.repo, who.name, now);
     deletedRepos.delete(admitted.repo);
     who.session.project = admitted.repo;
     who.session.projectRevision++;

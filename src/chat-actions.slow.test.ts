@@ -188,7 +188,7 @@ describe("shared chat action lifecycle", () => {
     const review = secure
       ? mintSharedActionReview(store, who, id, root, now)
       : null;
-    return confirmLeadProposal(store, who, id, now, {
+    return confirmLeadProposal(store, who, id, now, { authority: "full", 
       via: secure ? "web" : "telegram",
       evidenceRoot: root,
       ...(review
@@ -470,7 +470,7 @@ describe("shared chat action lifecycle", () => {
     const review = mintSharedActionReview(store, who, id, root, now);
     expect(review.payload.terms.join("\n")).toContain(instructions);
     expect(
-      confirmLeadProposal(store, who, id, now, {
+      confirmLeadProposal(store, who, id, now, { authority: "full", 
         via: "web",
         evidenceRoot: root,
         confirm: true,
@@ -551,7 +551,7 @@ describe("shared chat action lifecycle", () => {
       review = mintSharedActionReview(store, who, action, root, now);
     propose(store, { now, taskId: id, goal: "Different scope" });
     expect(
-      confirmLeadProposal(store, who, action, now, {
+      confirmLeadProposal(store, who, action, now, { authority: "full", 
         via: "web",
         evidenceRoot: root,
         confirm: true,
@@ -592,7 +592,7 @@ describe("shared chat action lifecycle", () => {
     expect(confirm(action)).toMatchObject({ ok: false, reason: "needs-confirm" });
     expect(assignment(id)?.state).toBe("ready-to-check");
     const before = store.proofVerdictFor(run);
-    expect(confirmLeadProposal(store, who, action, now, { via: "telegram", evidenceRoot: root, confirm: true })).toMatchObject({ ok: true, said: "Accepted and finished. The recorded checks are unchanged." });
+    expect(confirmLeadProposal(store, who, action, now, { authority: "full", via: "telegram", evidenceRoot: root, confirm: true })).toMatchObject({ ok: true, said: "Accepted and finished. The recorded checks are unchanged." });
     expect(assignment(id)).toMatchObject({ state: "complete", completion: { actor: "operator:operator" } });
     expect(store.proofVerdictFor(run)).toEqual(before);
     expect(store.proofAcceptance(run)).toBeNull();
@@ -607,7 +607,7 @@ describe("shared chat action lifecycle", () => {
     expect(() => proposal("result_accept", { task: id, run })).toThrow("already marked complete");
     const other = task(),
       cancel = proposal("task_cancel", { task: other });
-    expect(confirmLeadProposal(store, who, cancel, now, { via: "telegram", evidenceRoot: root, confirm: true })).toMatchObject({ ok: false, reason: "needs-confirm" });
+    expect(confirmLeadProposal(store, who, cancel, now, { authority: "full", via: "telegram", evidenceRoot: root, confirm: true })).toMatchObject({ ok: false, reason: "needs-confirm" });
     expect(store.getTask(other)?.state).not.toBe("cancelled");
   });
   test("a successor result invalidates completion, without completing either run", () => {
@@ -617,7 +617,7 @@ describe("shared chat action lifecycle", () => {
       review = mintSharedActionReview(store, who, action, root, now),
       next = attempt(id, store.getScope(id)!.digest);
     expect(
-      confirmLeadProposal(store, who, action, now, {
+      confirmLeadProposal(store, who, action, now, { authority: "full", 
         via: "web",
         evidenceRoot: root,
         confirm: true,
@@ -645,7 +645,7 @@ describe("shared chat action lifecycle", () => {
       two = proposal("task_cancel", { task: task() }),
       review = mintSharedActionReview(store, who, one, root, now);
     expect(
-      confirmLeadProposal(store, who, two, now, {
+      confirmLeadProposal(store, who, two, now, { authority: "full", 
         via: "web",
         evidenceRoot: root,
         confirm: true,
@@ -666,6 +666,7 @@ describe("shared chat action lifecycle", () => {
         action,
         new Date(now.getTime() + 11 * 60_000),
         {
+          authority: "full",
           via: "web",
           evidenceRoot: root,
           confirm: true,
@@ -896,7 +897,7 @@ describe("shared chat action lifecycle", () => {
       "Different plan",
     );
     expect(
-      confirmLeadProposal(store, who, action, now, {
+      confirmLeadProposal(store, who, action, now, { authority: "full", 
         via: "web",
         evidenceRoot: root,
         confirm: true,
@@ -1055,7 +1056,7 @@ describe("shared chat action lifecycle", () => {
     const review = mintSharedActionReview(store, who, action, root, now);
     expect(review.payload.terms.join("\n")).toContain(instructions);
     expect(
-      confirmLeadProposal(store, who, action, now, {
+      confirmLeadProposal(store, who, action, now, { authority: "full", 
         via: "web",
         evidenceRoot: root,
         confirm: true,

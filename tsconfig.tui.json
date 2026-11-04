@@ -1,0 +1,15 @@
+{
+  // The terminal UI: bundled by esbuild into dist/tui.js (scripts/browser-build.mjs), never emitted by tsc.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "types": ["node", "react"],
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["src/tui/**/*.ts", "src/tui/**/*.tsx"],
+  "exclude": []
+}

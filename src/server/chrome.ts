@@ -102,6 +102,8 @@ export function refuse(
   status: number,
   message: string,
   backHref = "/",
+  /** The one action that fixes it, in place of "Go back" (easy-start C2: Reconnect). */
+  act?: { label: string; href: string },
 ): void {
   if (who === null || who.via === "bearer") {
     return respond(response, status, "text/plain; charset=utf-8", message);
@@ -113,14 +115,14 @@ export function refuse(
   // The words are the caller's exactly (older callers wrote lower-case fragments; k-refusal capitalises the first letter).
   const body = html`<div class="k-refusal">${status === 404
     ? kitNotFound(path, generic ? {} : { title: message, text: "Home has what needs you; Tasks has every task." })
-    : kitDoc(kitDocHeader({ title: "Request refused", back: [backHref, "Back"] }), kitNotice(message), kitActs(kitBtn("Go back", { href: backHref })))}</div>`;
+    : kitDoc(kitDocHeader({ title: "Request refused", back: [backHref, "Back"] }), kitNotice(message), kitActs(act === undefined ? kitBtn("Go back", { href: backHref }) : kitBtn(act.label, { href: act.href, variant: "primary" })))}</div>`;
   // A signed-in browser keeps the workspace around it: the same navigation as every page.
   const framed = requestContext.getStore()?.refusal;
   if (framed !== undefined && who.via === "cookie") return framed(response, status, body);
   return page(response, status, shell(status === 404 ? "Not found" : "Request refused", outPage({
     brand: BRAND_HTML, title: status === 404 ? "Not found" : "Request refused",
     body: html`<div class="k-refusal">${kitNotice(status === 404 && generic ? `There\u2019s no page at ${path}.` : message)}</div>`,
-    foot: html`<a class="k-link" href="${status === 404 ? "/" : backHref}">${status === 404 ? "Go to Home" : "Go back"}</a>`,
+    foot: act === undefined ? html`<a class="k-link" href="${status === 404 ? "/" : backHref}">${status === 404 ? "Go to Home" : "Go back"}</a>` : html`<a class="k-link" href="${act.href}">${act.label}</a>`,
   })));
 }
 
@@ -809,8 +811,8 @@ export function personChip(name: string): Html {
 export const BRAND_HTML = html`<span class="so-brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>Toolroll`;
 
 /** A page on its own, in the workspace's look but with no script: the brand, then the page. */
-export function focusDocument(title: string, body: Html): Html {
-  return shell(title, html`<div class="focus-page"><a class="so-wordmark focus-brand" href="/chat">${BRAND_HTML}</a>${body}</div>`);
+export function focusDocument(title: string, body: Html, live?: { nonce: string; script: string }): Html {
+  return shell(title, html`<div class="focus-page"><a class="so-wordmark focus-brand" href="/chat">${BRAND_HTML}</a>${body}</div>`, live === undefined ? {} : { live });
 }
 
 

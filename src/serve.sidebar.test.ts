@@ -310,15 +310,24 @@ describe("the sidebar's project states", () => {
     expect((await page("/agents", robin)).usage).toBeUndefined();
   });
 
-  test("a visit while an agent runs is not seeing it: only its finished version, opened, marks it seen", async () => {
+  test("a visit while an agent runs is not seeing it: only its finished version, opened, marks it seen (the shell's keyed POST)", async () => {
     const run = running("t-seen", repoA);
     const alex = await login("alex", alexToken);
     const seen = () => store.handle.prepare("SELECT 1 AS hit FROM agent_seen WHERE account = 'alex' AND run = ?").get(run) !== undefined;
+    const said = async () => {
+      const csrf = (await page(`/agents?run=${run}`, alex)).csrf;
+      return (await fetch(url("/agents/seen"), { method: "POST", headers: { cookie: alex, "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+        body: new URLSearchParams({ csrf, run: String(run) }).toString() })).status;
+    };
     await page(`/agents?run=${run}`, alex);
     await fetch(url(`/r/${run}`), { headers: { cookie: alex } });
+    expect(await said()).toBe(409);
     expect(seen()).toBe(false);
     store.finishRun(run, { outcome: "built", committed: true, now: new Date() });
+    // Opening the page reads only (easy-start N1); the shell says it was seen.
     await page(`/agents?run=${run}`, alex);
+    expect(seen()).toBe(false);
+    expect(await said()).toBe(200);
     expect(seen()).toBe(true);
   });
 

@@ -6,7 +6,8 @@ import { releaseProgressFor, shipChecksForTask, type CiCheckRow, type ShipChecks
 import type { TimingRow } from "../design/kit.js";
 import { releaseCiRunningOf } from "../release-ci-hold.js";
 import { releaseObligationsOf } from "../release-recheck.js";
-import { approvalProofOf, freshlyApprovable, freshnessFor, withFreshness } from "../scope.js";
+import { approvalProofOf, freshlyApprovable, freshnessFor, localApprovalEligible, withFreshness } from "../scope.js";
+import { localOwnerRefusal } from "../local-owner.js";
 import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
 import { recentGitReads, taskBaseOf } from "../task-base.js";
@@ -561,6 +562,12 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
           if (fresh === null) return null;
           const gate = runtime.store.approvalGate(ref!.externalId, who.name, "person");
           return freshlyApprovable(runtime.store, ref!.externalId, scope, gate.verdict === "seal" && !gate.protectedWork) ? new Date(fresh.at).toISOString() : null;
+        })(),
+        // Easy-start C5: a laptop's local owner approves eligible work with no password (the seal applies the same rule).
+        approvalLocal: (() => {
+          if (ref === null || who?.via !== "cookie" || who.authority !== "local-owner") return null;
+          if (localApprovalEligible(runtime.store, who.name, ref.externalId).ok) return { eligible: true as const };
+          return { eligible: false as const, ...localOwnerRefusal(runtime.store.accountOf(who.name)?.passwordSet === true, taskHref(ref.externalId)) };
         })(),
         steerRecent: ref === null ? [] : runtime.store.runsFor(ref.id).filter(one => one.outcome !== null).map(one => one.id).sort((a, b) => b - a).slice(0, 5),
         // The running attempt's composer, for an approver on a browser session (steer-controls.ts).

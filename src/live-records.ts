@@ -17,6 +17,7 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { scanForSecrets } from "./evidence.js";
 import { topLevelEvent } from "./stream-scope.js";
+import { cleanTerminalLine } from "./terminal-text.js";
 
 /**
  * The fixed tool vocabulary: known harness tools map to OUR kinds; anything
@@ -71,7 +72,6 @@ const LIVE_SECRET_SHAPES: readonly RegExp[] = [
   /\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]+@/i,
   /[?&](?:access_token|token|key|api_key|apikey|secret|sig|signature|password|pwd|auth|code)=[^&\s]+/i,
 ];
-const BIDI_CONTROLS = /[‪-‮⁦-⁩]/g;
 
 /** A line that is only a long run of mixed-case base64 — a key body whose BEGIN line was elsewhere (a hash is not). */
 function keyBodyShaped(line: string): boolean {
@@ -85,18 +85,9 @@ export function liveSecretHit(line: string): boolean {
   return keyBodyShaped(line) || LIVE_SECRET_SHAPES.some(shape => shape.test(line));
 }
 
-/** Controls, ANSI escapes and bidi overrides out; tabs to spaces. */
+/** Controls, ANSI escapes and bidi overrides out; tabs to spaces (terminal-text.ts, the one sanitizer). */
 export function cleanLiveText(text: string): string {
-  return text
-    // Escape sequences in every form: CSI (7- or 8-bit, any parameter bytes including ':'), OSC, and the rest.
-    .replace(/(?:\x1b\[|\u009b)[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/(?:\x1b\]|\u009d)[^\x07\x1b\u009c]*(?:\x07|\x1b\\|\u009c)?/g, "")
-    .replace(/\x1b[ -/]*[0-~]/g, "")
-    .replace(/\t/g, " ")
-    .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
-    // Every invisible format character (zero-width, direction marks and overrides, joiners, BOM): never shown.
-    .replace(/\p{Cf}/gu, "")
-    .replace(BIDI_CONTROLS, "");
+  return cleanTerminalLine(text);
 }
 
 /** Letters, digits and dashes only, after folding look-alike letters and dashes. */
