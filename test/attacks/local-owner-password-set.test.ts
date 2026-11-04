@@ -328,3 +328,24 @@ describe("the refusal's way on (?next=)", () => {
     expect(world.store.accountOf("alex")!.passwordSet).toBe(false);
   });
 });
+
+describe("step-up forms for an owner with no password", () => {
+  test("Settings → Models shows how to set a password instead of a password field; once set, the field is back", async () => {
+    world = await openLocalWorld();
+    const { cookie, csrf } = await world.localSession();
+    for (const path of ["/settings/models", "/settings/models?format=workspace"]) {
+      const page = await world.send(path, "GET", { cookie });
+      expect(page.status, path).toBe(200);
+      const body = path.includes("format=workspace") ? String((JSON.parse(page.body) as { pageHtml?: string }).pageHtml ?? "") : page.body;
+      expect(body, path).not.toMatch(/autocomplete="current-password"/);
+      expect(body, path).toContain("Set a password to do this.");
+      expect(body, path).toContain('href="/password/set?next=%2Fsettings%2Fmodels"');
+    }
+    // A full session (the password now set) types it as before.
+    const set = await setPassword(cookie, { csrf, password: PASSWORD, again: PASSWORD });
+    const full = cookieOf({ status: set.status, headers: set.headers, body: set.body });
+    const page = await world.send("/settings/models", "GET", { cookie: full });
+    expect(page.body).toMatch(/autocomplete="current-password"/);
+    expect(page.body).not.toContain("data-local-step-up");
+  });
+});

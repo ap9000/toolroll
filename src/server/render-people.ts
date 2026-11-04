@@ -64,6 +64,21 @@ export function ssoStepUps(page: Html, sso: { label: string; fresh: boolean }, r
   return replaceMarkup(labelled, /<input\b([^>]*)>/g, (_whole, attributes) => stepUp(attributes) ? swap(attributes) : null);
 }
 
+/**
+ * Easy start: for a local owner who has no password yet, every step-up password field (type=password with
+ * autocomplete="current-password", typed-only ones included) becomes "Set a password to do this." and the Set a
+ * password link, carrying this page on: there is no password to type. A new password, a secret or a key field is
+ * never one. The field's own label and hint go with it.
+ */
+export function localOwnerStepUps(page: Html, setHref: string): Html {
+  const stepUp = (attributes: string) => /\btype="password"/.test(attributes) && /\bautocomplete="current-password"/.test(attributes);
+  const instead = (): Html => html`<p class="k-note" data-local-step-up>Set a password to do this. <a class="k-link" href="${setHref}">Set a password</a></p>`;
+  const fields = replaceMarkup(page, /<div class="k-field"><label class="k-label" for="[^"]*">[^<]*<\/label><input\b([^>]*)>(?:<p class="k-hint"[^>]*>[^<]*<\/p>)?(?:<span class="k-err"[^>]*>[^<]*<\/span>)?<\/div>/g,
+    (_whole, attributes) => stepUp(attributes) ? instead() : null);
+  const labelled = replaceMarkup(fields, /<label\b[^>]*>[^<]*(?:<span\b[^>]*>[^<]*<\/span>)?[^<]*<input\b([^>]*)>\s*<\/label>/g, (_whole, attributes) => stepUp(attributes) ? instead() : null);
+  return replaceMarkup(labelled, /<input\b([^>]*)>/g, (_whole, attributes) => stepUp(attributes) ? instead() : null);
+}
+
 /** An expiry as a person reads it: "Thu 5 Nov, 10:42". */
 function expiryWords(iso: string): string {
   const at = new Date(iso);

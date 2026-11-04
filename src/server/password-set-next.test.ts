@@ -5,6 +5,8 @@
 import { describe, expect, test } from "vitest";
 import { localOwnerRefusal } from "../local-owner.js";
 import { PASSWORD_SET_NEXT_MAX, passwordSetNext, refusalNext } from "./http.js";
+import { html, htmlString, type Html } from "../html.js";
+import { localOwnerStepUps } from "./render-people.js";
 
 describe("passwordSetNext", () => {
   test("a page of this console, as path and query", () => {
@@ -50,5 +52,25 @@ describe("refusalNext: the page a refused request was on", () => {
     expect(localOwnerRefusal(false, refusalNext("POST", at("/flows/example")))).toEqual({ message: "Set a password to do this.", action: "Set a password", href: "/password/set?next=%2Fflows" });
     expect(localOwnerRefusal(false, "/")).toMatchObject({ href: "/password/set" });
     expect(localOwnerRefusal(true, "/flows")).toMatchObject({ message: "Sign in with your password to do this.", href: "/login?return=%2Fflows" });
+  });
+});
+
+/** Markup as written (a template with no holes is taken as it is). */
+const raw = (markup: string): Html => html(Object.assign([markup], { raw: [markup] }) as unknown as TemplateStringsArray);
+
+describe("localOwnerStepUps: a step-up field becomes the way to set a password", () => {
+  const swap = (markup: string) => htmlString(localOwnerStepUps(raw(markup), "/password/set?next=%2Fsettings%2Fmodels"));
+  const said = '<p class="k-note" data-local-step-up>Set a password to do this. <a class="k-link" href="/password/set?next=%2Fsettings%2Fmodels">Set a password</a></p>';
+  test("a kit field, a labelled input and a bare input, label and hint going with it", () => {
+    expect(swap('<form><div class="k-field"><label class="k-label" for="pw">Your password</label><input class="k-input" id="pw" name="password" type="password" aria-describedby="pw-err" autocomplete="current-password" required><span class="k-err" id="pw-err" role="alert"></span></div><button>Apply</button></form>'))
+      .toBe(`<form>${said}<button>Apply</button></form>`);
+    expect(swap('<label>Your password<input type="password" name="password" autocomplete="current-password" required></label>')).toBe(said);
+    expect(swap('<label>Your password <span class="meta">only to widen</span><input type="password" name="password" autocomplete="current-password"></label>')).toBe(said);
+    expect(swap('<input type="password" name="token" data-so-typed autocomplete="current-password" required>')).toBe(said);
+  });
+  test("a new password, a secret or any other field is left as it is", () => {
+    for (const markup of ['<input type="password" name="password" autocomplete="new-password">', '<input type="password" name="bot" autocomplete="off">', '<input type="text" name="title">']) {
+      expect(swap(markup)).toBe(markup);
+    }
   });
 });

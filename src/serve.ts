@@ -187,10 +187,10 @@ import { requestContext } from "./server/request-context.js";
 import { asLocalOwner,localModeOn,localOwnerRefusal,localOwnerStandsNow,type LocalPrincipal } from "./local-owner.js";
 import { defaultAgentOf,fillDefaultRouting } from "./model-choices.js";
 import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
-import { BODY_CAP,form,loginHref,refusalNext,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
+import { BODY_CAP,form,loginHref,passwordSetNext,refusalNext,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
 import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,NOT_STARTED_SESSION,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
 import { type ProjectPeek } from "./server/render-pages.js";
-import { serverErrorPage,ssoStepUps,wrongHostPage } from "./server/render-people.js";
+import { localOwnerStepUps,serverErrorPage,ssoStepUps,wrongHostPage } from "./server/render-people.js";
 import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,sessionWithinLifetime,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SignInLink,type SsoIntent,type Who } from "./server/session.js";
 import { createTasksHandlers } from './server/tasks.js';
 import { KIT_BEHAVIOR_MARKUP, KIT_STANDALONE_SCRIPT } from './server/kit-standalone.js';
@@ -931,6 +931,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // Easy-start C2: every page that posts carries the key fill while the key is required; a session whose key is from
       // an earlier start (or has none) is told to reconnect.
       keyFill: browserKeys.required(),
+      // Easy start: a local owner with no password sees "Set a password to do this." where a step-up field would be.
+      ...(who.via === "cookie" && who.authority === "local-owner" && store.accountOf(who.name)?.passwordSet === false
+        ? { localStepUp: localOwnerRefusal(false, method === "GET" ? passwordSetNext(pagePathOf(url)) : "/").href } : {}),
       reconnect: browserKeys.stale(who, method === "GET" ? safeReturn(pagePathOf(url)) : "/"),
     };
     response.once("finish", () => keepSlowRequest(store, timeline, matchedRoute?.id ?? "unmatched", response.statusCode, clock()));
@@ -1527,6 +1530,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // A typed-only proof (settings-kit.ts) stays a password field: its handler takes nothing else.
       s = { ...s, body: keepTypedFields(s.body, ssoStepUps, ssoFacts, back), ...(s.workspace?.pageHtml == null ? {} : { workspace: { ...s.workspace, pageHtml: keepTypedFields(s.workspace.pageHtml, ssoStepUps, ssoFacts, back) } }) };
       if (s.workspace?.view?.kind === "flow") s = { ...s, workspace: { ...s.workspace, view: { ...s.workspace.view, stepUp: { label: ssoFacts.label, fresh: ssoFacts.fresh, confirmHref: `/login/sso?reauth=1&return=${encodeURIComponent(back)}` } } } };
+    }
+    // Easy start: a local owner with no password has none to type: each step-up field says how to set one instead.
+    const localStepUp = requestContext.getStore()?.localStepUp;
+    if (localStepUp !== undefined) {
+      s = { ...s, body: localOwnerStepUps(s.body, localStepUp), ...(s.workspace?.pageHtml == null ? {} : { workspace: { ...s.workspace, pageHtml: localOwnerStepUps(s.workspace.pageHtml, localStepUp) } }) };
     }
     // D5: team chat (the central team service) is deprecated; /chat?team=1 still opens this release, but nothing links to it.
     const sensitive = authored || s.forceSensitive === true;
