@@ -151,6 +151,9 @@ export type ServeOptions = {
   /** v147 (easy-start C2): this console start's key epoch, minted once per start (absent: the server mints its own).
    * A session's mutation key is bound to it; a key from another start is stale. */
   keyEpoch?: string;
+  /** Easy-start C2: the browser mutation key. On (a real console start, operate.ts startConsole), a protected loopback
+   * install's browser sessions carry a key every mutation must present (server/mutation-key.ts). Off: unchanged. */
+  browserKey?: boolean;
   /** v137: whether this console is draining (its `up` is stopping): /healthz says so at once, and pages say Toolroll is restarting. */
   draining?: () => boolean;
   /** Cockpit E: how Finder is asked to reveal a proved checkout (tests pass their own; never a launch). True: shown. */

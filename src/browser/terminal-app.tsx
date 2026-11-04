@@ -15,6 +15,7 @@ import "../design/kit.css";
 import "./terminal.css";
 import { termsOf } from "../design/kit.js";
 import { installKitBehavior, KActs, KApprove, KButton, KChip, KEmpty, KField, KIcon, KLinkButton, KNote, KOverlay, KRadios, KSelect } from "./kit/index.js";
+import { keyed, socketProtocols } from "./mutation-key.js";
 
 type Program = "claude" | "codex" | "shell";
 type Session = { id: string; repo: string; project: string; program: Program; branch: string; startedAt: string; endedAt: string | null; exit: { code: number | null; signal: number | null } | null };
@@ -46,7 +47,7 @@ async function readState(): Promise<State | null> {
 
 async function post(path: string, fields: Record<string, string>): Promise<{ ok: boolean; id?: string; error?: string }> {
   try {
-    const response = await fetch(path, { method: "POST", headers: { accept: "application/json" }, credentials: "same-origin", body: new URLSearchParams({ csrf: CSRF, ...fields }) });
+    const response = await fetch(path, { method: "POST", headers: keyed({ accept: "application/json" }), credentials: "same-origin", body: new URLSearchParams({ csrf: CSRF, ...fields }) });
     return await response.json() as { ok: boolean; id?: string; error?: string };
   } catch { return { ok: false, error: "The console didn't answer. Nothing changed; try again." }; }
 }
@@ -102,7 +103,7 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
     const connect = () => {
       onLink(retry === 0 ? "connecting" : "offline");
       const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/term/${session.id}/socket`;
-      const ws = new WebSocket(url);
+      const ws = new WebSocket(url, socketProtocols());
       socket = ws;
       ws.binaryType = "arraybuffer";
       let firstFrame = true;

@@ -15,6 +15,7 @@ import { ChatMark, LiveReplyBubble, useLiveReply } from "./live-reply.js";
 import { KButton, KComposer, KLinkButton, KOverlay, KPageHeader } from "./kit/index.js";
 import { fullWhen, shortWhen, viewerZone } from "../when-html.js";
 import type { useWorkspace } from "./app.js";
+import { keyed } from "./mutation-key.js";
 
 type Controller = ReturnType<typeof useWorkspace>;
 
@@ -199,7 +200,7 @@ export function LeadChat({ controller, docked = null }: { controller: Controller
     if (chat.pendingTurnId === null || stopping === "busy") return;
     setStopping("busy");
     try {
-      const response = await fetch("/chat/mate/stop", { method: "POST", credentials: "same-origin", redirect: "manual",
+      const response = await fetch("/chat/mate/stop", { method: "POST", credentials: "same-origin", redirect: "manual", headers: keyed({}),
         body: new URLSearchParams({ csrf: workspace.csrf, turn: String(chat.pendingTurnId), return: window.location.pathname + window.location.search }) });
       setStopping(response.type === "opaqueredirect" || response.ok ? "idle" : "The lead didn't stop. Try again.");
     } catch {

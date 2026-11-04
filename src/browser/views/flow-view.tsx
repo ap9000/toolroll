@@ -21,6 +21,7 @@ import { unattendedBudgetOf, unattendedCoverWords, unattendedEndAfterWords, unat
 import { Passwordless } from "../ui/post-form.js";
 import { Badge, Button, Input, Label, Textarea, cn } from "../components/ui/index.js";
 import { KActs, KApprove, KButton, KIcon, openOverlay, KChip, KCount, KDisclose, KDock, KEmpty, KField, KGroup, KInput, KLinkButton, KNotice, KOverlay, KPageHeader, KRow, KSeg, KSelect, KSlots, KStatus, useKMenu } from "../kit/index.js";
+import { keyed } from "../mutation-key.js";
 
 /** A person's initials in a small circle, the same colour for the same name everywhere. */
 function Face({ name, size = "sm" }: { name: string; size?: "sm" | "md" }) {
@@ -63,7 +64,7 @@ const browserAsked = () => { try { return new URLSearchParams(window.location.se
 async function send(path: string, fields: Record<string, string>, csrf: string): Promise<Said> {
   const body = new URLSearchParams({ csrf, ...fields });
   try {
-    const response = await fetch(path, { method: "POST", body, credentials: "same-origin", headers: { accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
+    const response = await fetch(path, { method: "POST", body, credentials: "same-origin", headers: keyed({ accept: "application/json" }), signal: AbortSignal.timeout(20_000) });
     const data = await response.json() as Said;
     return { ok: data.ok === true, said: typeof data.said === "string" ? data.said : response.ok ? "Done." : "That didn't go through.", ...(data.view === undefined ? {} : { view: data.view }), ...(data.reveal === undefined ? {} : { reveal: data.reveal }) };
   } catch {

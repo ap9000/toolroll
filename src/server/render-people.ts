@@ -92,6 +92,27 @@ export function loginPage(problem: string | null, returnTo = "/", sso: { label: 
 }
 
 /**
+ * Easy-start C2: reconnect this tab after a restart (or when it lost its key): the password again for a full session, an
+ * identity-provider sign-in for one that signs in there, or the terminal for a local owner (no password exists).
+ */
+export function reconnectPage(problem: string | null, returnTo: string, how: { kind: "password"; name: string } | { kind: "sso"; label: string } | { kind: "command" }): Html {
+  const back = returnTo === "/" ? null : returnTo;
+  const body = how.kind === "command"
+    ? html`<p>Run <code>toolroll open</code> on this computer to reconnect.</p>`
+    : how.kind === "sso"
+      ? btn(`Sign in with ${how.label}`, { variant: "primary", href: `/login/sso${back === null ? "" : `?return=${encodeURIComponent(back)}`}`, className: "k-wide" })
+      : postForm("/login/rekey", joinHtml([
+        outField({ id: "rekey-password", label: `Password for ${how.name}`, name: "token", type: "password", attrs: { autocomplete: "current-password", required: true, autofocus: true } }),
+        btn("Reconnect", { variant: "primary", type: "submit", className: "k-wide" }),
+      ]), { signedOut: true, returnTo: back, attrs: { class: "k-form" } });
+  return shell("Reconnect · Toolroll", outPage({
+    brand: BRAND_HTML, brandHref: "/", title: "Reconnect",
+    body: joinHtml([problem === null ? "" : html`<div class="k-refusal">${notice(problem)}</div>`, body]),
+    foot: html`Toolroll restarted, so this tab needs a fresh connection before it can make changes.`,
+  }), { nav: false });
+}
+
+/**
  * The page for an address the console doesn't answer to (onboarding): what was opened, where it answers, and the exact
  * command that admits this address. It stands alone (styles inline, no script, no font), because every other asset
  * would be refused at this address too; and it holds nothing a stranger's page doesn't already know.

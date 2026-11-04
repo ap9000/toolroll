@@ -28,7 +28,8 @@ import { hashSecret, mintApiToken, type TokenAccess } from "./api-tokens.js";
 import { limitWords, type Admission } from "./request-budget.js";
 import { sourceKey } from "./source-key.js";
 import { PKCE_CHALLENGE, readOAuthRegistration, readOAuthTokenRequest } from "./contracts/mcp-oauth.js";
-import { html, htmlString, joinHtml, postForm, styleElement, type Html } from "./html.js";
+import { html, htmlString, joinHtml, postForm, scriptElement, styleElement, type Html } from "./html.js";
+import { KEY_FILL_SCRIPT } from "./server/mutation-key.js";
 import { withFormToken } from "./server/request-context.js";
 
 /** How long each piece lives. A code is spent at once; a grant ends after 30 days and the person consents again. */
@@ -85,6 +86,10 @@ export type OAuthHttpOptions = {
   confirm: (request: IncomingMessage, session: OAuthSession, typed: string) => boolean;
   /** The projects this person may choose: each a project the server knows that they can use now. */
   projectsFor: (account: string) => string[];
+  /** Easy-start C2: the consent post presents the session's browser mutation key (absent: not required). */
+  keyed?: (request: IncomingMessage, form: URLSearchParams) => boolean;
+  /** Easy-start C2: whether the consent page carries the key fill (its one nonce'd script). */
+  keyFill?: () => boolean;
   /** The token exchange's budget by source (request-budget.ts): charged once per request, before its body is read or any code or refresh secret is spent. */
   admitToken?: (request: IncomingMessage) => Admission;
 };
@@ -129,11 +134,13 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
   };
   const oauthError = (response: ServerResponse, status: number, error: string, description: string): void => json(response, status, { error, error_description: description });
 
-  /** A page of this sign-in: script-free, never framed, posting only to this console. */
-  const page = (response: ServerResponse, status: number, document: Html): void => {
+  /** A page of this sign-in: script-free (but for the key fill, on a consent while the browser key is required), never
+   * framed, posting only to this console. */
+  const page = (response: ServerResponse, status: number, document: Html, fill = false): void => {
+    const nonce = fill && options.keyFill?.() === true ? randomBytes(16).toString("base64") : null;
     response.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff", "x-frame-options": "DENY",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
-    response.end(htmlString(document));
+      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline';${nonce === null ? "" : ` script-src 'nonce-${nonce}';`} form-action 'self'; frame-ancestors 'none'; base-uri 'none'` });
+    response.end(nonce === null ? htmlString(document) : htmlString(document).replace(/<\/body><\/html>$/, `${htmlString(scriptElement(KEY_FILL_SCRIPT, { nonce }))}</body></html>`));
   };
   /**
    * On to an address by a page that moves on by itself, never a redirect: a redirect answering a form is held to
@@ -310,7 +317,7 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
         response.writeHead(303, { location: `/login?return=${encodeURIComponent(`/oauth/authorize?request=${id}`)}`, "cache-control": "no-store" });
         return void response.end();
       }
-      return page(response, 200, consentHtml(session, id, one, null, null));
+      return page(response, 200, consentHtml(session, id, one, null, null), true);
     }
     if (request.method !== "POST") return problemPage(response, 405, "This sign-in isn't valid", "Start again from your MCP client.");
     const session = options.session(request);
@@ -320,6 +327,8 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     const form = new URLSearchParams(text ?? "");
     // The person's own act: their session's CSRF value, posted from this console's own page.
     if (text === null || !options.sameSite(request) || !same(form.get("csrf") ?? "", session.csrf)) return problemPage(response, 403, "This form expired", "Nothing was allowed. Start again from your MCP client.");
+    // Easy-start C2: on a protected loopback install, the key only this console's own page holds.
+    if (options.keyed !== undefined && !options.keyed(request, form)) return problemPage(response, 403, "Reconnect to Toolroll", "This tab isn't connected to Toolroll, so nothing was allowed. Open Toolroll, reconnect, then start again from your MCP client.");
     const id = form.get("request") ?? "";
     const one = waiting.get(id);
     if (one === undefined || one.expires <= now.getTime()) return problemPage(response, 410, "This sign-in has expired", "Nothing was allowed. Start again from your MCP client.");
@@ -335,7 +344,7 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     if (account === null || account.revokedAt !== null || account.generation !== session.generation) return problemPage(response, 403, "Sign in first", "Your access changed. Sign in again; nothing was allowed.");
     const access: TokenAccess = form.get("access") === "act" ? "act" : "read";
     const chosen = [...new Set(form.getAll("project"))];
-    const again = (status: number, problem: string) => page(response, status, consentHtml(session, id, one, problem, { access, projects: chosen }));
+    const again = (status: number, problem: string) => page(response, status, consentHtml(session, id, one, problem, { access, projects: chosen }), true);
     if (access === "act" && account.role !== "approver") return again(403, "Your account can watch, so the client can only read.");
     const mine = options.projectsFor(session.name);
     if (chosen.length === 0) return again(400, "Choose at least one project.");

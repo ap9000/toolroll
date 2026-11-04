@@ -26,7 +26,7 @@ import { basename, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
-import { flag, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
+import { flag, keyedHeaders, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
 /** The saved login `up` writes: in the reserved secrets folder, else (an older install) beside the database. */
 const savedLoginOf = state => existsSync(join(state, ".toolroll-secrets", "up-login.txt")) ? join(state, ".toolroll-secrets", "up-login.txt") : join(state, "up-login.txt");
@@ -201,7 +201,7 @@ function journey(name, mode, title, needs, body) {
 const flowView = id => json(`/flows/${id}?format=json`);
 const csrfOf = async on => on.locator('input[name="csrf"]').first().inputValue();
 const post = async (path, form, on = page) => {
-  const answer = await on.request.post(`${base}${path}`, { form: { csrf: await csrfOf(on), ...form }, headers: { accept: "application/json", origin: base }, maxRedirects: 0 });
+  const answer = await on.request.post(`${base}${path}`, { form: { csrf: await csrfOf(on), ...form }, headers: await keyedHeaders(on, { accept: "application/json", origin: base }), maxRedirects: 0 });
   return { status: answer.status(), body: await answer.text() };
 };
 /** A flow drawn from steps the way the canvas saves one. */
@@ -310,10 +310,10 @@ await journey("console", SCRIPTED, "Sign-in hardening and the audit trail: five 
   // A policy change, the way Settings makes it, and back. Widening to Full access takes the password (back to Auto
   // needs none): without it nothing changes.
   await page.goto(`${base}/settings`);
-  const unproved = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": "bypassPermissions" }, headers: { origin: base }, maxRedirects: 0 });
+  const unproved = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": "bypassPermissions" }, headers: await keyedHeaders(page, { origin: base }), maxRedirects: 0 });
   if (!/Enter(%20|\+| )your(%20|\+| )Toolroll(%20|\+| )password/.test(unproved.headers()["location"] ?? "")) throw new Error(`Full access without the password: ${unproved.status()} ${unproved.headers()["location"]}`);
   for (const mode of ["bypassPermissions", "auto"]) {
-    const changed = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": mode, password: w.passwords.alex }, headers: { origin: base }, maxRedirects: 0 });
+    const changed = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": mode, password: w.passwords.alex }, headers: await keyedHeaders(page, { origin: base }), maxRedirects: 0 });
     if (changed.status() !== 303) throw new Error(`the permission default refused ${mode}: ${changed.status()}`);
   }
   await page.goto(`${base}/ledger?source=sign-in`); await page.waitForSelector("[data-ledger-id]");
@@ -1715,7 +1715,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   // The project tool, the way the Tools page adds one (with your password), and tested.
   await page.goto(`${base}/settings/tools?repo=${encodeURIComponent(repo)}`);
   for (const form of [{ action: "add-custom", name: "store", transport: "stdio", target: `${process.execPath} ${shop}`, password: w.passwords.alex }, { action: "test", name: "store" }]) {
-    const answered = await page.request.post(`${base}/settings/tools/change`, { form: { csrf: await csrfOf(page), repo, shown: repo, ...form }, headers: { origin: base }, maxRedirects: 0 });
+    const answered = await page.request.post(`${base}/settings/tools/change`, { form: { csrf: await csrfOf(page), repo, shown: repo, ...form }, headers: await keyedHeaders(page, { origin: base }), maxRedirects: 0 });
     if (answered.status() >= 400) throw new Error(`the Tools page refused ${form.action}: ${answered.status()}`);
   }
   // Rosa, from the Support rep template; on her page she's let use the store.

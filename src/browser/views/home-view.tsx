@@ -11,6 +11,7 @@ import { isPhone } from "../kit/behavior.js";
 import { FormToken } from "../ui/index.js";
 import { WORKSPACE_NUDGE } from "../live-task.js";
 import "./home.css";
+import { keyed } from "../mutation-key.js";
 
 const nudge = () => window.dispatchEvent(new CustomEvent(WORKSPACE_NUDGE));
 const rowsOf = (view: BrowserHomeView): BrowserHomeRow[] => view.groups.flatMap(group => group.rows);
@@ -37,7 +38,7 @@ function Question({ row }: { row: BrowserHomeRow }) {
     if (busy || done || choice === "") return;
     setBusy(true); setError(null);
     try {
-      const response = await fetch(`/d/${question.id}/answer`, { method: "POST", credentials: "same-origin", body: new URLSearchParams({ csrf, choice }), signal: AbortSignal.timeout(15_000) });
+      const response = await fetch(`/d/${question.id}/answer`, { method: "POST", credentials: "same-origin", headers: keyed({}), body: new URLSearchParams({ csrf, choice }), signal: AbortSignal.timeout(15_000) });
       if (!response.ok) { setError(await refusalWords(response)); return; }
       setDone(true);
       // The row leaves once the page reads itself again.

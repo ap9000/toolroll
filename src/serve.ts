@@ -193,6 +193,7 @@ import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions
 import { createTasksHandlers } from './server/tasks.js';
 import { KIT_BEHAVIOR_MARKUP, KIT_STANDALONE_SCRIPT } from './server/kit-standalone.js';
 import { createWelcomeHandlers } from './server/welcome.js';
+import { createBrowserKeys, KEY_FILL_SCRIPT, pagePathOf } from './server/mutation-key.js';
 import { DEFAULT_GUARD_POLICY,passwordGuardOf,provenPasswordAccount,SourceBudget,withPasswordSource } from "./sign-in-guard.js";
 import { sourceKey } from "./source-key.js";
 import { readSsoSettings } from "./sso-settings.js";
@@ -251,6 +252,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get signInBudget() { return signInBudget; },
     get passwordAllowed() { return passwordAllowed; },
     get sessions() { return sessions; },
+    get browserKeys() { return browserKeys; },
   });
 
   const { store, evidenceRoot } = options;
@@ -744,6 +746,18 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       port === null ? [] : [`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`, ...tailnet.map(name => `${name}:${port}`)];
     return [...locals, ...(options.allowedHosts ?? []), ...(publicOrigin === null ? [] : [publicOrigin.host])].includes(host);
   };
+  /** Easy-start C2: a protected loopback install (bound to loopback only, no --allow-host, no public URL, no tailnet
+   * names) has one browser host, and there every browser mutation also presents the session's key (mutation-key.ts). */
+  const browserKeys = createBrowserKeys({
+    enabled: options.browserKey === true,
+    epoch: keyEpoch,
+    protectedHost: () => {
+      const address = server.address(), port = servedPort();
+      if (typeof address !== "object" || address === null || port === null) return null;
+      if ((options.allowedHosts ?? []).length > 0 || publicOrigin !== null || tailnet.length > 0) return null;
+      return address.address === "127.0.0.1" ? `127.0.0.1:${port}` : address.address === "::1" ? `[::1]:${port}` : null;
+    },
+  });
   /** The exact command that starts this console again as it runs now, plus a listening address or one more allowed host. */
   const consoleCommand = (change: { host?: string; allow?: string }): string => {
     const port = servedPort() ?? 4180;
@@ -814,6 +828,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (wrongMethodEdge?.host === 'before') return refuseEdge(request, response, hook.pathname, wrongMethodEdge);
     if (!allowedHost(request.headers.host)) {
       return respond(response, 421, "text/html; charset=utf-8", wrongHostPage(wrongHost(request.headers.host)));
+    }
+    // Easy-start C2: a protected loopback install has one browser origin, whose storage holds the session's mutation key.
+    // A browser's page read at another loopback name (localhost, [::1]) moves there; machine callers and protocol
+    // adapters (an API token, MCP's own addresses) are left where they are.
+    const canonical = browserKeys.canonicalHost();
+    if (canonical !== null && request.headers.host !== canonical && (method === "GET" || method === "HEAD") && request.headers.authorization === undefined
+      && (edgeRoute === null || edgeRoute.domain === "people")) {
+      request.resume();
+      response.writeHead(308, { location: `http://${canonical}${hook.pathname}${hook.search}`, "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" });
+      response.end();
+      return;
     }
     // A real domain (public-access.ts): HSTS for the public https host reached over HTTPS, and no API token over
     // plain HTTP from outside this computer and the tailnet — refused before anything reads or checks it.
@@ -901,6 +926,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       ...(workspaceRead && typeof request.headers['if-none-match'] === 'string' ? { workspaceIfNoneMatch: request.headers['if-none-match'] } : {}),
       workspaceRequest: url.searchParams.get('request'),
       timeline,
+      // Easy-start C2: every page that posts carries the key fill while the key is required; a session whose key is from
+      // an earlier start (or has none) is told to reconnect.
+      keyFill: browserKeys.required(),
+      reconnect: browserKeys.stale(who, method === "GET" ? safeReturn(pagePathOf(url)) : "/"),
     };
     response.once("finish", () => keepSlowRequest(store, timeline, matchedRoute?.id ?? "unmatched", response.statusCode, clock()));
     if (method === "GET" || method === "POST") return freshFacts.run(fresh, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
@@ -1483,6 +1512,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // D5: team chat (the central team service) is deprecated; /chat?team=1 still opens this release, but nothing links to it.
     const sensitive = authored || s.forceSensitive === true;
     const requestFacts = requestContext.getStore();
+    // Easy-start C2: while the browser mutation key is required, every page's one nonce'd script also fills the key.
+    const keyFill = requestFacts?.keyFill === true ? KEY_FILL_SCRIPT : "";
     // The settings frame (settings-kit.ts): its breadcrumb, for the shell and the workspace alike.
     if (s.chrome !== undefined && s.chrome.crumbs === undefined) {
       const crumbs = settingsCrumbs(new URL(requestFacts?.returnTo ?? '/', 'http://standing-orders.local').pathname, s.title, htmlString(s.body));
@@ -1596,6 +1627,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         ...(extras.firstRun === undefined ? {} : { firstRun: extras.firstRun }),
         ...(extras.phone === undefined ? {} : { phone: extras.phone }),
         ...(extras.home == null ? {} : { home: extras.home }),
+        // Easy-start C2: this tab's key is from an earlier start (or it has none): one way to reconnect.
+        ...(requestFacts.reconnect == null ? {} : { reconnect: requestFacts.reconnect }),
       };
       if (requestFacts.workspaceRead) {
         const validator = requestFacts.workspaceValidator;
@@ -1621,12 +1654,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const functional = conversation === null || extras.view ? (s.functional?.script ?? '') : RESULT_REVIEW_SCRIPT;
       const document = shell(s.title, s.body, { chrome: s.chrome, sensitive });
       return page(response, status, browserWorkspaceDocument(document, workspace, nonce,
-        functional + MOBILE_VIEWPORT_SCRIPT), nonce, true);
+        functional + MOBILE_VIEWPORT_SCRIPT + keyFill), nonce, true);
     }
     // A one-time secret on screen (a token, an invite link, a pairing code): the
     // page carries no script of any kind, so it leaves the workspace for a
     // focused page in the same look: the brand, the one card, and the way back.
-    if (s.forceSensitive === true) return page(response, status, focusDocument(s.title, s.body));
+    // Easy-start C2: but for the key fill when it has a form that posts (the fill reads nothing on the page).
+    if (s.forceSensitive === true) {
+      if (keyFill === "" || !/<form\b[^>]*method="post"/i.test(htmlString(s.body))) return page(response, status, focusDocument(s.title, s.body));
+      const nonce = randomBytes(16).toString("base64");
+      return page(response, status, focusDocument(s.title, s.body, { nonce, script: keyFill }), nonce);
+    }
     const chromeLayer = !sensitive && s.chrome !== undefined;
     const functional = s.functional?.script ?? "";
     // Sensitive pages strip the palette and keys but keep the sidebar toggle.
@@ -1634,7 +1672,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Kit markup the workspace bundle would have wired (a composer, an overlay, a switch, an idea) gets the kit's own small
     // behaviour here (kit-standalone.ts); never on a sensitive page, which carries no chrome additions.
     const kitBehavior = chromeLayer && KIT_BEHAVIOR_MARKUP.test(htmlString(s.body)) ? KIT_STANDALONE_SCRIPT : "";
-    const script = functional + (chromeLayer ? chromeScript() + WORKSPACE_MOTION_SCRIPT + kitBehavior : sensitiveChrome);
+    const script = functional + (chromeLayer ? chromeScript() + WORKSPACE_MOTION_SCRIPT + kitBehavior : sensitiveChrome) + keyFill;
     const nonce = script === "" ? undefined : randomBytes(16).toString("base64");
     const body = chromeLayer
       ? html`${s.body}\n${paletteTagCached(s.chrome?.project ?? null)}\n${KBD_HELP}`
@@ -1910,7 +1948,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Every POST passes the shared mutation guard. Caller, scope, project (including a limited account's posted repo)
     // and role were admitted by the route table.
     const denied = authorizeMutation(request, who, readForm(posted, CONSOLE_FORMS.mutationGuard));
-    if (denied !== null) return refuse(response, who, denied.status, denied.message);
+    if (denied !== null) return refuse(response, who, denied.status, denied.message, "/", denied.reconnect?.kind === "password" ? { label: "Reconnect", href: denied.reconnect.href } : undefined);
     // Standing can change after a token was minted: a viewer's act stays refused, cookie and bearer alike, except
     // the row's session-local acts.
     if (who.role === "viewer" && !route.viewer) return refuse(response, who, 403, "your login can watch, not act — ask an approver to upgrade you");
@@ -2216,6 +2254,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get authenticateCredential(): ServerRuntime['authenticateCredential'] { return authenticateCredential; },
     get identities(): ServerRuntime['identities'] { return identities; },
     get keyEpoch(): ServerRuntime['keyEpoch'] { return keyEpoch; },
+    get browserKeys(): ServerRuntime['browserKeys'] { return browserKeys; },
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime);
@@ -2226,6 +2265,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
   const remoteRuntime: RemoteRuntime = {
     get identify() { return identify; },
+    get browserKeys() { return browserKeys; },
     get freshFactsOf() { return freshFactsOf; },
     get store() { return store; },
     get admitPasswordSource() { return admitPasswordSource; },

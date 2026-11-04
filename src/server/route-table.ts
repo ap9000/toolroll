@@ -182,6 +182,9 @@ edge("people", "edge.sso-finish", "GET", "/login/sso/finish");
 edge("people", "edge.signup", "POST", "/signup");
 edge("people", "edge.login", "POST", "/login");
 edge("people", "edge.logout", "POST", "/logout", { callers: ["anonymous", "cookie"] });
+// Easy-start C2: a browser session's fresh mutation key after a restart: its own password again (the handler proves both).
+edge("people", "edge.rekey-page", "GET", "/login/rekey", { callers: ["anonymous", "cookie"] });
+edge("people", "edge.rekey", "POST", "/login/rekey", { callers: ["anonymous", "cookie"] });
 edge("people", "edge.join", "GET", "^\\/join\\/[A-Za-z0-9_-]{16,64}$", { sample: "/join/abcdefghijklmnop" });
 edge("people", "edge.join-send", "POST", "^\\/join\\/[A-Za-z0-9_-]{16,64}$", { sample: "/join/abcdefghijklmnop" });
 
