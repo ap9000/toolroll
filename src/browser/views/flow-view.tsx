@@ -1907,6 +1907,39 @@ function cardChip(card: BrowserFlowCard): ReactNode {
 }
 const waitsOnMe = (card: BrowserFlowCard) => card.state === "active" && (card.canDecide || card.question?.mine === true || card.choose?.mine === true);
 
+/** A press-steady primary: its label and act never change under a press. When what the primary should be changes (a
+ * card starts waiting on you, live), the old one holds for `settleMs` before the new one takes its place, and the change
+ * is said politely (aria-live) instead of swapped under the finger. The act is taken when the press starts
+ * (pointerdown) and that act runs on its click, whatever the button says by then. A keyboard press (click with detail
+ * 0) runs what is shown. */
+export const PRIMARY_SETTLE_MS = 600;
+type Primary = { label: string; busy?: string | false; act: (from: HTMLElement) => void; data?: Record<string, string> };
+const primaryKey = (one: Primary | null): string => one === null ? "" : `${one.label}\u0000${JSON.stringify(one.data ?? {})}`;
+function useSteadyPrimary(next: Primary | null, settleMs = PRIMARY_SETTLE_MS) {
+  const key = primaryKey(next);
+  const [shownKey, setShownKey] = useState(key);
+  const held = useRef<Primary | null>(next);
+  // Where no primary showed (editing just ended), nothing can be pressed by mistake: the new one shows at once.
+  const settled = key === shownKey || shownKey === "";
+  if (settled) held.current = next;
+  useEffect(() => {
+    if (key === shownKey) return;
+    const timer = setTimeout(() => setShownKey(key), shownKey === "" ? 0 : settleMs);
+    return () => clearTimeout(timer);
+  }, [key, shownKey, settleMs]);
+  const shown = settled ? next : held.current;
+  const pressed = useRef<Primary | null>(null);
+  const onPointerDown = () => { pressed.current = shown; };
+  const run = (event: { detail: number; currentTarget: HTMLElement }) => {
+    const chosen = event.detail > 0 && pressed.current !== null ? pressed.current : shown;
+    pressed.current = null;
+    chosen?.act(event.currentTarget);
+  };
+  /** What changed, said once politely while the old primary holds and after: never a swap under the finger. */
+  const said = settled || next === null ? "" : `${next.label} is next.`;
+  return { shown, onPointerDown, run, said };
+}
+
 type Overlay = { card: number } | { triggers: number | null } | { press: number } | { scripts: true } | { unattended: true } | { newCard: true };
 
 /** An act's outcome, in place: a refusal says what didn't change; a success is one quiet line. No toasts. */
@@ -2021,14 +2054,17 @@ export function FlowView({ view: initial, csrf }: { view: BrowserFlowView; csrf:
   const [running, setRunning] = useState(false);
   const runNow = async () => { if (schedule === undefined || running) return; setRunning(true); apply(await send(`${view.flow.href}/triggers/${schedule.id}/check`, {}, csrf)); setRunning(false); };
   /** The screen's one primary: what resolves a wait on you first, then the act that starts work. */
-  const primary: { label: string; busy?: string | false; act: (from: HTMLElement) => void; data?: Record<string, string> } | null = editing ? null
+  const wanted: Primary | null = editing ? null
     : mine.length > 0 ? { label: mine.length === 1 ? "Review" : `Review ${mine.length}`, act: from => open({ card: mine[0]!.id }, from), data: { "data-flow-review": "" } }
     : browserBlocked && view.canEdit && view.browser?.canApprove !== false ? null
     : button !== undefined ? { label: button.button!.label, act: from => open({ press: button.id }, from), data: { "data-flow-press": String(button.id) } }
     : schedule !== undefined && view.canEdit ? { label: "Run now", busy: running ? "Starting…" : false, act: () => void runNow(), data: { "data-flow-run-now": "" } }
     : view.canEdit ? { label: "New card", act: from => open({ newCard: true }, from), data: { "data-flow-new-card": "" } } : null;
+  const steady = useSteadyPrimary(wanted);
+  const primary = steady.shown;
   const primaryButton = (sm: boolean) => primary === null ? null
-    : <KButton variant="primary" sm={sm} label={primary.label} busy={primary.busy ?? false} {...primary.data} {...(primary.label === "New card" ? { lead: "plus" as const } : {})} onClick={event => primary.act(event.currentTarget)} />;
+    : <KButton variant="primary" sm={sm} label={primary.label} busy={primary.busy ?? false} {...primary.data} {...(primary.label === "New card" ? { lead: "plus" as const } : {})}
+      onPointerDown={steady.onPointerDown} onClick={event => steady.run(event)} />;
   const more = (from: HTMLElement) => menu(from, phone ? view.flow.name : "More", [
     ...(phone ? [{ label: "Triggers", act: () => open({ triggers: null }, from) }, { label: "Scripts", act: () => open({ scripts: true }, from) }] : []),
     ...(view.canEdit && !phone ? [{ label: "Edit flow", act: startEditing }] : []),
@@ -2062,6 +2098,7 @@ export function FlowView({ view: initial, csrf }: { view: BrowserFlowView; csrf:
   const firstTrigger = live.find(one => one.state === "active") ?? live[0];
   const head = <div className="fl-head">
     <h2 className="fl-lead">{lead}</h2>
+    <span className="sr-only" role="status" aria-live="polite" data-flow-primary-said>{steady.said}</span>
     {latestLine}
     <p className="fl-meta">
       <span className="fl-meta-item">{firstTrigger === undefined ? "Cards are added by hand" : firstTrigger.words}</span>
