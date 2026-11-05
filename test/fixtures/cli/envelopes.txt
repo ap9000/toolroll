@@ -792,8 +792,8 @@ $ contract --commands --json → 0
     {
       "invocation": "memory decide",
       "synopsis": "record a settled choice: memory decide \"<choice>\" --why \"<reason>\" --repo PATH",
-      "audience": "agent",
-      "agentMayInvoke": true,
+      "audience": "operator",
+      "agentMayInvoke": false,
       "mutation": "unkeyed",
       "flags": [
         {
@@ -859,13 +859,13 @@ $ contract --commands --json → 0
           "meaning": "search text, a decision id, or the decision sentence"
         }
       ],
-      "remote": "yes"
+      "remote": "step-up"
     },
     {
       "invocation": "memory retire",
       "synopsis": "retire a decision that no longer holds: memory retire <id> --reason \"<why>\"",
-      "audience": "agent",
-      "agentMayInvoke": true,
+      "audience": "operator",
+      "agentMayInvoke": false,
       "mutation": "unkeyed",
       "flags": [
         {
@@ -931,7 +931,7 @@ $ contract --commands --json → 0
           "meaning": "search text, a decision id, or the decision sentence"
         }
       ],
-      "remote": "yes"
+      "remote": "step-up"
     },
     {
       "invocation": "memory propose",
@@ -1066,8 +1066,8 @@ $ contract --commands --json → 0
     {
       "invocation": "memory apply",
       "synopsis": "decide one proposal: memory apply <id> --decision accept|reject — the only writer",
-      "audience": "agent",
-      "agentMayInvoke": true,
+      "audience": "operator",
+      "agentMayInvoke": false,
       "mutation": "unkeyed",
       "flags": [
         {

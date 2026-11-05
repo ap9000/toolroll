@@ -23,11 +23,11 @@ export const MEMORY_DESCRIPTORS = [
   { action: 'search', synopsis: 'search decisions, instructions, references, lessons and your conversations', mutation: 'none', takesQuery: true, flags },
   { action: 'decisions', synopsis: "list a project's active decisions (--all for history)", mutation: 'none', takesQuery: false, flags },
   { action: 'show', synopsis: 'read one decision with its reason and history', mutation: 'none', takesQuery: true, flags },
-  { action: 'decide', synopsis: 'record a settled choice: memory decide "<choice>" --why "<reason>" --repo PATH', mutation: 'unkeyed', takesQuery: true, flags },
-  { action: 'retire', synopsis: 'retire a decision that no longer holds: memory retire <id> --reason "<why>"', mutation: 'unkeyed', takesQuery: true, flags },
+  { action: 'decide', synopsis: 'record a settled choice: memory decide "<choice>" --why "<reason>" --repo PATH', mutation: 'unkeyed', takesQuery: true, flags, audience: 'operator' },
+  { action: 'retire', synopsis: 'retire a decision that no longer holds: memory retire <id> --reason "<why>"', mutation: 'unkeyed', takesQuery: true, flags, audience: 'operator' },
   { action: 'propose', synopsis: 'the backward pass: read recent sessions, keep a ledger of evidenced gaps, propose a few edits (writes nothing to memory)', mutation: 'unkeyed', takesQuery: false, flags },
   { action: 'review', synopsis: 'list pending memory proposals with their evidence', mutation: 'none', takesQuery: false, flags },
-  { action: 'apply', synopsis: 'decide one proposal: memory apply <id> --decision accept|reject — the only writer', mutation: 'unkeyed', takesQuery: true, flags },
+  { action: 'apply', synopsis: 'decide one proposal: memory apply <id> --decision accept|reject — the only writer', mutation: 'unkeyed', takesQuery: true, flags, audience: 'operator' },
   { action: 'status', synopsis: 'surface version, instruction budget, sessions analysed, open gaps and pending proposals', mutation: 'none', takesQuery: false, flags },
 ] as const;
 export type MemoryCliContext = { store: Store; write: (line: string) => void; json: boolean; now: Date; actor: string | null; repos: readonly string[]; evidenceRoot?: string; configDir?: string; analyzer?: MemoryAnalyzer; home?: string };

@@ -130,7 +130,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("demo", "a seeded throwaway sandbox"),
 
   ...KNOWLEDGE_DESCRIPTORS.map(spec => ({ invocation: `knowledge ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text or source file for impact" }] } : {}) })),
-  ...MEMORY_DESCRIPTORS.map(spec => ({ invocation: `memory ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text, a decision id, or the decision sentence" }] } : {}) })),
+  ...MEMORY_DESCRIPTORS.map(spec => ({ invocation: `memory ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text, a decision id, or the decision sentence" }] } : {}) })),
   // Flow writes carry an approver's credential: an agent runs them only as the person asked, after showing the preview.
   // Letting a flow run on its own raises authority: the owner's own password ceremony, never an agent's act.
   ...FLOWS_DESCRIPTORS.map(spec => ({ invocation: `flows ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags,
@@ -494,7 +494,9 @@ const REMOTE_NO: readonly string[] = [
 const REMOTE_STEP_UP: readonly string[] = [
   "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle",
   // Putting tasks away and restoring them: a person's act, in the console or on the server's machine.
-  "task archive", "task restore", "task tidy", "knowledge apply", "memory apply",
+  "task archive", "task restore", "task tidy", "knowledge apply",
+  // Changing project memory: a person's own password, never a token (the lead only proposes it in chat).
+  "memory decide", "memory retire", "memory apply",
   "flows card approve", "flows card send-back", "flows script approve", "flows unattended",
   "approver list", "approver add", "people list", "people invite", "people projects", "people revoke",
   // A person's own API tokens: a password step-up on the server's machine, or the console. Never with a token.
@@ -511,7 +513,7 @@ const REMOTE_YES: readonly string[] = [
   "config show", "verify show", "intake show", "intake run", "intake preview", "intake pr-comments", "template list", "template show",
   "webhook status", "review show", "chat-approval show", "chat-approval off",
   "knowledge search", "knowledge impact", "knowledge refresh",
-  "memory search", "memory decisions", "memory show", "memory decide", "memory retire", "memory review", "memory status",
+  "memory search", "memory decisions", "memory show", "memory review", "memory status",
   "flows list", "flows show", "flows export", "flows create", "flows edit", "flows trigger add", "flows trigger pause", "flows trigger resume",
   "flows trigger remove", "flows card add", "flows archive",
   "models status", "models list",

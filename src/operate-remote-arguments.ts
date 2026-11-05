@@ -66,11 +66,10 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ['template show', args('name')],
   ...['search', 'impact'].map(action => [`knowledge ${action}`, args('query', 'base')] as const),
   ['knowledge refresh', args('', 'base')],
-  // Decision reads and supersession are already project-bound in project-memory.ts. Proposal IDs are
-  // accepted only by memory apply (step-up), never by the listing commands below.
-  ...['search', 'decisions', 'show', 'decide', 'retire', 'review', 'status'].map(action => [`memory ${action}`,
-    args(['search', 'decide'].includes(action) ? 'query*' : ['show', 'retire'].includes(action) ? 'query' : '',
-      'why reason supersedes source all decision sessions no-local')] as const),
+  // Decision reads are already project-bound in project-memory.ts. Memory writes (decide, retire, apply) are a person's
+  // step-up, never a token's act, so none is listed here.
+  ...['search', 'decisions', 'show', 'review', 'status'].map(action => [`memory ${action}`,
+    args(action === 'search' ? 'query*' : action === 'show' ? 'query' : '', 'why reason supersedes source all decision sessions no-local')] as const),
   ['flows list', args()],
   ['flows show', args('flow:flow')], ['flows export', args('flow:flow')],
   ['flows create', args('', 'yes name template', { steps: 'steps' })],
