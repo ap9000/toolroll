@@ -37,7 +37,7 @@ import { chatMoney,type Chrome,oneLineOf,relativeAge,safePrUrl,screen,type Scree
 import { chatResultHref,projectChatHref,taskChatHref,taskHref } from "./http.js";
 import { type ProjectPeek } from "./render-pages.js";
 import { completionReceiptCard,type CompletionReceiptView } from "./render-results.js";
-import { agentsAvailabilityHtml,agentsBadgesHtml,agentsStripHtml,agentsSummaryWords,agentsWhyHtml,approvalSheetHtml,checkProgressHtml,consentClosedHtml,consentDoorOf,decisionAnswerCard,dispatchHeadline,milestoneProgressHtml,type MilestoneProgressView,type PlanContractView,planRevisionLedgerHtml,type PlanRevisionLedgerView,profileWords,type RevisionView,type RouteView,sizeConsequence,taskControlDetailsHtml,taskStatusCard,taskViewSwitch } from "./render-tasks.js";
+import { routeEvidenceHtml,agentsAvailabilityHtml,agentsBadgesHtml,agentsStripHtml,agentsSummaryWords,agentsWhyHtml,approvalSheetHtml,checkProgressHtml,consentClosedHtml,consentDoorOf,decisionAnswerCard,dispatchHeadline,milestoneProgressHtml,type MilestoneProgressView,type PlanContractView,planRevisionLedgerHtml,type PlanRevisionLedgerView,profileWords,type RevisionView,type RouteView,sizeConsequence,taskControlDetailsHtml,taskStatusCard,taskViewSwitch } from "./render-tasks.js";
 
 /** The installation fact that the lead was turned on by default, once (its value: the provider). */
 export const LEAD_BY_DEFAULT_FACT = "lead-on-by-default";
@@ -121,7 +121,7 @@ export function taskChatContext(focus: TaskChatFocus): Html {
     // conversation never hides which agent runs.
     focus.route === null
       ? ""
-      : html`<div class="task-chat-agents-aside"><span class="eyebrow">agents</span><p class="agents-summary">${agentsSummaryWords(focus.route)}</p><div class="agents-badges">${agentsBadgesHtml(focus.route)}</div>${
+      : html`<div class="task-chat-agents-aside"><span class="eyebrow">agents</span><p class="agents-summary">${agentsSummaryWords(focus.route)}</p>${routeEvidenceHtml(focus.route)}<div class="agents-badges">${agentsBadgesHtml(focus.route)}</div>${
         focus.route.projection === null ? "" : html`${agentsAvailabilityHtml(focus.route.projection)}${agentsWhyHtml(focus.route.projection)}`}<p class="meta"><a href="${taskHref(focus.id)}#agents">Change agents on the task →</a></p></div>`}<div class="task-chat-overview-actions"><a class="task-chat-overview-link" href="${taskHref(focus.id)}">Open full overview →</a></div></aside>`;
 }
 

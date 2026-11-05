@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-/** Results routing, slice 1 (docs/plans/results-routing.md): the task page's "Result record" line, at desktop and
- * phone, on synthetic data (the ui-polish fixture: an in-memory database, no live model, Git history, installed
+/** Results routing, slices 1 and 2 (docs/plans/results-routing.md): the task page's "Result record" line, and
+ * Settings → Models → Suggested (empty, an offer, its review, a stale offer, a refused save, the rule, the evidence
+ * line, Turn off), at desktop and phone, on synthetic data (the ui-polish fixture: an in-memory database, no live model, Git history, installed
  * database or external write). Run after `npm run build`. Default: assert and clean up; --capture also saves
  * screenshots to evidence/results-routing-journey/.
  *
@@ -136,6 +137,97 @@ try {
       recordRevisionOrigin(store, sealed.id, 'automatic-review');
       check(`${name}: an automatic-review revision leaves the record as it was`, await details('record-auto') === autoBefore);
       void waitingRun;
+
+      // ---- slice 2: Settings → Models → Suggested, at this viewport, on the long-named project ----
+      const models = async (query = '') => { await page.goto(`${fixture.url}/settings/models?scope=${encodeURIComponent(repo)}${query}`); return page.locator('section[aria-labelledby="models-suggested"]'); };
+      let section = await models();
+      check(`${name}: Suggested, empty, says how a suggestion comes`, (await section.innerText()).includes('No suggestions yet.'));
+      await fits('the empty Suggested group');
+      // Synthetic evidence: small tasks build on Sonnet here; Haiku has ten accepted, checked small tasks, and is cheaper.
+      const HAIKU = 'claude-haiku-5-5', SONNET = 'claude-sonnet-5-5';
+      store.setPhaseTierConfig(repo, 'build', 'light', 'claude', SONNET, 'polish-fixture', now);
+      for (const phase of ['build', 'repair']) store.setPhaseConfig(repo, phase, 'claude', SONNET, 'polish-fixture', now);
+      const { recordCatalog } = await import('../dist/model-catalog.js');
+      const prices = haikuIn => recordCatalog(store, [
+        { source: 'claude', id: HAIKU, name: 'Claude Haiku 5.5', inputUsd: haikuIn, outputUsd: 5, context: null, tools: true, releasedAt: null },
+        { source: 'claude', id: SONNET, name: 'Claude Sonnet 5.5', inputUsd: 3, outputUsd: 15, context: null, tools: true, releasedAt: null }], now);
+      prices(1);
+      const { saveResultRecord } = await import('../dist/route-store.js');
+      let seq = 0;
+      const evidence = (state, when) => {
+        const id = `journey-evidence-${name}-${++seq}`;
+        store.createTask({ id, title: `Synthetic evidence ${seq}` }, now);
+        const ref = store.refFor('built-in', id).id;
+        store.placeTask(ref, repo);
+        saveResultRecord(store, { taskRef: ref, task: id, repo, cohortSize: 'small', provider: 'claude', model: HAIKU, state, reason: state === 'rejected' ? 'check-failed' : null, resultRun: null,
+          firstStartedAt: when.toISOString(), acceptedAt: null, decidedAt: null, modelFailures: 0, infraFailures: 0, apiMicrousd: 400000, subscriptionRuns: 0, subscriptionTokens: 0, unknownRuns: 0,
+          remediationRuns: 0, selections: [], settled: true, personRevisions: 0, firstCheckPassed: null, agentTurns: 0, turnsUnknownRuns: 0, accumulationEnded: false }, when);
+      };
+      for (let one = 0; one < 10; one++) evidence('mature', new Date(now.getTime() - (30 - one) * 86_400_000));
+      section = await models();
+      check(`${name}: the suggestion shows its evidence, with Review change and Not now`, (await section.innerText()).includes('Claude Haiku 5.5 for small tasks instead of Claude Sonnet 5.5: 10 of the last 10 decided similar tasks were accepted with checks passing')
+        && await section.getByRole('link', { name: 'Review change' }).count() === 1 && await section.getByRole('button', { name: 'Not now' }).count() === 1);
+      await fits('a suggestion beside a long project name');
+      await shot('suggested');
+      // Review change: the evidence, prices and switch-back terms, saved with a step-up.
+      await section.getByRole('link', { name: 'Review change' }).click();
+      await page.waitForURL(url => url.search.includes('suggestion='));
+      section = page.locator('section[aria-labelledby="models-suggested"]');
+      check(`${name}: Review change shows the switch-back terms before saving`, (await section.innerText()).includes('It switches itself off if 2 of the latest 5 decided tasks are rejected'));
+      await fits('the review');
+      await shot('review');
+      const reviewUrl = page.url();
+      // A stale offer: the results moved after the page was drawn; the save refuses in words, nothing saved.
+      evidence('mature', new Date(now.getTime() - 86_400_000));
+      await section.locator('input[name="password"]').fill(fixture.password);
+      await section.getByRole('button', { name: /Use Claude Haiku 5.5/ }).click();
+      await page.waitForURL(url => url.search.includes('problem='));
+      const alerts = async () => (await page.locator('[role="alert"]').allInnerTexts()).join(' | ');
+      check(`${name}: a stale offer refuses as out of date`, (await alerts()).includes('out of date'));
+      await page.goto(reviewUrl);
+      check(`${name}: reviewing an offer that changed says it's out of date`, (await page.locator('section[aria-labelledby="models-suggested"] [role="alert"]').innerText()).includes('This suggestion is out of date'));
+      await fits('the stale review');
+      await shot('stale');
+      // A price that changed between Review and Save: refused by name (the error state).
+      section = await models();
+      await section.getByRole('link', { name: 'Review change' }).click();
+      await page.waitForURL(url => url.search.includes('suggestion='));
+      section = page.locator('section[aria-labelledby="models-suggested"]');
+      prices(1.5);
+      await section.locator('input[name="password"]').fill(fixture.password);
+      await section.getByRole('button', { name: /Use Claude Haiku 5.5/ }).click();
+      await page.waitForURL(url => url.search.includes('problem='));
+      check(`${name}: a changed price refuses in words`, (await alerts()).includes('A listed price changed'));
+      await fits('the refused save');
+      await shot('refused');
+      // Accept for real.
+      section = await models();
+      await section.getByRole('link', { name: 'Review change' }).click();
+      await page.waitForURL(url => url.search.includes('suggestion='));
+      section = page.locator('section[aria-labelledby="models-suggested"]');
+      await section.locator('input[name="password"]').fill(fixture.password);
+      await section.getByRole('button', { name: /Use Claude Haiku 5.5/ }).click();
+      await page.waitForURL(url => url.search.includes('said='));
+      check(`${name}: accepted, with the rule listed and Turn off beside it`, (await page.locator('[role="status"]').first().innerText()).includes('Saved.')
+        && (await page.locator('section[aria-labelledby="models-suggested"]').innerText()).includes('Claude Haiku 5.5 builds small tasks instead of Claude Sonnet 5.5'));
+      await fits('the rule in use');
+      await shot('rule');
+      // A new small task routes to Haiku, and its plan says why.
+      const ruled = file('record-ruled', 'Shorten export labels (synthetic, under the earned rule)');
+      void ruled;
+      await page.goto(fixture.url + '/t/record-ruled');
+      const why = page.locator('[data-route-evidence]').first();
+      check(`${name}: a new small task's approved route says why this model`, ((await why.textContent()) ?? '').trim().startsWith('Why this model: Claude Haiku 5.5 builds small tasks in this project.'));
+      await fits('the evidence line');
+      await shot('evidence');
+      // Chat and screen counts match: the lead's read (get_models) lists what the page lists.
+      const { suggestionsFor, rulesOf } = await import('../dist/route-rules.js');
+      check(`${name}: the lead reads the same rules the page shows`, rulesOf(store, repo, new Date()).length === 1 && suggestionsFor(store, repo, new Date()).length === 0);
+      // Turn off: tasks already approved keep their model.
+      section = await models();
+      await section.getByRole('button', { name: 'Turn off' }).first().click();
+      await page.waitForURL(url => url.search.includes('said='));
+      check(`${name}: Turn off says approved tasks keep their model`, (await page.locator('[role="status"]').first().innerText()).includes('tasks already approved keep their model'));
       check(`${name}: no page errors`, errors.length === 0);
     } finally { await context.close(); await fixture.stop(); }
   }

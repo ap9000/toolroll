@@ -340,6 +340,8 @@ import { installMethod } from "./install-method.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { machineActing } from "./scope.js";
 import { reevaluateResultRecords } from "./route-results.js";
+import { holdRuleOff, routeRulesPass, taskEvidenceWords } from "./route-rules.js";
+import { ruleHoldOf } from "./route-store.js";
 import { loginFileOf, migrateLegacyLogin, savedLoginFile, writableLoginFile } from "./login-secrets.js";
 
 export type Write = (line: string) => void;
@@ -1548,9 +1550,16 @@ async function dispatch(
       return runKnowledgeApply(flags, { ...context, now: context.clock(), actor: verified !== null && verified.ok ? acting!.name : null });
     }
     case "models": {
-      const acting = await askCredentials(flags, context);
+      // A local owner's lowering act (models turn-off / dismiss, through the terminal UI) asks for no credential: the
+      // rule door re-checks the owner and its exact act itself.
+      const localOnly = currentLocalOwner() !== null && !flags.has("as") && !flags.has("token") && ["turn-off", "dismiss", "suggestions"].includes(positional[0] ?? "");
+      const acting = localOnly ? null : await askCredentials(flags, context);
+      // The credential generation the proof is checked against, read BEFORE it (as `config set` does): a rotation in
+      // between makes the rule door refuse, never borrow the new generation.
+      const provedGeneration = acting === null ? -1 : context.store.accountOf(acting.name)?.generation ?? -1;
       const verified = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token);
-      return runModelsCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: verified !== null && verified.ok ? acting!.name : null });
+      const proof = verified !== null && verified.ok ? { actor: acting!.name, generation: provedGeneration, method: verified.method } : null;
+      return runModelsCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: proof?.actor ?? null, proof });
     }
     case "memory": {
       // The remembered local login (or --as/--token) names the person; reads
@@ -3003,6 +3012,18 @@ async function tickCommand(
       }
     }
 
+    // THE RULE HOLD, before any claim or row (results routing, route v3): a task approved under an earned rule that
+    // then switched itself off on its sealed trigger never starts on that model. Nothing opens, so nothing strikes;
+    // the task is held, in words, until a person approves it again (the hold goes with that yes).
+    if (!wantsPlan && !wantsScout) {
+      const ruleHeld = ruleHoldOf(store, id);
+      if (ruleHeld !== null) {
+        holdRuleOff(store, ref.id, id, ruleHeld.model, clock());
+        dispatched.push({ id, outcome: "skipped", reason: "rule-switched-off", detail: `${id}: results for ${ruleHeld.model} dropped after this was approved — approve it again or re-file it` });
+        continue;
+      }
+    }
+
     // THE READINESS HALT (v47): a provider THIS runner has reported
     // unavailable never claims and never spends — no substitution, no
     // second-best; the skip names the observation and the ways out.
@@ -3956,6 +3977,9 @@ async function reconcileCommand(
   // Result records (results-routing.md, slice 1): each finished family's record is evaluated again from its rows —
   // a completion, a follow-up check, a revision, a proof, a merge or the task ending each change what it says.
   try { reevaluateResultRecords(store, canonicalProject(repo) ?? resolve(repo), context.evidenceRoot, clock()); } catch { /* the next pass tries again */ }
+  // Earned rules (results-routing.md, slice 2): each live rule checked against its sealed terms on the records just
+  // evaluated; tasks approved under one that switched itself off are held for a new approval.
+  try { routeRulesPass(store, canonicalProject(repo) ?? resolve(repo), clock()); } catch { /* the next pass tries again */ }
 
   // Checkout cleanup (Settings → Storage): finished work's clean checkouts go as the setting says (by default when
   // the task is complete or cancelled); their branches stay. Each removal is in the ledger.
@@ -9869,7 +9893,7 @@ function showTask(positional: readonly string[], context: Context): number {
     ...(detail.automaticReview === null ? reviewStatusLines(detail.review, latestFinished?.id ?? null) : buildReviewLines(detail.automaticReview)),
     ...(scope === null
       ? ["  no scope — nothing will build this until one is written and approved"]
-      : describeScope(scope, readiness)),
+      : describeScope(scope, readiness, taskEvidenceWords(store, task.id, now))),
     ...planContractLines(store, context.evidenceRoot, id),
     // The route's standing (v47): sealed, proposed, legacy, or unreadable —
     // the projection itself is in describeScope's lines above.

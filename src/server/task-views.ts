@@ -1,4 +1,5 @@
 import { resultRecordWordsOf } from "../route-results.js";
+import { selectionEvidenceWords } from "../route-rules.js";
 import { feedbackImageProblem } from "../result-actions.js";
 import { parseFeedbackImage } from "../result-review.js";
 import { releaseViewOf } from "../release-view.js";
@@ -607,6 +608,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       replanOnPlanChange: ref.plan === "drafted" && scope !== null && !approvalOf(scope).approved,
       digest: scope?.digest ?? null,
       choices: agentChoicesFor(runtime.store, ref.repo, routed.kind === "route" ? routed.route : null),
+      // Results routing: why an earned rule's model builds it, from the records as they stand now.
+      evidence: routed.kind === "route" ? selectionEvidenceWords(runtime.store, routed.route, now) : null,
     } as const;
     if (routed.kind === "route") {
       return { kind: "route", source: routed.source, projection: projectRoute(routed.route, runtime.store.readinessLookupFor(ref.repo, ref.assignedRunner, now)), legacy: null, problem: null, ...shared };

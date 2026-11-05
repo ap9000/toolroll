@@ -1804,7 +1804,9 @@ export function scopeRouteWords(scope: Pick<Scope, "proposedRouteJson">, readine
 }
 
 /** The scope, in the words an operator has to be able to agree or disagree with. */
-export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READINESS): string[] {
+export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READINESS,
+  /** Results routing: the evidence line when an earned rule chose the builder (route-rules.ts taskEvidenceWords). */
+  evidence: string | null = null): string[] {
   const approval = approvalOf(scope);
   return [
     `  goal         ${scope.goal}`,
@@ -1818,6 +1820,7 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
     // The ROUTE, in the words the yes agrees to (v47): posture and every
     // leg with its reason and readiness — before anyone signs.
     ...scopeRouteWords(scope, readiness),
+    ...(evidence === null ? [] : [`  why model    ${evidence.replace(/^Why this model: /, "")}`]),
     // What the build may reach (egress.ts), part of what the yes agrees to.
     ...(scope.profile === null || scope.profile === undefined ? [] : [`  network      ${networkWords(scope.profile.network ?? null).replace(/^Network: /, "")}`]),
     ...(scope.profile === null || scope.profile === undefined ? [] : [`  writes       ${writesWords(scope.profile.writes)}`]),

@@ -13,7 +13,8 @@ import { currentLocalOwner, localModeOn, localOwnerInFlight, localOwnerStandsNow
 import { INSTALLATION_SCOPE, resolvePhaseAgent, resolveRouteCandidates } from "./agentconfig.js";
 import { seenModels, type SeenModel } from "./model-catalog.js";
 import { passwordlessOn } from "./passwordless.js";
-import { exactModelId, recommendRoute, routeProblems, type PhaseRoute, type RouteCandidates } from "./phase-routing.js";
+import { exactModelId, recommendRoute, routeProblems, type EarnedRule, type PhaseRoute, type RouteCandidates } from "./phase-routing.js";
+import { liveEarnedRules } from "./route-store.js";
 import { isProviderId, validateSpec } from "./provider.js";
 import type { Store } from "./store.js";
 
@@ -141,24 +142,29 @@ export const ROUTE_CASES: readonly { label: string; size: "small" | "medium" | "
   { label: "large", size: "large", risky: false, strict: false }, { label: "risky", size: "small", risky: true, strict: false },
   { label: "strict", size: "medium", risky: false, strict: true },
 ]);
-export function effectiveRoutes(store: Store, repo: string | null): { ok: true; routes: { label: string; route: PhaseRoute }[] } | { ok: false; problem: string } {
+export function effectiveRoutes(store: Store, repo: string | null, options: { rules?: readonly EarnedRule[] | false } = {}): { ok: true; routes: { label: string; route: PhaseRoute }[] } | { ok: false; problem: string } {
   const candidates = resolveRouteCandidates(store, repo);
   if (!candidates.ok) return { ok: false, problem: candidates.problem };
-  return { ok: true, routes: routesOf(candidates.candidates) };
+  // A project's live earned rules route its eligible small and routine tasks (the one precedence order,
+  // phase-routing.ts selectBuildLeg); `rules: false` asks for the configured rows alone.
+  const rules = options.rules === false ? [] : options.rules ?? liveEarnedRules(store, repo);
+  return { ok: true, routes: routesOf(candidates.candidates, rules) };
 }
-/** Every size's and demand's route over these candidates. (A build moved to another provider for plan headroom takes
- * its repairs with it, so that move can't break a repair; a tier whose only candidate is another provider's is its
- * primary here, and checked.) */
-function routesOf(candidates: RouteCandidates): { label: string; route: PhaseRoute }[] {
+/** Every size's and demand's route over these candidates, with a project's earned rules where they apply. (A build
+ * moved to another provider for plan headroom takes its repairs with it, so that move can't break a repair; a tier
+ * whose only candidate is another provider's is its primary here, and checked.) */
+function routesOf(candidates: RouteCandidates, rules: readonly EarnedRule[] = []): { label: string; route: PhaseRoute }[] {
   const routes = ROUTE_CASES.map(one => ({ label: one.label, route: recommendRoute({ qualityMode: one.strict ? "strict" : "default", evidence: [], publication: "none",
-    candidates, overrides: [], size: { size: one.size, risky: one.risky, source: "heuristic", reason: "" } }) }));
+    candidates, overrides: [], size: { size: one.size, risky: one.risky, source: "heuristic", reason: "" },
+    earned: rules.length === 0 ? null : { rules, release: false, protected: false } }) }));
   return routes;
 }
 
 /** Which preset a scope's EFFECTIVE configuration matches (what each size would really run, inherited rows
  * included), or null ("a custom set"). */
 export function presetInUse(store: Store, scope: string): PresetName | null {
-  const effective = effectiveRoutes(store, scope === INSTALLATION_SCOPE ? null : scope);
+  // The configured rows, not a project's earned rules: a rule never edits the owner's Models rows.
+  const effective = effectiveRoutes(store, scope === INSTALLATION_SCOPE ? null : scope, { rules: false });
   if (!effective.ok) return null;
   const legs = (label: string) => effective.routes.find(one => one.label === label)!.route.legs;
   const model = (label: string, phase: string) => legs(label).find(leg => leg.phase === phase);
@@ -268,11 +274,19 @@ export type ScopeCheck = { kind: "ok" } | { kind: "incomplete" | "invalid"; prob
  * or a route of any size or demand (small, routine, large, risky, strict) whose repair can't resume its builder,
  * inherited rows included. An invalid result is never saved.
  */
-export function checkScope(store: Store, repo: string | null): ScopeCheck {
+export function checkScope(store: Store, repo: string | null, options: { rules?: readonly EarnedRule[] } = {}): ScopeCheck {
   const build = resolvePhaseAgent(store, "build", repo, {});
   if (!build.ok) return { kind: "invalid", problem: build.problem };
   const plan = resolvePhaseAgent(store, "plan", repo, {});
   if (!plan.ok) return { kind: "invalid", problem: plan.problem };
+  // Every live earned rule's route is checked with the configured ones (results routing): a rule's builder must
+  // share any configured repair row's provider, since repairs resume the builder's session. `rules` is the set to
+  // check (an acceptance adds its candidate rule); by default the project's live rules.
+  const rules = options.rules ?? liveEarnedRules(store, repo);
+  const repairRow = (repo === null ? null : store.phaseConfig(repo, "repair")) ?? store.phaseConfig(INSTALLATION_SCOPE, "repair");
+  for (const rule of rules) {
+    if (repairRow !== null && repairRow.provider !== rule.provider) return { kind: "invalid", problem: `Repairs must use the builder's provider (${rule.provider}): an earned rule builds ${rule.cohortSize === "small" ? "small" : "routine"} tasks on it.` };
+  }
   // The reviewer is not checked here: an unset reviewer follows the planner, and routing deliberately never lets a
   // reviewer setting stop a task from planning or building (agentconfig.ts resolveRouteCandidates; that leg never
   // runs). So a Gemini planner with no reviewer of its own stays a valid configuration. A reviewer row written here is
@@ -284,11 +298,11 @@ export function checkScope(store: Store, repo: string | null): ScopeCheck {
   const standIn = (spec: { provider: string; model: string | null }) => isProviderId(spec.provider) ? { provider: spec.provider, model: spec.model ?? "not-chosen-yet" } : null;
   const configured = resolveRouteCandidates(store, repo, { plan: standIn(plan.spec), build: standIn(build.spec) });
   if (!configured.ok) return { kind: /has no exact model/.test(configured.problem) ? "incomplete" : "invalid", problem: configured.problem };
-  for (const route of routesOf(configured.candidates)) {
+  for (const route of routesOf(configured.candidates, rules)) {
     const problems = routeProblems(route.route);
     if (problems.length > 0) return { kind: "invalid", problem: `${route.label} tasks: ${problems[0]}` };
   }
-  const effective = effectiveRoutes(store, repo);
+  const effective = effectiveRoutes(store, repo, { rules });
   if (!effective.ok) return { kind: /has no exact model/.test(effective.problem) ? "incomplete" : "invalid", problem: effective.problem };
   return { kind: "ok" };
 }

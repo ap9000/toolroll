@@ -38,7 +38,7 @@ import { actorLabel, currentActor, type Actor } from "./actor.js";
 import { scanForSecrets } from "./evidence.js";
 import { LIVE_ACTIVITY_KINDS, type LiveActivityKind } from "./live.js";
 import { hashSecret, mintLeadToken, parseCredential, secretMatches, tokenPurpose, tokenRotationProblem, type CredentialKind, type TokenPurpose } from "./api-tokens.js";
-import { bumpModelsGeneration, forgetProjectRoutes, writeRunCohort } from "./route-store.js";
+import { bumpModelsGeneration, forgetProjectRoutes, liveEarnedRules, noteExposureCancelled, noteExposureFiled, noteExposureSealed, ruleHoldOf, writeRunCohort } from "./route-store.js";
 /**
  * The database: a small task store, and the operational overlay beside it.
  *
@@ -7482,6 +7482,8 @@ export class Store {
         .run(Number(ref["id"]), replacedBy, currentActor() === null ? null : actorLabel(currentActor()!), now.toISOString());
     }
     if (ref !== undefined && prior?.["state"] !== "cancelled") this.noteTaskAct(Number(ref["id"]), "cancelled", now);
+    // Results routing: a cancel closes the task's open exposure to an earned rule.
+    if (ref !== undefined) noteExposureCancelled(this, Number(ref["id"]), now);
     // A cancelled task's pending steering settles superseded in the SAME
     // transaction, whichever road cancelled it — a note silently waiting
     // for a build that can no longer happen is wrong on every road, not
@@ -8886,6 +8888,14 @@ export class Store {
           // with the route like every other input.
           size: ref?.sizing ?? null,
           headroom: this.planHeadroom(new Date(scope.proposedAt)),
+          // Results routing (route v3): the project's live earned rules, and the two eligibility facts the route
+          // doesn't carry. A release or candidate is read conservatively: terms this filing may still drop count.
+          earned: ref === null || ref.backend !== BUILT_IN || ref.repo === null ? null : {
+            rules: liveEarnedRules(this, ref.repo),
+            release: (scope.candidate ?? null) !== null || options.releaseTerms != null || options.releaseCheck != null
+              || prior?.["release_terms_json"] != null || prior?.["release_check_json"] != null || releaseTaskRef(this, ref.id) || nightlyTaskRef(this, ref.id),
+            protected: isProtectedWork(this.approvalRules(ref.repo), scope.touches),
+          },
         });
         const problems = routeProblems(route);
         if (problems.length > 0) unresolvedReason = problems.join("; ");
@@ -9055,6 +9065,9 @@ export class Store {
       // or a remote API run keeps any mark already there and never erases a
       // quarantine by refiling, and the lead's own text is marked `lead`.
       this.db.prepare("UPDATE task_scope SET proposed_via = ? WHERE task_id = ?").run(provenanceAfter(prior?.["proposed_via"], options.proposedVia ?? null), scope.taskId);
+      // Results routing (exposure, route-store.ts): a build leg under an earned rule opens the task's one exposure to
+      // it; a re-filing adds an event to an open one, never a row.
+      if (ref !== null && route !== null) noteExposureFiled(this, ref.id, legOf(route, "build").selection, new Date(scope.proposedAt));
       return null;
     }));
   }
@@ -9169,6 +9182,10 @@ export class Store {
         const authority = scopeAuthorityOf(readScope(working), { authMode: provider => readAuthModeStrict(provider) });
         if (!authority.ok) return false;
         if (routeProblems(authority.route).length > 0) return false;
+        // RESULTS ROUTING (route v3): a build leg selected by an earned rule that switched itself off since it was
+        // filed seals nothing — re-filing routes it on the configured builder (route-rules.ts holds what was approved).
+        const sealedSelection = legOf(authority.route, "build").selection;
+        if (sealedSelection?.kind === "rule" && this.db.prepare("SELECT state FROM route_rule WHERE id = ?").get(sealedSelection.rule)?.["state"] === "switched-off") return false;
         // RELEASE TERMS (release-once.md): only a person's own yes (the ceremony or a paired-chat tap) seals them, and
         // that yes opens the release's authority record in this same transaction — or the seal doesn't stand.
         const terms = storedReleaseTerms(working["release_terms_json"]);
@@ -9226,6 +9243,10 @@ export class Store {
           if (ref !== undefined) {
             if (basis === undefined || basis.kind === "chat") this.noteTaskAct(Number(ref["id"]), "approved", now);
             this.db.prepare("DELETE FROM hold WHERE owner_kind = 'backoff' AND owner_id = ?").run(`stale:${Number(ref["id"])}`);
+            // Results routing: this yes closes the task's open exposure (as proposed, or with the model it sealed),
+            // and lifts the hold a switched-off rule put on the approval it replaces.
+            noteExposureSealed(this, Number(ref["id"]), { selection: sealedSelection, model: legOf(authority.route, "build").model }, now);
+            this.db.prepare("DELETE FROM hold WHERE owner_kind = 'backoff' AND owner_id = ?").run(`rule-off:${Number(ref["id"])}`);
             this.db
               .prepare("UPDATE notification SET resolved_at = ? WHERE dedupe_key LIKE ? AND resolved_at IS NULL")
               .run(now.toISOString(), `stale-approval:${Number(ref["id"])}:%`);
@@ -15775,6 +15796,13 @@ export class Store {
       run.now,
     );
     if (problem !== null) refuse(problem);
+    // RESULTS ROUTING (route v3): a task approved under an earned rule that then switched itself off on its sealed
+    // trigger is held — its first build never starts on that model (no strike: nothing ran). A rule a person turned
+    // off, or one that expired, keeps the sealed model; a started task's later attempts finish under it.
+    if (role === "builder") {
+      const held = ruleHoldOf(this, taskId);
+      if (held !== null) refuse(`rule-switched-off: results for ${held.model} dropped after this was approved — approve it again or re-file it`);
+    }
     const stamp = run.route as RouteStamp;
     const qualityMode: QualityMode =
       role === "reviewer" && parent !== null

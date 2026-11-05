@@ -21,7 +21,7 @@ import {
   routeFromJson,
   routeWords,
   makesNoPlan,
-  ROUTE_VERSION,
+  PLAIN_ROUTE_VERSION,
   type RouteCandidates,
   type RouteInput,
   type TaskSizing,
@@ -54,7 +54,7 @@ function input(over: Partial<RouteInput> = {}): RouteInput {
 describe("tiers by size", () => {
   test("a small change builds on the light tier, makes no plan, and the card says so with the reason", () => {
     const route = recommendRoute(input({ size: sized("small") }));
-    expect(route.version).toBe(ROUTE_VERSION);
+    expect(route.version).toBe(PLAIN_ROUTE_VERSION);
     const build = legOf(route, "build");
     expect([build.provider, build.model, build.tier]).toEqual(["claude", "haiku", "light"]);
     expect(build.reasons[0]).toBe("small change — a fast model builds it and no plan is made");

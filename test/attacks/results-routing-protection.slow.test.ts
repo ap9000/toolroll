@@ -84,3 +84,20 @@ describe("the calls that feed the records, and the bodies that decide them, stay
     needsPerson({ "src/store.ts": writer("    bumpModelsGeneration(this, scope, phase, new Date());") }, { "src/store.ts": writer("") }, "src/store.ts's Store#clearPhaseConfig changed");
   });
 });
+
+describe("slice 2: the precedence order, the hold and the rule pass stay as the base has them", () => {
+  test("an eligibility change in selectBuildLeg: a person approves", () => {
+    const routing = (guard: string) => `export function selectBuildLeg(input, configured) {\n  if (${guard}) return { leg: configured, moved: false };\n  return { leg: input, moved: false };\n}\n`;
+    needsPerson({ "src/phase-routing.ts": routing("input.size?.size === \"large\"") }, { "src/phase-routing.ts": routing("false") }, "src/phase-routing.ts's selectBuildLeg changed");
+  });
+
+  test("the rule pass dropped from the reconcile pass: a person approves", () => {
+    const pass = (body: string) => `import { routeRulesPass } from "./route-rules.js";\nexport async function reconcileCommand(store, repo, now) {\n${body}\n}\n`;
+    needsPerson({ "src/operate.ts": pass("  routeRulesPass(store, repo, now);") }, { "src/operate.ts": pass("  return 0;") }, "no longer calls routeRulesPass");
+  });
+
+  test("a switched-off rule's admission hold removed from admitRun: a person approves", () => {
+    const admit = (body: string) => `export class Store {\n  admitRun(run) {\n${body}\n    return 1;\n  }\n}\n`;
+    needsPerson({ "src/store.ts": admit("    if (ruleHoldOf(this, run.task) !== null) throw new Error('rule-switched-off');") }, { "src/store.ts": admit("") }, "src/store.ts's Store#admitRun changed");
+  });
+});

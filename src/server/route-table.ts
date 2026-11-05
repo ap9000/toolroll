@@ -180,6 +180,10 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "settings.lead-on": "choose-default-agent",
   // Choosing which open project the pages show: a view filter, never authorization.
   "projects.select": "read",
+  // Results routing: lowering only.
+  "settings.models-turn-off": "routing-turn-off",
+  "settings.models-not-now": "dismiss-suggestion",
+  "settings.models-suggest-off": "dismiss-suggestion",
   "agents.seen": "mark-seen",
   "agents.watch": "watch-agent",
 });
@@ -563,6 +567,11 @@ for (const one of ["check", "watch", "update"]) post("settings", `settings.model
 // Changing which model a role uses: an instance operator's browser step-up (the handler proves the password, or the
 // Passwordless session; model-choices.ts re-proves the session and standing inside its one transaction).
 for (const one of ["agent", "apply"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, { scope: "step-up", ...operator("An instance operator changes models.", "/settings/models") });
+// Earned rules (results routing): accepting, keeping a paused rule and switching suggestions on are an instance
+// operator's browser step-up; turning a rule off, Not now and switching suggestions off only take authority away (a
+// signed-in operator, or the local owner in exactly that act: route-store.ts proveRuleDoor re-checks it in the write).
+for (const one of ["accept", "keep", "suggest-on"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, { scope: "step-up", ...operator("An instance operator changes which models run.", "/settings/models") });
+for (const one of ["turn-off", "not-now", "suggest-off"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, operator("An instance operator changes which models run.", "/settings/models"));
 // Any other models action answers the models area's own refusal.
 post("settings", "settings.models-act", "^\\/settings\\/models\\/.*$", { sample: "/settings/models/unknown", ...MODELS });
 post("settings", "settings.knowledge-refresh", "/settings/knowledge/refresh", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to refresh project context.", "/settings/knowledge") });

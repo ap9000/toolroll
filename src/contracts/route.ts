@@ -27,11 +27,15 @@ export const MODEL_ID_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 export const RISKS = ["routine", "elevated", "high"] as const;
 export const TASK_SIZE_WORDS = ["small", "medium", "large"] as const;
 
-/** The route version this code seals; version 1 (before sizing) still reads. */
-export const ROUTE_VERSION = 2;
-/** The newest route version this code reads (docs/plans/results-routing.md): version 3 adds the build leg's sealed
- * `selection`. Slice 1 reads it and seals nothing in it yet. */
-export const READ_ROUTE_VERSION = 3;
+/** The newest route version this code seals (docs/plans/results-routing.md, slice 2): version 3 adds the build leg's
+ * sealed `selection`, and is sealed only for a build leg that carries one (an earned rule's). Every other route still
+ * seals as version 2 (PLAIN_ROUTE_VERSION), so its bytes and digest are what they always were; version 1 (before
+ * sizing) still reads. */
+export const ROUTE_VERSION = 3;
+/** The version a route with no selection seals as. */
+export const PLAIN_ROUTE_VERSION = 2;
+/** The newest route version this code reads. */
+export const READ_ROUTE_VERSION = ROUTE_VERSION;
 
 const phase = z.enum(ROUTE_PHASES);
 const provider = z.enum(ROUTE_PROVIDERS);
@@ -83,7 +87,7 @@ export const sealedRouteV1Schema = versioned(1, {
   overrides: z.array(routeOverrideSchema),
 });
 
-export const sealedRouteV2Schema = versioned(ROUTE_VERSION, {
+export const sealedRouteV2Schema = versioned(PLAIN_ROUTE_VERSION, {
   ...terms,
   legs: z.array(routeLegSchema).length(ROUTE_PHASES.length),
   overrides: z.array(routeOverrideSchema),

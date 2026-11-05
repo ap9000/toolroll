@@ -164,6 +164,10 @@ export const CONSOLE_FORMS = {
   // preset or switch; the digest is what the page showed, and the change digest what the preview showed.
   modelsChange: formContract("POST /settings/models/agent, /settings/models/apply", ["password", "scope", "digest", "change", "preset", "switch", "to",
     "plan", "plan-strong", "build-light", "build", "build-strong", "repair", "review", "review-strong"]),
+  // Settings → Models → Suggested (results routing): the project, a suggestion's id or a rule's number, and the step-up
+  // password for accepting, keeping and switching suggestions on.
+  modelsRules: formContract("POST /settings/models/accept, /settings/models/keep, /settings/models/suggest-on, /settings/models/turn-off, /settings/models/not-now, /settings/models/suggest-off",
+    ["password", "scope", "id", "rule"]),
   knowledgeRefresh: formContract("POST /settings/knowledge/refresh", ["repo"]),
   knowledgeProposal: formContract("POST /settings/knowledge/proposal", ["repo", "decision", "proposal"]),
   knowledgeDecision: formContract("POST /settings/knowledge/decision", ["repo", "action", "claim", "why", "decision", "reason"]),

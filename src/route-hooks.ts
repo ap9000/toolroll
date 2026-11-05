@@ -41,12 +41,18 @@ export const ROUTING_HOOKS: readonly EvalHook[] = Object.freeze([
   { file: "src/operate.ts", inside: "reconcileCommand", calls: "reevaluateResultRecords", from: "./route-results.js", why: "records are evaluated again as their inputs change" },
   { file: "src/project-delete.ts", inside: "deleteRows", calls: "forgetProjectModels", from: "./store.js", why: "a deleted project's Models rows go through the counter" },
   { file: "src/release-auto.ts", inside: "changeProblem", calls: "routingHookProblem", from: "./route-hooks.js", why: "this check itself" },
+  // Slice 2: each live rule is checked against its sealed terms every pass, and a held task never starts.
+  { file: "src/operate.ts", inside: "reconcileCommand", calls: "routeRulesPass", from: "./route-rules.js", why: "a rule switches itself off on its sealed terms" },
+  { file: "src/operate.ts", inside: "tickCommand", calls: "ruleHoldOf", from: "./route-store.js", why: "a task approved under a rule that switched itself off never starts on it" },
   ...REVISION_CALLERS,
 ]);
 
 export const ROUTING_PINNED: readonly EvalPinned[] = Object.freeze([
   // What a route is and how it's read.
   { file: "src/phase-routing.ts", fn: "recommendRoute", why: "which agent a task is routed to" },
+  // Slice 2: the one precedence order (pin > override > trial > earned rule > configured > headroom) and who is eligible.
+  { file: "src/phase-routing.ts", fn: "selectBuildLeg", why: "the build leg's one precedence order" },
+  { file: "src/phase-routing.ts", fn: "earnedRuleFor", why: "which tasks an earned rule may build" },
   { file: "src/phase-routing.ts", fn: "canonicalRouteJson", why: "a sealed route's bytes, and so its digest" },
   { file: "src/phase-routing.ts", fn: "routeFromJson", why: "how a sealed route reads back" },
   { file: "src/contracts/route.ts", fn: "readSealedRoute", why: "every route version's rules, the build leg's selection included" },
@@ -65,7 +71,8 @@ export const ROUTING_PINNED: readonly EvalPinned[] = Object.freeze([
   // Its consumers and the Models writers, which move the configuration generations.
   { file: "src/store.ts", fn: "Store#saveScope", why: "filing a task's route" },
   { file: "src/store.ts", fn: "Store#sealScopeApproval", why: "approving a task's route" },
-  { file: "src/store.ts", fn: "Store#admitRun", why: "a run's admission and its cohort snapshot" },
+  { file: "src/store.ts", fn: "Store#admitRun", why: "a run's admission, its cohort snapshot, and the switched-off rule's hold" },
+  { file: "src/store.ts", fn: "Store#applyCancellationLocked", why: "a cancel closes a task's exposure to an earned rule" },
   { file: "src/store.ts", fn: "Store#setPhaseConfig", why: "a Models row write moves its generation" },
   { file: "src/store.ts", fn: "Store#clearPhaseConfig", why: "a Models row write moves its generation" },
   { file: "src/store.ts", fn: "Store#setPhaseTierConfig", why: "a Models row write moves its generation" },
