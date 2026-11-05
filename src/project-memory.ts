@@ -9,6 +9,8 @@
  */
 import { createHash } from 'node:crypto';
 import type { z } from 'zod';
+import { currentActor } from './actor.js';
+import { activeRemote } from './remote-run.js';
 import type { Store } from './store.js';
 import { scanForSecrets } from './evidence.js';
 import { learningIdentity } from './project-learning.js';
@@ -113,8 +115,21 @@ export function getDecision(store: Store, repo: string, actor: string, id: numbe
   return d;
 }
 
+/**
+ * Project memory is changed by a person (like `knowledge apply`, project-knowledge.ts applySavedKnowledge): never in the
+ * lead's chain and never inside a remote run (an API token), whatever credential reached here. The lead proposes (chat
+ * cards decision_record/decision_retire) and a person confirms. Every writer here and in memory-pass.ts calls this first,
+ * and again inside its transaction beside the person's standing (`admission`), so a revocation made since the caller
+ * proved them is seen by the write.
+ */
+export function refuseLeadMemoryWrite(): void {
+  if (currentActor()?.lead === true) throw Error('Project memory is changed by a person, not the lead.');
+  if (activeRemote() !== null) throw Error('Project memory is changed by a person with their own password, not an API token.');
+}
+
 /** Record one settled choice. A superseding decision retires the older one in the same transaction. */
 export function recordDecision(store: Store, args: { repo: string; actor: string; draft: DecisionDraft }, now = new Date()): Decision {
+  refuseLeadMemoryWrite();
   const identity = admission(store, args.repo, args.actor, true);
   const claim = clean(args.draft.claim, TEXT_LIMITS.decisionClaimBytes, 'The decision'), why = clean(args.draft.why, TEXT_LIMITS.decisionWhyBytes, 'The reason');
   const decidedBy = args.draft.decidedBy === undefined ? args.actor : clean(args.draft.decidedBy, TEXT_LIMITS.decisionByBytes, 'Who decided');
@@ -123,6 +138,8 @@ export function recordDecision(store: Store, args: { repo: string; actor: string
   const sourceKind = args.draft.sourceKind ?? 'manual';
   const sourceRef = args.draft.sourceRef === undefined || args.draft.sourceRef === null ? null : clean(String(args.draft.sourceRef), TEXT_LIMITS.decisionSourceBytes, 'The source');
   return store.transact(() => {
+    refuseLeadMemoryWrite();
+    admission(store, args.repo, args.actor, true);
     let supersedes: number | null = null;
     if (args.draft.supersedes !== undefined && args.draft.supersedes !== null) {
       const older = getDecision(store, args.repo, args.actor, Number(args.draft.supersedes));
@@ -151,9 +168,10 @@ function changeStatus(store: Store, repo: string, actor: string, id: number, sta
 }
 /** Retire a decision that no longer holds; history keeps it. */
 export function retireDecision(store: Store, args: { repo: string; actor: string; id: number; reason: string }, now = new Date()): Decision {
+  refuseLeadMemoryWrite();
   admission(store, args.repo, args.actor, true);
   const reason = clean(args.reason, TEXT_LIMITS.decisionRetireBytes, 'The reason');
-  return store.transact(() => { const d = changeStatus(store, args.repo, args.actor, args.id, 'retired', reason, now); reindexProjectMemory(store, args.repo); return d; });
+  return store.transact(() => { refuseLeadMemoryWrite(); admission(store, args.repo, args.actor, true); const d = changeStatus(store, args.repo, args.actor, args.id, 'retired', reason, now); reindexProjectMemory(store, args.repo); return d; });
 }
 export function decisionHistory(store: Store, repo: string, actor: string, id: number): { revision: number; actor: string; at: string; action: string }[] {
   admission(store, repo, actor);

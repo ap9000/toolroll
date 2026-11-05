@@ -1553,8 +1553,10 @@ async function dispatch(
     }
     case "memory": {
       // The remembered local login (or --as/--token) names the person; reads
-      // and writes both record who asked.
+      // and writes both record who asked. Writes are a person's: never the lead's token or chain (like knowledge apply).
+      if (memoryWriteVerb(positional) && currentActor()?.lead === true) return fail(context.write, context.json, `memory ${positional[0]}`, "unauthenticated", MEMORY_WRITE_REFUSAL, EXIT.refused);
       const acting = await askCredentials(flags, context);
+      if (memoryWriteVerb(positional) && acting !== null && parseLeadToken(acting.token) !== null) return fail(context.write, context.json, `memory ${positional[0]}`, "unauthenticated", MEMORY_WRITE_REFUSAL, EXIT.refused);
       const verified = acting === null ? null : verifyApproverByPassword(context.store, acting.name, acting.token, context.store.knownRepos().filter(repo => context.store.accountCanAccess(acting.name, repo)));
       const who = verified !== null && verified.ok ? verified.who : null;
       return runMemoryCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: who?.name ?? null, repos: who?.repos ?? [], configDir: dirname(context.databaseFile), ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }) });
@@ -13792,3 +13794,11 @@ export function upLaptopPortCandidates(store: Store, fromSeam?: readonly number[
   if (installationCreatedBy(store) !== "laptop") return [range[0] ?? 4180];
   return [...range];
 }
+
+/** The memory verbs that change project memory (memory-cli.ts), and `propose`, which files the proposals a person then
+ * applies: a person's act, never the lead's. The reads stay as they are. */
+const MEMORY_WRITE_VERBS: ReadonlySet<string> = new Set(["decide", "retire", "apply", "propose"]);
+function memoryWriteVerb(positional: readonly string[]): boolean {
+  return MEMORY_WRITE_VERBS.has(positional[0] ?? "");
+}
+const MEMORY_WRITE_REFUSAL = "Project memory is changed by a person with their own sign-in, not the lead. The lead proposes decisions in chat for you to confirm.";

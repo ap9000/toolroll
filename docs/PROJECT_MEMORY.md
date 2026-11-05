@@ -22,7 +22,7 @@ Search covers decisions, instructions, references, lessons and the conversations
 
 ## Changing it
 
-- Say a settled choice in chat and confirm the lead's **Record decision** card, or run `memory decide "<one sentence>" --why "<reason>"`. Replace an older decision with `--supersedes <id>`; retire one with `memory retire <id> --reason "<why>"`. Decisions are retired, never deleted, and every change keeps its history.
+- Say a settled choice in chat and confirm the lead's **Record decision** card, or run `memory decide "<one sentence>" --why "<reason>"`. Replace an older decision with `--supersedes <id>`; retire one with `memory retire <id> --reason "<why>"`. Decisions are retired, never deleted, and every change keeps its history. Changing memory (`memory decide`, `memory retire`, `memory apply`) is a person's act: your own sign-in at this computer or in the console, never the lead's token or an API token. The lead proposes decisions in chat for you to confirm.
 - Instructions and references change on the Knowledge page or through the lead's knowledge cards; every revision can be restored.
 
 ## The backward pass

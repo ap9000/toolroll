@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import type { Store } from './store.js';
 import { scanForSecrets, readVerifiedArtifact } from './evidence.js';
 import { changeKnowledge, knowledgeView } from './project-knowledge.js';
-import { listDecisions, recordDecision } from './project-memory.js';
+import { listDecisions, recordDecision, refuseLeadMemoryWrite } from './project-memory.js';
 import { composeLeadRequest, performLeadRequest, isDirectChatProvider, CHAT_KEY_ENV } from './converse.js';
 import { performSubscriptionLeadRequest } from './subscription-chat.js';
 import type { DirectChatProviderId, SubscriptionChatProviderId } from './store.js';
@@ -350,7 +350,10 @@ export function listProposals(store: Store, repo: string, status: 'pending' | 'a
 
 /** The one writer: accept applies the edit through the knowledge or decision store as the person; reject remembers the fingerprint and its corroboration. */
 export function decideProposal(store: Store, args: { repo: string; actor: string; id: number; decision: 'accept' | 'reject' }, now = new Date()): MemoryProposal {
+  refuseLeadMemoryWrite();
   return store.transact(() => {
+    // A person who may change this project's memory, read inside the write (a revoked account or lost access refuses).
+    if (!store.accountCanAccess(args.actor, args.repo) || store.accountOf(args.actor)?.role !== 'approver') throw Error('Project memory is outside your access.');
     const row = store.handle.prepare('SELECT * FROM memory_proposal WHERE id=? AND repo=?').get(args.id, args.repo) as Record<string, unknown> | undefined;
     if (!row) throw Error('That proposal is unavailable.');
     const proposal = proposalOf(row);

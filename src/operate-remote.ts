@@ -81,7 +81,7 @@ export const REMOTE_SCOPES: ReadonlyMap<string, RemoteScope> = new Map<string, R
   // The person's own remote actions, or everyone's within their projects for an approver (remote-audit.ts).
   ["audit", self],
   ["knowledge search", repo], ["knowledge impact", repo], ["knowledge refresh", repo],
-  ...["search", "decisions", "show", "decide", "retire", "review", "status"].map(action => [`memory ${action}`, self] as [string, RemoteScope]),
+  ...["search", "decisions", "show", "review", "status"].map(action => [`memory ${action}`, self] as [string, RemoteScope]),
   ...["list", "show", "export", "create", "edit", "trigger add", "trigger pause", "trigger resume", "trigger remove", "card add", "archive"]
     .map(action => [`flows ${action}`, self] as [string, RemoteScope]),
   ["models status", global], ["models list", global],
