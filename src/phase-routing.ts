@@ -56,6 +56,7 @@ import {
   MODEL_ID_SHAPE,
   postureOf,
   readRouteOverrides,
+  PLAIN_ROUTE_VERSION,
   readSealedRoute,
   RISKS,
   ROUTE_PHASES,
@@ -96,7 +97,7 @@ export function exactModelId(v: unknown): v is string {
 /** v2 adds the task's size (small / medium / large, risky or not), the
  * light tier, and plan headroom. A v1 route — sealed before sizing — still
  * reads back exactly and keeps its own digest domain. */
-export { ROUTE_VERSION };
+export { PLAIN_ROUTE_VERSION, ROUTE_VERSION };
 /** The durable route ERA a scope row carries once it was filed under this
  * policy: NULL on a row proven to predate v47 (legacy — the sealed profile
  * alone governs), this value on every row filed since. A row with an era
@@ -270,7 +271,24 @@ export type RouteInput = {
    * candidates on more than one provider, the one with more room runs; a
    * provider past its limits gives way even to a stronger tier. */
   headroom?: readonly ProviderRoom[];
+  /** Results routing (route v3, docs/plans/results-routing.md slice 2): the project's live earned rules, and the two
+   * eligibility facts the route itself doesn't carry (a release or candidate task; declared paths that touch the
+   * project's protected paths). Absent or null: no rule applies. */
+  earned?: EarnedInput | null;
 };
+
+/** One live earned rule, as routing reads it: which project-size cohort it covers, the exact Claude model it builds
+ * on, and the configured builder it was earned against (a configuration change pauses the rule; a mismatch here
+ * skips it all the same). */
+export type EarnedRule = {
+  id: number;
+  generation: number;
+  cohortSize: "small" | "medium";
+  provider: ProviderId;
+  model: string;
+  configured: { provider: string; model: string | null };
+};
+export type EarnedInput = { rules: readonly EarnedRule[]; release: boolean; protected: boolean };
 
 const PHASE_NOUN: Record<Phase, string> = { plan: "planner", build: "builder", repair: "repair", review: "reviewer" };
 const PHASE_VERB: Record<Phase, string> = { plan: "plans", build: "builds", repair: "repairs", review: "reviews" };
@@ -407,23 +425,13 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
     }
   }
 
-  // build — pin > override > recommendation.
+  // build — one precedence order (selectBuildLeg): pin > override > earned rule > configured > headroom.
   let buildMoved = false;
   const build = (() => {
-    const rec = pick("build");
-    buildMoved = rec.moved;
-    const pin = input.pins?.build ?? null;
-    const override = overrideFor("build");
-    const recommended = { provider: rec.spec.provider, model: rec.spec.model, tier: rec.tier };
-    if (pin !== null || override !== null) buildMoved = false;
-    const leg: RouteLeg =
-      pin !== null
-        ? { phase: "build", provider: pin.provider, model: pin.model, tier: rec.tier, chosen: "pinned", recommended, reasons: [`pinned to ${specWords(pin)} by the firing that filed this task — nothing overrides a pin`], problem: null }
-        : override !== null
-          ? { phase: "build", provider: override.provider, model: override.model, tier: rec.tier, chosen: "override", recommended, reasons: [`overridden by ${override.by} to ${specWords(override)} (recommended ${specWords(rec.spec)})`], problem: null }
-          : { phase: "build", provider: rec.spec.provider, model: rec.spec.model, tier: rec.tier, chosen: "recommended", recommended, reasons: rec.reasons, problem: null };
-    legs.push(leg);
-    return leg;
+    const chosen = selectBuildLeg(input, pickTier("build"));
+    buildMoved = chosen.moved;
+    legs.push(chosen.leg);
+    return chosen.leg;
   })();
 
   // repair — ALWAYS the build provider (repair resumes the builder's
@@ -514,7 +522,8 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
   }
 
   return {
-    version: ROUTE_VERSION,
+    // Version 3 only for a build leg that carries a selection: every other route's bytes stay version 2's.
+    version: build.selection !== undefined ? ROUTE_VERSION : PLAIN_ROUTE_VERSION,
     risk: "routine",
     qualityMode: input.qualityMode,
     publication: input.publication,
@@ -528,6 +537,76 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
     overrides,
     size: input.size ?? null,
   };
+}
+
+/**
+ * THE BUILD LEG'S ONE PRECEDENCE ORDER (results routing, docs/plans/results-routing.md slice 2), pure:
+ *
+ *   pin > person override > (trial, slice 3) > earned rule > configured row (light / routine / strong by size)
+ *   > headroom move
+ *
+ * Headroom moves only a configured leg, never a rule's: a rule's evidence is about one exact model. A rule whose
+ * provider is past the headroom limits is skipped for this filing, and its reason says so. A rule applies only to an
+ * eligible task — small or medium, not risky, default quality, no screenshot or manual-review evidence, not a
+ * merging mode, not a release or candidate, nothing protected declared — and only over the configured builder it was
+ * earned against. Its leg says how it was selected (`selection`), so the route seals as version 3 and every later
+ * check reads the sealed selection, never the current rules or the reason text.
+ */
+export function selectBuildLeg(input: RouteInput, configured: { spec: RouteCandidate; tier: CandidateTier; reasons: string[] }): { leg: RouteLeg; moved: boolean } {
+  const pin = input.pins?.build ?? null;
+  const override = input.overrides.find(one => one.phase === "build") ?? null;
+  if (pin !== null || override !== null) {
+    // What would have run otherwise is said as it always was: the configured leg after headroom.
+    const rec = withHeadroom(input, "build", configured);
+    const recommended = { provider: rec.spec.provider, model: rec.spec.model, tier: rec.tier };
+    const leg: RouteLeg = pin !== null
+      ? { phase: "build", provider: pin.provider, model: pin.model, tier: rec.tier, chosen: "pinned", recommended, reasons: [`pinned to ${specWords(pin)} by the firing that filed this task — nothing overrides a pin`], problem: null }
+      : { phase: "build", provider: override!.provider, model: override!.model, tier: rec.tier, chosen: "override", recommended, reasons: [`overridden by ${override!.by} to ${specWords(override!)} (recommended ${specWords(rec.spec)})`], problem: null };
+    return { leg, moved: false };
+  }
+  const earned = earnedRuleFor(input, configured);
+  if (earned !== null && earned.kind === "rule") {
+    const rule = earned.rule;
+    const spec = { provider: rule.provider, model: rule.model };
+    return {
+      leg: {
+        phase: "build", provider: rule.provider, model: rule.model, tier: configured.tier, chosen: "recommended",
+        recommended: { ...spec, tier: configured.tier },
+        reasons: [...configured.reasons.slice(0, 1), `earned rule: ${specWords(spec)} builds this project's eligible ${rule.cohortSize === "small" ? "small" : "routine"} tasks instead of the configured ${specWords({ provider: rule.configured.provider, model: rule.configured.model ?? "default" })}, on its recorded results here`],
+        problem: null,
+        selection: { kind: "rule", rule: rule.id, ruleGeneration: rule.generation },
+      },
+      moved: false,
+    };
+  }
+  const rec = withHeadroom(input, "build", configured);
+  const reasons = earned === null ? rec.reasons : [...rec.reasons, earned.reason];
+  return {
+    leg: { phase: "build", provider: rec.spec.provider, model: rec.spec.model, tier: rec.tier, chosen: "recommended", recommended: { provider: rec.spec.provider, model: rec.spec.model, tier: rec.tier }, reasons, problem: null },
+    moved: rec.moved,
+  };
+}
+
+/** The earned rule this task's build takes (pure): null when none could apply (no rule for its size, or the task
+ * isn't eligible), or a rule skipped for this filing with the words why. */
+export function earnedRuleFor(input: RouteInput, configured: { spec: RouteCandidate; tier: CandidateTier }): { kind: "rule"; rule: EarnedRule } | { kind: "skipped"; reason: string } | null {
+  const earned = input.earned ?? null;
+  const size = input.size ?? null;
+  if (earned === null || size === null || size.risky || (size.size !== "small" && size.size !== "medium")) return null;
+  const rule = earned.rules.find(one => one.cohortSize === size.size) ?? null;
+  if (rule === null) return null;
+  if (earned.release || earned.protected || input.qualityMode !== "default" || input.publication === "automerge") return null;
+  if (input.evidence.some(kind => kind === "screenshot" || kind === "manual-review")) return null;
+  if (demandedTier(input, "build").tier !== "routine") return null;
+  // Only Claude reports the model it ran, so only a Claude cohort can earn a rule.
+  if (rule.provider !== "claude" || !exactModel(rule.model)) return null;
+  if (configured.spec.provider !== rule.configured.provider || configured.spec.model !== rule.configured.model) {
+    return { kind: "skipped", reason: `the earned rule for ${size.size === "small" ? "small" : "routine"} tasks was earned against another configured builder — not applied` };
+  }
+  const room = (input.headroom ?? []).find(one => one.provider === rule.provider) ?? null;
+  const tight = room === null ? null : tightWords(room);
+  if (tight !== null) return { kind: "skipped", reason: `earned rule skipped for this filing: ${tight} — the configured builder runs it` };
+  return { kind: "rule", rule };
 }
 
 /**

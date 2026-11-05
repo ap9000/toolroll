@@ -2230,6 +2230,199 @@ $ contract --commands --json → 0
       "remote": "no"
     },
     {
+      "invocation": "models suggestions",
+      "synopsis": "cheaper models a project's own results suggest, and its earned rules",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "one project's records (default: every project you can open)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "remote": "no"
+    },
+    {
+      "invocation": "models accept",
+      "synopsis": "accept a suggestion as an earned rule, with its switch-back terms: models accept <id> --repo <p>",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "the project (default: the one project you can open)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "your approver name"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "your password (accepting and keeping take one typed now)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "target",
+          "required": true,
+          "meaning": "the suggestion's id, as models suggestions lists it"
+        }
+      ],
+      "remote": "no"
+    },
+    {
+      "invocation": "models dismiss",
+      "synopsis": "Not now: keep a suggestion quiet for 30 days: models dismiss <id> --repo <p>",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "the project (default: the one project you can open)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "your approver name"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "your password (accepting and keeping take one typed now)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "target",
+          "required": true,
+          "meaning": "the suggestion's id, as models suggestions lists it"
+        }
+      ],
+      "remote": "no"
+    },
+    {
+      "invocation": "models turn-off",
+      "synopsis": "turn an earned rule off, or drop a paused one: models turn-off <rule>",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "the project (default: the one project you can open)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "your approver name"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "your password (accepting and keeping take one typed now)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "target",
+          "required": true,
+          "meaning": "the rule's number, as models suggestions lists it"
+        }
+      ],
+      "remote": "no"
+    },
+    {
+      "invocation": "models keep",
+      "synopsis": "keep a paused earned rule: models keep <rule>",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "the project (default: the one project you can open)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "your approver name"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "your password (accepting and keeping take one typed now)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "target",
+          "required": true,
+          "meaning": "the rule's number, as models suggestions lists it"
+        }
+      ],
+      "remote": "no"
+    },
+    {
       "invocation": "status",
       "synopsis": "running work, queued reasons, results to review, the latest release check and plan windows",
       "audience": "agent",

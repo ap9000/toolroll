@@ -39,6 +39,11 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   "mark-seen",
   "watch-agent",
   "read",
+  // Results routing (docs/plans/results-routing.md, Authority): lowering only — turning an earned rule off (or
+  // dropping a paused one), and saying Not now to a suggestion (or switching suggestions off). The writer
+  // (route-store.ts proveRuleDoor) checks the in-flight act is exactly the one it needs.
+  "routing-turn-off",
+  "dismiss-suggestion",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);
@@ -192,6 +197,8 @@ export const CHAT_ACTION_LOCAL_ACTS: Readonly<Record<ChatAction, LocalOwnerAct |
   subagent_create: null, subagent_soul: null, subagent_state: null, subagent_note: null, subagent_ask: null,
   subagent_answer: null, subagent_tools: null, subagent_memory: null, subagent_routine: null, subagent_undo: null,
   kit_setup: null, decision_record: null, decision_retire: null, lead_about_you: null,
+  // Results routing: Not now only lowers (the rule door checks this exact act).
+  suggestion_not_now: "dismiss-suggestion",
   scope_approve: "approve-plan",
   result_accept: "complete-task",
   task_cancel: "stop-run",

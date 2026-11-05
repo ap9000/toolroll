@@ -11,8 +11,12 @@
  * A policy path (release-auto.ts EVAL_POLICY).
  */
 import { isProtectedWork } from "./approval-policy.js";
+import { currentLocalOwner, localOwnerInFlight, localOwnerStandsNow } from "./local-owner.js";
+import { passwordlessOn } from "./passwordless.js";
+import { machineActing } from "./scope.js";
 import { NOT_COUNTED_REASONS, RECORD_STATES, REJECT_REASONS, REVISION_ORIGINS, type ExecClass, type IneligibleReason, type RevisionOrigin, type Selection } from "./contracts/route-results.js";
 import type { RecordValue } from "./route-results.js";
+import type { EarnedRule } from "./phase-routing.js";
 import { BUILT_IN, nightlyTaskRef, releaseTaskRef, type Store } from "./store.js";
 
 // ---- execution class --------------------------------------------------------------------------------------------
@@ -233,4 +237,205 @@ export function forgetProjectRoutes(store: Store, repo: string): number {
   rows += Number(db.prepare(`DELETE FROM route_record WHERE repo = ? OR task_ref IN (${refs})`).run(repo, repo).changes);
   rows += Number(db.prepare(`DELETE FROM run_cohort WHERE repo = ? OR task_ref IN (${refs}) OR root_ref IN (${refs})`).run(repo, repo, repo).changes);
   return rows;
+}
+
+// ---- earned rules: the doors and their writers (slice 2) ---------------------------------------------------------
+
+/** A person who proved themselves for this act (model-choices.ts ModelAuthority's shape): the account, the credential
+ * generation the proof was checked against, how they proved it, and whether the session or login still stands. */
+export type RulePerson = { actor: string; generation: number; method: string; live: () => boolean };
+/** Who asks a rule act: a person, or this computer's local owner (local mode) inside the one act it may do. */
+export type RuleDoor = { kind: "person"; person: RulePerson } | { kind: "local-owner"; actor: string };
+/** The acts and the door each takes (docs/plans/results-routing.md, Authority). Raising acts take a person with a
+ * step-up; lowering acts take a person, or a local owner whose in-flight act is exactly the one named here. */
+export const RULE_ACTS = Object.freeze({
+  accept: { raising: true, localAct: null },
+  keep: { raising: true, localAct: null },
+  "suggest-on": { raising: true, localAct: null },
+  "turn-off": { raising: false, localAct: "routing-turn-off" },
+  dismiss: { raising: false, localAct: "dismiss-suggestion" },
+  "suggest-off": { raising: false, localAct: "dismiss-suggestion" },
+} as const);
+export type RuleAct = keyof typeof RULE_ACTS;
+export type RuleRefusalReason = "lead-refused" | "authority";
+/** A door proved inside the write's own transaction: minted only by proveRuleDoor, and spent only there. */
+export type ProvedRuleDoor = { readonly actor: string; readonly act: RuleAct; readonly via: "person" | "local-owner" };
+const provedDoors = new WeakSet<ProvedRuleDoor>();
+/** Proofs a raising act accepts: a password or identity provider now, or (only while Passwordless is on) a session
+ * or remembered CLI login. A lowering act also accepts a signed-in session: it only takes authority away. */
+const RAISING_PROOFS = new Set(["password-now", "sso-now", "fresh-password", "fresh-sso", "session", "cli-login"]);
+
+/**
+ * The rule doors' one proof, run inside the write's transaction: a lead token or a remote API token never acts
+ * (`lead-refused`); a person is re-proved — the same account, still active, still an instance operator who can open
+ * the project, at the credential generation the proof was made under, by a proof that still stands (model-choices.ts
+ * applyModelChoices' re-proof); a local owner only for a lowering act, only while it still stands, and only when its
+ * in-flight act is exactly that act's.
+ */
+export function proveRuleDoor(store: Store, door: RuleDoor, act: RuleAct, repo: string): { ok: true; door: ProvedRuleDoor } | { ok: false; reason: RuleRefusalReason } {
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined) return { ok: false, reason: "lead-refused" };
+  const spec = RULE_ACTS[act];
+  if (door.kind === "local-owner") {
+    const local = currentLocalOwner();
+    if (spec.localAct === null || local === null || !localOwnerInFlight(local) || local.act !== spec.localAct || local.account !== door.actor || !localOwnerStandsNow(store, local)) return { ok: false, reason: "authority" };
+    const proved: ProvedRuleDoor = Object.freeze({ actor: door.actor, act, via: "local-owner" as const });
+    provedDoors.add(proved);
+    return { ok: true, door: proved };
+  }
+  const { person } = door;
+  if (person.method === "lead-token" || person.method === "remote-token") return { ok: false, reason: "lead-refused" };
+  const account = store.accountOf(person.actor);
+  const proof = spec.raising
+    ? RAISING_PROOFS.has(person.method) && ((person.method !== "session" && person.method !== "cli-login") || passwordlessOn(store))
+    : RAISING_PROOFS.has(person.method) || person.method === "local-owner";
+  if (account === null || account.revokedAt !== null || account.generation !== person.generation || !store.isInstanceOperator(person.actor)
+    || !store.accountCanAccess(person.actor, repo) || !person.live() || !proof) return { ok: false, reason: "authority" };
+  const proved: ProvedRuleDoor = Object.freeze({ actor: person.actor, act, via: "person" as const });
+  provedDoors.add(proved);
+  return { ok: true, door: proved };
+}
+
+function spend(door: ProvedRuleDoor, act: RuleAct | readonly RuleAct[]): void {
+  const acts: readonly RuleAct[] = typeof act === "string" ? [act] : act;
+  if (!provedDoors.has(door) || !acts.includes(door.act)) throw new Error("a rule write needs a door proved for exactly this act");
+  provedDoors.delete(door);
+}
+
+export type RuleInsert = {
+  repo: string; cohortSize: "small" | "medium"; provider: string; model: string; configuredProvider: string; configuredModel: string | null;
+  grant: unknown; prices: unknown; depends: Readonly<Record<string, number>>;
+};
+/** Insert an accepted earned rule, live. The winner index makes a second live rule for the same project and size
+ * refuse (null); nothing else is written. */
+export function insertEarnedRule(store: Store, door: ProvedRuleDoor, rule: RuleInsert, now: Date): number | null {
+  spend(door, "accept");
+  if (rule.provider !== "claude" || (rule.cohortSize !== "small" && rule.cohortSize !== "medium")) throw new Error("only a Claude cohort of small or routine tasks can earn a rule");
+  try {
+    const inserted = store.handle.prepare(`INSERT INTO route_rule (repo, cohort_size, kind, provider, model, configured_provider, configured_model, state, generation,
+        grant_json, prices_json, depends_json, trial_limit, accepted_by, accepted_at)
+      VALUES (?, ?, 'rule', ?, ?, ?, ?, 'active', 1, ?, ?, ?, NULL, ?, ?)`)
+      .run(rule.repo, rule.cohortSize, rule.provider, rule.model, rule.configuredProvider, rule.configuredModel, JSON.stringify(rule.grant),
+        JSON.stringify(rule.prices), JSON.stringify(rule.depends), door.actor, now.toISOString());
+    return Number(inserted.lastInsertRowid);
+  } catch (error) {
+    if (/UNIQUE constraint failed/.test(String(error))) return null;
+    throw error;
+  }
+}
+
+/** A person's or local owner's end of a live rule — turned off, or a paused one dropped — by compare-and-swap on its
+ * generation. False when the rule moved since (or isn't live). */
+export function endRuleByDoor(store: Store, door: ProvedRuleDoor, ruleId: number, generation: number, now: Date): boolean {
+  spend(door, "turn-off");
+  const row = store.handle.prepare("SELECT state FROM route_rule WHERE id = ?").get(ruleId);
+  const state = row?.["state"] === "paused" ? "dropped" : "turned-off";
+  return Number(store.handle.prepare(`UPDATE route_rule SET state = ?, generation = generation + 1, ended_at = ?, ended_by = ?, end_reason = ?
+    WHERE id = ? AND generation = ? AND state IN ('active','trialling','paused')`).run(state, now.toISOString(), door.actor, state === "dropped" ? "dropped" : "turned-off", ruleId, generation).changes) === 1;
+}
+
+/** Keep a paused rule: live again, on the configuration generations it depends on now. Its sealed grant (terms,
+ * cutoff, expiry) never changes. */
+export function keepPausedRule(store: Store, door: ProvedRuleDoor, ruleId: number, generation: number, depends: Readonly<Record<string, number>>): boolean {
+  spend(door, "keep");
+  return Number(store.handle.prepare(`UPDATE route_rule SET state = 'active', generation = generation + 1, depends_json = ?, ended_at = NULL, ended_by = NULL, end_reason = NULL
+    WHERE id = ? AND generation = ? AND state = 'paused'`).run(JSON.stringify(depends), ruleId, generation).changes) === 1;
+}
+
+/** "Not now" on one suggestion: kept as an ended offer (state dropped, reason not-now) so the same suggestion stays
+ * quiet for its 30 days; it never blocks a rule. */
+export function recordNotNow(store: Store, door: ProvedRuleDoor, offer: { repo: string; cohortSize: "small" | "medium"; provider: string; model: string; configuredProvider: string; configuredModel: string | null; prices: unknown }, now: Date): void {
+  spend(door, "dismiss");
+  store.handle.prepare(`INSERT INTO route_rule (repo, cohort_size, kind, provider, model, configured_provider, configured_model, state, generation,
+      grant_json, prices_json, depends_json, trial_limit, accepted_by, accepted_at, ended_at, ended_by, end_reason)
+    VALUES (?, ?, 'rule', ?, ?, ?, ?, 'dropped', 1, '{"notNow":true}', ?, '{}', NULL, ?, ?, ?, ?, 'not-now')`)
+    .run(offer.repo, offer.cohortSize, offer.provider, offer.model, offer.configuredProvider, offer.configuredModel, JSON.stringify(offer.prices),
+      door.actor, now.toISOString(), now.toISOString(), door.actor);
+}
+
+/** A project's "Suggest cheaper models" switch. False when the project isn't saved here. */
+export function writeSuggestModels(store: Store, door: ProvedRuleDoor, repo: string, on: boolean): boolean {
+  spend(door, on ? "suggest-on" : "suggest-off");
+  return Number(store.handle.prepare("UPDATE project SET suggest_models = ? WHERE path = ?").run(on ? 1 : 0, repo).changes) === 1;
+}
+
+/** The plane's own end of a rule (no person): switched off by its sealed trigger, paused (a configuration or grant
+ * change), or expired. A compare-and-swap on the rule's generation and a live state: false when it moved since. */
+export function endRuleByPlane(store: Store, ruleId: number, generation: number, to: "switched-off" | "paused" | "expired", reason: string, now: Date): boolean {
+  const from = to === "expired" ? "('active','trialling','paused')" : "('active','trialling')";
+  return Number(store.handle.prepare(`UPDATE route_rule SET state = ?, generation = generation + 1, ended_at = ?, ended_by = NULL, end_reason = ?
+    WHERE id = ? AND generation = ? AND state IN ${from}`).run(to, now.toISOString(), reason.slice(0, 200), ruleId, generation).changes) === 1;
+}
+
+// ---- exposure: one row per task and rule, events append-only -----------------------------------------------------
+
+/** The exposure rows a filing writes (store.ts saveScope): a build leg sealed under a rule opens the task's exposure
+ * to it (`proposed`) or, filed again, adds `refiled`; a filing that no longer selects a rule the task was exposed to
+ * adds `refiled` to that open exposure, which its approval then closes as approved with another model. Re-filing
+ * never adds a row. */
+export function noteExposureFiled(store: Store, taskRef: number, selection: Selection | undefined, now: Date): void {
+  const at = now.toISOString();
+  const open = store.handle.prepare("SELECT id, rule FROM route_exposure WHERE task_ref = ? AND closed_at IS NULL").all(taskRef);
+  const rule = selection?.kind === "rule" || selection?.kind === "trial" ? selection.rule : null;
+  for (const one of open) appendExposureEvent(store, Number(one["id"]), "refiled", null, at);
+  if (rule === null || open.some(one => Number(one["rule"]) === rule)) return;
+  // Exposed once per task and rule: a closed exposure to the same rule is never reopened.
+  const made = store.handle.prepare("INSERT INTO route_exposure (task_ref, rule, created_at) VALUES (?, ?, ?) ON CONFLICT (task_ref, rule) DO NOTHING").run(taskRef, rule, at);
+  if (Number(made.changes) === 1) appendExposureEvent(store, Number(made.lastInsertRowid), "proposed", null, at);
+}
+
+/** An approval closes the task's open exposures: as proposed when it sealed that very rule, otherwise approved with
+ * the model it sealed. */
+export function noteExposureSealed(store: Store, taskRef: number, sealed: { selection: Selection | undefined; model: string }, now: Date): void {
+  const at = now.toISOString();
+  for (const one of store.handle.prepare("SELECT id, rule FROM route_exposure WHERE task_ref = ? AND closed_at IS NULL").all(taskRef)) {
+    const same = (sealed.selection?.kind === "rule" || sealed.selection?.kind === "trial") && sealed.selection.rule === Number(one["rule"]);
+    appendExposureEvent(store, Number(one["id"]), same ? "approved-as-proposed" : "approved-with-other", same ? null : sealed.model, at);
+  }
+}
+
+/** A cancel closes the task's open exposures. */
+export function noteExposureCancelled(store: Store, taskRef: number, now: Date): void {
+  for (const one of store.handle.prepare("SELECT id FROM route_exposure WHERE task_ref = ? AND closed_at IS NULL").all(taskRef)) {
+    appendExposureEvent(store, Number(one["id"]), "cancelled", null, now.toISOString());
+  }
+}
+
+const EXPOSURE_CLOSERS = new Set(["approved-as-proposed", "approved-with-other", "cancelled"]);
+/** Append one event, in order: `proposed` first and only once, nothing after a closing event, and a closing event
+ * closes the exposure in the same write. Anything out of order refuses. */
+function appendExposureEvent(store: Store, exposure: number, kind: "proposed" | "refiled" | "approved-as-proposed" | "approved-with-other" | "cancelled", model: string | null, at: string): void {
+  const events = store.handle.prepare("SELECT kind FROM route_exposure_event WHERE exposure = ? ORDER BY id").all(exposure).map(one => String(one["kind"]));
+  if (kind === "proposed" ? events.length !== 0 : events[0] !== "proposed" || events.some(one => EXPOSURE_CLOSERS.has(one))) throw new Error(`exposure event ${kind} out of order`);
+  if ((kind === "approved-with-other") !== (model !== null)) throw new Error("only an approval with another model names it");
+  store.handle.prepare("INSERT INTO route_exposure_event (exposure, kind, model, at) VALUES (?, ?, ?, ?)").run(exposure, kind, model, at);
+  if (EXPOSURE_CLOSERS.has(kind)) store.handle.prepare("UPDATE route_exposure SET closed_at = ? WHERE id = ? AND closed_at IS NULL").run(at, exposure);
+}
+
+// ---- reads routing makes at filing and admission ------------------------------------------------------------------
+
+/** A project's live earned rules, as routing reads them (phase-routing.ts EarnedRule): kind rule, state active, a
+ * Claude model. A row that doesn't read is left out (it can only ever not apply). */
+export function liveEarnedRules(store: Store, repo: string | null): EarnedRule[] {
+  if (repo === null) return [];
+  return store.handle.prepare("SELECT * FROM route_rule WHERE repo = ? AND kind = 'rule' AND state = 'active' ORDER BY id").all(repo).flatMap(row => {
+    const size = row["cohort_size"];
+    if ((size !== "small" && size !== "medium") || row["provider"] !== "claude") return [];
+    return [{ id: Number(row["id"]), generation: Number(row["generation"]), cohortSize: size, provider: "claude" as const, model: String(row["model"]),
+      configured: { provider: String(row["configured_provider"]), model: row["configured_model"] == null ? null : String(row["configured_model"]) } }];
+  });
+}
+
+/** Why a build of this task must not start under the rule its route sealed, or null: the rule switched itself off
+ * after the approval and the task hasn't started (docs/plans/results-routing.md, "When a rule ends"). A rule turned off
+ * by a person, or expired, keeps the sealed model; a started task's later attempts finish under it. */
+export function ruleHoldOf(store: Store, taskId: string): { rule: number; model: string } | null {
+  const sealed = store.sealedRouteOf(taskId);
+  if (!sealed.ok) return null;
+  const selection = sealed.route.legs[1]?.selection;
+  if (selection?.kind !== "rule") return null;
+  const rule = store.handle.prepare("SELECT state, model FROM route_rule WHERE id = ?").get(selection.rule);
+  if (rule === undefined || rule["state"] !== "switched-off") return null;
+  const started = store.handle.prepare(`SELECT 1 FROM run JOIN task_ref ON task_ref.id = run.task_ref
+    WHERE task_ref.backend = ? AND task_ref.external_id = ? AND run.role IN ('builder','repair') LIMIT 1`).get(BUILT_IN, taskId);
+  return started === undefined ? { rule: selection.rule, model: String(rule["model"]) } : null;
 }

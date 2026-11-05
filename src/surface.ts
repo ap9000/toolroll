@@ -135,7 +135,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   // Letting a flow run on its own raises authority: the owner's own password ceremony, never an agent's act.
   ...FLOWS_DESCRIPTORS.map(spec => ({ invocation: `flows ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags,
     ...("positionals" in spec ? { positionals: spec.positionals.map(name => ({ name, required: true, meaning: name === "flow" ? "a flow id from flows list" : name === "card" ? "a card id from flows show" : name === "on|off" ? "on signs the grant, off revokes it" : "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -" })) } : {}) })),
-  ...MODELS_DESCRIPTORS.map(spec => ({ invocation: `models ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "target", required: true, meaning: "the CLI to update, or on/off" }] } : {}) })),
+  ...MODELS_DESCRIPTORS.map(spec => ({ invocation: `models ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "target", required: true, meaning: "positional" in spec ? spec.positional : "the CLI to update, or on/off" }] } : {}) })),
 
   // ---- the queue (agent surface) ----
   { invocation: "status", synopsis: "running work, queued reasons, results to review, the latest release check and plan windows", audience: "agent", agentMayInvoke: true, mutation: "none", flags: [jsonFlag, dbFlag] },
@@ -482,6 +482,9 @@ const REMOTE_NO: readonly string[] = [
   "providers", "keys status", "keys set", "keys clear", "keys verify", "keys auth", "models check", "models update", "models watch",
   // Result records read with this machine's sign-in: project access, never a token's narrower scope.
   "models results",
+  // Earned rules (results routing): the project's own results, and its rules' doors, with this machine's sign-in; a
+  // remote token never changes which models run (the rule door refuses it in the write too).
+  "models suggestions", "models accept", "models dismiss", "models turn-off", "models keep",
   // Publication and release.
   "publish", "publish status", "publish merge", "publish refire", "publish unblock", "publish rearm", "publish grant", "publish revoke",
   // A repository's authority grants on this machine.
@@ -556,6 +559,10 @@ const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   "task archive": "archive-task",
   "task restore": "archive-task",
   "repos add": "add-project",
+  // Results routing: lowering only (route-store.ts proveRuleDoor checks the act is exactly this one).
+  "models suggestions": "read",
+  "models turn-off": "routing-turn-off",
+  "models dismiss": "dismiss-suggestion",
 };
 /** Every guide row's local-owner mark, by invocation: `allow` with its act, else `deny`. Exported for the inventory test. */
 export const LOCAL_POLICY: ReadonlyMap<string, { local: "allow"; act: LocalOwnerAct } | { local: "deny" }> = new Map(GUIDE_ROWS.map(row => [row.invocation,
