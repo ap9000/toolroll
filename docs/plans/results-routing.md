@@ -1,243 +1,329 @@
 # Results-driven model routing — plan
 
-Status: plan v1 (2026-11-05), awaiting Codex review (max 2 rounds). Branch `results-routing`, off main 3da1dcfa
-(0.9.91). Issue #227 (learning loop 1 of roadmap #231). Nothing in `src/` changes with this document.
+Status: **v2** (2026-11-05). Branch `results-routing`, off main 3da1dcfa (0.9.91). Issue #227, learning loop 1 of
+roadmap #231. Nothing in `src/` changes with this document.
+
+- v1 was NO-GO in Codex round 1 (12 findings; the ledger is at the end). The main errors:
+  - actor names were treated as proof of who accepted a result;
+  - a missing check excluded a run, which can hide failures;
+  - results were settled once, too early;
+  - the rule's effect was wider than its evidence;
+  - automatic going-back had no authority;
+  - only the scorer was protected.
+- Alex's decisions (final): trials **yes**, each trial task still approved by a person; going back **automatic**;
+  **per project** only; **large tasks not in v1**.
 
 ## What and why
 
-Alex (from agentrun's promote/demote-by-receipts idea): "make tasks more deterministic with cheaper models".
+Alex, inspired by agentrun's promote/demote-by-receipts: "make tasks more deterministic with cheaper models".
 
-- Toolroll keeps a **result record** for each finished task: which model built it, the task's size, the project, whether
-  checks passed, how many attempts it took, what the review found, whether a person asked for changes, whether a
-  person accepted it, cost and time.
-- Once a cheaper model has **earned it** in one project and size, Toolroll **suggests** making it the default. The
-  approval card shows the evidence in plain words.
-- When the cheaper model starts failing, it goes back.
+- Toolroll keeps a **result record** for each finished task, built only from its own records.
+- When a cheaper model has done as well on a project's small or routine tasks, Toolroll **suggests** it. A person
+  accepts with a proof. Every task is still approved as today, and the route is sealed into the approval.
+- When results drop, the suggestion **switches itself off**, under authority the person granted when accepting.
 
-It only changes **proposals**. A person accepts each suggestion, every task is still approved as today, and the route
-stays sealed into the approval.
+Lesson kept from run-efficiency v1: every fact here names the column it comes from. Anything that is not recorded is
+shown as **not counted, with the reason**. It is never counted as good, and never as 0.
 
-Lesson from run-efficiency v1 (NO-GO: "promised measurements the stored data doesn't hold"): this plan reads only
-columns that exist today, says where each one lives, and a fact that isn't recorded makes the record **excluded**, never
-good and never 0.
+## Facts the design stands on (verified at 3da1dcfa)
 
-## What is measured, and where it already lives
+Paths are under `src/`.
 
-Nothing below is recorded a second time. The one new store is a small **settled verdict** per task (§Schema), derived
-from these rows by one pure function. Paths are under `src/`.
-
-| Fact | Where it lives today | Caveat |
+| Fact | Where | What it does NOT prove |
 |---|---|---|
-| Model that was meant to run, per run, with its phase | `run_route` (store.ts:3394): `phase` plan/build/repair/review, `provider`, `model`, `chosen` (recommended/override/pinned/legacy/fallback). Written once in `startRun` (store.ts:15642) | Immutable, Toolroll-written |
-| Model that actually ran | `run.model_reported` (v140, store.ts:1445; `recordRunModelReported` :25589) | NULL = not reported (all rows before v140); several models joined with " + " |
-| Cost and billing | `run.cost_usd`, `run.billing_basis`, `run.cost_unknown` (v141, store.ts:758–759); `run_spend` (store-baseline.ts:2573). Classified by `runAmountOf` (reported-usage.ts:98): api / subscription / unknown | `cost_usd` can hold a cap when unknown; only `runAmountOf` is trusted |
-| Tokens, cache | `run.tokens_in/out`, `run.usage_json` → `usageOf` (run-efficiency.ts:51) | Provider-reported |
-| Time | `run.started_at`, `provider_started_at` (store.ts:16104), `finished_at` | |
-| Run outcome | `run.outcome` built/failed/refused/parked/no-change/interrupted, `reason` (`finishRun`, store.ts:15996) | NULL = cut down |
-| Check pass/fail | `run_check.status` passed/failed/not-run (store-baseline.ts:2669; `recordRunCheck` store.ts:16777 from builder.ts:2986) | Toolroll ran the command; first write wins |
-| Proof verdict | `proof_verdict.verdict` verified/attested/short/refuted (store.ts:4864) | |
-| Attempts | builder runs per `task_ref` with `outcome='failed'`; `repair_chain` rows (store.ts:4929) | `task_ref.strikes` resets on success, so it is not used. `role='repair'` mends a park payload; it is not a fix-after-failure loop |
-| Review findings | `build_review.findings_json` (review-switch.ts:20; HIGH/MEDIUM/LOW, contracts/review-findings.ts:22), `sent_back_as` | No count column: counted from the JSON |
-| Person asked for changes | revision task `task_ref.revision_of`, `filed_via='revision'` (store.ts:3293/3298); notes in `diff_comment.author` (store.ts:4992) | Automatic review's notes have author "automatic review" (build-review.ts:40) and are told apart |
-| Accepted, and by whom | `action_ledger` row with action `COMPLETION_ACTION` (result-completion.ts:10); actor `operator:<name>`, `lead:<id>`, `coordinator:<id>` or `system:landed`; `task_act.lead` (store.ts:22750) | The ledger is append-only (store-baseline.ts:2748) |
-| Size class | `task_ref.size`, `size_risky`, `size_source` (store.ts:5628); sealed in the route as `size` (phase-routing.ts:637) | The **sealed** size is used |
-| Build tier | `task_ref.route_tier` (store.ts:8734): light/routine/strong/override/pinned | |
-| Project | `task_ref.repo` (store.ts:3252) | NULL = unplaced task → excluded |
-| Excluded work | `task_scope.quality_mode='strict'`, `candidate`, `release_terms_json`; `run_check.release=1`; `approval_policy.protect_project`/`protected_paths` (store.ts:1809, `protectedResultProblem` :9669); `task_ref.deliverable='report'` | |
-| List price | `model_seen.input_usd/output_usd` (model-catalog.ts:21) | NULL = "price not listed" |
+| Model the route named, per run, and its phase | `run_route` (store.ts:3394), written once in `startRun` (:15642); holds `route_digest`, not the route | The run's size or eligibility. The scope can be re-filed later (`refileScope`, store.ts:8900, keeps the old approval, which goes stale) |
+| Model the provider reported | `run.model_reported` (v140, store.ts:1445; `recordRunModelReported` :25589) | **Claude only.** Other providers leave it null (provider.ts:199). For Claude it is the session's init model (reported-usage.ts:64), not every model that contributed |
+| Cost | `runAmountOf` (reported-usage.ts:98): API, subscription or unknown per run; `run_spend` | One task can mix all three kinds |
+| How a run ended | `run.outcome`/`reason` (`finishRun`, store.ts:15996); the tick stores **normalized** failure classes (dispose.ts:372); `run.terminal_class` is a structural stamp (store.ts:16354, e.g. auth-expired, claim.ts:1191) | A timeout or agent failure ends **before** any check is recorded (builder.ts:1934 vs :2986) |
+| Check result | `run_check.status` (`recordRunCheck`, store.ts:16777); later follow-up checks change the **effective** result without rewriting it (`assignmentChecksForRun`, assignment.ts:138) | |
+| Who accepted the result | completion `action_ledger` row (`COMPLETION_ACTION`, result-completion.ts:10). `detail` is `proof person` or `proof machine` (:90–91), bound to the receipt digest of the exact result run (assignment.ts:500–521) | `operator:` can carry `proof machine`. `system:landed` also completes **without merging** (youiyoux-intake.ts:715) |
+| Merge | `merge_intent.state='merged'` with `authority_basis`; `publication.remote_state` (store.ts:4392, :4736) | |
+| Who asked for changes | revision task (`task_ref.revision_of`); notes in `diff_comment.author` | Automatic review files revisions under a hands-off **mode signer's** name (build-review.ts:124) |
+| Automatic build review | still runs (operate.ts:3746). `build_review.state` is reviewed / not-reviewed / pending; HIGH findings are in `findings_json` | `not-reviewed` is not "no findings". Only the separate per-task reviewer route was removed (`task route --phase review` refuses, operate.ts:10763) |
+| Results wait for a person | a ready result waits for a separate completion (assignment.ts:325) | Waiting is not failing |
+| Routine builder fallback | large, risky or strict work builds on the **routine** row when no strong row exists (phase-routing.ts:379); small work does the same when no light row exists | A routine-row change can reach excluded work |
+| Protected work | `protectedResultProblem` (store.ts:9669) reads actual changed files, but returns null when approval is sufficient | Null does not mean "unprotected" |
+| Settings writes | `applyModelChoices` (model-choices.ts:316) re-proves a live operator inside the transaction (:337–344) and validates the result (`checkScope`, :271) | There is no settings generation; `stateDigest` is value-only |
+| CLI `models` | dispatch passes only an actor **name** (operate.ts:1549) | Proof method and generation are lost |
+| Local owner | `LOCAL_OWNER_ACTS` (local-owner.ts:26) is an allowlist; Models changes are not on it | |
+| Policy protection | `EVAL_POLICY` paths (release-auto.ts:192); `eval-hooks.ts` pins callers and store bodies | Product `src/` ships automatically otherwise (release-auto.ts:206) |
+| Migrations | a current-version file runs no DDL (store.ts:5548); update rehearsal follows `HISTORY_RULES` added columns (toolroll-update.ts:433) | |
 
-Prior art reused, not duplicated: `tier-report.ts` (`toolroll spend`, by tier: tasks, results, median minutes, plan runs,
-spend, "saved") and `spend-report.ts` `spendRows` (:64). Neither reads checks, review, revisions or acceptance; slice 4
-adds those through the result record rather than a second query.
+Reused, not duplicated: `tier-report.ts` (`toolroll spend` by tier), `spend-report.ts` `spendRows`, `runAmountOf`.
 
-## The result record (per task)
+## Cohort and provenance (F5)
 
-One record per task that reached an end, for its **build** leg. The record's key, its **cell**, is:
-project (`repo`) · size (sealed small/medium/large, risky or not) · build tier · provider · exact model.
+Each run's **cohort** is snapshotted when the run starts, in the same transaction as `writeRunRoute`, into
+`run_cohort`. It is never changed after. It holds:
 
-**Excluded** (it isn't counted for anyone, and says why):
-- The model that ran is not the model the route named (`model_reported` NULL, different, or joined).
-- Any excluded-work marker above, a risky or strict task, screenshot or manual-review evidence, automerge publication, a
-  revision task (it counts against its parent instead), a scout, or a task with no project.
-- No check result (`not-run` or NULL): Toolroll can't tell how it went.
-- The run ended on something that isn't the model's fault: refused, interrupted, provider exhausted, auth expired, fence
-  refusal, chain custody (the reason families already on `run.reason`).
-- Cancelled by a person before any result.
-- Accepted only by a lead or coordinator (`lead:` / `coordinator:` actor) with no merge after.
+- project, sealed size and risky, quality mode;
+- an "evidence demands" flag, the publication authority, release / candidate / protected-project flags;
+- the build leg's **selection**: configured default, earned rule, trial, person override, or pin;
+- the route digest.
 
-**Good**: accepted by a person (`operator:`) or merged (`system:landed`); the final build's checks passed; at most one
-failed build attempt before it; no HIGH review finding; proof not refuted; no person-written revision within 14 days.
+A comparison runs **within one cohort**: (project, small or medium, not risky, default quality, no evidence demands,
+not automerge, not release, not protected). Models are compared inside it whatever selected them. Selection is shown
+as provenance, and pins and overrides count as evidence for the model that ran.
 
-**Bad**: anything else that ended: the task failed or was abandoned after building, two or more failed attempts, a HIGH
-finding, a person asked for changes (or filed a revision within 14 days), a refuted proof.
+A record belongs to one model only if every builder run of the task family ran on that model, with
+`model_reported` equal to the route's model. Otherwise it is "not counted: mixed models" or "not counted: model not
+reported". A family is the root task plus its revision tasks, and the record is per root.
 
-The record also carries cost (all of the task's runs through `runAmountOf`: API dollars, plan usage or unknown, never
-added together), minutes to a result, minutes to accepted, and attempt count. It is **settled** at the end, and
-re-settled once if a revision arrives within 14 days. Each record names the policy version that judged it.
+## Result record lifecycle (F1–F3)
 
-## Promotion and demotion
+States: **pending → provisional → mature**, or **rejected**, or **not counted** (with a reason). A record is
+re-evaluated whenever its inputs change: a completion row, a follow-up check, a revision, a proof verdict, a merge,
+or the task ending. Every evaluation names the policy version.
 
-Only **build** slots can be suggested: `build-light` (small tasks) and `build` (routine tasks). Repair already follows
-the build (`repair: null` in "Sized by job", model-choices.ts:116). Plan rows are never touched, and model review is
-retired (operate.ts:10763). A repair row someone set is left alone.
+- **pending**: there is no result yet, or the result waits for review or completion. It never counts as a failure.
+- **provisional**: a **person-proof** completion (`detail = proof person`, receipt digest = the result run's), or a
+  merge whose `merge_intent` reached `merged` under a person, grant or mode authority. `system:landed` without a merge
+  is not acceptance. The **14-day window starts at that acceptance**.
+- **mature**: provisional, 14 days passed, no person revision in the family, the effective check result still passed,
+  and the proof is not refuted.
+- **rejected**, checked in this order, before any not-counted rule:
+  1. **execution failures**: two or more failed builder attempts (timeout, no-handoff, agent-reported, no-op,
+     commit-failure, check failed);
+  2. the task failed or was cancelled after a result;
+  3. a HIGH finding from automatic review;
+  4. a person revision within the window;
+  5. a refuted proof;
+  6. the effective check turned failed.
+- **not counted** (published with reasons; only after the rejected checks pass):
+  - infrastructure, **only on structural evidence**: `terminal_class` auth-expired or exhausted, operator stop or
+    interrupt, refused before `provider_started_at`;
+  - no check configured;
+  - model not reported, or mixed models;
+  - a ready result left 30 days without an answer;
+  - the cohort is ineligible.
 
-**Cheaper** means a lower list price for both input and output (`model_seen`). If either model's price is not listed,
-nothing is suggested.
+**Person feedback is recorded, not inferred** (F1). The revision write path stamps `task_ref.revision_by` as person,
+automatic-review, lead or machine, from trusted context: `currentActor`, `machineActing`, and the `allowMode` path.
+It does not use the author name. Only a person revision rejects.
 
-**Suggest as the default** (one project, one slot) when the cheaper model has, in that cell:
-- at least **10** counted records (good + bad) in the last **90 days**, using the newest 20 at most;
-- at least **90%** good;
-- none of its last **3** bad;
-- and, when the current model has 10+ records in the same cell, a good rate no more than **5 points** below it.
+Review signal (F4): "reviewed, no HIGH", "HIGH found" or "not reviewed". "Not reviewed" adds no signal. The cell shows
+"reviewed 9 of 15".
 
-**Decay**: records older than 90 days drop out. A new model id starts with no history; it never inherits from an
-older version.
+Each record keeps separately: API micro-USD (from runs with a known amount), the subscription run count and tokens,
+the unknown run count, and the **remediation runs** (revision-family runs included) (F10).
 
-**Goes back** (an accepted suggestion, or a trial) when, over its records since it was accepted:
-- 2 bad in the last 5, or
-- under 80% good over the last 10, or
-- people choose another model for that leg on 3 of the last 10 tasks it was proposed for.
+## Earned rules: suggest, accept, switch off (F6, F7)
 
-After going back, that model is not suggested again for that cell for 30 days, and only records after the date count.
+An accepted suggestion is **not** a change to the owner's Models rows. It is an **earned rule**:
 
-**Per project only** (decision D3). Settings shows other projects' results as context, never as evidence.
+> For this project's **small** (or **routine**) tasks that are not risky, strict, release, protected, automerge, or
+> evidence-demanding: build on Haiku 5.5 instead of the configured Sonnet 5.5.
 
-**Never on unknown**: no price listed → no suggestion. Excluded records never count. Savings in dollars are shown only
-from API-priced records (see "What the person sees").
+- `recommendRoute` gets one more pure input, `earned`, applied only when the task's cohort matches. Large, risky and
+  strict work therefore keeps its configured route even when it falls back to the routine row (F7).
+- The leg's reason names the rule, so it is sealed into the digest.
+- Pins and person overrides beat the rule.
+- Plan and repair rows are never touched; repair follows the build as today.
+- Only Claude cells can earn (F4).
 
-## Getting evidence: trials (decision D1)
+**Suggest** when, in the cohort, with records from the last 90 days (newest 20 at most):
+- the cheaper model has at least 10 **mature or rejected** records, at least 90% mature, and none of its last 3
+  rejected;
+- the configured model, when it has 10+ such records, is no more than 5 points better;
+- not-counted records are no more than a third of all records (else: "too many results Toolroll couldn't judge");
+- both models have a listed price, and the cheaper one is lower on input and on output. Both prices are
+  **snapshotted** into the suggestion.
 
-A cheaper model only earns results if it runs. Today that happens only when a person overrides a leg, which is rare. So
-when the **current** model is doing well in a cell (10+ records, 90%+ good), Settings offers "**Try Haiku 5.5 on the
-next 10 routine tasks**".
+**Accept** is a person-proved Models act through the `applyModelChoices` transaction: the same operator re-proof, the
+CSRF guard and step-up, and a ledger entry. It also re-checks eligibility on the spot: still earned, prices unchanged
+from the snapshot, configured rows unchanged. If anything changed, it refuses with "this suggestion is out of date,
+review it again". The person sees and grants:
 
-- Turning a trial on is a person's act with the same proof as any Models change.
-- While a trial runs, `recommendRoute` gets one more pure input, `trial`. The build leg is proposed on the cheaper
-  model, with a reason that is sealed like every reason (so it is in the digest): "trying Haiku 5.5 on routine builds
-  here (4 of 10) — turned on in Settings → Models".
-- A trial task is **never** approved automatically (mode, grant, auto-check, auto-green): it waits for a person, like
-  protected work.
-- A trial is never applied to excluded work.
-- It ends after 10 tasks, on the going-back rule, or by hand. A trial never changes a configured row.
+> Switch back to the configured model automatically if 2 of the next 5 results are rejected, or fewer than 80% of 10
+> mature, or people choose another model on 3 of 10 tasks it was proposed for. This lasts until <accept + 90 days>,
+> then asks again.
+
+**Switching off** is a bounded authority, sealed into the rule row at acceptance:
+- **who** granted it, with their proof and credential generation;
+- **what** it may do, which is one thing: set this rule's state to `switched-off`;
+- **when** it lapses: the expiry date.
+
+Because the owner's rows were never changed, "the prior state" is exactly what the configured rows say, row absence
+included, and nothing needs restoring.
+
+- **Revision-aware compare-and-set**. A new `models_generation` counter goes up on every `applyModelChoices` write,
+  and the rule keeps its own `generation`. Switch-off updates `WHERE id = ? AND generation = ? AND state = 'active'`.
+- **Configured rows changed since acceptance** (`models_generation` differs on the rule's slot): the rule
+  **pauses** instead of acting, and Needs you asks "You changed models for routine tasks in X since accepting the
+  Haiku rule. Keep it or drop it?"
+- **Validation re-runs**: `checkScope` must still resolve after switch-off. If it doesn't, the rule pauses and raises
+  Needs you; it never leaves routes unresolved.
+- **Expiry**: the rule ends and the suggestion is offered again if still earned.
+
+After a switch-off, that model is not suggested for the cohort for 30 days, and only later records count.
+
+## Trials (D1: yes) (F9)
+
+Trials exist because a cheaper model earns records only by running. Sized-by-job already runs Haiku on small tasks,
+so small-task evidence exists. Haiku on routine work does not.
+
+- **Offered** when the configured model in a Claude cohort has 10+ records at 90%+ mature: "**Try Haiku 5.5 on the
+  next 10 routine tasks**". Starting one is the same person-proved act as accepting.
+- **Reservations are atomic.** In the `saveScope` transaction a filing takes a trial position if
+  `reserved + consumed < 10`, and writes a `route_exposure` row. A position is **consumed** when an approved trial
+  task's builder starts, and **released** when the task is cancelled before building or re-filed off the trial.
+- **Never approved automatically, on every path.** `sealScopeApproval` refuses a trial route unless the approval
+  basis is a person proof (`password`/`chat` with a person seal, approval-authority.ts:18–25). It refuses mode,
+  grant, schedule, carried, auto-check, auto-green and lead. Build admission re-checks the same at dispatch.
+- Never on excluded cohorts. Pins and overrides beat it.
+- It ends at 10, on the switch-off rule, by hand, or at expiry.
+
+**Exposure is immutable** (F9). Every filing or re-filing where an earned rule or a trial proposed a leg appends one
+`route_exposure` row: task, rule, scope digest, proposed model, and its end (approved as proposed, overridden to X,
+cancelled, re-filed). The "3 of 10 chose another model" rule reads these rows.
 
 ## What the person sees
 
-**Approval card** (task page approval sheet `agentsDetail`, render-tasks.ts:405; ceremony `agentsCeremonyHtml` :756;
-chat aside render-chat.ts:122; text `describeScope` scope.ts:1807). It gets one line beside "Agents", shown only when the
-build leg comes from a suggestion or a trial:
+- **Approval card**: one line beside Agents when the leg came from a rule or a trial. Its surfaces are the approval
+  sheet `agentsDetail` (render-tasks.ts:405), the approval step `agentsCeremonyHtml` (:756), the chat side panel
+  (render-chat.ts:122) and the text card `describeScope` (scope.ts:1807).
 
-> **Why this model:** Haiku 5.5 builds routine tasks here. 14 of the last 15 similar tasks were accepted with checks
-> passing. About $0.40 each, vs $1.10 on Sonnet 5.5.
+  > **Why this model:** Haiku 5.5 builds routine tasks in this project. 14 of the last 15 similar tasks were
+  > accepted with checks passing (3 more not counted: no checks configured). Observed median $0.40 a task, $1.10 on
+  > Sonnet 5.5.
 
-> **Trying a cheaper model:** Haiku 5.5, task 4 of 10. You can pick another model before approving.
+  > **Trying a cheaper model:** Haiku 5.5, task 4 of 10. This task waits for your approval. You can pick another
+  > model before approving.
 
-Plan usage reads "uses your plan, list price $1 / $5 vs $3 / $15 per 1M tokens". Unknown cost reads "cost unknown". The
-line is shown from current records ("so far") and is not part of what is approved; the trial reason above is.
+  The rule or trial **reason** is sealed. The counts are shown "so far" and are not part of what is approved.
+- **Settings → Models**: a **Suggested** group next to "Newer models" (models-ui.ts:148):
+  - **Review change** opens a preview with the evidence and the switch-back terms, then saves with step-up.
+  - **Start trial**.
+  - **Not now** hides it for 30 days.
+  - Active rules are listed with **Turn off**; paused rules with **Keep / Drop**.
+  - A per-project "Suggest cheaper models" switch.
+  - States: empty ("Not enough finished tasks yet: 4 of 10"), stale offer, refused, and long project names.
+- **Needs you**: a rule switched off, paused, or about to expire.
+- **Chat** (F11): the lead can list suggestions ("suggestions" in chat shows the same counts and an **Open in
+  Settings** link) and offer **Not now**. Accept and Start trial happen only in Settings or the CLI.
+- **Spend page**, Suggestions block (F10): for each rule, tasks run, mature or rejected counts, and **observed
+  median** API dollars per task before and after over matched 90-day windows, with completeness ("API-priced 8 of
+  15") and the snapshotted prices. The label is "observed, not a promise". It is hidden below 5 API-priced records a
+  side. Plan usage and unknown stay separate, and remediation runs are included.
 
-**Settings → Models**: a **Suggested** group next to "Newer models" (models-ui.ts:148), built the same way:
+## Authority for each act (F11)
 
-- "Haiku 5.5 for routine tasks in toolroll — 14 of 15 accepted, about $0.70 less each" → **Review change** (previews
-  the diff, then saves with step-up through `applyModelChoices`, model-choices.ts:316) · **Not now** (hidden for 30 days).
-- "Try Haiku 5.5 on the next 10 routine tasks" → **Start trial** · **Not now**.
-- "Went back to Sonnet 5.5 for routine tasks: 2 of the last 5 needed changes." (also in Needs you)
-- One switch per project: "Suggest cheaper models" (on by default; off hides everything and stops trials).
+The CLI carries the same verified authority as `config set` (a `ModelAuthority` with generation, method and live
+check), not a name.
 
-**Spend page** (spend-ui.ts): a **Suggestions** block. For each accepted suggestion: tasks run, the good rate, API
-dollars per task before and after. "Before" is the old model's median in the same cell. It is labelled **estimate** and
-is shown only when each side has 5+ API-priced records. Plan usage and unknown stay apart, as on the rest of the page.
-
-## CLI parity
-
-All under `toolroll models` (models-cli.ts), with `--json` through the usual `succeed`/`fail` envelopes and stable
-reason tokens:
+| Act | Person (operator, step-up) | Local owner | Lead token / remote API token |
+|---|---|---|---|
+| accept a rule, start a trial | yes | no (not a settings change it may make) | refused |
+| keep a paused rule | yes | no | refused |
+| turn off a rule, stop a trial, drop a paused rule | yes | yes (new act `routing-turn-off`: it only returns to configured rows) | refused |
+| Not now (dismiss) | yes | yes (new act `dismiss-suggestion`) | refused (chat Not now runs as the chat's person) |
+| read results and suggestions | yes | yes | yes, read-only |
 
 ```
-toolroll models results [--repo <p>] [--json]                # cells: model, records, good/bad/excluded, cost, minutes
-toolroll models suggestions [--repo <p>] [--json]            # open suggestions, trials, recent go-backs
-toolroll models accept <id> --as <you> --token <t>           # = the Settings change, through applyModelChoices
-toolroll models try <id> --as <you> --token <t>              # start a trial
-toolroll models dismiss <id> | stop <id> --as <you> --token <t>
-toolroll spend [--json]                                      # gains the Suggestions lines (tier-report.ts)
+toolroll models results [--repo <p>] [--json]
+toolroll models suggestions [--repo <p>] [--json]
+toolroll models accept <id> | try <id> | keep <id> --as <you> --token <t> [--json]
+toolroll models off <id> | dismiss <id> --as <you> --token <t> [--json]
+toolroll spend [--json]          # gains the Suggestions lines
 ```
 
-`task show` / `task route` print the same evidence line as the card.
+Refusals use stable reason tokens (`stale-suggestion`, `price-changed`, `not-permitted`, `lead-refused`).
+`task show` / `task route` print the same evidence line.
 
-## Safety
+## Protecting the measurement and the mutation boundary (F8)
 
-- **Plan is never lowered.** Only `build-light`/`build` rows are ever suggested, at project scope. A suggestion can't
-  name a slot the owner set at project scope since the suggestion was made: accept checks the row is unchanged
-  (`stateDigest`, model-choices.ts:65).
-- **Sealed approvals never change.** Accepting writes a configuration row. The seal copies the route
-  (store.ts:9038–9052) and `sealedRouteOf` re-verifies it (store.ts:14290). Only tasks filed or re-filed later see the
-  new default. `refileScope` already refuses approved scopes.
-- **Going back** writes only the exact pair the suggestion replaced, and only if the row still holds what was accepted
-  (compare-and-set in one transaction). It runs through one narrow door, ledgered as `system:results`. Nothing else can
-  write through that door.
-- **Excluded work**: protected projects and paths, release candidates and release terms, strict quality, risky, evidence
-  demands, automerge: they are never trialled and never counted.
-- **Can't be gamed by an agent**:
-  - Records are derived only from Toolroll's own rows: `run`, `run_route`, `run_check`, `proof_verdict`,
-    `build_review`, `action_ledger`, `diff_comment` authors, `task_ref`, `task_scope`. They are never read from
-    worktree files, park payloads, agent reports or lead tool calls.
-  - A lead's or coordinator's acceptance does not count.
-  - Accepting, trialling and dismissing need a person proof (`PERSON_PROOFS`, model-choices.ts:219); a lead token is
-    refused, and there is no lead proposal kind for it.
-  - The scoring file (`src/route-results.ts`) joins `EVAL_POLICY` (release-auto.ts:192), so an automatic approval can't
-    ship a change to it.
-- **Display can't move money**: the evidence line and the Spend block never change admission, budgets or check verdicts.
+- **Person-only by path** (added to `EVAL_POLICY`, release-auto.ts:192):
+  - `src/route-results.ts` (record and cohort rules);
+  - `src/route-rules.ts` (suggest, accept checks, switch-off, trial reservations);
+  - `src/contracts/route-results.ts`.
+- **Pinned bodies and required calls** (a `ROUTING_HOOKS` / `ROUTING_PINNED` manifest checked by the same parser
+  as `eval-hooks.ts`):
+  - the inputs: `finishRun`, `recordRunCheck`, `writeRunRoute`, the `run_cohort` write in `startRun`,
+    `recordRunModelReported`, `recordUsage`, the completion `recordAction` in assignment.ts, the revision stamp in
+    `createResultRevision`, and the merge-intent settle;
+  - the consumers: the `earned`/trial input in `saveScope`, the trial check in `sealScopeApproval` and admission,
+    the settle pass call on the tick, `applyModelChoices`'s generation bump;
+  - every store method that writes `route_record`, `route_rule` or `route_exposure`.
+- **Attack tests**: a candidate that leaves the scorer untouched but does one of these must need a person:
+  - changes `finishRun`'s reason mapping;
+  - drops the settle call;
+  - renames the trial check's import;
+  - writes `route_rule` from a new caller;
+  - marks completions `proof person` from a machine path.
+- Records read only Toolroll's rows, never worktree files, park payloads, agent reports or lead tool calls.
 
-## Schema (v148, additive)
+## Schema: all in slice 1, v148 (F12)
 
-- `route_record` — one row per settled task:
-  - task, build run, cell (repo, size, risky, tier, provider, model), verdict `good|bad|excluded`, reason codes;
-  - cost kind and API micro-USD (NULL = unknown), minutes to result and to accepted, attempts;
-  - `policy_version`, `settled_at`, `resettled_at`.
-- `route_suggestion` — one row per offer:
-  - repo, slot, from and to (provider, model), kind `default|trial`;
-  - state `offered|accepted|trialling|dismissed|went-back|ended|expired`, evidence JSON (the counts shown);
-  - trial count and limit, `by`, timestamps, end reason.
-- `task_ref.route_trial` — the suggestion id when the task was filed under a trial; NULL otherwise.
-- `project` setting `suggest_models` (default 1).
-- Usual pattern: a `V148_ADDED_COLUMNS` map, an `UPDATE_SAFE_MIGRATIONS` entry (store.ts:1307), a migration test. Old
-  tasks are settled once, lazily, from the rows they already hold; records before v140 come out excluded (no reported
-  model).
+- `run_cohort`: one row per run, immutable.
+- `route_record`: one row per root task: cohort, model, state, reasons, the separate cost parts, attempts,
+  minutes, policy version, `accepted_at`, `evaluated_at`.
+- `route_rule`: offers, rules and trials.
+  - repo, cohort, from/to model, kind;
+  - state: offered / active / paused / switched-off / dismissed / expired / ended;
+  - evidence JSON, price snapshot;
+  - the switch-off grant (by, proof, generation, expires);
+  - `generation`, `models_generation_at_accept`, trial counts.
+- `route_exposure`: append-only.
+- `task_ref.revision_by`, `models_state.models_generation`, `project.suggest_models` (default 1).
+- `V148_ADDED_COLUMNS` and `HISTORY_RULES` entries; an `UPDATE_SAFE_MIGRATIONS` entry.
 
-## Slices (each ships alone, with tests and an e2e journey)
+Tests cover fresh, upgraded from v147, interrupted and re-run, and update rehearsal (toolroll-update.ts:433). Runs
+before v148 have no cohort row and stay not counted ("started before results were recorded").
 
-1. **Result records, read-only.**
-   - What ships: `route-results.ts` (pure `recordOf`), `route_record`, a bounded settle pass on the tick,
-     `toolroll models results [--json]`, and one "Result record" line in the task's Details.
-   - Tests: the verdict matrix (each good, bad and excluded cause from fixture rows); model mismatch; lead-only
-     acceptance; a revision within 14 days flips the verdict; infra reasons exclude; migration v147→v148.
-   - Journey: a task finishes, then `models results` shows its cell.
-2. **Suggest, accept, go back, evidence line.**
-   - What ships: the suggestion engine, Settings "Suggested" with Review change / Not now, the project switch, the
-     CLI `suggestions|accept|dismiss`, the going-back watcher and its door, the Needs you notice, and the approval
-     evidence line on all four surfaces.
-   - Tests: threshold edges (9/10 and 10/10, 8/10, a bad among the last 3); decay at 90 days; no listed price means no
-     suggestion; plan and repair rows are never offered; excluded work is never counted; accept refused for a lead
-     token or a stale state; a go-back compare-and-set loses when the row was changed by hand.
-   - Journey: seeded records lead to a suggestion; accepted with step-up; a new task routes to Haiku with the line; an
-     already-approved task keeps Sonnet; two bad results lead to the go-back notice.
+## Slices (each ships alone, with tests and e2e journeys)
+
+1. **Records, read-only.**
+   - What ships: all v148 schema, `run_cohort`, the revision stamp, the lifecycle evaluator, the protection
+     manifest, `models results [--json]`, and a "Result record" line in the task's Details.
+   - Tests: each state and reason from fixture rows; execution failures are counted before missing-check
+     exclusions; `proof machine`, `system:landed` without a merge, and a mode-signer revision are not person acts;
+     follow-up checks re-evaluate; mixed models; non-Claude; migration set; the protection attacks.
+   - Journeys (desktop and phone): a finished task's record moves pending → provisional → mature; empty state.
+2. **Suggestions and earned rules.**
+   - What ships: the suggest engine, Settings Suggested, accept with switch-back terms, the `earned` route input,
+     switch-off and pause, Needs you, the evidence line on all four surfaces, the CLI, chat list and Not now, and the
+     local-owner acts.
+   - Tests:
+     - threshold edges and the not-counted share;
+     - a stale offer, changed prices, changed rows;
+     - a large/risky/strict task under a routine rule keeps its configured model;
+     - switch-off compare-and-set races (a change away and back again is detected by the generation);
+     - pause on a settings change, validation re-run, expiry;
+     - authority matrix: lead token, remote token, local owner, revoked generation, Passwordless on and off.
+   - Journeys: accept a rule; a new routine task routes to Haiku with the line; an approved task keeps Sonnet; two
+     rejected results switch it off, with Needs you; chat and screen show the same counts.
 3. **Trials.**
-   - What ships: the `trial` input to `recommendRoute`, its sealed reason, `task_ref.route_trial`, auto-approval
-     refusal for trial tasks, and `models try|stop`.
-   - Tests: the trial changes the digest; never on excluded work; a mode-approved trial task waits for a person; the
-     trial ends at 10 or after 2 bad.
-   - Journey: start trial, file, approve, finish, and the trial count moves.
-4. **Spend savings.**
-   - What ships: the Suggestions block on the Spend page and the `toolroll spend` lines (extending tier-report.ts).
-   - Tests: the estimate is hidden under 5 API-priced records; plan usage and unknown are never added.
-   - Journey: the Spend page after slice 2's journey.
+   - What ships: reservations, exposure, the trial reason, the person-only seal and dispatch checks, and
+     `models try`.
+   - Tests: concurrent filings never exceed 10; cancel and re-file release a position; every approval basis
+     other than a person is refused at seal and at dispatch; pins beat trials.
+   - Journey: start a trial, a filed task waits for a person, the count moves.
+4. **Spend.**
+   - What ships: the Suggestions block and `toolroll spend` lines.
+   - Tests: completeness counts, hidden below 5, kinds never added, remediation included.
 
-## Open decisions for Alex
+## Open decisions
 
-1. **Trials**: let Toolroll offer "try a cheaper model on the next 10 tasks" (each task still approved by a person)?
-   **Recommend yes.** Without trials, suggestions only appear when someone overrides a model by hand, which almost
-   never happens.
-2. **Going back**: automatic, or a suggestion you accept? **Recommend automatic.** It only restores the model you had
-   before, only for new tasks, and it is logged and shown in Needs you.
-3. **Per project or installation-wide**: **Recommend per project only** for v1. Projects differ (a docs repo vs
-   Toolroll itself), and per project is easier to explain on the card.
-4. **Large tasks**: also suggest Sonnet for large non-risky tasks that run on Opus today? **Recommend not in v1.** Start
-   with small and routine, and revisit after about two months of records.
+None left. Alex decided D1–D4 above. The thresholds (10 records, 90%, 14-day window, 90-day expiry) are recommendations
+he can change before slice 2.
+
+## Codex round 1 ledger
+
+| # | Finding | Verified | Fixed how |
+|---|---|---|---|
+| 1 | Actor names don't prove acceptance or feedback | Yes (assignment.ts:510–511, build-review.ts:124, youiyoux-intake.ts:715) | Acceptance = `proof person` row bound to the result's receipt digest, or a verified merge; `system:landed` without a merge doesn't count; `task_ref.revision_by` stamped from trusted context |
+| 2 | Exclusions hide model failures | Yes (builder.ts:1934 before :2986; dispose.ts:372) | Execution failures counted first; infrastructure only on structural `terminal_class`/stop; not-counted published with reasons and capped at a third |
+| 3 | Settled once ≠ lifecycle | Yes (assignment.ts:138, :325) | pending / provisional / mature / rejected / not counted; window starts at acceptance; re-evaluated on every input change |
+| 4 | Telemetry overstated | Yes (provider.ts:199, reported-usage.ts:64, operate.ts:3746) | Claude-only coverage stated; record proves the session model; not-reviewed ≠ no findings; review claim corrected; trials only on Claude cohorts |
+| 5 | Cell mixes cohort and provenance | Yes (store.ts:8734, :8900, :14254; my refileScope claim was wrong) | Immutable `run_cohort` at run start; cohort excludes the model; selection is provenance; mixed-model families not counted |
+| 6 | Automatic rollback lacks authority | Yes (model-choices.ts:337, :271) | Kept automatic (Alex): bounded switch-off authority granted and sealed at acceptance; rule is a separate layer so the prior state, row absence included, is untouched; generation compare-and-set; pause and Needs you on any change; validation re-run |
+| 7 | Default change reaches excluded work | Yes (phase-routing.ts:379; store.ts:9669 null semantics) | Cohort-scoped earned rule instead of a Models row change; protected flags come from the cohort snapshot and changed files, not from a null |
+| 8 | Protecting the scorer isn't enough | Yes (release-auto.ts:206; eval-hooks.ts) | Policy paths plus a ROUTING manifest of pinned inputs, consumers and store writers; dependency-attack tests |
+| 9 | Exposure and trial accounting missing | Yes (approval-authority.ts:18–25) | Append-only `route_exposure`; atomic reservations in `saveScope`; person-only check at seal and dispatch on every basis; pins kept; eligibility re-checked at accept |
+| 10 | Savings basis incomplete | Yes (reported-usage.ts:98, model-catalog.ts:113/150) | Separate amounts and completeness counts; remediation included; price snapshot re-checked at accept; "observed median", not savings |
+| 11 | CLI and local-owner authority | Yes (operate.ts:1549, local-owner.ts:26) | Verified `ModelAuthority` through the CLI; per-act matrix; two new local-owner acts for turn-off and dismiss only; chat list and Not now; authority tests |
+| 12 | Migration with independent slices | Yes (store.ts:5548, toolroll-update.ts:433) | All schema in slice 1 (v148); fresh, upgrade, interrupted and rehearsal tests; phone and desktop journeys with states |
+
+Codex's closing alternative (read-only results plus person-approved reversion, no automatic rollback) is not
+adopted, because Alex chose automatic switch-off. Its concern is met by the bounded grant above. Codex's point that
+sized-by-job already gives small-task evidence is adopted: trials matter mainly for routine work.
