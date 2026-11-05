@@ -6479,6 +6479,35 @@ $ audit --since 0d --json → 2
   "message": "--since is a number of days, like 7d. Use audit [--person <name>] [--token <name>] [--source api|mcp] [--since <days>d] [--limit <n>] [--cursor <id>] [--json]."
 }
 
+$ spend --json → 0
+{
+  "envelopeVersion": 1,
+  "ok": true,
+  "command": "spend",
+  "month": "2026-08",
+  "totalMicrousd": 0,
+  "unpriced": 0,
+  "items": 0,
+  "budgets": [],
+  "limits": [],
+  "tiers": {
+    "rows": [],
+    "saved": {
+      "plansSkipped": 0,
+      "planMinutesSaved": null,
+      "minutesSoonerEach": null,
+      "microusdSaved": null
+    }
+  },
+  "suggestions": {
+    "label": "observed, not a promise",
+    "windowDays": 90,
+    "minPriced": 5,
+    "rows": [],
+    "staleSince": null
+  }
+}
+
 $ welcome --json → 0
 {
   "envelopeVersion": 1,

@@ -201,6 +201,8 @@ describe("the CLI's --json bytes", () => {
       await operate(["incident", "list", "--json"]);
       await operate(["audit", "--json"]);
       await operate(["audit", "--since", "0d", "--json"]);
+      // Spend, with its Suggestions and rules block empty (results-routing slice 4).
+      await operate(["spend", "--json"]);
       // Easy start: the welcome's model; `open` and `password set` only at a person's own terminal.
       await operate(["welcome", "--json"]);
       await operate(["open", "--json"]);

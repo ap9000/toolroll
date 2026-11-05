@@ -50,6 +50,7 @@ import { startLiveBackups } from "./live-backup.js";
 import { pushLimitSink } from "./provider-limits.js";
 import { heuristicSizing, installFilingSizer, ownerSizer, refineFiledSizing, settleSizings, type Sizer } from "./task-sizing.js";
 import { tierLines, tierReport } from "./tier-report.js";
+import { savingsLines, savingsReportOrError } from "./route-savings.js";
 import { limitsView } from "./limits-ui.js";
 import { startCodexLimits } from "./codex-limits.js";
 import { packageVersion, startMonitoring, targetOf } from "./monitoring.js";
@@ -11706,12 +11707,15 @@ function spendCommand(flags: Map<string, string | true>, context: Context): numb
   const windows = limitsView(limits, [], { project: repo => basename(repo), subagent: id => String(id) }, context.clock())?.tiles ?? [];
   // Sized routing: each tier's tasks, time to a result and plan use, and what the tiers saved.
   const tiers = tierReport(context.store.handle, month.from, month.to, items);
-  return succeed(context.write, context.json, command, { month: month.name, totalMicrousd: total, unpriced, items: items.length, budgets, limits, tiers: { rows: tiers.rows, saved: tiers.saved } }, () => [
+  // Suggestions and rules (results-routing slice 4): what each rule, trial and suggestion observed, over 90 days a side.
+  const suggestions = savingsReportOrError(context.store, context.store.knownRepos(), context.clock());
+  return succeed(context.write, context.json, command, { month: month.name, totalMicrousd: total, unpriced, items: items.length, budgets, limits, tiers: { rows: tiers.rows, saved: tiers.saved }, suggestions }, () => [
     `${month.name}: ${spendUsd(total)} (${items.length} pieces of work${unpriced > 0 ? `, ${unpriced} unpriced` : ""}; subscription work is $0)`,
     ...windows.map(tile => `  ${`${tile.name} ${tile.window}`.padEnd(24)} ${tile.value}% · ${tile.detail}`),
     ...[...byProject.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([repo, microusd]) => `  ${basename(repo).padEnd(24)} ${spendUsd(microusd)}`),
     ...budgets.map(one => `  budget ${budgetLabel(one, names.get(Number(one.key))).replace(/'s$/, "").padEnd(24)} ${spendUsd(one.spentMicrousd)} of ${spendUsd(one.limitMicrousd)} (${one.percent}%)${one.hardStop ? "" : " alerts only"}`),
     ...tierLines(tiers, spendUsd),
+    ...savingsLines(suggestions),
   ]);
 }
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-/** Results routing, slices 1 to 3 (docs/plans/results-routing.md): the task page's "Result record" line, and
+/** Results routing, slices 1 to 4 (docs/plans/results-routing.md): the task page's "Result record" line,
+ * Spend → Suggestions and rules (empty; a rule with too few priced results, stale results, then both medians), and
  * Settings → Models → Suggested (empty, an offer, its review, a stale offer, a refused save, the rule, the evidence
  * line, Turn off; then a trial offer, starting it, a trial task's line, its progress, full and Stop), at desktop and phone, on synthetic data (the ui-polish fixture: an in-memory database, no live model, Git history, installed
  * database or external write). Run after `npm run build`. Default: assert and clean up; --capture also saves
@@ -95,6 +96,16 @@ try {
       };
       const fits = async label => check(`${name}: ${label} has no horizontal overflow`, await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
       const shot = async label => { if (capture) await page.screenshot({ path: join(out, `${name}-${label}.png`), fullPage: false }); };
+      // The Spend block sits low on its page: capture the block itself.
+      const shotOf = async (label, locator) => { if (capture) { await locator.scrollIntoViewIfNeeded(); await locator.screenshot({ path: join(out, `${name}-${label}.png`) }); } };
+
+      // ---- slice 4: Spend → Suggestions and rules, empty ----
+      const spendBlock = async () => { await page.goto(fixture.url + '/spend'); const block = page.locator('section[aria-labelledby="spend-savings"]'); await block.waitFor(); return block; };
+      let savings = await spendBlock();
+      check(`${name}: Spend's Suggestions and rules, empty, says how a suggestion comes and is labelled observed`, (await savings.getAttribute('data-savings')) === 'empty'
+        && (await savings.innerText()).includes('No suggestions or rules yet.') && (await savings.innerText()).includes('observed, not a promise'));
+      await fits('the empty Suggestions and rules block');
+      await shotOf('spend-empty', savings);
 
       check(`${name}: a task with no build shows no result record`, await details('record-empty') === null);
       await fits('the empty task');
@@ -212,6 +223,43 @@ try {
         && (await page.locator('section[aria-labelledby="models-suggested"]').innerText()).includes('Claude Haiku 5.5 builds small tasks instead of Claude Sonnet 5.5'));
       await fits('the rule in use');
       await shot('rule');
+      // ---- slice 4: the rule on the Spend page: before (Sonnet, the 90 days before acceptance) and after (built under it) ----
+      const { rulesOf: rulesNow } = await import('../dist/route-rules.js');
+      const ruleId = rulesNow(store, repo, new Date())[0].id;
+      const costed = (model, api, when, selections, open) => {
+        const id = `journey-cost-${name}-${++seq}`;
+        store.createTask({ id, title: `Synthetic cost ${seq}` }, now);
+        const ref = store.refFor('built-in', id).id;
+        store.placeTask(ref, repo);
+        saveResultRecord(store, { taskRef: ref, task: id, repo, cohortSize: 'small', provider: 'claude', model, state: 'mature', reason: null, resultRun: null,
+          firstStartedAt: when.toISOString(), acceptedAt: null, decidedAt: null, modelFailures: 0, infraFailures: 0, apiMicrousd: api, subscriptionRuns: 0, subscriptionTokens: 0, unknownRuns: 0,
+          remediationRuns: 1, selections, settled: true, personRevisions: 0, firstCheckPassed: null, agentTurns: 0, turnsUnknownRuns: 0, accumulationEnded: !open }, when);
+      };
+      // Five Sonnet results before, still open and last checked weeks ago (the stale state); four Haiku results after.
+      for (let one = 0; one < 5; one++) costed(SONNET, 1_100_000, new Date(now.getTime() - (20 - one) * 86_400_000), [], true);
+      const underRule = [{ kind: 'rule', rule: ruleId, ruleGeneration: 1 }];
+      for (let one = 0; one < 4; one++) costed(HAIKU, 400_000, new Date(), underRule, false);
+      savings = await spendBlock();
+      let row = savings.locator(`[data-savings-row][data-kind="rule"]`).first();
+      check(`${name}: Spend shows the rule, In use, with not enough priced results yet and — for both medians`, (await row.getAttribute('data-enough')) === 'no'
+        && (await row.innerText()).includes('In use') && (await row.locator('[data-not-enough]').innerText()).includes('Not enough priced results yet: 4 and 5')
+        && (await row.locator('.spend-rr-v').allInnerTexts()).every(text => text.startsWith('—')));
+      check(`${name}: Spend says when stale results were last checked`, await savings.locator('[data-savings-stale]').count() === 1);
+      await fits('the rule on the Spend page, not enough yet');
+      await shotOf('spend-not-enough', savings);
+      costed(HAIKU, 400_000, new Date(), underRule, false);
+      savings = await spendBlock();
+      row = savings.locator(`[data-savings-row][data-kind="rule"]`).first();
+      const medians = await row.locator('.spend-rr-v').allInnerTexts();
+      check(`${name}: at 5 priced results a side the medians show, before $1.10 and after $0.40, with the price snapshot`, (await row.getAttribute('data-enough')) === 'yes'
+        && medians[0].startsWith('$1.10') && medians[1].startsWith('$0.40') && (await row.innerText()).includes('API-priced 5 of 5')
+        && (await row.locator('[data-prices]').innerText()).includes('Listed prices when accepted') && (await row.innerText()).includes('5 revision or repair runs included'));
+      // The command line says the same.
+      const { savingsReport } = await import('../dist/route-savings.js');
+      const cli = savingsReport(store, [repo], new Date()).rows.find(one => one.kind === 'rule');
+      check(`${name}: toolroll spend's figures match the page`, cli.enough && cli.configured.medianApiMicrousd === 1_100_000 && cli.cheaper.medianApiMicrousd === 400_000);
+      await fits('the rule on the Spend page');
+      await shotOf('spend-rule', savings);
       // A new small task routes to Haiku, and its plan says why.
       const ruled = file('record-ruled', 'Shorten export labels (synthetic, under the earned rule)');
       void ruled;
