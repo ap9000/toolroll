@@ -86,6 +86,8 @@ export const chatActionRequestSchemas = {
   decision_retire: z.strictObject({ repo: words, decision: id, reason: words }),
   // Results routing: Not now on a suggested cheaper model (accepting stays in Settings → Models, behind a step-up).
   suggestion_not_now: z.strictObject({ repo: words, suggestion: words }),
+  // Slice 3: stopping a trial (starting one stays in Settings → Models, behind a step-up).
+  trial_stop: z.strictObject({ repo: words, trial: id }),
   /** The line, and (from 1) the line it replaces; 0 or none adds it. */
   lead_about_you: z.strictObject({ line: words, replaces: z.int().min(0).optional() }),
   scope_approve: z.strictObject({ task: words }),

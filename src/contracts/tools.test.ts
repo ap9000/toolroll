@@ -44,7 +44,7 @@ const RENAMED: Record<Surface, Record<string, { from: string; fields: Record<str
 // No historical tools are removed without a replacement today. Future removals must record their decision here.
 const REMOVED: Record<Surface, Record<string, string>> = { lead: {}, gateway: {} };
 const DESCRIPTION_CHANGES: Record<string, string> = {
-  get_models: "results routing slice 2: also lists cheaper models a project's results suggest, its earned rules, and Not now",
+  get_models: "results routing slices 2-3: also lists cheaper models a project's results suggest, its earned rules, Not now, trial offers, trials and Stop",
   propose_review: "v137: attach a verified screenshot to feedback or name the result Comment control",
   get_flows: "D5: describe delegation through the lead and named subagents",
   propose_flow: "D5: teammate tools, steps and fields are named subagent",

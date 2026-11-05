@@ -78,6 +78,9 @@ export type SuggestedView = {
   rules: { id: number; repo: string; project: string; title: string; words: string; state: "active" | "paused" | "ended" }[];
   /** The project's switch (null on the installation scope). */
   suggest: { on: boolean } | null;
+  /** Slice 3: cheaper models to try on the next few tasks (a step-up starts one), and the trials in use (Stop). */
+  trialOffers?: { id: string; repo: string; project: string; title: string; words: string; save: string }[];
+  trials?: { id: number; repo: string; project: string; title: string; words: string; live: boolean }[];
 };
 
 const sec = (id: string, title: string, state: string, body: HtmlValueLike): Html =>
@@ -228,6 +231,14 @@ function suggestedSection(view: ModelsView): Html | "" {
       ? acts(postForm("/settings/models/keep", html`${password(view, `models-keep-${one.id}`)}${btn("Keep", { sm: true, type: "submit" })}`, { hidden: { scope: one.repo, rule: String(one.id) } }),
         postForm("/settings/models/turn-off", btn("Drop", { sm: true, variant: "ghost", type: "submit" }), { hidden: { scope: one.repo, rule: String(one.id) } }))
       : postForm("/settings/models/turn-off", btn("Turn off", { sm: true, type: "submit" }), { hidden: { scope: one.repo, rule: String(one.id) } }), "top"));
+  // Trials (slice 3): an offer to try a cheaper model on the next few tasks — started with a step-up, each task still
+  // approved by a person — and the trials in use, each with its progress and Stop (stopping only lowers: no password).
+  const trialOffers = (s.trialOffers ?? []).map(one => formRow(s.repo === null ? `${one.title} · ${one.project}` : one.title, one.words, manage
+    ? acts(postForm("/settings/models/try", html`${password(view, `models-try-${one.id.replace(/[^a-z0-9]/gi, "-")}`)}${btn(one.save, { sm: true, type: "submit" })}`, { hidden: { scope: one.repo, id: one.id } }),
+      postForm("/settings/models/not-now", btn("Not now", { sm: true, variant: "ghost", type: "submit" }), { hidden: { scope: one.repo, id: one.id } }))
+    : html``, "top"));
+  const trials = (s.trials ?? []).map(one => formRow(s.repo === null ? `${one.title} · ${one.project}` : one.title, one.words, !manage || !one.live ? html``
+    : postForm("/settings/models/stop", btn("Stop", { sm: true, type: "submit" }), { hidden: { scope: one.repo, rule: String(one.id) } }), "top"));
   const toggle = s.suggest === null || s.repo === null ? "" : formRow("Suggest cheaper models", s.suggest.on
       ? "On. When a cheaper model does as well on this project's small or routine tasks, it's suggested here. Nothing changes until you accept it."
       : "Off. No new suggestions for this project.",
@@ -235,6 +246,8 @@ function suggestedSection(view: ModelsView): Html | "" {
       ? postForm("/settings/models/suggest-off", btn("Turn off", { sm: true, type: "submit" }), { hidden: { scope: s.repo } })
       : postForm("/settings/models/suggest-on", html`${password(view, "models-suggest-pw")}${btn("Turn on", { sm: true, type: "submit" })}`, { hidden: { scope: s.repo } }), "inline");
   const emptyWords = s.repo === null ? "No suggestions yet. Choose a project above to see its own." : "No suggestions yet. When a cheaper model's results on this project's small or routine tasks match the configured model's, it's suggested here.";
-  const body = html`${review}${offers.length === 0 && rules.length === 0 && s.review === null ? note(emptyWords) : ""}${offers}${rules.length === 0 ? "" : html`${group("Rules in use")}${rules}`}${toggle}`;
-  return sec("suggested", "Suggested", s.offers.length === 0 ? "" : `${s.offers.length} to review`, body);
+  const nothing = offers.length === 0 && rules.length === 0 && trialOffers.length === 0 && trials.length === 0 && s.review === null;
+  const body = html`${review}${nothing ? note(emptyWords) : ""}${offers}${trialOffers}${rules.length === 0 ? "" : html`${group("Rules in use")}${rules}`}${trials.length === 0 ? "" : html`${group("Trials")}${trials}`}${toggle}`;
+  const waiting = s.offers.length + trialOffers.length;
+  return sec("suggested", "Suggested", waiting === 0 ? "" : `${waiting} to review`, body);
 }

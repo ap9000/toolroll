@@ -184,6 +184,7 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "settings.models-turn-off": "routing-turn-off",
   "settings.models-not-now": "dismiss-suggestion",
   "settings.models-suggest-off": "dismiss-suggestion",
+  "settings.models-stop": "trial-stop",
   "agents.seen": "mark-seen",
   "agents.watch": "watch-agent",
 });
@@ -570,8 +571,8 @@ for (const one of ["agent", "apply"]) post("settings", `settings.models-${one}`,
 // Earned rules (results routing): accepting, keeping a paused rule and switching suggestions on are an instance
 // operator's browser step-up; turning a rule off, Not now and switching suggestions off only take authority away (a
 // signed-in operator, or the local owner in exactly that act: route-store.ts proveRuleDoor re-checks it in the write).
-for (const one of ["accept", "keep", "suggest-on"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, { scope: "step-up", ...operator("An instance operator changes which models run.", "/settings/models") });
-for (const one of ["turn-off", "not-now", "suggest-off"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, operator("An instance operator changes which models run.", "/settings/models"));
+for (const one of ["accept", "keep", "suggest-on", "try"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, { scope: "step-up", ...operator("An instance operator changes which models run.", "/settings/models") });
+for (const one of ["turn-off", "not-now", "suggest-off", "stop"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, operator("An instance operator changes which models run.", "/settings/models"));
 // Any other models action answers the models area's own refusal.
 post("settings", "settings.models-act", "^\\/settings\\/models\\/.*$", { sample: "/settings/models/unknown", ...MODELS });
 post("settings", "settings.knowledge-refresh", "/settings/knowledge/refresh", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to refresh project context.", "/settings/knowledge") });

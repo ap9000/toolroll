@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-/** Results routing, slices 1 and 2 (docs/plans/results-routing.md): the task page's "Result record" line, and
+/** Results routing, slices 1 to 3 (docs/plans/results-routing.md): the task page's "Result record" line, and
  * Settings → Models → Suggested (empty, an offer, its review, a stale offer, a refused save, the rule, the evidence
- * line, Turn off), at desktop and phone, on synthetic data (the ui-polish fixture: an in-memory database, no live model, Git history, installed
+ * line, Turn off; then a trial offer, starting it, a trial task's line, its progress, full and Stop), at desktop and phone, on synthetic data (the ui-polish fixture: an in-memory database, no live model, Git history, installed
  * database or external write). Run after `npm run build`. Default: assert and clean up; --capture also saves
  * screenshots to evidence/results-routing-journey/.
  *
@@ -51,11 +51,11 @@ try {
     const store = fixture.store, repo = fixture.repos.second, now = new Date();
     // The long project's Models rows: a Claude builder, so its runs report their model.
     for (const phase of ['plan', 'build', 'review', 'repair']) store.setPhaseConfig(repo, phase, 'claude', MODEL, 'polish-fixture', now);
-    const file = (id, title) => {
+    const file = (id, title, size = 'small') => {
       store.createTask({ id, title }, now);
       const ref = store.refFor('built-in', id).id;
       store.placeTask(ref, repo);
-      store.writeSizing(ref, { size: 'small', risky: false, source: 'person', reason: 'synthetic journey task' });
+      store.writeSizing(ref, { size, risky: false, source: 'person', reason: 'synthetic journey task' });
       propose(store, { taskId: id, goal: 'Keep the export labels short (synthetic).', touches: ['src/export/labels.ts'], now });
       assert(approve(store, id, fixture.name, now, store.getScope(id).digest, fixture.password).ok, `approve ${id}`);
       return ref;
@@ -228,6 +228,56 @@ try {
       await section.getByRole('button', { name: 'Turn off' }).first().click();
       await page.waitForURL(url => url.search.includes('said='));
       check(`${name}: Turn off says approved tasks keep their model`, (await page.locator('[role="status"]').first().innerText()).includes('tasks already approved keep their model'));
+
+      // ---- slice 3: a trial, on routine tasks (Sonnet has ten accepted routine tasks here; Haiku has none) ----
+      for (let one = 0; one < 10; one++) {
+        const id = `journey-routine-${name}-${one}`;
+        store.createTask({ id, title: `Synthetic routine evidence ${one}` }, now);
+        const ref = store.refFor('built-in', id).id;
+        store.placeTask(ref, repo);
+        const when = new Date(now.getTime() - (40 - one) * 86_400_000);
+        saveResultRecord(store, { taskRef: ref, task: id, repo, cohortSize: 'medium', provider: 'claude', model: SONNET, state: 'mature', reason: null, resultRun: null,
+          firstStartedAt: when.toISOString(), acceptedAt: null, decidedAt: null, modelFailures: 0, infraFailures: 0, apiMicrousd: 900000, subscriptionRuns: 0, subscriptionTokens: 0, unknownRuns: 0,
+          remediationRuns: 0, selections: [], settled: true, personRevisions: 0, firstCheckPassed: null, agentTurns: 0, turnsUnknownRuns: 0, accumulationEnded: false }, when);
+      }
+      prices(1);
+      section = await models();
+      check(`${name}: the trial offer says why, with Try it on the next 10 and Not now`, (await section.innerText()).includes('Claude Sonnet 5.5 does well on routine tasks here (10 of the last 10 accepted with checks passing). Claude Haiku 5.5 has no decided tasks here yet.')
+        && await section.getByRole('button', { name: 'Try it on the next 10' }).count() === 1);
+      await fits('the trial offer');
+      await shot('trial-offer');
+      const offerRow = section.locator('form[action="/settings/models/try"]');
+      if (await offerRow.locator('input[name="password"]').count() > 0) await offerRow.locator('input[name="password"]').fill(fixture.password);
+      await offerRow.getByRole('button', { name: 'Try it on the next 10' }).click();
+      await page.waitForURL(url => url.search.includes('said='));
+      section = page.locator('section[aria-labelledby="models-suggested"]');
+      check(`${name}: the trial starts, and its progress shows`, (await page.locator('[role="status"]').first().innerText()).includes('Trial started.')
+        && (await section.innerText()).includes('on the next 10 routine tasks: 0 of 10 so far'));
+      await fits('the trial in use');
+      await shot('trial-started');
+      // A routine task filed now tries Haiku, waits for a person's approval, and its plan says which trial task it is.
+      file('record-trial', 'Shorten export labels (synthetic, trying a cheaper model)', 'medium');
+      await page.goto(fixture.url + '/t/record-trial');
+      const trialWhy = ((await page.locator('[data-route-evidence]').first().textContent()) ?? '').trim();
+      check(`${name}: the trial task's line says trial 1 of 10`, trialWhy.startsWith('Trying a cheaper model: Claude Haiku 5.5, trial 1 of 10.'));
+      await fits('the trial evidence line');
+      await shot('trial-evidence');
+      section = await models();
+      check(`${name}: the count moves`, (await section.innerText()).includes('1 of 10 so far (0 started, 1 waiting)'));
+      // Full: nine more filings take the rest; the eleventh builds on the configured model.
+      for (let one = 2; one <= 10; one++) file(`record-trial-${one}`, `Synthetic trial task ${one}`, 'medium');
+      file('record-trial-full', 'Synthetic task after the trial is full', 'medium');
+      const fullBuild = JSON.parse(store.getScope('record-trial-full').proposedRouteJson).legs[1];
+      check(`${name}: a full trial routes the next task on the configured model`, fullBuild.model === SONNET && fullBuild.selection === undefined);
+      section = await models();
+      check(`${name}: a full trial says 10 of 10`, (await section.innerText()).includes('10 of 10 so far'));
+      await fits('the full trial');
+      await shot('trial-full');
+      await section.getByRole('button', { name: 'Stop' }).first().click();
+      await page.waitForURL(url => url.search.includes('said='));
+      check(`${name}: Stop says approved tasks keep their model`, (await page.locator('[role="status"]').first().innerText()).includes('Trial stopped.'));
+      await fits('the stopped trial');
+      await shot('trial-stopped');
       check(`${name}: no page errors`, errors.length === 0);
     } finally { await context.close(); await fixture.stop(); }
   }
