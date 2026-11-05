@@ -339,7 +339,7 @@ import { latestRelease, newerRelease, notifySecurityRelease, notifyVersionLive, 
 import { installMethod } from "./install-method.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { machineActing } from "./scope.js";
-import { reevaluateResultRecords } from "./route-store.js";
+import { reevaluateResultRecords } from "./route-results.js";
 import { loginFileOf, migrateLegacyLogin, savedLoginFile, writableLoginFile } from "./login-secrets.js";
 
 export type Write = (line: string) => void;

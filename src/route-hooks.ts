@@ -38,7 +38,7 @@ const REVISION_CALLERS: readonly EvalHook[] = [
 export const ROUTING_HOOKS: readonly EvalHook[] = Object.freeze([
   { file: "src/dispose.ts", inside: "disposeBuildOutcomeLocked", calls: "recordExecClass", from: "./route-store.js", args: true, why: "a failed run's class is kept from its raw reason" },
   { file: "src/result-actions.ts", inside: "createResultRevision", calls: "recordRevisionOrigin", from: "./route-store.js", args: true, why: "every revision says who it came from" },
-  { file: "src/operate.ts", inside: "reconcileCommand", calls: "reevaluateResultRecords", from: "./route-store.js", why: "records are evaluated again as their inputs change" },
+  { file: "src/operate.ts", inside: "reconcileCommand", calls: "reevaluateResultRecords", from: "./route-results.js", why: "records are evaluated again as their inputs change" },
   { file: "src/project-delete.ts", inside: "deleteRows", calls: "forgetProjectModels", from: "./store.js", why: "a deleted project's Models rows go through the counter" },
   { file: "src/release-auto.ts", inside: "changeProblem", calls: "routingHookProblem", from: "./route-hooks.js", why: "this check itself" },
   ...REVISION_CALLERS,

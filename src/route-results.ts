@@ -8,93 +8,18 @@
  *
  * Read-only in slice 1: nothing here suggests, routes or switches anything.
  */
-import { isProtectedWork, protectedChanges } from "./approval-policy.js";
+import { protectedChanges } from "./approval-policy.js";
 import { assignmentChecksForRun } from "./assignment.js";
 import {
   INELIGIBLE_REASONS, REASON_WORDS, selectionSchema,
-  type ExecClass, type IneligibleReason, type NotCountedReason, type RecordReason, type RecordState, type RejectReason, type ResultRecordView, type Selection,
+  type ExecClass, type NotCountedReason, type RecordReason, type RecordState, type RejectReason, type ResultRecordView, type Selection,
 } from "./contracts/route-results.js";
 import { changedFilesOf, COMPLETION_ACTION } from "./result-completion.js";
-import { BUILT_IN, nightlyTaskRef, releaseTaskRef, runAccounting, type Run, type Store } from "./store.js";
-
-// ---- execution class --------------------------------------------------------------------------------------------
-
-/** A failed run's raw reason, by whose account it failed. Anything not listed counts as the model's (conservative: a
- * missing or unknown class counts against the cheaper model, never for it). */
-export const EXEC_CLASS_OF_REASON: Readonly<Record<string, ExecClass>> = Object.freeze({
-  timeout: "model", agent: "model", "agent-reported": "model", "no-op": "model", "no-handoff": "model",
-  "moved-head": "model", "moved-branch": "model", "commit-failure": "model",
-  git: "infrastructure", setup: "infrastructure", "provider-init": "infrastructure", "provider-unattested": "infrastructure",
-  "provider-protocol": "infrastructure", stopped: "infrastructure",
-});
-/** The gateway's terminal classes that say the provider, not the model, ended the attempt. */
-const INFRASTRUCTURE_TERMINALS: ReadonlySet<string> = new Set(["auth-expired", "usage-exhausted", "credits-depleted", "transient-throttle"]);
-
-/** The class a failed run's raw reason (before the tick's normalization) and its terminal class give. */
-export function execClassOf(reason: string, terminalClass: string | null): ExecClass {
-  if (terminalClass !== null && INFRASTRUCTURE_TERMINALS.has(terminalClass)) return "infrastructure";
-  return Object.prototype.hasOwnProperty.call(EXEC_CLASS_OF_REASON, reason) ? EXEC_CLASS_OF_REASON[reason]! : "model";
-}
-
-// ---- cohort snapshot (written at admission) ---------------------------------------------------------------------
-
-export type CohortRow = {
-  run: number; taskRef: number; rootRef: number; repo: string | null; role: "builder" | "repair";
-  size: "small" | "medium" | "large" | null; risky: boolean | null; qualityMode: "default" | "strict";
-  evidenceDemands: boolean; publication: "none" | "notify" | "automerge"; release: boolean; protected: boolean;
-  selection: Selection; routeDigest: string; provider: string; model: string | null;
-  cohortSize: "small" | "medium" | null; ineligible: IneligibleReason | null; startedAt: string;
-};
-
-export type CohortInput = {
-  run: number; taskRef: number; role: "builder" | "repair"; routeDigest: string; provider: string; model: string | null;
-  qualityMode: "default" | "strict"; startedAt: string;
-};
-
-/** The sealed facts a code-writing run's eligibility is decided from, conservatively: anything unreadable or not
- * sealed is not eligible. Pure reads of the store, in the admission transaction. */
-export function cohortOf(store: Store, input: CohortInput): CohortRow {
-  const base: CohortRow = {
-    run: input.run, taskRef: input.taskRef, rootRef: input.taskRef, repo: null, role: input.role, size: null, risky: null, qualityMode: input.qualityMode,
-    evidenceDemands: false, publication: "none", release: false, protected: false, selection: { kind: "configured" },
-    routeDigest: input.routeDigest, provider: input.provider, model: input.model, cohortSize: null, ineligible: null, startedAt: input.startedAt,
-  };
-  const ineligible = (row: CohortRow, reason: IneligibleReason): CohortRow => ({ ...row, cohortSize: null, ineligible: reason });
-  const ref = store.handle.prepare("SELECT backend, external_id, repo FROM task_ref WHERE id = ?").get(input.taskRef);
-  if (ref === undefined || ref["backend"] !== BUILT_IN) return ineligible(base, "not-built-in");
-  const taskId = String(ref["external_id"]);
-  const repo = ref["repo"] === null ? null : String(ref["repo"]);
-  // The family's root, so the record pass finds the family without walking it: a lineage that can't be proved is
-  // its own root (and its record says so).
-  const family = store.taskFamilyOf(taskId, null, true);
-  const rootRef = family !== null && family.problem === null ? family.root.refId : input.taskRef;
-  const sealed = store.sealedRouteOf(taskId);
-  if (!sealed.ok) return ineligible({ ...base, rootRef, repo }, "no-sealed-route");
-  const route = sealed.route;
-  const build = route.legs[1]!;
-  const selection: Selection = build.selection ?? { kind: build.chosen === "override" ? "override" : build.chosen === "pinned" ? "pin" : "configured" };
-  const scope = store.getScope(taskId);
-  const terms = store.handle.prepare("SELECT release_terms_json, release_check_json FROM task_scope WHERE task_id = ?").get(taskId);
-  const release = releaseTaskRef(store, input.taskRef) || nightlyTaskRef(store, input.taskRef)
-    || (terms !== undefined && (terms["release_terms_json"] != null || terms["release_check_json"] != null));
-  const isProtected = repo === null ? false : isProtectedWork(store.approvalRules(repo), scope?.touches ?? []);
-  const row: CohortRow = {
-    ...base, rootRef, repo, size: route.size?.size ?? null, risky: route.size?.risky ?? null,
-    qualityMode: route.qualityMode === "strict" || input.qualityMode === "strict" ? "strict" : "default",
-    evidenceDemands: route.evidence.some(kind => kind === "screenshot" || kind === "manual-review"),
-    publication: route.publication, release, protected: isProtected, selection,
-  };
-  // Every reason is a sealed fact or a project rule read now; the first that applies is kept.
-  if (row.release) return ineligible(row, "release");
-  if (row.protected) return ineligible(row, "protected");
-  if (row.qualityMode === "strict") return ineligible(row, "strict");
-  if (row.evidenceDemands) return ineligible(row, "evidence-demands");
-  if (row.publication === "automerge") return ineligible(row, "automerge");
-  if (row.risky !== false || route.risk !== "routine") return ineligible(row, row.risky === null ? "unsized" : "risky");
-  if (row.size === null) return ineligible(row, "unsized");
-  if (row.size === "large") return ineligible(row, "large");
-  return { ...row, cohortSize: row.size, ineligible: null };
-}
+import { runAccounting, type Run, type Store } from "./store.js";
+import { INFRASTRUCTURE_TERMINALS, saveResultRecord } from "./route-store.js";
+// The execution class and the cohort snapshot live with their writer (route-store.ts), which store.ts imports: kept
+// light so the store's module graph doesn't reach the evaluator's readers.
+export { cohortOf, EXEC_CLASS_OF_REASON, execClassOf, type CohortInput, type CohortRow } from "./route-store.js";
 
 // ---- the record ---------------------------------------------------------------------------------------------------
 
@@ -361,3 +286,20 @@ export function familiesToEvaluate(store: Store, repo: string, limit: number): s
 }
 
 export { INELIGIBLE_REASONS };
+
+/** The re-evaluation pass (the reconcile pass of each project, operate.ts): every family with a cohort snapshot whose
+ * record is missing or not closed is evaluated again from its rows, oldest evaluation first, at most `limit` a pass,
+ * and saved through route-store.ts. Each family is its own transaction, so one unreadable family never holds the others
+ * back. */
+export function reevaluateResultRecords(store: Store, repo: string, evidenceRoot: string | undefined, now: Date, limit = 100): number {
+  let saved = 0;
+  for (const task of familiesToEvaluate(store, repo, limit)) {
+    try {
+      store.transact(() => {
+        const value = evaluateFamily(store, task, evidenceRoot, now);
+        if (value !== null) { saveResultRecord(store, value, now); saved++; }
+      });
+    } catch { /* the next pass tries again */ }
+  }
+  return saved;
+}

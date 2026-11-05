@@ -21,8 +21,8 @@ import { pathToFileURL } from 'node:url';
 import { startFixture } from './ui-polish-fixture.mjs';
 import { recordRunModelReported } from '../dist/store.js';
 import { propose, approve } from '../dist/scope.js';
-import { recordRevisionOrigin, reevaluateResultRecords } from '../dist/route-store.js';
-import { resultRecordOf } from '../dist/route-results.js';
+import { recordRevisionOrigin } from '../dist/route-store.js';
+import { reevaluateResultRecords, resultRecordOf } from '../dist/route-results.js';
 
 const capture = process.argv.includes('--capture');
 const out = resolve('evidence/results-routing-journey');
