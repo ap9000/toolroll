@@ -29,7 +29,7 @@ const REVISION_CALLERS: readonly EvalHook[] = [
   { file: "src/pull-request-flow.ts", inside: "followPullRequests", calls: "requestResultChanges", from: "./result-actions.js", args: true, why: "a CI revision says it came from a flow" },
   { file: "src/chat-decide.ts", inside: "applyDecideFeedback", calls: "requestResultChanges", from: "./result-actions.js", args: true, why: "a chat's verified person asks for changes in their own words" },
   { file: "src/chat-review.ts", inside: "applyChatReview", calls: "createResultRevision", from: "./result-actions.js", args: true, why: "a confirmed review card passes the origin it was given" },
-  { file: "src/lead-doors.ts", inside: "executeProposal", calls: "applyChatReview", from: "./chat-review.js", args: true, why: "a lead's review card is the lead's" },
+  { file: "src/lead-doors.ts", inside: "executeProposal", calls: "applyChatReview", from: "./chat-review.js", args: true, why: "a review card a person confirms is the person's; under a lead chain or remote run, the lead's" },
   { file: "src/task-outcome-cli.ts", inside: "runTaskOutcomeCommand", calls: "requestResultChanges", from: "./result-actions.js", args: true, why: "the command line tells a person from a lead or a machine" },
   { file: "src/server/tasks.ts", inside: "createTasksHandlers", calls: "requestResultChanges", from: "../result-actions.js", args: true, why: "a browser session is a person; a bearer credential a machine" },
   { file: "src/server/tasks.ts", inside: "createTasksHandlers", calls: "createResultRevision", from: "../result-actions.js", args: true, why: "a browser session is a person; a bearer credential a machine" },

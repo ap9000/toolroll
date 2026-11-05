@@ -1808,6 +1808,8 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const child = revisionIdOf(confirmed.headers.get("location"));
     expect(confirmed.headers.get("location")).toBe(`/chat?task=${root}&revision=${child}#latest`);
     expect(store.revisionLineageOf(child, now)).toMatchObject({ root, sourceTask: root, sourceRun: run });
+    // Results routing: the person who confirmed the lead's card decided the result needed changes: origin person.
+    expect(store.handle.prepare("SELECT revision_origin FROM task_ref WHERE external_id = ?").get(child)?.["revision_origin"]).toBe("person");
     expect(store.liveDiffComments(run).map(one => one.note)).toEqual(["A later note, not in this revision."]);
     expect(approvalOf(store.getScope(child)).approved).toBe(false);
     expect(await read(`/chat?task=${root}`)).not.toContain(`action="/t/${child}/approve"`);

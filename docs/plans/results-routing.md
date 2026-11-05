@@ -108,7 +108,7 @@ all nine callers above with the value each must pass:
 | Caller | origin |
 |---|---|
 | browser (server/tasks.ts:1480, :1591) | `person` when the session's proof is a person proof, else `machine` |
-| chat and paired chat (chat-decide.ts:957, chat-review.ts:82) | `person` only for the chat's verified person, `lead` for a lead turn |
+| chat and paired chat (chat-decide.ts:957, chat-review.ts:82) | `person` for the chat's verified person, and for a lead's or coordinator's review card a person confirms (lead-doors.ts); `lead` under the lead's own chain or a remote run (`machineActing()`) |
 | CLI (task-outcome-cli.ts:94) | `person` for a verified approver, `lead` for a lead token |
 | flows (flow-engine.ts:458, flow-pull-request.ts:128, pull-request-flow.ts:331) | `flow` |
 | automatic review (build-review.ts:125) | `automatic-review`, even when the mode signer's name is the actor |
