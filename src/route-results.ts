@@ -101,12 +101,21 @@ export function cohortOf(store: Store, input: CohortInput): CohortRow {
 /** How long an accepted result waits before it counts, and how long a result may wait for an answer. */
 export const MATURE_AFTER_MS = 14 * 24 * 60 * 60_000;
 export const UNANSWERED_AFTER_MS = 30 * 24 * 60 * 60_000;
+/** The explicit cutoff for a family's spending and counts: they keep accumulating through later revision and repair
+ * runs (a verdict, once final, never moves) until the family is quiet — every version ended and no run open — or
+ * this long after its first run, whichever is first. */
+export const ACCUMULATE_FOR_MS = 90 * 24 * 60 * 60_000;
 
 export type RecordValue = {
   taskRef: number; task: string; repo: string | null; cohortSize: "small" | "medium" | null; provider: string | null; model: string | null;
   state: RecordState; reason: RecordReason | null; resultRun: number | null; firstStartedAt: string | null; acceptedAt: string | null;
   decidedAt: string | null; modelFailures: number; infraFailures: number; apiMicrousd: number; subscriptionRuns: number;
   subscriptionTokens: number; unknownRuns: number; remediationRuns: number; selections: Selection[]; settled: boolean;
+  /** Accumulating counts: person revisions, whether the family's first built run's own check passed (null: none
+   * recorded), and agent turns (runs whose provider reports none counted apart). */
+  personRevisions: number; firstCheckPassed: boolean | null; agentTurns: number; turnsUnknownRuns: number;
+  /** The family is quiet, or past ACCUMULATE_FOR_MS: with a final verdict, the record closes. */
+  accumulationEnded: boolean;
 };
 
 type CohortRead = { run: number; repo: string | null; cohortSize: "small" | "medium" | null; ineligible: string | null; model: string | null; provider: string; selection: Selection | null; startedAt: string };
@@ -168,6 +177,16 @@ export function evaluateFamily(store: Store, rootTaskId: string, evidenceRoot: s
     else if (accounting.amount.kind === "api") apiMicrousd += accounting.amount.microusd;
     else { subscriptionRuns++; subscriptionTokens += (accounting.usage.in ?? 0) + (accounting.usage.out ?? 0); }
   }
+  let agentTurns = 0, turnsUnknownRuns = 0;
+  for (const run of runs) {
+    if (run.providerStartedAt === null) continue;
+    if (run.agentTurns == null) turnsUnknownRuns++; else agentTurns += run.agentTurns;
+  }
+  const firstBuilt = runs.find(run => run.outcome === "built");
+  const firstCheck = firstBuilt === undefined ? null : store.runCheckFor(firstBuilt.id)?.status ?? null;
+  const personRevisions = store.handle.prepare("SELECT COUNT(*) AS n FROM task_ref WHERE id IN (SELECT value FROM json_each(?)) AND revision_origin = 'person'")
+    .get(JSON.stringify(family.versions.filter(one => one.id !== family.root.id).map(one => one.refId)))?.["n"];
+  const quiet = family.versions.every(one => one.state === "done" || one.state === "cancelled" || one.state === "failed") && runs.every(run => run.outcome !== null);
   let modelFailures = 0, infraFailures = 0;
   for (const run of runs) {
     const failedCheck = run.outcome === "built" && store.runCheckFor(run.id)?.status === "failed";
@@ -183,6 +202,9 @@ export function evaluateFamily(store: Store, rootTaskId: string, evidenceRoot: s
     firstStartedAt: first?.startedAt ?? runs[0]!.startedAt, acceptedAt: null, decidedAt: null, modelFailures, infraFailures,
     apiMicrousd, subscriptionRuns, subscriptionTokens, unknownRuns, remediationRuns,
     selections: attributed.map(one => one.selection).filter((one): one is Selection => one !== null), settled: false,
+    personRevisions: Number(personRevisions ?? 0), firstCheckPassed: firstCheck === "passed" ? true : firstCheck === "failed" ? false : null,
+    agentTurns, turnsUnknownRuns,
+    accumulationEnded: quiet || now.getTime() >= Date.parse(first?.startedAt ?? runs[0]!.startedAt) + ACCUMULATE_FOR_MS,
   };
   const reject = (reason: RejectReason): RecordValue => ({ ...value, state: "rejected", reason, decidedAt: now.toISOString(), settled: true });
   const notCounted = (reason: NotCountedReason, settled: boolean): RecordValue => ({ ...value, state: "not-counted", reason, decidedAt: settled ? now.toISOString() : null, settled });
@@ -199,7 +221,11 @@ export function evaluateFamily(store: Store, rootTaskId: string, evidenceRoot: s
     if (run.modelReported == null) return notCounted("model-not-reported", true);
     if (run.modelReported !== cohorts.get(run.id)!.model) return notCounted("mixed-models", true);
   }
-  // 2. Still running: nothing to say yet.
+  // 2. A person who asked for changes, or a HIGH finding, rejected a result already: that stands whatever the family
+  //    does next (its later runs still add to its spending).
+  if (value.personRevisions > 0) return reject("person-revision");
+  if (highFinding(store, ids)) return reject("high-finding");
+  // 3. Still running: nothing to say yet.
   if (runs.some(run => run.outcome === null)) return value;
   const current = family.current;
   const result = [...runs].reverse().find(run => versionOf.get(run.id) === current.id && run.role === "builder" && (run.outcome === "built" || run.outcome === "no-change"));
@@ -209,18 +235,14 @@ export function evaluateFamily(store: Store, rootTaskId: string, evidenceRoot: s
     return value;
   }
   value.resultRun = result.id;
-  // 3. Rejections, checked first among what a result can be.
+  // 4. Rejections, checked first among what a result can be.
   if (modelFailures >= 2) return reject("model-failures");
   if (family.versions.some(one => one.state === "failed")) return reject("task-failed");
   if (current.state === "cancelled") return reject("cancelled-after-result");
-  if (highFinding(store, ids)) return reject("high-finding");
-  const origins = store.handle.prepare("SELECT revision_origin FROM task_ref WHERE id IN (SELECT value FROM json_each(?))")
-    .all(JSON.stringify(family.versions.filter(one => one.id !== family.root.id).map(one => one.refId))).map(row => row["revision_origin"]);
-  if (origins.includes("person")) return reject("person-revision");
   if (store.proofVerdictFor(result.id)?.verdict === "refuted") return reject("proof-refuted");
   const checks = evidenceRoot === undefined ? null : assignmentChecksForRun(store, evidenceRoot, result.id, now);
   if (checks?.status === "failed") return reject("check-failed");
-  // 4. Not counted.
+  // 5. Not counted.
   const answerBy = Date.parse(result.finishedAt ?? result.startedAt) + UNANSWERED_AFTER_MS;
   if (checks === null || checks.status === "unavailable") return notCounted("check-unavailable", now.getTime() >= answerBy);
   if (checks.status === "not-run") return notCounted("no-check", now.getTime() >= answerBy);
@@ -232,7 +254,7 @@ export function evaluateFamily(store: Store, rootTaskId: string, evidenceRoot: s
     if (changed === null) return notCounted("changed-files-unknown", true);
     if (rules !== null && protectedChanges(rules, changed).length > 0) return notCounted("touched-protected", true);
   }
-  // 5. Accepted by a person's completion of this result, or by its merge; then mature after 14 days.
+  // 6. Accepted by a person's completion of this result, or by its merge; then mature after 14 days.
   const acceptedAt = acceptanceOf(store, family.root.id, current.id, result.id);
   if (acceptedAt === null) return now.getTime() >= answerBy ? notCounted("unanswered", true) : value;
   const matureAt = Date.parse(acceptedAt) + MATURE_AFTER_MS;
@@ -289,7 +311,9 @@ export function recordView(row: Record<string, unknown>, task: string): ResultRe
   return {
     ...view, words: recordWords(view), failures: { model: n("model_failures"), infrastructure: n("infra_failures") },
     spend: { apiMicrousd: n("api_microusd"), subscriptionRuns: n("subscription_runs"), subscriptionTokens: n("subscription_tokens"), unknownRuns: n("unknown_runs"), remediationRuns: n("remediation_runs") },
-    selections,
+    selections, personRevisions: n("person_revisions"),
+    firstCheckPassed: row["first_check_passed"] == null ? null : Number(row["first_check_passed"]) === 1,
+    turns: { known: n("agent_turns"), unknownRuns: n("turns_unknown_runs") }, closed: n("closed") === 1,
   };
 }
 
@@ -298,7 +322,9 @@ export function valueView(value: RecordValue): ResultRecordView {
   return recordView({ repo: value.repo, cohort_size: value.cohortSize, provider: value.provider, model: value.model, state: value.state, reason: value.reason,
     result_run: value.resultRun, accepted_at: value.acceptedAt, decided_at: value.decidedAt, model_failures: value.modelFailures, infra_failures: value.infraFailures,
     api_microusd: value.apiMicrousd, subscription_runs: value.subscriptionRuns, subscription_tokens: value.subscriptionTokens, unknown_runs: value.unknownRuns,
-    remediation_runs: value.remediationRuns, provenance_json: JSON.stringify(value.selections) }, value.task);
+    remediation_runs: value.remediationRuns, provenance_json: JSON.stringify(value.selections), person_revisions: value.personRevisions,
+    first_check_passed: value.firstCheckPassed === null ? null : value.firstCheckPassed ? 1 : 0, agent_turns: value.agentTurns,
+    turns_unknown_runs: value.turnsUnknownRuns, closed: value.settled && value.accumulationEnded ? 1 : 0 }, value.task);
 }
 
 /** The saved records of these projects, newest first (by their family's first run). */
@@ -325,11 +351,12 @@ export function resultRecordWordsOf(store: Store, taskId: string, evidenceRoot: 
 }
 
 /** The families the re-evaluation pass looks at: a root task with a code-writing run that has a cohort snapshot, whose
- * record is missing or not settled; the least recently evaluated first. */
+ * record is missing or not closed (a final verdict still gathers its family's later spending until it closes); the
+ * least recently evaluated first. */
 export function familiesToEvaluate(store: Store, repo: string, limit: number): string[] {
   return store.handle.prepare(`SELECT root.external_id AS task FROM run_cohort c JOIN task_ref root ON root.id = c.root_ref
     LEFT JOIN route_record rec ON rec.task_ref = c.root_ref
-    WHERE c.repo = ? AND (rec.task_ref IS NULL OR rec.settled = 0)
+    WHERE c.repo = ? AND (rec.task_ref IS NULL OR rec.closed = 0)
     GROUP BY c.root_ref ORDER BY COALESCE(MIN(rec.evaluated_at), ''), c.root_ref LIMIT ?`).all(repo, limit).map(row => String(row["task"]));
 }
 

@@ -1582,8 +1582,10 @@ export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[nu
  * - run_cohort: one row per code-writing run (builder, repair), written in the run's admission transaction beside its
  *   route stamp and never updated: the sealed facts its eligibility was decided from. cohort_size NULL = not eligible,
  *   with the reason in `ineligible`.
- * - route_record: a task family's result record (keyed by its root task_ref), recomputed by the reconcile pass;
- *   `settled` = no later input can change it.
+ * - route_record: a task family's result record (keyed by its root task_ref), recomputed by the reconcile pass.
+ *   `settled` = its verdict (state, reason, result, acceptance, decision time) is final; its spending and counts keep
+ *   accumulating through later revision and repair runs until `closed` (the family is quiet, or 90 days after its
+ *   first run: route-results.ts ACCUMULATE_FOR_MS).
  * - route_rule: an earned rule or a trial, with its sealed grant, price snapshot and the configuration generations it
  *   depends on; one live winner per project and size (route_rule_one_winner).
  * - route_exposure / route_exposure_event: one exposure per task and rule, its events append-only.
@@ -1634,13 +1636,19 @@ CREATE TABLE IF NOT EXISTS route_record (
   subscription_tokens INTEGER NOT NULL DEFAULT 0 CHECK (subscription_tokens >= 0),
   unknown_runs        INTEGER NOT NULL DEFAULT 0 CHECK (unknown_runs >= 0),
   remediation_runs    INTEGER NOT NULL DEFAULT 0 CHECK (remediation_runs >= 0),
+  person_revisions    INTEGER NOT NULL DEFAULT 0 CHECK (person_revisions >= 0),
+  first_check_passed  INTEGER CHECK (first_check_passed IS NULL OR first_check_passed IN (0,1)),
+  agent_turns         INTEGER NOT NULL DEFAULT 0 CHECK (agent_turns >= 0),
+  turns_unknown_runs  INTEGER NOT NULL DEFAULT 0 CHECK (turns_unknown_runs >= 0),
   provenance_json     TEXT NOT NULL DEFAULT '[]',
   settled             INTEGER NOT NULL DEFAULT 0 CHECK (settled IN (0,1)),
+  closed              INTEGER NOT NULL DEFAULT 0 CHECK (closed IN (0,1)),
   evaluated_at        TEXT NOT NULL,
-  CHECK ((state IN ('rejected','not-counted')) = (reason IS NOT NULL))
+  CHECK ((state IN ('rejected','not-counted')) = (reason IS NOT NULL)),
+  CHECK (closed = 0 OR settled = 1)
 );
 CREATE INDEX IF NOT EXISTS route_record_by_cohort ON route_record (repo, cohort_size, state, first_started_at);
-CREATE INDEX IF NOT EXISTS route_record_open ON route_record (evaluated_at) WHERE settled = 0;
+CREATE INDEX IF NOT EXISTS route_record_open ON route_record (evaluated_at) WHERE closed = 0;
 CREATE TABLE IF NOT EXISTS route_rule (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   repo                TEXT NOT NULL,

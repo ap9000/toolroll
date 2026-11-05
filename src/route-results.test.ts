@@ -25,7 +25,7 @@ import { openStore, BUILT_IN, recordRunModelReported, forgetProjectModels, type 
 import { addApprover, approve, propose } from "./scope.js";
 import { writeEvidenceFile } from "./evidence.js";
 import { COMPLETION_ACTION } from "./result-completion.js";
-import { evaluateFamily, execClassOf, EXEC_CLASS_OF_REASON, MATURE_AFTER_MS, recordWords, resultRecordOf, UNANSWERED_AFTER_MS } from "./route-results.js";
+import { ACCUMULATE_FOR_MS, evaluateFamily, execClassOf, EXEC_CLASS_OF_REASON, MATURE_AFTER_MS, recordWords, resultRecordOf, UNANSWERED_AFTER_MS } from "./route-results.js";
 import { bumpModelsGeneration, modelsGenerationOf, recordExecClass, recordRevisionOrigin, reevaluateResultRecords, writeRunCohort } from "./route-store.js";
 import { runModelsCommand } from "./models-cli.js";
 
@@ -314,10 +314,39 @@ describe("the re-evaluation pass and the task page's record", () => {
     reevaluateResultRecords(store, REPO, evidence, at(30));
     const saved = () => ({ ...store.handle.prepare("SELECT state, decided_at, settled FROM route_record WHERE task_ref = ?").get(refOf(id)) });
     expect(saved()).toEqual({ state: "mature", decided_at: new Date(at(2).getTime() + MATURE_AFTER_MS).toISOString(), settled: 1 });
-    // Settled: a later failing check doesn't move it, and the pass no longer picks it up.
+    // Final: a later failing check doesn't move the verdict. The family is still open, so the pass keeps reading its
+    // spending; once the task is done (quiet), the record closes and the pass no longer picks it up.
     seams.checks.set(run, "failed");
-    expect(reevaluateResultRecords(store, REPO, evidence, at(31))).toBe(0);
+    expect(reevaluateResultRecords(store, REPO, evidence, at(31))).toBe(1);
     expect(saved().state).toBe("mature");
+    store.setTaskState(id, "done", at(31));
+    reevaluateResultRecords(store, REPO, evidence, at(32));
+    expect(store.handle.prepare("SELECT closed FROM route_record WHERE task_ref = ?").get(refOf(id))?.["closed"]).toBe(1);
+    expect(reevaluateResultRecords(store, REPO, evidence, at(33))).toBe(0);
+  });
+
+  test("a final verdict keeps gathering its family's later revision runs, turns and counts until its cutoff", () => {
+    const id = file("frozen");
+    const first = build(id);
+    store.recordRunCheck(first, { status: "failed", exitCode: 1, suites: [] }, T0);
+    const child = revise(id, first, "person");
+    reevaluateResultRecords(store, REPO, evidence, at(1));
+    const read = () => resultRecordOf(store, id, evidence, at(5))!;
+    expect(read()).toMatchObject({ state: "rejected", reason: "person-revision", personRevisions: 1, firstCheckPassed: false, closed: false });
+    const decided = read().decidedAt;
+    // A later revision run, and a second person revision of it: the verdict stays, the totals move.
+    const second = build(child);
+    store.handle.prepare("UPDATE run SET agent_turns = 7 WHERE id = ?").run(second);
+    revise(child, second, "person");
+    reevaluateResultRecords(store, REPO, evidence, at(4));
+    expect(read()).toMatchObject({ state: "rejected", reason: "person-revision", decidedAt: decided, personRevisions: 2, firstCheckPassed: false, closed: false,
+      spend: { remediationRuns: 1 }, turns: { known: 7 } });
+    // The explicit cutoff: 90 days after the family's first run, the record closes even while work is still open.
+    reevaluateResultRecords(store, REPO, evidence, new Date(T0.getTime() + ACCUMULATE_FOR_MS));
+    expect(read().closed).toBe(true);
+    build(child);
+    expect(reevaluateResultRecords(store, REPO, evidence, new Date(T0.getTime() + ACCUMULATE_FOR_MS + DAY))).toBe(0);
+    expect(read().spend.remediationRuns).toBe(1);
   });
 
   test("models results lists the records of the projects this person can open, plainly and as JSON", async () => {

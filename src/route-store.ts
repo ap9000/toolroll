@@ -58,29 +58,47 @@ function fallbackCohort(input: CohortInput) {
     routeDigest: input.routeDigest, provider: input.provider, model: input.model, cohortSize: null, startedAt: input.startedAt };
 }
 
-/** Save a family's record as evaluated now. A decision time is kept while the state stays the same. */
+/** Save a family's record as evaluated now. A decision time is kept while the state stays the same. Once a verdict
+ * is final (settled) it never moves — state, reason, result run, acceptance and decision time stay as decided — but
+ * the family's spending and counts keep being updated from later revision and repair runs until the record closes
+ * (route-results.ts ACCUMULATE_FOR_MS); a closed record is never written again. */
 export function saveResultRecord(store: Store, value: RecordValue, now: Date): void {
   if (!(RECORD_STATES as readonly string[]).includes(value.state)) throw new Error(`unknown record state: ${value.state}`);
   const reasons: readonly string[] = value.state === "rejected" ? REJECT_REASONS : value.state === "not-counted" ? NOT_COUNTED_REASONS : [];
   if ((value.reason === null) !== (reasons.length === 0) || (value.reason !== null && !reasons.includes(value.reason))) throw new Error(`a ${value.state} record can't have the reason ${String(value.reason)}`);
   store.handle.prepare(`INSERT INTO route_record (task_ref, repo, cohort_size, provider, model, state, reason, result_run, first_started_at, accepted_at, decided_at,
-      model_failures, infra_failures, api_microusd, subscription_runs, subscription_tokens, unknown_runs, remediation_runs, provenance_json, settled, evaluated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (task_ref) DO UPDATE SET repo = excluded.repo, cohort_size = excluded.cohort_size, provider = excluded.provider, model = excluded.model,
-      decided_at = CASE WHEN route_record.state = excluded.state AND route_record.reason IS excluded.reason THEN COALESCE(route_record.decided_at, excluded.decided_at) ELSE excluded.decided_at END,
-      state = excluded.state, reason = excluded.reason, result_run = excluded.result_run, first_started_at = excluded.first_started_at,
-      accepted_at = excluded.accepted_at, model_failures = excluded.model_failures, infra_failures = excluded.infra_failures,
+      model_failures, infra_failures, api_microusd, subscription_runs, subscription_tokens, unknown_runs, remediation_runs, person_revisions,
+      first_check_passed, agent_turns, turns_unknown_runs, provenance_json, settled, closed, evaluated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (task_ref) DO UPDATE SET
+      decided_at = CASE WHEN route_record.settled = 1 OR (route_record.state = excluded.state AND route_record.reason IS excluded.reason)
+        THEN COALESCE(route_record.decided_at, excluded.decided_at) ELSE excluded.decided_at END,
+      state = CASE WHEN route_record.settled = 1 THEN route_record.state ELSE excluded.state END,
+      reason = CASE WHEN route_record.settled = 1 THEN route_record.reason ELSE excluded.reason END,
+      result_run = CASE WHEN route_record.settled = 1 THEN route_record.result_run ELSE excluded.result_run END,
+      accepted_at = CASE WHEN route_record.settled = 1 THEN route_record.accepted_at ELSE excluded.accepted_at END,
+      repo = CASE WHEN route_record.settled = 1 THEN route_record.repo ELSE excluded.repo END,
+      cohort_size = CASE WHEN route_record.settled = 1 THEN route_record.cohort_size ELSE excluded.cohort_size END,
+      provider = CASE WHEN route_record.settled = 1 THEN route_record.provider ELSE excluded.provider END,
+      model = CASE WHEN route_record.settled = 1 THEN route_record.model ELSE excluded.model END,
+      first_started_at = excluded.first_started_at, model_failures = excluded.model_failures, infra_failures = excluded.infra_failures,
       api_microusd = excluded.api_microusd, subscription_runs = excluded.subscription_runs, subscription_tokens = excluded.subscription_tokens,
-      unknown_runs = excluded.unknown_runs, remediation_runs = excluded.remediation_runs, provenance_json = excluded.provenance_json,
-      settled = excluded.settled, evaluated_at = excluded.evaluated_at
-    WHERE route_record.settled = 0`)
+      unknown_runs = excluded.unknown_runs, remediation_runs = excluded.remediation_runs, person_revisions = excluded.person_revisions,
+      first_check_passed = excluded.first_check_passed, agent_turns = excluded.agent_turns, turns_unknown_runs = excluded.turns_unknown_runs,
+      provenance_json = excluded.provenance_json,
+      settled = MAX(route_record.settled, excluded.settled),
+      closed = CASE WHEN MAX(route_record.settled, excluded.settled) = 1 THEN excluded.closed ELSE 0 END,
+      evaluated_at = excluded.evaluated_at
+    WHERE route_record.closed = 0`)
     .run(value.taskRef, value.repo, value.cohortSize, value.provider, value.model, value.state, value.reason, value.resultRun, value.firstStartedAt,
       value.acceptedAt, value.decidedAt, value.modelFailures, value.infraFailures, Math.max(0, Math.round(value.apiMicrousd)), value.subscriptionRuns,
-      value.subscriptionTokens, value.unknownRuns, value.remediationRuns, JSON.stringify(value.selections), value.settled ? 1 : 0, now.toISOString());
+      value.subscriptionTokens, value.unknownRuns, value.remediationRuns, value.personRevisions, value.firstCheckPassed === null ? null : value.firstCheckPassed ? 1 : 0,
+      value.agentTurns, value.turnsUnknownRuns, JSON.stringify(value.selections), value.settled ? 1 : 0, value.settled && value.accumulationEnded ? 1 : 0,
+      now.toISOString());
 }
 
 /** The re-evaluation pass (the reconcile pass of each project, operate.ts): every family with a cohort snapshot whose
- * record is missing or not settled is evaluated again from its rows, oldest evaluation first, at most `limit` a
+ * record is missing or not closed is evaluated again from its rows, oldest evaluation first, at most `limit` a
  * pass. Each family is its own transaction, so one unreadable family never holds the others back. */
 export function reevaluateResultRecords(store: Store, repo: string, evidenceRoot: string | undefined, now: Date, limit = 100): number {
   let saved = 0;

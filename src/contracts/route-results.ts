@@ -78,6 +78,11 @@ export const resultRecordSchema = z.strictObject({
   decidedAt: z.string().nullable(),
   failures: z.strictObject({ model: z.number().int(), infrastructure: z.number().int() }),
   spend: z.strictObject({ apiMicrousd: z.number().int(), subscriptionRuns: z.number().int(), subscriptionTokens: z.number().int(), unknownRuns: z.number().int(), remediationRuns: z.number().int() }),
+  /** Counts that keep accumulating after the verdict is final, until the record closes. */
+  personRevisions: z.number().int(),
+  firstCheckPassed: z.boolean().nullable(),
+  turns: z.strictObject({ known: z.number().int(), unknownRuns: z.number().int() }),
+  closed: z.boolean(),
   selections: z.array(selectionSchema),
 });
 export type ResultRecordView = z.infer<typeof resultRecordSchema>;

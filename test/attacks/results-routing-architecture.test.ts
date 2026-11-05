@@ -52,7 +52,8 @@ describe("this tree", () => {
     try {
       expect(() => recordRevisionOrigin(store, "t-1", "someone" as never)).toThrow(/unknown revision origin/);
       const value = { taskRef: 1, task: "t-1", repo: null, cohortSize: null, provider: null, model: null, state: "rejected" as const, reason: null, resultRun: null, firstStartedAt: null,
-        acceptedAt: null, decidedAt: null, modelFailures: 0, infraFailures: 0, apiMicrousd: 0, subscriptionRuns: 0, subscriptionTokens: 0, unknownRuns: 0, remediationRuns: 0, selections: [], settled: true };
+        acceptedAt: null, decidedAt: null, modelFailures: 0, infraFailures: 0, apiMicrousd: 0, subscriptionRuns: 0, subscriptionTokens: 0, unknownRuns: 0, remediationRuns: 0, selections: [], settled: true,
+        personRevisions: 0, firstCheckPassed: null, agentTurns: 0, turnsUnknownRuns: 0, accumulationEnded: false };
       expect(() => saveResultRecord(store, value, new Date())).toThrow(/can't have the reason/);
       expect(() => saveResultRecord(store, { ...value, state: "mature", reason: "no-check" }, new Date())).toThrow(/can't have the reason/);
       expect(() => saveResultRecord(store, { ...value, state: "rejected", reason: "unanswered" }, new Date())).toThrow(/can't have the reason/);
