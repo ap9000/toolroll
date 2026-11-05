@@ -84,7 +84,7 @@ import { startConnect } from "../mcp-connect.js";
 import { decideProposal,listProposals,memoryStatus } from "../memory-pass.js";
 import { checkModels,isNewModel,modelOptions,modelWords,RUNTIME_TOOLS,runtimeStates,seenModels,setWatch,updateRuntime,watchState,type RuntimeTool } from "../model-catalog.js";
 import { modelsHtml,modelsScript,type RoleView,type SuggestedView } from "../models-ui.js";
-import { acceptSuggestion, dismissSuggestion, grantWords, keepRule, modelName, ruleWords, rulesOf, setSuggestModels, suggestionsFor, suggestionWords, suggestModelsOn, turnOffRule } from "../route-rules.js";
+import { acceptSuggestion, dismissSuggestion, grantWords, keepRule, modelName, ruleWords, rulesOf, setSuggestModels, startTrial, stopTrial, suggestionsFor, suggestionWords, suggestModelsOn, trialOffersFor, trialOfferWords, trialsOf, trialWords, turnOffRule } from "../route-rules.js";
 import type { RuleDoor } from "../route-store.js";
 import { ALL_SLOTS,applyModelChoices,browserWords,checkScope,DEFAULT_PRESET,defaultAgentOf,fillDefaultRouting,isPresetName,newerModels,PRESETS,presetChange,presetInUse,previewModelChange,recentRuns,rowAt,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
 import { HEADROOM_FIVE_HOUR_LIMIT,HEADROOM_WEEKLY_LIMIT,exactModelId } from "../phase-routing.js";
@@ -2392,6 +2392,8 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.models-turn-off": modelsRuleAct("turn-off"),
     "settings.models-not-now": modelsRuleAct("not-now"),
     "settings.models-suggest-off": modelsRuleAct("suggest-off"),
+    "settings.models-try": modelsRuleAct("try"),
+    "settings.models-stop": modelsRuleAct("stop"),
     "settings.knowledge-refresh": knowledgeRefresh,
     "settings.knowledge-proposal": knowledgeProposal,
     "settings.knowledge-decision": knowledgeDecision,
@@ -2643,6 +2645,10 @@ ${postForm("/settings/chat-approval/save", html`\
       rules: repos.flatMap(one => rulesOf(store, one, now)).map(one => ({ id: one.id, repo: one.repo, project: projectName(one.repo), title: sizeTitle(one.cohortSize, modelName(store, one.model)), words: ruleWords(store, one),
         state: one.state === "active" ? "active" as const : one.state === "paused" ? "paused" as const : "ended" as const })),
       suggest: repo === null ? null : { on: suggestModelsOn(store, repo) },
+      trialOffers: repos.flatMap(one => trialOffersFor(store, one, now)).map(one => ({ id: one.id, repo: one.repo, project: projectName(one.repo),
+        title: `Try ${sizeTitle(one.cohortSize, one.name)}`, words: trialOfferWords(one), save: `Try it on the next ${one.places}` })),
+      trials: repos.flatMap(one => trialsOf(store, one, now)).map(one => ({ id: one.id, repo: one.repo, project: projectName(one.repo),
+        title: `Trying ${sizeTitle(one.cohortSize, modelName(store, one.model))}`, words: trialWords(store, one), live: one.state === "trialling" || one.state === "paused" })),
     };
   }
 
@@ -2653,7 +2659,7 @@ ${postForm("/settings/chat-approval/save", html`\
    * suggestions off only take authority away, so a signed-in session does — or this computer's local owner, whose
    * route row narrows it to exactly that act.
    */
-  function modelsRuleAct(kind: "accept" | "keep" | "suggest-on" | "turn-off" | "not-now" | "suggest-off") { return async (ctx: HandlerContext): Promise<void> => {
+  function modelsRuleAct(kind: "accept" | "keep" | "suggest-on" | "turn-off" | "not-now" | "suggest-off" | "try" | "stop") { return async (ctx: HandlerContext): Promise<void> => {
     const { response, now, posted } = ctx;
     const who = browserCaller(ctx.who);
     const body = readForm(posted, CONSOLE_FORMS.modelsRules);
@@ -2662,7 +2668,7 @@ ${postForm("/settings/chat-approval/save", html`\
     if (["scope", "password", "id", "rule"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
     if (!consoleProjects().includes(repo) || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/models");
     let door: RuleDoor;
-    if (kind === "accept" || kind === "keep" || kind === "suggest-on") {
+    if (kind === "accept" || kind === "keep" || kind === "suggest-on" || kind === "try") {
       const proved = authenticateApprover(who, body.get("password") ?? "");
       if (!proved.ok) return back("problem", "Enter your Toolroll password to change which models run.");
       door = { kind: "person", person: modelsAuthority(who, proved.method) };
@@ -2672,12 +2678,16 @@ ${postForm("/settings/chat-approval/save", html`\
     const ruleId = /^[1-9][0-9]{0,9}$/.test(body.get("rule") ?? "") ? Number(body.get("rule")) : -1;
     const id = body.get("id") ?? "";
     const result = kind === "accept" ? acceptSuggestion(store, { repo, id }, door, now)
+      : kind === "try" ? startTrial(store, { repo, id }, door, now)
+      : kind === "stop" ? stopTrial(store, ruleId, door, now)
       : kind === "keep" ? keepRule(store, ruleId, door, now)
       : kind === "turn-off" ? turnOffRule(store, ruleId, door, now)
       : kind === "not-now" ? dismissSuggestion(store, { repo, id }, door, now)
       : setSuggestModels(store, repo, kind === "suggest-on", door);
     if (!result.ok) return back("problem", result.problem);
-    return back("said", kind === "accept" ? "Saved. New tasks of that size build on the suggested model; each is still approved by a person."
+    return back("said", kind === "try" ? "Trial started. The next tasks of that size try the cheaper model; each waits for your approval."
+      : kind === "stop" ? "Trial stopped. New tasks build on the configured model; tasks already approved keep their model."
+      : kind === "accept" ? "Saved. New tasks of that size build on the suggested model; each is still approved by a person."
       : kind === "keep" ? "Kept. The rule is on again with its original terms."
       : kind === "turn-off" ? "Turned off. New tasks build on the configured model; tasks already approved keep their model."
       : kind === "not-now" ? "Not now. This suggestion stays quiet for 30 days."

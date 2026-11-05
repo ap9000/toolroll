@@ -38,7 +38,7 @@ import { actorLabel, currentActor, type Actor } from "./actor.js";
 import { scanForSecrets } from "./evidence.js";
 import { LIVE_ACTIVITY_KINDS, type LiveActivityKind } from "./live.js";
 import { hashSecret, mintLeadToken, parseCredential, secretMatches, tokenPurpose, tokenRotationProblem, type CredentialKind, type TokenPurpose } from "./api-tokens.js";
-import { bumpModelsGeneration, forgetProjectRoutes, liveEarnedRules, noteExposureCancelled, noteExposureFiled, noteExposureSealed, ruleHoldOf, writeRunCohort } from "./route-store.js";
+import { admitTrialRun, bumpModelsGeneration, forgetProjectRoutes, liveEarnedRules, liveTrialFor, noteExposureCancelled, noteExposureFiled, noteExposureSealed, releaseTrialPlaces, reserveTrialPlace, ruleHoldOf, settleTrialPlaces, trialSealProblem, writeRunCohort } from "./route-store.js";
 /**
  * The database: a small task store, and the operational overlay beside it.
  *
@@ -7484,6 +7484,8 @@ export class Store {
     if (ref !== undefined && prior?.["state"] !== "cancelled") this.noteTaskAct(Number(ref["id"]), "cancelled", now);
     // Results routing: a cancel closes the task's open exposure to an earned rule.
     if (ref !== undefined) noteExposureCancelled(this, Number(ref["id"]), now);
+    // …and gives up any trial place it holds unconsumed (a consumed place is never released).
+    if (ref !== undefined) releaseTrialPlaces(this, Number(ref["id"]), now);
     // A cancelled task's pending steering settles superseded in the SAME
     // transaction, whichever road cancelled it — a note silently waiting
     // for a build that can no longer happen is wrong on every road, not
@@ -8867,6 +8869,8 @@ export class Store {
           route = options.route;
           const problems = routeProblems(route);
           if (problems.length > 0) unresolvedReason = problems.join("; ");
+          // A trial's place is one task's (results routing slice 3): a frozen route never carries one to another.
+          else if (legOf(route, "build").selection?.kind === "trial") unresolvedReason = "a frozen agent route can't try a cheaper model — a trial place belongs to the task it was reserved for";
         }
       } else if (!candidatesResolved.ok) {
         unresolvedReason = candidatesResolved.problem;
@@ -8877,7 +8881,16 @@ export class Store {
       } else if (!planPin.ok) {
         unresolvedReason = planPin.problem;
       } else {
-        route = recommendRoute({
+        // Results routing (route v3): the project's live earned rules and trial, and the two eligibility facts the
+        // route doesn't carry. A release or candidate is read conservatively: terms this filing may still drop count.
+        const earnedBase = ref === null || ref.backend !== BUILT_IN || ref.repo === null ? null : {
+          rules: liveEarnedRules(this, ref.repo),
+          release: (scope.candidate ?? null) !== null || options.releaseTerms != null || options.releaseCheck != null
+            || prior?.["release_terms_json"] != null || prior?.["release_check_json"] != null || releaseTaskRef(this, ref.id) || nightlyTaskRef(this, ref.id),
+          protected: isProtectedWork(this.approvalRules(ref.repo), scope.touches),
+        };
+        const trial = earnedBase === null || ref === null ? null : liveTrialFor(this, ref.repo, ref.sizing?.size);
+        const routeWith = (reservation: number | null) => recommendRoute({
           qualityMode,
           evidence: [...new Set(scope.acceptance.flatMap(one => one.evidence))] as RouteEvidenceKind[],
           publication: this.publicationAuthorityOf(ref?.repo ?? null, new Date(scope.proposedAt)),
@@ -8888,15 +8901,18 @@ export class Store {
           // with the route like every other input.
           size: ref?.sizing ?? null,
           headroom: this.planHeadroom(new Date(scope.proposedAt)),
-          // Results routing (route v3): the project's live earned rules, and the two eligibility facts the route
-          // doesn't carry. A release or candidate is read conservatively: terms this filing may still drop count.
-          earned: ref === null || ref.backend !== BUILT_IN || ref.repo === null ? null : {
-            rules: liveEarnedRules(this, ref.repo),
-            release: (scope.candidate ?? null) !== null || options.releaseTerms != null || options.releaseCheck != null
-              || prior?.["release_terms_json"] != null || prior?.["release_check_json"] != null || releaseTaskRef(this, ref.id) || nightlyTaskRef(this, ref.id),
-            protected: isProtectedWork(this.approvalRules(ref.repo), scope.touches),
-          },
+          earned: earnedBase === null ? null : { ...earnedBase, ...(trial === null ? {} : { trial: { ...trial, reservation } }) },
         });
+        // A TRIAL'S PLACE (results routing slice 3): asked first whether this filing would take the trial at all (a
+        // pure probe, nothing written), then its place reserved here, in this write transaction, and the route made
+        // with that place (or with none left: the configured builder runs it). A pin, an override or an ineligible
+        // task never takes a place.
+        route = routeWith(trial === null ? null : Number.MAX_SAFE_INTEGER);
+        if (trial !== null && ref !== null && legOf(route, "build").selection?.kind === "trial") {
+          route = routeWith(reserveTrialPlace(this, trial.id, ref.id, new Date(scope.proposedAt)));
+        } else if (trial !== null) {
+          route = routeWith(null);
+        }
         const problems = routeProblems(route);
         if (problems.length > 0) unresolvedReason = problems.join("; ");
       }
@@ -9068,6 +9084,12 @@ export class Store {
       // Results routing (exposure, route-store.ts): a build leg under an earned rule opens the task's one exposure to
       // it; a re-filing adds an event to an open one, never a row.
       if (ref !== null && route !== null) noteExposureFiled(this, ref.id, legOf(route, "build").selection, new Date(scope.proposedAt));
+      // Results routing (trials, route-store.ts): the place this route seals is bound to the digest it was filed under
+      // (repeated saves reuse it); any other place this task held unconsumed is released.
+      if (ref !== null) {
+        const selection = route === null ? undefined : legOf(route, "build").selection;
+        settleTrialPlaces(this, ref.id, options.route !== undefined ? undefined : selection, boundDigest, new Date(scope.proposedAt));
+      }
       return null;
     }));
   }
@@ -9186,6 +9208,11 @@ export class Store {
         // filed seals nothing — re-filing routes it on the configured builder (route-rules.ts holds what was approved).
         const sealedSelection = legOf(authority.route, "build").selection;
         if (sealedSelection?.kind === "rule" && this.db.prepare("SELECT state FROM route_rule WHERE id = ?").get(sealedSelection.rule)?.["state"] === "switched-off") return false;
+        // A TRIAL (results routing slice 3): only a person's own yes seals it — the ceremony or their paired-chat tap,
+        // never a mode, a grant, a schedule, an automatic seal, a carry or the lead — and only while its place stands.
+        const trialRef = this.db.prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, taskId);
+        if (trialSealProblem(this, { taskRef: trialRef === undefined ? null : Number(trialRef["id"]), selection: sealedSelection, digest: String(working["digest"] ?? ""),
+          basis: basis === undefined ? null : basis.kind, by, machine: machineActing() }) !== null) return false;
         // RELEASE TERMS (release-once.md): only a person's own yes (the ceremony or a paired-chat tap) seals them, and
         // that yes opens the release's authority record in this same transaction — or the seal doesn't stand.
         const terms = storedReleaseTerms(working["release_terms_json"]);
@@ -15856,6 +15883,10 @@ export class Store {
     // never updated (route-store.ts writeRunCohort; a snapshot it can't compute is recorded as not eligible).
     if (role === "builder" || role === "repair") {
       writeRunCohort(this, { run: id, taskRef: run.taskRef, role, routeDigest: stamp.routeDigest, provider: provider ?? "claude", model, qualityMode, startedAt: run.now.toISOString() });
+      // A TRIAL (results routing slice 3): a person's own approval, and its place consumed exactly once against the
+      // sealed digest (a retry or repair of the same task consumes nothing more). Refused → the row rolls back.
+      const trialProblem = admitTrialRun(this, { taskId, taskRef: run.taskRef, role, run: id, now: run.now });
+      if (trialProblem !== null) refuse(trialProblem);
     }
     if (role === "reviewer" && parent?.role === "reviewer" && parent.watchIncarnation != null) {
       this.db.prepare("UPDATE run SET watch_incarnation = ? WHERE id = ?").run(parent.watchIncarnation, id);

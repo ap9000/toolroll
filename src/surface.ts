@@ -484,7 +484,7 @@ const REMOTE_NO: readonly string[] = [
   "models results",
   // Earned rules (results routing): the project's own results, and its rules' doors, with this machine's sign-in; a
   // remote token never changes which models run (the rule door refuses it in the write too).
-  "models suggestions", "models accept", "models dismiss", "models turn-off", "models keep",
+  "models suggestions", "models accept", "models dismiss", "models turn-off", "models keep", "models try", "models stop",
   // Publication and release.
   "publish", "publish status", "publish merge", "publish refire", "publish unblock", "publish rearm", "publish grant", "publish revoke",
   // A repository's authority grants on this machine.
@@ -563,6 +563,7 @@ const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   "models suggestions": "read",
   "models turn-off": "routing-turn-off",
   "models dismiss": "dismiss-suggestion",
+  "models stop": "trial-stop",
 };
 /** Every guide row's local-owner mark, by invocation: `allow` with its act, else `deny`. Exported for the inventory test. */
 export const LOCAL_POLICY: ReadonlyMap<string, { local: "allow"; act: LocalOwnerAct } | { local: "deny" }> = new Map(GUIDE_ROWS.map(row => [row.invocation,

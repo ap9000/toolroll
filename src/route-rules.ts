@@ -17,11 +17,11 @@ import { INSTALLATION_SCOPE } from "./agentconfig.js";
 import { canonicalJson } from "./canonical-json.js";
 import { REASON_WORDS, type NotCountedReason, type Selection } from "./contracts/route-results.js";
 import { checkScope, effectiveRoutes } from "./model-choices.js";
-import { seenModel } from "./model-catalog.js";
-import { legOf, routeFromJson, type PhaseRoute } from "./phase-routing.js";
+import { seenModel, seenModels } from "./model-catalog.js";
+import { exactModelId, legOf, routeFromJson, type PhaseRoute } from "./phase-routing.js";
 import {
-  endRuleByDoor, endRuleByPlane, insertEarnedRule, keepPausedRule, liveEarnedRules, modelsGenerationOf, proveRuleDoor, recordNotNow,
-  ruleHoldOf, writeSuggestModels, type RuleAct, type RuleDoor, type RuleRefusalReason,
+  endRuleByDoor, endRuleByPlane, endTrialByDoor, insertEarnedRule, insertTrial, keepPausedRule, liveEarnedRules, liveTrialFor, modelsGenerationOf, proveRuleDoor, recordNotNow,
+  ruleHoldOf, trialOrdinalOf, trialPlaceLive, trialPlacesOf, writeSuggestModels, type RuleAct, type RuleDoor, type RuleRefusalReason,
 } from "./route-store.js";
 import { BUILT_IN, type Store } from "./store.js";
 
@@ -82,6 +82,8 @@ export type RuleRow = {
   configured: { provider: string; model: string | null }; state: RuleState; generation: number; grant: Grant | null;
   prices: Prices | null; depends: Record<string, number> | null; acceptedBy: string; acceptedAt: string;
   endedAt: string | null; endedBy: string | null; endReason: string | null;
+  /** A trial's number of places (slice 3); null for a rule. */
+  limit: number | null;
 };
 /** Listed prices, in dollars per million tokens, as snapshotted. */
 export type Prices = { model: { in: number; out: number }; configured: { in: number; out: number } };
@@ -97,6 +99,7 @@ function readRule(row: Record<string, unknown>): RuleRow {
     acceptedBy: String(row["accepted_by"]), acceptedAt: String(row["accepted_at"]),
     endedAt: row["ended_at"] == null ? null : String(row["ended_at"]), endedBy: row["ended_by"] == null ? null : String(row["ended_by"]),
     endReason: row["end_reason"] == null ? null : String(row["end_reason"]),
+    limit: row["trial_limit"] == null ? null : Number(row["trial_limit"]),
   };
 }
 export function ruleById(store: Store, id: number): RuleRow | null {
@@ -394,7 +397,7 @@ export function dismissSuggestion(store: Store, input: { repo: string; id: strin
   return act(store, () => {
     if (!known(store, input.repo)) throw new Refused(refused("unknown-project"));
     const proved = prove(store, door, "dismiss", input.repo);
-    const asked = readSuggestionId(input.id);
+    const asked = readSuggestionId(input.id) ?? readTrialOfferId(input.id);
     if (asked === null) throw new Refused(refused("not-found"));
     const configured = configuredBuilder(store, input.repo, asked.size);
     recordNotNow(store, proved, { repo: input.repo, cohortSize: asked.size, provider: "claude", model: asked.model, configuredProvider: configured?.provider ?? "claude",
@@ -532,7 +535,12 @@ export function routeRulesPass(store: Store, repo: string, now: Date): { switche
     if (rule.state === "expired") notify(store, repo, `route-rule-expired:${rule.id}`, `${name} for ${sizeWord(rule.cohortSize)} tasks ended`,
       "Its 90 days are over. These tasks build on the configured model again; tasks already approved keep their model.", now);
   }
-  // Tasks under a rule that is no longer live.
+  // Trials (slice 3): one past its days ends; tasks already approved on it keep their place and model.
+  for (const trial of trialsOf(store, repo, now).filter(one => one.state === "trialling" || one.state === "paused")) {
+    const expires = trialExpiry(store, trial);
+    if (expires === null || expires <= now.getTime()) endRuleByPlane(store, trial.id, trial.generation, "expired", "trial-ended", now);
+  }
+  // Tasks under a rule that is no longer live, and plans waiting on a trial place that no longer stands.
   const live = new Set(liveEarnedRules(store, repo).map(one => one.id));
   const rows = store.handle.prepare(`SELECT ts.task_id, tr.id AS ref, ts.proposed_route_json, ts.approved_route_json, ts.approved_digest, ts.digest
       FROM task_scope ts JOIN task_ref tr ON tr.backend = ? AND tr.external_id = ts.task_id JOIN task t ON t.id = ts.task_id
@@ -548,7 +556,7 @@ export function routeRulesPass(store: Store, repo: string, now: Date): { switche
           if (held === null) return;
           holdRuleOff(store, ref, taskId, held.model, now);
           counts.held++;
-        } else if (proposed?.kind !== "rule" || live.has(proposed.rule)) {
+        } else if (proposed?.kind === "rule" ? live.has(proposed.rule) : proposed?.kind === "trial" ? trialPlaceLive(store, proposed, ref) : true) {
           return;
         }
         if (store.hasLiveClaim(ref, now)) return;
@@ -569,6 +577,7 @@ export function routeRulesPass(store: Store, repo: string, now: Date): { switche
 export function selectionEvidenceWords(store: Store, route: PhaseRoute | null, now: Date): string | null {
   if (route === null) return null;
   const selection = legOf(route, "build").selection;
+  if (selection?.kind === "trial") return trialEvidenceWords(store, selection);
   if (selection?.kind !== "rule") return null;
   const rule = ruleById(store, selection.rule);
   if (rule === null) return "Why this model: an earned rule chose it; that rule is gone now. Change the builder if you want another model.";
@@ -602,4 +611,182 @@ export function ruleWords(store: Store, rule: RuleRow): string {
   if (rule.state === "switched-off") return `${what}: switched itself off on ${rule.endedAt?.slice(0, 10) ?? "?"} (${rule.endReason ?? "its results dropped"}).`;
   if (rule.state === "expired") return `${what}: ended on ${rule.endedAt?.slice(0, 10) ?? "?"}.`;
   return `${what}: turned off${rule.endedBy === null ? "" : ` by ${rule.endedBy}`} on ${rule.endedAt?.slice(0, 10) ?? "?"}.`;
+}
+
+// ---- trials (slice 3) ------------------------------------------------------------------------------------------------
+
+/** When to offer a trial (docs/plans/results-routing.md, "Trials"): the configured Claude builder of a cohort has at
+ * least 10 decided records here at ≥ 90% accepted with checks passing, and a cheaper Claude model has too few results
+ * here to be suggested on its own. A trial tries it on the next 10 eligible tasks, each approved by a person. */
+export const TRIAL_TERMS = Object.freeze({ places: 10, configuredMinDecided: 10, configuredMinMature: 0.9, days: 90 });
+
+export type TrialOffer = {
+  /** `trial:<size>:<model>:<offer>` — what the person starts, and what Not now names. */
+  id: string;
+  repo: string; cohortSize: "small" | "medium"; provider: "claude"; model: string; name: string;
+  configured: { provider: string; model: string; name: string };
+  evidence: Evidence; configuredEvidence: Evidence; prices: Prices; depends: Record<string, number>;
+  places: number;
+  offer: { evidence: string; prices: string; depends: string };
+};
+
+/** A trial offer's id read back: its cohort, model and the three digest prefixes it was offered under. */
+export function readTrialOfferId(id: string): { size: "small" | "medium"; model: string; evidence: string; prices: string; depends: string } | null {
+  return id.startsWith("trial:") ? readSuggestionId(id.slice("trial:".length)) : null;
+}
+
+/** What a trial offer for this cohort and model would say now, whether or not it qualifies: the parts its digests
+ * bind, and why it doesn't qualify (null: it does). */
+export function trialOfferNow(store: Store, repo: string, size: "small" | "medium", model: string, now: Date): { offer: TrialOffer | null; why: string | null; parts: TrialOffer["offer"] | null } {
+  const configured = configuredBuilder(store, repo, size);
+  if (configured === null) return { offer: null, why: "the configured builder can't be read", parts: null };
+  if (configured.provider !== "claude") return { offer: null, why: "only Claude reports the model it ran, so only a Claude builder runs a trial", parts: null };
+  if (model === configured.model || !exactModelId(model) || readSuggestionId(`${size}:${model}:000000000000`) === null) return { offer: null, why: "that model can't be tried here", parts: null };
+  const since = new Date(now.getTime() - SUGGEST_TERMS.windowDays * DAY).toISOString();
+  const rows = cohortRecords(store, repo, size, "claude", model, since);
+  const standingRows = cohortRecords(store, repo, size, "claude", configured.model, since);
+  const evidence = evidenceOf(rows), configuredEvidence = evidenceOf(standingRows);
+  const cheaper = pricesOf(store, "claude", model), standing = pricesOf(store, "claude", configured.model);
+  const prices: Prices | null = cheaper === null || standing === null ? null : { model: cheaper, configured: standing };
+  const depends = dependsOf(store, repo);
+  const parts = {
+    evidence: short({ trial: true, repo, size, model, configured, own: decidedOf(rows).slice(0, SUGGEST_TERMS.newest).map(one => [one.task, one.state]),
+      standing: decidedOf(standingRows).slice(0, SUGGEST_TERMS.newest).map(one => [one.task, one.state]) }),
+    prices: short(prices), depends: short(depends),
+  };
+  const share = configuredEvidence.decided === 0 ? 0 : configuredEvidence.mature / configuredEvidence.decided;
+  const why = configuredEvidence.decided < TRIAL_TERMS.configuredMinDecided ? `the configured model has ${configuredEvidence.decided} decided tasks here; ${TRIAL_TERMS.configuredMinDecided} are needed to compare`
+    : share < TRIAL_TERMS.configuredMinMature - 1e-9 ? "fewer than 90% of the configured model's own decided tasks here were accepted with checks passing"
+    : evidence.decided >= SUGGEST_TERMS.minDecided ? "it has enough results here to be judged on them"
+    : prices === null ? "one of the two models has no listed price"
+    : !(prices.model.in < prices.configured.in && prices.model.out < prices.configured.out) ? "it isn't cheaper than the configured model on both input and output"
+    : null;
+  if (why !== null) return { offer: null, why, parts };
+  return {
+    offer: {
+      id: `trial:${size}:${model}:${parts.evidence.slice(0, 4)}${parts.prices.slice(0, 4)}${parts.depends.slice(0, 4)}`,
+      repo, cohortSize: size, provider: "claude", model, name: modelName(store, model),
+      configured: { ...configured, name: modelName(store, configured.model) }, evidence, configuredEvidence, prices: prices!, depends, places: TRIAL_TERMS.places, offer: parts,
+    },
+    why: null, parts,
+  };
+}
+
+/**
+ * The trials a project offers now: per size, where nothing is suggested (a suggestion has enough evidence to stand on
+ * its own) and no rule or trial is live, the closest cheaper Claude model the catalog lists now (the dearest of those
+ * cheaper on both prices, then the newest), unless the project's switch is off or a person said Not now to it.
+ */
+export function trialOffersFor(store: Store, repo: string, now: Date): TrialOffer[] {
+  if (!suggestModelsOn(store, repo)) return [];
+  const suggested = new Set(suggestionsFor(store, repo, now).map(one => one.cohortSize));
+  const out: TrialOffer[] = [];
+  for (const size of ["small", "medium"] as const) {
+    if (suggested.has(size)) continue;
+    if (store.handle.prepare("SELECT 1 FROM route_rule WHERE repo = ? AND cohort_size = ? AND state IN ('active','trialling','paused')").get(repo, size) !== undefined) continue;
+    const offers = seenModels(store, "claude").filter(one => exactModelId(one.id) && !notNowStands(store, repo, size, one.id, now))
+      .flatMap(one => { const offer = trialOfferNow(store, repo, size, one.id, now).offer; return offer === null ? [] : [{ offer, released: one.releasedAt ?? "" }]; });
+    offers.sort((a, b) => b.offer.prices.model.in - a.offer.prices.model.in || b.offer.prices.model.out - a.offer.prices.model.out || b.released.localeCompare(a.released) || a.offer.model.localeCompare(b.offer.model));
+    if (offers[0] !== undefined) out.push(offers[0].offer);
+  }
+  return out;
+}
+
+/** A trial offer in plain words, the evidence first. */
+export function trialOfferWords(offer: TrialOffer): string {
+  const c = offer.configuredEvidence, e = offer.evidence;
+  const own = e.decided === 0 ? `${offer.name} has no decided tasks here yet` : `${offer.name} has ${e.decided} decided task${e.decided === 1 ? "" : "s"} here so far; ${SUGGEST_TERMS.minDecided} are needed to suggest it`;
+  return `${offer.configured.name} does well on ${sizeWord(offer.cohortSize)} tasks here (${c.mature} of the last ${c.decided} accepted with checks passing). ${own}. Try it on the next ${offer.places}; a person approves each one.`;
+}
+
+/** A project's trials a person sees: live (trialling, paused) and, for 30 days, the ones that ended. */
+export function trialsOf(store: Store, repo: string, now: Date): RuleRow[] {
+  return store.handle.prepare(`SELECT * FROM route_rule WHERE repo = ? AND kind = 'trial' AND (state IN ('trialling','paused') OR ended_at >= ?) ORDER BY cohort_size, id DESC`)
+    .all(repo, new Date(now.getTime() - NOT_NOW_DAYS * DAY).toISOString()).map(readRule);
+}
+/** When a trial's days end, from its sealed grant; null when that can't be read (it then ends: fail closed). */
+function trialExpiry(store: Store, trial: RuleRow): number | null {
+  try {
+    const grant = JSON.parse(String(store.handle.prepare("SELECT grant_json FROM route_rule WHERE id = ?").get(trial.id)?.["grant_json"])) as { expires?: unknown };
+    const expires = typeof grant.expires === "string" ? Date.parse(grant.expires) : NaN;
+    return Number.isFinite(expires) ? expires : null;
+  } catch { return null; }
+}
+
+/**
+ * Start a trial, in one transaction: the person re-proved (a step-up); the offer still standing, at the same prices
+ * and on the same configuration generations it was offered under, with its eligibility re-checked now (a stale
+ * offer refuses); the configuration valid with the trial's builder added (checkScope: repairs resume its session);
+ * and the size's one winner free (concurrent starts: one wins). A refusal names which.
+ */
+export function startTrial(store: Store, input: { repo: string; id: string }, door: RuleDoor, now: Date): { ok: true; trial: number; offer: TrialOffer } | RuleRefusal {
+  return act(store, () => {
+    if (!known(store, input.repo)) throw new Refused(refused("unknown-project"));
+    const proved = prove(store, door, "trial-start", input.repo);
+    const asked = readTrialOfferId(input.id);
+    if (asked === null) throw new Refused(refused("not-found"));
+    if (store.handle.prepare("SELECT 1 FROM route_rule WHERE repo = ? AND cohort_size = ? AND state IN ('active','trialling','paused')").get(input.repo, asked.size) !== undefined) throw new Refused(refused("taken"));
+    const now_ = trialOfferNow(store, input.repo, asked.size, asked.model, now);
+    if (now_.parts !== null && now_.parts.depends.slice(0, 4) !== asked.depends) throw new Refused(refused("config-changed"));
+    if (now_.parts !== null && now_.parts.prices.slice(0, 4) !== asked.prices) throw new Refused(refused("price-changed"));
+    if (now_.offer === null || now_.parts === null || now_.parts.evidence.slice(0, 4) !== asked.evidence || !suggestModelsOn(store, input.repo)
+      || suggestionsFor(store, input.repo, now).some(one => one.cohortSize === asked.size)) throw new Refused(refused("stale-suggestion"));
+    const offer = now_.offer;
+    const candidate = { id: 0, generation: 1, cohortSize: offer.cohortSize, provider: "claude" as const, model: offer.model, configured: { provider: offer.configured.provider, model: offer.configured.model } };
+    const checked = checkScope(store, input.repo, { rules: [...liveEarnedRules(store, input.repo), candidate] });
+    if (checked.kind !== "ok") throw new Refused(refused("invalid", `${REFUSAL_WORDS.invalid} ${checked.problem}`));
+    const grant = { policyVersion: ROUTING_POLICY_VERSION, cutoff: now.toISOString(), expires: new Date(now.getTime() + TRIAL_TERMS.days * DAY).toISOString(), places: offer.places };
+    const trial = insertTrial(store, proved, { repo: input.repo, cohortSize: offer.cohortSize, model: offer.model, configuredProvider: offer.configured.provider,
+      configuredModel: offer.configured.model, limit: offer.places, grant, prices: offer.prices, depends: offer.depends }, now);
+    if (trial === null) throw new Refused(refused("taken"));
+    store.recordAction({ at: now.toISOString(), actor: proved.actor, repo: input.repo, taskId: null, runId: null, action: "model trial started", outcome: "changed", source: "policy",
+      detail: `the next ${offer.places} ${sizeWord(offer.cohortSize)} tasks try ${offer.model} instead of ${offer.configured.model}, each approved by a person (trial ${trial})` });
+    return { ok: true as const, trial, offer };
+  });
+}
+
+/** Stop a live or paused trial. Plans waiting on it are re-filed on the configured builder; tasks a person already
+ * approved on it keep that model. */
+export function stopTrial(store: Store, trialId: number, door: RuleDoor, now: Date): { ok: true; trial: RuleRow } | RuleRefusal {
+  return act(store, () => {
+    const trial = ruleById(store, trialId);
+    if (trial === null || trial.kind !== "trial" || (trial.state !== "trialling" && trial.state !== "paused")) throw new Refused(refused("not-found"));
+    const proved = prove(store, door, "trial-stop", trial.repo);
+    if (!endTrialByDoor(store, proved, trial.id, trial.generation, now)) throw new Refused(refused("not-found"));
+    const places = trialPlacesOf(store, trial.id);
+    store.recordAction({ at: now.toISOString(), actor: proved.actor, repo: trial.repo, taskId: null, runId: null, action: "model trial stopped", outcome: "changed", source: "policy",
+      detail: `${sizeWord(trial.cohortSize)} tasks build on the configured model again after ${places.consumed} of ${places.limit} trial tasks (trial ${trial.id})` });
+    return { ok: true as const, trial: ruleById(store, trial.id)! };
+  });
+}
+
+/** A trial's progress in words, as Settings, the command line and chat say it. */
+export function trialWords(store: Store, trial: RuleRow): string {
+  const name = modelName(store, trial.model);
+  const places = trialPlacesOf(store, trial.id);
+  const used = places.consumed + places.reserved;
+  const progress = `${used} of ${places.limit} so far (${places.consumed} started, ${places.reserved} waiting)`;
+  const instead = trial.configured.model === null ? "the configured model" : modelName(store, trial.configured.model);
+  if (trial.state === "trialling") return `Trying ${name} instead of ${instead} on the next ${places.limit} ${sizeWord(trial.cohortSize)} tasks: ${progress}. A person approves each one.`;
+  if (trial.state === "paused") return `Trying ${name} on ${sizeWord(trial.cohortSize)} tasks: paused because Models changed (${progress}). Stop it; a new offer follows.`;
+  if (trial.state === "finished") return `Tried ${name} on ${places.limit} ${sizeWord(trial.cohortSize)} tasks, finished on ${trial.endedAt?.slice(0, 10) ?? "?"}. Their results count as they're decided.`;
+  if (trial.state === "expired") return `Trying ${name} on ${sizeWord(trial.cohortSize)} tasks ended on ${trial.endedAt?.slice(0, 10) ?? "?"} after ${places.consumed} of ${places.limit}.`;
+  return `Trying ${name} on ${sizeWord(trial.cohortSize)} tasks: stopped${trial.endedBy === null ? "" : ` by ${trial.endedBy}`} on ${trial.endedAt?.slice(0, 10) ?? "?"} after ${places.consumed} of ${places.limit}.`;
+}
+
+/** The evidence line for a build leg a trial selected: which model, and which trial task this is ("trial 3 of 10"). */
+function trialEvidenceWords(store: Store, selection: { rule: number; reservation: number }): string {
+  const trial = ruleById(store, selection.rule);
+  if (trial === null || trial.kind !== "trial") return "Trying a cheaper model: that trial is gone now. Change the builder if you want another model.";
+  const place = trialOrdinalOf(store, selection.reservation);
+  const name = modelName(store, trial.model);
+  const which = place === null || place.trial !== trial.id || place.state === "released" ? "its trial place was given up" : `trial ${place.ordinal} of ${trial.limit ?? "?"}`;
+  const state = trial.state === "trialling" || trial.state === "finished" ? "" : ` The trial is ${trial.state === "paused" ? "paused" : "over"} now; approving keeps ${name}.`;
+  return `Trying a cheaper model: ${name}, ${which}. A person approves each trial task; you can pick another model before approving.${state}`;
+}
+
+/** The project's live trial for a size, as Settings reads it (null when none). */
+export function liveTrialOf(store: Store, repo: string, size: "small" | "medium"): RuleRow | null {
+  const live = liveTrialFor(store, repo, size);
+  return live === null ? null : ruleById(store, live.id);
 }

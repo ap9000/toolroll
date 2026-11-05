@@ -166,7 +166,7 @@ export const CONSOLE_FORMS = {
     "plan", "plan-strong", "build-light", "build", "build-strong", "repair", "review", "review-strong"]),
   // Settings → Models → Suggested (results routing): the project, a suggestion's id or a rule's number, and the step-up
   // password for accepting, keeping and switching suggestions on.
-  modelsRules: formContract("POST /settings/models/accept, /settings/models/keep, /settings/models/suggest-on, /settings/models/turn-off, /settings/models/not-now, /settings/models/suggest-off",
+  modelsRules: formContract("POST /settings/models/accept, /settings/models/keep, /settings/models/suggest-on, /settings/models/turn-off, /settings/models/not-now, /settings/models/suggest-off, /settings/models/try, /settings/models/stop",
     ["password", "scope", "id", "rule"]),
   knowledgeRefresh: formContract("POST /settings/knowledge/refresh", ["repo"]),
   knowledgeProposal: formContract("POST /settings/knowledge/proposal", ["repo", "decision", "proposal"]),

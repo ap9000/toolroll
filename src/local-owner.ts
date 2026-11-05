@@ -44,6 +44,8 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // (route-store.ts proveRuleDoor) checks the in-flight act is exactly the one it needs.
   "routing-turn-off",
   "dismiss-suggestion",
+  // Slice 3: stopping a trial of a cheaper model only lowers (proveRuleDoor checks this exact act).
+  "trial-stop",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);
@@ -199,6 +201,8 @@ export const CHAT_ACTION_LOCAL_ACTS: Readonly<Record<ChatAction, LocalOwnerAct |
   kit_setup: null, decision_record: null, decision_retire: null, lead_about_you: null,
   // Results routing: Not now only lowers (the rule door checks this exact act).
   suggestion_not_now: "dismiss-suggestion",
+  // Stopping a trial only lowers (the rule door checks this exact act).
+  trial_stop: "trial-stop",
   scope_approve: "approve-plan",
   result_accept: "complete-task",
   task_cancel: "stop-run",

@@ -5,8 +5,8 @@ import { checkModels, isNewModel, modelOptions, priceWords, RUNTIME_TOOLS, runti
 import { isProviderId } from "./provider.js";
 import { canonicalProject } from "./project.js";
 import { resultRecords } from "./route-results.js";
-import { acceptSuggestion, dismissSuggestion, grantWords, keepRule, ruleById, ruleWords, rulesOf, suggestionsFor, suggestionWords, turnOffRule, type RuleRefusal } from "./route-rules.js";
-import type { RuleDoor } from "./route-store.js";
+import { acceptSuggestion, dismissSuggestion, grantWords, keepRule, ruleById, ruleWords, rulesOf, startTrial, stopTrial, suggestionsFor, suggestionWords, trialOffersFor, trialOfferWords, trialsOf, trialWords, turnOffRule, type RuleRefusal } from "./route-rules.js";
+import { trialPlacesOf, type RuleDoor } from "./route-store.js";
 import { currentLocalOwner } from "./local-owner.js";
 import { REASON_WORDS } from "./contracts/route-results.js";
 import type { Store } from "./store.js";
@@ -41,6 +41,8 @@ export const MODELS_DESCRIPTORS = [
   { action: "dismiss", synopsis: "Not now: keep a suggestion quiet for 30 days: models dismiss <id> --repo <p>", mutation: "unkeyed", takesQuery: true, positional: "the suggestion's id, as models suggestions lists it", flags: ruleFlags },
   { action: "turn-off", synopsis: "turn an earned rule off, or drop a paused one: models turn-off <rule>", mutation: "unkeyed", takesQuery: true, positional: "the rule's number, as models suggestions lists it", flags: ruleFlags },
   { action: "keep", synopsis: "keep a paused earned rule: models keep <rule>", mutation: "unkeyed", takesQuery: true, positional: "the rule's number, as models suggestions lists it", flags: ruleFlags },
+  { action: "try", synopsis: "try a cheaper model on the next 10 small or routine tasks, each approved by a person: models try <id> --repo <p>", mutation: "unkeyed", takesQuery: true, positional: "the trial offer's id, as models suggestions lists it", flags: ruleFlags },
+  { action: "stop", synopsis: "stop a trial; tasks already approved on it keep their model: models stop <trial>", mutation: "unkeyed", takesQuery: true, positional: "the trial's number, as models suggestions lists it", flags: ruleFlags },
 ] as const;
 /** `proof`: the person who proved themselves for this command — at the credential generation read before the proof,
  * and how — or null. The rule doors re-prove it inside their own transaction. */
@@ -52,14 +54,14 @@ export async function runModelsCommand(positional: readonly string[], options: M
   const command = `models ${action}`;
   const fail = (reason: "usage" | "unauthenticated" | "refused", message: string) => { context.write(context.json ? envelopeJson({ ok: false, command, reason, message }) : message); return reason === "usage" ? 2 : 1; };
   const ok = (result: Record<string, unknown>, lines: string[]) => { context.write(context.json ? envelopeJson({ ok: true, command, ...result }) : lines.join("\n")); return 0; };
-  if (!MODELS_DESCRIPTORS.some(one => one.action === action)) return fail("usage", "Use models status | list --provider <p> | check | update <claude|codex|gemini> | watch on|off | results | suggestions | accept <id> | dismiss <id> | turn-off <rule> | keep <rule>.");
+  if (!MODELS_DESCRIPTORS.some(one => one.action === action)) return fail("usage", "Use models status | list --provider <p> | check | update <claude|codex|gemini> | watch on|off | results | suggestions | accept <id> | dismiss <id> | turn-off <rule> | keep <rule> | try <id> | stop <trial>.");
   // This computer's local owner (local mode, through the terminal UI) may turn a rule off and say Not now: the door
   // re-checks that its in-flight act is exactly that one.
   const local = currentLocalOwner();
-  if (context.actor === null && !(local !== null && (action === "turn-off" || action === "dismiss" || action === "suggestions"))) return fail("unauthenticated", "Sign in first: the remembered local login drives models commands.");
+  if (context.actor === null && !(local !== null && (action === "turn-off" || action === "dismiss" || action === "suggestions" || action === "stop"))) return fail("unauthenticated", "Sign in first: the remembered local login drives models commands.");
   const { store, now } = context;
   if (action === "results") return modelsResults(options, context, ok, fail);
-  if (action === "suggestions" || action === "accept" || action === "dismiss" || action === "turn-off" || action === "keep") return modelsRules(action, positional, options, { ...context, actor: context.actor ?? local!.account }, ok, fail, local !== null && context.proof == null);
+  if (action === "suggestions" || action === "accept" || action === "dismiss" || action === "turn-off" || action === "keep" || action === "try" || action === "stop") return modelsRules(action, positional, options, { ...context, actor: context.actor ?? local!.account }, ok, fail, local !== null && context.proof == null);
   const actor = context.actor;
   if (actor === null) return fail("unauthenticated", "Sign in first: the remembered local login drives models commands.");
   if (action === "status") {
@@ -126,7 +128,7 @@ type Fail = (reason: "usage" | "unauthenticated" | "refused", message: string) =
  * remote token is refused there); `turn-off` and `dismiss` take the person, or this computer's local owner inside
  * exactly that act.
  */
-function modelsRules(action: "suggestions" | "accept" | "dismiss" | "turn-off" | "keep", positional: readonly string[], options: Map<string, string | true>,
+function modelsRules(action: "suggestions" | "accept" | "dismiss" | "turn-off" | "keep" | "try" | "stop", positional: readonly string[], options: Map<string, string | true>,
   context: ModelsCliContext & { actor: string }, ok: Ok, fail: Fail, asLocal: boolean): number {
   const { store, now } = context;
   const allowed = action === "suggestions" ? ["repo", "json", "db", "as", "token", "token-file", "token-env"] : ["repo", "json", "db", "as", "token", "token-file", "token-env"];
@@ -140,25 +142,39 @@ function modelsRules(action: "suggestions" | "accept" | "dismiss" | "turn-off" |
     const repos = wanted === null ? open : [wanted];
     const suggestions = repos.flatMap(repo => suggestionsFor(store, repo, now));
     const rules = repos.flatMap(repo => rulesOf(store, repo, now));
+    const trialOffers = repos.flatMap(repo => trialOffersFor(store, repo, now));
+    const trials = repos.flatMap(repo => trialsOf(store, repo, now));
     return ok({
       suggestions: suggestions.map(one => ({ id: one.id, repo: one.repo, size: one.cohortSize, model: one.model, name: one.name, configured: one.configured,
         evidence: one.evidence, configuredEvidence: one.configuredEvidence, prices: one.prices, terms: grantWords(one.grant), words: suggestionWords(one) })),
       rules: rules.map(one => ({ id: one.id, repo: one.repo, size: one.cohortSize, model: one.model, configured: one.configured, state: one.state, acceptedAt: one.acceptedAt,
         acceptedBy: one.acceptedBy, expires: one.grant?.expires ?? null, endedAt: one.endedAt, endReason: one.endReason, words: ruleWords(store, one) })),
-    }, suggestions.length === 0 && rules.length === 0 ? ["No suggestions yet. A cheaper model is suggested once its results here match the configured one's."] : [
+      // Slice 3: cheaper models to try where results don't yet suggest one, and the trials in use.
+      trialOffers: trialOffers.map(one => ({ id: one.id, repo: one.repo, size: one.cohortSize, model: one.model, name: one.name, configured: one.configured,
+        evidence: one.evidence, configuredEvidence: one.configuredEvidence, prices: one.prices, places: one.places, words: trialOfferWords(one) })),
+      trials: trials.map(one => ({ id: one.id, repo: one.repo, size: one.cohortSize, model: one.model, configured: one.configured, state: one.state, startedAt: one.acceptedAt,
+        startedBy: one.acceptedBy, endedAt: one.endedAt, endReason: one.endReason, places: trialPlacesOf(store, one.id), words: trialWords(store, one) })),
+    }, suggestions.length === 0 && rules.length === 0 && trialOffers.length === 0 && trials.length === 0 ? ["No suggestions yet. A cheaper model is suggested once its results here match the configured one's."] : [
       ...suggestions.flatMap(one => [`Suggested · ${one.repo} · ${suggestionWords(one)}`, `  accept: toolroll models accept ${one.id} --repo ${one.repo}`, `  not now: toolroll models dismiss ${one.id} --repo ${one.repo}`]),
       ...rules.map(one => `Rule ${one.id} · ${one.repo} · ${ruleWords(store, one)}`),
+      ...trialOffers.flatMap(one => [`Try · ${one.repo} · ${trialOfferWords(one)}`, `  try: toolroll models try ${one.id} --repo ${one.repo}`, `  not now: toolroll models dismiss ${one.id} --repo ${one.repo}`]),
+      ...trials.map(one => `Trial ${one.id} · ${one.repo} · ${trialWords(store, one)}`),
     ]);
   }
   const target = positional[1];
-  if (target === undefined || positional.length !== 2) return fail("usage", action === "accept" || action === "dismiss" ? `Name one suggestion: models ${action} <id> --repo <p>.` : `Name one rule: models ${action} <rule>.`);
+  if (target === undefined || positional.length !== 2) return fail("usage", action === "accept" || action === "dismiss" || action === "try" ? `Name one offer: models ${action} <id> --repo <p>.` : action === "stop" ? "Name one trial: models stop <trial>." : `Name one rule: models ${action} <rule>.`);
   const proof = context.proof ?? null;
   const door: RuleDoor | null = proof !== null ? { kind: "person", person: { ...proof, live: () => true } } : asLocal ? { kind: "local-owner", actor: context.actor } : null;
   if (door === null) return fail("unauthenticated", "This takes your own sign-in: --as <you> --token <password>.");
   const said = (result: { ok: true } | RuleRefusal, payload: Record<string, unknown>, line: string) => result.ok ? ok(payload, [line]) : fail("refused", result.problem);
-  if (action === "accept" || action === "dismiss") {
+  if (action === "accept" || action === "dismiss" || action === "try") {
     const repo = wanted ?? (open.length === 1 ? open[0]! : null);
     if (repo === null) return fail("usage", "Name the project: --repo <p>.");
+    if (action === "try") {
+      const started = startTrial(store, { repo, id: target }, door, now);
+      return started.ok ? ok({ trial: started.trial, repo, model: started.offer.model, size: started.offer.cohortSize, places: started.offer.places },
+        [`Trial ${started.trial}: the next ${started.offer.places} ${started.offer.cohortSize === "small" ? "small" : "routine"} tasks try ${started.offer.name}. Each waits for a person's approval.`]) : fail("refused", started.problem);
+    }
     if (action === "accept") {
       const accepted = acceptSuggestion(store, { repo, id: target }, door, now);
       return accepted.ok ? ok({ rule: accepted.rule, repo, model: accepted.suggestion.model, size: accepted.suggestion.cohortSize, terms: grantWords(accepted.suggestion.grant) },
@@ -168,7 +184,12 @@ function modelsRules(action: "suggestions" | "accept" | "dismiss" | "turn-off" |
   }
   const id = /^[1-9][0-9]{0,9}$/.test(target) ? Number(target) : null;
   const rule = id === null ? null : ruleById(store, id);
-  if (rule === null || !open.includes(rule.repo)) return fail("refused", "That rule isn't one you can see here.");
+  if (action === "stop") {
+    if (rule === null || rule.kind !== "trial" || !open.includes(rule.repo)) return fail("refused", "That trial isn't one you can see here.");
+    const stopped = stopTrial(store, rule.id, door, now);
+    return stopped.ok ? ok({ trial: stopped.trial.id, state: stopped.trial.state }, [`Trial ${stopped.trial.id} stopped. Tasks already approved on it keep their model.`]) : fail("refused", stopped.problem);
+  }
+  if (rule === null || rule.kind !== "rule" || !open.includes(rule.repo)) return fail("refused", "That rule isn't one you can see here.");
   if (action === "turn-off") {
     const turned = turnOffRule(store, rule.id, door, now);
     return turned.ok ? ok({ rule: turned.rule.id, state: turned.rule.state }, [`Rule ${turned.rule.id} is off. Tasks already approved keep the model they were approved with.`]) : fail("refused", turned.problem);

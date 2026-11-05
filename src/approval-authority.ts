@@ -22,8 +22,8 @@ const PERSON_PROOFS = "('password-now', 'sso-now', 'fresh-password', 'fresh-sso'
 /** SQL over a `task_scope` alias and a repo expression: whether that row's approval authority stands at `now` (an SQL
  * expression, used exactly three times: the mode and grant clauses, and the release's expiry). It never asks whether the row is approved.
  * COALESCE: a NULL basis would make the OR chain NULL, and NOT NULL reads as "not dead"; NULL stands on nothing. */
-export const authorityStandsSql = (scope: string, repo: string, now: string): string =>
-  `COALESCE((((COALESCE(${scope}.approval_basis, '') IN ('password', 'chat') AND NOT ${machineSealSql(scope)}
+export function authorityStandsSql(scope: string, repo: string, now: string): string {
+  return `COALESCE((((COALESCE(${scope}.approval_basis, '') IN ('password', 'chat') AND NOT ${machineSealSql(scope)}
         AND (${personSealSql(scope)} OR NOT ${automationSql(scope)} OR ${approverStandsSql(scope, repo)}))
     OR (${scope}.approval_basis = 'carried' AND ${carrySealSql(scope)})
     OR (${scope}.approval_basis = 'mode' AND EXISTS (SELECT 1 FROM operating_mode om
@@ -33,7 +33,20 @@ export const authorityStandsSql = (scope: string, repo: string, now: string): st
     OR (${scope}.approval_basis = 'grant' AND ${grantStandsSql(`${scope}.mode_digest`, now, repo)})
     OR (${scope}.approval_basis = 'schedule' AND ${approverStandsSql(scope, repo)})
     OR (${scope}.approval_basis IN ('auto-check', 'auto-green') AND ${autoSealSql(scope, repo)} AND ${approverStandsSql(scope, repo)}))
-    AND ${releaseStandsSql(scope, now)} AND ${localSealStandsSql(scope, repo)}), 0)`;
+    AND ${releaseStandsSql(scope, now)} AND ${localSealStandsSql(scope, repo)}
+    AND (instr(COALESCE(${scope}.approved_route_json, ''), '"trial"') = 0 OR ${trialSealStandsSql(scope)})), 0)`;
+}
+
+/**
+ * SQL, conjunctive with every alternative above (results routing slice 3): a task whose sealed route tries a cheaper
+ * model (its build leg's selection is a trial) stands only on a PERSON's own yes to these exact bytes — the ceremony
+ * (`password`) or their paired-chat tap (`chat`), with that person's proof at the seal's instant, and no machine's.
+ * A mode, a grant, a schedule, a carry, an automatic seal or the lead never stand for one, whatever else allows them.
+ * The route is matched as text, so a route that can't be read as JSON is held to it too (fail closed).
+ */
+export function trialSealStandsSql(scope: string): string {
+  return `(COALESCE(${scope}.approval_basis, '') IN ('password', 'chat') AND NOT ${machineSealSql(scope)} AND ${personSealSql(scope)})`;
+}
 
 /**
  * SQL, conjunctive with every alternative above (easy-start plan C5): a seal a local owner gave (its proof row at the

@@ -1,6 +1,6 @@
 /** Shared, exact-state actions. Models may prepare; only the existing human
  * confirmation door executes. Protected actions use a one-use review receipt. */
-import { dismissSuggestion, suggestionsFor, suggestionWords, taskEvidenceWords } from "./route-rules.js";
+import { dismissSuggestion, ruleById, stopTrial, suggestionsFor, suggestionWords, taskEvidenceWords, trialWords } from "./route-rules.js";
 import type { RuleDoor } from "./route-store.js";
 import { CHAT_ACTION_LOCAL_ACTS, currentLocalOwner, type Authority } from "./local-owner.js";
 import { fileTaskProposal } from "./proposal.js";
@@ -163,6 +163,8 @@ export const CHAT_ACTIONS = {
   decision_retire: { label: "Retire decision", protected: false, password: false },
   // Not now only takes a suggestion off the list for 30 days: nothing about which models run changes.
   suggestion_not_now: { label: "Not now", protected: false, password: false },
+  // Stopping a trial only lowers: new tasks build on the configured model; approved ones keep theirs.
+  trial_stop: { label: "Stop trial", protected: false, password: false },
   // What the owner's own lead knows about them: theirs alone, in no project (lead-about.ts).
   lead_about_you: { label: "Remember", protected: false, password: false },
   scope_approve: { label: "Approve work", protected: true, password: true },
@@ -333,7 +335,7 @@ export function prepareSharedAction(
     return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
   }
   const task =
-    operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_") || operation.startsWith("suggestion_")
+    operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_") || operation.startsWith("suggestion_") || operation.startsWith("trial_")
       ? null
       : text(input, "task", 64);
   const flowTarget = operation.startsWith("flow_") && operation !== "flow_create" && operation !== "flow_script_save" && operation !== "flow_starter" ? flowTargetOf(store, input) : null;
@@ -836,6 +838,14 @@ export function prepareSharedAction(
     state = { suggestion: offer.id };
     title = `Not now: ${offer.name} for ${offer.cohortSize === "small" ? "small" : "routine"} tasks`;
     terms.push(suggestionWords(offer), "Keeps this suggestion quiet for 30 days. Nothing about which models run changes. To accept it instead, review it in Settings → Models.");
+  } else if (operation === "trial_stop") {
+    // Only a live trial of this project, by its number; the card is stale once the trial moves.
+    const asked = integer(input, "trial");
+    const trial = Number.isSafeInteger(asked) ? ruleById(store, asked) : null;
+    if (trial === null || trial.kind !== "trial" || trial.repo !== repo || (trial.state !== "trialling" && trial.state !== "paused")) throw Error("That trial isn't running any more. See Settings → Models.");
+    state = { trial: trial.id, generation: trial.generation };
+    title = "Stop trying a cheaper model";
+    terms.push(trialWords(store, trial), "New tasks build on the configured model again. Tasks a person already approved on the trial keep that model.");
   } else if (operation.startsWith("decision_")) {
     // The staleness fence: the newest decision id and the active count, so a
     // card drafted before a subagent recorded or retired one is refused.
@@ -1352,6 +1362,14 @@ export function executeSharedAction(
         if (!added.ok) throw Error(added.message);
       } else if (payload.operation === "tool_remove") {
         if (!removeToolFrom(store, repo, String(req["name"]), actor, now)) throw Error("That tool was already removed.");
+      }
+      else if (payload.operation === "trial_stop") {
+        const door: RuleDoor = currentLocalOwner() !== null ? { kind: "local-owner", actor } : { kind: "person", person: { actor: who.name, generation: who.generation, method: "session", live: () => true } };
+        const trial = ruleById(store, Number(payload.state["trial"]));
+        if (trial === null || trial.generation !== Number(payload.state["generation"])) throw Error("That trial changed since this card was made. See Settings → Models.");
+        const done = stopTrial(store, trial.id, door, now);
+        if (!done.ok) throw Error(done.problem);
+        return { ok: true as const, taskId: null, said: "Trial stopped. New tasks build on the configured model.", href: `/settings/models?scope=${encodeURIComponent(repo)}#models-suggested` };
       }
       else if (payload.operation === "suggestion_not_now") {
         // The rule door (route-store.ts proveRuleDoor) re-proves who says it: this computer's local owner only inside

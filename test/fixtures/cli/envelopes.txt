@@ -2423,6 +2423,90 @@ $ contract --commands --json → 0
       "remote": "no"
     },
     {
+      "invocation": "models try",
+      "synopsis": "try a cheaper model on the next 10 small or routine tasks, each approved by a person: models try <id> --repo <p>",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "the project (default: the one project you can open)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "your approver name"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "your password (accepting and keeping take one typed now)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "target",
+          "required": true,
+          "meaning": "the trial offer's id, as models suggestions lists it"
+        }
+      ],
+      "remote": "no"
+    },
+    {
+      "invocation": "models stop",
+      "synopsis": "stop a trial; tasks already approved on it keep their model: models stop <trial>",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "the project (default: the one project you can open)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "your approver name"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "your password (accepting and keeping take one typed now)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "target",
+          "required": true,
+          "meaning": "the trial's number, as models suggestions lists it"
+        }
+      ],
+      "remote": "no"
+    },
+    {
       "invocation": "status",
       "synopsis": "running work, queued reasons, results to review, the latest release check and plan windows",
       "audience": "agent",

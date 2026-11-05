@@ -11,12 +11,13 @@
  * A policy path (release-auto.ts EVAL_POLICY).
  */
 import { isProtectedWork } from "./approval-policy.js";
+import { trialSealStandsSql } from "./approval-authority.js";
 import { currentLocalOwner, localOwnerInFlight, localOwnerStandsNow } from "./local-owner.js";
 import { passwordlessOn } from "./passwordless.js";
 import { machineActing } from "./scope.js";
 import { NOT_COUNTED_REASONS, RECORD_STATES, REJECT_REASONS, REVISION_ORIGINS, type ExecClass, type IneligibleReason, type RevisionOrigin, type Selection } from "./contracts/route-results.js";
 import type { RecordValue } from "./route-results.js";
-import type { EarnedRule } from "./phase-routing.js";
+import type { EarnedRule, EarnedTrial } from "./phase-routing.js";
 import { BUILT_IN, nightlyTaskRef, releaseTaskRef, type Store } from "./store.js";
 
 // ---- execution class --------------------------------------------------------------------------------------------
@@ -255,6 +256,9 @@ export const RULE_ACTS = Object.freeze({
   "turn-off": { raising: false, localAct: "routing-turn-off" },
   dismiss: { raising: false, localAct: "dismiss-suggestion" },
   "suggest-off": { raising: false, localAct: "dismiss-suggestion" },
+  // Slice 3: starting a trial raises (a person's step-up); stopping one only lowers.
+  "trial-start": { raising: true, localAct: null },
+  "trial-stop": { raising: false, localAct: "trial-stop" },
 } as const);
 export type RuleAct = keyof typeof RULE_ACTS;
 export type RuleRefusalReason = "lead-refused" | "authority";
@@ -438,4 +442,181 @@ export function ruleHoldOf(store: Store, taskId: string): { rule: number; model:
   const started = store.handle.prepare(`SELECT 1 FROM run JOIN task_ref ON task_ref.id = run.task_ref
     WHERE task_ref.backend = ? AND task_ref.external_id = ? AND run.role IN ('builder','repair') LIMIT 1`).get(BUILT_IN, taskId);
   return started === undefined ? { rule: selection.rule, model: String(rule["model"]) } : null;
+}
+
+// ---- trials (slice 3): a place per task, reserved → consumed (once) or released -----------------------------------
+
+export type TrialInsert = {
+  repo: string; cohortSize: "small" | "medium"; model: string; configuredProvider: string; configuredModel: string | null;
+  limit: number; grant: unknown; prices: unknown; depends: Readonly<Record<string, number>>;
+};
+/** Start a trial, live (state trialling) with its number of places. The winner index makes a second live rule or
+ * trial for the same project and size refuse (null); nothing else is written. */
+export function insertTrial(store: Store, door: ProvedRuleDoor, trial: TrialInsert, now: Date): number | null {
+  spend(door, "trial-start");
+  if ((trial.cohortSize !== "small" && trial.cohortSize !== "medium") || !Number.isSafeInteger(trial.limit) || trial.limit < 1 || trial.limit > 50) throw new Error("a trial covers a Claude cohort of small or routine tasks, for 1 to 50 places");
+  try {
+    const inserted = store.handle.prepare(`INSERT INTO route_rule (repo, cohort_size, kind, provider, model, configured_provider, configured_model, state, generation,
+        grant_json, prices_json, depends_json, trial_limit, accepted_by, accepted_at)
+      VALUES (?, ?, 'trial', 'claude', ?, ?, ?, 'trialling', 1, ?, ?, ?, ?, ?, ?)`)
+      .run(trial.repo, trial.cohortSize, trial.model, trial.configuredProvider, trial.configuredModel, JSON.stringify(trial.grant),
+        JSON.stringify(trial.prices), JSON.stringify(trial.depends), trial.limit, door.actor, now.toISOString());
+    return Number(inserted.lastInsertRowid);
+  } catch (error) {
+    if (/UNIQUE constraint failed/.test(String(error))) return null;
+    throw error;
+  }
+}
+
+/**
+ * A person's or local owner's stop of a live or paused trial, by compare-and-swap on its generation, in the same
+ * transaction as releasing the places of tasks not approved on them (those plans are re-filed by the rule pass). A
+ * place a task was approved on stays reserved: that task keeps the model a person approved (as a rule turned off
+ * does). False when the trial moved since.
+ */
+export function endTrialByDoor(store: Store, door: ProvedRuleDoor, trialId: number, generation: number, now: Date): boolean {
+  spend(door, "trial-stop");
+  const ended = Number(store.handle.prepare(`UPDATE route_rule SET state = 'turned-off', generation = generation + 1, ended_at = ?, ended_by = ?, end_reason = 'stopped'
+    WHERE id = ? AND kind = 'trial' AND generation = ? AND state IN ('trialling','paused')`).run(now.toISOString(), door.actor, trialId, generation).changes) === 1;
+  if (ended) {
+    store.handle.prepare(`UPDATE route_trial_reservation SET state = 'released', updated_at = ?
+      WHERE rule = ? AND state = 'reserved' AND NOT EXISTS (SELECT 1 FROM task_ref tr JOIN task_scope ts ON ts.task_id = tr.external_id AND tr.backend = ?
+        WHERE tr.id = route_trial_reservation.task_ref AND ts.approved_at IS NOT NULL AND ts.approved_digest = ts.digest AND ts.digest = route_trial_reservation.scope_digest)`)
+      .run(now.toISOString(), trialId, BUILT_IN);
+  }
+  return ended;
+}
+
+/** A project's live trial for one size, as routing reads it (without this filing's place): state trialling, a Claude
+ * model. Null when none, or when its row doesn't read (it can only ever not apply). */
+export function liveTrialFor(store: Store, repo: string | null, size: string | null | undefined): Omit<EarnedTrial, "reservation"> | null {
+  if (repo === null || (size !== "small" && size !== "medium")) return null;
+  const row = store.handle.prepare("SELECT * FROM route_rule WHERE repo = ? AND cohort_size = ? AND kind = 'trial' AND state = 'trialling' ORDER BY id LIMIT 1").get(repo, size);
+  if (row === undefined || row["provider"] !== "claude" || !Number.isSafeInteger(Number(row["trial_limit"]))) return null;
+  return { id: Number(row["id"]), generation: Number(row["generation"]), cohortSize: size, provider: "claude", model: String(row["model"]), limit: Number(row["trial_limit"]),
+    configured: { provider: String(row["configured_provider"]), model: row["configured_model"] == null ? null : String(row["configured_model"]) } };
+}
+
+/**
+ * This task's place in a trial, in the filing's own write transaction (store.ts saveScope, serialized by
+ * beginWriteWithin): a place it already holds (reserved, or consumed by its own earlier attempt) is reused, so
+ * repeated saves never take a second one; a place it gave up is never taken back; otherwise a new one only while
+ * reserved + consumed is under the trial's limit and the trial is live. Its digest is bound by settleTrialPlaces in
+ * the same transaction. Null: no place.
+ */
+export function reserveTrialPlace(store: Store, trialId: number, taskRef: number, now: Date): number | null {
+  const own = store.handle.prepare("SELECT id, state FROM route_trial_reservation WHERE rule = ? AND task_ref = ?").get(trialId, taskRef);
+  if (own !== undefined) return own["state"] === "released" ? null : Number(own["id"]);
+  const inserted = store.handle.prepare(`INSERT INTO route_trial_reservation (rule, task_ref, scope_digest, state, created_at, updated_at)
+    SELECT ?, ?, '', 'reserved', ?, ? FROM route_rule r WHERE r.id = ? AND r.kind = 'trial' AND r.state = 'trialling'
+      AND (SELECT COUNT(*) FROM route_trial_reservation p WHERE p.rule = r.id AND p.state IN ('reserved','consumed')) < r.trial_limit`)
+    .run(trialId, taskRef, now.toISOString(), now.toISOString(), trialId);
+  return Number(inserted.changes) === 1 ? Number(inserted.lastInsertRowid) : null;
+}
+
+/**
+ * After a filing, in its transaction: the place its route seals (if any) is bound to the scope digest it was filed
+ * under (a compare-and-swap on `reserved`; a place this task's own attempt already consumed stays as it is), and every
+ * other place this task holds unconsumed is released. A selection that names a place this task doesn't hold throws:
+ * nothing files on it.
+ */
+export function settleTrialPlaces(store: Store, taskRef: number, selection: Selection | undefined, digest: string, now: Date): void {
+  let kept = -1;
+  if (selection?.kind === "trial") {
+    if (typeof digest !== "string" || digest === "") throw new Error("a trial place is bound to the scope digest it was filed under");
+    const row = store.handle.prepare("SELECT rule, task_ref, state FROM route_trial_reservation WHERE id = ?").get(selection.reservation);
+    if (row === undefined || Number(row["rule"]) !== selection.rule || Number(row["task_ref"]) !== taskRef || (row["state"] !== "reserved" && row["state"] !== "consumed")) {
+      throw new Error("a trial route names a place this task doesn't hold");
+    }
+    if (row["state"] === "reserved") store.handle.prepare("UPDATE route_trial_reservation SET scope_digest = ?, updated_at = ? WHERE id = ? AND state = 'reserved'").run(digest, now.toISOString(), selection.reservation);
+    kept = selection.reservation;
+  }
+  store.handle.prepare("UPDATE route_trial_reservation SET state = 'released', updated_at = ? WHERE task_ref = ? AND state = 'reserved' AND id != ?").run(now.toISOString(), taskRef, kept);
+}
+
+/** A cancel gives up every place the task holds unconsumed (store.ts applyCancellationLocked). A consumed place is
+ * never released. How many went. */
+export function releaseTrialPlaces(store: Store, taskRef: number, now: Date): number {
+  return Number(store.handle.prepare("UPDATE route_trial_reservation SET state = 'released', updated_at = ? WHERE task_ref = ? AND state = 'reserved'").run(now.toISOString(), taskRef).changes);
+}
+
+/** Whether this place still stands for this task's approval at `digest`: reserved and bound to exactly that digest,
+ * or consumed by this task's own earlier attempt. */
+function placeStands(store: Store, selection: { rule: number; reservation: number }, taskRef: number, digest: string): boolean {
+  const row = store.handle.prepare("SELECT rule, task_ref, state, scope_digest FROM route_trial_reservation WHERE id = ?").get(selection.reservation);
+  if (row === undefined || Number(row["rule"]) !== selection.rule || Number(row["task_ref"]) !== taskRef) return false;
+  return row["state"] === "consumed" || (row["state"] === "reserved" && digest !== "" && row["scope_digest"] === digest);
+}
+
+/**
+ * Why a seal of this route must not stand, or null (store.ts sealScopeApproval): a trial task is approved only by a
+ * person — their own ceremony (no basis; not a machine acting, not an AI approver's name) or their paired-chat tap —
+ * never a mode, a grant, a schedule, a carry, an automatic seal or the lead; and only while its place stands.
+ */
+export function trialSealProblem(store: Store, input: { taskRef: number | null; selection: Selection | undefined; digest: string; basis: string | null; by: string; machine: boolean }): string | null {
+  if (input.selection?.kind !== "trial") return null;
+  if (input.machine) return "a trial task is approved by a person, never a lead or an API token";
+  if (input.basis !== null && input.basis !== "chat") return `a trial task is approved by a person, not by a ${input.basis} approval`;
+  if (input.basis === null && input.by.endsWith(" (AI)")) return "a trial task is approved by a person";
+  if (input.taskRef === null || !placeStands(store, input.selection, input.taskRef, input.digest)) return "this task's trial place is no longer held — re-file it";
+  return null;
+}
+
+/**
+ * A code-writing run's trial check, in its admission transaction after the run row exists (store.ts admitRun): for a
+ * route sealed on a trial, the approval must be a person's own (approval-authority.ts trialSealStandsSql), and the
+ * sealed place is consumed exactly once — a compare-and-swap on `reserved` and the sealed scope digest. A retry or
+ * repair of the same task whose place that task already consumed is admitted without consuming again. The words, or
+ * null to admit; the caller refuses (rolling the row back) on words.
+ */
+export function admitTrialRun(store: Store, input: { taskId: string; taskRef: number; role: string; run: number; now: Date }): string | null {
+  if (input.role !== "builder" && input.role !== "repair") return null;
+  const sealed = store.sealedRouteOf(input.taskId);
+  if (!sealed.ok) return null;
+  const selection = sealed.route.legs[1]?.selection;
+  if (selection?.kind !== "trial") return null;
+  const scope = store.handle.prepare(`SELECT task_scope.approved_digest AS digest FROM task_scope WHERE task_scope.task_id = ? AND task_scope.approved_digest = task_scope.digest
+    AND ${trialSealStandsSql("task_scope")}`).get(input.taskId);
+  if (scope === undefined) return "trial-person: a task trying a cheaper model runs only on a person's own approval — approve it yourself";
+  const row = store.handle.prepare("SELECT rule, task_ref, state, consumed_run FROM route_trial_reservation WHERE id = ?").get(selection.reservation);
+  if (row === undefined || Number(row["rule"]) !== selection.rule || Number(row["task_ref"]) !== input.taskRef) return "trial-reservation: the trial place this task was approved on isn't its own";
+  if (row["state"] === "consumed") return null;
+  if (row["state"] !== "reserved") return "trial-reservation: the trial place this task was approved on was given up — re-file it";
+  if (!consumeTrialPlace(store, selection.reservation, String(scope["digest"]), input.run, input.now)) return "trial-reservation: the trial place doesn't match this approval — re-file it";
+  // Every place used: the trial is finished, and its cohort is free for a suggestion again.
+  store.handle.prepare(`UPDATE route_rule SET state = 'finished', generation = generation + 1, ended_at = ?, end_reason = 'all-places-used'
+    WHERE id = ? AND kind = 'trial' AND state IN ('trialling','paused')
+      AND (SELECT COUNT(*) FROM route_trial_reservation p WHERE p.rule = route_rule.id AND p.state = 'consumed') >= trial_limit`).run(input.now.toISOString(), selection.rule);
+  return null;
+}
+
+/** Consume one reserved place for this run: only with the sealed scope digest it was bound to. */
+export function consumeTrialPlace(store: Store, reservation: number, sealedDigest: string, run: number, now: Date): boolean {
+  if (typeof sealedDigest !== "string" || sealedDigest === "" || !Number.isSafeInteger(run) || run < 1) throw new Error("a trial place is consumed only against the sealed scope digest, by a run");
+  return Number(store.handle.prepare(`UPDATE route_trial_reservation SET state = 'consumed', consumed_run = ?, updated_at = ?
+    WHERE id = ? AND state = 'reserved' AND scope_digest = ?`).run(run, now.toISOString(), reservation, sealedDigest).changes) === 1;
+}
+
+/** A trial's places: its limit, how many are reserved (waiting) and consumed (started). */
+export function trialPlacesOf(store: Store, trialId: number): { limit: number; reserved: number; consumed: number } {
+  const row = store.handle.prepare(`SELECT r.trial_limit AS lim,
+      (SELECT COUNT(*) FROM route_trial_reservation p WHERE p.rule = r.id AND p.state = 'reserved') AS reserved,
+      (SELECT COUNT(*) FROM route_trial_reservation p WHERE p.rule = r.id AND p.state = 'consumed') AS consumed
+    FROM route_rule r WHERE r.id = ? AND r.kind = 'trial'`).get(trialId);
+  return { limit: Number(row?.["lim"] ?? 0), reserved: Number(row?.["reserved"] ?? 0), consumed: Number(row?.["consumed"] ?? 0) };
+}
+
+/** Which place in its trial this one is (1-based, counting places held or used, in order), or null. */
+export function trialOrdinalOf(store: Store, reservation: number): { trial: number; ordinal: number; state: string } | null {
+  const row = store.handle.prepare(`SELECT p.rule, p.state, (SELECT COUNT(*) FROM route_trial_reservation o WHERE o.rule = p.rule AND o.id <= p.id AND o.state IN ('reserved','consumed')) AS ordinal
+    FROM route_trial_reservation p WHERE p.id = ?`).get(reservation);
+  return row === undefined ? null : { trial: Number(row["rule"]), ordinal: Number(row["ordinal"]), state: String(row["state"]) };
+}
+
+/** Whether a proposal's trial place still stands for re-use by its next approval: the trial is live and the place is
+ * held reserved by that task (the rule pass re-files a proposal whose place doesn't). */
+export function trialPlaceLive(store: Store, selection: { rule: number; reservation: number }, taskRef: number): boolean {
+  const row = store.handle.prepare(`SELECT 1 FROM route_trial_reservation p JOIN route_rule r ON r.id = p.rule
+    WHERE p.id = ? AND p.rule = ? AND p.task_ref = ? AND p.state IN ('reserved','consumed') AND r.state = 'trialling'`).get(selection.reservation, selection.rule, taskRef);
+  return row !== undefined;
 }
