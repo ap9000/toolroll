@@ -17,7 +17,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import type { ExecResult } from "./exec.js";
 import type { Runner } from "./worktree.js";
 import { teardownGit, refusal } from "./teardown-git.js";
-import { BUILT_IN, forgetProjectModels, type Database, type Store } from "./store.js";
+import { BUILT_IN, forgetProjectModels, V149_REPO_TABLES, type Database, type Store } from "./store.js";
 import { BRANCH_PREFIXES, isOwnBranch } from "./names.js";
 
 /** The tables whose history is the audit record itself: never touched. */
@@ -324,6 +324,9 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   // Settings, knowledge and the project itself.
   del("operating_mode_event", "mode IN (SELECT id FROM operating_mode WHERE repo = ?)", repo);
   del("decision_change", "decision IN (SELECT id FROM project_decision WHERE repo = ?)", repo);
+  // Its learning-loops rows (v149), by repo; a check's results, a note's tallies and a merge of its decisions go with
+  // the rows they hang off (the deleted runs, notes and decisions), below.
+  for (const table of V149_REPO_TABLES) del(table, "repo = ?", repo);
   del("memory_sighting", "gap IN (SELECT id FROM memory_gap WHERE repo = ?) OR session IN (SELECT id FROM memory_session WHERE repo = ?)", repo, repo);
   for (const [table, column] of SETTINGS) del(table, `${column} = ?`, repo);
   // Its Models rows and results-routing rows: through the Models counter, so whatever depended on them pauses.

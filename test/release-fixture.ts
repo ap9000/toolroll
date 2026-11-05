@@ -194,6 +194,10 @@ export function reportOf(units: UnitOutcome[], extra: Partial<CheckReport> & { e
  * version 3 receipt. `report` gets the attempt's plan so a targeted report can answer it.
  */
 export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, report: (plan: import("../src/contracts/release-check.js").TargetedPlan | null, units: readonly string[]) => Omit<CheckReport, "nonce" | "mode" | "planDigest"> | null, options: { forceFull?: boolean; base?: string; release?: boolean; setupReplayed?: true;
+  /** What the check printed before its report (a test's own lines, a learning line); given the attempt's nonce. */
+  stdoutBefore?: (nonce: string) => string;
+  /** Asked about for learning only (the handshake's `learn`). */
+  learn?: readonly string[];
   /** What the plane saw of the command instead of an exit (it never started, Toolroll's own shutdown stopped it, it
    * timed out): the builder's own result, sealed in the receipt. */
   plane?: { configured: true; ran: false; attemptFailed: true; failure: import("../src/contracts/verification-receipt.js").VerifyCommandFacts extends infer F ? F extends { failure?: infer X } ? X : never : never } } = {}) {
@@ -204,12 +208,14 @@ export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, rep
   const decision = planTargetedRecheck(store, root, { runId, taskId, repo: f.repo, head, command, access: "sandboxed", now: RELEASE_NOW });
   const targeted = decision.mode === "targeted" && options.forceFull !== true;
   const prepared = prepareCheckAttempt(store, root, { runId, repo: f.repo, head, command, access: "sandboxed", authority: decision.authority,
-    ...(targeted && decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, ...(options.release === undefined ? {} : { release: options.release }) }, RELEASE_NOW);
+    ...(targeted && decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, ...(options.release === undefined ? {} : { release: options.release }), ...(options.learn === undefined ? {} : { learn: options.learn }) }, RELEASE_NOW);
   if (prepared === null) throw new Error("no attempt");
   const body = report(prepared.plan, prepared.inventory.units);
   const exitCode: number | null = options.plane !== undefined ? null : body?.exitCode ?? 1;
   const full = body === null ? null : { ...body, nonce: prepared.nonce, mode: prepared.mode, planDigest: prepared.plan === null ? null : createHashHex(JSON.stringify(prepared.plan)) };
-  const sealedReport = sealCheckOutcome(store, root, prepared, { stdout: full === null ? "the report was lost\n" : `checks\nTOOLROLL_CHECK_REPORT ${JSON.stringify(full)}\n`, exitCode }, RELEASE_NOW);
+  const before = options.stdoutBefore?.(prepared.nonce) ?? "";
+  const stdout = full === null ? `${before}the report was lost\n` : `checks\n${before}TOOLROLL_CHECK_REPORT ${JSON.stringify(full)}\n`;
+  const sealedReport = sealCheckOutcome(store, root, prepared, { stdout, exitCode }, RELEASE_NOW);
   const settled = settleCoverage(store, root, { runId, taskId, exitCode, now: RELEASE_NOW }, run => { const gate = verificationEvidence(store, root, run); return gate.ok ? gate.digest : null; });
   storeEvidence(store, root, runId, "check-log", "check-log.txt", Buffer.from(`exit ${exitCode}\n`), command.command, RELEASE_NOW, { captureStatus: "ok" });
   const sha = (capture: string) => { const found = store.artifactsFor(runId).filter(a => a.kind === "structured-output" && a.capture === capture); return found.length === 1 ? found[0]!.sha256 : null; };
@@ -218,7 +224,7 @@ export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, rep
   sealVerificationReceipt(store, root, runId, head, command, effective.result, RELEASE_NOW, undefined, effective.facts ?? undefined);
   const passed = effective.result.configured && effective.result.ran && effective.result.exitCode === 0;
   store.recordRunCheck(runId, { status: passed ? "passed" : "failed", exitCode: effective.result.configured && effective.result.ran ? effective.result.exitCode : null, suites: [] }, RELEASE_NOW);
-  return { runId, prepared, decision, coverage: settled.coverage, composed: settled.composed };
+  return { runId, prepared, decision, coverage: settled.coverage, composed: settled.composed, stdout, report: sealedReport, status: passed ? "passed" as const : "failed" as const, command };
 }
 
 function createHashHex(text: string): string {

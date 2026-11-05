@@ -20,6 +20,7 @@ import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
 import { deleteProject, holdingsWords, MODEL_SETTINGS, PROJECT_SETTINGS, projectHoldings, projectRunning } from "./project-delete.js";
 import { modelsGenerationOf } from "./route-store.js";
+import { watchObservation } from "./flaky.js";
 
 let dir: string, file: string, store: Store, repo: string, evidence: string, pool: string;
 const OTHER = "/repo/other";
@@ -70,6 +71,24 @@ function task(where: string, revisionOf?: string): { id: string; ref: number; ru
   return { id, ref, run };
 }
 
+/** A project's learning-loops rows (v149), the decision tables' guards and the merge's own included. */
+function learningRows(where: string, first: { ref: number; run: number }): void {
+  const at = NOW.toISOString();
+  store.handle.prepare("INSERT INTO check_fact (run, repo, task_ref, purpose, learn_state, recorded_at) VALUES (?, ?, ?, 'ordinary', 'not-asked', ?)").run(first.run, where, first.ref, at);
+  store.handle.prepare("INSERT INTO check_result (run, identity, state, source, recorded_at) VALUES (?, 'check', 'passed', 'receipt', ?)").run(first.run, at);
+  watchObservation(store, { repo: where, identity: "unit:src/a.test.ts::adds", observation: first.run, now: NOW });
+  const decision = (claim: string) => Number(store.handle.prepare(`INSERT INTO project_decision (repo, identity, claim, why, status, decided_by, decided_at, source_kind, recorded_by, sha)
+    VALUES (?, 'id', ?, 'why', 'active', 'alex', ?, 'manual', 'alex', 'sha') RETURNING id`).get(where, claim, at)!["id"]);
+  const [a, b] = [decision("A"), decision("B")];
+  store.handle.prepare("INSERT INTO decision_merge (merge, successor, successor_revision, predecessor, predecessor_revision, at, by) VALUES (?, ?, 1, ?, 1, ?, 'alex')").run(first.run, b, a, at);
+}
+const learningCounts = (where: string) => ({
+  facts: Number(store.handle.prepare("SELECT COUNT(*) AS n FROM check_fact WHERE repo = ?").get(where)!["n"]),
+  results: Number(store.handle.prepare("SELECT COUNT(*) AS n FROM check_result WHERE run IN (SELECT run FROM check_fact WHERE repo = ?)").get(where)!["n"]),
+  watches: Number(store.handle.prepare("SELECT COUNT(*) AS n FROM learning_watch WHERE repo = ?").get(where)!["n"]),
+  merges: Number(store.handle.prepare("SELECT COUNT(*) AS n FROM decision_merge WHERE successor IN (SELECT id FROM project_decision WHERE repo = ?)").get(where)!["n"]),
+});
+
 /** Everything a project can have: tasks and a version, runs and evidence, a chat, a flow and card, a subagent, budgets, settings, knowledge. */
 function populate(where: string) {
   const first = task(where);
@@ -93,6 +112,8 @@ function populate(where: string) {
   // Knowledge history refuses deletes by design; a project's own goes with it.
   store.handle.prepare("INSERT INTO knowledge_change (repo, identity, revision, actor, at, payload, sha) VALUES (?, 'k', 1, 'alex', ?, '{}', 'x')").run(where, NOW.toISOString());
   store.upsertProject(where, where.split("/").pop()!, NOW);
+  // Learning loops (v149): a check's facts and results, a tracked identity, and a merge of two of its decisions.
+  learningRows(where, first);
   // Its Models rows and results-routing rows (v148): an override, a strong agent, another provider's candidate, an
   // earned rule and a result record.
   store.setPhaseConfig(where, "build", "claude", "claude-haiku-4-5", "alex", NOW);
@@ -155,12 +176,17 @@ test("deleting a project removes what Toolroll holds for it and keeps everything
   expect(count("SELECT COUNT(*) AS n FROM chat_event WHERE provider = 'telegram' AND kind = 'message'")).toBe(2);
 
   const generation = modelsGenerationOf(store, repo, "build");
+  expect(learningCounts(repo)).toEqual({ facts: 1, results: 1, watches: 1, merges: 1 });
   const done = await deleteProject(store, repo, { actor: "alex", via: "command line", now: NOW, evidenceRoot: evidence, poolRoot: pool });
   expect(done).toMatchObject({ ok: true, removed: { tasks: 1, versions: 1, runs: 2, branches: 2, chats: 2, subagents: 1 }, left: [] });
   // Its Models rows went through the counter (so whatever depended on them paused), with its results-routing rows.
   expect(modelsGenerationOf(store, repo, "build")).toBe(generation + 1);
   for (const table of ["route_rule", "route_record"]) expect(count(`SELECT COUNT(*) AS n FROM ${table} WHERE repo = ?`, repo), table).toBe(0);
   expect(count("SELECT COUNT(*) AS n FROM route_rule WHERE repo = ?", OTHER)).toBe(1);
+  // Its learning rows went with it, through the deletion's own lifted guards; the other project's stayed, guards back.
+  expect(learningCounts(repo)).toEqual({ facts: 0, results: 0, watches: 0, merges: 0 });
+  expect(learningCounts(OTHER)).toEqual({ facts: 1, results: 1, watches: 1, merges: 1 });
+  expect(() => store.handle.prepare("DELETE FROM check_fact").run()).toThrow(/kept/);
   // Only forgetProjectModels deletes them: the generic settings list never names a Models table.
   expect(PROJECT_SETTINGS.map(([table]) => table).filter(table => MODEL_SETTINGS.some(([model]) => model === table))).toEqual([]);
   // The shop's message and its reply went with it; the other project's stayed.
@@ -330,4 +356,12 @@ test("project config refusal keeps its checkouts instead of taking the missing-r
   expect(result).toMatchObject({ ok: true, removed: { branches: 0 } });
   expect(existsSync(path)).toBe(true);
   if (result.ok) expect(result.left.join(" ")).toContain("core.fsmonitor");
+});
+
+test("removing a project from the list keeps its learning rows, as it keeps its tasks and results", () => {
+  const first = task(OTHER);
+  store.upsertProject(OTHER, "other", NOW);
+  learningRows(OTHER, first);
+  store.forgetProject(OTHER);
+  expect(learningCounts(OTHER)).toEqual({ facts: 1, results: 1, watches: 1, merges: 1 });
 });
