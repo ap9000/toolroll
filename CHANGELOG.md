@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.91 — 2026-11-04
 
 - **A deploy checks your HTTPS console before it changes anything.** If the
   console you reach Toolroll through (over Tailscale, say) doesn't answer, the
