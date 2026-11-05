@@ -1,4 +1,4 @@
-import { resultRecordOf } from "../route-results.js";
+import { resultRecordWordsOf } from "../route-results.js";
 import { feedbackImageProblem } from "../result-actions.js";
 import { parseFeedbackImage } from "../result-review.js";
 import { releaseViewOf } from "../release-view.js";
@@ -516,7 +516,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         route: routeView,
         canEditRoute: who.role === "approver",
         // Results routing (slice 1): the family's saved record, or the one its rows give now; never a reason to fail the page.
-        resultRecord: (() => { try { return resultRecordOf(runtime.store, taskId, runtime.evidenceRoot, now)?.words ?? null; } catch { return null; } })(),
+        resultRecord: resultRecordWordsOf(runtime.store, taskId, runtime.evidenceRoot, now),
         spendDefaults: runtime.store.getSpendDefaults(),
         permissionDefault: runtime.store.permissionDefault().mode,
         permissionMode: ref?.permissionMode ?? null,

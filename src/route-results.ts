@@ -318,6 +318,12 @@ export function resultRecordOf(store: Store, taskId: string, evidenceRoot: strin
   return value === null ? null : valueView(value);
 }
 
+/** The task page's "Result record" line: the record's words, or null when the task has none (or it can't be read:
+ * a record never fails the page). */
+export function resultRecordWordsOf(store: Store, taskId: string, evidenceRoot: string | undefined, now: Date): string | null {
+  try { return resultRecordOf(store, taskId, evidenceRoot, now)?.words ?? null; } catch { return null; }
+}
+
 /** The families the re-evaluation pass looks at: a root task with a code-writing run that has a cohort snapshot, whose
  * record is missing or not settled; the least recently evaluated first. */
 export function familiesToEvaluate(store: Store, repo: string, limit: number): string[] {

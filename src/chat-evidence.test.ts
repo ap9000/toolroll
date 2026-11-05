@@ -102,6 +102,8 @@ describe("shared result image selection", () => {
     expect(requestResultChanges(store, evidenceRoot, { ...input, note: "Different text" }, T0)).toMatchObject({ ok: false, status: 409 });
     expect(requestResultChanges(store, evidenceRoot, { ...input, image: target(first) }, T0)).toMatchObject({ ok: false, status: 409 });
     expect(store.revisionsFromRun(run)).toHaveLength(1);
+    // Results routing: the revision says who it came from, once; the replay above didn't add or change it.
+    expect(store.handle.prepare("SELECT revision_origin FROM task_ref WHERE external_id = ?").get(revised.ok ? revised.id : "")?.["revision_origin"]).toBe("person");
     if (!revised.ok) throw Error(revised.message);
     const source = store.revisionSourceOf(store.lookupRef(revised.id)!.id)!;
     const brief = JSON.parse(readFileSync(join(evidenceRoot, source.briefArtifact.key), "utf8"));
