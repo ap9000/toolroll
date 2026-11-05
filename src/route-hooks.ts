@@ -53,6 +53,10 @@ export const ROUTING_PINNED: readonly EvalPinned[] = Object.freeze([
   // Slice 2: the one precedence order (pin > override > trial > earned rule > configured > headroom) and who is eligible.
   { file: "src/phase-routing.ts", fn: "selectBuildLeg", why: "the build leg's one precedence order" },
   { file: "src/phase-routing.ts", fn: "earnedRuleFor", why: "which tasks an earned rule may build" },
+  // Slice 3: which tasks a trial may build, and that only a person's own yes seals or dispatches one.
+  { file: "src/phase-routing.ts", fn: "trialFor", why: "which tasks a trial may build" },
+  { file: "src/approval-authority.ts", fn: "authorityStandsSql", why: "which approvals dispatch, a trial task's only on a person's yes" },
+  { file: "src/approval-authority.ts", fn: "trialSealStandsSql", why: "a trial task stands only on a person's own approval" },
   { file: "src/phase-routing.ts", fn: "canonicalRouteJson", why: "a sealed route's bytes, and so its digest" },
   { file: "src/phase-routing.ts", fn: "routeFromJson", why: "how a sealed route reads back" },
   { file: "src/contracts/route.ts", fn: "readSealedRoute", why: "every route version's rules, the build leg's selection included" },

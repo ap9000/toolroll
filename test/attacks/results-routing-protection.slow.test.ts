@@ -101,3 +101,24 @@ describe("slice 2: the precedence order, the hold and the rule pass stay as the 
     needsPerson({ "src/store.ts": admit("    if (ruleHoldOf(this, run.task) !== null) throw new Error('rule-switched-off');") }, { "src/store.ts": admit("") }, "src/store.ts's Store#admitRun changed");
   });
 });
+
+describe("slice 3: a trial's person-only approval and its precedence stay as the base has them", () => {
+  test("an if (false) around the trial check in sealScopeApproval: a person approves", () => {
+    const seal = (guard: string) => `export class Store {\n  sealScopeApproval(taskId, by, now, mutation, basis) {\n    if (${guard}) return false;\n    return true;\n  }\n}\n`;
+    needsPerson({ "src/store.ts": seal("trialSealProblem(this, { basis }) !== null") }, { "src/store.ts": seal("false && trialSealProblem(this, { basis }) !== null") }, "src/store.ts's Store#sealScopeApproval changed");
+  });
+
+  test("the trial clause dropped from the dispatch predicate: a person approves", () => {
+    const sql = (tail: string) => `export function authorityStandsSql(scope, repo, now) {\n  return \`COALESCE(1${tail}, 0)\`;\n}\nexport function trialSealStandsSql(scope) { return "1"; }\n`;
+    needsPerson({ "src/approval-authority.ts": sql(" AND (instr(x, 'trial') = 0 OR ${trialSealStandsSql(scope)})") }, { "src/approval-authority.ts": sql("") }, "src/approval-authority.ts's authorityStandsSql changed");
+  });
+
+  test("a trial that skips its eligibility in trialFor: a person approves", () => {
+    const routing = (guard: string) => `export function trialFor(input, configured) {\n  if (${guard}) return null;\n  return { kind: "trial", trial: input.earned.trial };\n}\n`;
+    needsPerson({ "src/phase-routing.ts": routing("input.size?.size === \"large\"") }, { "src/phase-routing.ts": routing("false") }, "src/phase-routing.ts's trialFor changed");
+  });
+
+  test("a new file consuming a trial place: a person approves", () => {
+    needsPerson({}, { "src/shortcut.ts": "export const go = (db) => db.prepare(\"UPDATE route_trial_reservation SET state = 'consumed' WHERE id = ?\").run(1);\n" }, "src/shortcut.ts writes results-routing or Models rows outside their writers");
+  });
+});

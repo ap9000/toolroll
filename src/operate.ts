@@ -1552,7 +1552,7 @@ async function dispatch(
     case "models": {
       // A local owner's lowering act (models turn-off / dismiss, through the terminal UI) asks for no credential: the
       // rule door re-checks the owner and its exact act itself.
-      const localOnly = currentLocalOwner() !== null && !flags.has("as") && !flags.has("token") && ["turn-off", "dismiss", "suggestions"].includes(positional[0] ?? "");
+      const localOnly = currentLocalOwner() !== null && !flags.has("as") && !flags.has("token") && ["turn-off", "dismiss", "suggestions", "stop"].includes(positional[0] ?? "");
       const acting = localOnly ? null : await askCredentials(flags, context);
       // The credential generation the proof is checked against, read BEFORE it (as `config set` does): a rotation in
       // between makes the rule door refuse, never borrow the new generation.

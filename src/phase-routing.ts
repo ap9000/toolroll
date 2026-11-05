@@ -288,7 +288,11 @@ export type EarnedRule = {
   model: string;
   configured: { provider: string; model: string | null };
 };
-export type EarnedInput = { rules: readonly EarnedRule[]; release: boolean; protected: boolean };
+/** A live trial (results routing slice 3): try a cheaper Claude model on the next `limit` eligible tasks of one
+ * cohort, each still approved by a person. `reservation` is this filing's place in it (route-store.ts
+ * reserveTrialPlace): its id, or null when every place is taken, so the configured builder runs it. */
+export type EarnedTrial = EarnedRule & { limit: number; reservation: number | null };
+export type EarnedInput = { rules: readonly EarnedRule[]; release: boolean; protected: boolean; trial?: EarnedTrial | null };
 
 const PHASE_NOUN: Record<Phase, string> = { plan: "planner", build: "builder", repair: "repair", review: "reviewer" };
 const PHASE_VERB: Record<Phase, string> = { plan: "plans", build: "builds", repair: "repairs", review: "reviews" };
@@ -425,7 +429,7 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
     }
   }
 
-  // build — one precedence order (selectBuildLeg): pin > override > earned rule > configured > headroom.
+  // build — one precedence order (selectBuildLeg): pin > override > trial > earned rule > configured > headroom.
   let buildMoved = false;
   const build = (() => {
     const chosen = selectBuildLeg(input, pickTier("build"));
@@ -542,11 +546,12 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
 /**
  * THE BUILD LEG'S ONE PRECEDENCE ORDER (results routing, docs/plans/results-routing.md slice 2), pure:
  *
- *   pin > person override > (trial, slice 3) > earned rule > configured row (light / routine / strong by size)
+ *   pin > person override > trial > earned rule > configured row (light / routine / strong by size)
  *   > headroom move
  *
- * Headroom moves only a configured leg, never a rule's: a rule's evidence is about one exact model. A rule whose
- * provider is past the headroom limits is skipped for this filing, and its reason says so. A rule applies only to an
+ * Headroom moves only a configured leg, never a rule's or a trial's: their evidence is about one exact model. A rule
+ * or trial whose provider is past the headroom limits is skipped for this filing, and its reason says so. A trial
+ * applies only with a place reserved for this task (slice 3). A rule or trial applies only to an
  * eligible task — small or medium, not risky, default quality, no screenshot or manual-review evidence, not a
  * merging mode, not a release or candidate, nothing protected declared — and only over the configured builder it was
  * earned against. Its leg says how it was selected (`selection`), so the route seals as version 3 and every later
@@ -564,6 +569,21 @@ export function selectBuildLeg(input: RouteInput, configured: { spec: RouteCandi
       : { phase: "build", provider: override!.provider, model: override!.model, tier: rec.tier, chosen: "override", recommended, reasons: [`overridden by ${override!.by} to ${specWords(override!)} (recommended ${specWords(rec.spec)})`], problem: null };
     return { leg, moved: false };
   }
+  const trial = trialFor(input, configured);
+  if (trial !== null && trial.kind === "trial") {
+    const one = trial.trial;
+    const spec = { provider: one.provider, model: one.model };
+    return {
+      leg: {
+        phase: "build", provider: one.provider, model: one.model, tier: configured.tier, chosen: "recommended",
+        recommended: { ...spec, tier: configured.tier },
+        reasons: [...configured.reasons.slice(0, 1), `trial: ${specWords(spec)} is being tried on this project's next ${one.limit} eligible ${one.cohortSize === "small" ? "small" : "routine"} tasks instead of the configured ${specWords({ provider: one.configured.provider, model: one.configured.model ?? "default" })}; a person approves each one`],
+        problem: null,
+        selection: { kind: "trial", rule: one.id, reservation: one.reservation },
+      },
+      moved: false,
+    };
+  }
   const earned = earnedRuleFor(input, configured);
   if (earned !== null && earned.kind === "rule") {
     const rule = earned.rule;
@@ -580,7 +600,7 @@ export function selectBuildLeg(input: RouteInput, configured: { spec: RouteCandi
     };
   }
   const rec = withHeadroom(input, "build", configured);
-  const reasons = earned === null ? rec.reasons : [...rec.reasons, earned.reason];
+  const reasons = [...rec.reasons, ...(trial === null ? [] : [trial.reason]), ...(earned === null ? [] : [earned.reason])];
   return {
     leg: { phase: "build", provider: rec.spec.provider, model: rec.spec.model, tier: rec.tier, chosen: "recommended", recommended: { provider: rec.spec.provider, model: rec.spec.model, tier: rec.tier }, reasons, problem: null },
     moved: rec.moved,
@@ -607,6 +627,31 @@ export function earnedRuleFor(input: RouteInput, configured: { spec: RouteCandid
   const tight = room === null ? null : tightWords(room);
   if (tight !== null) return { kind: "skipped", reason: `earned rule skipped for this filing: ${tight} — the configured builder runs it` };
   return { kind: "rule", rule };
+}
+
+/** The trial this task's build takes (pure, results routing slice 3): null when none could apply (no live trial for
+ * its size, or the task isn't eligible: the same facts an earned rule needs), a trial with this task's place, or a
+ * trial skipped for this filing with the words why (another configured builder, no place left, no headroom). */
+export function trialFor(input: RouteInput, configured: { spec: RouteCandidate; tier: CandidateTier }): { kind: "trial"; trial: EarnedTrial & { reservation: number } } | { kind: "skipped"; reason: string } | null {
+  const trial = input.earned?.trial ?? null;
+  const size = input.size ?? null;
+  if (trial === null || size === null || size.risky || (size.size !== "small" && size.size !== "medium") || trial.cohortSize !== size.size) return null;
+  if (input.earned!.release || input.earned!.protected || input.qualityMode !== "default" || input.publication === "automerge") return null;
+  if (input.evidence.some(kind => kind === "screenshot" || kind === "manual-review")) return null;
+  if (demandedTier(input, "build").tier !== "routine") return null;
+  // Only Claude reports the model it ran, so only a Claude cohort runs a trial.
+  if (trial.provider !== "claude" || !exactModel(trial.model) || !Number.isSafeInteger(trial.limit) || trial.limit < 1) return null;
+  const words = size.size === "small" ? "small" : "routine";
+  if (configured.spec.provider !== trial.configured.provider || configured.spec.model !== trial.configured.model) {
+    return { kind: "skipped", reason: `the trial for ${words} tasks was started against another configured builder — not applied` };
+  }
+  const room = (input.headroom ?? []).find(one => one.provider === trial.provider) ?? null;
+  const tight = room === null ? null : tightWords(room);
+  if (tight !== null) return { kind: "skipped", reason: `trial skipped for this filing: ${tight} — the configured builder runs it` };
+  if (trial.reservation === null || !Number.isSafeInteger(trial.reservation) || trial.reservation < 1) {
+    return { kind: "skipped", reason: `every place in the trial for ${words} tasks is taken — the configured builder runs it` };
+  }
+  return { kind: "trial", trial: { ...trial, reservation: trial.reservation } };
 }
 
 /**
