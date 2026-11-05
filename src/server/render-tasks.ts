@@ -1554,6 +1554,8 @@ export function taskBodyParts(data: {
   qualityMode?: QualityMode | null;
   /** The phase route (v47) and whether this session may edit it. */
   route?: RouteView | null;
+  /** Results routing (slice 1): this task family's result record in words; null when it has none yet. */
+  resultRecord?: string | null;
   canEditRoute?: boolean;
   runs: Run[];
   /** Proof produced by the newest finished attempt. The two booleans are
@@ -2783,6 +2785,7 @@ export function taskBodyParts(data: {
   if (approvedScope !== undefined) review.push({ ...approvedScope, label: approvedScope.label === "Approved scope" ? "Approvals" : "Scope" });
   review.push({ label: "Who reviews", parts: [facts.find(one => one.label === "Approval rules")?.parts[0] as string | undefined ?? "Any approver in this project"] });
   review.push({ label: "Publishes as", parts: [publishesAs] });
+  if (data.resultRecord != null) review.push({ label: "Result record", parts: [data.resultRecord] });
   const about: BrowserTaskFact[] = [];
   const filedFact = facts.find(one => one.label === "Filed by");
   about.push(filedFact ?? { label: "Filed by", parts: [filedBy ?? (data.origin != null ? "An automation" : data.filedVia == null ? "Not recorded" : `via ${data.filedVia}`)] });
