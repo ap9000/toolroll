@@ -38,6 +38,7 @@ import { actorLabel, currentActor, type Actor } from "./actor.js";
 import { scanForSecrets } from "./evidence.js";
 import { LIVE_ACTIVITY_KINDS, type LiveActivityKind } from "./live.js";
 import { hashSecret, mintLeadToken, parseCredential, secretMatches, tokenPurpose, tokenRotationProblem, type CredentialKind, type TokenPurpose } from "./api-tokens.js";
+import { bumpModelsGeneration, forgetProjectRoutes, writeRunCohort } from "./route-store.js";
 /**
  * The database: a small task store, and the operational overlay beside it.
  *
@@ -1166,7 +1167,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // read 1), a browser session's authority (web_session.authority; saved rows read 'full'), its local generation, key
 // epoch and key hash (saved rows read NULL: no local binding, and a stale key), and the running console's key epoch
 // (console_instance.key_epoch; NULL). V147_ADDED_COLUMNS.
-export const SCHEMA_VERSION = 147;
+// v148 adds, and changes no saved row (docs/plans/results-routing.md): the results-routing tables (V148_SCHEMA, new
+// tables only) and a run's execution class, a revision's origin and a project's "Suggest cheaper models" switch
+// (V148_ADDED_COLUMNS: saved rows read NULL, NULL and 1).
+export const SCHEMA_VERSION = 148;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1304,7 +1308,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1568,7 +1572,155 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number];
+/**
+ * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
+ * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
+ * route_trial_reservation are written from later slices. src/route-store.ts is the only writer of all of them (the
+ * migration aside), which release-auto.ts's routing scan (route-hooks.ts) holds a release to.
+ *
+ * - run_cohort: one row per code-writing run (builder, repair), written in the run's admission transaction beside its
+ *   route stamp and never updated: the sealed facts its eligibility was decided from. cohort_size NULL = not eligible,
+ *   with the reason in `ineligible`.
+ * - route_record: a task family's result record (keyed by its root task_ref), recomputed by the reconcile pass.
+ *   `settled` = its verdict (state, reason, result, acceptance, decision time) is final; its spending and counts keep
+ *   accumulating through later revision and repair runs until `closed` (the family is quiet, or 90 days after its
+ *   first run: route-results.ts ACCUMULATE_FOR_MS).
+ * - route_rule: an earned rule or a trial, with its sealed grant, price snapshot and the configuration generations it
+ *   depends on; one live winner per project and size (route_rule_one_winner).
+ * - route_exposure / route_exposure_event: one exposure per task and rule, its events append-only.
+ * - route_trial_reservation: a trial's place, reserved, then consumed (once, at admission) or released.
+ * - models_generation: a counter per (scope, phase), moved by every Models row writer in the same transaction.
+ */
+export const V148_SCHEMA = `
+CREATE TABLE IF NOT EXISTS run_cohort (
+  run              INTEGER PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
+  task_ref         INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
+  root_ref         INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
+  repo             TEXT,
+  role             TEXT NOT NULL CHECK (role IN ('builder','repair')),
+  size             TEXT CHECK (size IS NULL OR size IN ('small','medium','large')),
+  risky            INTEGER CHECK (risky IS NULL OR risky IN (0,1)),
+  quality_mode     TEXT NOT NULL CHECK (quality_mode IN ('default','strict')),
+  evidence_demands INTEGER NOT NULL CHECK (evidence_demands IN (0,1)),
+  publication      TEXT NOT NULL CHECK (publication IN ('none','notify','automerge')),
+  release          INTEGER NOT NULL CHECK (release IN (0,1)),
+  protected        INTEGER NOT NULL CHECK (protected IN (0,1)),
+  selection_json   TEXT NOT NULL,
+  route_digest     TEXT NOT NULL,
+  provider         TEXT NOT NULL,
+  model            TEXT,
+  cohort_size      TEXT CHECK (cohort_size IS NULL OR cohort_size IN ('small','medium')),
+  ineligible       TEXT,
+  started_at       TEXT NOT NULL,
+  CHECK ((cohort_size IS NULL) = (ineligible IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS run_cohort_by_task ON run_cohort (task_ref);
+CREATE INDEX IF NOT EXISTS run_cohort_by_root ON run_cohort (repo, root_ref);
+CREATE TABLE IF NOT EXISTS route_record (
+  task_ref            INTEGER PRIMARY KEY REFERENCES task_ref(id) ON DELETE CASCADE,
+  repo                TEXT,
+  cohort_size         TEXT CHECK (cohort_size IS NULL OR cohort_size IN ('small','medium')),
+  provider            TEXT,
+  model               TEXT,
+  state               TEXT NOT NULL CHECK (state IN ('pending','provisional','mature','rejected','not-counted')),
+  reason              TEXT,
+  result_run          INTEGER REFERENCES run(id) ON DELETE SET NULL,
+  first_started_at    TEXT,
+  accepted_at         TEXT,
+  decided_at          TEXT,
+  model_failures      INTEGER NOT NULL DEFAULT 0 CHECK (model_failures >= 0),
+  infra_failures      INTEGER NOT NULL DEFAULT 0 CHECK (infra_failures >= 0),
+  api_microusd        INTEGER NOT NULL DEFAULT 0 CHECK (api_microusd >= 0),
+  subscription_runs   INTEGER NOT NULL DEFAULT 0 CHECK (subscription_runs >= 0),
+  subscription_tokens INTEGER NOT NULL DEFAULT 0 CHECK (subscription_tokens >= 0),
+  unknown_runs        INTEGER NOT NULL DEFAULT 0 CHECK (unknown_runs >= 0),
+  remediation_runs    INTEGER NOT NULL DEFAULT 0 CHECK (remediation_runs >= 0),
+  person_revisions    INTEGER NOT NULL DEFAULT 0 CHECK (person_revisions >= 0),
+  first_check_passed  INTEGER CHECK (first_check_passed IS NULL OR first_check_passed IN (0,1)),
+  agent_turns         INTEGER NOT NULL DEFAULT 0 CHECK (agent_turns >= 0),
+  turns_unknown_runs  INTEGER NOT NULL DEFAULT 0 CHECK (turns_unknown_runs >= 0),
+  provenance_json     TEXT NOT NULL DEFAULT '[]',
+  settled             INTEGER NOT NULL DEFAULT 0 CHECK (settled IN (0,1)),
+  closed              INTEGER NOT NULL DEFAULT 0 CHECK (closed IN (0,1)),
+  evaluated_at        TEXT NOT NULL,
+  CHECK ((state IN ('rejected','not-counted')) = (reason IS NOT NULL)),
+  CHECK (closed = 0 OR settled = 1)
+);
+CREATE INDEX IF NOT EXISTS route_record_by_cohort ON route_record (repo, cohort_size, state, first_started_at);
+CREATE INDEX IF NOT EXISTS route_record_open ON route_record (evaluated_at) WHERE closed = 0;
+CREATE TABLE IF NOT EXISTS route_rule (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo                TEXT NOT NULL,
+  cohort_size         TEXT NOT NULL CHECK (cohort_size IN ('small','medium')),
+  kind                TEXT NOT NULL CHECK (kind IN ('rule','trial')),
+  provider            TEXT NOT NULL,
+  model               TEXT NOT NULL,
+  configured_provider TEXT NOT NULL,
+  configured_model    TEXT,
+  state               TEXT NOT NULL CHECK (state IN ('active','trialling','paused','switched-off','turned-off','expired','dropped','finished')),
+  generation          INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+  grant_json          TEXT NOT NULL,
+  prices_json         TEXT NOT NULL,
+  depends_json        TEXT NOT NULL,
+  trial_limit         INTEGER CHECK (trial_limit IS NULL OR trial_limit >= 1),
+  accepted_by         TEXT NOT NULL,
+  accepted_at         TEXT NOT NULL,
+  ended_at            TEXT,
+  ended_by            TEXT,
+  end_reason          TEXT,
+  CHECK ((kind = 'trial') = (trial_limit IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS route_rule_one_winner ON route_rule (repo, cohort_size) WHERE state IN ('active','trialling','paused');
+CREATE TABLE IF NOT EXISTS route_exposure (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_ref   INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
+  rule       INTEGER NOT NULL REFERENCES route_rule(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  closed_at  TEXT,
+  UNIQUE (task_ref, rule)
+);
+CREATE TABLE IF NOT EXISTS route_exposure_event (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  exposure INTEGER NOT NULL REFERENCES route_exposure(id) ON DELETE CASCADE,
+  kind     TEXT NOT NULL CHECK (kind IN ('proposed','refiled','approved-as-proposed','approved-with-other','cancelled')),
+  model    TEXT,
+  at       TEXT NOT NULL,
+  CHECK ((kind = 'approved-with-other') = (model IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS route_exposure_event_by_exposure ON route_exposure_event (exposure, id);
+CREATE TABLE IF NOT EXISTS route_trial_reservation (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule         INTEGER NOT NULL REFERENCES route_rule(id) ON DELETE CASCADE,
+  task_ref     INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
+  scope_digest TEXT NOT NULL,
+  state        TEXT NOT NULL CHECK (state IN ('reserved','consumed','released')),
+  consumed_run INTEGER REFERENCES run(id) ON DELETE SET NULL,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  UNIQUE (rule, task_ref),
+  CHECK (state = 'consumed' OR consumed_run IS NULL)
+);
+CREATE TABLE IF NOT EXISTS models_generation (
+  scope      TEXT NOT NULL,
+  phase      TEXT NOT NULL,
+  generation INTEGER NOT NULL CHECK (generation >= 1),
+  changed_at TEXT NOT NULL,
+  PRIMARY KEY (scope, phase)
+);
+`;
+/** The tables V148_SCHEMA adds, in the order a test drops them to make the v147 shape. */
+export const V148_TABLES = Object.freeze(["route_trial_reservation", "route_exposure_event", "route_exposure", "route_rule", "route_record", "run_cohort", "models_generation"] as const);
+/** v148: a run's execution class (saved runs read NULL: none kept, which the records count as the model's), a
+ * revision's origin (saved revisions read NULL: not recorded, never a person), and a project's "Suggest cheaper models"
+ * switch (saved projects read 1: on). */
+export const V148_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  run: { exec_class: { definition: "TEXT CHECK (exec_class IS NULL OR exec_class IN ('model','infrastructure'))", saved: "NULL" } },
+  task_ref: { revision_origin: { definition: "TEXT CHECK (revision_origin IS NULL OR revision_origin IN ('person','automatic-review','flow','lead','machine'))", saved: "NULL" } },
+  project: { suggest_models: { definition: "INTEGER NOT NULL DEFAULT 1 CHECK (suggest_models IN (0,1))", saved: "1" } },
+});
+/** The v148 migration's steps after v147's, in order (OpenOptions.migrationStep may stop after each). */
+export const V148_STEPS = Object.freeze(["results-tables", "exec-class", "revision-origin", "suggest-models"] as const);
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -5885,6 +6037,16 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   step("web-session");
   for (const [column, { definition }] of Object.entries(V147_ADDED_COLUMNS["console_instance"]!)) addColumn(db, "console_instance", column, definition);
   step("console-instance");
+  // v148: the results-routing tables (new tables only) and the execution class, revision origin and suggestion switch
+  // (V148_ADDED_COLUMNS: saved rows read their declared values). Each step is idempotent, as v147's are.
+  db.exec(V148_SCHEMA);
+  step("results-tables");
+  for (const [column, { definition }] of Object.entries(V148_ADDED_COLUMNS["run"]!)) addColumn(db, "run", column, definition);
+  step("exec-class");
+  for (const [column, { definition }] of Object.entries(V148_ADDED_COLUMNS["task_ref"]!)) addColumn(db, "task_ref", column, definition);
+  step("revision-origin");
+  for (const [column, { definition }] of Object.entries(V148_ADDED_COLUMNS["project"]!)) addColumn(db, "project", column, definition);
+  step("suggest-models");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -13778,25 +13940,33 @@ export class Store {
 
   /** Write one complete pair. Audited: who changed spend routing, and when. */
   setPhaseConfig(scope: string, phase: string, provider: string, model: string | null, by: string, now: Date): void {
-    const was = this.phaseConfig(scope, phase);
-    const words = (agent: { provider: string; model: string | null } | null) => agent === null ? "not set" : `${agent.provider} · ${agent.model ?? "its default model"}`;
-    this.recordPolicy(by, scope === "installation" ? null : scope, `agent for ${phase} changed`, words(was), words({ provider, model }), now);
-    this.db
-      .prepare(
-        `INSERT INTO phase_config (scope, phase, provider, model, updated_at, updated_by)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT (scope, phase) DO UPDATE SET
-           provider = excluded.provider, model = excluded.model,
-           updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-      )
-      .run(scope, phase, provider, model, now.toISOString(), by);
+    // Results routing (v148): a changed row moves its (scope, phase) generation in the same transaction, which pauses
+    // any rule that depended on it (route-store.ts bumpModelsGeneration).
+    this.transact(() => {
+      const was = this.phaseConfig(scope, phase);
+      const words = (agent: { provider: string; model: string | null } | null) => agent === null ? "not set" : `${agent.provider} · ${agent.model ?? "its default model"}`;
+      this.recordPolicy(by, scope === "installation" ? null : scope, `agent for ${phase} changed`, words(was), words({ provider, model }), now);
+      this.db
+        .prepare(
+          `INSERT INTO phase_config (scope, phase, provider, model, updated_at, updated_by)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (scope, phase) DO UPDATE SET
+             provider = excluded.provider, model = excluded.model,
+             updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+        )
+        .run(scope, phase, provider, model, now.toISOString(), by);
+      if (was === null || was.provider !== provider || was.model !== model) bumpModelsGeneration(this, scope, phase, now);
+    });
   }
 
   clearPhaseConfig(scope: string, phase: string): boolean {
-    const { changes } = this.db
-      .prepare("DELETE FROM phase_config WHERE scope = ? AND phase = ?")
-      .run(scope, phase);
-    return Number(changes) > 0;
+    return this.transact(() => {
+      const { changes } = this.db
+        .prepare("DELETE FROM phase_config WHERE scope = ? AND phase = ?")
+        .run(scope, phase);
+      if (Number(changes) > 0) bumpModelsGeneration(this, scope, phase, new Date());
+      return Number(changes) > 0;
+    });
   }
 
   // ---- phase routing (v47) -----------------------------------------------
@@ -13832,19 +14002,26 @@ export class Store {
   setPhaseTierConfig(scope: string, phase: string, tier: "light" | "strong", provider: string, model: string | null, by: string, now: Date): void {
     // A small change makes no plan and repairs resume the builder: only the build phase has a light agent.
     if (tier === "light" && phase !== "build") throw new Error(`a light agent is for the build phase only, not ${phase}`);
-    this.db
-      .prepare(
-        `INSERT INTO phase_tier_config (scope, phase, tier, provider, model, updated_at, updated_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (scope, phase, tier) DO UPDATE SET provider = excluded.provider, model = excluded.model,
-                                                        updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-      )
-      .run(scope, phase, tier, provider, model, now.toISOString(), by);
+    this.transact(() => {
+      const was = this.phaseTierConfig(scope, phase, tier);
+      this.db
+        .prepare(
+          `INSERT INTO phase_tier_config (scope, phase, tier, provider, model, updated_at, updated_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (scope, phase, tier) DO UPDATE SET provider = excluded.provider, model = excluded.model,
+                                                          updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+        )
+        .run(scope, phase, tier, provider, model, now.toISOString(), by);
+      if (was === null || was.provider !== provider || was.model !== model) bumpModelsGeneration(this, scope, phase, now);
+    });
   }
 
   clearPhaseTierConfig(scope: string, phase: string, tier: "light" | "strong"): boolean {
-    const { changes } = this.db.prepare("DELETE FROM phase_tier_config WHERE scope = ? AND phase = ? AND tier = ?").run(scope, phase, tier);
-    return Number(changes) > 0;
+    return this.transact(() => {
+      const { changes } = this.db.prepare("DELETE FROM phase_tier_config WHERE scope = ? AND phase = ? AND tier = ?").run(scope, phase, tier);
+      if (Number(changes) > 0) bumpModelsGeneration(this, scope, phase, new Date());
+      return Number(changes) > 0;
+    });
   }
 
   /** A tier's candidates on other providers at a scope, in provider order (sized routing). */
@@ -13873,22 +14050,29 @@ export class Store {
   /** Name this provider's candidate on a tier, beside the tier's own (one per provider; a second replaces the first). */
   setPhaseTierAlternate(scope: string, phase: "plan" | "build", tier: CandidateTier, provider: string, model: string, by: string, now: Date): void {
     if (tier === "light" && phase !== "build") throw new Error(`a light agent is for the build phase only, not ${phase}`);
-    this.db
-      .prepare(
-        `INSERT INTO phase_tier_alternate (scope, phase, tier, provider, model, updated_at, updated_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (scope, phase, tier, provider) DO UPDATE SET model = excluded.model,
-                                                                  updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-      )
-      .run(scope, phase, tier, provider, model, now.toISOString(), by);
+    this.transact(() => {
+      const was = this.phaseTierAlternates(scope, phase, tier).find(one => one.provider === provider) ?? null;
+      this.db
+        .prepare(
+          `INSERT INTO phase_tier_alternate (scope, phase, tier, provider, model, updated_at, updated_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (scope, phase, tier, provider) DO UPDATE SET model = excluded.model,
+                                                                    updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+        )
+        .run(scope, phase, tier, provider, model, now.toISOString(), by);
+      if (was === null || was.model !== model) bumpModelsGeneration(this, scope, phase, now);
+    });
   }
 
   /** Remove one provider's candidate from a tier, or every one when no provider is named; how many went. */
   clearPhaseTierAlternates(scope: string, phase: string, tier: CandidateTier, provider: string | null): number {
-    const { changes } = provider === null
-      ? this.db.prepare("DELETE FROM phase_tier_alternate WHERE scope = ? AND phase = ? AND tier = ?").run(scope, phase, tier)
-      : this.db.prepare("DELETE FROM phase_tier_alternate WHERE scope = ? AND phase = ? AND tier = ? AND provider = ?").run(scope, phase, tier, provider);
-    return Number(changes);
+    return this.transact(() => {
+      const { changes } = provider === null
+        ? this.db.prepare("DELETE FROM phase_tier_alternate WHERE scope = ? AND phase = ? AND tier = ?").run(scope, phase, tier)
+        : this.db.prepare("DELETE FROM phase_tier_alternate WHERE scope = ? AND phase = ? AND tier = ? AND provider = ?").run(scope, phase, tier, provider);
+      if (Number(changes) > 0) bumpModelsGeneration(this, scope, phase, new Date());
+      return Number(changes);
+    });
   }
 
   /** Each provider's plan headroom right now, from the latest readings of
@@ -15640,6 +15824,11 @@ export class Store {
     // The provenance row lands in the same transaction as the run row —
     // proved above, written here; a run and its route are one fact.
     this.writeRunRoute(id, stamp, run.now);
+    // Results routing (v148): a code-writing run's cohort snapshot, beside its route in this same transaction and
+    // never updated (route-store.ts writeRunCohort; a snapshot it can't compute is recorded as not eligible).
+    if (role === "builder" || role === "repair") {
+      writeRunCohort(this, { run: id, taskRef: run.taskRef, role, routeDigest: stamp.routeDigest, provider: provider ?? "claude", model, qualityMode, startedAt: run.now.toISOString() });
+    }
     if (role === "reviewer" && parent?.role === "reviewer" && parent.watchIncarnation != null) {
       this.db.prepare("UPDATE run SET watch_incarnation = ? WHERE id = ?").run(parent.watchIncarnation, id);
     }
@@ -26242,4 +26431,24 @@ export function laptopPortOf(store: Store): number | null {
 /** Record the laptop port, once (installation facts are never updated). */
 export function recordLaptopPort(store: Store, port: number, now: Date): void {
   store.recordInstallationFact(LAPTOP_PORT_FACT, String(port), now);
+}
+
+// ---- v148: results routing (docs/plans/results-routing.md) ------------------------------------------------------
+
+/** The Models rows of a project being deleted (project-delete.ts), through the same counter as every other Models
+ * writer: each phase whose rows go moves its generation (pausing what depended on it), then the project's
+ * results-routing rows go (route-store.ts forgetProjectRoutes). One of the routing scan's named phase_* writers
+ * (route-hooks.ts). How many rows went. */
+export function forgetProjectModels(store: Store, repo: string, now: Date): number {
+  return store.transact(() => {
+    const db = store.handle;
+    let rows = 0;
+    const phases = new Set(db.prepare(`SELECT phase FROM phase_config WHERE scope = ? UNION SELECT phase FROM phase_tier_config WHERE scope = ?
+      UNION SELECT phase FROM phase_tier_alternate WHERE scope = ?`).all(repo, repo, repo).map(row => String(row["phase"])));
+    rows += Number(db.prepare("DELETE FROM phase_config WHERE scope = ?").run(repo).changes);
+    rows += Number(db.prepare("DELETE FROM phase_tier_config WHERE scope = ?").run(repo).changes);
+    rows += Number(db.prepare("DELETE FROM phase_tier_alternate WHERE scope = ?").run(repo).changes);
+    for (const phase of [...phases].sort()) bumpModelsGeneration(store, repo, phase, now);
+    return rows + forgetProjectRoutes(store, repo);
+  });
 }

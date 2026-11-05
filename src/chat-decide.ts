@@ -957,6 +957,8 @@ export function applyDecideFeedback(store: Store, seat: DecideSeat, prompt: Deci
   const revised = requestResultChanges(store, root, {
     run: prompt.run, batch: "", source: prompt.digest, actor: verified.who.name, repos: verified.who.repos,
     note: text, path: "", line: "", request: sha(`chat-decide:${seat.channel}:${prompt.id}`).slice(0, 32), allowMode: true,
+    // The chat's own verified person, answering "What should change?" in their own words.
+    origin: "person",
   }, now);
   if (!revised.ok) return { said: `Your feedback wasn't sent: ${revised.message}`, link: null };
   const quoted = phoneText(text, 1_000).split("\n").map(line => `| ${line}`).join("\n");

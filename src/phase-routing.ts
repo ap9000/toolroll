@@ -631,6 +631,8 @@ export function canonicalRouteJson(route: PhaseRoute): string {
       recommended: leg.recommended,
       reasons: leg.reasons,
       problem: leg.problem,
+      // v3 (results routing): the build leg's selection is in the bytes, so in the digest; v1 and v2 bytes never change.
+      ...(route.version === 3 && leg.selection !== undefined ? { selection: leg.selection } : {}),
     })),
     overrides: route.overrides.map(one => ({ phase: one.phase, provider: one.provider, model: one.model, by: one.by, at: one.at })),
     // v2 carries the size it was routed for; a v1 snapshot's bytes never change.

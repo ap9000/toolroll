@@ -32,9 +32,17 @@ describe("the sealed route contract", () => {
         ...savedRoutes.map(one => ({ name: one.name, input: JSON.parse(one.json) as unknown })),
         { name: "overrides in any order", input: { ...v2, overrides: [{ ...override, phase: "build" }, override] } },
         { name: "evidence in any order", input: { ...v2, evidence: ["screenshot", "check"] } },
+        // Version 3 (results routing): a v2 route whose build leg may say how it was selected.
+        { name: "a version 3 route with no selection", input: { ...v2, version: 3 } },
+        { name: "a version 3 build leg selected by a rule", input: leg({ ...v2, version: 3 }, 1, { selection: { kind: "rule", rule: 4, ruleGeneration: 2 } }) },
+        { name: "a version 3 build leg selected as configured", input: leg({ ...v2, version: 3 }, 1, { selection: { kind: "configured" } }) },
       ],
       invalid: [
-        { name: "a newer version", input: { ...v2, version: 3 }, paths: ["version"] },
+        { name: "a newer version", input: { ...v2, version: 4 }, paths: ["version"] },
+        { name: "a selection on a version 2 leg", input: leg(v2, 1, { selection: { kind: "configured" } }), paths: ["legs[1]"] },
+        { name: "a selection on the plan leg", input: leg({ ...v2, version: 3 }, 0, { selection: { kind: "configured" } }), paths: ["legs[0].selection"] },
+        { name: "an override selection on a recommended leg", input: leg({ ...v2, version: 3 }, 1, { selection: { kind: "override" } }), paths: ["legs[1].selection"] },
+        { name: "a rule selection with no generation", input: leg({ ...v2, version: 3 }, 1, { selection: { kind: "rule", rule: 4 } }), paths: ["legs[1].selection.ruleGeneration"] },
         { name: "no version", input: { ...v2, version: undefined }, paths: ["version"] },
         { name: "an unknown key", input: { ...v2, note: "x" }, paths: ["payload"] },
         { name: "a version 1 route has no size", input: { ...v1, size: null }, paths: ["payload"] },
@@ -64,7 +72,13 @@ describe("the sealed route contract", () => {
 
   it("refuses with path-named lines, and the scope's refusal carries them", () => {
     expect(routeJsonProblem(JSON.stringify({ ...v2, posture: "strong" }))).toBe('posture: must be "economy": that is what its legs run');
-    expect(routeJsonProblem(JSON.stringify({ ...v2, version: 3 }))).toBe("version: made by a newer Toolroll (version 3; this one reads up to 2)");
+    expect(routeJsonProblem(JSON.stringify({ ...v2, version: 4 }))).toBe("version: made by a newer Toolroll (version 4; this one reads up to 3)");
+    // A version 3 route reads back to its own bytes, its selection in them, and a changed selection is a changed digest.
+    const ruled = routeFromJson(JSON.stringify(leg({ ...v2, version: 3 }, 1, { selection: { kind: "rule", rule: 4, ruleGeneration: 2 } })))!;
+    expect(ruled.legs[1]!.selection).toEqual({ kind: "rule", rule: 4, ruleGeneration: 2 });
+    expect(routeFromJson(canonicalRouteJson(ruled))).toEqual(ruled);
+    const bumped = routeFromJson(JSON.stringify(leg({ ...v2, version: 3 }, 1, { selection: { kind: "rule", rule: 4, ruleGeneration: 3 } })))!;
+    expect(canonicalRouteJson(bumped)).not.toBe(canonicalRouteJson(ruled));
     expect(routeJsonProblem("{")).toBe("payload: not valid JSON");
     expect(routeFromJson(JSON.stringify(leg(v2, 1, { model: "-rf" })))).toBeNull();
   });

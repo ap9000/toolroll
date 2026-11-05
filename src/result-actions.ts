@@ -10,6 +10,8 @@ import { parseFeedbackImage, sameFeedbackImage, type FeedbackImage, isRevisionFe
 import { validateNote, hasForbiddenControls } from "./decision.js";
 import { TASK_TEXT_LIMITS, validateTaskText } from "./task-text.js";
 import { modeFilingCoverage } from "./scope.js";
+import { recordRevisionOrigin } from "./route-store.js";
+import type { RevisionOrigin } from "./contracts/route-results.js";
 
 export type RevisionResult = { ok: true; id: string } | { ok: false; status: number; message: string };
 type RevisionInput = Parameters<typeof createResultRevision>[2];
@@ -82,6 +84,9 @@ class ChangeRequestRefusal extends Error { constructor(readonly status: number, 
 export function createResultRevision(store: Store, evidenceRoot: string, input: {
   run: number; batch: string | null; source: string | null; actor: string;
   repos: readonly string[] | null; includeUnplaced?: boolean; allowMode?: boolean;
+  /** Who this revision comes from (results routing): each caller says it from its own trusted context, never from
+   * `allowMode` or the actor's name. Only `person` counts against the model that built the result. */
+  origin: RevisionOrigin;
 }, now: Date): RevisionResult {
   return store.transact((): RevisionResult => {
     const id = input.run;
@@ -236,6 +241,8 @@ export function createResultRevision(store: Store, evidenceRoot: string, input: 
         // and collision handling. Set only this new row's display title,
         // atomically with its seal; retries returned earlier, untouched.
         store.raw().prepare("UPDATE task SET title = ? WHERE id = ?").run(title, result.id);
+        // Who it comes from, with its seal (route-store.ts: written once, on a revision only).
+        recordRevisionOrigin(store, result.id, input.origin);
       }
       // Planned afresh: the planner reads the copied terms and these notes, and a note asking for
       // more than the old plan allows becomes an amendment the person approves before anything

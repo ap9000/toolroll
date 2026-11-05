@@ -1480,6 +1480,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       const result = requestResultChanges(store, evidenceRoot, {
         run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
         repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
+        // A browser session is a person's proof; a bearer credential is a machine's.
+        origin: who.via === "cookie" ? "person" : "machine",
         note: body.get("note") ?? "", path: body.get("path") ?? "", line: body.get("line") ?? "", request: body.get("request"), image,
       }, now);
       if (!result.ok) {
@@ -1591,6 +1593,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const result = createResultRevision(store, evidenceRoot, {
       run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
       repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
+      origin: who.via === "cookie" ? "person" : "machine",
     }, now);
     if (!result.ok) return refuse(response, who, result.status, result.message, back);
     return redirect(response, revisionDestination(result.id, back));

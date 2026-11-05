@@ -457,7 +457,7 @@ export function revisionWithNote(store: Store, card: FlowCardRow, target: FlowSt
   if (runId === undefined || runTask === null) return null;
   const revised = requestResultChanges(store, evidenceRoot, {
     run: runId, source: revisionSourceOf(store.getScope(runTask)?.digest ?? null), actor, repos,
-    batch: "", note, path: "", line: "", request: `flow-${card.id}-${card.entry}`, allowMode: true,
+    batch: "", note, path: "", line: "", request: `flow-${card.id}-${card.entry}`, allowMode: true, origin: "flow",
   }, now);
   return revised.ok ? revised.id : null;
 }

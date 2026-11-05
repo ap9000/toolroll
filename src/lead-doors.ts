@@ -26,7 +26,7 @@ import { teamChatAuthorization, subscriptionTeamChatProvider, type TeamChatProvi
 import { readProjectAccess } from "./project-access.js";
 import { TeamLeads } from './team-leads.js';
 import { fileTaskProposal } from "./proposal.js";
-import { proposeGuarded } from "./scope.js";
+import { machineActing, proposeGuarded } from "./scope.js";
 import { isTaskSize, PHASES, specWords } from "./phase-routing.js";
 import { isProviderId } from "./provider.js";
 import type { Phase, ProviderId } from "./provider.js";
@@ -416,7 +416,9 @@ function executeProposal(
     if (options.evidenceRoot === undefined) return refuse("refused", "The saved result is not available on this connection.");
     const request = payload as unknown as ReviewRequest;
     if (request.snapshot == null || request.snapshot.task !== taskId || (request.operation !== "note" && request.operation !== "revise")) return refuse("refused", "This feedback card is incomplete. Ask again.");
-    const result = applyChatReview(store, actor, options.evidenceRoot, request, now, options.via !== "cli");
+    // A review card is the lead's (or a coordinator's) proposal; a person confirming it here decided the result needs
+    // these changes, so the revision is theirs. Under the lead's own chain or a remote run nobody confirmed it: lead.
+    const result = applyChatReview(store, actor, options.evidenceRoot, request, now, options.via !== "cli", machineActing() ? "lead" : "person");
     return result.ok ? { ok: true, kind, taskId: result.taskId, said: result.said } : refuse("stale", result.message);
   }
 

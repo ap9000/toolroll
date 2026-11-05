@@ -33,6 +33,7 @@ import { verificationEvidence, failedVerificationEvidence } from "./verification
 import { classifyGateFailure, describeGateFailure, gateFailureSummary, type GateFailureClass } from "./gate-failure.js";
 import { propose, approve, liveReleaseOf, releaseCheckScope } from "./scope.js";
 import { headWithin } from "./names.js";
+import { recordExecClass } from "./route-store.js";
 
 /**
  * Which road is disposing. 'tick' = the unattended loop: full task
@@ -330,6 +331,7 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
       return { kind: "malformed", sealed: sealed.ok };
     }
     const outcome = STANDALONE_BROKE_REASONS.has(result.reason) ? "failed" : "refused";
+    if (outcome === "failed") recordExecClass(store, runId, result.reason);
     store.finishRun(runId, { outcome, reason: result.reason, now: clock() });
     return { kind: "recorded", outcome };
   }
@@ -367,6 +369,9 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
   }
 
   if (TICK_FAILURE_REASONS.has(result.reason)) {
+    // Results routing (v148): the raw reason's execution class, kept on the run before the mapping below folds
+    // timeouts and setup failures together (route-store.ts recordExecClass; first write wins).
+    recordExecClass(store, runId, result.reason);
     // One fenced transaction decides what the failure means. The
     // classification trusts only what the machine itself observed.
     const failureClass: FailureClass =

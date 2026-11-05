@@ -39,7 +39,7 @@ const input = (change: readonly ModelChange[], over: Partial<ApplyInput> = {}, s
 };
 const policyEntries = () => store.actionLedger({ repos: null, instance: true, limit: 100 }).filter(one => one.source === "policy").map(one => `${one.action}: ${one.detail}`).sort();
 /** Every table but the editor's own rows, the ledger and SQLite's and the live view's counters, as stored. */
-const everythingElse = () => Object.fromEntries((store.raw().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT IN ('phase_config','phase_tier_config','service_cursor','sqlite_sequence') AND name NOT LIKE '%ledger%' ORDER BY name").all() as { name: string }[])
+const everythingElse = () => Object.fromEntries((store.raw().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT IN ('phase_config','phase_tier_config','models_generation','service_cursor','sqlite_sequence') AND name NOT LIKE '%ledger%' ORDER BY name").all() as { name: string }[])
   .map(({ name }) => [name, JSON.stringify(store.raw().prepare(`SELECT * FROM "${name}"`).all())]));
 
 describe("who may write", () => {

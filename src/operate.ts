@@ -339,6 +339,7 @@ import { latestRelease, newerRelease, notifySecurityRelease, notifyVersionLive, 
 import { installMethod } from "./install-method.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { machineActing } from "./scope.js";
+import { reevaluateResultRecords } from "./route-results.js";
 import { loginFileOf, migrateLegacyLogin, savedLoginFile, writableLoginFile } from "./login-secrets.js";
 
 export type Write = (line: string) => void;
@@ -3951,6 +3952,10 @@ async function reconcileCommand(
   // notices main has fixed are put away, at most a bounded number a pass, each with its reason in the ledger.
   let tidied: TidyItem[] = [];
   try { tidied = runTidy(store, clock(), releaseFactsFor(context.databaseFile), TIDY_PASS_LIMIT, { principal: "operator", repos: [repo], includeUnplaced: false }); } catch { /* the next pass tries again */ }
+
+  // Result records (results-routing.md, slice 1): each finished family's record is evaluated again from its rows —
+  // a completion, a follow-up check, a revision, a proof, a merge or the task ending each change what it says.
+  try { reevaluateResultRecords(store, canonicalProject(repo) ?? resolve(repo), context.evidenceRoot, clock()); } catch { /* the next pass tries again */ }
 
   // Checkout cleanup (Settings → Storage): finished work's clean checkouts go as the setting says (by default when
   // the task is complete or cancelled); their branches stay. Each removal is in the ledger.

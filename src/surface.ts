@@ -480,6 +480,8 @@ const REMOTE_NO: readonly string[] = [
   "serve", "serve check-public", "watch", "up", "onboard", "daemon", "background on", "background off", "background show", "stop", "open", "welcome", "password set", "doctor", "bridge", "setup show", "setup clear",
   // Provider keys and model tools on this machine.
   "providers", "keys status", "keys set", "keys clear", "keys verify", "keys auth", "models check", "models update", "models watch",
+  // Result records read with this machine's sign-in: project access, never a token's narrower scope.
+  "models results",
   // Publication and release.
   "publish", "publish status", "publish merge", "publish refire", "publish unblock", "publish rearm", "publish grant", "publish revoke",
   // A repository's authority grants on this machine.
