@@ -12,6 +12,7 @@ import { budgetLabel, usd, type BudgetState, type SpendItem } from "./spend.js";
 import type { SpendLine, SpendReport, SpendRole } from "./spend-report.js";
 import type { BrowserLimits } from "./browser-workspace.js";
 import { runHref, taskHref } from "./server/http.js";
+import { notEnoughWords, pricesWords, sideWords, SAVINGS_LABEL, type SavingsReport, type SavingsRow, type SavingsSide } from "./route-savings.js";
 
 const projectName = (repo: string) => repo.split("/").filter(Boolean).pop() ?? repo;
 
@@ -33,7 +34,14 @@ export const SPEND_CSS = `.spend{display:grid;gap:24px;min-width:0}.spend-sec{di
   `.spend-win.warning .spend-meter>i,.spend-win.danger .spend-meter>i{background:var(--so-danger)}.spend .k-disclose{padding-top:4px}.spend .k-disclose[open]>summary{margin-bottom:8px}` +
   `@media(max-width:760px){.spend-lim-h{grid-template-columns:minmax(0,1fr) auto}.spend-lim-a{grid-column:1/-1}.spend-lim-a .k-btn{width:100%}.spend-sum{grid-template-columns:minmax(0,1fr)}` +
   `.spend-sum>div+div{border-left:0;border-top:1px solid var(--so-line);padding-left:0}.spend-bar{grid-template-columns:minmax(0,120px) minmax(0,1fr) 68px;gap:8px;font-size:12.5px}` +
-  `.spend-edit-row .k-field{flex:1 1 100%}.spend .k-btn.k-btn-primary.k-docked{display:none}}`;
+  `.spend-edit-row .k-field{flex:1 1 100%}.spend .k-btn.k-btn-primary.k-docked{display:none}}` +
+  // Suggestions and rules (results-routing slice 4): each rule's two sides, side by side; stacked on a phone.
+  `.spend-rr{display:grid;gap:10px;padding:14px 0;border-bottom:1px solid var(--so-line);min-width:0}.spend-rr-h{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0}` +
+  `.spend-rr-t{font-weight:500;overflow-wrap:anywhere;min-width:0}.spend-rr-x{font-size:12.5px;color:var(--so-muted);overflow-wrap:anywhere}` +
+  `.spend-rr-g{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.spend-rr-s{display:grid;gap:4px;align-content:start;min-width:0;padding:12px;border:1px solid var(--so-line);border-radius:8px}` +
+  `.spend-rr-k{font-size:12px;color:var(--so-muted);overflow-wrap:anywhere}.spend-rr-v{font-size:18px;font-weight:600;font-variant-numeric:tabular-nums}.spend-rr-v small{font-size:12px;font-weight:400;color:var(--so-muted)}` +
+  `.spend-rr-p{display:grid;gap:2px;margin:0;padding:0;list-style:none;font-size:12.5px;color:var(--so-muted)}.spend-rr .k-note{margin:0}` +
+  `@media(max-width:760px){.spend-rr-g{grid-template-columns:minmax(0,1fr)}}`;
 
 const ROLE_WORDS: Record<SpendRole, string> = {
   builder: "Builds", repair: "Repairs", planner: "Plans", reviewer: "Reviews", scout: "Scouting",
@@ -72,6 +80,8 @@ export type SpendView = {
   facts?: ApprovalFacts;
   /** This month's name (YYYY-MM): the limits are this month's. */
   current?: string;
+  /** Suggestions and rules (route-savings.ts): what each rule, trial and suggestion observed, or that it can't be read. */
+  savings?: SavingsReport | { error: string } | null;
 };
 
 /** Dollars for the page: a positive amount under a cent reads "<$0.01", never a false $0. */
@@ -203,9 +213,50 @@ export function spendHtml(view: SpendView, said: { said?: string | null; problem
   const docked = edit !== null && (rows.some(row => row.target === edit.target) || adding !== null)
     ? dock(btn("Save limit", { variant: "primary", type: "submit", attrs: { form: `limit-${edit.target.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 60) || "new"}`, name: "action", value: "save" } }))
     : "";
-  const body = html`<div class="spend">${limits}${monthBar}${figures}${breakdowns}${windows}${notCounted}</div>${docked}`;
+  const body = html`<div class="spend">${limits}${monthBar}${figures}${breakdowns}${windows}${savingsSection(view.savings ?? null)}${notCounted}</div>${docked}`;
   return settingsShell({ group: "spend", title: "Spend", lead: "What agents cost, by project and by model, with the limits that stop them. Dates are UTC months.", body,
     flags: { spend: saved.some(one => one.budget !== null && limitNeedsYou(one.budget)) } });
+}
+
+const sizeWords = (size: "small" | "medium") => size === "small" ? "Small tasks" : "Routine tasks";
+const dateWords = (iso: string) => new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }).format(new Date(iso));
+const STATUS_TONE: Record<string, "" | "live" | "needs"> = { active: "live", trialling: "live", paused: "needs" };
+
+/** One side of a rule's comparison: its model and window, the median API dollars a task (— when hidden), and the
+ * completeness, plan usage, unknown cost and remediation counts, each on its own line. */
+function savingsSide(label: string, side: SavingsSide): Html {
+  const words = sideWords(side);
+  const cap = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+  return html`<div class="spend-rr-s" role="group" aria-label="${label}: ${side.name}" data-side="${label.toLowerCase()}"><span class="spend-rr-k">${label} · ${side.name} · ${dateWords(side.from)} to ${dateWords(side.to)}</span>\
+<span class="spend-rr-v" data-amount-kind="api" data-microusd="${side.medianApiMicrousd ?? ""}">${words.median} <small>median API dollars a task</small></span>\
+<ul class="spend-rr-p"><li data-priced="${side.apiPriced}" data-results="${side.results}">${words.parts[0]!}</li><li data-amount-kind="subscription">${cap(words.parts[1]!)}</li><li data-amount-kind="unknown">${cap(words.parts[2]!)}</li><li>${cap(words.parts[3]!)}</li></ul></div>`;
+}
+
+function savingsRow(row: SavingsRow): Html {
+  const suggestion = row.kind === "suggestion";
+  const what = `${row.cheaper.name} instead of ${row.configured.name}${row.kind === "trial" ? " (a trial)" : suggestion ? " (suggested, not in use)" : ""}`;
+  const href = `/settings/models?scope=${encodeURIComponent(row.repo)}#models-suggested`;
+  return html`<article class="spend-rr" data-savings-row data-kind="${row.kind}" data-state="${row.state}" data-enough="${row.enough ? "yes" : "no"}">\
+<div class="spend-rr-h"><span class="spend-rr-t">${row.project} · ${sizeWords(row.size)}</span>${chip(row.status, STATUS_TONE[row.state] ?? "")}</div><span class="spend-rr-x">${what}</span>\
+<div class="spend-rr-g">${savingsSide(suggestion ? "Configured" : "Before", row.configured)}${savingsSide(suggestion ? "Suggested" : "After", row.cheaper)}</div>\
+${row.enough ? "" : html`<p class="k-note" data-not-enough>${notEnoughWords(row)}</p>`}<p class="k-note" data-prices>${pricesWords(row)}</p>\
+<span><a class="k-link" href="${href}">${suggestion ? "Review in Models settings" : "Open Models settings"}</a></span></article>`;
+}
+
+/** Suggestions and rules (docs/plans/results-routing.md, slice 4): per project and size, each live or recently ended
+ * rule or trial, and each standing suggestion, with what it observed over matched 90-day windows. Labelled "observed,
+ * not a promise"; a median shows only from 5 API-priced results a side; unknown is "—", never $0. Read-only. */
+export function savingsSection(savings: SavingsReport | { error: string } | null): Html | "" {
+  if (savings === null) return "";
+  const state = `${SAVINGS_LABEL} · 90 days a side`;
+  if ("error" in savings) return sec("savings", "Suggestions and rules", state, notice("Suggestions and rules can't be read right now. Nothing else on this page is affected."), html` data-savings="error"`);
+  if (savings.rows.length === 0) {
+    return sec("savings", "Suggestions and rules", state, empty({ title: "No suggestions or rules yet.",
+      text: "When a cheaper model does as well on a project's small or routine tasks, its suggestion shows here, and once it's in use, what it cost before and after." }), html` data-savings="empty"`);
+  }
+  const stale = savings.staleSince === null ? "" : html`<p class="k-note" data-savings-stale>Some results were last checked on ${dateWords(savings.staleSince)}; they update while Toolroll runs.</p>`;
+  const lead = html`<p class="k-note">Median API dollars a task, including revision and repair runs. Plan usage and unknown cost are counted apart, never added in. A median shows once each side has ${savings.minPriced} results priced in API dollars.</p>`;
+  return sec("savings", "Suggestions and rules", state, html`${lead}${stale}${savings.rows.map(savingsRow)}`, html` data-savings="rows"`);
 }
 
 /** Checks the amount next to its field before any password is asked or the form leaves the page; the server checks

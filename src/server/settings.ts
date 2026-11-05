@@ -128,6 +128,7 @@ import { slackSettingsHtml } from "../slack-settings.js";
 import { spendHtml,spendScript,type LimitEdit,type LimitRowView } from "../spend-ui.js";
 import { approvalFactsNow } from "./kit.js";
 import { spendReport,spendReportCsv,spendRows } from "../spend-report.js";
+import { savingsReportOrError } from "../route-savings.js";
 import { limitsView } from "../limits-ui.js";
 import { budgetStates,monthNamed,spendItems,usd as spendUsd,subagentNames as subagentNamesOf } from "../spend.js";
 import { removeSsoSettings,saveSsoSettings,SSO_CALLBACK,ssoChangeWords } from "../sso-settings.js";
@@ -198,7 +199,9 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
     };
     const windows = limitsView(store.providerLimits(), [], { project: projectName, subagent: id => subagentNames.get(id) ?? `Subagent ${id}` }, now);
     const view = { month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1), current: current.name, report: spendReport(rows),
-      budgets, unlimited, targets, windows, subagentNames, edit, facts: approvalFactsNow() };
+      budgets, unlimited, targets, windows, subagentNames, edit, facts: approvalFactsNow(),
+      // Suggestions and rules (results-routing slice 4): read-only, for every project this console shows.
+      savings: savingsReportOrError(store, consoleProjects(), now) };
     // A refusal for the open form shows in the form; anything else under the limits' heading.
     const said = { said: url.searchParams.get("said"), problem: edit === null ? url.searchParams.get("problem") : null };
     return sendScreen(response, 200, screen("Spend", spendHtml(view, said), { chrome: chromeFor(null, "spend"), functional: { script: spendScript() } }));
