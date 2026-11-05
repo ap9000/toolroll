@@ -501,6 +501,7 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
       // The size, said once and plainly beside who builds: "Small change: fast model, no plan".
       projection === null ? "" : sizeLineHtml(projection),
       who.length === 0 ? "" : html`<p class="approval-who">${who.join(" · ")}</p>`,
+      routeEvidenceHtml(route, "approval-evidence"),
       consent,
   ]);
   return { lead, rows, editor, editorForm, details, submit, label: rebuild !== null ? "Approve and build again" : "Approve and start", after, allowing, passwordNote };
@@ -670,7 +671,18 @@ export type RouteView = {
    * every option an exact pair the operator named once in configuration.
    * The form offers these and nothing else. */
   choices: Record<Phase, AgentChoice[]>;
+  /** Results routing (slice 2): "Why this model: …" when an earned rule selected the build leg (route-rules.ts
+   * selectionEvidenceWords), else absent. The selection is sealed; the counts read "so far". */
+  evidence?: string | null;
 };
+
+/** The evidence line beside the agents, only when an earned rule chose the builder. */
+export function routeEvidenceHtml(view: RouteView | null | undefined, className = "meta"): Html {
+  const words = view?.evidence ?? null;
+  if (words === null) return html``;
+  const split = words.indexOf(": ");
+  return html`<p class="${className} route-evidence" data-route-evidence><strong>${words.slice(0, split + 1)}</strong>${words.slice(split + 1)}</p>`;
+}
 
 export const ROLE_NOUN: Record<RouteProjection["legs"][number]["phase"], string> = { plan: "Planner", build: "Builder", repair: "Repair", review: "Reviewer" };
 
@@ -767,6 +779,7 @@ export function agentsCeremonyHtml(view: RouteView | null | undefined): Html {
     html`<div class="agents-ceremony"><p class="approval-label">agents</p>`,
     sizeLineHtml(view.projection),
     html`<p class="agents-summary">${view.projection.summary}</p>`,
+    routeEvidenceHtml(view),
     html`<div class="agents-badges">${riskBadgeHtml(view.projection)}<span class="badge">${sentenceCase(view.projection.postureWords)}</span></div>`,
     agentsWhyHtml(view.projection),
     html`<p class="meta">These exact agents are part of what you approve; changing any of them asks for a fresh approval.</p></div>`,
@@ -846,6 +859,7 @@ export function agentsCardHtml(taskId: string, view: RouteView | null | undefine
     html`<section class="card agents-card" id="agents" aria-label="agents">`,
     html`<div class="agents-head"><h3>Agents</h3><div class="agents-badges">${agentsBadgesHtml(view)}</div></div>`,
     html`<p class="agents-summary">${agentsSummaryWords(view)}</p>`,
+    routeEvidenceHtml(view),
     p === null
       ? view.kind === "unreadable"
         ? html`<p class="agents-halted">Nothing runs for this task until its scope is filed again and approved.</p>`

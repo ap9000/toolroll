@@ -388,7 +388,9 @@ describe("where freshness may be honoured", () => {
       "src/nightly-github.ts": 1, "src/operate.ts": 61, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
-      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 10, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 26,
+      // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
+      // suggestions on) are an instance operator's step-up; the rule door re-proves the session in the write.
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 10, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 27,
       "src/server/tasks.ts": 7, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -576,6 +578,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Easy-start C5: turning local mode off is an operator's step-up from a full session, proved inside the write's transaction.
     "src/server/settings.ts#createSettingsHandlers@1>localModeOff@110>turned:store.transact(_)@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>modelsSave@108": 1,
+    // Results routing (slice 2): Settings → Models → Suggested's step-up acts (accept, keep, suggestions on), last in
+    // the handlers so the reviewed positions above stay as they were.
+    "src/server/settings.ts#createSettingsHandlers@1>modelsRuleAct@112><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>monitoringSave@64": 1,
     "src/server/settings.ts#createSettingsHandlers@1>permissionDefaultSave@82": 1,
     "src/server/settings.ts#createSettingsHandlers@1>policySave@49": 1,

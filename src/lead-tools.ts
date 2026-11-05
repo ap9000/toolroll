@@ -1,3 +1,4 @@
+import { rulesOf, ruleWords as earnedRuleWords, suggestionsFor, suggestionWords } from "./route-rules.js";
 import { type FeedbackImage, sameFeedbackImage } from "./result-review.js";
 import { sweepLine, sweepTable } from "./lead-sweep.js";
 import { connectionsOf, oneClickOf } from "./mcp-connect.js";
@@ -1429,7 +1430,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   get_models: {
-    description: "Default agent per role with the exact model each name runs now, installed CLI versions and updates, and models released in the last two weeks. Read-only; changes happen in Settings → Models.",
+    description: "Default agent per role with the exact model each name runs now, installed CLI versions and updates, models released in the last two weeks, and cheaper models your projects' own results suggest (with their earned rules). Read-only; accepting happens in Settings → Models; Not now is propose_action suggestion_not_now.",
     handle: (ctx) => {
       const roles = (["plan", "build", "review", "repair"] as const).map(phase => {
         const row = ctx.store.phaseConfig(INSTALLATION_SCOPE, phase);
@@ -1437,7 +1438,11 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       });
       const tools = runtimeStates(ctx.store).map(one => ({ name: one.name, installed: one.installed, latest: one.latest, updateAvailable: one.behind }));
       const newModels = (["claude", "codex", "gemini"] as const).flatMap(source => seenModels(ctx.store, source)).filter(model => isNewModel(model, ctx.now)).map(model => ({ name: model.name, id: model.id, price: priceWords(model), released: model.releasedAt }));
-      return { ok: true, body: { roles, tools, newModels, change: "/settings/models" } };
+      // Results routing: the same suggestions and rules Settings → Models and `toolroll models suggestions` show.
+      const suggestions = ctx.who.repos.flatMap(repo => suggestionsFor(ctx.store, repo, ctx.now)).map(one => ({ id: one.id, repo: one.repo, words: suggestionWords(one),
+        review: `/settings/models?scope=${encodeURIComponent(one.repo)}&suggestion=${encodeURIComponent(one.id)}#models-suggested` }));
+      const rules = ctx.who.repos.flatMap(repo => rulesOf(ctx.store, repo, ctx.now)).map(one => ({ id: one.id, repo: one.repo, state: one.state, words: earnedRuleWords(ctx.store, one) }));
+      return { ok: true, body: { roles, tools, newModels, suggestions, rules, change: "/settings/models" } };
     },
   },
   list_tasks: {

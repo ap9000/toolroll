@@ -83,7 +83,9 @@ import { mailboxAccess,readThroughImap } from "../mailbox.js";
 import { startConnect } from "../mcp-connect.js";
 import { decideProposal,listProposals,memoryStatus } from "../memory-pass.js";
 import { checkModels,isNewModel,modelOptions,modelWords,RUNTIME_TOOLS,runtimeStates,seenModels,setWatch,updateRuntime,watchState,type RuntimeTool } from "../model-catalog.js";
-import { modelsHtml,modelsScript,type RoleView } from "../models-ui.js";
+import { modelsHtml,modelsScript,type RoleView,type SuggestedView } from "../models-ui.js";
+import { acceptSuggestion, dismissSuggestion, grantWords, keepRule, modelName, ruleWords, rulesOf, setSuggestModels, suggestionsFor, suggestionWords, suggestModelsOn, turnOffRule } from "../route-rules.js";
+import type { RuleDoor } from "../route-store.js";
 import { ALL_SLOTS,applyModelChoices,browserWords,checkScope,DEFAULT_PRESET,defaultAgentOf,fillDefaultRouting,isPresetName,newerModels,PRESETS,presetChange,presetInUse,previewModelChange,recentRuns,rowAt,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
 import { HEADROOM_FIVE_HOUR_LIMIT,HEADROOM_WEEKLY_LIMIT,exactModelId } from "../phase-routing.js";
 import { RISKY_MEANS,SIZE_MEANS,SIZING_CLAUDE_MODEL } from "../task-sizing.js";
@@ -2220,9 +2222,9 @@ ${postForm("/settings/chat-approval/save", html`\
         chosen: one.chosen === null ? "its default" : /^(opus|sonnet|haiku|fable)$/.test(one.chosen) ? `floating ${one.chosen}` : one.chosen,
         ranOn: one.ranOn ?? "not reported" })),
       waiting: canManage ? store.scopesAwaitingApproval(null, 10, admissionList()).map(one => ({ taskId: one.taskId, title: one.title })) : [],
+      suggested: suggestedView(repo, projects, query.get("suggestion"), now),
     };
   }
-
   /** Google's redirect back: the code becomes a saved refresh token, and a page sends the person back to Settings. */
   async function googleCallback(ctx: EdgeContext): Promise<void> {
     const { request, response, url } = ctx;
@@ -2384,6 +2386,12 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.models-agent": modelsSave,
     "settings.models-apply": modelsApply,
     "settings.models-act": modelsAct("other"),
+    "settings.models-accept": modelsRuleAct("accept"),
+    "settings.models-keep": modelsRuleAct("keep"),
+    "settings.models-suggest-on": modelsRuleAct("suggest-on"),
+    "settings.models-turn-off": modelsRuleAct("turn-off"),
+    "settings.models-not-now": modelsRuleAct("not-now"),
+    "settings.models-suggest-off": modelsRuleAct("suggest-off"),
     "settings.knowledge-refresh": knowledgeRefresh,
     "settings.knowledge-proposal": knowledgeProposal,
     "settings.knowledge-decision": knowledgeDecision,
@@ -2616,5 +2624,64 @@ ${postForm("/settings/chat-approval/save", html`\
     if (!turned.ok) return back("problem", turned.reason === "not-on" ? "Local mode is already off." : "Only an instance operator can turn off local mode.");
     return back("said", "Local mode is off. This computer's browser signs in with your password now.");
   }
+  /** Settings → Models → Suggested: one project's offers, rules and switch; on the installation scope, every
+   * project's offers and rules, each reviewed on its own project's page. */
+  function suggestedView(repo: string | null, projects: readonly string[], asked: string | null, now: Date): SuggestedView {
+    const repos = repo === null ? projects : [repo];
+    const offers = repos.flatMap(one => suggestionsFor(store, one, now));
+    const sizeTitle = (size: "small" | "medium", name: string) => `${name} for ${size === "small" ? "small" : "routine"} tasks`;
+    const reviewed = asked === null || repo === null ? null : offers.find(one => one.id === asked && one.repo === repo) ?? null;
+    return {
+      repo,
+      offers: offers.map(one => ({ id: one.id, repo: one.repo, project: projectName(one.repo), title: sizeTitle(one.cohortSize, one.name), words: suggestionWords(one) })),
+      review: asked === null || repo === null ? null : reviewed === null ? { stale: true as const, repo } : {
+        id: reviewed.id, repo: reviewed.repo, title: `${sizeTitle(reviewed.cohortSize, reviewed.name)} instead of ${reviewed.configured.name}`,
+        evidence: [suggestionWords(reviewed), reviewed.configuredEvidence.decided === 0 ? `${reviewed.configured.name}: no decided similar tasks here in the last 90 days.` : `${reviewed.configured.name}: ${reviewed.configuredEvidence.mature} of its last ${reviewed.configuredEvidence.decided} decided similar tasks accepted with checks passing.`],
+        prices: `${reviewed.name} $${reviewed.prices.model.in} / $${reviewed.prices.model.out}, ${reviewed.configured.name} $${reviewed.prices.configured.in} / $${reviewed.prices.configured.out} per 1M tokens (listed now)`,
+        terms: grantWords(reviewed.grant), save: `Use ${reviewed.name} for ${reviewed.cohortSize === "small" ? "small" : "routine"} tasks`,
+      },
+      rules: repos.flatMap(one => rulesOf(store, one, now)).map(one => ({ id: one.id, repo: one.repo, project: projectName(one.repo), title: sizeTitle(one.cohortSize, modelName(store, one.model)), words: ruleWords(store, one),
+        state: one.state === "active" ? "active" as const : one.state === "paused" ? "paused" as const : "ended" as const })),
+      suggest: repo === null ? null : { on: suggestModelsOn(store, repo) },
+    };
+  }
+
+  /**
+   * Settings → Models → Suggested (results routing, slice 2): the earned-rule doors (route-rules.ts), re-proved inside
+   * their own transaction. Accepting, keeping a paused rule and switching suggestions on are an instance operator's
+   * step-up (the password, or a Passwordless session); turning a rule off or dropping it, Not now, and switching
+   * suggestions off only take authority away, so a signed-in session does — or this computer's local owner, whose
+   * route row narrows it to exactly that act.
+   */
+  function modelsRuleAct(kind: "accept" | "keep" | "suggest-on" | "turn-off" | "not-now" | "suggest-off") { return async (ctx: HandlerContext): Promise<void> => {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.modelsRules);
+    const repo = body.get("scope") ?? "";
+    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/models?scope=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}#models-suggested`);
+    if (["scope", "password", "id", "rule"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
+    if (!consoleProjects().includes(repo) || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/models");
+    let door: RuleDoor;
+    if (kind === "accept" || kind === "keep" || kind === "suggest-on") {
+      const proved = authenticateApprover(who, body.get("password") ?? "");
+      if (!proved.ok) return back("problem", "Enter your Toolroll password to change which models run.");
+      door = { kind: "person", person: modelsAuthority(who, proved.method) };
+    } else {
+      door = who.authority === "local-owner" ? { kind: "local-owner", actor: who.name } : { kind: "person", person: modelsAuthority(who, "session") };
+    }
+    const ruleId = /^[1-9][0-9]{0,9}$/.test(body.get("rule") ?? "") ? Number(body.get("rule")) : -1;
+    const id = body.get("id") ?? "";
+    const result = kind === "accept" ? acceptSuggestion(store, { repo, id }, door, now)
+      : kind === "keep" ? keepRule(store, ruleId, door, now)
+      : kind === "turn-off" ? turnOffRule(store, ruleId, door, now)
+      : kind === "not-now" ? dismissSuggestion(store, { repo, id }, door, now)
+      : setSuggestModels(store, repo, kind === "suggest-on", door);
+    if (!result.ok) return back("problem", result.problem);
+    return back("said", kind === "accept" ? "Saved. New tasks of that size build on the suggested model; each is still approved by a person."
+      : kind === "keep" ? "Kept. The rule is on again with its original terms."
+      : kind === "turn-off" ? "Turned off. New tasks build on the configured model; tasks already approved keep their model."
+      : kind === "not-now" ? "Not now. This suggestion stays quiet for 30 days."
+      : kind === "suggest-on" ? "Suggestions are on for this project." : "Suggestions are off for this project.");
+  }; }
   return { registrations, modelsView };
 }

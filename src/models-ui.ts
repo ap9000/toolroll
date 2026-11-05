@@ -63,6 +63,21 @@ export type ModelsView = {
   waiting: { taskId: string; title: string }[];
   /** What this request's approval shows (approvalFactsNow): a step-up asks for the password unless Passwordless is on. */
   facts?: ApprovalFacts;
+  /** Results routing (slice 2): cheaper models this project's own results suggest, its earned rules, its switch. */
+  suggested?: SuggestedView;
+};
+
+/** The Suggested group: offers, a reviewed offer, the project's rules, and its "Suggest cheaper models" switch. */
+export type SuggestedView = {
+  /** The project shown, or null on the installation scope (offers from every project, each reviewed on its own). */
+  repo: string | null;
+  offers: { id: string; repo: string; project: string; title: string; words: string }[];
+  /** "Review change": the evidence, the switch-back terms and the step-up save; `stale` when the offer reviewed is
+   * no longer the one on offer. */
+  review: { id: string; repo: string; title: string; evidence: string[]; prices: string; terms: string[]; save: string } | { stale: true; repo: string } | null;
+  rules: { id: number; repo: string; project: string; title: string; words: string; state: "active" | "paused" | "ended" }[];
+  /** The project's switch (null on the installation scope). */
+  suggest: { on: boolean } | null;
 };
 
 const sec = (id: string, title: string, state: string, body: HtmlValueLike): Html =>
@@ -116,7 +131,7 @@ ${formRow("Automatic checks", `${view.watch.enabled ? "On" : "Off"}. Every 6 hou
     : note(`Checked ${when(view.watch.checkedAt)}.`);
   const fresh = view.fresh.length === 0 ? "" : sec("new", "New models", "", view.fresh.map(model => formRow(model.name, `${priceWords(model)}${model.releasedAt === null ? "" : ` · released ${model.releasedAt.slice(0, 10)}`}`, chip("New", "", { dot: false }), "inline")));
   const chat = view.chat === null ? "" : formRow("Chat", view.chat.words, btn("Change", { sm: true, variant: "ghost", href: "/settings/lead" }), "inline");
-  const body = html`<div class="models">${outcome}${preview}${choiceSection(view, manage, previewing)}${recentSection(view)}${sec("tools", "AI tools on this computer", "", html`${tools}${checks}`)}${fresh}${chat}</div>`;
+  const body = html`<div class="models">${outcome}${preview}${choiceSection(view, manage, previewing)}${suggestedSection(view)}${recentSection(view)}${sec("tools", "AI tools on this computer", "", html`${tools}${checks}`)}${fresh}${chat}</div>`;
   return settingsShell({ group: "agents", sub: true, title: "Models", lead: "Which model plans, builds and reviews each task. Changes apply to tasks filed from now on.", body });
 }
 
@@ -184,4 +199,42 @@ function sizingSection(view: ModelsView): Html {
 function recentSection(view: ModelsView): Html | "" {
   if (view.recent.length === 0) return "";
   return sec("recent", "Recent work", "", view.recent.map(one => formRow(one.role, `Chosen ${one.chosen} → ran on ${one.ranOn}`, html`<a class="k-link k-mono" href="/t/${encodeURIComponent(one.taskId)}">${one.taskId}</a>`, "inline")));
+}
+
+/** Settings → Models → Suggested (docs/plans/results-routing.md slice 2): what a project's own results suggest, each
+ * reviewed before it's saved with a step-up; the rules in force with Turn off (Keep or Drop when paused); and the
+ * project's "Suggest cheaper models" switch. Turning off and Not now only take authority away: no password. */
+function suggestedSection(view: ModelsView): Html | "" {
+  const s = view.suggested;
+  if (s === undefined) return "";
+  const manage = view.csrf !== "";
+  const scoped = (repo: string) => `/settings/models?scope=${encodeURIComponent(repo)}`;
+  const review = s.review === null ? ""
+    : "stale" in s.review
+      ? html`${notice("This suggestion is out of date: its results, a price or Models changed since. Nothing was saved.")}${acts(btn("Back", { sm: true, href: `${scoped(s.review.repo)}#models-suggested` }))}`
+      : html`<div class="models-diff">${factList([
+          ["Change", s.review.title],
+          ["Evidence", html`${s.review.evidence.map(line => html`<span>${line}</span><br>`)}`],
+          ["Prices", s.review.prices],
+          ["Switches back", html`${s.review.terms.map(line => html`<span>${line}</span><br>`)}`],
+        ])}${manage ? postForm("/settings/models/accept", html`${note(`Every task is still approved, and keeps the model it was approved with. ${termsOf("step-up", factsOf(view))}`)}${password(view, "models-accept-pw")}${acts(btn(s.review.save, { variant: "primary", type: "submit" }), btn("Cancel", { variant: "ghost", href: `${scoped(s.review.repo)}#models-suggested` }))}`,
+          { hidden: { scope: s.review.repo, id: s.review.id }, attrs: { class: "models-editor" } }) : ""}</div>`;
+  const offers = s.offers.map(one => formRow(s.repo === null ? `${one.title} · ${one.project}` : one.title, one.words, manage
+    ? acts(btn("Review change", { sm: true, href: `${scoped(one.repo)}&suggestion=${encodeURIComponent(one.id)}#models-suggested` }),
+      postForm("/settings/models/not-now", btn("Not now", { sm: true, variant: "ghost", type: "submit" }), { hidden: { scope: one.repo, id: one.id } }))
+    : html``, "top"));
+  const rules = s.rules.map(one => formRow(s.repo === null ? `${one.title} · ${one.project}` : one.title, one.words, !manage || one.state === "ended" ? html``
+    : one.state === "paused"
+      ? acts(postForm("/settings/models/keep", html`${password(view, `models-keep-${one.id}`)}${btn("Keep", { sm: true, type: "submit" })}`, { hidden: { scope: one.repo, rule: String(one.id) } }),
+        postForm("/settings/models/turn-off", btn("Drop", { sm: true, variant: "ghost", type: "submit" }), { hidden: { scope: one.repo, rule: String(one.id) } }))
+      : postForm("/settings/models/turn-off", btn("Turn off", { sm: true, type: "submit" }), { hidden: { scope: one.repo, rule: String(one.id) } }), "top"));
+  const toggle = s.suggest === null || s.repo === null ? "" : formRow("Suggest cheaper models", s.suggest.on
+      ? "On. When a cheaper model does as well on this project's small or routine tasks, it's suggested here. Nothing changes until you accept it."
+      : "Off. No new suggestions for this project.",
+    !manage ? html`` : s.suggest.on
+      ? postForm("/settings/models/suggest-off", btn("Turn off", { sm: true, type: "submit" }), { hidden: { scope: s.repo } })
+      : postForm("/settings/models/suggest-on", html`${password(view, "models-suggest-pw")}${btn("Turn on", { sm: true, type: "submit" })}`, { hidden: { scope: s.repo } }), "inline");
+  const emptyWords = s.repo === null ? "No suggestions yet. Choose a project above to see its own." : "No suggestions yet. When a cheaper model's results on this project's small or routine tasks match the configured model's, it's suggested here.";
+  const body = html`${review}${offers.length === 0 && rules.length === 0 && s.review === null ? note(emptyWords) : ""}${offers}${rules.length === 0 ? "" : html`${group("Rules in use")}${rules}`}${toggle}`;
+  return sec("suggested", "Suggested", s.offers.length === 0 ? "" : `${s.offers.length} to review`, body);
 }
