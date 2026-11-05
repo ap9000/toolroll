@@ -651,6 +651,34 @@ test('finish checks custody before the console answers, waits for fresh leases, 
   }
 });
 
+test('a configured HTTPS console that does not answer stops prepare before anything is paused', async () => {
+  const withConsole = (args: Record<string, any>) => ({ ...args, publicUrl: 'https://console.test' });
+  const d = await deployment({ wrap: withConsole });
+  try {
+    d.hooks.fetch = () => { if (d.log.at(-1)?.startsWith('fetch https://')) throw Error('no answer'); };
+    await expect(d.phases.prepare({ packageSha256: 'staged' })).rejects.toThrow('The configured HTTPS console (https://console.test) does not answer, so nothing was paused.');
+    expect(d.log).toEqual(['fetch https://console.test/t/task']);
+    expect(existsSync(join(d.stage, 'deployment.json'))).toBe(false);
+  } finally { d.close(); }
+  const answering = await deployment({ wrap: withConsole });
+  try {
+    await answering.phases.prepare({ packageSha256: 'staged' });
+    expect(answering.log.slice(0, 2)).toEqual(['fetch https://console.test/t/task', 'preparing']);
+    expect(answering.journal().phase).toBe('backup-verified');
+  } finally { answering.close(); }
+});
+
+test('a configured HTTPS console that stops answering after prepare stops the swap before the old service is stopped', async () => {
+  const d = await deployment({ wrap: args => ({ ...args, publicUrl: 'https://console.test' }) });
+  try {
+    await d.rehearsed();
+    d.hooks.fetch = () => { throw Error('no answer'); };
+    await expect(d.phases.swap()).rejects.toThrow('does not answer, so the running service was not stopped.');
+    expect(d.log).toEqual(['rehearsed', 'fetch https://console.test/t/task']);
+    expect([d.journal().phase, d.services.running, d.gateOwned()]).toEqual(['rehearsed', 'old', true]);
+  } finally { d.close(); }
+});
+
 /** deploy-browser's database helpers, with the snapshot and the SQLite copy supplied. */
 function browserDatabaseHelpers(snapshot: (db: DatabaseSync) => unknown = () => [], copy: typeof backup = backup) {
   return {

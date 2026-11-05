@@ -11,6 +11,7 @@ import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { sleep } from "./sleep.js";
 import { callLabel, readOnlyCall, retryCall, retryingExec, writeWithRecheck, type ExecResult, type RetryOptions } from "./release-net.js";
@@ -58,6 +59,15 @@ export const exec: Exec = (command, args, options = {}) => new Promise(done => {
 });
 
 /** Without NODE_OPTIONS, which a test runner or debugger may have left for this process. */
+/** This runtime's own CLI (dist/bin.js beside this module) when it has one; from source, `toolroll` as installed. */
+const ownCli = (): readonly string[] => {
+  const bin = join(dirname(fileURLToPath(import.meta.url)), "bin.js");
+  return existsSync(bin) ? [process.execPath, bin] : ["toolroll"];
+};
+
+/** Journal phases the deployment's finish accepts (scripts/deploy-phases.mjs finish): the new service runs, unproven. */
+const FINISHES_FORWARD = Object.freeze(["started", "healthy"]);
+
 const cleanEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => {
   const env = { ...process.env, ...extra };
   delete env["NODE_OPTIONS"];
@@ -217,6 +227,8 @@ export type AdapterOptions = {
   formula?: string;
   /** How long the deployment itself may run, in minutes. */
   deployMinutes?: number;
+  /** The Toolroll CLI the release calls, as [program, ...leading args]; by default this runtime's own bin.js. */
+  cli?: readonly string[];
   run?: Exec;
   fetch?: typeof fetch;
   say?: (line: string) => void;
@@ -248,8 +260,11 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   /** A write by gh, never retried by itself. */
   const ghWrite = (remainingMs: number, ...args: string[]) => run(tools.gh, args, { cwd: "/", env: gitEnv, timeoutMs: Math.min(120_000, remainingMs) });
   const ghJson = async (what: string, ...args: string[]) => JSON.parse(await must(gh(...args), what)) as unknown;
+  // The build running this release, never a PATH lookup: until the link step, `toolroll` on PATH is still the previous
+  // build, which refuses a database the deployment migrated, so a release resumed after its deploy couldn't read its task.
+  const cli = options.cli ?? ownCli();
   const toolroll = async (...args: string[]): Promise<Json> => {
-    const result = await run("toolroll", [...args, "--json"], { env: cleanEnv(), timeoutMs: 120_000 });
+    const result = await run(cli[0]!, [...cli.slice(1), ...args, "--json"], { env: cleanEnv(), timeoutMs: 120_000 });
     try { return object(JSON.parse(result.stdout)); } catch { throw new Error(`toolroll ${args[0]} ${args[1] ?? ""} answered no JSON (exit ${result.code}): ${(result.stderr || result.stdout).trim().slice(0, 300)}`); }
   };
   const refused = (answer: Json) => `${String(answer["message"] ?? answer["reason"] ?? "refused")}`;
@@ -498,6 +513,17 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         // A deployment that outlived a killed release is still at work: recovering under it would race it.
         const running = (options.processes ?? processes)().filter(one => one.command.includes("deploy-browser.mjs") && one.command.includes(stage));
         if (running.length > 0) return { ok: false, message: `the deployment is still running (process ${running.map(one => one.pid).join(", ")}); let it finish, then rerun` };
+        // The new service started (deploy-rescue.ts FORWARD_ONLY): recovery refuses to roll it back, so the release
+        // resumes it forward with the deployment's own finish (health, both consoles, leases, then the pause lifted).
+        // Finishing deploys, so the candidate is proven first, as for a deploy.
+        const phase = (() => { try { return object(JSON.parse(readFileSync(join(stage, "deployment.json"), "utf8")))["phase"]; } catch { return undefined; } })();
+        if (FINISHES_FORWARD.includes(String(phase))) {
+          const proven = proveCandidate(runId);
+          if (!proven.ok) return stopped(stage, proven.message);
+          const finished = await deployScript(worktree, stage, runId, proven, ["--yes", "--phase", "finish"]);
+          if (finished.code === 0) return { ok: true };
+          return stopped(stage, `${tail(finished)} (the deployment journal is at ${String(phase)}; finishing it forward stopped; ${join(stage, "deployment.json")})`);
+        }
         // Recovery needs no approval, but it runs only the recorded commit's own script, extracted by this runtime.
         const recorded = recordedCommit(runId);
         if (recorded === null) return stopped(stage, `Run ${runId} names no commit to recover with.`);

@@ -146,6 +146,15 @@ export function browserDeployment({
     requireTrue(typeof reserve === "function", "The deployment can't reserve its task against being put away.");
     reserve(proven);
   };
+  const answered = response => response && (response.ok || response.status === 303 || response.status === 302);
+  // finish needs the configured HTTPS console. One already down stops the deployment before it pauses work or stops
+  // the old service, never only after the new service started, where finishing forward is all that is left.
+  const requireRemoteConsole = async (task, unchanged) => {
+    if (!publicUrl) return;
+    const response = await fetch(`${publicUrl}/t/${encodeURIComponent(task)}`, { redirect: "manual", signal: AbortSignal.timeout(10_000) }).catch(() => null);
+    checkpoint();
+    requireTrue(answered(response), `The configured HTTPS console (${publicUrl}) does not answer, so ${unchanged}. Bring it back (for example \`tailscale up\`) and continue the release.`);
+  };
   const loadPhase = phase => {
     checkpoint();
     // The plane's records are re-read before every phase, not only at entry:
@@ -318,6 +327,7 @@ export function browserDeployment({
       // A fresh preparation proves here, not through loadPhase: refresh the reservation before anything is written
       // (this handle holds no transaction; the backup's own proofs below run inside one and only read).
       refreshReservation(f);
+      await requireRemoteConsole(f.taskId, "nothing was paused");
       if (!resumed) writeFileSync(join(stageDir, "release.json"), JSON.stringify({ ...f, run: runId, head: candidateHead, at: new Date().toISOString(), ...staged }, null, 1));
       const r = resumed ?? { id: randomUUID(), candidate: candidateHead, database, phase: "preparing", schema, nextSchema, createdAt: new Date().toISOString(), backup: join(stageDir, "orders.backup.db"), priorRuntime: priorDist, nextRuntime: nextDist, builder: runId, completion: f.completion, gateDigest: f.gateDigest, task: f.taskId, repo: f.repo, scopeDigest: f.scopeDigest, ...staged, proofVerdict: f.proofVerdict, manualAcceptance: f.acceptance, publicUrl };
       requireTrue(r.schema === schema && r.nextSchema === nextSchema && r.priorRuntime === priorDist &&
@@ -372,6 +382,7 @@ export function browserDeployment({
     const r = loadPhase("rehearsed");
     requireTrue(sha(readFileSync(r.backup)) === r.backupSha256 && r.rehearsal.integrity === "ok", "The verified backup or rehearsal changed.");
     await ensureCodingBackup(oldRt.coding, r);
+    await requireRemoteConsole(r.task, "the running service was not stopped");
     // Stop the installed service and prove every old process is gone.
     r.stoppingService = service(priorDist);
     requireTrue(r.stoppingService, "The current service identity could not be verified before shutdown. No runtime was replaced.");
@@ -465,7 +476,6 @@ export function browserDeployment({
     requireTrue(live.commands.some(c => c.includes("--host 127.0.0.1 --port 4180")) || !livePlist.includes("--host 127.0.0.1"), "The backend must remain on its configured loopback address.");
     // The console answers as soon as it listens (project folders are resolved after, src/operate.ts startConsole); a
     // started service is still given a short while to open its port, and each ask has its own bound.
-    const answered = response => response && (response.ok || response.status === 303 || response.status === 302);
     const until = now() + LOCAL_ANSWER_MS;
     let local = null;
     for (let first = true; ; first = false) {
@@ -481,7 +491,7 @@ export function browserDeployment({
     let remote = "not configured";
     if (r.publicUrl) {
       const response = await fetch(`${r.publicUrl}/t/${encodeURIComponent(r.task)}`, { redirect: "manual", signal: AbortSignal.timeout(10_000) }).catch(() => null);
-      requireTrue(response && (response.ok || response.status === 303 || response.status === 302), "The configured HTTPS console is unavailable.");
+      requireTrue(answered(response), "The configured HTTPS console is unavailable.");
       remote = `${r.publicUrl} answered ${response.status}`;
     }
     checkpoint();

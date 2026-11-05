@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- **A deploy checks your HTTPS console before it changes anything.** If the
+  console you reach Toolroll through (over Tailscale, say) doesn't answer, the
+  deploy now stops before it pauses new work or stops the running service,
+  and says to bring the console back. It used to find out only at the end,
+  with the new version already running and new work paused.
+- **A release finishes a deploy that stopped after the new version started.**
+  If a deploy's last check failed once the new version was already running
+  (an HTTPS console that didn't answer, say), `toolroll release` sent you to
+  `toolroll release --recover-deploy`, which sent you back, and new work
+  stayed paused. Rerunning the release now finishes the deploy: it checks
+  the new service, both consoles and the project workers, then lifts the
+  pause.
+- **A resumed release reads its task with its own build.** It used to call
+  whichever `toolroll` came first on your PATH, which until the release
+  relinks it is still the previous version and can't open a database the
+  deploy just upgraded.
+
 ## 0.9.90 — 2026-11-04
 
 - **Type `toolroll` and you're in.** At your own terminal, bare `toolroll`
