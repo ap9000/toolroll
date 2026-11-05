@@ -12,6 +12,7 @@
  * Git directory. No command or console road reaches these functions: `toolroll release` calls them through its store
  * adapter. Any refusal unseals `auto-check`, so the task asks a person, its passing check kept.
  */
+import { ROUTING_HOOK_FILES, routingHookProblem } from "./route-hooks.js";
 import { assignmentOf } from "./assignment.js";
 import { fullCheckProblem, projectGitDir } from "./check-report.js";
 import { sealedRun } from "./release-recheck.js";
@@ -188,8 +189,10 @@ const TEST_FILE = /^(?!.*(^|\/)fixtures?\/)[^]*\.test\.ts$/;
 /** The eval set's and GitHub nightly's policy code (docs/plans/evals-nightly.md, part C, finding 10): the cases and
  * oracles, the evaluator, its gate, hooks and world, reviewer scoring, nightly ingestion, their contracts, and the
  * accounting readings evals trust (reported-usage.ts, run-efficiency.ts). Where they are called from, and the store's
- * accounting reads, are held by eval-hooks.ts instead (evalHookProblem). */
-const EVAL_POLICY = /^(evals\/|src\/evals[^/]*\.ts$|src\/eval-[^/]*\.ts$|src\/reviewer-evals\.ts$|src\/nightly-github\.ts$|src\/contracts\/evals[^/]*\.ts$|src\/reported-usage\.ts$|src\/run-efficiency\.ts$)/;
+ * accounting reads, are held by eval-hooks.ts instead (evalHookProblem). Results routing's policy is here too
+ * (docs/plans/results-routing.md, Protection 1): the record evaluator, the rules, the one writer module, this scan's
+ * manifest and the record contract; their callers and pinned bodies are route-hooks.ts's (routingHookProblem). */
+const EVAL_POLICY = /^(evals\/|src\/evals[^/]*\.ts$|src\/eval-[^/]*\.ts$|src\/reviewer-evals\.ts$|src\/nightly-github\.ts$|src\/contracts\/evals[^/]*\.ts$|src\/reported-usage\.ts$|src\/run-efficiency\.ts$|src\/route-(?:results|rules|store|hooks)\.ts$|src\/contracts\/route-results\.ts$)/;
 
 /** Build or type configuration anywhere: a person approves it. */
 const BUILD_CONFIG = /(^|\/)(tsconfig[^/]*\.json|[^/]*\.config\.[cm]?[jt]s|\.npmrc|\.nvmrc|\.node-version)$/;
@@ -214,7 +217,7 @@ export function autoPathProblem(path: string): string | null {
   }
   // Test files under test/ carry the same trust as src's (Alex: test authors are trusted) — only the `.test.ts` files
   // themselves, never a helper, fixture, setup or config file beside them, nor one inside a fixtures folder.
-  if (EVAL_POLICY.test(normal)) return "it's eval or nightly policy code";
+  if (EVAL_POLICY.test(normal)) return "it's eval, nightly or model routing policy code";
   if (testUnderTest) return null;
   if (BUILD_CONFIG.test(normal)) return "it configures the build or the checks";
   if (normal === "package.json" || normal === "package-lock.json") return null;
@@ -315,6 +318,12 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
   const changedAt = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, changed); return blobs.ok ? (file: string): Buffer | null => blobs.value.get(file)?.bytes ?? null : null; };
   const rewrites = storeRewriteProblem(changed, changedAt(after.value.tree), changedAt(before.value.tree));
   if (rewrites !== null) return `${rewrites}: a person decides`;
+  // Results routing (route-hooks.ts): its required calls and pinned bodies the base holds, and no changed file writing
+  // its rows (or the Models rows) from anywhere but their writers.
+  const routingAt = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, ROUTING_HOOK_FILES); return (file: string): Buffer | null => blobs.ok ? blobs.value.get(file)?.bytes ?? null : null; };
+  const routing = routingHookProblem({ candidate: routingAt(after.value.tree), base: routingAt(before.value.tree) },
+    { paths: changed, candidate: changedAt(after.value.tree), base: changedAt(before.value.tree) });
+  if (routing !== null) return `${routing}: a person decides`;
   for (const change of diff.value) {
     const modes = [change.before?.mode, change.after?.mode].filter((one): one is string => one !== undefined);
     if (modes.includes("120000") || modes.includes("160000")) return `${change.path} is a symlink or submodule`;
