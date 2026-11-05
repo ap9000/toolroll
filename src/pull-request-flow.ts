@@ -330,7 +330,7 @@ export async function followPullRequests(
       const filed = store.transact(() => {
         const revised = requestResultChanges(store, options.evidenceRoot, {
           run: publication.run, batch: "", source: revisionSourceOf(scope?.digest ?? null), actor: CI_ACTOR, repos: null, includeUnplaced: true,
-          allowMode: false, note, path: "", line: "", request,
+          allowMode: false, note, path: "", line: "", request, origin: "flow",
         }, now);
         if (!revised.ok) return revised;
         updateFollow(store, publication.id, { revisions: follow.revisions + 1, red_head: one.headOid, revision_task: revised.id }, now);

@@ -1841,12 +1841,12 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(readChatResult(store, who, evidenceRoot, "review-guard", otherRun)).toMatchObject({ ok: false });
     // An invalid inherited source binding fails after the new note was tentatively saved.
     store.raw().prepare("UPDATE run SET scope_digest = ? WHERE id = ?").run("f".repeat(64), run);
-    expect(applyChatReview(store, who, evidenceRoot, request, T0, false)).toMatchObject({ ok: false });
+    expect(applyChatReview(store, who, evidenceRoot, request, T0, false, "lead")).toMatchObject({ ok: false });
     expect(store.allDiffComments(run)).toHaveLength(0);
     store.raw().prepare("UPDATE run SET scope_digest = ? WHERE id = ?").run(store.getScope("review-guard")!.digest, run);
     // New scope: old card stays attached to the old terms and refuses.
     propose(store, { taskId: "review-guard", goal: "Different terms", touches: [], now: T0 });
-    expect(applyChatReview(store, who, evidenceRoot, request, T0, false)).toMatchObject({ ok: false, message: expect.stringContaining("changed") });
+    expect(applyChatReview(store, who, evidenceRoot, request, T0, false, "lead")).toMatchObject({ ok: false, message: expect.stringContaining("changed") });
     expect(store.allDiffComments(run)).toHaveLength(0);
     const artifact = store.artifactsFor(run).find(one => one.kind === "terminal-diff")!;
     writeFileSync(join(evidenceRoot, artifact.key), "changed after capture");

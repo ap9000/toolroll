@@ -1,3 +1,4 @@
+import type { RevisionOrigin } from "./contracts/route-results.js";
 import type { Store } from "./store.js";
 import type { VerifiedApprover } from "./principal.js";
 import { selectResultImages } from "./chat-evidence.js";
@@ -52,7 +53,7 @@ export function reviewInputProblem(note: string | null, path: string | null, lin
 /** Chat and the result form write the same comments and call the same revision service.
  * A failed combined note+revision rolls back the note too; no half-completed action.
  */
-export function applyChatReview(store: Store, who: VerifiedApprover, evidenceRoot: string, request: ReviewRequest, now: Date, allowMode: boolean):
+export function applyChatReview(store: Store, who: VerifiedApprover, evidenceRoot: string, request: ReviewRequest, now: Date, allowMode: boolean, origin: RevisionOrigin):
   { ok: true; taskId: string; run: number; said: string } | Problem {
   try {
     return store.transact(() => store.savepoint(() => {
@@ -80,7 +81,7 @@ export function applyChatReview(store: Store, who: VerifiedApprover, evidenceRoo
       if (operation === "note") return { ok: true as const, taskId: live.root, run: live.run, said: "Feedback saved. No work started." };
       if (batch.length === 0) return fail("Add feedback or select saved notes before requesting changes.");
       const result = createResultRevision(store, evidenceRoot, {
-        run: live.run, batch: batch.join(","), source: live.source, actor: who.name, repos: who.repos, allowMode,
+        run: live.run, batch: batch.join(","), source: live.source, actor: who.name, repos: who.repos, allowMode, origin,
       }, now);
       if (!result.ok) return fail(result.message);
       const scope = store.getScope(result.id);

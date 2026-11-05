@@ -18,7 +18,8 @@ import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
-import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
+import { deleteProject, holdingsWords, MODEL_SETTINGS, PROJECT_SETTINGS, projectHoldings, projectRunning } from "./project-delete.js";
+import { modelsGenerationOf } from "./route-store.js";
 
 let dir: string, file: string, store: Store, repo: string, evidence: string, pool: string;
 const OTHER = "/repo/other";
@@ -92,6 +93,14 @@ function populate(where: string) {
   // Knowledge history refuses deletes by design; a project's own goes with it.
   store.handle.prepare("INSERT INTO knowledge_change (repo, identity, revision, actor, at, payload, sha) VALUES (?, 'k', 1, 'alex', ?, '{}', 'x')").run(where, NOW.toISOString());
   store.upsertProject(where, where.split("/").pop()!, NOW);
+  // Its Models rows and results-routing rows (v148): an override, a strong agent, another provider's candidate, an
+  // earned rule and a result record.
+  store.setPhaseConfig(where, "build", "claude", "claude-haiku-4-5", "alex", NOW);
+  store.setPhaseTierConfig(where, "build", "strong", "claude", "claude-opus-4-1", "alex", NOW);
+  store.setPhaseTierAlternate(where, "build", "routine", "codex", "gpt-5-codex", "alex", NOW);
+  store.handle.prepare(`INSERT INTO route_rule (repo, cohort_size, kind, provider, model, configured_provider, state, grant_json, prices_json, depends_json, accepted_by, accepted_at)
+    VALUES (?, 'small', 'rule', 'claude', 'claude-haiku-4-5', 'claude', 'active', '{}', '{}', '{}', 'alex', ?)`).run(where, NOW.toISOString());
+  store.handle.prepare("INSERT INTO route_record (task_ref, repo, state, evaluated_at) VALUES (?, ?, 'pending', ?)").run(first.ref, where, NOW.toISOString());
   return { first, second, flow, card, mate, thread, taskThread };
 }
 
@@ -99,7 +108,9 @@ function populate(where: string) {
 function mentions(where: string): string[] {
   const found: string[] = [];
   for (const { name } of store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'memory_search_%'").all() as { name: string }[]) {
-    if (name === "action_ledger") continue;
+    // The ledger keeps every entry; a Models generation counter only ever moves forward (results routing: a project
+    // added again under the same path must never meet an old offer's generation), and holds nothing but a number.
+    if (name === "action_ledger" || name === "models_generation") continue;
     const columns = store.handle.prepare(`PRAGMA table_info("${name}")`).all().map(row => String(row["name"])).filter(one => ["repo", "project", "path", "scope", "scope_key"].includes(one));
     for (const column of columns) if (Number(store.handle.prepare(`SELECT COUNT(*) AS n FROM "${name}" WHERE "${column}" = ?`).get(where)!["n"]) > 0) found.push(`${name}.${column}`);
   }
@@ -143,8 +154,15 @@ test("deleting a project removes what Toolroll holds for it and keeps everything
   const talk = telegramTalk([[shop.first.id, 501], [other.first.id, 502]]);
   expect(count("SELECT COUNT(*) AS n FROM chat_event WHERE provider = 'telegram' AND kind = 'message'")).toBe(2);
 
+  const generation = modelsGenerationOf(store, repo, "build");
   const done = await deleteProject(store, repo, { actor: "alex", via: "command line", now: NOW, evidenceRoot: evidence, poolRoot: pool });
   expect(done).toMatchObject({ ok: true, removed: { tasks: 1, versions: 1, runs: 2, branches: 2, chats: 2, subagents: 1 }, left: [] });
+  // Its Models rows went through the counter (so whatever depended on them paused), with its results-routing rows.
+  expect(modelsGenerationOf(store, repo, "build")).toBe(generation + 1);
+  for (const table of ["route_rule", "route_record"]) expect(count(`SELECT COUNT(*) AS n FROM ${table} WHERE repo = ?`, repo), table).toBe(0);
+  expect(count("SELECT COUNT(*) AS n FROM route_rule WHERE repo = ?", OTHER)).toBe(1);
+  // Only forgetProjectModels deletes them: the generic settings list never names a Models table.
+  expect(PROJECT_SETTINGS.map(([table]) => table).filter(table => MODEL_SETTINGS.some(([model]) => model === table))).toEqual([]);
   // The shop's message and its reply went with it; the other project's stayed.
   expect(store.handle.prepare("SELECT id FROM chat_event WHERE provider = 'telegram' AND kind = 'message'").all().map(row => row["id"])).toEqual([talk[1]]);
   expect(store.handle.prepare("SELECT event FROM chat_part WHERE provider = 'telegram'").all().map(row => row["event"])).toEqual([talk[1]]);

@@ -126,6 +126,8 @@ function sendBack(store: Store, root: string, runId: number, taskId: string, rep
     run: runId, source: revisionSourceOf(store.getScope(taskId)?.digest ?? null), actor, repos: [repo], batch: "",
     note: revisionNoteOf(high), path: "", line: "",
     request: createHash("sha256").update(`build-review:${runId}`).digest("hex").slice(0, 32), allowMode: true,
+    // The automatic review's send-back, even when the mode's signer is its actor: never a person's act.
+    origin: "automatic-review",
   }, now);
   return revised.ok ? { ok: true, id: revised.id } : { ok: false, problem: revised.message };
 }

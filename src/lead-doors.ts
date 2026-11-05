@@ -416,7 +416,8 @@ function executeProposal(
     if (options.evidenceRoot === undefined) return refuse("refused", "The saved result is not available on this connection.");
     const request = payload as unknown as ReviewRequest;
     if (request.snapshot == null || request.snapshot.task !== taskId || (request.operation !== "note" && request.operation !== "revise")) return refuse("refused", "This feedback card is incomplete. Ask again.");
-    const result = applyChatReview(store, actor, options.evidenceRoot, request, now, options.via !== "cli");
+    // A review card is the lead's (or a coordinator's) proposal: its changes are the lead's words, confirmed.
+    const result = applyChatReview(store, actor, options.evidenceRoot, request, now, options.via !== "cli", "lead");
     return result.ok ? { ok: true, kind, taskId: result.taskId, said: result.said } : refuse("stale", result.message);
   }
 

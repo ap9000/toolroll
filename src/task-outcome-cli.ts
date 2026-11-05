@@ -4,7 +4,8 @@ import { assignmentOf, checkAssignmentAsOperator } from './assignment.js';
 import { assignmentForCoordinator, coordinatorToken } from './assignment-adapters.js';
 import { authenticateCoordinator } from './coordinator.js';
 import { reproveApprover, type VerifiedApprover } from './principal.js';
-import { authenticateApprover, personProof } from './scope.js';
+import { authenticateApprover, machineActing, personProof } from './scope.js';
+import { currentActor } from './actor.js';
 import { requestResultChanges } from './result-actions.js';
 import { commentSourceKey, revisionSourceOf } from './result-review.js';
 import { envelopeJson } from './envelope.js';
@@ -92,7 +93,9 @@ export async function runTaskOutcomeCommand(action: 'complete' | 'revise', posit
     // The shared action returns exact replays before stale-family checks. An
     // older result cannot create another child once a newer revision is current.
     const revised = requestResultChanges(store, evidenceRoot, { run: run.id, source, actor, repos,
-      batch: '', note: feedback, path: '', line: '', request: key, allowMode: operator !== null }, now);
+      batch: '', note: feedback, path: '', line: '', request: key, allowMode: operator !== null,
+      // A verified approver's own words; a scoped credential or the lead's token is the lead; a remote API run a machine.
+      origin: coordinator !== null || currentActor()?.lead === true ? 'lead' : machineActing() ? 'machine' : 'person' }, now);
     if (!revised.ok) return fail(revised.status === 400 ? 'usage' : 'stale-result', revised.message);
     const scope = store.getScope(revised.id);
     const approved = scope?.approvedDigest != null && scope.approvedDigest === scope.digest;

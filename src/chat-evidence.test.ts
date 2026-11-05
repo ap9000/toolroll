@@ -91,11 +91,11 @@ describe("shared result image selection", () => {
     const target = (id: number) => ({ run, artifact: id, sha256: store.getArtifact(id)!.sha256 });
     const read = readChatResult(store, who([repos.a]), evidenceRoot, "alpha", run);
     if (!read.ok) throw Error(read.message);
-    expect(applyChatReview(store, who([repos.a]), evidenceRoot, { snapshot: read.snapshot, operation: "note", note: "Give the desktop heading more space.", path: null, line: null, notes: [], image: target(first) }, T0, false).ok).toBe(true);
+    expect(applyChatReview(store, who([repos.a]), evidenceRoot, { snapshot: read.snapshot, operation: "note", note: "Give the desktop heading more space.", path: null, line: null, notes: [], image: target(first) }, T0, false, "lead").ok).toBe(true);
     const snapshot = readChatResult(store, who([repos.a]), evidenceRoot, "alpha", run);
     if (!snapshot.ok) throw Error(snapshot.message);
     expect(snapshot.snapshot.notes[0]?.image).toEqual(target(first));
-    const input = { run, batch: String(snapshot.snapshot.notes[0]!.id), source: snapshot.snapshot.source, actor: "alex", repos: [repos.a], note: "Keep the phone button on one line.", path: "", line: "", request: "a".repeat(32), image: target(second) };
+    const input = { run, batch: String(snapshot.snapshot.notes[0]!.id), source: snapshot.snapshot.source, actor: "alex", repos: [repos.a], note: "Keep the phone button on one line.", path: "", line: "", request: "a".repeat(32), image: target(second), origin: "person" as const };
     const revised = requestResultChanges(store, evidenceRoot, input, T0);
     expect(revised.ok).toBe(true);
     expect(requestResultChanges(store, evidenceRoot, input, T0)).toEqual(revised);
@@ -121,9 +121,9 @@ describe("shared result image selection", () => {
     if (cause === "deleted") unlinkSync(join(evidenceRoot, `${run}/one.png`));
     if (cause === "stale") finished("alpha", ref, "newer");
     if (cause === "changed-after-proposal") writeFileSync(join(evidenceRoot, `${run}/one.png`), JPEG);
-    const result = applyChatReview(store, who([repos.a]), evidenceRoot, { snapshot: read.snapshot, operation: "revise", note: "Keep this feedback.", path: null, line: null, notes: [], image }, T0, false);
+    const result = applyChatReview(store, who([repos.a]), evidenceRoot, { snapshot: read.snapshot, operation: "revise", note: "Keep this feedback.", path: null, line: null, notes: [], image }, T0, false, "lead");
     expect(result.ok).toBe(false);
-    expect(requestResultChanges(store, evidenceRoot, { run, batch: "", source: read.snapshot.source, actor: "alex", repos: [repos.a], note: "Keep this feedback.", path: "", line: "", request: "b".repeat(32), image }, T0)).toMatchObject({ ok: false, status: 409 });
+    expect(requestResultChanges(store, evidenceRoot, { run, batch: "", source: read.snapshot.source, actor: "alex", repos: [repos.a], note: "Keep this feedback.", path: "", line: "", request: "b".repeat(32), image, origin: "person" }, T0)).toMatchObject({ ok: false, status: 409 });
     expect(store.allDiffComments(run)).toEqual([]);
     expect(store.revisionsFromRun(run)).toEqual([]);
   });
@@ -229,7 +229,7 @@ describe("shared result image selection", () => {
     expect(selectResultImages(store, me, evidenceRoot, "alpha", older)).toMatchObject({ ok: true, selection: { run: older, currentExecution: "alpha", images: [expect.objectContaining({ artifact: olderShot, caption: `alpha · result #${older} · screenshot 1 of 1` })] } });
     // A revision of the same task, through the shared result service the console and chat both call.
     const note = store.addDiffComment({ artifactId: newerDiff, runId: newer, path: null, line: null, note: "Tighten the spacing.", author: "alex" }, T0);
-    const revision = createResultRevision(store, evidenceRoot, { run: newer, batch: String(note), source: revisionSourceOf(store.getScope("alpha")!.digest), actor: "alex", repos: [repos.a] }, T0);
+    const revision = createResultRevision(store, evidenceRoot, { run: newer, batch: String(note), source: revisionSourceOf(store.getScope("alpha")!.digest), actor: "alex", repos: [repos.a], origin: "person" }, T0);
     if (!revision.ok) throw new Error(revision.message);
     const child = revision.id;
     expect(store.taskFamilyOf("alpha", [repos.a], false)?.versions.map(one => one.id)).toEqual(["alpha", child]);

@@ -127,7 +127,7 @@ export async function pullRequestStep(store: Store, flow: FlowRow, definition: F
       const runTask = store.externalIdFor(store.getRun(runId)?.taskRef ?? -1);
       const revised = runTask === null ? null : requestResultChanges(store, io.evidenceRoot, {
         run: runId, source: revisionSourceOf(store.getScope(runTask)?.digest ?? null), actor: "toolroll", repos: [flow.repo], batch: "",
-        note: found?.note ?? said, path: "", line: "", allowMode: true,
+        note: found?.note ?? said, path: "", line: "", allowMode: true, origin: "flow",
         request: createHash("sha256").update(`flow-ci ${card.id} ${card.entry} ${publication.id}`).digest("hex").slice(0, 32),
       }, now);
       if (revised?.ok === true) revision = revised.id;

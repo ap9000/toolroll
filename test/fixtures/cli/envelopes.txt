@@ -2205,6 +2205,31 @@ $ contract --commands --json → 0
       "remote": "no"
     },
     {
+      "invocation": "models results",
+      "synopsis": "each finished task's result record: which model built it, and whether it counts",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "one project's records (default: every project you can open)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "remote": "no"
+    },
+    {
       "invocation": "status",
       "synopsis": "running work, queued reasons, results to review, the latest release check and plan windows",
       "audience": "agent",

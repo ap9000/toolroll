@@ -17,7 +17,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import type { ExecResult } from "./exec.js";
 import type { Runner } from "./worktree.js";
 import { teardownGit, refusal } from "./teardown-git.js";
-import { BUILT_IN, type Database, type Store } from "./store.js";
+import { BUILT_IN, forgetProjectModels, type Database, type Store } from "./store.js";
 import { BRANCH_PREFIXES, isOwnBranch } from "./names.js";
 
 /** The tables whose history is the audit record itself: never touched. */
@@ -59,13 +59,20 @@ function doomed(db: Database, repo: string): Doomed {
   return { refs, tasks, runs, artifacts, threads, turns, flows, cards, subagents };
 }
 
-/** A project's settings: one row per thing someone set for it. */
+/** A project's settings: one row per thing someone set for it. Its Models rows (phase_config, phase_tier_config,
+ * phase_tier_alternate) are settings too, but go only through store.ts forgetProjectModels, which moves their
+ * generations and takes the project's results-routing rows with them (MODEL_SETTINGS). */
 const SETTINGS: [table: string, column: string][] = [
   ["approval_policy", "repo"], ["verify_command", "repo"], ["worktree_setup", "repo"], ["backend_grant", "repo"], ["publication_grant", "repo"],
-  ["intake_grant", "repo"], ["capability", "repo"], ["project_tool", "repo"], ["phase_config", "scope"], ["phase_tier_config", "scope"],
+  ["intake_grant", "repo"], ["capability", "repo"], ["project_tool", "repo"],
   ["learning_policy", "repo"], ["operating_mode", "repo"], ["project_knowledge", "repo"], ["live_detail_setting", "repo"],
   ["project_decision", "repo"], ["flow_script", "repo"], ["workflow_recipe", "repo"], ["team_lead_project", "project"],
 ];
+
+/** The project's Models rows, counted with its settings and deleted by forgetProjectModels only. */
+export const MODEL_SETTINGS: readonly [table: string, column: string][] = Object.freeze([["phase_config", "scope"], ["phase_tier_config", "scope"], ["phase_tier_alternate", "scope"]]);
+/** The project's settings tables, for the deletion test's inventory. */
+export const PROJECT_SETTINGS: readonly [table: string, column: string][] = Object.freeze(SETTINGS.map(one => [...one] as [string, string]));
 
 /** What Toolroll holds for a project, counted. */
 export function projectHoldings(store: Store, repo: string): ProjectHoldings {
@@ -79,7 +86,7 @@ export function projectHoldings(store: Store, repo: string): ProjectHoldings {
     checkouts: count("SELECT COUNT(*) AS n FROM worktree WHERE repo = ?", repo),
     chats: d.threads.length, flows: d.flows.length, cards: d.cards.length, subagents: d.subagents.length,
     budgets: count(`SELECT COUNT(*) AS n FROM budget WHERE removed_at IS NULL AND ((scope_kind = 'project' AND scope_key = ?) OR (scope_kind = 'subagent' AND scope_key IN (SELECT CAST(value AS TEXT) FROM json_each(?))))`, repo, json(d.subagents)),
-    settings: SETTINGS.filter(([table]) => tableExists(db, table)).reduce((sum, [table, column]) => sum + count(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`, repo), 0),
+    settings: [...SETTINGS, ...MODEL_SETTINGS].filter(([table]) => tableExists(db, table)).reduce((sum, [table, column]) => sum + count(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`, repo), 0),
   };
 }
 
@@ -319,6 +326,8 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("decision_change", "decision IN (SELECT id FROM project_decision WHERE repo = ?)", repo);
   del("memory_sighting", "gap IN (SELECT id FROM memory_gap WHERE repo = ?) OR session IN (SELECT id FROM memory_session WHERE repo = ?)", repo, repo);
   for (const [table, column] of SETTINGS) del(table, `${column} = ?`, repo);
+  // Its Models rows and results-routing rows: through the Models counter, so whatever depended on them pauses.
+  rows += forgetProjectModels(store, repo, now);
   del("project_mute", "repo = ?", repo);
   for (const table of ["knowledge_change", "project_identity_carry", "project_skill_change", "memory_gap", "memory_proposal", "memory_rejection", "memory_session", "memory_search", "mode_rail", "side_spend", "watch_episode", "worktree", "coordinator_proposal", "lead_commitment"]) del(table, "repo = ?", repo);
   // A builder watching the project keeps its lease until it stops; an ended one goes.
