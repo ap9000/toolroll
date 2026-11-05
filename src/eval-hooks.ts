@@ -32,9 +32,13 @@ const typescript = (): typeof ts => compiler ??= createRequire(import.meta.url)(
  * says (a module specifier its un-renamed named import comes from; `self`: the file's own top-level function; `local`:
  * declared inside `inside`). `args`: the call's arguments, as text, must stay as the base has them. */
 export type EvalHook = { file: string; inside: string; calls: string; from: string; args?: true; why: string };
+/** `fn` may also be `outer>inner` (docs/plans/learning-loops.md, Protection 3): a `const inner = (…) => …` (or function
+ * expression) or `function inner`, bound once in the file and never reassigned, inside the top-level function `outer`
+ * and in no other function between them. `strict`: a base that holds the file but can't resolve the pin is a problem,
+ * never skipped (a base without the file at all is a project that isn't Toolroll, and holds none). */
 /** One function whose body (its text, as the candidate has it) must stay as the base has it: a top-level function, or
  * `Class#method`, a method of a top-level class. */
-export type EvalPinned = { file: string; fn: string; why: string };
+export type EvalPinned = { file: string; fn: string; why: string; strict?: true };
 
 export const EVAL_HOOKS: readonly EvalHook[] = Object.freeze([
   { file: "src/deploy-gate.ts", inside: "deploymentGate", calls: "nightlyDebtHold", from: "./nightly-github.js", why: "GitHub's nightly holds every deploy" },
@@ -47,6 +51,7 @@ export const EVAL_HOOKS: readonly EvalHook[] = Object.freeze([
   { file: "src/release-auto.ts", inside: "changeProblem", calls: "evalHookProblem", from: "./eval-hooks.js", why: "this check itself" },
   { file: "src/release-auto.ts", inside: "changeProblem", calls: "autoPathProblem", from: "self", why: "policy paths need a person" },
   { file: "src/release-auto.ts", inside: "changeProblem", calls: "storeRewriteProblem", from: "./eval-hooks.js", why: "no changed file rewrites a pinned Store method" },
+  { file: "src/release-auto.ts", inside: "changeProblem", calls: "learningHookProblem", from: "./eval-hooks.js", why: "learning loops' hooks, pins and writers (docs/plans/learning-loops.md)" },
   // The invocation gateway (invoke.ts): every agent run an eval world spawns takes a slot.
   { file: "src/invoke.ts", inside: "invokeAgent", calls: "takeEvalDispatch", from: "./eval-gate.js", why: "every agent dispatch in an eval world takes a slot" },
   // PR #263 review: what the run's billing basis and its unknown cost are computed from is held too, not only the call.
@@ -221,13 +226,13 @@ function bindingsOf(source: ts.SourceFile, name: string): ts.Node[] {
 /** Whether `name` is bound in this file only as `from` says: exactly one binding, and it is an un-renamed, value
  * (not type-only) named import from that module; the top-level function (`self`); or a declaration inside `inside`
  * (`local`). Null when it is; otherwise why not. */
-function boundAs(source: ts.SourceFile, name: string, from: string, inside: ts.FunctionDeclaration): string | null {
+function boundAs(source: ts.SourceFile, name: string, from: string, inside: ts.Node): string | null {
   const compiler = typescript();
   const all = bindingsOf(source, name);
   if (all.length !== 1) return all.length === 0 ? `${name} isn't bound` : `${name} is declared or assigned more than once`;
   const only = all[0]!;
   if (from === "self") return compiler.isFunctionDeclaration(only) && only.parent === source ? null : `${name} isn't its own top-level function`;
-  if (from === "local") return only.pos >= inside.pos && only.end <= inside.end && !compiler.isParameter(only) ? null : `${name} isn't declared inside ${inside.name?.text ?? "it"}`;
+  if (from === "local") return only.pos >= inside.pos && only.end <= inside.end && !compiler.isParameter(only) ? null : `${name} isn't declared inside its function`;
   if (!compiler.isImportSpecifier(only) || only.propertyName !== undefined || only.isTypeOnly) return `${name} isn't imported by its own name`;
   const clause = only.parent.parent;
   const declaration = clause.parent;
@@ -254,6 +259,38 @@ function heldFunction(source: ts.SourceFile, name: string): ts.FunctionDeclarati
   return fn === null || boundAs(source, name, "self", fn) !== null ? null : fn;
 }
 
+/** `outer>inner`: the one function-like `inner` declared inside the held top-level `outer` (no other function between
+ * them), bound once in the file and never reassigned — a `function inner` or a `const inner =` arrow or function
+ * expression. Null otherwise. */
+function nestedFunction(source: ts.SourceFile, spec: string): ts.FunctionLikeDeclaration | null {
+  const compiler = typescript();
+  const [outerName, innerName, ...rest] = spec.split(">");
+  if (outerName === undefined || innerName === undefined || rest.length > 0 || outerName === "" || innerName === "") return null;
+  const outer = heldFunction(source, outerName);
+  if (outer === null || outer.body === undefined) return null;
+  const all = bindingsOf(source, innerName);
+  if (all.length !== 1) return null;
+  const only = all[0]!;
+  let fn: ts.FunctionLikeDeclaration | null = null;
+  if (compiler.isFunctionDeclaration(only) && only.body !== undefined) fn = only;
+  else if (compiler.isVariableDeclaration(only) && only.initializer !== undefined && (compiler.isArrowFunction(only.initializer) || compiler.isFunctionExpression(only.initializer))
+    && compiler.isVariableDeclarationList(only.parent) && (only.parent.flags & compiler.NodeFlags.Const) !== 0) fn = only.initializer;
+  if (fn === null) return null;
+  // Directly inside `outer`: the first function-like ancestor of the declaration is `outer` itself.
+  for (let at: ts.Node | undefined = only.parent; at !== undefined; at = at.parent) {
+    if (at === outer) return fn;
+    if (compiler.isFunctionLike(at) || compiler.isClassLike(at)) return null;
+  }
+  return null;
+}
+
+/** A held function by its manifest name: top-level, `Class#method` or `outer>inner`. */
+function heldNode(source: ts.SourceFile, spec: string): ts.Node | null {
+  if (spec.includes(">")) return nestedFunction(source, spec);
+  if (spec.includes("#")) return classMethod(source, spec);
+  return heldFunction(source, spec);
+}
+
 /** A reader that parses each file once. */
 function parser(read: (file: string) => Buffer | null): (file: string) => Parsed {
   const seen = new Map<string, Parsed>();
@@ -264,7 +301,7 @@ function parser(read: (file: string) => Buffer | null): (file: string) => Parsed
 function hookIn(tree: (file: string) => Parsed, hook: EvalHook): { args: string[] } | { missing: string } {
   const parsed = tree(hook.file);
   if ("problem" in parsed) return { missing: `${parsed.problem}, and it holds a required call (${hook.why})` };
-  const fn = heldFunction(parsed.source, hook.inside);
+  const fn = (hook.inside.includes(">") ? nestedFunction(parsed.source, hook.inside) : heldFunction(parsed.source, hook.inside)) as ts.FunctionLikeDeclaration | null;
   if (fn === null || fn.body === undefined) return { missing: `${hook.file} no longer has ${hook.inside} as one function, which must call ${hook.calls} (${hook.why})` };
   const found = callsOf(fn.body, hook.calls);
   if (found.length === 0) return { missing: `${hook.file}'s ${hook.inside} no longer calls ${hook.calls} (${hook.why})` };
@@ -277,7 +314,7 @@ function hookIn(tree: (file: string) => Parsed, hook: EvalHook): { args: string[
 function pinnedText(tree: (file: string) => Parsed, pin: EvalPinned): string | null {
   const parsed = tree(pin.file);
   if ("problem" in parsed) return null;
-  const fn = pin.fn.includes("#") ? classMethod(parsed.source, pin.fn) : heldFunction(parsed.source, pin.fn);
+  const fn = heldNode(parsed.source, pin.fn);
   if (fn === null) return null;
   // The static block's pin holds the class header too: its name, modifiers and heritage, as the base has them.
   return pin.fn.endsWith("#static") ? `${classHeader(parsed.source, fn)}\n${fn.getText(parsed.source)}` : fn.getText(parsed.source);
@@ -302,7 +339,11 @@ export function evalHookProblem(candidate: (file: string) => Buffer | null, base
   }
   for (const pin of pinned) {
     const before = was === null ? null : pinnedText(was, pin);
-    if (was !== null && before === null) continue;
+    if (was !== null && before === null) {
+      // A strict pin the base holds the file of but can't resolve is a problem (learning loops, Protection 2), never a skip.
+      if (pin.strict === true && base!(pin.file) !== null) return `${pin.file} at the base has no ${pin.fn} as one function, which is pinned strictly (${pin.why})`;
+      continue;
+    }
     const after = pinnedText(now, pin);
     if (after === null) return `${pin.file} no longer has ${pin.fn} as one function (${pin.why})`;
     if (before !== null && after !== before) return `${pin.file}'s ${pin.fn} changed (${pin.why})`;
@@ -438,4 +479,167 @@ export function storeRewriteProblem(paths: readonly string[], candidate: ((file:
     }
   }
   return null;
+}
+
+// ---- learning loops (docs/plans/learning-loops.md, "Safety", Protection 2-4) ----------------------------------------
+
+/** The calls that record a check's facts: at disposition, and as the check's command starts. */
+export const LEARNING_HOOKS: readonly EvalHook[] = Object.freeze([
+  { file: "src/builder.ts", inside: "settleProof", calls: "recordCheckFacts", from: "./check-facts.js", why: "every settled check records its facts" },
+  { file: "src/builder.ts", inside: "settleProof>runVerification", calls: "captureCheckConditions", from: "./check-facts.js", why: "a check's conditions are captured as its command starts" },
+]);
+
+/** The bodies a release can't change by itself, every one strict: what a run is told from project memory, how a memory
+ * proposal and a decision are written, and where a check's conditions are captured. */
+export const LEARNING_PINNED: readonly EvalPinned[] = Object.freeze([
+  { file: "src/project-knowledge.ts", fn: "knowledgeContext", strict: true, why: "the decisions and references a run is given, and their snapshot" },
+  { file: "src/project-learning.ts", fn: "learningContext", strict: true, why: "the lessons a run is given, and their snapshot" },
+  { file: "src/memory-pass.ts", fn: "decideProposal", strict: true, why: "a memory proposal's one writer" },
+  { file: "src/project-memory.ts", fn: "recordDecision", strict: true, why: "how a decision is recorded and what it supersedes" },
+  { file: "src/project-memory.ts", fn: "retireDecision", strict: true, why: "how a decision is retired" },
+  { file: "src/builder.ts", fn: "settleProof>runVerification", strict: true, why: "the check's command and the conditions it starts under" },
+]);
+
+/** Every file the learning manifest reads. */
+export const LEARNING_HOOK_FILES: readonly string[] = Object.freeze([...new Set([...LEARNING_HOOKS.map(hook => hook.file), ...LEARNING_PINNED.map(pin => pin.file)])]);
+
+/** Each protected table and its only writer modules (the v149 migration in store.ts aside). The decision tables'
+ * existing writers stay theirs: project-memory.ts records and retires, project-delete.ts deletes a whole project. */
+export const LEARNING_WRITERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  check_fact: ["src/check-facts.ts"], check_result: ["src/check-facts.ts"],
+  local_observation: ["src/flaky.ts"], ci_flaky_observation: ["src/flaky-ci.ts"], ci_pairing_rejected: ["src/flaky-ci.ts"],
+  learning_watch: ["src/flaky.ts", "src/lesson-notes.ts"],
+  lesson_note: ["src/lesson-notes.ts"], lesson_note_tally: ["src/lesson-notes.ts"],
+  memory_use: ["src/memory-use.ts"],
+  memory_tidy_proposal: ["src/memory-tidy.ts"], decision_merge: ["src/memory-tidy.ts"],
+  project_decision: ["src/memory-tidy.ts", "src/project-memory.ts", "src/project-delete.ts"],
+  decision_change: ["src/memory-tidy.ts", "src/project-memory.ts", "src/project-delete.ts"],
+});
+/** store.ts's v149 migration: the only place outside the writers that may name these tables in SQL. */
+const LEARNING_MIGRATION: Readonly<Record<string, readonly string[]>> = Object.freeze({ "src/store.ts": ["V149_SCHEMA", "V149_TABLES", "V149_REPO_TABLES"] });
+
+const PROTECTED = Object.keys(LEARNING_WRITERS);
+const tableWrite = (table: string): RegExp => new RegExp(String.raw`(?:\b(?:(?:INSERT(?:\s+OR\s+\w+)?|REPLACE)\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+(?:main\s*\.\s*)?["\`\[]?${table}["\`\]]?(?!\w)`
+  + String.raw`|\b(?:DROP\s+(?:TABLE|TRIGGER|INDEX|VIEW)(?:\s+IF\s+EXISTS)?|ALTER\s+TABLE)\s+(?:main\s*\.\s*)?["\`\[]?${table})`, "i");
+const TABLE_WRITES = PROTECTED.map(table => ({ table, write: tableWrite(table) }));
+const WRITE_WORD = /\b(?:INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER)\b/i;
+const BARE_NAME = new RegExp(String.raw`^\s*(?:main\s*\.\s*)?["\`\[]?(?:${PROTECTED.join("|")})["\`\]]?\s*$`, "i");
+
+/** One SQL-shaped construct in a file: its static text (a placeholder `${}` where an expression sits), the protected
+ * tables it writes, and the top-level declaration it's in ("" for none). `unreadable`: a write whose table name is
+ * split around an expression; `bare`: a string that is only a protected table's name (SQL assembled elsewhere). */
+type LearningConstruct = { text: string; tables: string[]; inside: string; unreadable: boolean; bare: boolean };
+
+/**
+ * Every construct in the file that could write a protected table: each string literal, template (its static parts)
+ * and `+` concatenation (its literal operands), whatever it's passed to — `prepare`, `exec`, a renamed `prepare`, a
+ * helper. A write verb next to a protected table's name, a table name split around an expression next to a write
+ * word, and a string that is only a protected table's name are each found.
+ */
+export function learningConstructs(source: ts.SourceFile): LearningConstruct[] {
+  const compiler = typescript();
+  const found: LearningConstruct[] = [];
+  const topOf = (node: ts.Node): string => {
+    let at: ts.Node = node;
+    while (at.parent !== undefined && !compiler.isSourceFile(at.parent)) at = at.parent;
+    if (compiler.isFunctionDeclaration(at) || compiler.isClassDeclaration(at)) return at.name?.text ?? "";
+    if (compiler.isVariableStatement(at)) return at.declarationList.declarations.map(one => compiler.isIdentifier(one.name) ? one.name.text : "").join(",");
+    return "";
+  };
+  const fragmentRisk = (parts: readonly string[]): boolean => {
+    // Around each placeholder: the identifier characters just before and just after it.
+    for (let i = 0; i < parts.length - 1; i++) {
+      const before = /[A-Za-z0-9_]*$/.exec(parts[i]!)![0].toLowerCase(), after = /^[A-Za-z0-9_]*/.exec(parts[i + 1]!)![0].toLowerCase();
+      if (before === "" && after === "") continue;
+      if (PROTECTED.some(table => (before !== "" && table.startsWith(before) && table !== before) || (after !== "" && table.endsWith(after) && table !== after)
+        || (before !== "" && after !== "" && table.startsWith(before) && table.endsWith(after)))) return true;
+    }
+    return false;
+  };
+  const consider = (node: ts.Node, parts: readonly string[]): void => {
+    const text = parts.join("${}");
+    const tables = TABLE_WRITES.filter(one => one.write.test(text)).map(one => one.table);
+    const unreadable = parts.length > 1 && WRITE_WORD.test(text) && fragmentRisk(parts);
+    const bare = parts.length === 1 && BARE_NAME.test(text);
+    if (tables.length > 0 || unreadable || bare) found.push({ text: text.replace(/\s+/g, " ").trim(), tables, inside: topOf(node), unreadable, bare });
+  };
+  const isPlus = (node: ts.Node): node is ts.BinaryExpression => compiler.isBinaryExpression(node) && node.operatorToken.kind === compiler.SyntaxKind.PlusToken;
+  const flatten = (node: ts.Expression, into: ts.Expression[]): void => {
+    let at: ts.Expression = node;
+    while (compiler.isParenthesizedExpression(at)) at = at.expression;
+    if (isPlus(at)) { flatten(at.left, into); flatten(at.right, into); } else into.push(at);
+  };
+  const visit = (node: ts.Node): void => {
+    if (isPlus(node) && !(node.parent !== undefined && (isPlus(node.parent) || (compiler.isParenthesizedExpression(node.parent) && node.parent.parent !== undefined && isPlus(node.parent.parent))))) {
+      const operands: ts.Expression[] = [];
+      flatten(node, operands);
+      if (operands.some(one => compiler.isStringLiteralLike(one) || compiler.isTemplateExpression(one))) {
+        const parts: string[] = [""];
+        for (const one of operands) {
+          if (compiler.isStringLiteralLike(one)) parts[parts.length - 1] += one.text;
+          else if (compiler.isTemplateExpression(one)) { parts[parts.length - 1] += one.head.text; for (const span of one.templateSpans) parts.push(span.literal.text); }
+          else parts.push("");
+        }
+        if (parts.length > 1 || operands.length > 1) consider(node, parts);
+      }
+    }
+    if (compiler.isStringLiteralLike(node)) consider(node, [node.text]);
+    else if (compiler.isTemplateExpression(node)) consider(node, [node.head.text, ...node.templateSpans.map(span => span.literal.text)]);
+    compiler.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+/** Whether this construct may stand in this file: its writer module for every table it writes, or the migration's own
+ * declarations in store.ts. An unreadable or bare construct stands only in a writer of some protected table. */
+function learningAllowed(file: string, one: LearningConstruct): boolean {
+  if ((LEARNING_MIGRATION[file] ?? []).some(name => one.inside.split(",").includes(name))) return true;
+  if (one.tables.length > 0) return one.tables.every(table => LEARNING_WRITERS[table]!.includes(file));
+  return Object.values(LEARNING_WRITERS).some(writers => writers.includes(file));
+}
+
+/**
+ * Why a changed file writes a learning-loops table (or a decision merge or restore) from a place that may not, or null
+ * (docs/plans/learning-loops.md, Protection 4). Every changed JavaScript or TypeScript file but tests is parsed; a
+ * construct its writer module doesn't own is new unless the base's copy of that file already had exactly that text
+ * (counted by its sha256, as storeRewriteProblem does). A file that can't be read or parsed needs a person. It reads
+ * text the candidate wrote, never runs it: it raises the bar for review; a person reviewing these files is the backstop.
+ */
+export function learningWriteProblem(paths: readonly string[], candidate: ((file: string) => Buffer | null) | null, base: ((file: string) => Buffer | null) | null): string | null {
+  const scanned = paths.filter(path => /\.(?:[cm]?[jt]sx?)$/.test(path) && !/\.test\.[cm]?[jt]sx?$/.test(path) && !path.startsWith("test/")
+    && !path.startsWith("node_modules/") && !path.includes("/node_modules/"));
+  if (scanned.length === 0) return null;
+  if (candidate === null || base === null) return "the changed files can't be read";
+  const key = (text: string): string => createHash("sha256").update(text).digest("hex");
+  for (const path of scanned) {
+    const bytes = candidate(path);
+    if (bytes === null) return `${path} can't be read`;
+    const now = parse(path, bytes);
+    if ("problem" in now) return now.problem;
+    const before = base(path);
+    const was = before === null ? null : parse(path, before);
+    const kept = new Map<string, number>();
+    if (was !== null && !("problem" in was)) for (const one of learningConstructs(was.source)) kept.set(key(one.text), (kept.get(key(one.text)) ?? 0) + 1);
+    for (const one of learningConstructs(now.source)) {
+      if (learningAllowed(path, one)) continue;
+      const left = kept.get(key(one.text)) ?? 0;
+      if (left > 0) { kept.set(key(one.text), left - 1); continue; }
+      const what = one.unreadable ? "builds a learning-loops table's name around an expression in SQL" : one.bare ? "names a learning-loops table outside its writers" : "writes learning-loops rows outside their writers";
+      return `${path} ${what} (\`${one.text.slice(0, 80)}\`)`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Why a candidate needs a person for learning loops, or null: a required call dropped, a pinned body changed (strict
+ * pins included), or a changed file writing a protected table from outside its writers. With `manifest.base`, only what
+ * the base holds is required, as evalHookProblem does — except a strict pin whose file the base holds.
+ */
+export function learningHookProblem(
+  manifest: { candidate: (file: string) => Buffer | null; base?: (file: string) => Buffer | null },
+  changed: { paths: readonly string[]; candidate: ((file: string) => Buffer | null) | null; base: ((file: string) => Buffer | null) | null },
+): string | null {
+  return evalHookProblem(manifest.candidate, manifest.base, LEARNING_HOOKS, LEARNING_PINNED) ?? learningWriteProblem(changed.paths, changed.candidate, changed.base);
 }
