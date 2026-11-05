@@ -60,6 +60,7 @@ const REQUESTS: Record<ChatActionOperation, Record<string, unknown>> = {
   kit_setup: { repo: "/work/app", kit: "support-desk" },
   decision_record: { repo: "/work/app", claim: "Dates are UTC.", why: "Support reads them across zones.", source: "chat" },
   decision_retire: { repo: "/work/app", decision: 9, reason: "Superseded." },
+  suggestion_not_now: { repo: "/work/app", suggestion: "small:claude-haiku-5-5:0123456789ab" },
   lead_about_you: { line: "Prefers short replies.", replaces: 0 },
   scope_approve: { task: "fix-footer" },
   result_accept: { task: "fix-footer", run: 41 },
