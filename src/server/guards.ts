@@ -210,6 +210,7 @@ export function createSharedGuards(runtime: GuardsRuntime) {
         const task = matchTaskPath(url.pathname, '(?:/[a-z-]+)?$');
         return task === null ? null : runtime.store.lookupRef(task.taskId)?.repo ?? null;
       }
+      case 'task-ref': return Number.isSafeInteger(id) && id > 0 ? runtime.store.refForId(id)?.repo ?? null : null;
       case 'run': return runRepo(id);
       case 'decision': return runRepo(runtime.store.getDecision(id)?.run);
       case 'incident': return runRepo(runtime.store.openIncidents().find(one => one.id === id)?.run);

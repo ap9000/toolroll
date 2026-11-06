@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { createCipheriv, createECDH, createPrivateKey, hkdfSync, randomBytes, createHash, sign as cryptoSign } from "node:crypto";
 import type { Notification, Store } from "./store.js";
 import { isCheckProgressLine } from "./check-progress.js";
+import { RELEASE_PUSH_WORDS, releasePushOf, releaseReadyObsolete } from "./release-approval.js";
 
 export const VAPID_FILE = "vapid-keys.json";
 /** RFC 8291 §4: rs 4096 leaves room for the record's delimiter and tag. */
@@ -218,37 +219,49 @@ export function validatePushEndpoint(raw: string): { ok: true; url: URL } | { ok
 
 // ---- the payload ------------------------------------------------------------
 
+/** A push's class: a stored class, or `release`, which is never stored: it is derived at send time from the plane's own
+ * state (release-approval.ts releasePushOf), never from a title, a task id or a link. */
+export type PushClass = NonNullable<Notification["pushClass"]> | "release";
+
 /** Fixed words, except for one validated machine-only suite/count line. */
-export const PUSH_WORDS: Record<NonNullable<Notification["pushClass"]>, { title: string; body: string }> = {
+export const PUSH_WORDS: Record<PushClass, { title: string; body: string }> = {
   decision: { title: "Toolroll", body: "a decision needs you" },
   pick: { title: "Toolroll", body: "agents finished — pick a winner" },
   merge: { title: "Toolroll", body: "a pull request needs a person" },
   attention: { title: "Toolroll", body: "the plane needs attention" },
   progress: { title: "Toolroll", body: "checks in progress" },
+  release: { title: "Toolroll", body: RELEASE_PUSH_WORDS },
 };
 
-const LINK_SHAPES = [/^\/next$/, /^\/review$/, /^\/system$/, /^\/routines$/, /^\/routines\/[0-9]{1,15}$/, /^\/d\/[0-9]{1,15}$/, /^\/r\/[0-9]{1,15}$/];
-const CLASS_FALLBACK: Record<NonNullable<Notification["pushClass"]>, string> = {
+// `/approve/<n>`: a release's opaque locator (a task ref number: no version, commit or branch), resolved by the console.
+const RELEASE_LINK = /^\/approve\/[0-9]{1,15}$/;
+const LINK_SHAPES = [/^\/next$/, /^\/review$/, /^\/system$/, /^\/routines$/, /^\/routines\/[0-9]{1,15}$/, /^\/d\/[0-9]{1,15}$/, /^\/r\/[0-9]{1,15}$/, RELEASE_LINK];
+const CLASS_FALLBACK: Record<PushClass, string> = {
   decision: "/next",
   pick: "/next",
   merge: "/review",
   attention: "/next",
   progress: "/next",
+  release: "/next",
 };
 
 /** Static words and machine-minted numbers only — re-proved at send time. */
-export function safePushLink(pushClass: NonNullable<Notification["pushClass"]>, link: string | null): string {
+export function safePushLink(pushClass: PushClass, link: string | null): string {
+  // The release locator rides only the derived `release` class: a stored link of that shape on any other row is not one.
+  if (link !== null && RELEASE_LINK.test(link)) return pushClass === "release" ? link : CLASS_FALLBACK[pushClass];
   if (link !== null && LINK_SHAPES.some(shape => shape.test(link))) return link;
   return CLASS_FALLBACK[pushClass];
 }
 
-export function buildPushPayload(notification: Notification, waiting: number | null = null): string {
-  const pushClass = notification.pushClass as NonNullable<Notification["pushClass"]>;
+/** `release`: the class and link the plane derived for this row at send time (releasePushOf); absent or null, the
+ * row's stored class and link, revalidated. */
+export function buildPushPayload(notification: Notification, waiting: number | null = null, release: { link: string } | null = null): string {
+  const pushClass: PushClass = release !== null ? "release" : notification.pushClass as NonNullable<Notification["pushClass"]>;
   const words = PUSH_WORDS[pushClass];
   return JSON.stringify({
     title: words.title,
     body: pushClass === "progress" && isCheckProgressLine(notification.body) ? notification.body : words.body,
-    url: safePushLink(pushClass, notification.link),
+    url: safePushLink(pushClass, release !== null ? release.link : notification.link),
     // The opaque tag collapses a crash-duplicate on the lock screen.
     tag: pushClass === "progress" && notification.run !== null ? `so-run-${notification.run}` : `so-${notification.id}`,
     // The app-icon badge (Phase 2E, v2 S4): the server-computed
@@ -317,6 +330,13 @@ export async function pushPass(
     const fenced = store.pushSendFence(pair.id, owner, pair.claimGeneration, clock());
     if (fenced === null) continue; // resolved, retired, rotated, or lost — nothing to send
     const subscription = fenced.subscriptionRow;
+    // A release's "ready for your approval" that no longer stands (approved, superseded, put away) is resolved, never
+    // sent; one that stands is sent as `release`, its class and link derived from the plane's state now.
+    if (releaseReadyObsolete(store, fenced.notificationRow)) {
+      store.handle.prepare("UPDATE notification SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL").run(clock().toISOString(), fenced.notificationRow.id);
+      continue;
+    }
+    const release = releasePushOf(store, fenced.notificationRow);
 
     const endpoint = validatePushEndpoint(subscription.endpoint);
     if (!endpoint.ok) {
@@ -333,7 +353,7 @@ export async function pushPass(
         // The badge count rides every push: the same inbox classifier the
         // console's own sidebar badge reads, unscoped (a phone has no
         // project pane), computed at send time.
-        buildPushPayload(fenced.notificationRow, store.countInboxScoped(null, clock(), 100, null).count),
+        buildPushPayload(fenced.notificationRow, store.countInboxScoped(null, clock(), 100, null).count, release),
       );
     } catch {
       // Off-curve or malformed subscriber material: the device, not us.

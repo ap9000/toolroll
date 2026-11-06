@@ -38,8 +38,13 @@ export const RELEASE_HELP = `toolroll release <branch> — release Toolroll itse
 
   Run the same command to resume after a stop. Interrupted deployments recover their saved stage before retrying.
 
-  A branch whose name is one of this command's own words (status, nightly, carry…) is named with --branch <name>
+  A branch whose name is one of this command's own words (approve, status, nightly, carry…) is named with --branch <name>
   or after --: \`toolroll release --branch status\`.
+
+toolroll release approve [<branch>] [--repo <path>] — approve the release waiting for you: shows the release, GitHub CI
+  now, what approving does, what changed and every term, then asks for your password (or uses your remembered login
+  where Passwordless allows it). Names the waiting releases when more than one could be meant. With --json it never
+  prompts: --as <you> --token <password> --digest <card digest>
 
 toolroll release status [<task>] — the steps of a release (the newest one recorded, or the release task named): each
   step's state and how long it took, and where it stopped
@@ -218,6 +223,8 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
     if (args.some(arg => VALUE_FLAGS.has(arg.split("=")[0]!) || ["--new", "--no-carry", "--start"].includes(arg))) return refuse("usage", "`toolroll release status [<task>]` takes only --json.", 2);
     return runStatusCommand(positional[1], write, json, deps);
   }
+  // `release approve` is the toolroll command's own (cli.ts routes it to the operate commands); never a branch here.
+  if (!named && positional[0] === "approve") return refuse("usage", "Run `toolroll release approve [<branch>]`. A branch named approve is released with `--branch approve`.", 2);
   if (!named && positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: bare.has("--start") }, write, json, deps);
   if (!named && ["carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok"].includes(positional[0] ?? "") && positional.length === 2) {
     return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry" | "auto-approve" | "publish-ok", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);

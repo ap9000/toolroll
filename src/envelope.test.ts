@@ -118,6 +118,8 @@ describe("the machine envelope", () => {
       claim: ["--json"],
       heartbeat: ["--json"],
       worker: ["release", "--json"],
+      // No release waiting: one refusal envelope, nothing prompted.
+      release: ["approve", "--json"],
       reap: ["--json"],
       enroll: ["--json"],
       grants: ["--json"],

@@ -72,7 +72,7 @@ acceptanceLinesToInput,
 acceptanceToLines,
 approvalOf,
 approve as approveScope,
-freshnessFor, localApprovalEligible, spendingOnlyOnSuccess, ssoNowAvailable, withFreshness,
+freshnessFor, freshlyApprovable, localApprovalEligible, spendingOnlyOnSuccess, ssoNowAvailable, withFreshness,
 modeFilingCoverage,PLACEHOLDER_RUBRIC,
 proposeGuarded,
 type UnattendedPermissionMode
@@ -106,6 +106,10 @@ import { timingFor } from "../latency-timeline.js";
 import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
 import { type Who } from "./session.js";
+import { approveReleaseCard, releaseApprovalCard, releaseSheetHref, releaseTaskOf } from "../release-approval.js";
+import { releaseSheetPage } from "./render-release.js";
+import { approvalFactsNow } from "./kit.js";
+import { localOwnerRefusal } from "../local-owner.js";
 export function createTasksHandlers(runtime: ServerRuntime) {
   const { identities, store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, leadPrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
 
@@ -2469,7 +2473,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           : requestedReturn === null
             ? taskHref(taskId)
             : safeChatReturn(requestedReturn);
+        // The release sheet's Approve release (trusted-release-reports.md A7): the same door, its own page for words.
+        const sheet = body.get("sheet") === "release";
         const approvalProblem = (message: string, status: number): void => {
+          if (sheet) return releaseSheet.sheetScreen({ who, response, project: null }, taskId, message, status);
           if (requestedReturn !== null && requestedReturn !== "next") {
             return redirect(response, chatReturnWithSaid(approvalBack, message));
           }
@@ -2498,6 +2505,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           && !(who.authority === "local-owner" && localApprovalEligible(store, who.name, taskId).ok)) {
           return approvalProblem("approval requires your password, typed again", 400);
         }
+        // The sheet binds the release card's digest (the nonce was minted for it): the shared card wrapper decides.
+        if (sheet) return releaseSheet.approveFromSheet({ who, response, project: null }, taskId, digest, token);
         const scopeRow = store.getScope(taskId);
         if (scopeRow === null) return approvalProblem("this task has no scope to approve", 409);
         const planView = planViewOf(ref.id);
@@ -3059,6 +3068,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     return live;
   }
   const tidyHandlers = createTidyHandlers(runtime);
+  const releaseSheet = createReleaseSheetHandlers(runtime);
   /** The question page, with a refusal in its box when an answer was refused (the box keeps the choice to make). */
   function decisionScreen(ctx: HandlerContext, id: number, back: string | null, refusal: string | null, code: number, now: Date, draft: { choice: string | null; note: string | null } | null): void {
     const { who, response, project } = ctx;
@@ -3076,6 +3086,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
 
   const registrations = handlersOf("tasks", {
     ...tidyHandlers,
+    ...releaseSheet.routes,
     ...createAgentSignalHandlers(runtime),
     "code.page": showCode("workspace"),
     "code.session": showCode("session"),
@@ -3287,4 +3298,70 @@ export function createAgentSignalHandlers(runtime: ServerRuntime) {
     return answer(response, held ? 200 : 409, held);
   }
   return { "agents.seen": agentSeen, "agents.watch": agentWatch };
+}
+
+/**
+ * One-tap release approval (docs/plans/trusted-release-reports.md, slice A): the sheet (`/t/<id>/release`), the push's
+ * opaque locator (`/approve/<task ref>`, a GET that only redirects to the sheet) and the sheet's approval, which the
+ * task approval POST hands here once its shared checks (cookie session, CSRF and the browser key at admission, the
+ * single-use nonce, a password or a standing proof) passed. The approval itself is the shared card wrapper around the
+ * unchanged approve() (release-approval.ts approveReleaseCard).
+ */
+export function createReleaseSheetHandlers(runtime: ServerRuntime) {
+  const { store, sendScreen, chromeFor, visible, mintApprovalNonce, clock } = runtime;
+  const missing = (who: Who, response: ServerResponse) => refuse(response, who, 404, "There's no release waiting for approval at this address.", "/work");
+
+  /** The sheet, with a problem said where it happened. */
+  function sheetScreen(ctx: Pick<HandlerContext, "who" | "response" | "project">, taskId: string, problem: string | null, status: number): void {
+    const { who, response, project } = ctx;
+    const ref = store.lookupRef(taskId);
+    if (ref === null || !visible(ref.repo) || !store.accountCanAccess(who.name, ref.repo)) return missing(who, response);
+    const built = releaseApprovalCard(store, taskId);
+    if (!built.ok) return missing(who, response);
+    const card = built.card;
+    const open = card.approved === null && card.refusal === null;
+    // This computer's local owner can't approve a release: the full sign-in comes first (scope.ts localApprovalEligible).
+    const local = who.via === "cookie" && who.authority === "local-owner" ? localOwnerRefusal(store.accountOf(who.name)?.passwordSet === true, releaseSheetHref(taskId)) : null;
+    const nonce = open && local === null && who.via === "cookie" && who.role === "approver" ? mintApprovalNonce(who.name, taskId, card.digest) : "";
+    const remembered = (() => {
+      if (!open || who.via !== "cookie") return false;
+      const fresh = withFreshness("approve-standard", () => freshnessFor(who.name, Date.now(), true));
+      if (fresh === null) return false;
+      const gate = store.approvalGate(taskId, who.name, "person");
+      return freshlyApprovable(store, taskId, card.scope, gate.verdict === "seal" && !gate.protectedWork);
+    })();
+    return sendScreen(response, status, releaseSheetPage(chromeFor(project ?? ref.repo, "work"), { card, nonce, facts: approvalFactsNow({ remembered }), local, problem }));
+  }
+
+  async function showSheet(ctx: HandlerContext): Promise<void> {
+    const task = matchTaskPath(ctx.url.pathname, "/release$");
+    if (task === null) return missing(ctx.who, ctx.response);
+    return sheetScreen(ctx, task.taskId, null, 200);
+  }
+
+  /** The push's locator: proved a release in the person's projects from the plane's own state, then only redirected. */
+  async function locate(ctx: HandlerContext): Promise<void> {
+    const { who, response, url } = ctx;
+    const raw = /^\/approve\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
+    const ref = raw === undefined ? null : store.refForId(Number(raw));
+    if (ref === null || ref.backend !== "built-in" || !visible(ref.repo) || !store.accountCanAccess(who.name, ref.repo) || releaseTaskOf(store, ref.externalId) === null) return missing(who, response);
+    return redirect(response, releaseSheetHref(ref.externalId));
+  }
+
+  /** The sheet's Approve release, after the approval POST's shared checks. */
+  function approveFromSheet(ctx: Pick<HandlerContext, "who" | "response" | "project">, taskId: string, cardDigest: string, token: string): void {
+    const { who, response } = ctx;
+    const now = clock();
+    const answer = spendingOnlyOnSuccess(
+      () => withFreshness("approve-standard", () => approveReleaseCard(store, { taskId, cardDigest, approveNow: scopeDigest => approveScope(store, taskId, who.name, now, scopeDigest, token) })),
+      result => !result.ok && !(result.reason === "approve" && result.result.reason === "second-approver" && !result.result.already));
+    if (answer.ok) return redirect(response, releaseSheetHref(taskId));
+    if (answer.reason !== "approve") return sheetScreen(ctx, taskId, answer.message, answer.reason === "not-release" ? 404 : 409);
+    const refused = answer.result;
+    if (refused.reason === "second-approver") return sheetScreen(ctx, taskId, gateWords({ verdict: "vote", have: refused.have, need: 2, already: refused.already }), 200);
+    if (refused.reason === "policy") return sheetScreen(ctx, taskId, refused.message, 403);
+    return sheetScreen(ctx, taskId, approveRefusalWords(refused.reason), refused.reason === "changed" || refused.reason === "unrouted" ? 409 : 403);
+  }
+
+  return { routes: { "task.release": showSheet, "release.locate": locate }, sheetScreen, approveFromSheet };
 }
