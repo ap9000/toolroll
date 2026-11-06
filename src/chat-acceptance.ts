@@ -19,7 +19,7 @@ export function acceptanceStatus(proof: { verdict: string; reasons: readonly str
   if (proof?.verdict === "verified" && check !== "passed") {
     return check === undefined ? "Open the result to see its checks" : check === "failed" ? "Checks failed" : check === "running" ? "Checks running" : "The check result couldn't be read";
   }
-  return proof === null ? "No checks recorded" : ({ verified: "Checks passed", attested: "Checks reported by the agent", short: "Some required material is missing", refuted: "Saved result conflicts with the approved scope" }[proof.verdict] ?? "Some required material is missing");
+  return proof === null ? "No checks recorded" : ({ verified: "Checks passed", attested: "Checks reported by the agent", short: "Some required material is missing", refuted: "Saved result doesn't match the approved plan" }[proof.verdict] ?? "Some required material is missing");
 }
 
 export function readAcceptanceEvidence(store: Store, who: VerifiedApprover, root: string | undefined, task: string, runId?: number, offset = 0) {

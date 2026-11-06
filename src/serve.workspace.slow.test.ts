@@ -501,7 +501,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     finished('t-status-check', 'Failed check', alpha, { verdict: 'refuted', reasons: ["the repository's approved verification command exited 1"] });
     await agree('t-status-check', 'checks-failed', 'Open the failed check');
     finished('t-status-missing', 'Missing proof', alpha, null);
-    await agree('t-status-missing', 'verification-needed', 'See what is missing');
+    await agree('t-status-missing', 'verification-needed', 'Run checks');
     const oldResultScope = store.getScope('t-status-check')!;
     propose(store, { taskId: 't-status-check', goal: 'A new scope after the failed check', touches: oldResultScope.touches, acceptance: oldResultScope.acceptance, now });
     store.setTaskState('t-status-check', 'queued', now);
@@ -738,7 +738,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
       "t-checks": ["checks-failed", "Changes saved, but checks failed"],
       "t-mismatch": ["evidence-mismatch", "Result saved, but its record does not match"],
       "t-missing": ["verification-needed", "Result saved — verification needed"],
-      "t-attested": ["agent-attested", "Result saved — checks reported by the agent"],
+      "t-attested": ["agent-attested", "Ready · no project check set up"],
       "t-accepted": ["accepted-exception", "Accepted with an exception"],
       "t-verified": ["ready-to-review", "Ready"],
       "t-pr": ["pr-opened", "PR opened"],

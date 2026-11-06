@@ -25,6 +25,7 @@ import type { ReviewRetryState, TaskState } from "./store.js";
 import type { TaskControlView } from "./task-control.js";
 import { CHECK_COMMAND_CHANGED, CHECK_UNREADABLE, OPEN_RESULT, approvedCheckOf, approvedCheckStateOf, plainReasonOf, stageOfCode, taskStatusOf, workToneOf, type ChecksFact } from "./task-status.js";
 import { whenUtc } from "./when-html.js";
+import { NEEDS } from "./needs-you.js";
 import { html, postForm, type Html } from "./html.js";
 
 /** The Work destination's views — shortcuts over the same rows, never a
@@ -322,10 +323,10 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
   if (result.verdict === null) {
     return {
       token: "verification-needed",
-      label: "Result saved — verification needed",
-      detail: withPublication("No verification result is recorded for this build."),
+      label: "No check result for this build yet",
+      detail: withPublication("No check result for this build yet. Run checks on it."),
       tone: "problem",
-      action: { label: "See what is missing", kind: "open-review" },
+      action: { label: "Run checks", kind: "open-review" },
     };
   }
   // Any verdict short of a pass the check confirms: never "passed" when the check can't be read now.
@@ -338,8 +339,8 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
   if (result.verdict === "attested" && !passedNow(check)) {
     return {
       token: "agent-attested",
-      label: "Result saved — checks reported by the agent",
-      detail: withPublication("No independent project check ran; the checks listed are the agent's own report."),
+      label: "Ready · no project check set up",
+      detail: withPublication("No project check is set up, so the checks listed are the agent's own report."),
       tone: "neutral",
       action: { label: OPEN_RESULT, kind: "open-result" },
     };
@@ -441,12 +442,14 @@ const DISPATCH_ACTION_LABELS: Record<DispatchAction, string> = {
   "inspect-hold": "Review hold",
   "repair-dependency": "Review required task",
   "repair-capability": "Review missing requirement",
-  "start-worker": "Check connection",
+  "start-worker": "Start the builder",
   "retry-review": "Review retry options",
   "resume-run": "Review pause",
 };
 
 export function dispatchActionLabel(dispatch: DispatchDiagnosis | null): string {
+  // One label everywhere for the builder (needs-you.ts NEEDS): Connect a builder, or Start the builder.
+  if (dispatch?.action === "start-worker") return dispatch.code === "no-worker-registered" ? NEEDS["connect-builder"].action.label : NEEDS["start-builder"].action.label;
   return dispatch?.action == null ? "View task details" : DISPATCH_ACTION_LABELS[dispatch.action];
 }
 
@@ -604,7 +607,7 @@ export function workStatusOf(facts: WorkFacts, resultDisplay?: DisplayStatus): W
     : stageOfCode(status.token, { needsPerson: status.views.includes("needs-you"), planning: facts.dispatch?.code === "running" && facts.dispatch.role === "planner", operatorHold: facts.dispatch?.action === "unhold" });
   const stage = done && read.stage !== "needs-you" && read.stage !== "failed" ? "finished" as const : read.stage;
   const level = facts.result?.checkLevel ?? null;
-  const shared = taskStatusOf({ stage, ...(read.need === undefined ? {} : { need: read.need }), reason: plainReasonOf(stage, status.token, status.detail),
+  const shared = taskStatusOf({ stage, ...(read.need === undefined ? {} : { need: read.need }), ...(read.wait === undefined ? {} : { wait: read.wait }), reason: plainReasonOf(stage, status.token, status.detail),
     report: facts.result?.role === "scout", checks: stage !== "finished" ? null : VERIFIED_RESULT.has(status.token) ? { status: "passed", exitCode: null, head: null, level }
       : level === "off" ? { status: "not-run", exitCode: null, head: null, level } : null });
   return { ...status, label: shared.headline, tone: workToneOf(shared.headline), detail: stage === "finished" && level !== "off" ? status.detail : shared.sentence };

@@ -10,9 +10,10 @@
 export type NeedKey =
   | "approval" | "card" | "answer" | "questions" | "sign-in" | "stop-unproven" | "hold"
   | "choose-project" | "define-task" | "fix-request" | "choose-agent" | "fix-dependency" | "add-requirement"
-  | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "replan" | "earlier-version" | "other";
+  | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "replan" | "earlier-version" | "history" | "other";
 /** What the work waits for when no person can act. */
-export type WaitKey = "build-stopping" | "build-finishing" | "build-checking" | "other-computer" | "card-reply" | "card-time" | "card-ci";
+export type WaitKey = "build-stopping" | "build-finishing" | "build-checking" | "other-computer" | "card-reply" | "card-time" | "card-ci"
+  | "plan-next" | "research-next" | "builders-busy" | "retry-later" | "app-update" | "other-task";
 
 /** The action's code: the WorkAction that owns the act, or one of the acts a surface renders itself. */
 export type NeedActionCode =
@@ -29,8 +30,9 @@ export const startBuilderHref = (taskId: string | null): string =>
   taskId === null ? START_BUILDER_HREF : `${START_BUILDER_HREF}?task=${encodeURIComponent(taskId)}`;
 /** What starts a builder: run on the machine where the project lives, in the project's folder. */
 export const START_BUILDER_COMMAND = "toolroll up";
-/** `build`: the run a sentence names; `provider`: the agent that signed out. */
-export type NeedContext = { build?: number | null; provider?: string | null };
+/** `build`: the run a sentence names; `provider`: the agent that signed out; `task`: another task it names (an
+ * earlier version); `retry`: when Toolroll tries again, in words ("in 4 minutes"). */
+export type NeedContext = { build?: number | null; provider?: string | null; task?: string | null; retry?: string | null };
 
 /** `useReason`: which recorded reasons say what is needed better than the default words. */
 type Need = { sentence: (context: NeedContext) => string; action: NeedAction; useReason?: (reason: string) => boolean;
@@ -66,14 +68,18 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
     } },
   "add-requirement": { sentence: () => "This project is missing something the task needs. Add it so a builder can start.", action: { code: "repair-capability", label: "Add the requirement" } },
   "connect-builder": { sentence: () => "No builder works on this project yet. Connect one so the task can start.", action: { code: "start-worker", label: "Connect a builder" } },
-  "start-builder": { sentence: () => "The builder for this project is offline. Start it and the task begins on its own.", action: { code: "start-worker", label: "Start the builder" } },
-  vanished: { sentence: context => `${Build(context)} stopped without finishing. Check it, then retry.`, action: { code: "reconcile-run", label: "Check the build" } },
+  "start-builder": { sentence: () => "The builder is offline. Start the builder.", action: { code: "start-worker", label: "Start the builder" } },
+  // The same act as before (it opens the build, where Retry is): only the words are plainer.
+  vanished: { sentence: context => `${Build(context)} stopped unexpectedly. Retry it.`, action: { code: "reconcile-run", label: "Open the build" } },
   "review-result": { sentence: () => "Check the result, then accept it or ask for changes.", action: { code: "open-result", label: "Open result" } },
   // Accepting it would not help: it was built to terms that are no longer the plan.
   rebuild: { sentence: context => `${Build(context)} was made to an earlier plan. Build it again to the current plan.`, action: { code: "retry-task", label: "Build again" } },
   // The plan was rewritten after the build and not yet approved: the yes comes first, then Build again.
   replan: { sentence: context => `The plan changed after ${build(context)}. Approve the new plan, then build it again.`, action: { code: "approve-scope", label: "Approve plan" } },
-  "earlier-version": { sentence: () => "An earlier version of this task still needs you. Finish it first.", action: { code: "inspect-task", label: "Open earlier version" } },
+  "earlier-version": { sentence: context => context.task == null ? "An earlier version of this task still needs you. Finish it first." : `An earlier version, ${context.task}, still needs you. Finish it first.`,
+    action: { code: "inspect-task", label: "Open earlier version" } },
+  // An actionable need, never a quiet Waiting: a person opens it to retry or archive it.
+  history: { sentence: () => "Toolroll can't read this task's history. Open it to retry or archive it.", action: { code: "inspect-task", label: "Open the task" } },
   other: { sentence: () => "Open the task to see what it needs from you.", action: { code: "inspect-task", label: "Open the task" }, useReason: always },
 };
 
@@ -123,17 +129,23 @@ export const NEED_ASK: Readonly<Record<NeedKey, Ask>> = {
   "fix-request": "decide", "choose-agent": "decide",
   "review-result": "review", rebuild: "review", replan: "decide",
   "sign-in": "unblock", "stop-unproven": "unblock", hold: "unblock", "fix-dependency": "unblock",
-  "add-requirement": "unblock", "connect-builder": "unblock", "start-builder": "unblock", vanished: "unblock", "earlier-version": "unblock", other: "unblock",
+  "add-requirement": "unblock", "connect-builder": "unblock", "start-builder": "unblock", vanished: "unblock", "earlier-version": "unblock", history: "unblock", other: "unblock",
 };
 
 export const WAITS: Readonly<Record<WaitKey, (context: NeedContext) => string>> = {
   "build-finishing": () => "Finishing up; this clears on its own.",
   "build-checking": context => `Making sure ${build(context)} stopped. This clears on its own.`,
-  "build-stopping": context => `Waiting for ${build(context)} to stop. Nothing is needed from you.`,
+  "build-stopping": context => `Waiting: Toolroll is stopping ${build(context)}.`,
   "other-computer": context => `Waiting for the computer that ran ${build(context)} to confirm it stopped.`,
   "card-reply": () => "Waiting for a reply.",
   "card-time": () => "Waiting before moving on.",
   "card-ci": () => "Waiting for the pull request's checks.",
+  "plan-next": () => "Waiting to plan.",
+  "research-next": () => "Waiting to research.",
+  "builders-busy": () => "Waiting its turn: builders are busy.",
+  "retry-later": context => `Waiting: Toolroll retries ${build(context)} ${context.retry ?? "soon"}.`,
+  "app-update": () => "Waiting: Toolroll is updating. New work starts after it.",
+  "other-task": context => context.task == null ? "Waiting for another task to finish first." : `Waiting for ${context.task} to finish first.`,
 };
 
 /** Words that name the machine's internals (plain-words.ts, the one table); no Needs you or Waiting sentence carries
@@ -150,10 +162,16 @@ export function needSentence(key: NeedKey, reason: string | null, context: NeedC
   return need.withReason === undefined ? plain : need.withReason(plain);
 }
 
+/** Waits whose words need a fact (when it retries, which task it waits on): without it, a plain recorded reason that
+ * already says it is kept. */
+const WAITS_WITH_FACTS: Readonly<Partial<Record<WaitKey, (context: NeedContext) => boolean>>> = {
+  "retry-later": context => context.retry != null, "other-task": context => context.task != null,
+};
 export function waitSentence(key: WaitKey | undefined, reason: string | null, context: NeedContext = {}): string {
-  if (key !== undefined) return WAITS[key](context);
   const plain = reason?.trim() || null;
-  return plain !== null && !hasInternalWords(plain) ? plain : "Waiting for the work to continue on its own.";
+  const known = plain !== null && !hasInternalWords(plain) ? plain : null;
+  if (key !== undefined) return WAITS_WITH_FACTS[key]?.(context) === false && known !== null ? known : WAITS[key](context);
+  return known ?? "Waiting for the work to continue on its own.";
 }
 
 /** A finished run Toolroll can't yet prove stopped (store.stopQuiescenceFact). Nobody is asked to confirm it:
@@ -168,15 +186,65 @@ export function processNeedOf(fact: { run: number; kind: "open" | "alive" | "els
   return { wait: fact.kind === "elsewhere" ? "other-computer" : "build-stopping", build: fact.run };
 }
 
-/** Dispatch and work-index codes that wait on a person, as their need. */
-export const CODE_NEED: Readonly<Record<string, NeedKey>> = {
-  "signed-out": "sign-in", "needs-approval": "approval", "waiting-decision": "answer", "decision-queue": "answer",
-  "needs-project": "choose-project", "needs-scope": "define-task", "planner-source": "fix-request", "needs-agent-profile": "choose-agent",
-  "terminal-dependency": "fix-dependency", "missing-requirement": "add-requirement", "no-worker-registered": "connect-builder",
-  "no-worker-online": "start-builder", "vanished-run": "vanished", "needs-verification": "review-result", "proof-refuted": "review-result",
-  "no-build-record": "review-result", "verification-needed": "review-result", "evidence-mismatch": "review-result",
-  "record-incomplete": "review-result", "evidence-damaged": "review-result",
+/** The stages a code reads as (task-status.ts TaskStage). */
+export type CodeStage = "queued" | "planning" | "needs-you" | "waiting" | "building" | "checking" | "reviewing" | "finished" | "complete" | "failed" | "stopped";
+/** Every dispatch and work-index code, as what it means for a person (docs/plans/plain-toolroll.md P1.2): a need with
+ * the act that resolves it, a wait (worded as what it waits for), or a plain state. A code is exactly one of these.
+ * `act` is the work-index row's own act for the code, the same act it had before this table: a need keeps its act, a
+ * wait offers none. `stopped` and `failed` keep their own act too (Resume, Retry). */
+export type CodeReading = { stage: CodeStage; need?: NeedKey; wait?: WaitKey; act?: NeedActionCode | "inspect-stop" | "resume-run" | "unhold" | "answer-agent" | "inspect-run" | null };
+export const CODE_READING: Readonly<Record<string, CodeReading>> = {
+  // Plain states: nothing is asked and nothing is waited on by name.
+  queued: { stage: "queued" }, ready: { stage: "queued" }, "provider-quota": { stage: "queued" },
+  running: { stage: "building" }, reviewing: { stage: "reviewing" }, "review-pending": { stage: "building" }, "checks-running": { stage: "checking" },
+  "ready-to-check": { stage: "finished", act: "open-result" }, "ready-to-review": { stage: "finished" }, "report-ready": { stage: "finished" }, "no-change": { stage: "finished" },
+  "pr-opened": { stage: "finished" }, "merge-observed": { stage: "finished" }, "pr-closed": { stage: "finished" }, "agent-attested": { stage: "finished" }, "accepted-exception": { stage: "finished" },
+  complete: { stage: "complete", act: "open-result" }, cancelled: { stage: "stopped", act: "inspect-task" }, paused: { stage: "stopped" },
+  stopped: { stage: "stopped", act: "resume-run" },
+  failed: { stage: "failed", act: "retry-task" }, "checks-failed": { stage: "failed" },
+  // The same failure again and again: a need over Retry, its own act, said plainly.
+  "waiting-incident": { stage: "failed", act: "retry-task" },
+  // Waits: Toolroll or another task moves these on; no person is asked.
+  stopping: { stage: "waiting", wait: "build-stopping" },
+  "build-stopping": { stage: "waiting", wait: "build-stopping" }, "other-computer": { stage: "waiting", wait: "other-computer" },
+  "planning-ready": { stage: "waiting", wait: "plan-next" }, "scouting-ready": { stage: "waiting", wait: "research-next" },
+  "worker-at-capacity": { stage: "waiting", wait: "builders-busy" }, "retry-scheduled": { stage: "waiting", wait: "retry-later" },
+  updating: { stage: "waiting", wait: "app-update" }, "waiting-dependency": { stage: "waiting", wait: "other-task" },
+  // Needs, each over the act it has always had.
+  "history-problem": { stage: "needs-you", need: "history", act: "inspect-task" },
+  "earlier-active": { stage: "needs-you", need: "earlier-version", act: "inspect-task" },
+  "waiting-decision": { stage: "needs-you", need: "answer", act: "answer-decision" },
+  "decision-queue": { stage: "needs-you", need: "questions", act: "inspect-decisions" },
+  // A saved result that can't simply be accepted yet: its own reason (resultHoldUpSentence) is the sentence.
+  "result-needs-attention": { stage: "needs-you", need: "other", act: "inspect-run" },
+  "process-needs-attention": { stage: "needs-you", need: "stop-unproven", act: "inspect-run" },
+  "vanished-run": { stage: "needs-you", need: "vanished", act: "reconcile-run" },
+  held: { stage: "needs-you", need: "hold", act: "inspect-hold" },
+  "terminal-dependency": { stage: "needs-you", need: "fix-dependency", act: "repair-dependency" },
+  "needs-project": { stage: "needs-you", need: "choose-project", act: "place-task" },
+  "needs-scope": { stage: "needs-you", need: "define-task", act: "write-scope" },
+  "invalid-scope": { stage: "needs-you", need: "define-task", act: "write-scope" },
+  "planner-source": { stage: "needs-you", need: "fix-request", act: "write-scope" },
+  "needs-agent-profile": { stage: "needs-you", need: "choose-agent", act: "select-agent" },
+  "needs-approval": { stage: "needs-you", need: "approval", act: "approve-scope" },
+  "missing-requirement": { stage: "needs-you", need: "add-requirement", act: "repair-capability" },
+  "no-worker-registered": { stage: "needs-you", need: "connect-builder", act: "start-worker" },
+  "no-worker-online": { stage: "needs-you", need: "start-builder", act: "start-worker" },
+  "signed-out": { stage: "needs-you", need: "sign-in", act: "sign-in" },
+  "needs-verification": { stage: "needs-you", need: "review-result" }, "proof-refuted": { stage: "needs-you", need: "review-result" },
+  "no-build-record": { stage: "needs-you", need: "review-result" }, "verification-needed": { stage: "needs-you", need: "review-result" },
+  "evidence-mismatch": { stage: "needs-you", need: "review-result" }, "record-incomplete": { stage: "needs-you", need: "review-result" },
+  "evidence-damaged": { stage: "needs-you", need: "review-result" },
 };
+/** A code that waits on Toolroll or another task: no person is asked. */
+export const isWaitCode = (code: string): boolean => CODE_READING[code]?.stage === "waiting";
+
+/** Notification kinds that need nothing from a person: they stay in the activity log and never ping a phone. */
+export const ACTIVITY_ONLY_KINDS: ReadonlySet<string> = new Set(["check-progress"]);
+
+/** Dispatch and work-index codes that wait on a person, as their need (read from CODE_READING). */
+export const CODE_NEED: Readonly<Record<string, NeedKey>> = Object.fromEntries(Object.entries(CODE_READING)
+  .flatMap(([code, reading]) => reading.need === undefined ? [] : [[code, reading.need] as const]));
 
 /** A stopped run's recorded reason code, in words (the run record, the thread, a failed task's status). */
 export const RUN_REASON_WORDS: Readonly<Record<string, string>> = {

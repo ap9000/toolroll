@@ -828,6 +828,11 @@ await journey("stop", SCRIPTED, "Stop a build while it runs, then resume it with
   const stop = page.locator("form.task-stop-form button");
   await stop.waitFor({ timeout: 15_000 });
   await Promise.all([page.waitForNavigation(), stop.click()]);
+  // While Toolroll stops it, the build is a wait, never Needs you (docs/plans/plain-toolroll.md P1.2). Read the list
+  // first: a stop still unsettled after the read was unsettled during it.
+  const needsYou = cli(["task", "list", "--view", "needs-you"]).tasks.some(one => one.rootId === id || one.id === id);
+  const settledYet = rows(`SELECT settled_at FROM run_stop WHERE run = ${running.id}`)[0]?.settled_at ?? null;
+  if (needsYou && settledYet === null) throw new Error("a build Toolroll is still stopping reads Needs you");
   await until("the task to be paused", async () => { await page.reload(); return (await page.locator('[data-task-control="paused"]').count()) > 0; }, { timeoutMs: 180_000, everyMs: 3000 });
   const stopped = rows(`SELECT requested_via, settlement FROM run_stop WHERE run = ${running.id}`)[0];
   if (stopped?.requested_via !== "web") throw new Error(`the stop: ${JSON.stringify(stopped)}`);

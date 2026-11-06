@@ -116,7 +116,7 @@ describe("reading the existing projections", () => {
       }
     }
     expect(stageOfCode("queued").stage).toBe("queued");
-    expect(stageOfCode("worker-at-capacity").stage).toBe("queued");
+    expect(stageOfCode("worker-at-capacity")).toEqual({ stage: "waiting", wait: "builders-busy" });
     expect(stageOfCode("needs-approval")).toEqual({ stage: "needs-you", need: "approval" });
     expect(stageOfCode("failed").stage).toBe("failed");
     expect(stageOfCode("cancelled").stage).toBe("stopped");

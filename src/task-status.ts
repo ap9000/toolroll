@@ -14,7 +14,7 @@ import { DEFAULT_LEAD_NAME } from "./lead-identity.js";
 import { html, type Html } from "./html.js";
 import type { AssignmentSnapshot } from "./assignment.js";
 import { FAILED_CHECK } from "./result-acts.js";
-import { CODE_NEED, NEEDS, needSentence, waitSentence, type NeedAction, type NeedContext, type NeedKey, type WaitKey } from "./needs-you.js";
+import { CODE_READING, NEEDS, needSentence, waitSentence, type NeedAction, type NeedContext, type NeedKey, type WaitKey } from "./needs-you.js";
 export type { NeedKey, WaitKey } from "./needs-you.js";
 
 /** A cancelled task with a successor reads "Replaced by <id>" everywhere, never "Cancelled". */
@@ -377,24 +377,9 @@ export const taskStatusOf = statusOf;
 
 // ---- reading the existing projections ----------------------------------------
 
-/** Every dispatch or work-index code, as the stage it means. Unknown codes that
- * wait on a person stay Needs you; everything else waits in the queue. */
-const CODE_STAGE: Readonly<Record<string, [TaskStage, TaskStatusFacts["need"]?]>> = {
-  queued: ["queued"], ready: ["queued"], "worker-at-capacity": ["queued"], "retry-scheduled": ["queued"], updating: ["queued"],
-  "waiting-dependency": ["queued"], "scouting-ready": ["queued"], "planning-ready": ["queued"], "provider-quota": ["queued"],
-  // A request the planner cannot be given (too long to hand back, say) waits on a person to shorten it.
-  "planner-source": ["needs-you", "fix-request"],
-  running: ["building"], reviewing: ["reviewing"], "review-pending": ["building"], "checks-running": ["checking"],
-  "signed-out": ["needs-you", "sign-in"],
-  "needs-approval": ["needs-you", "approval"],
-  "waiting-decision": ["needs-you", "answer"], "decision-queue": ["needs-you", "answer"],
-  "build-stopping": ["waiting"], "other-computer": ["waiting"],
-  stopping: ["stopped"], stopped: ["stopped"], paused: ["stopped"], cancelled: ["stopped"],
-  failed: ["failed"], "waiting-incident": ["failed"], "checks-failed": ["failed"],
-  "ready-to-check": ["finished"], "ready-to-review": ["finished"], "report-ready": ["finished"], "no-change": ["finished"],
-  "pr-opened": ["finished"], "merge-observed": ["finished"], "pr-closed": ["finished"], "agent-attested": ["finished"], "accepted-exception": ["finished"],
-  complete: ["complete"],
-};
+/** Codes that read Needs you whoever asks (their reason is a person's by nature). Any other need reads Needs you
+ * only when the caller says a person is needed; otherwise it waits in the queue. */
+const ALWAYS_NEEDS: ReadonlySet<string> = new Set(["planner-source", "signed-out", "needs-approval", "waiting-decision", "decision-queue"]);
 
 /** Queue reasons worth a sentence of their own; any other queued or
  * building reason is scheduler wording, and the default sentence is plainer. */
@@ -405,12 +390,16 @@ export function plainReasonOf(stage: TaskStage, code: string, detail: string | n
   return detail ?? null;
 }
 
-export function stageOfCode(code: string, options: { needsPerson?: boolean; planning?: boolean; operatorHold?: boolean } = {}): { stage: TaskStage; need?: TaskStatusFacts["need"] } {
+/** Every dispatch or work-index code, as the stage it means (needs-you.ts CODE_READING, the one table). Unknown
+ * codes that wait on a person stay Needs you; everything else waits in the queue. */
+export function stageOfCode(code: string, options: { needsPerson?: boolean; planning?: boolean; operatorHold?: boolean } = {}): { stage: TaskStage; need?: TaskStatusFacts["need"]; wait?: WaitKey } {
   if (code === "running" && options.planning) return { stage: "planning" };
   if (code === "held") return options.operatorHold === false ? { stage: "needs-you", need: "hold" } : { stage: "stopped" };
-  const known = CODE_STAGE[code];
-  if (known !== undefined) return known[1] === undefined ? { stage: known[0] } : { stage: known[0], need: known[1] };
-  return options.needsPerson === false ? { stage: "queued" } : { stage: "needs-you", need: CODE_NEED[code] ?? "other" };
+  const known = Object.prototype.hasOwnProperty.call(CODE_READING, code) ? CODE_READING[code] : undefined;
+  if (known !== undefined && (known.stage !== "needs-you" || ALWAYS_NEEDS.has(code))) {
+    return { stage: known.stage, ...(known.need === undefined ? {} : { need: known.need }), ...(known.wait === undefined ? {} : { wait: known.wait }) };
+  }
+  return options.needsPerson === false ? { stage: "queued" } : { stage: "needs-you", need: known?.need ?? "other" };
 }
 
 /** The pull request as the task page's follower reports it, or the bare publication row. */
@@ -690,7 +679,7 @@ export const TASK_STATUS_CSS = `.status-headline{display:flex;align-items:center
  * no assignment. A done task is Complete once a person marked its result;
  * a refuted result whose project check failed is Failed. */
 export function stageOfDispatch(d: { code: string; condition: string; action: string | null; role?: string | null; detail?: string },
-  options: { completed?: boolean } = {}): { stage: TaskStage; need?: TaskStatusFacts["need"] } {
+  options: { completed?: boolean } = {}): { stage: TaskStage; need?: TaskStatusFacts["need"]; wait?: WaitKey } {
   if (d.code === "reviewing") return { stage: "reviewing" };
   if (d.code === "complete" || d.code.startsWith("review-")) return { stage: options.completed ? "complete" : "finished" };
   if (d.code === "proof-refuted") return /approved check failed|checks failed/i.test(d.detail ?? "") ? { stage: "failed" } : { stage: "needs-you", need: "review-result" };

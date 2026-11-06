@@ -79,7 +79,7 @@ describe("every reason", () => {
       expect(status.need, key).toBeNull();
       expect(hasInternalWords(status.sentence), key).toBe(false);
       expect(status.sentence, key).toMatch(key === "build-finishing" ? /^Finishing up; this clears on its own\.$/
-        : key === "build-checking" ? /^Making sure build #2175 stopped\. This clears on its own\.$/ : /^Waiting /);
+        : key === "build-checking" ? /^Making sure build #2175 stopped\. This clears on its own\.$/ : /^Waiting[ :]/);
     }
   });
 
@@ -472,7 +472,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     const read = assignment("still-alive");
     const presentation = assignmentPresentationOf(read);
     expect(presentation.taskStatus.headline).toBe("Waiting");
-    expect(presentation.taskStatus.sentence).toBe(`Waiting for build #${runs["still-alive"]} to stop. Nothing is needed from you.`);
+    expect(presentation.taskStatus.sentence).toBe(`Waiting: Toolroll is stopping build #${runs["still-alive"]}.`);
     expect(presentation.status.views).not.toContain("needs-you");
     expect(read.state).not.toBe("needs-decision");
     const index = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { view: "all" }).items.find(one => one.rootId === "still-alive")!;

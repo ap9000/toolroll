@@ -1189,7 +1189,7 @@ export function statusActionHref(status: DisplayStatus, taskId: string, runId: n
 /** A not-yet-finished task's shared headline from its dispatch diagnosis (task-status.ts). */
 export function dispatchHeadline(d: DispatchDiagnosis): string {
   const read = stageOfDispatch(d);
-  return taskStatusOf({ stage: read.stage, ...(read.need === undefined ? {} : { need: read.need }) }).headline;
+  return taskStatusOf({ stage: read.stage, ...(read.need === undefined ? {} : { need: read.need }), ...(read.wait === undefined ? {} : { wait: read.wait }) }).headline;
 }
 
 export function statusLineHtml(status: DisplayStatus, extra: Html | "" = ""): Html {

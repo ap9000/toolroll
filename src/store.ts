@@ -79,6 +79,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
 import { containerEmptiness } from "./container-state.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
+import { ACTIVITY_ONLY_KINDS } from "./needs-you.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
 import { hashPassword, liveReleaseOf } from "./scope.js";
@@ -23573,13 +23574,15 @@ export class Store {
         `INSERT OR IGNORE INTO push_delivery (notification, subscription, created_at)
          SELECT notification.id, push_subscription.id, ?
            FROM notification, push_subscription
-          WHERE (notification.push_class IS NOT NULL OR notification.kind = 'check-progress')
+          WHERE notification.push_class IS NOT NULL
+            -- A fact that needs nothing from a person (checks in progress) stays in the activity log: no phone ping.
+            AND notification.kind NOT IN (SELECT value FROM json_each(?))
             AND notification.resolved_at IS NULL
             AND (notification.recipient IS NULL OR notification.recipient = push_subscription.approver)
             AND push_subscription.retired_at IS NULL
             AND notification.id > push_subscription.starts_after_notification`,
       )
-      .run(now.toISOString());
+      .run(now.toISOString(), JSON.stringify([...ACTIVITY_ONLY_KINDS]));
     // Pings follow responsibility: a pair this person must not be alerted about retires before it is ever sent.
     if (Number(changes) > 0) {
       const fresh = this.db.prepare(`SELECT p.id AS pair, s.approver AS approver, n.* FROM push_delivery p

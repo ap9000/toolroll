@@ -21,7 +21,8 @@ import { isCheckLevel, requiredCheckCommandFor } from './check-levels.js';
 import { MARKER } from './worktree.js';
 import { withFollowUps } from './result-follow-ups.js';
 import { LANDED_ACTOR, landedReasonOf } from './result-completion.js';
-import { ASKS, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedKey, type WaitKey } from './needs-you.js';
+import { ASKS, CODE_READING, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, isWaitCode, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedContext, type NeedKey, type WaitKey } from './needs-you.js';
+import { retryWhenWords } from './dispatch.js';
 import { LEAD_CLAIM_SQL, LEAD_IDLE_MS } from './lead-voice.js';
 
 export type WorkIndexCounts = Record<WorkView, number>;
@@ -90,14 +91,22 @@ const AGENT_ASK = `(SELECT q.id FROM agent_question q JOIN run qr ON qr.id=q.run
 const GATE_PAUSE_ON_TASK = pauseOnTaskProviders('p', 'c.ref_id');
 
 type StopFact = NonNullable<ReturnType<Store['stopQuiescenceFact']>>;
-/** Index codes that wait on a person, as their need (needs-you.ts); dispatch codes come from task-status's own table. */
-const INDEX_NEED: Readonly<Record<string, NeedKey>> = {
-  'earlier-active': 'earlier-version', 'process-needs-attention': 'stop-unproven', 'invalid-scope': 'define-task', 'decision-queue': 'questions',
-};
-/** Every index code that can wait on a person. */
+/** Index codes that wait on a person, as their need, where the index reads one the dispatch codes don't. */
+const INDEX_NEED: Readonly<Record<string, NeedKey>> = Object.fromEntries(['earlier-active', 'process-needs-attention', 'invalid-scope', 'decision-queue', 'history-problem']
+  .map(code => [code, CODE_READING[code]!.need!] as const));
+/** Every index code that can wait on a person. A wait (stopping, waiting its turn, a retry later) is never one. */
 const PERSON_CODES = ['history-problem', 'earlier-active', 'ready-to-check', 'waiting-decision', 'decision-queue', 'result-needs-attention',
-  'process-needs-attention', 'failed', 'vanished-run', 'stopping', 'stopped', 'held', 'waiting-incident', 'terminal-dependency', 'needs-project',
+  'process-needs-attention', 'failed', 'vanished-run', 'stopped', 'held', 'waiting-incident', 'terminal-dependency', 'needs-project',
   'needs-scope', 'invalid-scope', 'needs-agent-profile', 'needs-approval', 'missing-requirement', 'no-worker-registered', 'no-worker-online', 'signed-out'];
+/** The index codes that wait on nobody: finished or running work, and every wait (needs-you.ts CODE_READING). */
+export const WAITING_CODES: readonly string[] = ['cancelled', 'complete', 'running', 'queued',
+  ...['stopping', 'updating', 'retry-scheduled', 'waiting-dependency', 'worker-at-capacity', 'planning-ready', 'scouting-ready'].filter(code => isWaitCode(code))];
+const WAITING_SQL = WAITING_CODES.map(code => `'${code}'`).join(',');
+/** The words on a state's own act (a need's act wears its need's label). */
+const STATE_ACT_LABEL: Readonly<Record<string, string>> = {
+  'ready-to-check': 'Open result', complete: 'Open result', cancelled: 'View task details', failed: 'Review and retry', 'waiting-incident': 'Review and retry',
+  stopped: 'Review pause', held: 'Review hold', 'result-needs-attention': 'Open the build', 'process-needs-attention': 'Open the build',
+};
 /** A code's ask: a saved result is Review (unless its build may still run), otherwise its need's ask. */
 export function askOfCode(code: string, custody = false): Ask {
   if (custody) return 'unblock';
@@ -288,11 +297,11 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
   SELECT c.*,CASE WHEN code IN ('cancelled','complete') THEN 0 ELSE ${LEAD_CLAIM_SQL} END lead_claim FROM classified c
 ), ranked AS MATERIALIZED (
   -- A task the person's lead is on (lead-voice.ts) waits on nobody: it leaves Needs you until the claim ends or lapses.
-  SELECT c.*,code NOT IN ('cancelled','complete','running','updating','retry-scheduled','waiting-dependency','worker-at-capacity','planning-ready','scouting-ready','queued') AND NOT ${CUSTODY_WAITS} AND lead_claim<>1 AND NOT ${ARCHIVED} needs,
-    code NOT IN ('cancelled','complete','running','updating','retry-scheduled','waiting-dependency','worker-at-capacity','planning-ready','scouting-ready','queued') AND NOT ${CUSTODY_WAITS} AND NOT ${ARCHIVED} person_need,
+  SELECT c.*,code NOT IN (${WAITING_SQL}) AND NOT ${CUSTODY_WAITS} AND lead_claim<>1 AND NOT ${ARCHIVED} needs,
+    code NOT IN (${WAITING_SQL}) AND NOT ${CUSTODY_WAITS} AND NOT ${ARCHIVED} person_need,
     ${ARCHIVED} archived,
     CASE WHEN code='complete' THEN 3 WHEN code='cancelled' THEN 4 WHEN code='running' THEN 1
-      WHEN ${CUSTODY_WAITS} OR code IN ('updating','retry-scheduled','waiting-dependency','worker-at-capacity','planning-ready','scouting-ready','queued') THEN 2 ELSE 0 END rank,
+      WHEN ${CUSTODY_WAITS} OR code IN (${WAITING_SQL.replace(/'(?:cancelled|complete|running)',/g, '')}) THEN 2 ELSE 0 END rank,
     ${ASK_RANK} ask_rank,
     CASE WHEN code='complete' THEN completed.at ELSE family_updated END sort_at,
     completed.actor checked_actor,completed.at checked_at,completed.outcome checked_digest,completed.detail checked_detail
@@ -457,7 +466,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'proof_verdict',(SELECT COALESCE(machine_verdict,verdict) FROM proof_verdict WHERE run=page_result_id),
     'proof_failed_check',(SELECT verdict='refuted' AND reasons_json LIKE '%approved verification command exited%' FROM proof_verdict WHERE run=page_result_id),'code',code,'needs',needs,'person_need',person_need,'lead_claim',lead_claim,'family_running',family_running,'rank',rank,'ask_rank',ask_rank,'list_order',${ORDER},'sort_at',sort_at,
     'checked_actor',checked_actor,'checked_at',checked_at,'checked_digest',checked_digest,'checked_detail',checked_detail,'question_id',question_id,
-    'dependency_id',dependency_id,'dependency_state',dependency_state,'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,300),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
+    'dependency_id',dependency_id,'dependency_state',dependency_state,'hold_until',hold_until,'attempt_run',(SELECT id FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,300),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
     'plan_changed',scope_digest IS NOT NULL AND digest IS NOT scope_digest,'head_ok',length(head_revision)=40 AND head_revision NOT GLOB '*[^a-f0-9]*','stop_run',stop_run,'unfinished',unfinished,'signed_out',signed_out,
     'question_run',(SELECT run FROM decision WHERE id=page.question_id),'agent_ask',page.agent_ask,
     'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
@@ -480,7 +489,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   // automatic review and, with checks Off, the release check that covers it.
   const memo: ReleaseMemo = new Map();
   const readiness = (row: Row, checks: ChecksFact | null) => resultReadinessFacts(store, now, options.root, row, checks, memo);
-  return { items: page.map(row => itemOf(row, access.principal, probe, leadName, readiness, options.root !== undefined)), projects, totals: rows[0] === undefined ? { ...EMPTY } : counts(rows[0]),
+  return { items: page.map(row => itemOf(row, access.principal, probe, leadName, readiness, options.root !== undefined, now)), projects, totals: rows[0] === undefined ? { ...EMPTY } : counts(rows[0]),
     groups: rows[0] === undefined ? { ...NO_GROUPS } : groupCounts(rows[0]), nextCursor, limit, view };
 }
 
@@ -629,7 +638,7 @@ function resultReadinessFacts(store: Store, now: Date, root: string | undefined,
 }
 
 function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (taskId: string) => StopFact | null, leadName?: string,
-  readiness?: (row: Row, checks: ChecksFact | null) => ReadinessFacts, readable = false): WorkIndexItem {
+  readiness?: (row: Row, checks: ChecksFact | null) => ReadinessFacts, readable = false, now: Date = new Date()): WorkIndexItem {
   const code = String(row['code']), id = String(row['id']);
   const custody = code === 'process-needs-attention' || (code === 'result-needs-attention' && n(row, 'custody_unresolved') === 1);
   const process = custody && probe !== undefined ? processNeedOf(probe(id)) : null;
@@ -640,43 +649,26 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   const personNeed = (n(row, 'person_need') === 1 || need) && !waiting;
   const assignmentState: AssignmentSnapshot['state'] = code === 'complete' ? 'complete' : code === 'ready-to-check' ? 'ready-to-check'
     : code === 'cancelled' ? 'cancelled' : need ? 'needs-decision' : 'working';
-  const words: Record<string, [string, string, WorkAction['code'] | null, string]> = {
-    'history-problem': ['Needs your decision', FAMILY_PROBLEM, 'inspect-task', 'Review task history'],
-    'earlier-active': ['Needs your decision', 'Earlier work is still active. Resolve it before completing this assignment.', 'inspect-task', 'Review active work'],
-    'ready-to-check': ['Ready', 'The saved result is ready to review.', 'open-result', 'Open result'],
-    complete: ['Complete', 'Completion is recorded for this result. Open it to inspect the saved evidence.', 'open-result', 'Open result'],
-    cancelled: ['Cancelled', 'This assignment was cancelled.', 'inspect-task', 'View assignment'],
-    running: ['Running now', '', null, ''],
-    'waiting-decision': ['Needs your decision', 'An unanswered question is waiting.', n(row, 'question_id') ? 'answer-decision' : n(row, 'agent_ask') ? 'answer-agent' : 'inspect-decisions', 'Answer question'],
-    'decision-queue': ['Needs your decision', 'The decision queue is full.', 'inspect-decisions', 'Review open questions'],
-    // Its own reason replaces this below (resultHoldUpSentence).
-    'result-needs-attention': ['Needs your decision', '', 'inspect-run', 'Inspect run'],
-    'process-needs-attention': ['Needs your decision', 'A process exit is not recorded. Open the attempt to check whether its work has stopped.', 'inspect-run', 'Inspect run'],
-    failed: ['Needs your decision', 'The last attempt stopped.', 'retry-task', 'Review and retry'],
-    'vanished-run': ['Needs your decision', 'An unfinished attempt has no current live claim.', 'reconcile-run', 'Check the unfinished attempt'],
-    stopping: ['Needs your decision', 'Stopping. The work so far is kept.', 'inspect-stop', 'View stop details'],
-    stopped: ['Needs your decision', 'Paused by a person. The work so far is kept.', 'resume-run', 'Review pause'],
-    held: ['Needs your decision', s(row, 'hold_reason') ?? 'This task is on hold.', s(row, 'hold_kind') === 'operator' ? 'unhold' : 'inspect-hold', 'Review hold'],
-    'waiting-incident': ['Needs your decision', 'An unresolved incident holds the next attempt.', 'retry-task', 'Review and retry'],
-    'terminal-dependency': ['Needs your decision', 'A required task did not finish.', 'repair-dependency', 'Review required task'],
-    'waiting-dependency': ['Waiting for another task', 'A required task must finish before this task can start.', null, ''],
-    'needs-project': ['Needs your decision', 'Choose a project for this task.', 'place-task', 'Choose a project'],
-    'needs-scope': ['Needs your decision', 'Define the task before a worker can start.', 'write-scope', 'Define the task'],
-    'invalid-scope': ['Needs your decision', 'The saved task scope cannot be read safely.', 'write-scope', 'Review scope'],
-    'needs-agent-profile': ['Needs your decision', 'Choose an available agent for this task.', 'select-agent', 'Choose an agent'],
-    'needs-approval': ['Needs your decision', 'Review the current plan before a worker can start.', 'approve-scope', 'Approve plan'],
-    'missing-requirement': ['Needs your decision', 'A required capability is missing or expired.', 'repair-capability', 'Review missing requirement'],
-    'no-worker-registered': ['Needs your decision', 'No connected builder includes this project.', 'start-worker', 'Check connection'],
-    'no-worker-online': ['Needs your decision', 'The builder has stopped checking in.', 'start-worker', 'Check connection'],
-    'worker-at-capacity': ['Waiting for worker capacity', 'This task starts when an eligible worker has capacity.', null, ''],
-    'signed-out': ['Waiting for a sign-in', 'Its agent needs you to sign in again; it starts on its own once that works.', null, ''],
-    'retry-scheduled': ['Retry scheduled', 'The attempt is backing off before retrying.', null, ''],
-    updating: ['Waiting for app update', 'New work resumes after the update.', null, ''],
-    'planning-ready': ['Planner ready', 'A connected worker can draft the plan.', null, ''],
-    'scouting-ready': ['Scout ready', 'A connected worker can produce the report.', null, ''],
-    queued: ['Queued', '', null, ''],
-  };
-  let [label, detail, actionCode, actionLabel] = words[code]!;
+  // What the code means (needs-you.ts CODE_READING, the one table): its act is the one it has always had; a need's
+  // words and label come from NEEDS, a wait's from WAITS. Only facts the row itself holds are added here.
+  const meaning = CODE_READING[code];
+  let label = '';
+  let detail = '';
+  let actionCode: WorkAction['code'] | null = (meaning?.act ?? null) as WorkAction['code'] | null;
+  let actionLabel = actionCode === null ? '' : STATE_ACT_LABEL[code] ?? (meaning?.need === undefined ? '' : NEEDS[meaning.need].action.label);
+  if (code === 'waiting-decision') actionCode = n(row, 'question_id') ? 'answer-decision' : n(row, 'agent_ask') ? 'answer-agent' : 'inspect-decisions';
+  if (code === 'held') { actionCode = s(row, 'hold_kind') === 'operator' ? 'unhold' : 'inspect-hold'; detail = s(row, 'hold_reason') ?? 'This task is on hold.'; }
+  if (code === 'stopping') { actionCode = 'inspect-stop'; actionLabel = 'View stop details'; }
+  if (code === 'stopped') detail = 'Paused by a person. The work so far is kept.';
+  if (code === 'cancelled') detail = 'This task was cancelled.';
+  // The same failure again and again: what failed, and the two ways on.
+  if (code === 'waiting-incident') detail = `The last attempts failed the same way (${failedAttemptSentence(s(row, 'attempt_reason')).replace(/[.\s]+$/, '').replace(/^./, first => first.toLowerCase())}). Retry, or change the plan.`;
+  /** The build, the task or the time a sentence names. */
+  const context: NeedContext = code === 'stopping' ? { build: n(row, 'stop_run') || null }
+    : code === 'retry-scheduled' ? { build: n(row, 'attempt_run') || null, retry: s(row, 'hold_until') === null ? null : retryWhenWords(s(row, 'hold_until')!, now) }
+    : code === 'vanished-run' ? { build: n(row, 'unfinished') || null }
+    : code === 'earlier-active' ? { task: s(row, 'earlier_id') }
+    : code === 'waiting-dependency' ? { task: s(row, 'dependency_id') } : {};
   if (code === 'signed-out') {
     const [provider = '', authMode = 'subscription'] = (s(row, 'signed_out') ?? '').split(':');
     label = signInReason({ provider: provider as ProviderId, authMode: authMode === 'api-key' ? 'api-key' : 'subscription' });
@@ -728,7 +720,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   // Toolroll marked it complete because its work landed: the reason, said once.
   const landed = code === 'complete' ? landedReasonOf(s(row, 'checked_actor'), s(row, 'checked_detail')) : null;
   const shared = taskStatusOf({ stage: reading.stage, ...(reading.need === undefined ? {} : { need: reading.need }), ...(reading.wait === undefined ? {} : { wait: reading.wait }),
-    ...(process === null ? {} : { needContext: { build: process.build } }),
+    ...(process === null ? (Object.keys(context).length === 0 ? {} : { needContext: context }) : { needContext: { build: process.build } }),
     reason: finished ? null : plainReasonOf(reading.stage, code, detail || null), report: s(row, 'result_role') === 'scout',
     checks: ready !== null ? ready.checks : listedChecks,
     ...(ready === null ? {} : { requirements: ready.requirements ?? null, ...(ready.accepted ? { accepted: true } : {}), ...(ready.blockers === undefined ? {} : { blockers: ready.blockers }) }),
