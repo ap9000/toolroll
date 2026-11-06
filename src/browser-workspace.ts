@@ -310,7 +310,9 @@ export type BrowserTaskView = {
   mergeReady?: MergeReadyView | null;
   /** A release's own steps (release status's twin). Null: this task is no release, or nothing recorded. */
   release?: { tag: string; version: string; pr: number | null; state: "running" | "waiting" | "failed" | "done"; rows: import("./design/kit.js").TimingRow[];
-    headline: string; stopped: { step: string; message: string; at: string } | null; startedAt: string } | null;
+    headline: string; stopped: { step: string; message: string; at: string } | null; startedAt: string;
+    /** The step it is on now, and where that is in its steps. */
+    at?: { step: string; name: string; index: number; of: number } | null } | null;
   /** How the plan was approved: by whom and how, or the rule that approved it automatically. */
   approved?: { by: string; at: string; automatic: boolean; rule: string | null; how: string; version: string } | null;
   /** ⋯ More actions: the task's secondary acts, the same order on the task and agent pages, destructive last. */

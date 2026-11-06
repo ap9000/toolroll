@@ -219,8 +219,8 @@ function ShipBox({ ship }: { ship: NonNullable<BrowserTaskView["ship"]> }) {
 /** A release's own steps, in order on one time axis, where it stands in one line, and why it stopped
  * (`toolroll release status` is its twin). */
 function ReleaseBox({ release }: { release: NonNullable<BrowserTaskView["release"]> }) {
-  const chip = release.state === "failed" ? <KChip word="Failed" tone="failed" /> : release.state === "done" ? <KChip word="Released" tone="done" />
-    : release.state === "waiting" ? <KChip word="Needs you" tone="needs" /> : <KChip word="Releasing" tone="live" />;
+  const chip = release.state === "failed" ? <KChip word="Failed" tone="failed" /> : release.state === "done" ? <KChip word="Done" tone="done" />
+    : release.state === "waiting" ? <KChip word="Needs you" tone="needs" /> : <KChip word="Running" tone="live" />;
   return <section className="k-sec" aria-label="Release" data-release={release.state}>
     <h3>{release.headline}</h3>
     {release.stopped !== null && <KNotice>{release.stopped.step}: {release.stopped.message} Run the same release command again to continue from there.</KNotice>}

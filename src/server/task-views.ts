@@ -66,6 +66,7 @@ import { completionReceiptView,diffFileAnchor,evidenceLinksFor,followUpsFor,orde
 import { approvalFormDigest,consentDoorOf,nonceHashOf,publicationFactsOf,resumeCeremonyPage,resumeDigestOf,taskBody,taskPage,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView,type LocalApprovalView } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { mergeReadyViewOf } from "./merge-ready-view.js";
+import { machineChecked, machineCheckWords } from "./machine-check.js";
 import type { TaskPageExtras } from "./runtime.js";
 import type { BrowserTaskView } from "../browser-workspace.js";
 import { RESULT_REVIEW_SCRIPT } from "../result-review.js";
@@ -892,6 +893,16 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       release: releaseStepsViewOf(releaseProgressFor(runtime.store, rootId), runtime.clock()),
       // "Can I merge?" (P1.6): the checklist from the same assignment this page read, each blocker with its own form.
       mergeReady: mergeReadyViewOf(runtime.store, taskId, data.assignment, who, presentedData.runChecks ?? null, taskHref(taskId)) } : onePage;
+    // A check the machine runs (a prepared candidate: a release's check) is said as the check it is, with no agent's
+    // activity, no notes to read, and for a release its own steps instead of the generic Plan → Build stepper.
+    if (oneTaskView?.kind === "task" && machineChecked(runtime.store, taskId)) {
+      const words = machineCheckWords(runtime.store, taskId, data.liveRunId ?? null, oneTaskView.release ?? null, runtime.clock());
+      const card = oneTaskView.status;
+      if (words !== null && card !== null && card.status.headline === "Building") oneTaskView.status = { ...card, status: { ...card.status, sentence: words } };
+      oneTaskView.activity = null;
+      oneTaskView.steering = null;
+      if (oneTaskView.release != null) oneTaskView.journey = null;
+    }
     // The Result tab's no-script page, under the task's own (the same HTML its result page serves), and its script.
     if (extras.result != null) {
       page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result">${extras.result.html}</section>`;
@@ -1261,7 +1272,10 @@ export function releaseStepsViewOf(progress: ReturnType<typeof releaseProgressFo
   return {
     tag: progress.tag, version: progress.version, pr: progress.pr,
     rows,
-    state: progress.stopped !== null ? "failed" : done ? "done" : at?.st === "wait" ? "waiting" : "running",
+    // Waiting is a person's act only at Approval; a step waiting on a machine (its check, GitHub's checks, quiet) is the
+    // release running, never "Needs you".
+    state: progress.stopped !== null ? "failed" : done ? "done" : at?.st === "wait" && steps[current] === "approval" ? "waiting" : "running",
+    at: current === -1 ? null : { step: steps[current]!, name: at!.name, index: current + 1, of: rows.length },
     headline: done ? `Released ${progress.version}` : progress.stopped !== null ? `Stopped at ${RELEASE_STEP_WORDS[progress.stopped.step] ?? progress.stopped.step}`
       : at !== null ? `${at.name} · Step ${current + 1} of ${rows.length}` : last === null ? "Starting" : `${last} done · the next step starts on its own`,
     stopped: progress.stopped === null ? null : { step: RELEASE_STEP_WORDS[progress.stopped.step] ?? progress.stopped.step, message: progress.stopped.message, at: progress.stopped.at },

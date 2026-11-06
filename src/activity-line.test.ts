@@ -6,17 +6,17 @@ const AT = "2026-10-07T12:00:00.000Z";
 const after = (ms: number) => Date.parse(AT) + ms;
 
 describe("the last-activity line", () => {
-  test("turns quiet at five minutes of silence, and says for how long", () => {
+  test("at five minutes of silence it says when it last heard, in neutral words (amber is for what needs you)", () => {
     const ran = { what: "Edited files", at: AT, worker: "online" as const };
-    expect(activityLine(ran, after(QUIET_AFTER_MS - 1_000)).quiet).toBe(false);
-    expect(activityLine(ran, after(QUIET_AFTER_MS))).toEqual({ text: "No word for 5 min", quiet: true });
-    expect(activityLine(ran, after(6 * 60_000 + 30_000))).toEqual({ text: "No word for 6 min", quiet: true });
+    expect(activityLine(ran, after(QUIET_AFTER_MS - 1_000)).stale).toBe(false);
+    expect(activityLine(ran, after(QUIET_AFTER_MS))).toEqual({ text: "Last update 5 min ago", quiet: false, stale: true });
+    expect(activityLine(ran, after(6 * 60_000 + 30_000))).toEqual({ text: "Last update 6 min ago", quiet: false, stale: true });
   });
 
   test("an offline worker says so, not that the agent is quiet", () => {
     const gone = { what: "Ran a command", at: AT, worker: "offline" as const };
-    expect(activityLine(gone, after(40_000))).toEqual({ text: "Worker offline · last word 40 s ago", quiet: true });
-    expect(activityLine(gone, after(7 * 60_000))).toEqual({ text: "Worker offline · last word 7 min ago", quiet: true });
+    expect(activityLine(gone, after(40_000))).toEqual({ text: "Worker offline · last word 40 s ago", quiet: true, stale: false });
+    expect(activityLine(gone, after(7 * 60_000))).toEqual({ text: "Worker offline · last word 7 min ago", quiet: true, stale: false });
   });
 
   test("ages read plainly; a clock behind the record never says the future", () => {
