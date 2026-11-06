@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.92 — 2026-11-05
+
+- **Toolroll learns which cheaper models do the job.** Every task now gets a
+  result record (see it on the task page, or run `toolroll models results`).
+  Once a cheaper model has done well on a project's small or routine tasks,
+  Settings → Models suggests it, with the evidence. Accepting needs your
+  password and only affects that project's eligible tasks; if the cheaper
+  model then does badly, Toolroll switches back on its own and tells you.
+  Approvals show a line saying why a model was picked. Also in the terminal:
+  `toolroll models suggestions`, `accept`, `dismiss`, `turn-off`.
+- **Try a cheaper model on the next 10 tasks.** When a cheaper model has no
+  track record yet, Settings → Models offers a trial. Each trial task says
+  "trial 3 of 10" and must be approved by a person; Stop ends it any time
+  (`toolroll models try` / `stop`).
+- **See what it saved.** The Spend page and `toolroll spend` show cost per
+  task before and after each rule or trial — observed, not a promise, and
+  only once there are enough priced results.
+- **Project memory is changed by a person only.** A personal API token used
+  from the remote CLI could record or retire project decisions without a
+  password; now it can't, and neither can the lead. Reading memory works as
+  before.
+
 ## 0.9.91 — 2026-11-04
 
 - **A deploy checks your HTTPS console before it changes anything.** If the
