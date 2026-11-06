@@ -179,11 +179,11 @@ export function lingeringWork(db: DatabaseSync): string | null {
   const lingering = lingeringRun(db);
   return lingering && lingeringWords(lingering);
 }
-export const lingeringWords = (l: LingeringRun) => l.action ? `${l.on}. If nothing of it is running, run: ${l.action}` : `${l.on}.`;
+export const lingeringWords = (l: LingeringRun) => l.action ? `${l.on}. To have Toolroll check again, run: ${l.action}` : `${l.on}.`;
 /** What an update says when it stops waiting on `l`: what is in the way, the command, and that new work resumed. */
 export const stoppedWaitingWords = (l: LingeringRun) => `Stopped waiting after 2 minutes. ${l.on}. ${clearWords(l)} New work resumed; nothing was changed.`;
 /** The next step once an update has stopped on `l`. */
-export const clearWords = (l: LingeringRun) => l.action ? `If nothing of it is running, run ${l.action}, then update again.` : "Update again once it has stopped.";
+export const clearWords = (l: LingeringRun) => l.action ? `To have Toolroll check again, run ${l.action}, then update again.` : "Update again once it has stopped.";
 
 /** An update that is waiting or stopped, what on, and the one action that clears it: for `toolroll status` and the
  * console. `app`: the desktop app's update rather than `toolroll update`. */
@@ -196,7 +196,7 @@ export function updateWaitingWords(o: { app: boolean; version: string; stopped: 
     const words = `${update} is waiting for ${on}. New work is paused.`;
     return { app, version, stopped: false, run: null, on, action: null, words, short: words };
   }
-  const next = l.action ? ` If nothing of it is running, run ${l.action}${stopped ? ", then update again" : ""}.` : stopped ? " Update again once it has stopped." : "";
+  const next = l.action ? ` To have Toolroll check again, run ${l.action}${stopped ? ", then update again" : ""}.` : stopped ? " Update again once it has stopped." : "";
   return { app, version, stopped, run: l.run, on: l.on, action: l.action,
     words: `${update} ${stopped ? "stopped waiting" : "is waiting"}: ${l.on}.${next}`,
     short: `${update} ${stopped ? `stopped: run #${l.run} is in the way` : `is waiting on run #${l.run}`}.${next}` };
@@ -245,15 +245,17 @@ export function settleLeftoverRecords(db: DatabaseSync, now: Date): number {
   return new Store(db).settleUnspawnedWitnesses(now);
 }
 
-/** Store.stopQuiescenceProblem's reasons, said for a person: no internal terms, and `toolroll run settle` only where it
- * can clear the record (it refuses while anything of the run is alive). */
+/** Store.stopQuiescenceProblem's reasons, said for a person: no internal terms. Nobody vouches that a run stopped:
+ * Toolroll proves it itself (stop-proof.ts), and `toolroll run settle` only has it look again now. */
 export function plainLingering(fallbackRun: number, problem: string): LingeringRun {
   const run = Number(/run #(\d+)/.exec(problem)?.[1] ?? fallbackRun);
-  const settle = `toolroll run settle ${run} --why "it is not running"`;
+  const settle = `toolroll run settle ${run}`;
   const pid = /process (\d+)/.exec(problem)?.[1];
-  if (/incomplete spawn witness|before its process witness was recorded/.test(problem)) return { run, on: `Run #${run} finished, but Toolroll has no process ID for one of its processes, so it can't confirm that process ended`, action: settle };
-  if (/belongs to another host|another host/.test(problem)) return { run, on: `Run #${run} finished on another computer, and Toolroll can only confirm its processes ended there`, action: `${settle} (on that computer)` };
-  if (/incomplete native containment custody|cannot be proven empty/.test(problem)) return { run, on: `Run #${run} finished, but Toolroll can't confirm its sandbox is empty`, action: settle };
+  if (/incomplete spawn witness|before its process witness was recorded/.test(problem)) return { run, on: `Run #${run} finished, and Toolroll is making sure none of its processes is still running`, action: settle };
+  if (/belongs to another host|another host|another computer/.test(problem)) return { run, on: `Run #${run} finished on another computer, and Toolroll can only confirm its processes ended there`, action: `${settle} (on that computer)` };
+  if (/can't be proven stopped: .* is using its folder/.test(problem)) return { run, on: `Run #${run} finished, but something Toolroll didn't start is using its folder`, action: settle };
+  if (/can't be checked on this computer/.test(problem)) return { run, on: `Run #${run} finished, but Toolroll can't check this computer's processes`, action: settle };
+  if (/incomplete native containment custody|cannot be proven empty/.test(problem)) return { run, on: `Run #${run} finished, but Toolroll can't confirm its sandbox is empty`, action: null };
   if (/still has members/.test(problem)) return { run, on: `Run #${run} finished, but processes are still running in its sandbox`, action: null };
   if (/workspace is still held/.test(problem)) return { run, on: `Run #${run} finished, but process ${pid ?? "?"} is still using its folder`, action: null };
   if (/workspace occupancy/.test(problem)) return { run, on: `Run #${run} finished, but Toolroll can't check whether its folder is still in use`, action: null };

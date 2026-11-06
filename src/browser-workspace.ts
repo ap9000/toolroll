@@ -237,8 +237,8 @@ export type BrowserTaskView = {
   statusHtml: string;
   /** The approval ceremony or its updated terms, exactly as signed. */
   approval: string;
-  /** Confirm it stopped, behind the password, when the status asks for it. */
-  confirmStopped?: { action: string; run: number; checked?: boolean } | null;
+  /** Check again (a build Toolroll could not prove stopped from this computer), when the status asks for it. */
+  recheckStopped?: { action: string; run: number } | null;
   /** Build again, in place, when the status asks for it (a result built to an earlier plan). */
   rebuild?: { action: string } | null;
   /** What a failed task missed, in one line (the requirement it missed, the failing check's error line, or the stop
@@ -395,10 +395,10 @@ export type BrowserCheckItem = {
  * the person's own checks, which the page adds as they answer them. */
 export type BrowserResultDecision = { label: AcceptLabel; ready: boolean; why: string | null; effect: string; sentence: string;
   base?: { label: AcceptLabel; ready: boolean; why: string | null } };
-/** A Needs you action: a link, (Confirm it stopped) a form behind the password, (Build again) one
+/** A Needs you action: a link, (Check again, Build again) one
  * button, or (on the result itself) Accept, which records the person's acceptance; `note` asks why
  * when the evidence disagrees. */
-export type BrowserNeedAction = { label: string; href: string | null; confirm: { action: string; run: number; returnTo: string; checked?: boolean } | null;
+export type BrowserNeedAction = { label: string; href: string | null; confirm: { action: string; run: number; returnTo: string } | null;
   accept?: { action: string; run: number; returnTo: string; note: string | null } | null;
   /** Build again (a result built to an earlier plan): one button, the task page's requeue. */
   rebuild?: { action: string } | null };

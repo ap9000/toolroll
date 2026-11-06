@@ -331,7 +331,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "days", takesValue: true, meaning: "also finished tasks untouched this many days (1–365, default 14)" },
       { name: "except", takesValue: true, meaning: "comma-separated tasks from the list to leave out" }],
     notableReasons: ["usage", "not-an-approver", "empty"] },
-  operator("run settle", "last resort for a finished run whose process witness can't be proven either way: records your --why in the ledger; refuses while any of the run's processes is alive"),
+  operator("run settle", "have Toolroll check again whether a finished run stopped: it looks at this computer's processes itself, stops only leftovers proven the run's, and settles the run when none is left (nobody vouches; --why is ignored)"),
   operator("task resume", "resume the exact stopped attempt (--run <id>): refuses until it is quiescent, lifts only that stop's hold, approves nothing — the next pass re-proves the scope and inherits the draft with fresh proof"),
 
   // ---- leases (runner surface) ----

@@ -631,7 +631,9 @@ post("tasks", "task.act.route", `^\\/t\\/${TASK}\\/route$`, { project: "task", l
 post("tasks", "task.act.retry-review", `^\\/t\\/${TASK}\\/retry-review$`, { project: "task", limited: "resource", sample: "/t/one/retry-review" });
 post("tasks", "task.act.complete", `^\\/t\\/${TASK}\\/complete$`, { project: "task", limited: "resource", sample: "/t/one/complete", ...approver("Only an approver can mark a result complete.") });
 post("tasks", "task.act.merge", `^\\/t\\/${TASK}\\/merge$`, { project: "task", limited: "resource", sample: "/t/one/merge", ...approver("Only an approver can merge.") });
-post("tasks", "task.act.confirm-stopped", `^\\/t\\/${TASK}\\/confirm-stopped$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/confirm-stopped", ...approver("Only an approver can confirm a build stopped.") });
+// Check again: Toolroll looks at this computer's processes for a finished build once more (stop-proof.ts). Nobody
+// vouches that a build stopped, so no password: it only asks for the look the worker makes on its own anyway.
+post("tasks", "task.act.recheck-stopped", `^\\/t\\/${TASK}\\/recheck-stopped$`, { project: "task", limited: "resource", sample: "/t/one/recheck-stopped", ...approver("Only an approver can have Toolroll check a build again.") });
 post("tasks", "task.act.stop-carrying", `^\\/t\\/${TASK}\\/stop-carrying$`, { project: "task", limited: "resource", sample: "/t/one/stop-carrying", ...approver("Only an approver can stop carrying a release.") });
 post("tasks", "task.act.stop", `^\\/t\\/${TASK}\\/stop$`, { project: "task", limited: "resource", sample: "/t/one/stop" });
 // Putting one task away and bringing it back (task-tidy.md): a person's act, so only a browser session.

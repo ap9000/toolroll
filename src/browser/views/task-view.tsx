@@ -148,18 +148,12 @@ function submitNative(form: HTMLFormElement | null, password: string | null): Pr
   return new Promise(() => {});
 }
 
-/** Confirm it stopped: an approver's act (the same record as `toolroll run settle`), a step-up: the password is asked
- * in a popover by the button unless Passwordless stands in. `checked`: Toolroll can't check the build, so the approver
- * says they did. */
-function ConfirmStopped({ form, label }: { form: NonNullable<BrowserTaskView["confirmStopped"]>; label: string }) {
-  const ref = useRef<HTMLFormElement>(null);
-  const passwordless = useContext(Passwordless);
-  return <PostForm ref={ref} action={form.action} id="confirm-stopped" data-confirm-stopped={form.run} className="k-acts">
+/** Check again: Toolroll looks at this computer's processes for the build once more (stop-proof.ts). Nobody vouches
+ * that a build stopped, so there is no password and nothing to tick: it only asks Toolroll to look now. */
+function RecheckStopped({ form, label }: { form: NonNullable<BrowserTaskView["recheckStopped"]>; label: string }) {
+  return <PostForm action={form.action} id="recheck-stopped" data-recheck-stopped={form.run} className="k-acts">
     <input type="hidden" name="run" value={String(form.run)} />
-    <input type="hidden" name="token" value="" />
-    {form.checked === true && <label className="k-switch"><input type="checkbox" name="checked" value="yes" required />Nothing from build #{form.run} is running</label>}
-    <KApprove kind="step-up" facts={{ passwordless, remembered: false }} label={label} busy="Confirming…" terms={`Confirms that nothing from build #${form.run} is running.`}
-      onApprove={password => submitNative(ref.current, password)} />
+    <KButton type="submit" variant="primary" label={label} data-primary-action="" />
   </PostForm>;
 }
 
@@ -240,7 +234,7 @@ function headingOf(card: AssignmentCard): string {
   switch (card.status.headline) {
     case "Needs you":
       return need === "approval" ? "Plan ready" : need === "answer" || need === "questions" ? "A question for you" : need === "hold" ? "On hold"
-        : need === "confirm-stopped" || need === "check-stopped" || need === "vanished" ? "The build stopped" : need === "sign-in" ? "Sign in again"
+        : need === "stop-unproven" || need === "vanished" ? "The build stopped" : need === "sign-in" ? "Sign in again"
         : need === "start-builder" || need === "connect-builder" ? "No builder is running" : need === "rebuild" || need === "replan" ? "The plan changed"
         : need === "review-result" ? "Ready for your review" : "Waiting on you";
     case "Ready for review": return "Ready for your review";
@@ -266,7 +260,7 @@ function approvedWords(approved: NonNullable<BrowserTaskView["approved"]>): stri
  * under More. */
 function StatusBox({ view, card, csrf, approved }: { view: BrowserTaskView; card: AssignmentCard; csrf: string; approved: BrowserTaskView["approved"] }) {
   const failed = card.status.headline === "Failed";
-  const confirm = view.confirmStopped ?? null, rebuild = view.rebuild ?? null, retry = view.retry ?? null, failure = view.failure ?? null;
+  const confirm = view.recheckStopped ?? null, rebuild = view.rebuild ?? null, retry = view.retry ?? null, failure = view.failure ?? null;
   const stuck = view.progress?.stuck ?? null;
   const retrying = failed && retry != null && csrf !== "";
   const pause = view.stop != null && csrf !== "" ? view.pause ?? null : null;
@@ -274,7 +268,7 @@ function StatusBox({ view, card, csrf, approved }: { view: BrowserTaskView; card
   const pausedLine = pause?.state == null || stuck !== null ? null : pause.state === "pausing" ? "Pausing…"
     : pausedWords({ until: pause.until ?? null, limitMs: pause.limitMs ?? null }, iso => shortWhen(iso, new Date(), viewerZone(), true));
   const waits = card.status.headline === "Needs you" || card.status.headline === "Ready for review";
-  const acts: ReactNode = confirm != null && csrf !== "" ? <ConfirmStopped form={confirm} label={card.action?.label ?? "Confirm it stopped"} />
+  const acts: ReactNode = confirm != null && csrf !== "" ? <RecheckStopped form={confirm} label={card.action?.label ?? "Check again"} />
     : rebuild != null && csrf !== "" ? <PostForm action={rebuild.action} data-rebuild><KButton type="submit" variant="primary" label={card.action?.label ?? "Build again"} data-primary-action="" /></PostForm>
     : retrying ? <RetryForm action={retry.action} note={retry.note ?? failure?.suggestion} />
     : <>
@@ -588,7 +582,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     {people.length > 0 && <> · <AlsoViewing people={people} /></>}</>;
   const record = view.more?.find(one => one.kind === "link" && one.label === "Evidence pack");
   const needs = view.status?.status.headline === "Needs you" || view.status?.status.headline === "Ready for review";
-  const primary = approve === null && needs && view.status?.action != null && view.confirmStopped == null && view.rebuild == null && view.retry == null
+  const primary = approve === null && needs && view.status?.action != null && view.recheckStopped == null && view.rebuild == null && view.retry == null
     ? <KLinkButton variant="primary" label={view.status.action.label} href={view.status.action.href} /> : null;
   return <div data-kit-page data-task-page={view.id}>
     <div className="k-doc" onClick={inPage}>

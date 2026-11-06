@@ -384,6 +384,10 @@ const SECURITY_KINDS = new Set(["secret-detected", "security-release"]);
 const SPENT_KINDS = new Set(["attempts-exhausted", "plan-attempts-exhausted"]);
 /** What stops a finished run reading stopped (Store.stopQuiescenceFact). */
 export type StopFactKind = "open" | "alive" | "elsewhere" | "unprovable" | "unknown" | "settling";
+/** Why a finished run's stop is unproven where Toolroll's own process check (stop-proof.ts) can prove it: a run that
+ * started its agent with no process witness, a spawn witness with no pid, or a workspace note that can't be read. */
+export type StopProofCause = "no-witness" | "incomplete-spawn" | "workspace-unreadable";
+export type StopFact = { run: number; kind: StopFactKind; problem: string; cause?: StopProofCause };
 export type TaskAct = "filed" | "approved" | "cancelled" | "completed" | "asked";
 /** Store.stopQuiescenceFact, read safely: a deploy proves completion with this code over the INSTALLED runtime's store,
  * which may predate the method. There the older stopQuiescenceProblem decides, and its words give the kind. */
@@ -22103,12 +22107,20 @@ export class Store {
    * what kind of answer it is (needs-you.ts reads it): `alive` while
    * something of the run may still be running, `elsewhere` when only
    * another computer can tell, `unprovable` when nothing is known to run
-   * but its exit was never recorded, `unknown` when this computer can't
-   * check at all (both are what `run settle` resolves; only the first may
-   * be called not running). `settling` already meets the automatic
-   * reconciliation proof, so no confirmation is needed. */
-  stopQuiescenceFact(runId: number): { run: number; kind: StopFactKind; problem: string } | null {
-    const fact = (run: number, kind: StopFactKind, problem: string) => ({ run, kind, problem });
+   * but its exit was never recorded (Toolroll's own look, stop-proof.ts,
+   * settles it), `unknown` when this computer can't check, or that look
+   * was blocked. `settling` already meets the automatic reconciliation
+   * proof. Nobody is ever asked to confirm a build stopped. `cause` names
+   * what stop-proof.ts can prove. */
+  stopQuiescenceFact(runId: number): StopFact | null {
+    const fact = (run: number, kind: StopFactKind, problem: string, cause?: StopProofCause): StopFact => cause === undefined ? { run, kind, problem } : { run, kind, problem, cause };
+    // What Toolroll can prove on its own (stop-proof.ts): until its own check of this computer's processes has run, the
+    // answer is `unprovable` (it settles by itself); once that check could not look, or found a process it didn't start
+    // in the build's folder, it is `unknown`, and the plain reason says why. Nobody is asked to vouch either way.
+    const provable = (run: number, problem: string, cause: StopProofCause): StopFact => {
+      const verdict = stopProofVerdictOf(this, run);
+      return verdict === null ? fact(run, "unprovable", problem, cause) : fact(run, "unknown", `run #${run} ${verdict}`, cause);
+    };
     const ids = this.ownedRunsOf(runId);
     if (ids.length === 0) return fact(runId, "open", `run #${runId} does not exist`);
     for (const id of ids) {
@@ -22118,7 +22130,7 @@ export class Store {
       const witnesses = this.db.prepare("SELECT * FROM run_process WHERE run = ? ORDER BY id").all(id);
       let incompleteSpawn = false;
       if (run.providerStartedAt !== null && witnesses.length === 0 && !this.processesSummarized(id)) {
-        return fact(id, "unprovable", `run #${id} may have spawned before its process witness was recorded; exit is unproven`);
+        return provable(id, `run #${id} may have spawned before its process witness was recorded; exit is unproven`, "no-witness");
       }
       for (const witness of witnesses) {
         // A recorded group exit proves the whole group ended, not just its
@@ -22154,20 +22166,27 @@ export class Store {
           const occupied = worktreeProcessOccupancy(run.worktree);
           if (occupied.held) return fact(id, "alive", `run #${id}'s workspace is still held by process ${occupied.by}`);
         } catch {
-          // An unreadable workspace note is no proof either way; an approver's recorded word settles it.
-          if (!this.workspaceConfirmedByApprover(id)) return fact(id, "unknown", `run #${id}'s workspace occupancy could not be established`);
+          // An unreadable workspace note is no proof either way; Toolroll's own look at this computer's processes settles
+          // it (stop-proof.ts), as an approver's recorded word did before.
+          if (!this.workspaceConfirmedByApprover(id)) {
+            const verdict = stopProofVerdictOf(this, id);
+            return fact(id, "unknown", verdict === null ? `run #${id}'s workspace occupancy could not be established` : `run #${id} ${verdict}`, "workspace-unreadable");
+          }
         }
       }
-      if (incompleteSpawn) return fact(id, this.settleableUnspawnedWitnesses(run, witnesses).length > 0 ? "settling" : "unprovable",
-        `run #${id} has an incomplete spawn witness; exit is unproven`);
+      if (incompleteSpawn) {
+        if (this.settleableUnspawnedWitnesses(run, witnesses).length > 0) return fact(id, "settling", `run #${id} has an incomplete spawn witness; exit is unproven`);
+        return provable(id, `run #${id} has an incomplete spawn witness; exit is unproven`, "incomplete-spawn");
+      }
     }
     return null;
   }
 
-  /** `run settle` recorded an approver's word that a run whose workspace
-   * note couldn't be read has stopped. */
+  /** A run whose workspace note couldn't be read was proven free: by Toolroll's own look (stop-proof.ts), or, in
+   * ledgers from before it, by an approver's recorded word (still read, never written now). */
   private workspaceConfirmedByApprover(runId: number): boolean {
-    return this.db.prepare("SELECT 1 FROM action_ledger WHERE run_id = ? AND action = 'workspace settled by approver' LIMIT 1").get(runId) !== undefined;
+    // An older approver's word still counts (ledger entries before stop-proof.ts); Toolroll's own proof counts the same.
+    return this.db.prepare("SELECT 1 FROM action_ledger WHERE run_id = ? AND action IN ('workspace settled by approver', ?) LIMIT 1").get(runId, STOP_PROOF_WORKSPACE_FREE) !== undefined;
   }
 
   reserveRunProcess(runId: number, now: Date, group = true): number {
@@ -22260,7 +22279,7 @@ export class Store {
    * here, every other witness of the run has exited and none of the run's
    * process groups is alive, it settles as never started, with a ledger
    * entry. A sole pid-less witness has no group to prove gone and stays for
-   * `run settle`. Native witnesses keep their OS-only road. */
+   * Toolroll's own look (stop-proof.ts). Native witnesses keep their OS-only road. */
   settleUnspawnedWitnesses(now: Date, onlyRun?: number): number {
     const candidates = this.db.prepare(`SELECT DISTINCT p.run FROM run_process p JOIN run r ON r.id = p.run
       WHERE p.exited_at IS NULL AND p.pid IS NULL AND p.containment IS NULL AND p.container IS NULL
@@ -22305,74 +22324,6 @@ export class Store {
     if (known.length === 0 || known.some(row => processMayBeAlive(Number(row["pid"]), row["process_group"] === 1,
       { observedAt: row["observed_at"], finishedAt: run.finishedAt, exitedAt: row["exited_at"] }))) return [];
     return pidless;
-  }
-
-  /** `run settle` (an approver's last resort): every witness of a finished
-   * run that cannot be proven either way is recorded settled under the
-   * approver's reason, in the ledger. Refuses while anything of the run is
-   * alive or could be checked only from another host. Never signals. */
-  settleRunWitnessesByApprover(args: { runId: number; by: string; why: string }, now: Date):
-    | { ok: true; witnesses: number[]; repeated: boolean }
-    | { ok: false; reason: "unknown-run" | "still-running" | "alive"; detail: string } {
-    return this.transact(() => {
-      const run = this.getRun(args.runId);
-      if (run === null) return { ok: false as const, reason: "unknown-run" as const, detail: `no run #${args.runId}` };
-      if (run.outcome === null) return { ok: false as const, reason: "still-running" as const, detail: `run #${args.runId} is still open` };
-      const alive = (detail: string) => ({ ok: false as const, reason: "alive" as const, detail });
-      if (ownedProcessCount(runOwnerTag(this, args.runId)) > 0) return alive(`run #${args.runId} still has an owned subprocess`);
-      const rows = this.db.prepare("SELECT * FROM run_process WHERE run = ? ORDER BY id").all(args.runId);
-      const open = rows.filter(row => row["exited_at"] === null);
-      for (const row of rows) {
-        if (row["pid"] === null) continue;
-        if (row["host"] !== hostname()) {
-          if (row["exited_at"] === null) return alive(`run #${args.runId}'s process ${String(row["pid"])} belongs to ${String(row["host"])}; settle it there`);
-          continue;
-        }
-        if (processMayBeAlive(Number(row["pid"]), row["process_group"] === 1, { observedAt: row["observed_at"], finishedAt: run.finishedAt, exitedAt: row["exited_at"] })) return alive(`run #${args.runId}'s process ${String(row["pid"])} is still running`);
-      }
-      for (const row of open) {
-        if (row["pid"] === null && row["host"] !== hostname()) return alive(`run #${args.runId} has a witness from ${String(row["host"])}; settle it there`);
-        if (row["containment"] != null && row["container"] != null && row["container_empty_at"] == null &&
-            containerEmptiness(String(row["containment"]), String(row["container"]), process.platform, row["container_identity"] == null ? null : String(row["container_identity"])) === "populated") {
-          return alive(`run #${args.runId}'s ${String(row["containment"])} object ${String(row["container"])} still has members`);
-        }
-      }
-      // A workspace still held by a live process refuses; one whose note can't
-      // be read is settled by the approver's word, in the ledger.
-      let workspace = false;
-      if (run.worktree !== null) {
-        try {
-          const occupied = worktreeProcessOccupancy(run.worktree);
-          if (occupied.held) return alive(`run #${args.runId}'s workspace is still held by process ${occupied.by}`);
-        } catch { workspace = !this.workspaceConfirmedByApprover(args.runId); }
-      }
-      const ref = this.refById(run.taskRef);
-      if (workspace) {
-        this.recordAction({ at: now.toISOString(), actor: args.by, repo: ref?.repo ?? null, taskId: ref?.externalId ?? null, runId: args.runId,
-          action: "workspace settled by approver", outcome: run.worktree ?? "", source: "request", detail: args.why });
-      }
-      // A run that may have spawned before any witness was written has none
-      // to settle: the approver's word is recorded as one ended witness.
-      if (rows.length === 0 && run.providerStartedAt !== null && !this.processesSummarized(args.runId)) {
-        const id = Number(this.db.prepare("INSERT INTO run_process (run,host,process_group,observed_at,boot_id,exited_at) VALUES (?,?,0,?,?,?)")
-          .run(args.runId, hostname(), now.toISOString(), currentBootId(), now.toISOString()).lastInsertRowid);
-        this.recordAction({ at: now.toISOString(), actor: args.by, repo: ref?.repo ?? null, taskId: ref?.externalId ?? null, runId: args.runId,
-          action: "process witness settled by approver", outcome: `witness ${id}`, source: "request", detail: args.why });
-        this.settleQuiescentStops(now);
-        return { ok: true as const, witnesses: [id], repeated: false };
-      }
-      if (open.length === 0) {
-        if (workspace) this.settleQuiescentStops(now);
-        return { ok: true as const, witnesses: [], repeated: !workspace };
-      }
-      const ids = open.map(row => Number(row["id"]));
-      for (const id of ids) this.db.prepare("UPDATE run_process SET exited_at = ? WHERE id = ? AND run = ? AND exited_at IS NULL").run(now.toISOString(), id, args.runId);
-      this.recordAction({ at: now.toISOString(), actor: args.by, repo: ref?.repo ?? null, taskId: ref?.externalId ?? null, runId: args.runId,
-        action: "process witness settled by approver", outcome: `witness ${ids.join(", ")}`, source: "request", detail: args.why });
-      compactSettledRunProcesses(this.db, now, args.runId);
-      this.settleQuiescentStops(now);
-      return { ok: true as const, witnesses: ids, repeated: false };
-    });
   }
 
   recordRunProcess(runId: number, pid: number, now: Date, group = true, witness?: number): void {
@@ -26509,5 +26460,73 @@ export function forgetProjectModels(store: Store, repo: string, now: Date): numb
     rows += Number(db.prepare("DELETE FROM phase_tier_alternate WHERE scope = ?").run(repo).changes);
     for (const phase of [...phases].sort()) bumpModelsGeneration(store, repo, phase, now);
     return rows + forgetProjectRoutes(store, repo);
+  });
+}
+
+// ---- Toolroll's own stop proof (stop-proof.ts) ------------------------------------------------------------------
+
+/** The ledger words of Toolroll's own stop proof. Nobody is asked to vouch that a build stopped: Toolroll looks at
+ * this computer's processes itself, and a person's older recorded word (`run settle` before this) is still read. */
+export const STOP_PROOF_SETTLED = "run stop proven automatically";
+export const STOP_PROOF_BLOCKED = "automatic stop check blocked";
+export const STOP_PROOF_WORKSPACE_FREE = "workspace proven free automatically";
+
+/** Why Toolroll's own stop check is blocked for a run, in words that follow "run #N " (the stop fact's problem), or
+ * null when its newest word is not a block (never checked, or proven since). */
+export function stopProofVerdictOf(store: Store, runId: number): string | null {
+  const row = store.handle.prepare("SELECT action, outcome FROM action_ledger WHERE run_id = ? AND action IN (?, ?) ORDER BY id DESC LIMIT 1")
+    .get(runId, STOP_PROOF_BLOCKED, STOP_PROOF_SETTLED);
+  return row === undefined || row["action"] !== STOP_PROOF_BLOCKED ? null : String(row["outcome"]);
+}
+
+/** Record that Toolroll's own stop check could not prove a run stopped (`words` follow "run #N "; `detail` is the
+ * evidence). The same block twice in a row is recorded once. True when recorded. */
+export function recordStopProofBlocked(store: Store, runId: number, words: string, detail: string, now: Date): boolean {
+  return store.transact(() => {
+    if (stopProofVerdictOf(store, runId) === words) return false;
+    const run = store.getRun(runId);
+    const ref = run === null ? null : store.refById(run.taskRef);
+    store.recordAction({ at: now.toISOString(), actor: "system", repo: ref?.repo ?? null, taskId: ref?.externalId ?? null, runId,
+      action: STOP_PROOF_BLOCKED, outcome: words, source: "work", detail });
+    return true;
+  });
+}
+
+/**
+ * Settle a finished run's unproven stop on Toolroll's own observation of this computer (stop-proof.ts): the caller
+ * looked at every process here and found none of the run's. Applies only while the run's stop is still unproven for
+ * exactly `cause` (re-read in this transaction): a pid-less spawn witness is recorded ended, a run with no witness gets
+ * one ended witness, an unreadable workspace note is recorded proven free. The evidence goes in the ledger. Never
+ * signals. True when this call settled it.
+ */
+export function settleRunStopByObservation(store: Store, args: { runId: number; cause: StopProofCause; evidence: string }, now: Date): boolean {
+  return store.transact(() => {
+    const fact = store.stopQuiescenceFact(args.runId);
+    if (fact === null || fact.run !== args.runId || fact.cause !== args.cause || (fact.kind !== "unprovable" && fact.kind !== "unknown")) return false;
+    const run = store.getRun(args.runId);
+    if (run === null || run.outcome === null || run.finishedAt === null) return false;
+    const db = store.handle;
+    const ref = store.refById(run.taskRef);
+    const at = now.toISOString();
+    let what: string;
+    if (args.cause === "incomplete-spawn") {
+      const changed = db.prepare(`UPDATE run_process SET exited_at = ? WHERE run = ? AND exited_at IS NULL AND pid IS NULL
+        AND containment IS NULL AND container IS NULL AND host = ?`).run(at, args.runId, hostname()).changes;
+      if (Number(changed) === 0) return false;
+      what = `${Number(changed)} process witness${Number(changed) === 1 ? "" : "es"} with no process ID recorded ended`;
+    } else if (args.cause === "no-witness") {
+      db.prepare("INSERT INTO run_process (run,host,process_group,observed_at,boot_id,exited_at) VALUES (?,?,0,?,?,?)")
+        .run(args.runId, hostname(), at, currentBootId(), at);
+      what = "its missing process witness recorded ended";
+    } else {
+      store.recordAction({ at, actor: "system", repo: ref?.repo ?? null, taskId: ref?.externalId ?? null, runId: args.runId,
+        action: STOP_PROOF_WORKSPACE_FREE, outcome: run.worktree ?? "", source: "work", detail: args.evidence });
+      what = "its folder recorded free";
+    }
+    store.recordAction({ at, actor: "system", repo: ref?.repo ?? null, taskId: ref?.externalId ?? null, runId: args.runId,
+      action: STOP_PROOF_SETTLED, outcome: what, source: "work", detail: args.evidence });
+    compactSettledRunProcesses(db, now, args.runId);
+    store.settleQuiescentStops(now);
+    return true;
   });
 }

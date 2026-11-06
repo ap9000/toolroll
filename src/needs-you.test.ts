@@ -31,6 +31,7 @@ import type { BrowserWorkspace } from "./browser-workspace.js";
 import { taskMovedSince } from "./chat-ask.js";
 import { leadBrowserMessages } from "./server/render-chat.js";
 import { approvalIdentity } from "./browser/views/task-view.js";
+import { proveFinishedRunsStopped, proveRunStopped } from "./stop-proof.js";
 
 const NEED_KEYS = Object.keys(NEEDS) as NeedKey[];
 const WAIT_KEYS = Object.keys(WAITS) as WaitKey[];
@@ -77,7 +78,8 @@ describe("every reason", () => {
       expect(status.tone, key).toBe("neutral");
       expect(status.need, key).toBeNull();
       expect(hasInternalWords(status.sentence), key).toBe(false);
-      expect(status.sentence, key).toMatch(key === "build-finishing" ? /^Finishing up; this clears on its own\.$/ : /^Waiting /);
+      expect(status.sentence, key).toMatch(key === "build-finishing" ? /^Finishing up; this clears on its own\.$/
+        : key === "build-checking" ? /^Making sure build #2175 stopped\. This clears on its own\.$/ : /^Waiting /);
     }
   });
 
@@ -90,23 +92,24 @@ describe("every reason", () => {
     expect(stageOfCode("held", { operatorHold: false })).toEqual({ stage: "needs-you", need: "hold" });
   });
 
-  test("a build Toolroll can't confirm stopped is a person's act only when nothing of it may run", () => {
-    expect(processNeedOf({ run: 9, kind: "unprovable" })).toEqual({ need: "confirm-stopped", build: 9 });
+  test("nobody is ever asked to confirm a build stopped: Toolroll proves it, and only a stop it can't look at is held", () => {
+    // Toolroll's own look (stop-proof.ts) settles it: a wait, never a person's act.
+    expect(processNeedOf({ run: 9, kind: "unprovable" })).toEqual({ wait: "build-checking", build: 9 });
     expect(processNeedOf({ run: 9, kind: "alive" })).toEqual({ wait: "build-stopping", build: 9 });
     expect(processNeedOf({ run: 9, kind: "open" })).toEqual({ wait: "build-stopping", build: 9 });
     expect(processNeedOf({ run: 9, kind: "settling" })).toEqual({ wait: "build-finishing", build: 9 });
     expect(processNeedOf({ run: 9, kind: "elsewhere" })).toEqual({ wait: "other-computer", build: 9 });
-    // Toolroll can't look at all: the person checks; it never says nothing is running.
-    expect(processNeedOf({ run: 9, kind: "unknown" })).toEqual({ need: "check-stopped", build: 9 });
-    expect(taskStatusOf({ stage: "needs-you", need: "check-stopped", needContext: { build: 2175 } }).sentence)
-      .toBe("Toolroll can't check whether build #2175 stopped. Make sure nothing from it is running, then confirm.");
+    // This computer can't look: held, with Check again, never a vouch; it never says nothing is running.
+    expect(processNeedOf({ run: 9, kind: "unknown" })).toEqual({ need: "stop-unproven", build: 9 });
+    expect(taskStatusOf({ stage: "needs-you", need: "stop-unproven", needContext: { build: 2175 } }).sentence)
+      .toBe("Toolroll can't prove build #2175 stopped from this computer, so the work is held. Close anything of yours that is using its folder, then check again.");
+    expect(NEEDS["stop-unproven"].action).toEqual({ code: "recheck-stopped", label: "Check again" });
     expect(processNeedOf(null)).toBeNull();
-    expect(taskStatusOf({ stage: "needs-you", need: "confirm-stopped", needContext: { build: 2175 } }).sentence)
-      .toBe("Toolroll can't confirm build #2175 stopped. Nothing from it is running.");
+    for (const key of NEED_KEYS) expect(`${NEEDS[key].action.label} ${NEEDS[key].sentence({ build: 1 })}`, key).not.toMatch(/confirm it stopped|nothing from it is running|make sure nothing/i);
   });
 });
 
-describe("Confirm it stopped, end to end", () => {
+describe("Toolroll proves a build stopped itself, end to end", () => {
   const NOW = new Date();
   const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
   let dir: string, REPO: string, HEAD: string, root: string, password: string, cookie: string, base: string;
@@ -198,60 +201,71 @@ describe("Confirm it stopped, end to end", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("the result reads in plain words, with Confirm it stopped first", async () => {
+  test("an unrecorded spawn reads Waiting on Toolroll's own check: nobody is asked to confirm it stopped", async () => {
     for (const id of ["spawn-gap", "no-record"]) {
       const read = assignment(id);
       const presentation = assignmentPresentationOf(read);
-      expect(read.state, id).toBe("needs-decision");
-      expect(presentation.taskStatus.headline, id).toBe("Needs you");
-      expect(presentation.taskStatus.sentence, id).toBe(`Toolroll can't confirm build #${runs[id]} stopped. Nothing from it is running.`);
-      expect(read.primaryAction, id).toMatchObject({ code: "confirm-stopped", label: "Confirm it stopped", target: { runId: runs[id] } });
+      expect(read.state, id).toBe("working");
+      expect(presentation.taskStatus.headline, id).toBe("Waiting");
+      expect(presentation.taskStatus.sentence, id).toBe(`Making sure build #${runs[id]} stopped. This clears on its own.`);
+      expect(read.primaryAction, id).toMatchObject({ code: "inspect-run", target: { runId: runs[id] } });
       expect(read.attention.some(hasInternalWords), id).toBe(false);
+      expect(listed("needs-you").items.some(one => one.rootId === id), id).toBe(false);
     }
-    // The result page (desktop and phone render the same view): the need's action, then Request changes beside it.
     const result = workspaceOf(await page(`/review?result=spawn-gap&run=${runs["spawn-gap"]}`)).view as Extract<BrowserWorkspace["view"], { kind: "result" }>;
     const panel = result.selected!.panel!;
-    expect(panel.status?.headline).toBe("Needs you");
-    expect(hasInternalWords(panel.status!.sentence)).toBe(false);
-    expect(panel.need).toMatchObject({ label: "Confirm it stopped", confirm: { action: "/t/spawn-gap/confirm-stopped", run: runs["spawn-gap"] } });
-    // The task page: the same words, and the form behind the password.
+    expect(panel.status?.headline).toBe("Waiting");
+    expect(panel.need?.confirm ?? null).toBeNull();
     const task = workspaceOf(await page("/t/spawn-gap")).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
-    expect(task.status?.status.headline).toBe("Needs you");
-    expect(task.status?.action?.label).toBe("Confirm it stopped");
-    expect(task.confirmStopped).toEqual({ action: "/t/spawn-gap/confirm-stopped", run: runs["spawn-gap"], checked: false });
+    expect(task.status?.status.headline).toBe("Waiting");
+    expect(task.recheckStopped).toBeNull();
   });
 
-  test("a build Toolroll can't check says so, and confirming asks the person to say they checked", async () => {
+  test("a build Toolroll can't check says so: Check again has Toolroll look, with no password and nothing to tick", async () => {
     for (const id of ["unreadable", "half-contained"]) {
       expect(store.stopQuiescenceFact(runs[id]!)?.kind, id).toBe("unknown");
       const status = assignmentPresentationOf(assignment(id)).taskStatus;
       expect(status.headline, id).toBe("Needs you");
-      expect(status.sentence, id).toBe(`Toolroll can't check whether build #${runs[id]} stopped. Make sure nothing from it is running, then confirm.`);
+      expect(status.sentence, id).toBe(`Toolroll can't prove build #${runs[id]} stopped from this computer, so the work is held. Close anything of yours that is using its folder, then check again.`);
       expect(status.sentence, id).not.toContain("Nothing from it is running");
       const task = workspaceOf(await page(`/t/${id}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
-      expect(task.confirmStopped, id).toEqual({ action: `/t/${id}/confirm-stopped`, run: runs[id], checked: true });
+      expect(task.recheckStopped, id).toEqual({ action: `/t/${id}/recheck-stopped`, run: runs[id] });
       const result = workspaceOf(await page(`/review?result=${id}&run=${runs[id]}`)).view as Extract<BrowserWorkspace["view"], { kind: "result" }>;
-      expect(result.selected!.panel!.need?.confirm?.checked, id).toBe(true);
-      expect(listed("needs-you").items.find(one => one.rootId === id)?.status.detail, id).toContain("can't check");
-      // Never one click: without the tick it is refused, and nothing changes.
-      const html = await page(`/t/${id}`);
-      const unticked = await post(`/t/${id}/confirm-stopped`, { csrf: csrfOf(html), run: String(runs[id]), token: password });
-      expect(unticked.status, id).toBe(409);
-      expect(store.stopQuiescenceFact(runs[id]!)?.kind, id).toBe("unknown");
-      const confirmed = await post(`/t/${id}/confirm-stopped`, { csrf: csrfOf(html), run: String(runs[id]), token: password, checked: "yes" });
-      expect(confirmed.status, id).toBe(303);
-      expect(store.stopQuiescenceFact(runs[id]!), id).toBeNull();
-      expect(assignmentPresentationOf(assignment(id)).taskStatus.headline, id).toBe("Ready for review");
-      expect(listed().items.find(one => one.rootId === id)?.status.label, id).toBe("Ready for review");
+      expect(result.selected!.panel!.need).toMatchObject({ label: "Check again", confirm: { action: `/t/${id}/recheck-stopped`, run: runs[id] } });
+      expect(listed("needs-you").items.find(one => one.rootId === id)?.status.detail, id).toContain("can't prove");
     }
+    // Inside the grace after it finished, Toolroll doesn't look yet: refused, nothing changed.
+    let html = await page("/t/unreadable");
+    const early = await post("/t/unreadable/recheck-stopped", { csrf: csrfOf(html), run: String(runs["unreadable"]) });
+    expect(early.status).toBe(409);
+    expect(store.stopQuiescenceFact(runs["unreadable"]!)?.kind).toBe("unknown");
+    // Past it, Toolroll looks at this computer's processes itself: nothing works in the folder, so it is proven.
+    store.raw().prepare("UPDATE run SET finished_at = ? WHERE id = ?").run(new Date(Date.now() - 2 * 60_000).toISOString(), runs["unreadable"]!);
+    html = await page("/t/unreadable");
+    const looked = await post("/t/unreadable/recheck-stopped", { csrf: csrfOf(html), run: String(runs["unreadable"]) });
+    expect(looked.status).toBe(303);
+    expect(store.stopQuiescenceFact(runs["unreadable"]!)).toBeNull();
+    expect(store.raw().prepare("SELECT actor FROM action_ledger WHERE run_id = ? AND action = 'run stop proven automatically'").get(runs["unreadable"]!)).toMatchObject({ actor: "system" });
+    expect(assignmentPresentationOf(assignment("unreadable")).taskStatus.headline).toBe("Ready for review");
+    expect(listed().items.find(one => one.rootId === "unreadable")?.status.label).toBe("Ready for review");
+    // A sandbox object it never finished recording can't be looked into: still held, and still nothing to vouch for.
+    store.raw().prepare("UPDATE run SET finished_at = ? WHERE id = ?").run(new Date(Date.now() - 2 * 60_000).toISOString(), runs["half-contained"]!);
+    html = await page("/t/half-contained");
+    const held = await post("/t/half-contained/recheck-stopped", { csrf: csrfOf(html), run: String(runs["half-contained"]) });
+    expect(held.status).toBe(409);
+    expect(await held.text()).toContain("still can&#39;t prove");
+    expect(store.stopQuiescenceFact(runs["half-contained"]!)?.kind).toBe("unknown");
   });
 
-  test("a workspace still held by a live process can't be confirmed stopped", () => {
+  test("a workspace still held by a live process is never proven stopped", async () => {
     const run = built("held-workspace", "Compress the logs");
     ended(run);
     writeFileSync(join(store.getRun(run)!.worktree!, MARKER), `${process.pid} builder-1 group\n`);
     expect(store.stopQuiescenceFact(run)?.kind).toBe("alive");
-    expect(store.settleRunWitnessesByApprover({ runId: run, by: "sam", why: "test" }, NOW)).toMatchObject({ ok: false, reason: "alive" });
+    store.raw().prepare("UPDATE run SET finished_at = ? WHERE id = ?").run(new Date(Date.now() - 2 * 60_000).toISOString(), run);
+    expect((await proveRunStopped(store, run, () => new Date())).outcome).not.toBe("settled");
+    expect(store.stopQuiescenceFact(run)?.kind).toBe("alive");
+    store.setTaskState("held-workspace", "cancelled", NOW);
   });
 
   test.each([false, true])("an exited witness permits completion without changing a passed check (group=%s)", async group => {
@@ -261,11 +275,10 @@ describe("Confirm it stopped, end to end", () => {
     witness(run, process.pid);
     store.raw().prepare("UPDATE run_process SET exited_at=?, process_group=? WHERE run=?").run(NOW.toISOString(), group ? 1 : 0, run);
     store.recordRunCheck(run, { status: "passed", exitCode: 0, suites: [] }, NOW);
-    if (!group) expect(store.settleRunWitnessesByApprover({ runId: run, by: "sam", why: "The check ended." }, NOW)).toMatchObject({ ok: true });
     expect(store.stopQuiescenceFact(run)).toBeNull();
     const read = assignment(id);
     expect(read.state).toBe("ready-to-check");
-    expect(read.primaryAction?.code).not.toBe("confirm-stopped");
+    expect(read.primaryAction?.code).not.toBe("recheck-stopped");
     const checks = store.raw().prepare("SELECT * FROM run_check WHERE run=?").all(run);
     const completed = await post(`/t/${id}/complete`, { csrf: csrfOf(await page(`/t/${id}`)), run: String(run), receipt: read.receipt!.digest, accept: "1" });
     expect(completed.status).toBe(303);
@@ -285,12 +298,12 @@ describe("Confirm it stopped, end to end", () => {
     expect(listed().items.find(one => one.rootId === id)?.status.detail).toBe(sentence);
     const task = workspaceOf(await page(`/t/${id}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
     expect(task.status?.status.sentence).toBe(sentence);
-    expect(task.confirmStopped).toBeNull();
+    expect(task.recheckStopped).toBeNull();
     const result = workspaceOf(await page(`/review?result=${id}&run=${run}`)).view as Extract<BrowserWorkspace["view"], { kind: "result" }>;
     expect(result.selected!.panel!.status?.sentence).toBe(sentence);
     expect(result.selected!.panel!.need?.confirm).toBeFalsy();
     // Catch-up lists human actions; this wait must never become a request.
-    expect(htmlString(leadBriefHtml(assignmentCatchUp(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 50 }, root)))).not.toContain(`/t/${id}#confirm-stopped`);
+    expect(htmlString(leadBriefHtml(assignmentCatchUp(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 50 }, root)))).not.toContain(`/t/${id}#recheck-stopped`);
     expect(store.settleUnspawnedWitnesses(NOW, run)).toBe(1);
     expect(assignment(id).state).toBe("ready-to-check");
   });
@@ -305,7 +318,7 @@ describe("Confirm it stopped, end to end", () => {
     expect(store.stopQuiescenceFact(runs["exited-quietly"]!)).toBeNull();
     const quiet = all.items.find(one => one.rootId === "exited-quietly")!;
     expect(quiet.status.label).toBe("Ready for review");
-    expect(quiet.primaryAction?.code).not.toBe("confirm-stopped");
+    expect(quiet.primaryAction?.code).not.toBe("recheck-stopped");
     expect(assignmentPresentationOf(assignment("exited-quietly")).taskStatus.headline).toBe("Ready for review");
   });
 
@@ -455,7 +468,7 @@ describe("Confirm it stopped, end to end", () => {
     expect(store.getTask("unverified")?.state).toBe("queued");
   });
 
-  test("a build that may still be running is Waiting, never Needs you, and can't be confirmed", async () => {
+  test("a build that may still be running is Waiting, never Needs you, and Check again settles nothing", async () => {
     const read = assignment("still-alive");
     const presentation = assignmentPresentationOf(read);
     expect(presentation.taskStatus.headline).toBe("Waiting");
@@ -467,43 +480,43 @@ describe("Confirm it stopped, end to end", () => {
     expect(index.status.views).not.toContain("needs-you");
     expect(index.assignmentState).toBe("working");
     const html = await page("/t/still-alive");
-    const refused = await post("/t/still-alive/confirm-stopped", { csrf: csrfOf(html), run: String(runs["still-alive"]), token: password });
+    const refused = await post("/t/still-alive/recheck-stopped", { csrf: csrfOf(html), run: String(runs["still-alive"]) });
     expect(refused.status).toBe(409);
     expect(await refused.text()).toContain("may still be running");
     expect(store.stopQuiescenceFact(runs["still-alive"]!)?.kind).toBe("alive");
   });
 
   test("the task list and Catch up lead with the same action", async () => {
-    const index = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { view: "needs-you" }).items.find(one => one.rootId === "spawn-gap")!;
+    const index = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { view: "needs-you" }).items.find(one => one.rootId === "half-contained")!;
     expect(index.status.label).toBe("Needs you");
     expect(hasInternalWords(index.status.detail)).toBe(false);
-    expect(index.primaryAction).toMatchObject({ code: "confirm-stopped", label: "Confirm it stopped", target: { runId: runs["spawn-gap"] } });
-    expect(browserWorkActionHref(index)).toBe("/t/spawn-gap#confirm-stopped");
+    expect(index.primaryAction).toMatchObject({ code: "recheck-stopped", label: "Check again", target: { runId: runs["half-contained"] } });
+    expect(browserWorkActionHref(index)).toBe("/t/half-contained#recheck-stopped");
     const home = workspaceOf(await page("/chat")).home!;
-    const item = home.catchUp.find(one => one.id === "spawn-gap")!;
+    const item = home.catchUp.find(one => one.id === "half-contained")!;
     expect(item.tab).toBe("needs-you");
-    expect(item.action).toEqual({ label: "Confirm it stopped", href: "/t/spawn-gap#confirm-stopped" });
+    expect(item.action).toEqual({ label: "Check again", href: "/t/half-contained#recheck-stopped" });
     expect(home.catchUp.find(one => one.id === "still-alive")?.tab).not.toBe("needs-you");
+    expect(home.catchUp.find(one => one.id === "spawn-gap")?.tab).not.toBe("needs-you");
     // The saved catch-up shown before the lead is on: the same button under the same sentence.
     const brief = htmlString(leadBriefHtml(assignmentCatchUp(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 8 }, root)));
-    expect(brief).toContain(`href="/t/spawn-gap#confirm-stopped" data-catch-up-action>Confirm it stopped</a>`);
+    expect(brief).toContain(`href="/t/half-contained#recheck-stopped" data-catch-up-action>Check again</a>`);
+    expect(brief).not.toContain("Confirm it stopped");
     expect(hasInternalWords(brief)).toBe(false);
   });
 
-  test("confirming takes the password, records who, and the result becomes Ready", async () => {
+  test("the reconcile pass proves an unrecorded spawn stopped with nobody asked, and the result becomes Ready", async () => {
+    const past = new Date(Date.now() - 2 * 60_000).toISOString();
+    for (const id of ["spawn-gap", "no-record"]) store.raw().prepare("UPDATE run SET finished_at = ? WHERE id = ?").run(past, runs[id]!);
+    const results = await proveFinishedRunsStopped(store, () => new Date());
     for (const id of ["spawn-gap", "no-record"]) {
-      const html = await page(`/t/${id}`);
-      const wrong = await post(`/t/${id}/confirm-stopped`, { csrf: csrfOf(html), run: String(runs[id]), token: "not-the-password" });
-      expect(wrong.status, id).toBe(403);
-      expect(assignment(id).state, id).toBe("needs-decision");
-      const confirmed = await post(`/t/${id}/confirm-stopped`, { csrf: csrfOf(html), run: String(runs[id]), token: password });
-      expect(confirmed.status, id).toBe(303);
+      expect(results.find(one => one.run === runs[id]), id).toMatchObject({ outcome: "settled" });
       expect(store.stopQuiescenceProblem(runs[id]!), id).toBeNull();
-      const after = assignmentPresentationOf(assignment(id));
-      expect(after.taskStatus.headline, id).toBe("Ready for review");
-      const ledger = store.raw().prepare("SELECT actor, detail FROM action_ledger WHERE run_id = ? AND action = 'process witness settled by approver'").get(runs[id]!);
-      expect(ledger, id).toMatchObject({ actor: "sam" });
+      expect(assignmentPresentationOf(assignment(id)).taskStatus.headline, id).toBe("Ready for review");
+      const ledger = store.raw().prepare("SELECT actor, detail FROM action_ledger WHERE run_id = ? AND action = 'run stop proven automatically'").get(runs[id]!);
+      expect(ledger, id).toMatchObject({ actor: "system" });
     }
+    expect(store.raw().prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action LIKE '%by approver%'").get()).toMatchObject({ n: 0 });
   });
 });
 

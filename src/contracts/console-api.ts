@@ -206,7 +206,7 @@ export const CONSOLE_FORMS = {
   peopleRevoke: formContract("POST /people/revoke", ["token", "name"]),
   runnerRetire: formContract("POST /fleet/runner/retire", ["token", "name"]),
   decisionAnswer: formContract("POST /d/<id>/answer", ["return", "choice", "confirm", "note"]),
-  confirmStopped: formContract("POST /t/<task>/confirm-stopped", ["run", "token", "checked", "return"]),
+  recheckStopped: formContract("POST /t/<task>/recheck-stopped", ["run", "return"]),
   merge: formContract("POST /t/<task>/merge", ["run", "token", "anyway"]),
   onboard: formContract("POST /projects/onboard-preview, /projects/onboard-confirm", ["repo", "root", "token", "nonce", "big-ok"]),
   pushSubscribe: formContract("POST /push/subscribe", ["token", "endpoint", "p256dh", "auth"]),

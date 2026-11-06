@@ -414,23 +414,23 @@ test("a finished run's leftover record with no process id: the app update stops 
     let clock = Date.now(), waits = 0;
     await runDesktopUpdate(f.state, { ...f.hooks, now: () => new Date(clock), sleep: async ms => {
       waits++;
-      expect(readUpdateJournal(f.state)?.detail).toContain(`toolroll run settle ${id} --why "it is not running"`);
+      expect(readUpdateJournal(f.state)?.detail).toContain(`toolroll run settle ${id}`);
       expect(desktopUpdateWaitingOf(f.config.databaseFile, () => true)).toMatchObject({ app: true, stopped: false, run: id,
-        short: `App update to 0.4.3 is waiting on run #${id}. If nothing of it is running, run toolroll run settle ${id} --why "it is not running".` });
+        short: `App update to 0.4.3 is waiting on run #${id}. To have Toolroll check again, run toolroll run settle ${id}.` });
       clock += ms;
     } });
     const done = readUpdateJournal(f.state)!;
     expect(done.phase).toBe("cancelled");
     expect(waits).toBeLessThanOrEqual(120);
-    expect(done.detail).toBe(`Stopped waiting after 2 minutes. Run #${id} finished, but Toolroll has no process ID for one of its processes, so it can't confirm that process ended. If nothing of it is running, run toolroll run settle ${id} --why "it is not running", then update again. New work resumed; nothing was changed.`);
+    expect(done.detail).toBe(`Stopped waiting after 2 minutes. Run #${id} finished, and Toolroll is making sure none of its processes is still running. To have Toolroll check again, run toolroll run settle ${id}, then update again. New work resumed; nothing was changed.`);
     expect(done.detail).not.toMatch(/witness|unproven/i);
     expect(bundleHash(f.installed)).toBe(j.old.hash); expect(f.calls).toEqual([]);
     const after = f.db(); expect(updateAdmissionPaused(after)).toBe(false); after.close();
     // toolroll status names the stopped app update first, while the run is still in the way.
     const lines: string[] = [];
     expect(await runOperate("status", [], line => lines.push(line), { databaseFile: f.config.databaseFile, releaseIo: { fetch: async () => { throw new Error("offline"); } } } as never)).toBe(0);
-    expect(lines.join("\n").split("\n")[0]).toBe(`App update to 0.4.3 stopped waiting: Run #${id} finished, but Toolroll has no process ID for one of its processes, so it can't confirm that process ended. If nothing of it is running, run toolroll run settle ${id} --why "it is not running", then update again.`);
-    expect(desktopUpdateWaitingOf(f.config.databaseFile, () => true)?.short).toBe(`App update to 0.4.3 stopped: run #${id} is in the way. If nothing of it is running, run toolroll run settle ${id} --why "it is not running", then update again.`);
+    expect(lines.join("\n").split("\n")[0]).toBe(`App update to 0.4.3 stopped waiting: Run #${id} finished, and Toolroll is making sure none of its processes is still running. To have Toolroll check again, run toolroll run settle ${id}, then update again.`);
+    expect(desktopUpdateWaitingOf(f.config.databaseFile, () => true)?.short).toBe(`App update to 0.4.3 stopped: run #${id} is in the way. To have Toolroll check again, run toolroll run settle ${id}, then update again.`);
     expect(desktopUpdateWaitingOf(f.config.databaseFile, () => false)).toBeNull();
   } finally { f.close(); }
 });

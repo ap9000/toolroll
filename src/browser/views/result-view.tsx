@@ -17,7 +17,7 @@ import {
 } from "../components/ui/index.js";
 import { ACCEPT_NEEDS_REASON, acceptWithChecksOf, requirementsWordsOf, resultActsOf, type ResultActKind, type ResultActs } from "../../result-acts.js";
 import { toneOf } from "./tone.js";
-import { ConfirmStoppedForm, HEADLINE_DOT, RebuildForm, StatusDetails, StatusHeadline, statusWhyLines } from "./status-summary.js";
+import { RecheckStoppedForm, HEADLINE_DOT, RebuildForm, StatusDetails, StatusHeadline, statusWhyLines } from "./status-summary.js";
 import { Html, RetryForm, threadWhen, whenTitle } from "./task-view.js";
 import { KButton, KInput, KLinkButton } from "../kit/index.js";
 
@@ -86,8 +86,8 @@ function StatusCard({ selected, acts, answers, bare = false }: { selected: Selec
         return row.action !== null && same(row.action.href) ? { ...row, action: null } : row;
       }) };
   const tone = toneOf(selected.status.tone);
-  // A form that resolves a Needs you (Build again, Confirm it stopped) keeps the need's own sentence; otherwise what happened.
-  const needForm = acts.primary === "rebuild" || acts.primary === "confirm-stopped";
+  // A form that resolves a Needs you (Build again, Check again) keeps the need's own sentence; otherwise what happened.
+  const needForm = acts.primary === "rebuild" || acts.primary === "recheck-stopped";
   const sentence = selected.noRun ?? (panel !== null && !needForm ? panel.outcome : status?.sentence ?? panel?.outcome ?? "");
   const mismatch = selected.mismatch;
   // A disagreement the mismatch rows already name is said once, there.
@@ -309,8 +309,8 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
         return <KLinkButton key={kind} variant={ink ? "primary" : "outline"} label="Request changes" href="#request-changes" {...mark} />;
       case "rebuild":
         return need?.rebuild == null ? null : <RebuildForm key={kind} action={need.rebuild.action} csrf={csrf} label={need.label} className="min-h-11" />;
-      case "confirm-stopped":
-        return need?.confirm == null ? null : <ConfirmStoppedForm key={kind} form={need.confirm} csrf={csrf} label={need.label} />;
+      case "recheck-stopped":
+        return need?.confirm == null ? null : <RecheckStoppedForm key={kind} form={need.confirm} csrf={csrf} label={need.label} />;
       case "revise":
       case "draft-repair":
         return next === null ? null : <Html key={kind} html={next.control} className="so-result-next phone:w-full" />;
@@ -508,12 +508,12 @@ function openRecord(event: MouseEvent<HTMLAnchorElement>) {
 }
 
 /** The acts a task page's own header already offers for its current result (one mounted form each, never two). */
-const HEADER_OWNED: ReadonlySet<ResultActKind> = new Set(["retry", "rebuild", "confirm-stopped"]);
+const HEADER_OWNED: ReadonlySet<ResultActKind> = new Set(["retry", "rebuild", "recheck-stopped"]);
 
 /** One result: the status, the evidence, the person's own checks, then the decision. The answers to
  * "You check this one" live here, so the Requirements row and the decision follow each one at once. On a task page's
  * Result tab (`inTask`) the task's header already says the current result's status and holds its Retry, Build again and
- * Confirm it stopped: those aren't repeated here. */
+ * Check again: those aren't repeated here. */
 export function SelectedResult({ selected, csrf, inTask }: { selected: Selected; csrf: string; inTask?: { current: boolean } }) {
   const [answers, setAnswers] = useState<Answers>(new Map());
   const answer = (id: string, to: Answer | null) => setAnswers(previous => { const next = new Map(previous); if (to === null) next.delete(id); else next.set(id, to); return next; });

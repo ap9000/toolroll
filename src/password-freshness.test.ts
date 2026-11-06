@@ -391,7 +391,7 @@ describe("where freshness may be honoured", () => {
       // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
       // suggestions on) are an instance operator's step-up; the rule door re-proves the session in the write.
       "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 10, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 27,
-      "src/server/tasks.ts": 7, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
+      "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
     const chatRuns = files.find(one => one.path === "src/server/chat.ts")!.text.match(/freshFacts\.run\([^,]*,/g) ?? [];
@@ -598,7 +598,6 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>updatesAct@53><anonymous>@1": 1,
     "src/server/tasks.ts#createTasksHandlers@2": 2,
     "src/server/tasks.ts#createTasksHandlers@2>codeAct@25><anonymous>@1": 2,
-    "src/server/tasks.ts#createTasksHandlers@2>taskConfirmStopped@30": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@43": 3,
     // Put away old tasks (task-tidy.md): the bulk put-away's step-up, and the runtime it reads it from.
     "src/server/tasks.ts#createTidyHandlers@3": 2,
@@ -657,8 +656,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveRunner@232>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
     // Easy-start C4: the local owner's first password, written with password_set 1 in the one enrollment transaction
     // (its preconditions re-read there); the caller hashes it. It authenticates no one itself.
-    "src/store.ts#enrollOwnerPassword@1170": 1,
-    "src/store.ts#enrollOwnerPassword@1170>store.transact(_)@1": 1,
+    "src/store.ts#enrollOwnerPassword@1169": 1,
+    "src/store.ts#enrollOwnerPassword@1169>store.transact(_)@1": 1,
     "src/toolroll-update.ts#systemdLaptopService@106>recorded@3": 1,
   },
   "credential_hash": {
@@ -674,8 +673,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveRunner@232>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.signInWithSso@226>transact(_)@1": 1,
     // Easy-start F and C4: the laptop owner's unusable hash (random bytes thrown away, password_set 0) and enrollment.
-    "src/store.ts#enrollOwnerPassword@1170>store.transact(_)@1": 1,
-    "src/store.ts#initLocalMode@1169>store.transact(_)@1": 1,
+    "src/store.ts#enrollOwnerPassword@1169>store.transact(_)@1": 1,
+    "src/store.ts#initLocalMode@1168>store.transact(_)@1": 1,
     "src/store.ts#mergeCredentialsForV118@61": 1,
     // Easy-start D: the Linux update reads a runner's stored hash to authenticate its process record (never a password).
     "src/toolroll-update.ts#systemdLaptopService@106>recorded@3": 2,
@@ -763,7 +762,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.ledgerChain@176": 1,
     "src/store.ts#Store.ledgerChain@176>recent@1": 2,
     "src/store.ts#Store.recordApprovalVote@171": 2,
-    "src/store.ts#Store.seedPushPairs@1009": 2,
+    "src/store.ts#Store.seedPushPairs@1008": 2,
     "src/store.ts#initializeStore@41": 3,
     "src/telegram-flow.ts#applyFlowReply@16": 3,
     "src/telegram-lead.ts#applyProposalTap@8": 2,

@@ -93,7 +93,7 @@ describe("safe task stop and resume (v52)", () => {
   });
   afterEach(() => store.close());
 
-  test.each([false, true])("quiescence trusts recorded process and group exits while approver settlement keeps its group probe (group=%s)", group => {
+  test.each([false, true])("quiescence trusts recorded process and group exits, and never signals a reused number (group=%s)", group => {
     const a = runningAttempt(store, "t-exit-reused"), pid = fakePid(1);
     store.recordRunProcess(a.runId, pid, T0, group);
     const before = store.raw().prepare("SELECT * FROM run_process WHERE run=?").get(a.runId)!;
@@ -107,13 +107,7 @@ describe("safe task stop and resume (v52)", () => {
       kill.mockReturnValue(true);
       store.finishRun(a.runId, { outcome: "built", now: later(1000) });
       expect(store.stopQuiescenceFact(a.runId)).toBeNull();
-      const settled = store.settleRunWitnessesByApprover({ runId: a.runId, by: "alex", why: "The check ended." }, later(2000));
-      if (group) {
-        expect(settled).toMatchObject({ ok: false, reason: "alive" });
-      } else {
-        expect(store.stopQuiescenceProblem(a.runId)).toBeNull();
-        expect(settled).toMatchObject({ ok: true, repeated: true });
-      }
+      expect(store.stopQuiescenceProblem(a.runId)).toBeNull();
       expect(store.recordRunProcessExits(a.runId, later(2000))).toBe(0);
       expect(store.raw().prepare("SELECT * FROM run_process WHERE run=?").get(a.runId)).toEqual(ended);
       expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
@@ -157,7 +151,6 @@ describe("safe task stop and resume (v52)", () => {
       store.finishRun(a.runId, { outcome: "built", now: later(11 * 60_000) });
       expect(store.raw().prepare("SELECT exited_at FROM run_process WHERE id=?").get(unknown)?.exited_at).toBe(later(11 * 60_000).toISOString());
       expect(store.stopQuiescenceFact(a.runId)).toBeNull();
-      expect(store.settleRunWitnessesByApprover({ runId: a.runId, by: "alex", why: "Check ended." }, later(12 * 60_000))).toMatchObject({ ok: true });
       expect(kill).not.toHaveBeenCalled();
       expect(ps).not.toHaveBeenCalled();
     } finally { kill.mockRestore(); ps.mockReset(); Object.defineProperty(process, "platform", platform); }

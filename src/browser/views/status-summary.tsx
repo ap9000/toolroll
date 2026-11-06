@@ -105,17 +105,12 @@ export function HeadlineBadge({ label, tone, className, ...rest }: { label: stri
   </span>;
 }
 
-/** Confirm it stopped, behind the password: the one form for the task and
- * result pages (an approver's act, the same record as `toolroll run settle`).
- * `checked`: Toolroll can't check the build, so the approver says they did. */
-export function ConfirmStoppedForm({ form, csrf, label = "Confirm it stopped" }: { form: { action: string; run: number; returnTo?: string; checked?: boolean }; csrf: string; label?: string }) {
-  return <PostForm action={form.action} id="confirm-stopped" data-confirm-stopped={form.run} className="flex flex-wrap items-center gap-2 phone:w-full">
+/** Check again, for a build Toolroll couldn't prove stopped from this computer: the one form for the task and result
+ * pages. It asks Toolroll to look at this computer's processes now (stop-proof.ts); nobody vouches, so no password. */
+export function RecheckStoppedForm({ form, csrf, label = "Check again" }: { form: { action: string; run: number; returnTo?: string }; csrf: string; label?: string }) {
+  return <PostForm action={form.action} id="recheck-stopped" data-recheck-stopped={form.run} className="flex flex-wrap items-center gap-2 phone:w-full">
     <input type="hidden" name="run" value={String(form.run)} />
     {form.returnTo !== undefined && <input type="hidden" name="return" value={form.returnTo} />}
-    {form.checked === true && <label className="flex min-h-11 items-center gap-2 text-sm phone:w-full">
-      <input type="checkbox" name="checked" value="yes" required className="size-4" />Nothing from build #{form.run} is running
-    </label>}
-    <Reauth><Input type="password" name="token" autoComplete="current-password" required aria-label="Your password" placeholder="Your password" className="h-9 w-44 phone:h-11 phone:w-full" /></Reauth>
     <Button type="submit" variant="attention" className="phone:w-full" data-primary-action>{label}</Button>
   </PostForm>;
 }

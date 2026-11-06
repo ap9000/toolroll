@@ -92,7 +92,7 @@ const GATE_PAUSE_ON_TASK = pauseOnTaskProviders('p', 'c.ref_id');
 type StopFact = NonNullable<ReturnType<Store['stopQuiescenceFact']>>;
 /** Index codes that wait on a person, as their need (needs-you.ts); dispatch codes come from task-status's own table. */
 const INDEX_NEED: Readonly<Record<string, NeedKey>> = {
-  'earlier-active': 'earlier-version', 'process-needs-attention': 'confirm-stopped', 'invalid-scope': 'define-task', 'decision-queue': 'questions',
+  'earlier-active': 'earlier-version', 'process-needs-attention': 'stop-unproven', 'invalid-scope': 'define-task', 'decision-queue': 'questions',
 };
 /** Every index code that can wait on a person. */
 const PERSON_CODES = ['history-problem', 'earlier-active', 'ready-to-check', 'waiting-decision', 'decision-queue', 'result-needs-attention',
@@ -633,7 +633,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   const code = String(row['code']), id = String(row['id']);
   const custody = code === 'process-needs-attention' || (code === 'result-needs-attention' && n(row, 'custody_unresolved') === 1);
   const process = custody && probe !== undefined ? processNeedOf(probe(id)) : null;
-  const waiting = process !== null && 'wait' in process;
+  const waiting = (process !== null && 'wait' in process) || (custody && probe === undefined);
   const need = n(row, 'needs') === 1 && !waiting, running = n(row, 'family_running') === 1;
   // The lead's claim (lead-voice.ts): the row still reads its own stage, worded "<name> is on it".
   const lead = n(row, 'lead_claim') === 1 ? 'on-it' as const : n(row, 'lead_claim') === 2 ? 'lapsed' as const : null;
@@ -697,8 +697,8 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     report: s(row, 'result_role') === 'scout' });
   if (code === 'result-needs-attention' && n(row, 'custody_unresolved')) detail = 'A process exit is not recorded. Open the result to check whether its work has stopped.';
   if (code === 'result-needs-attention' && ['built', 'no-change'].includes(s(row, 'result_outcome') ?? '')) { actionCode = 'open-result'; actionLabel = 'Open result'; }
-  if (process !== null && 'need' in process) { actionCode = 'confirm-stopped'; actionLabel = NEEDS[process.need].action.label; }
-  else if (custody && probe === undefined) { actionCode = 'confirm-stopped'; actionLabel = NEEDS['confirm-stopped'].action.label; }
+  // Toolroll proves a build stopped itself; only a stop it can't prove from here offers "Check again", never a vouch.
+  if (process !== null && 'need' in process) { actionCode = 'recheck-stopped'; actionLabel = NEEDS[process.need].action.label; }
   if (code === 'signed-out') { actionCode = 'sign-in'; actionLabel = NEEDS['sign-in'].action.label; }
   if (actionCode === null) { actionCode = code === 'running' ? 'inspect-run' : 'inspect-task'; actionLabel = code === 'running' ? 'Watch the build' : 'View task details'; }
   const read = actionCode !== null && ['inspect-task', 'inspect-run', 'inspect-stop', 'inspect-decisions', 'open-result'].includes(actionCode);
@@ -706,7 +706,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     target: { taskId: successor ?? (code === 'earlier-active' ? s(row, 'earlier_id') ?? id : actionCode === 'answer-decision' ? s(row, 'question_task') ?? id : id),
       runId: actionCode === 'answer-decision' ? n(row, 'question_run') || null : actionCode === 'answer-agent' ? n(row, 'agent_ask_run') || null : actionCode === 'inspect-run' && code === 'running' ? n(row, 'live_run') || null : actionCode === 'open-result' || actionCode === 'inspect-run' ? n(row, 'result_id') || null
         : actionCode === 'reconcile-run' ? n(row, 'unfinished') || null : ['resume-run', 'inspect-stop'].includes(actionCode) ? n(row, 'stop_run') || null
-        : actionCode === 'confirm-stopped' ? process?.build ?? (n(row, 'result_id') || null) : null,
+        : actionCode === 'recheck-stopped' ? process?.build ?? (n(row, 'result_id') || null) : null,
       decisionId: actionCode === 'answer-decision' ? n(row, 'question_id') || null : null },
     access: read ? 'read' : principal === 'operator' ? 'operator-control' : ['answer-decision', 'answer-agent', 'write-scope', 'unhold'].includes(actionCode) ? 'proposal-only' : 'operator-handoff',
     retry: actionCode === 'reconcile-run' ? 'reconcile-before-retry' : read ? 'read-again' : 'refresh-before-acting' };
@@ -714,7 +714,8 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   const coded = stageOfCode(code, { needsPerson: personNeed, planning: s(row, 'live_role') === 'planner', operatorHold: s(row, 'hold_kind') === 'operator' });
   const reading: { stage: typeof coded.stage; need?: NeedKey | undefined; wait?: WaitKey | undefined } = process !== null
     ? 'wait' in process ? { stage: 'waiting', wait: process.wait } : { stage: 'needs-you', need: process.need }
-    : custody ? { stage: 'needs-you', need: 'confirm-stopped' }
+    // Not read here (no process probe): Toolroll's own stop check settles it, so it waits on no one.
+    : custody ? { stage: 'waiting', wait: 'build-checking' }
     : coded.stage === 'needs-you' && (coded.need === undefined || coded.need === 'other') && INDEX_NEED[code] !== undefined ? { stage: 'needs-you', need: INDEX_NEED[code] } : coded;
   const checkStatus = s(row, 'check_status'), verdict = s(row, 'proof_verdict');
   const finished = reading.stage === 'finished' || reading.stage === 'complete';

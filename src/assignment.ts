@@ -293,13 +293,14 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
       : { code: "inspect-task", label: `Open ${successor}`, target: { taskId: successor, runId: null, decisionId: null }, access: "read", retry: "read-again" };
   }
   else if (!live && processFact !== null && result !== null) {
-    // Toolroll can't confirm the build stopped. A person confirms it when
-    // nothing of it may still run; otherwise the work waits, needing no one.
+    // Toolroll hasn't yet proven the build stopped. It proves that itself
+    // (stop-proof.ts), so the work waits, needing no one; only when this
+    // computer can't look is it held, offering Check again — never a vouch.
     const process = processNeedOf(processFact)!;
     if ("need" in process) {
       state = "needs-decision";
       detail = NEEDS[process.need].sentence({ build: process.build });
-      primaryAction = { code: "confirm-stopped", label: NEEDS[process.need].action.label, target: { taskId: current.id, runId: process.build, decisionId: null },
+      primaryAction = { code: "recheck-stopped", label: NEEDS[process.need].action.label, target: { taskId: current.id, runId: process.build, decisionId: null },
         access: access.principal === "operator" ? "operator-control" : "operator-handoff", retry: "refresh-before-acting" };
       need = { key: process.need, build: process.build };
     } else {
@@ -501,6 +502,11 @@ function acknowledgeCurrent(store: Store, current: AssignmentSnapshot, receiptDi
   const receipt = current.receipt;
   // The nightly check of main is a check only (release-once.md, part 3): nobody completes it.
   if (store.handle.prepare("SELECT 1 AS hit FROM nightly_check WHERE task = ?").get(current.receipt!.taskId) !== undefined) return { ok: false, reason: "check-only", message: "The nightly check of main is only a check; it isn't completed." };
+  // Toolroll is still proving its build stopped (stop-proof.ts): a wait that clears on its own, said as one, so a
+  // release waits for it instead of stopping.
+  if (current.state !== "ready-to-check" && current.state !== "complete" && current.need != null && "wait" in current.need && STOP_WAITS.has(current.need.wait)) {
+    return { ok: false, reason: "stopping", message: `Toolroll is still making sure ${current.need.build === null ? "the build" : `build #${current.need.build}`} stopped. This clears on its own.` };
+  }
   if (current.state !== "ready-to-check" && current.state !== "complete") return { ok: false, reason: "not-ready", message: "This assignment still has unresolved execution, scope or decisions." };
   // A release task completes only while its release approval stands for it (release-once.md, liveReleaseOf).
   const release = liveReleaseOf(store, current.receipt!.taskId, "complete", now);
@@ -678,3 +684,6 @@ export function assignmentUpdates(store: Store, now: Date, access: AssignmentAcc
   });
   return { events, nextCursor: page.length === 0 ? after : Number(page.at(-1)!["id"]), hasMore: rows.length > limit };
 }
+
+/** The waits of a build Toolroll is still proving stopped by itself (needs-you.ts processNeedOf). */
+const STOP_WAITS: ReadonlySet<string> = new Set(["build-finishing", "build-checking", "build-stopping"]);

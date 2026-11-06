@@ -51,7 +51,7 @@ import { type Chrome,isOverdue,oneLineOf,projectChip,regionScript,safePrUrl,scre
 import { steerDestinationWords, steerStandingParts } from "../steer-status.js";
 import { reviewHref,taskChatHref,taskHref } from "./http.js";
 import { coordinatorProposalsSection } from "./render-chat.js";
-import { completionReceiptCard, type CompletionReceiptView, criterionMatrixHtml, type EvidenceLinkMap, evidenceWords, homePhaseWords, incidentWords, needsCheck, pullRequestCardHtml, reasonWords, receiptStatusOf, repairChainHtml, reportItemsHtml, reviewRetryPanel, runNoun, runOutcomeBadge, semanticCoverageHtml, type TaskPullRequest, verificationExplanation, verificationRecovered } from "./render-results.js";
+import { completionReceiptCard, type CompletionReceiptView, criterionMatrixHtml, type EvidenceLinkMap, evidenceWords, homePhaseWords, incidentWords, pullRequestCardHtml, reasonWords, receiptStatusOf, repairChainHtml, reportItemsHtml, reviewRetryPanel, runNoun, runOutcomeBadge, semanticCoverageHtml, type TaskPullRequest, verificationExplanation, verificationRecovered } from "./render-results.js";
 import { type Who } from "./session.js";
 import { linkWords, originNote, requestName, requestWords, type TaskOrigin } from "../task-source.js";
 
@@ -2914,8 +2914,8 @@ export function taskBodyParts(data: {
     approve: data.archived != null || sheetInput === null || dependencyChoiceNeeded || data.csrf === "" ? null : approveKitOf(sheetInput, data.approvalFresh ?? null),
     approved: scope !== null && approval.approved ? approvedKitOf(scope, approval, data.approvalProof ?? null) : null,
     more,
-    confirmStopped: data.csrf !== "" && data.assignment?.primaryAction?.code === "confirm-stopped" && data.assignment.primaryAction.target.runId !== null
-      ? { action: `${taskHref(data.assignment.rootId)}/confirm-stopped`, run: data.assignment.primaryAction.target.runId, checked: needsCheck(data.assignment) } : null,
+    recheckStopped: data.csrf !== "" && data.assignment?.primaryAction?.code === "recheck-stopped" && data.assignment.primaryAction.target.runId !== null
+      ? { action: `${taskHref(data.assignment.rootId)}/recheck-stopped`, run: data.assignment.primaryAction.target.runId } : null,
     rebuild,
     // The plan, progress and plan changes are thread entries now; the rest still needs a person here.
     lead: [

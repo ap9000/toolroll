@@ -25,9 +25,9 @@ describe("the result page's one ink act", () => {
   });
 
   it("every state has at most one ink act and it is never navigation", () => {
-    const acts = new Set(["accept", "next-check", "checks-running", "run-checks", "request-changes", "rebuild", "confirm-stopped", "revise", "draft-repair"]);
+    const acts = new Set(["accept", "next-check", "checks-running", "run-checks", "request-changes", "rebuild", "recheck-stopped", "revise", "draft-repair"]);
     for (const accept of [null, { ready: true }, { ready: false }]) for (const runChecks of [false, true]) for (const checksRunning of [false, true]) for (const blocked of [null, MISMATCH])
-      for (const canRequest of [false, true]) for (const need of [null, "rebuild", "confirm-stopped"] as const) for (const next of [null, "revise"] as const) {
+      for (const canRequest of [false, true]) for (const need of [null, "rebuild", "recheck-stopped"] as const) for (const next of [null, "revise"] as const) {
         const chosen = resultActsOf({ accept, runChecks, checksRunning, blocked, canRequest, need, next });
         if (chosen.primary !== null) expect(acts.has(chosen.primary)).toBe(true);
         expect(chosen.secondary === null || chosen.secondary !== chosen.primary).toBe(true);

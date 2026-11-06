@@ -11,7 +11,7 @@
  *   report and changes disagree,
  *   or the proof is refuted             → Request changes, then Accept (as allowed);
  *                                         never Accept as ink, even with no form here
- *   a Needs you form resolves it        → that form (Build again, Confirm it stopped)
+ *   a Needs you form resolves it        → that form (Build again, Check again)
  *   saved notes or a failing PR         → Revise / Draft a repair task
  *   a failed build                      → Retry (its note starts with what to change), then Run checks when they
  *                                         didn't run; never Accept: a failed build is not a result to accept
@@ -54,7 +54,7 @@ export function cantAcceptYetOf(verdict: ProofVerdict | null, reasons: readonly 
     : ACCEPT_NEEDS_REASON;
 }
 
-export type ResultActKind = "retry" | "accept" | "accept-anyway" | "next-check" | "checks-running" | "run-checks" | "request-changes" | "rebuild" | "confirm-stopped" | "revise" | "draft-repair";
+export type ResultActKind = "retry" | "accept" | "accept-anyway" | "next-check" | "checks-running" | "run-checks" | "request-changes" | "rebuild" | "recheck-stopped" | "revise" | "draft-repair";
 
 export type ResultActFacts = {
   /** An Accept this page can post (Accept and finish, or the person's acceptance alone); `ready`: every requirement met and checks passed. */
@@ -68,7 +68,7 @@ export type ResultActFacts = {
   /** The feedback form is on this page. */
   canRequest: boolean;
   /** A Needs you form that resolves it here. */
-  need: "rebuild" | "confirm-stopped" | null;
+  need: "rebuild" | "recheck-stopped" | null;
   /** Saved notes ready to become a revision, or a failing pull request's repair. */
   next: "revise" | "draft-repair" | null;
   /** A failed build: `retry` when the task can be retried from here; `acceptAnyway` when it delivered a result that

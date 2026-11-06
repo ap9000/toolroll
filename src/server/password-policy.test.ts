@@ -17,7 +17,7 @@ const COOKIE_ONLY_POSTS = [
   'fleet.register', 'mode.confirm', 'mode.sign', 'people.projects', 'people.invite', 'people.invite-revoke',
   'people.revoke', 'fleet.retire',
   'task.act.approve', 'task.act.reopen', 'task.act.accept-revision', 'task.act.reject-revision',
-  'task.act.confirm-stopped', 'task.act.resume', 'projects.onboard-confirm', 'push.subscribe',
+  'task.act.resume', 'projects.onboard-confirm', 'push.subscribe',
   'chat.config', 'chat.mate-mint', 'chat.mate-follow', 'chat.mate-end', 'chat.mate-stop',
   // The lead queue: removing your own waiting message, from a browser.
   'chat.queued-remove',
@@ -65,7 +65,7 @@ const PASSWORD_CEREMONIES = [
   '/mode/sign', '/mode/confirm', '/people/projects', '/people/invite', '/people/invite-revoke', '/people/revoke',
   '/projects/onboard-confirm', '/push/subscribe', '/settings/local-mode/off',
   '/chat/config', '/chat', `/chat/file/${'a'.repeat(32)}`, '/chat/ack/1',
-  '/t/guarded/confirm-stopped', '/t/guarded/reopen', '/t/guarded/accept-revision', '/t/guarded/resume', '/t/guarded/approve',
+  '/t/guarded/reopen', '/t/guarded/accept-revision', '/t/guarded/resume', '/t/guarded/approve',
 ];
 
 test('every password ceremony has a cookie-only step-up declaration', () => {

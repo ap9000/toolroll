@@ -14,7 +14,7 @@ export function browserWorkActionHref(item: WorkIndexItem): string | null {
   if (action.code === 'inspect-decisions') return '/';
   if (action.code === 'sign-in') return '/settings/agents#providers';
   if (action.code === 'answer-agent' && runId !== null) return `/agents?run=${runId}`;
-  if (action.code === 'confirm-stopped') return `/t/${encodeURIComponent(item.rootId)}#confirm-stopped`;
+  if (action.code === 'recheck-stopped') return `/t/${encodeURIComponent(item.rootId)}#recheck-stopped`;
   if (action.code === 'open-result' && runId !== null) return chatResultHref(taskId, runId);
   if (action.code === 'open-pr' && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/.test(item.publicationUrl ?? '')) return item.publicationUrl!;
   if (runId !== null && (action.code === 'open-pr' || action.code === 'retry-review')) {

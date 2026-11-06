@@ -12,6 +12,7 @@ import { envelopeJson } from './envelope.js';
 import { completeAndOpenPullRequest, mergeAsPerson, MERGE_NEEDS_PERSON, newestPullRequestOf, publishingOf, pullRequestViewOf, type PullRequestView } from './pull-request-flow.js';
 import type { PublishExec } from './publish.js';
 import type { Store } from './store.js';
+import { proveRunStopped } from './stop-proof.js';
 
 export async function runTaskOutcomeCommand(action: 'complete' | 'revise', positional: readonly string[], flags: Map<string, string | true>, context: {
   store: Store; evidenceRoot: string; json: boolean; write: (line: string) => void; now: Date;
@@ -35,6 +36,9 @@ export async function runTaskOutcomeCommand(action: 'complete' | 'revise', posit
   const operator = credential.token === null ? await context.operator() : null;
   if (credential.token === null && operator === null) return fail('unauthenticated', 'Sign in with up, or supply --as and --token. Agents can use --token-file or --token-env with a scoped credential.');
   const { store, now, evidenceRoot } = context;
+  // A result whose build Toolroll hasn't yet proven stopped: it looks now (stop-proof.ts), so completing never waits
+  // on a person to confirm it, only on Toolroll's own check (a refusal says "stopping" until it lands).
+  if (action === 'complete') await proveTaskBuildsStopped(store, task, () => now);
   return store.transact(() => {
     const coordinator = credential.token === null ? null : authenticateCoordinator(store, credential.token);
     if (coordinator !== null && !coordinator.ok) return fail('unauthenticated', 'The scoped credential is invalid or revoked.');
@@ -147,4 +151,16 @@ export async function runTaskMergeCommand(positional: readonly string[], flags: 
 export function pullRequestLines(view: PullRequestView | null): string[] {
   if (view === null) return [];
   return [`  pull request: ${view.prUrl ?? 'opening'} · ${view.label}`, `    ${view.detail}`, ...(view.mergeCommit === null ? [] : [`    merge commit: ${view.mergeCommit}`])];
+}
+
+/** Toolroll's own stop proof for every finished build of a task's family whose stop it can prove here. Best effort: a
+ * failure leaves the completion's own refusal to say what is still unproven. */
+async function proveTaskBuildsStopped(store: Store, task: string, clock: () => Date): Promise<void> {
+  try {
+    const family = store.taskFamilyOf(task, null, true);
+    const refs = family === null ? [store.lookupRef(task)?.id].filter((one): one is number => one !== undefined) : family.versions.map(version => version.refId);
+    for (const ref of refs) for (const run of store.runsFor(ref)) {
+      if (run.outcome !== null && store.stopQuiescenceFact(run.id)?.cause !== undefined) await proveRunStopped(store, run.id, clock);
+    }
+  } catch { /* the completion below refuses with what is still unproven */ }
 }

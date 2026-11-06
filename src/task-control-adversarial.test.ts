@@ -413,7 +413,7 @@ describe("a failed or interrupted spawn never leaves a run unprovable", () => {
     expect(f.store.stopQuiescenceFact(f.id)?.kind).toBe("unprovable");
   });
 
-  test("c3: run settle records the approver's reason and refuses while a process of the run is alive", async () => {
+  test("c3: run settle has Toolroll check again: nobody vouches, it refuses while a process of the run is alive", async () => {
     const f = fixture();
     const added = addApprover(f.store, "alex", new Date());
     if (!added.ok) throw new Error("approver");
@@ -427,22 +427,25 @@ describe("a failed or interrupted spawn never leaves a run unprovable", () => {
       const code = await runOperate("run", ["settle", String(f.id), ...extra, "--json"], line => lines.push(line), { databaseFile: join(f.root, "orders.db") });
       return { code, body: JSON.parse(lines.join("\n")) as Record<string, unknown> };
     };
-    const why = "The release check's runner crashed between reserving and recording its spawn; checked ps by hand.";
-    expect((await settle("--why", why)).body).toMatchObject({ ok: false, reason: "usage" });
-    expect((await settle("--why", why, "--as", "alex", "--token", "wrong")).body).toMatchObject({ ok: false, reason: "not-an-approver" });
-    expect((await settle("--as", "alex", "--token", added.token)).body).toMatchObject({ ok: false, reason: "usage" });
-    const refused = await settle("--why", why, "--as", "alex", "--token", added.token);
-    expect(refused.body).toMatchObject({ ok: false, reason: "alive" });
+    expect((await settle()).body).toMatchObject({ ok: false, reason: "usage" });
+    expect((await settle("--as", "alex", "--token", "wrong")).body).toMatchObject({ ok: false, reason: "not-an-approver" });
+    expect((await settle("--as", "alex", "--token", added.token)).body).toMatchObject({ ok: false, reason: "alive" });
     expect(f.store.stopQuiescenceProblem(f.id)).not.toBeNull();
     const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
     child.kill("SIGKILL");
     await exited;
-    const settled = await settle("--why", why, "--as", "alex", "--token", added.token);
+    // Its exit is recorded; the witness with no pid is what only Toolroll's own look can prove, past its grace.
+    f.store.recordRunProcessExits(f.id, new Date());
+    const past = new Date(Date.now() - 2 * 60_000).toISOString();
+    f.store.raw().prepare("UPDATE run SET started_at = ?, finished_at = ? WHERE id = ?").run(new Date(Date.now() - 3 * 60_000).toISOString(), past, f.id);
+    // An older script's --why is accepted and ignored: no person's word is recorded.
+    const settled = await settle("--why", "it is not running", "--as", "alex", "--token", added.token);
     expect(settled.code).toBe(0);
-    expect(settled.body).toMatchObject({ ok: true, run: f.id, repeated: false });
+    expect(settled.body).toMatchObject({ ok: true, run: f.id, outcome: "stopped" });
     expect(f.store.stopQuiescenceProblem(f.id)).toBeNull();
-    const entry = f.store.actionLedger({ repos: null }).find(one => one.action === "process witness settled by approver");
-    expect(entry).toMatchObject({ actor: "alex", runId: f.id, detail: why });
-    expect((await settle("--why", why, "--as", "alex", "--token", added.token)).body).toMatchObject({ ok: true, repeated: true });
+    // Settled on the machine's own evidence: here the record already proves it (its one process group is gone).
+    expect(f.store.actionLedger({ repos: null }).find(one => one.action === "process witness settled")).toMatchObject({ actor: "system", runId: f.id });
+    expect(f.store.actionLedger({ repos: null }).some(one => /by approver/.test(one.action))).toBe(false);
+    expect((await settle("--as", "alex", "--token", added.token)).body).toMatchObject({ ok: true, outcome: "already-stopped" });
   });
 });

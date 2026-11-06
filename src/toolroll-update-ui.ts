@@ -42,7 +42,7 @@ export function updateStepsHtml(j: RuntimeUpdateJournal, running: boolean, optio
   const items = UPDATE_STEPS.map((step: UpdateStep, i) => {
     const state = j.phase === "complete" || i < last ? "done" : i > last ? "waiting" : failed ? "failed" : finished ? "waiting" : "now";
     // Only where it adds something: which work it waits for, or what went wrong.
-    const detail = state === "now" && step === "draining" && j.waiting ? html`${j.waiting.on}.${j.waiting.action ? html` If nothing of it is running, run <code class="k-mono">${j.waiting.action}</code>.` : ""}`
+    const detail = state === "now" && step === "draining" && j.waiting ? html`${j.waiting.on}.${j.waiting.action ? html` To have Toolroll check again, run <code class="k-mono">${j.waiting.action}</code>.` : ""}`
       : (state === "now" && step === "draining") || (state === "failed" && j.phase === "rolling-back") ? html`${j.detail}` : "";
     return settingsRecord({ title: STEP_WORDS[step], sub: detail, when: STEP_CHIP[state], attrs: { "data-step": step, "data-state": state } });
   });
@@ -63,7 +63,7 @@ function outcomeHtml(j: RuntimeUpdateJournal): Html | "" {
   if (j.phase === "refused" && j.waiting) {
     return settingsSection({ id: "update-outcome", title: `Update to ${j.to.version} stopped: run #${j.waiting.run} is in the way`,
       body: html`<div data-update-outcome="stopped">${infoLine(`${j.waiting.on}. New work resumed.`)}${
-        j.waiting.action ? note(html`If nothing of it is running, run <code class="k-mono">${j.waiting.action}</code>, then update again.`) : note("Update again once it has stopped.")}</div>` });
+        j.waiting.action ? note(html`To have Toolroll check again, run <code class="k-mono">${j.waiting.action}</code>, then update again.`) : note("Update again once it has stopped.")}</div>` });
   }
   const title = j.phase === "refused" ? `Didn't update to ${j.to.version}` : j.phase === "restored" ? `Update to ${j.to.version} didn't finish` : "The update needs attention";
   return settingsSection({ id: "update-outcome", title, state: html` ${chip("Failed", "failed")}`,

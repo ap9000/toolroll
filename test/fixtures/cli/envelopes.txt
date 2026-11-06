@@ -4283,7 +4283,7 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "run settle",
-      "synopsis": "last resort for a finished run whose process witness can't be proven either way: records your --why in the ledger; refuses while any of the run's processes is alive",
+      "synopsis": "have Toolroll check again whether a finished run stopped: it looks at this computer's processes itself, stops only leftovers proven the run's, and settles the run when none is left (nobody vouches; --why is ignored)",
       "audience": "operator",
       "agentMayInvoke": false,
       "mutation": "unkeyed",
