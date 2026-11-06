@@ -190,7 +190,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const requestedRevision = url.searchParams.get("revision");
     if (requestedRevision !== null) {
       if (focusTask === null || !focusTask.family.versions.some(one => one.id === requestedRevision) || url.searchParams.has("result")) {
-        return refuse(response, who, 404, "That revision is not available for this task.", "/work");
+        return refuse(response, who, 404, "That revision is not available for this task.", "/tasks");
       }
       if (requestedRevision !== focusTask.executionId) return redirect(response, `${taskHref(focusTask.id)}?version=${encodeURIComponent(requestedRevision)}`);
     }
@@ -1407,11 +1407,11 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const all = view("all"), needs = view("needs-you"), done = view("completed");
     const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
     const counts: BrowserHomeCount[] = [
-      { key: "working", label: "Working now", value: agents.length, href: "/work?view=running" },
+      { key: "working", label: "Working now", value: agents.length, href: "/tasks?view=running" },
       // Each by its shared headline, as the Tasks list words it: a result whose checks failed waits on you, it isn't ready.
-      { key: "waiting", label: "Waiting on you", value: needs.items.filter(one => one.status.label !== "Ready for review").length, href: "/work?view=needs-you" },
-      { key: "ready", label: "Ready to review", value: needs.items.filter(one => one.status.label === "Ready for review").length, href: "/work?view=needs-you" },
-      { key: "done", label: "Done this week", value: done.items.filter(one => (one.completion?.at ?? one.updatedAt) >= weekAgo).length, href: "/work?view=completed" },
+      { key: "waiting", label: "Waiting on you", value: needs.items.filter(one => one.status.label !== "Ready for review").length, href: "/tasks?view=needs-you" },
+      { key: "ready", label: "Ready to review", value: needs.items.filter(one => one.status.label === "Ready for review").length, href: "/tasks?view=needs-you" },
+      { key: "done", label: "Done this week", value: done.items.filter(one => (one.completion?.at ?? one.updatedAt) >= weekAgo).length, href: "/tasks?view=completed" },
     ];
     const tabOf = (one: WorkIndexItem): BrowserCatchUpItem["tab"] => one.assignmentState === "ready-to-check" ? one.status.label === "Ready for review" ? "ready" : "needs-you"
       : one.assignmentState === "needs-decision" ? "needs-you" : one.assignmentState === "working" || one.assignmentState === "checking" ? "running" : "finished";
@@ -1430,7 +1430,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const lead = activity === null ? null : { name: activity.name, doing: activity.doing, at: activity.at,
       href: leadTask == null || !admitted(leadTask.repo) ? null : taskHref(familyOf(activity.taskId!)?.root.id ?? activity.taskId!) };
     return {
-      agents, counts, catchUp, allHref: "/work", ...(lead === null ? {} : { lead }),
+      agents, counts, catchUp, allHref: "/tasks", ...(lead === null ? {} : { lead }),
       planUse: (windows?.tiles ?? []).map(one => ({ name: one.name, window: one.window, percent: one.percent, detail: one.detail, tone: one.tone })),
     };
   }

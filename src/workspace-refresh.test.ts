@@ -162,16 +162,16 @@ test('revoked credentials and changed account access are revalidated before a co
 
 test('another page re-read after a live change is a 304 while what it renders is exactly what the page holds', async () => {
   const cookie = await login();
-  const first = await read(cookie, undefined, '/work?format=workspace');
+  const first = await read(cookie, undefined, '/tasks?format=workspace');
   expect(first.status).toBe(200);
   const tag = first.headers.get('etag');
   expect(tag).toMatch(/^"w[\w-]{43}"$/);
-  const same = await read(cookie, tag!, '/work?format=workspace');
+  const same = await read(cookie, tag!, '/tasks?format=workspace');
   expect(same.status).toBe(304); expect(await same.text()).toBe('');
   // Another session's validator is never its own (its form token differs), and a change renders anew.
-  expect((await read(await login(), tag!, '/work?format=workspace')).status).toBe(200);
+  expect((await read(await login(), tag!, '/tasks?format=workspace')).status).toBe(200);
   store.createTask({ id: 'tasks-change', title: 'Shows in Tasks' }, now);
   store.placeTask(store.lookupRef('tasks-change')!.id, repo);
-  const changed = await read(cookie, tag!, '/work?format=workspace');
+  const changed = await read(cookie, tag!, '/tasks?format=workspace');
   expect(changed.status).toBe(200); expect(changed.headers.get('etag')).not.toBe(tag);
 });

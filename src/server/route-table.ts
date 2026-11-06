@@ -100,6 +100,9 @@ export interface RouteDeclaration {
    */
   readonly local: "allow" | "deny";
   readonly localAct: LocalOwnerAct | null;
+  /** A retired page (docs/plans/plain-toolroll.md P1.4): a permanent GET redirect to where it lives now
+   * (retired-routes.ts), admitted exactly as that target is, and no page handler of its own. */
+  readonly retired?: true;
 }
 
 type Options = Partial<Omit<RouteDeclaration, "id" | "domain" | "method" | "pattern" | "stage" | "local" | "localAct">>;
@@ -133,6 +136,7 @@ function row(stage: Stage, domain: Domain, id: string, method: RouteMethod, patt
     ...(options.roleRefusal === undefined ? {} : { roleRefusal: options.roleRefusal }),
     ...(options.bodyCap === undefined ? {} : { bodyCap: options.bodyCap }),
     freshness: options.freshness ?? "never",
+    ...(options.retired === true ? { retired: true as const } : {}),
     ...localMarkOf(stage, method, id),
   });
 }
@@ -339,28 +343,35 @@ get("pages", "projects.page", "/projects", { limited: "unscoped", ...free });
 get("pages", "projects.project", "^\\/projects\\/[^/]+$", { limited: "unscoped", ...free, sample: "/projects/payments-api" });
 get("pages", "home", "/", { limited: "collection", ...free });
 get("pages", "search", "/search", { limited: "collection", ...free });
-get("tasks", "inbox", "/inbox", { limited: "collection", ...free });
-get("tasks", "work", "/work", { limited: "collection", ...free });
-// Put away old tasks (task-tidy.md): the preview reads only; putting away is an approver's step-up in a browser session.
-get("tasks", "work.put-away", "/work/put-away", { limited: "collection", ...free, callers: ["cookie"], ...approver("Only an approver can put tasks away.", "/work") });
-post("tasks", "work.put-away.apply", "/work/put-away", { scope: "step-up", limited: "collection", ...approver("Only an approver can put tasks away.", "/work") });
-get("tasks", "next", "/next", { limited: "collection" });
+// Retired pages (docs/plans/plain-toolroll.md P1.4): permanent redirects to Home and Tasks, admitted as their target is.
+const RETIRED = { limited: "collection", ...free, retired: true } as const;
+get("tasks", "inbox", "/inbox", RETIRED);
+get("tasks", "work", "/work", RETIRED);
+// Archive old tasks (task-tidy.md): the preview reads only, at /tasks/archive; archiving is an approver's step-up in a
+// browser session, and keeps its POST /work/put-away exactly.
+get("tasks", "work.put-away", "/work/put-away", { ...RETIRED, callers: ["cookie"], ...approver("Only an approver can archive tasks.", "/tasks") });
+get("tasks", "tasks.archive", "/tasks/archive", { limited: "collection", ...free, callers: ["cookie"], ...approver("Only an approver can archive tasks.", "/tasks") });
+post("tasks", "work.put-away.apply", "/work/put-away", { scope: "step-up", limited: "collection", ...approver("Only an approver can archive tasks.", "/tasks") });
+get("tasks", "next", "/next", RETIRED);
 get("pages", "morning", "/morning", { limited: "collection", ...free }); // a redirect to / now
-get("pages", "workbench", "/workbench", free);
-get("tasks", "board", "/board", { limited: "collection" });
-get("tasks", "review", "/review", { limited: "collection" });
+get("pages", "workbench", "/workbench", RETIRED);
+get("tasks", "board", "/board", RETIRED);
+// A result keeps its own page here (/review?result=…); the bare list is retired to Tasks' Ready view.
+get("tasks", "review", "/review", { limited: "collection", ...free });
+// A push's task link (P1.4): /n/<the task's stored number>, resolved to its page under the viewer's own access.
+get("tasks", "n.task", "^\\/n\\/[1-9][0-9]{0,14}$", { limited: "unscoped", ...free, project: "none", sample: "/n/1" });
 get("settings", "spend", "/spend", { ...free, ...anyOperator("An instance operator sees spend.", "/") });
 get("settings", "settings.spend", "/settings/spend", { ...free, ...anyOperator("An instance operator sets spending limits.", "/settings") });
 get("pages", "ledger", "/ledger", { limited: "unscoped", ...free });
 get("pages", "activity", "/activity", { limited: "collection", ...free }); // a redirect to / now (Home has the summary)
-get("tasks", "done", "/done", { limited: "collection", ...free }); // a redirect to the Tasks list's Finished view now
+get("tasks", "done", "/done", RETIRED);
 get("settings", "mode", "/mode");
 get("people", "people.page", "/people", { limited: "unscoped", ...free });
 get("pages", "system", "/system", free);
 // Where every "Connect a builder" leads: read-only, open to a project-limited person (the handler shows only a visible project).
 get("pages", "start-builder", "/start-builder", { limited: "unscoped", ...free });
-get("tasks", "tasks", "/tasks", { limited: "collection", ...free }); // a redirect to /work now: never sent to the project opener first
-get("tasks", "queue", "/queue");
+get("tasks", "tasks", "/tasks", { limited: "collection", ...free });
+get("tasks", "queue", "/queue", RETIRED);
 get("pages", "peek", "/peek", free);
 get("pages", "agents", "/agents", { limited: "unscoped", ...free });
 // The Agents view's Live grid (docs/plans/agents-view.md §3): read-only, every request filtered to what the viewer may see.
@@ -714,6 +725,7 @@ export function assertRouteTable(routes: readonly RouteDeclaration[] = ROUTES): 
     if (route.callers.length === 0) throw new Error(`route table: ${route.id} admits no caller`);
     if ((route.role === "any") !== (route.roleRefusal === undefined)) throw new Error(`route table: ${route.id} role and its refusal go together`);
     if (route.role !== "any" && route.stage !== "console") throw new Error(`route table: ${route.id} edge routes prove roles in their protocol`);
+    if (route.retired === true && (route.method !== "GET" || route.stage !== "console")) throw new Error(`route table: ${route.id} a retired page is a console GET`);
     const test = new RegExp(route.pattern);
     if (!test.test(route.sample)) throw new Error(`route table: ${route.id} does not match its sample ${route.sample}`);
     const method = route.method === "GET,HEAD" ? "GET" : route.method;

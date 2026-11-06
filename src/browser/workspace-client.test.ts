@@ -225,7 +225,7 @@ test("the workspace room's changes read again; an unchanged read neither replace
 test("a page without a docked chat reads when its workspace room speaks, never on a timer, and not while hidden", async () => {
   vi.useFakeTimers();
   const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
-  const page = (seconds: number): BrowserWorkspace => ({ ...fixture(), path: "/work", refreshUrl: "/work", conversation: null, pageHtml: "<h1>Tasks</h1>", refreshSeconds: seconds });
+  const page = (seconds: number): BrowserWorkspace => ({ ...fixture(), path: "/tasks", refreshUrl: "/tasks", conversation: null, pageHtml: "<h1>Tasks</h1>", refreshSeconds: seconds });
   const fetcher = vi.fn<typeof fetch>().mockImplementationOnce(async () => tagged(page(10))).mockImplementation(async () => unchanged());
   vi.stubGlobal("fetch", fetcher);
   await workspaceProbe(page(30));

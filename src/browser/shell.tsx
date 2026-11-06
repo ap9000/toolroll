@@ -23,7 +23,7 @@ export function needsOf(workspace: BrowserWorkspace): Needs {
   // A server without the field: the count the Home row carries (the same Tasks count).
   const home = workspace.navigation.find(item => item.label === "Home" || item.label === "Tasks");
   const count = home?.count ?? 0;
-  return { count, saturated: false, scope: null, label: home?.countLabel ?? `${count} ${count === 1 ? "needs" : "need"} you`, href: "/work?view=needs-you" };
+  return { count, saturated: false, scope: null, label: home?.countLabel ?? `${count} ${count === 1 ? "needs" : "need"} you`, href: "/tasks?view=needs-you" };
 }
 
 /**

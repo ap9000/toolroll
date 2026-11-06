@@ -587,7 +587,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     ? <KLinkButton variant="primary" label={view.status.action.label} href={view.status.action.href} /> : null;
   return <div data-kit-page data-task-page={view.id}>
     <div className="k-doc" onClick={inPage}>
-      <KDocHeader back={["/work", "Tasks"]} title={view.title} meta={meta}
+      <KDocHeader back={["/tasks", "Tasks"]} title={view.title} meta={meta}
         right={<nav className="k-acts so-task-tools" aria-label="Task tools">
           {record !== null && <KLinkButton variant="ghost" sm className="k-desk-only" label={record.label} href={record.href} />}
           <KButton ref={detailsButton} variant="ghost" sm lead="panel" label="Details" className="k-desk-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} data-open-details="" />

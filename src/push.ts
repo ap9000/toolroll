@@ -235,14 +235,18 @@ export const PUSH_WORDS: Record<PushClass, { title: string; body: string }> = {
 
 // `/approve/<n>`: a release's opaque locator (a task ref number: no version, commit or branch), resolved by the console.
 const RELEASE_LINK = /^\/approve\/[0-9]{1,15}$/;
-const LINK_SHAPES = [/^\/next$/, /^\/review$/, /^\/system$/, /^\/routines$/, /^\/routines\/[0-9]{1,15}$/, /^\/d\/[0-9]{1,15}$/, /^\/r\/[0-9]{1,15}$/, RELEASE_LINK];
+/** The relative links a push may carry (docs/plans/plain-toolroll.md P1.4): every shape an older worker took, kept for
+ * good (/next and /review now redirect to Home and Tasks' Ready view; the rest keep their pages), then Home, Tasks'
+ * Ready and Board views, and a task by its stored number (/n/<n>, resolved under the viewer's own access). */
+export const LINK_SHAPES: readonly RegExp[] = [/^\/next$/, /^\/review$/, /^\/system$/, /^\/routines$/, /^\/routines\/[0-9]{1,15}$/, /^\/d\/[0-9]{1,15}$/, /^\/r\/[0-9]{1,15}$/, RELEASE_LINK,
+  /^\/$/, /^\/tasks\?view=ready$/, /^\/tasks\?view=board$/, /^\/n\/[1-9][0-9]{0,14}$/];
 const CLASS_FALLBACK: Record<PushClass, string> = {
-  decision: "/next",
-  pick: "/next",
-  merge: "/review",
-  attention: "/next",
-  progress: "/next",
-  release: "/next",
+  decision: "/",
+  pick: "/",
+  merge: "/tasks?view=ready",
+  attention: "/",
+  progress: "/",
+  release: "/",
 };
 
 /** Static words and machine-minted numbers only — re-proved at send time. */

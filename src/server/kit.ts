@@ -287,7 +287,7 @@ export const card = (options: { href: string; title: string; meta: HtmlValue }):
 export function notFound(path: string, options: { title?: string; text?: string } = {}): Html {
   return html`${pageHeader("Not found")}<div class="k-nf">${empty({
     title: options.title ?? NOT_FOUND.title(path), text: options.text ?? NOT_FOUND.text,
-    action: acts(btn("Go to Home", { sm: true, href: "/" }), btn("Open Tasks", { sm: true, variant: "ghost", href: "/work" })),
+    action: acts(btn("Go to Home", { sm: true, href: "/" }), btn("Open Tasks", { sm: true, variant: "ghost", href: "/tasks" })),
   })}</div>`;
 }
 

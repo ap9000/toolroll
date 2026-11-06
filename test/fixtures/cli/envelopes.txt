@@ -4151,7 +4151,7 @@ $ contract --commands --json → 0
         {
           "name": "finish",
           "takesValue": false,
-          "meaning": "accept and finish: task complete's exact-receipt completion; --json and scoped agents pass --digest"
+          "meaning": "accept the result and finish the task: task complete's exact-receipt completion; --json and scoped agents pass --digest"
         },
         {
           "name": "digest",
@@ -5739,6 +5739,7 @@ $ task list --json → 0
   "totals": {
     "all": 2,
     "needs-you": 2,
+    "ready": 0,
     "running": 0,
     "queued": 0,
     "completed": 0,
@@ -5991,6 +5992,7 @@ $ task list --view archived --json → 0
   "totals": {
     "all": 2,
     "needs-you": 2,
+    "ready": 0,
     "running": 0,
     "queued": 0,
     "completed": 0,

@@ -260,8 +260,10 @@ await journey("console", SCRIPTED, "A wrong password is refused, and a signed-ou
 });
 
 await journey("pages", SCRIPTED, "Every main page opens without an error, in the one workspace look, on desktop and on a phone", [], async () => {
-  const paths = ["/chat", "/work", "/tasks", "/tasks/new", "/projects", "/flows", `/settings/knowledge?repo=${encodeURIComponent(repo)}`, "/settings", "/settings/models", "/settings/skills", `/settings/tools?repo=${encodeURIComponent(repo)}`, "/recipes",
-    "/inbox", "/board", "/next", "/done", "/system", "/workbench", "/code", "/kits", "/settings/lead/subagents", "/fleet", "/people"];
+  const paths = ["/chat", "/", "/tasks", "/tasks?view=board", "/tasks?view=ready", "/tasks?view=order", "/tasks?scope=all", "/tasks/new", "/projects", "/flows", `/settings/knowledge?repo=${encodeURIComponent(repo)}`, "/settings", "/settings/models", "/settings/skills", `/settings/tools?repo=${encodeURIComponent(repo)}`, "/recipes",
+    "/tasks?view=done", "/system", "/code", "/kits", "/settings/lead/subagents", "/fleet", "/people"];
+  // Retired pages (docs/plans/plain-toolroll.md P1.4) answer with a permanent redirect to their place on Home or Tasks.
+  const retired = { "/work": "/tasks", "/inbox": "/", "/next": "/", "/workbench": "/tasks?scope=all", "/board": "/tasks?view=board", "/queue": "/tasks?view=order", "/review": "/tasks?view=ready", "/done": "/tasks?view=done" };
   const broken = [];
   const phone = await signIn("sam", { width: 390, height: 844 }, "dark");
   for (const path of paths) {
@@ -281,6 +283,13 @@ await journey("pages", SCRIPTED, "Every main page opens without an error, in the
       }
     }
   }
+  for (const [from, to] of Object.entries(retired)) {
+    const answer = await page.request.get(`${base}${from}`, { maxRedirects: 0 });
+    if (answer.status() !== 301 || answer.headers()["location"] !== to) broken.push(`${from}: ${answer.status()} → ${answer.headers()["location"]}`);
+  }
+  // An old link on the phone (a bookmark, an old push) lands on its place.
+  await phone.goto(`${base}/next`);
+  if (new URL(phone.url()).pathname !== "/") broken.push(`an old /next link landed on ${phone.url()}`);
   // A page that doesn't exist is still a page in the workspace, not bare text.
   const missing = await page.goto(`${base}/no-such-page`);
   await page.locator("[data-workspace-shell]").waitFor({ state: "attached", timeout: 5_000 }).catch(() => undefined);
@@ -499,7 +508,7 @@ await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown c
   if (csv.status() !== 200 || !(await csv.text()).includes("time_utc,source,role,project,person")) throw new Error(`the CSV: ${csv.status()}`);
   // Tasks folds usage (the limit, and the plan's windows once Claude has run here) to one line; its link opens Spend,
   // where the limit has its meter and the plan's windows are tiles as Claude said them.
-  await page.goto(`${base}/work`);
+  await page.goto(`${base}/tasks`);
   const usage = page.locator("[data-usage-summary]");
   await usage.waitFor({ timeout: 15_000 });
   if (!/\d+%/.test(await usage.innerText())) throw new Error(`the usage line: ${await usage.innerText()}`);
@@ -535,7 +544,7 @@ await journey("console", SCRIPTED, "Archive old tasks: Needs you → Archive old
   const archivedNow = () => rows("SELECT r.external_id id FROM task_archive a JOIN task_ref r ON r.id = a.task_ref ORDER BY id").map(one => one.id);
   // A task's row in the Tasks list (the whole row is its link).
   const taskRow = id => page.locator(`.k-row:has(a.k-row-t[href="/t/${id}"])`);
-  await page.goto(`${base}/work?view=needs-you`);
+  await page.goto(`${base}/tasks?view=needs-you`);
   await taskRow("tidy-old-copy").first().waitFor({ timeout: 15_000 });
   // Archive old tasks is in the list's task tools menu.
   await page.locator('button[aria-label="More task tools"]:visible').first().click();
@@ -549,20 +558,20 @@ await journey("console", SCRIPTED, "Archive old tasks: Needs you → Archive old
   const password = preview.locator('input[name="password"]');
   if (await password.count() > 0) await password.fill(w.passwords.alex);
   await Promise.all([page.waitForNavigation(), preview.locator("button.kit-save").click()]);
-  if (!page.url().endsWith("/work?view=archived")) throw new Error(`after putting away: ${page.url()} — ${(await page.locator("body").innerText()).slice(0, 300)}`);
+  if (!page.url().endsWith("/tasks?view=archived")) throw new Error(`after putting away: ${page.url()} — ${(await page.locator("body").innerText()).slice(0, 300)}`);
   if (JSON.stringify(archivedNow()) !== JSON.stringify(["tidy-old-copy"])) throw new Error(`put away: ${JSON.stringify(archivedNow())}`);
   await taskRow("tidy-old-copy").first().waitFor({ timeout: 15_000 });
   if (!/Archived by alex: Finished/.test(await page.locator("body").innerText())) throw new Error("Archived doesn't say who put it away and why");
   await shot("put-away-archived");
-  await page.goto(`${base}/work?view=needs-you`);
+  await page.goto(`${base}/tasks?view=needs-you`);
   await page.locator("[data-task-list], .k-empty").first().waitFor({ timeout: 15_000 });
   if (await taskRow("tidy-old-copy").count() !== 0) throw new Error("a put-away task is still in Needs you");
-  await page.goto(`${base}/work?view=archived`);
+  await page.goto(`${base}/tasks?view=archived`);
   await Promise.all([page.waitForNavigation(), taskRow("tidy-old-copy").locator('[data-tidy-act="restore"] button').first().click()]);
   if (archivedNow().length !== 0) throw new Error(`Restore left: ${JSON.stringify(archivedNow())}`);
   // The same preview on a phone.
   const phone = await alexPhone();
-  await phone.goto(`${base}/work/put-away`);
+  await phone.goto(`${base}/tasks/archive`);
   await phone.locator("form#put-away").waitFor({ timeout: 15_000 });
   await settle(phone);
   await phone.screenshot({ path: join(w.out, "put-away-preview-phone.png") });

@@ -1689,10 +1689,10 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       expect(chat).toContain(`data-task="${root}" data-execution="${child}"`);
       expect(chat).toContain(`data-execution="${child}"`);
       expect(chat).toContain(`action="/t/${child}/approve"`);
-      const work = await read("/work");
+      const work = await read("/tasks");
       expect(work.match(new RegExp(`class="work-row" data-task="${root}"`, "g"))).toHaveLength(1);
       expect(work).not.toContain(`class="work-row" data-task="${child}"`);
-      expect(await read("/work")).not.toContain(`href="/t/${child}"`);
+      expect(await read("/tasks")).not.toContain(`href="/t/${child}"`);
       const form = new RegExp(`<form method="post" action="/t/${child}/approve"[\\s\\S]*?</form>`).exec(chat)![0];
       const digest = /name="digest" value="([^"]+)"/.exec(form)![1]!;
       const nonce = /name="nonce" value="([^"]+)"/.exec(form)![1]!;
@@ -1815,7 +1815,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(await read(`/chat?task=${root}`)).not.toContain(`action="/t/${child}/approve"`);
     plannerKeptTerms(store, child);
     expect(await read(`/chat?task=${root}`)).toContain(`action="/t/${child}/approve"`);
-    expect(await read("/work")).toContain(`data-task="${root}"`);
+    expect(await read("/tasks")).toContain(`data-task="${root}"`);
     await post(cookie, `/chat/proposal/${revise.id}/confirm`, { csrf });
     expect(store.taskFamilyOf(root, [repo], false)?.versions).toHaveLength(2);
     expect(store.allDiffComments(run)).toHaveLength(3);
@@ -2471,7 +2471,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const childRef = store.lookupRef(child)!.id;
     const line = async () => /<p class="result-revision" data-result-revision="[^"]+" data-result-revision-approved="([01])" data-tone="([a-z]+)"><strong>Revision<\/strong> <a href="[^"]+">[^<]*<\/a> <span class="meta">· ([^<]*)<\/span><\/p>/.exec(await read(`/r/${run}`));
     // The Work row names the assignment; the selected result still names the exact revision state.
-    const rowWords = async () => /<span class="status-label">([^<]*)<\/span>/.exec((await read("/work?view=all")).split(`data-task="t-standing"`)[1] ?? "")?.[1] ?? null;
+    const rowWords = async () => /<span class="status-label">([^<]*)<\/span>/.exec((await read("/tasks?view=all")).split(`data-task="t-standing"`)[1] ?? "")?.[1] ?? null;
     // Planned first: nothing to approve until the plan is updated (this fixture's worker is stale, and it says so).
     // The revision's standing is its shared headline (task-status.ts).
     expect((await line())?.[3]).toBe("Needs you");

@@ -820,7 +820,7 @@ export type BrowserHomeView = {
   project: string | null;
   scopes: { key: string; label: string; href: string; active: boolean }[] | null;
   counts: { key: 'needs' | 'running' | 'queued' | 'finished'; label: string; value: number; href: string }[];
-  groups: { key: 'decide' | 'review' | 'unblock' | 'running'; label: string; rows: BrowserHomeRow[] }[];
+  groups: { key: 'decide' | 'review' | 'unblock' | 'running' | 'waiting'; label: string; rows: BrowserHomeRow[] }[];
   /** More waits than the list shows: open them all in Tasks. */
   more: { count: number; href: string } | null;
   newTask: string;
@@ -914,7 +914,7 @@ export function browserProjectsOf(projects: readonly { name: string; path: strin
   return projects.flatMap(project => {
     if (seen.has(project.path)) return [];
     seen.add(project.path);
-    return [{ name: project.name, path: project.path, href: `/work?project=${encodeURIComponent(project.path)}`,
+    return [{ name: project.name, path: project.path, href: `/tasks?project=${encodeURIComponent(project.path)}`,
       knowledgeHref: `/settings/knowledge?repo=${encodeURIComponent(project.path)}` }];
   });
 }
@@ -927,8 +927,8 @@ export function browserNavigationOf(path: string, project: string | null = null,
   return [
     { label: 'Home', href: '/', active: pathname === '/' || pathname === '/chat' || under('/d', '/activity', '/morning'),
       ...(needsYou > 0 ? { count: needsYou, ...(needsYouLabel === undefined ? {} : { countLabel: needsYouLabel }) } : {}) },
-    { label: 'Tasks', href: `/work${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
-      active: under('/work', '/tasks', '/t', '/r', '/done', '/board', '/queue', '/inbox', '/review') },
+    { label: 'Tasks', href: `/tasks${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
+      active: under('/tasks', '/t', '/r', '/review') },
     { label: 'Flows', href: '/flows', active: under('/flows', '/recipes', '/kits', '/routines') },
     { label: 'Agents', href: '/agents', active: under('/agents', '/peek', '/term', '/fleet', '/system', '/runs') },
     { label: 'Projects', href: '/projects', active: under('/projects') },

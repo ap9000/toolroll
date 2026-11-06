@@ -215,9 +215,9 @@ const ROWS: Row[] = [
   page("/t/refuted", [`${S.title} refuted`]),
   page("/t/short", [`${S.title} short`]),
   page("/", []),
-  page("/work"),
-  page("/work?view=needs-you"),
-  page("/work?layout=board"),
+  page("/tasks"),
+  page("/tasks?view=needs-you"),
+  page("/tasks?view=board"),
   page("/settings"),
 ];
 

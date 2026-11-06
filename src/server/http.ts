@@ -372,7 +372,7 @@ export function safeReturn(raw: string | null | undefined): string {
  * button can name. Nothing here is a second redirect framework: one
  * same-site path, or "/".
  */
-export const LOGIN_RETURN_PAGES = /^\/(oauth\/authorize|t\/[^/]+|r\/[1-9]\d*|code(?:\/[a-f0-9]{32}(?:\/ship)?)?|review|chat|work|board|projects|routines|recipes|fleet|settings(\/[a-z-]+)?|mode)$/;
+export const LOGIN_RETURN_PAGES = /^\/(oauth\/authorize|t\/[^/]+|r\/[1-9]\d*|code(?:\/[a-f0-9]{32}(?:\/ship)?)?|review|chat|tasks|work|board|projects|routines|recipes|fleet|settings(\/[a-z-]+)?|mode)$/;
 export function loginReturn(raw: string | null | undefined): string {
   const safe = safeReturn(raw);
   if (safe === "/") return "/";

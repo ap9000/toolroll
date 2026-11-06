@@ -1079,7 +1079,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // A project link is a read context, not a session-changing operation.
     // Prove it against both admission and the known project catalog before
     // collection queries; unknown/foreign paths reveal no work.
-    if ((route.id === 'work' || route.id === 'system') && url.searchParams.has('project')) {
+    if ((route.id === 'tasks' || route.id === 'work' || route.id === 'system') && url.searchParams.has('project')) {
       const wanted = url.searchParams.get('project') ?? '';
       if (url.searchParams.getAll('project').length !== 1 || !visible(wanted) ||
           ![...managedRepos(), ...store.listProjects().map(one => one.path)].includes(wanted)) {
@@ -1098,7 +1098,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       project = wanted;
     }
     // All projects, asked for by name on Tasks (its project filter): the rolled-up list, admission-bound as ever.
-    if (route.id === 'work' && url.searchParams.get('all') === '1' && !url.searchParams.has('project') && url.searchParams.getAll('all').length === 1) project = null;
+    // Tasks (P1.4) says every project as scope=all; an old link's all=1 still reads so.
+    if (route.id === 'tasks' && !url.searchParams.has('project') && ((url.searchParams.get('scope') === 'all' && url.searchParams.getAll('scope').length === 1)
+      || (url.searchParams.get('all') === '1' && url.searchParams.getAll('all').length === 1))) project = null;
     // Every page's Tasks count covers this one project view, whatever project the page itself shows.
     const facts = requestContext.getStore();
     if (facts !== undefined) facts.lens = project;
@@ -1113,7 +1115,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const namedProject = url.searchParams.get("project");
       if (url.searchParams.getAll("result").length !== 1 || url.searchParams.getAll("run").length > 1 || url.searchParams.getAll("project").length > 1 ||
           (namedProject !== null && (ref === null || !visible(ref.repo) || namedProject !== ref.repo))) {
-        return refuse(response, who, 404, "No such result in your projects.", "/work");
+        return refuse(response, who, 404, "No such result in your projects.", "/tasks");
       }
       if (who.via === "cookie" && ref !== null && visible(ref.repo)) project = ref.repo;
     }
@@ -1140,7 +1142,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       who.via === "cookie" && project === null && !unscopedMode &&
       route.needsProject &&
       !(route.id === "review" && url.searchParams.has("result")) &&
-      !(route.id === "board" && url.searchParams.get("scope") === "all");
+      !(route.id === "board" && url.searchParams.get("scope") === "all") && !(route.id === "tasks" && url.searchParams.get("scope") === "all");
     if (needsProject) return redirect(response, `/projects?return=${encodeURIComponent(safeReturn(url.pathname + url.search))}`);
     return dispatchConsole(route, { url, who, request, response, route, now, project, chosenProject, posted: new URLSearchParams() });
   }
@@ -1457,15 +1459,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function paletteIndexTag(project: string | null): Html {
     const admitted = project === null ? admissionList() : null;
     const entries: { label: string; href: string }[] = [
-      { label: "tasks", href: "/work" },
-      { label: "needs you", href: "/work?view=needs-you" },
-      { label: "inbox", href: "/" },
-      { label: "board", href: "/board?scope=all" },
+      { label: "tasks", href: "/tasks" },
+      { label: "needs you", href: "/tasks?view=needs-you" },
+      { label: "home", href: "/" },
+      { label: "board", href: "/tasks?view=board&scope=all" },
       { label: "queue", href: QUEUE_VIEW },
-      { label: "workbench", href: "/workbench" },
+      { label: "every project", href: "/tasks?scope=all" },
       { label: "flows", href: "/flows" },
-      { label: "done", href: "/done" },
-      { label: "review cockpit", href: "/review" },
+      { label: "finished", href: "/tasks?view=done" },
+      { label: "ready for review", href: "/tasks?view=ready" },
       { label: "fleet", href: "/fleet" },
       { label: "activity", href: "/activity" },
       { label: "action ledger", href: "/ledger" },
@@ -1480,8 +1482,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       entries.push({ label: `${one.id} — ${one.title}`, href: `/t/${encodeURIComponent(one.id)}` });
     }
     const saturated = open.length > 200;
-    const safeEntries = restricted() ? entries.filter(one => ["/work", "/work?view=needs-you", "/", "/board", "/flows", "/done", "/review", "/runs", "/projects", "/ledger"].includes(one.href) || one.href.startsWith("/t/")) : entries;
-    return jsonScript(saturated ? [...safeEntries, { label: "… more in Tasks", href: "/work" }] : safeEntries, { id: "palette-index" });
+    const safeEntries = restricted() ? entries.filter(one => ["/tasks", "/tasks?view=needs-you", "/", "/tasks?view=board", "/flows", "/tasks?view=done", "/tasks?view=ready", "/runs", "/projects", "/ledger"].includes(one.href) || one.href.startsWith("/t/")) : entries;
+    return jsonScript(saturated ? [...safeEntries, { label: "… more in Tasks", href: "/tasks" }] : safeEntries, { id: "palette-index" });
   }
 
   /**
@@ -1644,7 +1646,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         needsYou: { count: needsYou, saturated: s.chrome.inboxSaturated === true, scope: tasksProject ?? null,
           label: s.chrome.inboxLabel ?? `${needsYou} ${needsYou === 1 ? 'needs' : 'need'} you`,
           // Every project, said by name (all=1), so a session's own open project never narrows the list the count opens.
-          href: tasksProject === null ? '/work?all=1&view=needs-you' : `/work?project=${encodeURIComponent(tasksProject)}&view=needs-you` },
+          href: tasksProject === null ? '/tasks?scope=all&view=needs-you' : `/tasks?project=${encodeURIComponent(tasksProject)}&view=needs-you` },
         chats,
         // The same count per project (the rail's project rows), read from the same work index totals.
         ...(() => { if (sensitive) return {}; try { return { needsYouByProject: projectCounts(clock()).map(one => ({ path: one.repo, count: one.totals['needs-you'] })) }; } catch { return {}; } })(),
@@ -2391,7 +2393,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 export { PAGE_CSS,pinnedTheme,SENSITIVE_INPUT } from "./server/chrome.js";
 export { redactedPath,SHUTDOWN_WAIT_MS,type ServeOptions } from "./server/http.js";
 export { TASK_COMPOSER_MODES,type TaskComposerMode } from "./server/render-chat.js";
-export { inboxFingerprints,parseInboxTab,queueScript,type InboxTab } from "./server/render-pages.js";
+export { queueScript } from "./server/render-pages.js";
 export { ssoStepUps,wrongHostPage } from "./server/render-people.js";
 export { diffFileAnchor,editorFileHref,needActionOf,orderChangedFiles,plainConclusionOf,rankReviewQueue,reviewFilePriority,reviewPriorityOf,runFactsFragment,withinSignedTouches,type ReviewFileRow,type ReviewPriority,type ReviewQueueFacts } from "./server/render-results.js";
 export { decisionAnswerScript,earlierVersionsWords,revisionLineageWords,type RouteView } from "./server/render-tasks.js";

@@ -280,7 +280,7 @@ describe("c3: Run checks and Add tests work on any result", () => {
     expect(statusOf("checks-off")).toMatchObject({ headline: "Ready for review" });
     expect(statusOf("checks-off").details.find(one => one.key === "checks")!.text).toBe(`Passed on ${HEAD.slice(0, 7)}`);
     expect((await taskView("checks-off")).status!.status.headline).toBe("Ready for review");
-    const rows = (workspaceOf(await page("/work")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>).rows;
+    const rows = (workspaceOf(await page("/tasks")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>).rows;
     expect(rows.find(row => row.id === "checks-off")!.status.label).toBe("Ready for review");
   });
 
@@ -490,7 +490,7 @@ describe("checks Off are checked at release", () => {
     expect(after.receipt!.digest).toBe(before.receipt!.digest);
     expect(store.proofVerdictFor(runs["off-before-release"]!)).toEqual(proofBefore);
     // The Tasks list says the same.
-    const rows = (workspaceOf(await page("/work")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>).rows;
+    const rows = (workspaceOf(await page("/tasks")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>).rows;
     expect(rows.find(row => row.id === "off-before-release")!.status).toMatchObject({ label: "Ready for review" });
     const listed = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { root }).items.find(one => one.rootId === "off-before-release")!;
     expect(listed.status).toMatchObject({ label: "Ready for review", detail: status().sentence });

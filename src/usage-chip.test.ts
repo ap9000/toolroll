@@ -10,7 +10,7 @@ const window = (over: Partial<Parameters<typeof usageChipOf>[0][number]>) => ({ 
 
 test("the most-used window leads, with its reset", () => {
   expect(usageChipOf([window({ usedPercent: 40 }), window({ provider: "codex", window: "seven_day", usedPercent: 82, windowMinutes: 10_080, resetsAt: at(180) })], now))
-    .toMatchObject({ text: "Codex Weekly · 82% · resets 3h", tone: "warning", stale: false, href: "/work" });
+    .toMatchObject({ text: "Codex Weekly · 82% · resets 3h", tone: "warning", stale: false, href: "/tasks" });
   expect(usageChipOf([], now)).toBeNull();
 });
 

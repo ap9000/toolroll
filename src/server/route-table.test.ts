@@ -5,6 +5,7 @@
  */
 import { describe, expect, test } from "vitest";
 import { assertRouteTable, matchRoute, ROUTES, type RouteDeclaration } from "./route-table.js";
+import { RETIRED_ROUTES } from "./retired-routes.js";
 
 const consoleRoutes = ROUTES.filter(route => route.stage === "console");
 const edgeRoutes = ROUTES.filter(route => route.stage === "edge");
@@ -18,6 +19,8 @@ const LIMITED_ACCESS = {
   'home': 'collection', 'search': 'collection', 'morning': 'collection', 'activity': 'collection', 'inbox': 'collection', 'work': 'collection', 'next': 'collection',
   'work.put-away': 'collection', 'work.put-away.apply': 'collection', 'task.act.archive': 'resource', 'task.act.restore': 'resource',
   'board': 'collection', 'review': 'collection', 'ledger': 'unscoped', 'done': 'collection',
+  // Retired pages (P1.4) admit exactly as their target, Tasks, does; a push's /n/<n> resolves under the viewer's own access.
+  'queue': 'collection', 'workbench': 'collection', 'tasks.archive': 'collection', 'n.task': 'unscoped',
   'people.page': 'unscoped', 'tasks': 'collection', 'tasks.new': 'collection', 'welcome': 'collection',
   'task.page': 'resource', 'task.evidence': 'resource',
   // One-tap release approval: the sheet and the push's locator are each one task's own page, admitted by its project.
@@ -141,5 +144,52 @@ describe("the route table", () => {
     expect(matchRoute("GET", "/tasks/add", "console")).toBeNull();
     expect(matchRoute("DELETE", "/board", "console")).toBeNull();
     expect(matchRoute("HEAD", "/board", "console")).toBeNull();
+  });
+});
+
+describe("retired pages (docs/plans/plain-toolroll.md P1.4)", () => {
+  const retired = ROUTES.filter(route => route.retired === true);
+  test("every retired GET is a redirect row with a target and no page of its own; Home, Tasks and results keep theirs", () => {
+    expect(ids(retired).sort()).toEqual(["board", "done", "inbox", "next", "queue", "work", "work.put-away", "workbench"]);
+    for (const route of retired) {
+      expect(route.method, route.id).toBe("GET");
+      expect(RETIRED_ROUTES[route.id], route.id).toBeDefined();
+      // Admitted exactly as the page it leads to: never sent to the project opener first, a listing for a limited person.
+      expect(route.needsProject, route.id).toBe(false);
+      expect(route.limited, route.id).toBe("collection");
+    }
+    for (const id of ["home", "tasks", "review", "tasks.archive", "task.page"]) expect(ROUTES.find(route => route.id === id)?.retired, id).toBeUndefined();
+  });
+
+  test("the archive POST row is unchanged: its path, step-up and approver rule", () => {
+    const apply = ROUTES.find(route => route.id === "work.put-away.apply")!;
+    expect(apply).toMatchObject({ method: "POST", pattern: "^\\/work\\/put-away$", scope: "step-up", callers: ["cookie"], limited: "collection", role: "approver", roleBrowser: true });
+    expect(matchRoute("POST", "/work/put-away")?.id).toBe("work.put-away.apply");
+    expect(matchRoute("GET", "/tasks/archive")?.id).toBe("tasks.archive");
+  });
+
+  test("each redirect keeps only the keys its target knows", () => {
+    const at = (id: string, path: string) => RETIRED_ROUTES[id]!(new URL(path, "http://x"));
+    expect(at("work", "/work")).toBe("/tasks");
+    expect(at("work", "/work?view=needs-you&project=%2Fr%2Fshop&evil=1")).toBe("/tasks?project=%2Fr%2Fshop&view=needs-you");
+    expect(at("work", "/work?layout=board&state=failed")).toBe("/tasks?view=board");
+    expect(at("work", "/work?all=1&view=running")).toBe("/tasks?scope=all&view=running");
+    expect(at("work", "/work?project=a&project=b")).toBe("/tasks");
+    expect(at("inbox", "/inbox?tab=ready")).toBe("/");
+    expect(at("next", "/next?skip=d:1")).toBe("/");
+    expect(at("workbench", "/workbench?t=one")).toBe("/tasks?scope=all");
+    expect(at("board", "/board")).toBe("/tasks?view=board");
+    expect(at("board", "/board?view=order")).toBe("/tasks?view=order");
+    expect(at("board", "/board?scope=all")).toBe("/tasks?scope=all&view=board");
+    expect(at("queue", "/queue")).toBe("/tasks?view=order");
+    expect(at("done", "/done")).toBe("/tasks?view=done");
+    expect(at("review", "/review")).toBe("/tasks?view=ready");
+    expect(at("work.put-away", "/work/put-away?days=30")).toBe("/tasks/archive?days=30");
+    expect(at("work.put-away", "/work/put-away?days=../x")).toBe("/tasks/archive");
+  });
+
+  test("/n/<number> is its own row outside /t/, numbers only", () => {
+    expect(matchRoute("GET", "/n/41")?.id).toBe("n.task");
+    for (const path of ["/n/0", "/n/1x", "/n/../x", "/n/fix-the-footer", "/n/41/x"]) expect(matchRoute("GET", path)?.id, path).not.toBe("n.task");
   });
 });

@@ -44,14 +44,16 @@ const PWA_MANIFEST = JSON.stringify({
 // and the tap, only. notificationclick resolves ONLY allow-listed relative
 // paths — the payload URL is data, revalidated, never handed raw to the
 // browser (arc 3 finding 5).
-const PWA_WORKER = `// Toolroll — push only; deliberately NO fetch handler (no offline cache of an authenticated console).
-const SHAPES = [/^\\/next$/, /^\\/review$/, /^\\/system$/, /^\\/routines$/, /^\\/routines\\/[0-9]+$/, /^\\/d\\/[0-9]+$/, /^\\/r\\/[0-9]+$/, /^\\/approve\\/[0-9]+$/];
+export const PWA_WORKER = `// Toolroll — push only; deliberately NO fetch handler (no offline cache of an authenticated console).
+// Every shape an older worker took, kept for good, then Home, Tasks' Ready and Board views and a task by its number.
+const SHAPES = [/^\\/next$/, /^\\/review$/, /^\\/system$/, /^\\/routines$/, /^\\/routines\\/[0-9]+$/, /^\\/d\\/[0-9]+$/, /^\\/r\\/[0-9]+$/, /^\\/approve\\/[0-9]+$/,
+  /^\\/$/, /^\\/tasks\\?view=ready$/, /^\\/tasks\\?view=board$/, /^\\/n\\/[1-9][0-9]{0,14}$/];
 self.addEventListener("push", function (event) {
   var data = {};
   try { data = event.data ? event.data.json() : {}; } catch (e) {}
   var body = typeof data.body === "string" ? data.body : "the console needs you";
   var tag = typeof data.tag === "string" ? data.tag : "toolroll";
-  var url = typeof data.url === "string" && SHAPES.some(function (s) { return s.test(data.url); }) ? data.url : "/next";
+  var url = typeof data.url === "string" && SHAPES.some(function (s) { return s.test(data.url); }) ? data.url : "/";
   if (typeof data.waiting === "number" && data.waiting >= 0 && self.registration.setAppBadge) {
     // A count, never content. Honest no-op where unsupported.
     event.waitUntil(self.registration.setAppBadge(Math.floor(data.waiting)).catch(function () {}));
@@ -70,7 +72,7 @@ self.addEventListener("notificationclick", function (event) {
   event.notification.close();
   if (self.registration.clearAppBadge) self.registration.clearAppBadge().catch(function () {});
   var url = event.notification.data && event.notification.data.url;
-  var target = new URL(SHAPES.some(function (s) { return s.test(url); }) ? url : "/next", self.location.origin).href;
+  var target = new URL(SHAPES.some(function (s) { return s.test(url); }) ? url : "/", self.location.origin).href;
   event.waitUntil(clients.matchAll({ type: "window" }).then(function (open) {
     for (var i = 0; i < open.length; i++) { if (open[i].url === target && open[i].focus) return open[i].focus(); }
     return clients.openWindow(target);

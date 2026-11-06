@@ -484,7 +484,7 @@ export function chromeScript(): string {
     `if(ev.key==="?"){toggleHelp();ev.preventDefault();return;}` +
     `if(ev.key==="j"||ev.key==="k"){rove(ev.key==="j"?1:-1,ev);return;}` +
     `if(pending==="g"){pending=null;` +
-    `var map={b:"/board",i:"/",w:"/workbench",d:"/done",q:"/board?view=order",f:"/fleet",t:"/work",a:"/activity",p:"/projects"};` +
+    `var map={b:"/tasks?view=board",i:"/",w:"/tasks?scope=all",d:"/tasks?view=done",q:"/tasks?view=order",f:"/fleet",t:"/tasks",a:"/activity",p:"/projects"};` +
     `if(map[ev.key]){go(map[ev.key]);ev.preventDefault();}return;}` +
     `if(ev.key==="g"){pending="g";setTimeout(function(){pending=null;},800);}});` +
     `})();`
@@ -655,8 +655,8 @@ ${count !== undefined && count > 0 ? html` <span class="count badge badge-open">
   const scopeStatus = peekCounts === null
     ? null
     : html`<span class="scope-status">\
-${peekCounts.waiting > 0 ? html`<a class="hot" href="/work?view=needs-you">${peekCounts.waiting} needs you</a>` : html`<a href="/work?view=needs-you">0 needs you</a>`}\
-<a href="/runs">${peekCounts.running} live</a><a href="/board?view=order">${peekCounts.queued} queued</a></span>`;
+${peekCounts.waiting > 0 ? html`<a class="hot" href="/tasks?view=needs-you">${peekCounts.waiting} needs you</a>` : html`<a href="/tasks?view=needs-you">0 needs you</a>`}\
+<a href="/runs">${peekCounts.running} live</a><a href="/tasks?view=order">${peekCounts.queued} queued</a></span>`;
   const scopeName = effectiveScope === "project" && chrome.project !== null ? projectName(chrome.project) : "All projects";
   // The switcher (board pass): the scope's name opens a menu of every
   // enrolled project — one tap to open one, or to widen to all — as plain
@@ -701,7 +701,7 @@ ${scopeStatus}</div>`;
 ${count !== undefined && count > 0 ? html` <span${chrome.inboxLabel === undefined ? "" : html` aria-label="${chrome.inboxLabel}" title="${chrome.inboxLabel}"`} class="count badge badge-open">${count}${chrome.inboxSaturated ? "+" : ""}</span>` : ""}</a>`;
   const side = joinHtml([
     html`<aside class="side">`,
-    html`<div class="side-head"><a class="brand" href="${chrome.chat === true ? "/chat" : "/work"}"><span class="brand-long">Toolroll</span><span class="brand-short">T</span></a>`,
+    html`<div class="side-head"><a class="brand" href="${chrome.chat === true ? "/chat" : "/tasks"}"><span class="brand-long">Toolroll</span><span class="brand-short">T</span></a>`,
     ...(options.sidebarToggle === true
       ? [html`<button type="button" class="side-toggle" aria-label="collapse sidebar" aria-expanded="true" title="collapse sidebar">${strokeIcon(html`<path d="m15 18-6-6 6-6"/>`)}</button>`]
       : []),
@@ -711,7 +711,7 @@ ${count !== undefined && count > 0 ? html` <span${chrome.inboxLabel === undefine
     // gating); Work and Projects always. Every specialist tool is a dim
     // text row inside one of the two accordion groups below.
     ...(chrome.chat ? [primaryItem("chat", "/chat", "Chat")] : []),
-    primaryItem("work", "/work", "Tasks", chrome.inboxCount),
+    primaryItem("work", "/tasks", "Tasks", chrome.inboxCount),
     primaryItem("flows", "/flows", "Flows"),
     primaryItem("projects", "/projects", "Projects"),
     html`</nav>`,
@@ -755,7 +755,7 @@ ${postForm(update.dismissHref, html`<button type="submit">Dismiss</button>`, { a
   // these only below 760px; desktop keeps the sidebar untouched.
   const mobileTop = joinHtml([
     html`<header class="mobile-top">`,
-    html`<a class="brand-mini" href="${chrome.chat === true ? "/chat" : "/work"}">T</a>`,
+    html`<a class="brand-mini" href="${chrome.chat === true ? "/chat" : "/tasks"}">T</a>`,
     // On a phone the pill IS the scope row (mobile pass): the project's
     // name, its three counts, and the one /projects link at that
     // breakpoint — the scope bar hides below 760px so the header is one
@@ -792,7 +792,7 @@ ${count !== undefined && count > 0 ? html`<span class="dot-badge" role="img" ari
   const tabbar = joinHtml([
     html`<nav class="tabbar">`,
     ...(chrome.chat ? [tab("chat", "/chat", "Chat")] : []),
-    tab("work", "/work", "Tasks", chrome.inboxCount),
+    tab("work", "/tasks", "Tasks", chrome.inboxCount),
     tab("flows", "/flows", "Flows"),
     tab("projects", "/projects", "Projects"),
     html`</nav>`,
@@ -865,7 +865,7 @@ export const TO_FRONT_ICON = html`<svg viewBox="0 0 24 24" fill="none" stroke="c
 export const strokeIcon = (paths: Html | string): Html =>
   html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
 /** Where the queue lives now: the board, flipped to dispatch order. */
-export const QUEUE_VIEW = "/board?view=order";
+export const QUEUE_VIEW = "/tasks?view=order";
 export const FOLDER_PATHS = html`<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>`;
 export const CHAT_PATHS = html`<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>`;
 export const WORK_PATHS = html`<path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="m4 6 1 1 2-2"/><path d="m4 12 1 1 2-2"/><path d="m4 18 1 1 2-2"/>`;
@@ -897,11 +897,11 @@ export function workToolRows(scoped = false, _offersChat = false, offersCode = f
     // D5: coding sessions are deprecated; /code still opens this release, but nothing links to it.
     // Live terminals: an operator's own Claude Code, Codex or shell, in a real terminal (docs/plans/live-terminal.md).
     ...(offersCode ? [{ key: "code" as const, href: "/term", label: "Live", hint: "your own terminals: Claude Code, Codex or a shell" }] : []),
-    { key: "inbox", href: "/inbox", label: "Inbox", hint: "questions, approvals, and repairs to act on" },
-    { key: "board", href: "/board", label: "Board", hint: "lanes by state, with the order view" },
-    { key: "tasks", href: "/work", label: "Task list", hint: "everything, filterable by state" },
+    { key: "inbox", href: "/", label: "Home", hint: "what needs you, what runs, and what waits" },
+    { key: "board", href: "/tasks?view=board", label: "Board", hint: "lanes by state, with the order view" },
+    { key: "tasks", href: "/tasks", label: "Task list", hint: "everything, filterable by state" },
     { key: "recipes", href: "/recipes", label: "Recipes", hint: "choose, customize, and reuse a workflow" },
-    { key: "workbench", href: "/workbench", label: "Portfolio", hint: "every project and live build in one place" },
+    { key: "workbench", href: "/tasks?scope=all", label: "Every project", hint: "every project's tasks in one list" },
     { key: "ledger", href: "/ledger", label: "Action ledger", hint: "who acted, what happened, and the result" },
     { key: "spend", href: "/spend", label: "Spend", hint: "what agent work cost, and monthly budgets" },
   ];
@@ -927,8 +927,8 @@ export const SETTINGS_KEYS = new Set<Chrome["active"]>(["settings", "fleet", "ca
 export function buildsViews(current: "builds" | "done" | "review" | "activity"): Html {
   const views: [typeof current, string, string][] = [
     ["builds", "/runs", "builds"],
-    ["done", "/done", "done"],
-    ["review", "/review", "review"],
+    ["done", "/tasks?view=done", "done"],
+    ["review", "/tasks?view=ready", "review"],
     ["activity", "/activity", "activity"],
   ];
   return html`<p class="meta board-view">${joinHtml(views.map(([key, href, label]) => (key === current ? html`<strong>${label}</strong>` : html`<a href="${href}">${label}</a>`)), " \u00b7 ")}</p>`;

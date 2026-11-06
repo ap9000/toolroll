@@ -1575,7 +1575,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect((await fetch(url(`/review?result=t-broke&run=${failedRun}`), { headers: { cookie } })).status).toBe(200);
     expect((await fetch(url(`/r/${failedRun}`), { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe(`/review?result=t-broke&run=${failedRun}`);
     // The Tasks list says the same, in vermilion's problem line.
-    const rows = (workspaceOf(await (await fetch(url("/work"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTasksView).rows;
+    const rows = (workspaceOf(await (await fetch(url("/tasks"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTasksView).rows;
     expect(rows.find(row => row.id === "t-broke")?.detail).toBe(said);
     // No "review its incident", said once: Task options names the reason without its own Review and retry link, and offers no second ink retry.
     const options = view.manage.find(one => one.id === "task-diagnostics")!.html;
@@ -1641,7 +1641,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(record).toContain(`id="run-reason-detail"`);
     expect(record).toContain("TypeError: Cannot read properties of undefined (reading &#39;id&#39;)");
 
-    const rows = (workspaceOf(await (await fetch(url("/work"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTasksView).rows;
+    const rows = (workspaceOf(await (await fetch(url("/tasks"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTasksView).rows;
     expect(rows.find(row => row.id === "t-later")?.detail).toBe("No reason was recorded for this attempt.");
     const family = rows.filter(row => row.id === "t-fam" || row.id === "t-fam-r");
     expect(family.length).toBe(1);

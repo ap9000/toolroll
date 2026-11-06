@@ -509,7 +509,7 @@ function recordAttempt(store: Store, repo: string, attempt: { run: number; attem
         store.enqueueNotification({ dedupeKey: `github-nightly-failed:${Number(opened.lastInsertRowid)}`, kind: "github-nightly-failed", subject: "GitHub's nightly failed on main",
           body: `Nightly checks failed: ${lane}, on main at ${attempt.sha.slice(0, 7)}. Releases wait until it passes again.`, pushClass: "attention",
           // The project it belongs to, so its people's chats may carry it (Codex round 1, finding 8).
-          source: { project: repo }, link: "/board" }, now);
+          source: { project: repo }, link: "/tasks?view=board" }, now);
       }
     }
   });
@@ -870,7 +870,7 @@ export function nightlyNeedsYou(store: Store, shown: (repo: string) => boolean):
     for (const failure of openFailures(store, repo)) {
       needs.push({ key: `github-nightly-${failure.id}`, repo, title: `Nightly checks failed: ${laneName(store, repo, failure.laneId)}`,
         reason: `On main at ${failure.sha.slice(0, 7)}. Releases wait until it passes again.`,
-        href: slug === null ? "/board" : `https://github.com/${slug}/actions/runs/${failure.ghRun}/job/${failure.jobId}`, since: failure.openedAt });
+        href: slug === null ? "/tasks?view=board" : `https://github.com/${slug}/actions/runs/${failure.ghRun}/job/${failure.jobId}`, since: failure.openedAt });
     }
   }
   // The plane's own nightly check of main (nightly-check.ts): one item per failed check, its items summed up.
@@ -883,7 +883,7 @@ export function nightlyNeedsYou(store: Store, shown: (repo: string) => boolean):
     const items = store.handle.prepare("SELECT item FROM main_check_failure WHERE repo = ? AND run = ? AND cleared_at IS NULL ORDER BY item").all(repo, Number(row["run"])).map(one => String(one["item"]));
     needs.push({ key: `main-check-${Number(row["run"])}`, repo, title: `Nightly check of main failed: ${failureSummary(items)}`,
       reason: `On main at ${String(row["sha"]).slice(0, 7)}. Composed releases wait until a full check passes.`,
-      href: task === null ? "/board" : `/t/${encodeURIComponent(task)}`, since: String(row["since"]) });
+      href: task === null ? "/tasks?view=board" : `/t/${encodeURIComponent(task)}`, since: String(row["since"]) });
   }
   return needs.sort((a, b) => a.since.localeCompare(b.since));
 }

@@ -66,7 +66,7 @@ test("a worker that stopped heartbeating reads offline", () => {
 });
 
 test("with no workers the strip says where work waits", () => {
-  expect(render([], [])).toContain("No workers yet");
+  expect(render([], [])).toContain("No builders yet");
 });
 
 test("the building card carries its steps, and every card a stable key for the swap", () => {

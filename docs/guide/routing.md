@@ -123,7 +123,7 @@ as an ordinary proposal. `toolroll flows show` prints a standing order's
 terms; `toolroll flows trigger pause|resume` (or **Resume** on the flow canvas)
 stops and starts its schedule.
 
-Every approval surface — the task page, the focused chat, and `/next` — shows
+Every approval surface — the task page and the focused chat — shows
 the same concise line of exact agents above the password, with why stronger
 agents run explained in plain words and the runtime limits one tap away; changing
 any agent invalidates the approval every surface signed under. Where no yes

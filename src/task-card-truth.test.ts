@@ -238,7 +238,7 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
     }
 
     // ---- the Tasks list row: the same headline, never a pass the card doesn't show
-    const list = workspaceOf(await page("/work")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>;
+    const list = workspaceOf(await page("/tasks")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>;
     const listed = list.rows.find(item => item.id === one.id);
     expect(listed, `${one.id}: listed`).toBeDefined();
     expect(listed!.status.label, `${one.id}: list headline`).toBe(status.headline);
@@ -270,7 +270,7 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
 test("no surface claims a pass beside a check row that says otherwise", async () => {
   const CLAIM = /\b(?:check|checks|command) passed\b|\bpassed against\b|\bPassed on\b|verified (?:the|this) result/i;
   const violations: string[] = [];
-  const list = workspaceOf(await page("/work")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>;
+  const list = workspaceOf(await page("/tasks")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>;
   for (const one of CASES) {
     const task = workspaceOf(await page(`/t/${one.id}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
     const row = task.status!.status.details.find(detail => detail.key === "checks")?.text ?? "";

@@ -9,12 +9,12 @@ import { REPLACED_THREAD_DIVIDER, WorkspaceApp } from "./app.js";
 const home: BrowserHome = {
   agents: [{ runId: 3, taskId: "t-1", title: "Fix the login button", phase: "Building", agent: "Claude", since: "2026-10-05T10:00:00.000Z", href: "/t/t-1" }],
   counts: [
-    { key: "working", label: "Working now", value: 1, href: "/work?view=running" },
-    { key: "waiting", label: "Waiting on you", value: 0, href: "/work?view=needs-you" },
-    { key: "ready", label: "Ready to review", value: 0, href: "/work?view=needs-you" },
-    { key: "done", label: "Done this week", value: 2, href: "/work?view=completed" },
+    { key: "working", label: "Working now", value: 1, href: "/tasks?view=running" },
+    { key: "waiting", label: "Waiting on you", value: 0, href: "/tasks?view=needs-you" },
+    { key: "ready", label: "Ready to review", value: 0, href: "/tasks?view=needs-you" },
+    { key: "done", label: "Done this week", value: 2, href: "/tasks?view=completed" },
   ],
-  planUse: [], catchUp: [], allHref: "/work",
+  planUse: [], catchUp: [], allHref: "/tasks",
 } as unknown as BrowserHome;
 
 const message = (id: number, role: "operator" | "assistant", text: string, extra: Partial<BrowserMessage> = {}): BrowserMessage =>

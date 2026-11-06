@@ -260,7 +260,7 @@ function Computers({ computers, terminals }: { computers: BrowserComputers; term
         meta={<span>{one.projects.length > 0 ? one.projects.join(", ") : "No projects yet"}</span>}
         action={<KButton sm label="Details" aria-haspopup="dialog" onClick={event => setOpen({ name: one.name, trigger: event.currentTarget })} />} />
     </div>)}
-    {computers.shared > 0 && <p className="agents-line">{plural(computers.shared, "task waits", "tasks wait")} in the shared queue for any free computer. <a className="k-link" href="/board?view=order">Reserve one for a computer</a></p>}
+    {computers.shared > 0 && <p className="agents-line">{plural(computers.shared, "task waits", "tasks wait")} in the shared queue for any free computer. <a className="k-link" href="/tasks?view=order">Reserve one for a computer</a></p>}
     {adding && <RegisterForm onCancel={() => setAdding(false)} />}
     {terminals && <p className="agents-line k-phone-only"><a className="k-link" href="/agents/terminals">Terminals on these computers</a></p>}
     {open !== null && shown !== null && <ComputerDrawer one={shown} computers={computers} trigger={open.trigger} onClose={() => setOpen(null)} />}
@@ -319,7 +319,7 @@ function AgentsList({ view }: { view: BrowserAgentsView }) {
     {view.computerSaid && <div className="agents-pad" data-computer-said>{view.computerSaid.tone === "error" ? <KNotice>{view.computerSaid.text}</KNotice> : <KInfoLine>{view.computerSaid.text}</KInfoLine>}</div>}
     {offline.map(one => <div key={one.name} className="agents-pad"><OfflineBox one={one} others={alive} /></div>)}
     {needs.length === 0 && working.length === 0 && <div data-agents-empty><KEmpty title="No agents are working." text="An agent starts when you approve a plan. What finished in the window you pick shows below."
-      action={<KLinkButton sm href="/work" label="Open Tasks" />} /></div>}
+      action={<KLinkButton sm href="/tasks" label="Open Tasks" />} /></div>}
     {needs.length > 0 && <Group id="needs-you" label="Needs you" rows={needs} ink />}
     {working.length > 0 && <Group id="working" label="Working" rows={working} />}
     <Group id="finished" label={<><span className="k-desk-only">Finished in {WINDOW_WORDS[range]}</span><span className="k-phone-only">Finished</span></>} rows={finished}

@@ -64,7 +64,7 @@ describe("Put away old tasks on the console", () => {
 
   test("the preview lists each task with why, binds a digest, and changes nothing", async () => {
     const alex = await loginAs("alex", alexToken);
-    const response = await page(alex, "/work/put-away");
+    const response = await page(alex, "/tasks/archive");
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain("Old routine runs");
@@ -76,16 +76,16 @@ describe("Put away old tasks on the console", () => {
     // The archive page names no CLI digest line (docs/plans/plain-toolroll.md: deleted in Phase 1).
     expect(html).not.toContain("toolroll task tidy --apply --digest");
     expect(archived()).toEqual([]);
-    expect((await page(await loginAs("vera", veraToken), "/work/put-away")).status).toBe(403);
+    expect((await page(await loginAs("vera", veraToken), "/tasks/archive")).status).toBe(403);
   });
 
   test("a viewer, a bad form token, a token caller, a wrong password, a stale digest and a task outside the list change nothing", async () => {
     const alex = await loginAs("alex", alexToken);
-    const html = await (await page(alex, "/work/put-away")).text();
+    const html = await (await page(alex, "/tasks/archive")).text();
     const csrf = csrfOf(html), digest = digestOf(html);
     const good: [string, string][] = [["csrf", csrf], ["digest", digest], ["days", "14"], ["task", "site-oct-28"], ["password", alexToken]];
     const vera = await loginAs("vera", veraToken);
-    const veraCsrf = csrfOf(await (await page(vera, "/work")).text());
+    const veraCsrf = csrfOf(await (await page(vera, "/tasks")).text());
     expect((await post(vera, "/work/put-away", good.map(([k, v]) => [k, k === "csrf" ? veraCsrf : k === "password" ? veraToken : v]))).status).toBe(403);
     expect((await post(alex, "/work/put-away", good.map(([k, v]) => [k, k === "csrf" ? "0".repeat(64) : v]))).status).toBe(403);
     expect((await post("", "/work/put-away", good, { authorization: `Bearer alex:${alexToken}` })).status).toBe(403);
@@ -102,15 +102,15 @@ describe("Put away old tasks on the console", () => {
 
   test("puts away exactly the ticked tasks, then Archived shows who and why, and Restore brings one back", async () => {
     const alex = await loginAs("alex", alexToken);
-    const html = await (await page(alex, "/work/put-away")).text();
+    const html = await (await page(alex, "/tasks/archive")).text();
     const done = await post(alex, "/work/put-away", [["csrf", csrfOf(html)], ["digest", digestOf(html)], ["days", "14"], ["task", "site-oct-28"], ["task", "site-oct-30"], ["password", alexToken]]);
     expect(done.status).toBe(303);
-    expect(done.headers.get("location")).toBe("/work?view=archived");
+    expect(done.headers.get("location")).toBe("/tasks?view=archived");
     expect(archived()).toEqual(["site-oct-28", "site-oct-30"]);
     expect(archiveOf(store, "site-oct-28")).toMatchObject({ by: "alex", byKind: "person", rule: "routine" });
-    const list = await (await page(alex, "/work?view=archived")).text();
+    const list = await (await page(alex, "/tasks?view=archived")).text();
     expect(list).toContain("Archived by alex: A newer run, “Is the site current? — Oct 31”, replaces it.");
-    const needs = await (await page(alex, "/work?view=needs-you")).text();
+    const needs = await (await page(alex, "/tasks?view=needs-you")).text();
     expect(needs).not.toContain('data-task="site-oct-28"');
     const taskPage = await (await page(alex, "/t/site-oct-30")).text();
     expect(taskPage).toContain("data-archived");
@@ -121,27 +121,27 @@ describe("Put away old tasks on the console", () => {
 
   test("Put away one task: an approver's browser act; a viewer, a bad form token and a token caller are refused", async () => {
     const alex = await loginAs("alex", alexToken);
-    const csrf = csrfOf(await (await page(alex, "/work")).text());
+    const csrf = csrfOf(await (await page(alex, "/tasks")).text());
     const vera = await loginAs("vera", veraToken);
-    const veraCsrf = csrfOf(await (await page(vera, "/work")).text());
+    const veraCsrf = csrfOf(await (await page(vera, "/tasks")).text());
     expect((await post(vera, "/t/site-oct-31/archive", [["csrf", veraCsrf]])).status).toBe(403);
     expect((await post(alex, "/t/site-oct-31/archive", [["csrf", "0".repeat(64)]])).status).toBe(403);
     expect((await post("", "/t/site-oct-31/archive", [["csrf", csrf]], { authorization: `Bearer alex:${alexToken}` })).status).toBe(403);
     expect(archived()).toEqual([]);
-    const done = await post(alex, "/t/site-oct-31/archive", [["csrf", csrf], ["return", "/work?view=needs-you"]]);
+    const done = await post(alex, "/t/site-oct-31/archive", [["csrf", csrf], ["return", "/tasks?view=needs-you"]]);
     expect(done.status).toBe(303);
-    expect(done.headers.get("location")).toBe("/work?view=needs-you");
+    expect(done.headers.get("location")).toBe("/tasks?view=needs-you");
     expect(archiveOf(store, "site-oct-31")).toMatchObject({ by: "alex", reason: "Put away by hand" });
     expect((await post(alex, "/t/site-oct-31/archive", [["csrf", csrf]])).status).toBe(409);
     expect((await post(alex, "/t/site-oct-31/restore", [["csrf", csrf], ["return", "https://evil.example/"]])).headers.get("location")).toBe("/t/site-oct-31");
   });
 
   test("the Tasks page offers Put away old tasks and Put away to an approver only", async () => {
-    const alex = await (await page(await loginAs("alex", alexToken), "/work?view=needs-you")).text();
-    expect(alex).toContain('href="/work/put-away"');
+    const alex = await (await page(await loginAs("alex", alexToken), "/tasks?view=needs-you")).text();
+    expect(alex).toContain('href="/tasks/archive"');
     expect(alex).toContain('action="/t/site-oct-28/archive"');
-    const vera = await (await page(await loginAs("vera", veraToken), "/work?view=needs-you")).text();
-    expect(vera).not.toContain('href="/work/put-away"');
+    const vera = await (await page(await loginAs("vera", veraToken), "/tasks?view=needs-you")).text();
+    expect(vera).not.toContain('href="/tasks/archive"');
     expect(vera).not.toContain("/archive");
   });
 });

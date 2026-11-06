@@ -560,7 +560,7 @@ export function ResultView({ view, csrf }: { view: BrowserResultView; csrf: stri
 
     {selected === null
       ? view.results.length === 0
-        ? <Card className="items-start py-10"><p className="text-base text-muted-foreground">Nothing to review yet.</p><Button asChild variant="outline"><a href="/work">Open tasks</a></Button></Card>
+        ? <Card className="items-start py-10"><p className="text-base text-muted-foreground">Nothing to review yet.</p><Button asChild variant="outline"><a href="/tasks">Open tasks</a></Button></Card>
         : <Card aria-label="Results" className="gap-0 overflow-hidden p-0 phone:p-0">
             <ul className="divide-y divide-border">{view.results.map(row => <li key={row.href} className="flex items-start gap-3 px-5 py-3 phone:px-4">
               <span aria-hidden="true" className={cn("mt-2 size-2 shrink-0 rounded-full", row.status === null ? "bg-muted-foreground" : DOT[toneOf(row.status.tone)])} />

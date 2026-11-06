@@ -67,7 +67,7 @@ const post = (path: string, authorization: string) => fetch(`${base}${path}`, { 
 
 test('an accepted password bearer still signs in, and every answer says it is deprecated and what replaces it', async () => {
   await serve();
-  const response = await get('/work', `Bearer alex:${password}`);
+  const response = await get('/tasks', `Bearer alex:${password}`);
   expect(response.status).toBe(200);
   expect(response.headers.get('deprecation')).toBe('true');
   expect(response.headers.get('warning')).toContain('toolroll tokens create');
@@ -85,7 +85,7 @@ test('every refusal of a password bearer names the replacement', async () => {
   const browserOnly = route('projects.github'), act = route('chat.demo.ask'), stepUp = route('settings.sessions-send');
   expect([browserOnly.callers, act.scope, stepUp.scope]).toEqual([['cookie'], 'act', 'step-up']);
   const refusals: [string, Response, number][] = [
-    ['invalid credentials', await get('/work', 'Bearer alex:wrong-password'), 401],
+    ['invalid credentials', await get('/tasks', 'Bearer alex:wrong-password'), 401],
     ['disallowed route', await get(browserOnly.sample, `Bearer alex:${password}`), 403],
     ['insufficient scope', await post(act.sample, `Bearer vera:${viewer}`), 403],
     ['step-up', await post(stepUp.sample, `Bearer alex:${password}`), 403],
@@ -102,7 +102,7 @@ test('from the release that removes it, a password bearer is refused before the 
   await serve(false);
   const check = vi.mocked(scope.authenticateAccount);
   check.mockClear();
-  const page = await get('/work', `Bearer alex:${password}`);
+  const page = await get('/tasks', `Bearer alex:${password}`);
   expect(page.status).toBe(401);
   expect(await page.text()).toBe(PASSWORD_BEARER_REFUSED);
   const team = await get('/api/team', `Bearer alex:${password}`);
