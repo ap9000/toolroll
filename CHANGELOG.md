@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.93 — 2026-11-06
+
+- **Approve a release with one tap.** When a release is ready for your yes,
+  your phone gets one notification ("A release is ready for your approval")
+  that opens a single screen: what changed since the last release, the
+  GitHub checks, the full terms, and one **Approve release** button. Approve
+  and walk away: it deploys only after everything passes, and you hear back
+  only if something fails. In the terminal, `toolroll release approve` finds
+  the release itself — no task names or codes to copy.
+- **No more "Confirm it stopped".** When a finished build's process record
+  is incomplete, Toolroll now checks the computer itself, stops anything left
+  over that it can prove is that build's, and carries on. The task says
+  "Making sure build #N stopped. This clears on its own." Releases wait
+  through it instead of stopping.
+- **Checks record what they saw.** Each finished check now keeps an advisory
+  record of the exact code, conditions and failures, groundwork for a list
+  of flaky tests and for lessons from fixed failures. It never changes a
+  check's result.
+
 ## 0.9.92 — 2026-11-05
 
 - **Toolroll learns which cheaper models do the job.** Every task now gets a
