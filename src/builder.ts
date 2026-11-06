@@ -1,7 +1,7 @@
 import { legacyNetwork, repositoryEcosystems, type NetworkProfile } from "./egress.js";
 import { CHECK_ACCESS_DEFAULT, checkAccessHere, checkNetworkOf, localModeCap, type CheckAccess } from "./check-access.js";
 import { localModeOn } from "./local-owner.js";
-import { checkoutGit } from "./teardown-git.js";
+import { checkoutGit, refusal as gitRefusal } from "./teardown-git.js";
 import type { WritesMode } from "./writes-mode.js";
 import type { LaunchNetwork } from "./invoke.js";
 import type { ProviderId } from "./contracts/provider.js";
@@ -968,7 +968,11 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     if (refusal !== null) return { ok: false, reason: "no-op", message: refusal };
     // Check the exact candidate before setup or the full gate spends anything.
     const listed = await git(GIT, [...preparedEvidenceGit(), "ls-tree", "-z", preparedCandidate, "--", PREPARED_EVIDENCE_FILE], { cwd: worktree, maxBuffer: 2048 });
-    if (listed.code !== 0) return { ok: false, reason: "no-op", message: "The committed screenshot inventory could not be inspected. Restore the saved candidate before review." };
+    if (listed.code !== 0) {
+      // Say why (runs 3316–3324 said only this sentence while the real cause was a refused config read).
+      const why = gitRefusal(listed) ?? listed.stderr.split("\n").map(line => line.trim()).find(line => line !== "") ?? `git exited ${listed.code}`;
+      return { ok: false, reason: "no-op", message: `The committed screenshot inventory could not be inspected (${redactSecretText(why).slice(0, 400)}). Restore the saved candidate before review.` };
+    }
     const required = scope?.acceptance.some(criterion => criterion.evidence.includes("screenshot")) ?? false;
     try { if (required || listed.stdout.length > 0) preparedEvidence = readPreparedEvidence(worktree, preparedCandidate, required); }
     catch (error) { return { ok: false, reason: "no-op", message: error instanceof Error ? error.message : "The committed screenshots could not be verified." }; }

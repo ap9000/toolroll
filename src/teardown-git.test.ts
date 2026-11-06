@@ -36,7 +36,7 @@ import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, existsSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "./exec.js";
-import { carriedSettings, checkoutGit, teardownGit, TEARDOWN_FLAGS } from "./teardown-git.js";
+import { carriedSettings, checkoutGit, CONFIG_READ_BYTES, CONFIG_READ_MS, teardownGit, TEARDOWN_FLAGS, viewedGitSync } from "./teardown-git.js";
 import { WorktreePool } from "./worktree.js";
 import { openStore } from "./store.js";
 
@@ -331,3 +331,59 @@ test("a config parse that Git doesn't finish in time still refuses, and says so,
   expect(Date.now() - started).toBeLessThan(25_000);
   rmSync(dir, { recursive: true, force: true }); rmSync(slow, { force: true });
 }, 40_000);
+
+// Runs 3316–3324: a project's .git/config grew past 2 KiB (one [branch] section per work branch) and builder.ts's
+// ls-tree read (maxBuffer 2048) passed its own limit to the hardened runner's config listing, which then failed — every
+// prepared release check ended as "the committed screenshot inventory could not be inspected".
+describe("the hardened runners' own reads take their own bounds, never the caller's", () => {
+  const bigConfig = () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-big-config-")));
+    const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir, env });
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    execFileSync("git", ["add", "a.txt"], { cwd: dir, env });
+    execFileSync("git", ["-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "a"], { cwd: dir, env });
+    for (let i = 0; i < 60; i++) {
+      execFileSync("git", ["config", `branch.so/work-branch-number-${i}.remote`, "origin"], { cwd: dir });
+      execFileSync("git", ["config", `branch.so/work-branch-number-${i}.merge`, `refs/heads/so/work-branch-number-${i}`], { cwd: dir });
+    }
+    const listing = execFileSync("git", ["config", "--list", "--show-scope", "-z"], { cwd: dir });
+    expect(listing.length).toBeGreaterThan(4096);
+    return { dir, env };
+  };
+
+  test("a config past 2 KiB with a caller's 2 KiB maxBuffer: the config read succeeds, and the caller's command keeps its own limit", async () => {
+    const { dir, env } = bigConfig();
+    try {
+      const git = checkoutGit();
+      const listed = await git("git", ["ls-tree", "-z", "HEAD", "--", "a.txt"], { cwd: dir, env, maxBuffer: 2048, timeoutMs: 5_000 });
+      expect(refusal(listed)).toBeNull();
+      expect(listed).toMatchObject({ code: 0 });
+      expect(listed.stdout).toContain("a.txt");
+      // The caller's own command is still held to the caller's limit: its output past 2 KiB fails, as asked.
+      const tooMuch = await git("git", ["config", "--list"], { cwd: dir, env, maxBuffer: 2048 });
+      expect(tooMuch.code).not.toBe(0);
+      expect(refusal(tooMuch)).toBeNull();
+      // The synchronous reader, the same.
+      expect(viewedGitSync(dir, ["ls-tree", "HEAD", "--", "a.txt"], { maxBuffer: 2048 })).toMatchObject({ status: 0, stdout: expect.stringContaining("a.txt") });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("a config read that fails says why in its refusal", async () => {
+    const { dir, env } = bigConfig();
+    try {
+      // A runner whose config listing fails as an exceeded buffer would: the refusal carries git's own words.
+      const failing: typeof run = async (file, args, options) => args.includes("--show-scope")
+        ? { code: 1, stdout: "", stderr: "stdout maxBuffer length exceeded\n", timedOut: false, notFound: false }
+        : run(file, args, options);
+      const listed = await checkoutGit(failing)("git", ["ls-tree", "HEAD"], { cwd: dir, env });
+      expect(refusal(listed)).toBe("its config couldn't be read (stdout maxBuffer length exceeded)");
+      // And the internal read never gets the caller's limits or stdin.
+      let seen: Parameters<typeof run>[2] | undefined;
+      const spy: typeof run = async (file, args, options) => { if (args.includes("--show-scope")) seen = options; return run(file, args, options); };
+      await checkoutGit(spy)("git", ["ls-tree", "HEAD"], { cwd: dir, env, maxBuffer: 2048, timeoutMs: 1_000, stdin: "x" });
+      expect(seen).toMatchObject({ maxBuffer: CONFIG_READ_BYTES, timeoutMs: CONFIG_READ_MS, cwd: dir });
+      expect(seen?.stdin).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});

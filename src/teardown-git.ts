@@ -17,7 +17,7 @@ import { homedir } from "node:os";
 import { ensureGitViewsRoot, withCheckoutLock } from "./git-views.js";
 import { gitIncident, type GitIncident } from "./git-incident.js";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
-import { run, type ExecResult } from "./exec.js";
+import { run, type ExecResult, type RunOptions } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { WORKTREE_TIMEOUT_MS, type Runner } from "./worktree.js";
 import { FOLDER_DIDNT_ANSWER, folderAnswers } from "./folder-gate.js";
@@ -825,6 +825,30 @@ export function lfsExtensionIn(checkout: string, gitFile = "git", limit?: Limit)
   return parsed.status !== 0 || parsed.stdout.split("\0").filter(Boolean).some(name => lfsCommand(name) || ["include", "includeif"].includes(keyParts(name).section));
 }
 
+/** The hardened runners' own reads before the caller's command (the checkout's config listing): their own bounds, never
+ * the caller's. A caller's small `maxBuffer` is for its own command's output (builder.ts reads one ls-tree line with
+ * 2 KiB): inherited, it failed the config listing once a project's .git/config grew past 2 KiB (one [branch] section per
+ * work branch), and every prepared release check then failed as "its config couldn't be read" (runs 3316–3324). */
+export const CONFIG_READ_BYTES = 16 * 1024 * 1024;
+export const CONFIG_READ_MS = 30_000;
+
+/** What of a caller's options an internal read keeps: where it runs and with what environment and containment —
+ * never its time limit, output limit, stdin or output callbacks. */
+function internalOptions(options: RunOptions | undefined, env: Record<string, string>): RunOptions {
+  const { cwd, envAllowlist, omitEnv, fence, fenceGrants, confinement, processGroup, owner, signal } = options ?? {};
+  return { ...(cwd === undefined ? {} : { cwd }), ...(envAllowlist === undefined ? {} : { envAllowlist }), ...(omitEnv === undefined ? {} : { omitEnv }),
+    ...(fence === undefined ? {} : { fence }), ...(fenceGrants === undefined ? {} : { fenceGrants }), ...(confinement === undefined ? {} : { confinement }),
+    ...(processGroup === undefined ? {} : { processGroup }), ...(owner === undefined ? {} : { owner }), ...(signal === undefined ? {} : { signal }),
+    env, timeoutMs: CONFIG_READ_MS, maxBuffer: CONFIG_READ_BYTES };
+}
+
+/** Why the checkout's config listing failed, in words, for the refusal: git's own first line, or what stopped it. */
+function listingFailure(result: ExecResult): string {
+  if (result.timedOut) return `its config couldn't be read (the read ran past ${CONFIG_READ_MS / 1000} s)`;
+  const said = `${result.stderr}`.split("\n").map(line => line.trim()).find(line => line !== "");
+  return `its config couldn't be read${said === undefined ? ` (git exited ${result.code})` : ` (${said.slice(0, 300)})`}`;
+}
+
 /** Every command runs against a view of the checkout's repository (gitView) whose config and info are copies the
  * plane made, inspected there, so neither can change between the inspection and the run. `mode` "read" is for reading
  * a checkout an agent may still be writing (the code page): every command also takes readFlags(), and the view holds
@@ -844,9 +868,9 @@ export function checkoutGit(inner: Runner = run, mode: "build" | "read" = "build
     try { view = gitView(cwd, mode === "read" ? "read" : "write", binding); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
     try {
       const viewed = { ...options, env: { ...(options?.env ?? {}), ...view.env } };
-      // The checkout's own config may name no command.
-      const own = await inner("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], viewed);
-      if (own.code !== 0) return refused("its config couldn't be read");
+      // The checkout's own config may name no command. Read with this runner's own bounds (internalOptions).
+      const own = await inner("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], internalOptions(options, viewed.env));
+      if (own.code !== 0) return refused(listingFailure(own));
       const key = commandSetting(own.stdout, { lfsChecked: true });
       if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
       // A git without --no-lazy-fetch: a repository that could fetch lazily is refused, from the view's frozen config.
@@ -934,8 +958,10 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
     const env: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", ...view.env };
     const timeoutNow = () => { expire(); return limit === undefined ? options.timeoutMs ?? 60_000 : Math.max(1, Math.min(options.timeoutMs ?? 60_000, limit())); };
     const fixed = { cwd, env, encoding: "utf8" as const, killSignal: "SIGKILL" as const, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
-    const own = spawnSync(gitFile, ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], { ...fixed, timeout: timeoutNow() });
-    if (own.status !== 0) throw new Error("its config couldn't be read");
+    // Its own bounds, never the caller's output limit (CONFIG_READ_BYTES); a caller's deadline still holds.
+    const own = spawnSync(gitFile, ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], { ...fixed, maxBuffer: CONFIG_READ_BYTES,
+      timeout: limit === undefined ? CONFIG_READ_MS : Math.max(1, Math.min(CONFIG_READ_MS, limit())) });
+    if (own.status !== 0) throw new Error(own.error !== undefined ? `its config couldn't be read (${own.error.message.slice(0, 300)})` : "its config couldn't be read");
     const key = commandSetting(own.stdout, { lfsChecked: true });
     if (key !== null) throw new Error(`the checkout's git config sets ${key}, which can run a command`);
     // A git without --no-lazy-fetch: a repository that could fetch lazily is refused, from the view's frozen config.
