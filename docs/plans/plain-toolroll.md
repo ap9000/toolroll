@@ -1,6 +1,6 @@
 # Plain Toolroll — plan
 
-Status: **v2** (2026-11-05). Branch `plain-toolroll`, rebased on main f98078fb (0.9.92). Nothing in `src/` changes with
+Status: **v3** (2026-11-05). Branch `plain-toolroll`, on main f98078fb (0.9.92). Nothing in `src/` changes with
 this document.
 
 Inputs: the UI and CLI copy audit (109 findings, file:line) and the comparison with Conductor, Orca and Paperclip, both
@@ -9,7 +9,10 @@ from 2026-11-05. Finding numbers (`#N`) are the audit's. Line numbers were spot-
 Review history:
 - Codex round 1 (on v1, 8b6d673): NO-GO, with 1 Critical, 9 High and 3 Medium findings. Each was checked against the
   code and all are accepted. v2 closes them; the ledger is at the end.
-- Round 2 is the last round for this arc (budget: 2). Anything still open after it goes to Alex with options.
+- Codex round 2 (on v2, af058575): Phase 1 is good to build after two clarifications (CLI `accept`, push shapes).
+  FAST as a locked-down profile is NO-GO without deep fence work.
+- Alex's decision after round 2: the fast path is **file and approve in one step** (P2.4). v3 makes that change and
+  closes the round 2 findings; the ledger is at the end. The Codex budget is spent, so the coordinator verifies v3.
 
 ## What and why
 
@@ -33,8 +36,10 @@ Alex's decisions (final):
    approvals. One word each for builder, approver, finishing a result, archiving and numbering.
 3. **Fewer choices.** Results: Accept / Send back / Retry. Approvals: Approve / Request changes / Reject, with a password
    field only when the act needs one. One `toolroll release <branch>`. Routing changes ask as little as possible.
-4. **Fast path.** Small tasks a person is watching skip plan approval and build straight away. Plan approval stays for
-   large or risky work, flows, schedules, anything unattended, protected paths, and release or merge.
+4. **Fast path.** Small tasks a person is watching skip the separate plan step and build straight away. After Codex
+   round 2 this is **file and approve in one step**: the New task form shows the exact terms, and Build is the
+   person's approval of them. Plan approval stays for large or risky work, flows, schedules, anything unattended,
+   protected paths, and release or merge.
 5. **Pages.** Keep Home and Tasks (with a Board view), and retire the rest with redirects.
 6. **From the comparison.** One-line pings with one button; a "Can I merge?" checklist; start from a GitHub issue or PR;
    keyboard shortcuts.
@@ -118,15 +123,19 @@ Build:
 - `RUN_REASON_WORDS`, Toolroll's requirement-detail sentences (`proof.ts:43-700` through one mapper over its own
   strings), lifecycle subjects and CLI people messages use the table.
 - `cli-help.ts`: plumbing moves under `toolroll internals --help`, and the commands keep working.
-- **CLI verb migration, explicit:**
-  - `task accept <id>` becomes the person's Accept: the same exact-receipt road as `task complete` today, with the
-    same `--digest` rule under `--json` and for coordinators.
-  - Today's acceptance-with-limitations becomes `task accept <id> --despite "<reason>"`. That is the "Accept anyway"
-    outline act, with a reason required.
-  - `task complete` stays as an alias of the new `task accept`.
-  - The old bare `task accept` meaning is reachable only with `--despite`. A bare call that today would have recorded a
-    limitation refuses with words naming `--despite`, so nobody silently completes where they meant to note a
-    limitation.
+- **CLI verb migration with an explicit discriminator.** Today `task accept <id> [--note]` records an acceptance
+  without completing (`operate.ts:9960-9967`). The same words must never quietly start meaning something else, so
+  every `task accept` call names its intent:
+  - `task accept <id> --finish` or `task accept <id> --digest <receipt>` is the person's Accept: exactly the
+    exact-receipt completion `task complete` does today, with the same rule that `--json` and coordinators must pass
+    `--digest`.
+  - `task accept <id> --despite "<reason>"` is **acceptance only**: today's acceptance-with-limitations, with the
+    reason required (today's optional `--note` becomes an alias of `--despite`). It never completes. Combining it
+    with `--finish` or `--digest` refuses: the console's "Accept anyway" stays two existing acts in order, never one
+    new one.
+  - A bare `task accept <id>` refuses, with words naming `--finish` and `--despite`. This holds for good, not just
+    during migration.
+  - `task complete` stays as it is.
   - `task archive` (alias `tidy`) and `task recheck` (alias `regate`) are renames only.
 
 Tests:
@@ -138,8 +147,10 @@ Tests:
   sentinel spans. What remains is product copy, and it must hold no banned word.
 - A second assertion makes every sentinel appear byte-identical where it is rendered. Preserved content is never
   rewritten.
-- `task accept` / `--despite` / `complete`: one contract table. Completion still requires the exact receipt, and a bare
-  legacy-shaped call refuses.
+- `task accept`: one contract table. Bare refuses. `--note <text>` is read as `--despite <text>` (acceptance
+  only). A missing or empty `--despite` reason refuses. `--despite` never completes. `--despite` with `--finish` or `--digest` refuses.
+  `--finish` and `--digest` complete only the exact receipt, and `--json` or a coordinator without `--digest`
+  refuses.
 
 Journey: file → approve → build → accept, with no "scope", hex or "signs" in product copy.
 Parity: the TUI, the CLI and the four chat apps are rows in the same test.
@@ -231,12 +242,14 @@ Build:
   knows are kept.
 - **Archive keeps its POST exactly.** `POST /work/put-away` keeps its path, step-up and approver rule. Only the GET
   preview gets a new address (`/tasks/archive`, with the old GET redirecting there).
-- Push links: `CLASS_FALLBACK` becomes `/` and `/tasks?view=ready`. `LINK_SHAPES` and the worker `SHAPES` allow
-  exactly:
+- Push links: `CLASS_FALLBACK` becomes `/` and `/tasks?view=ready`. `LINK_SHAPES` and the worker `SHAPES` are the
+  old list plus new entries, with nothing removed:
+  - **every existing shape is kept, unchanged** (`push.ts:230`): `/next`, `/review`, `/system`, `/routines`,
+    `/routines/<n>`, `/d/<n>` and `/r/<n>`. `/next` and `/review` become redirects (to `/` and `/tasks?view=ready`);
+    the other five keep their pages;
   - the new fixed destinations `/`, `/tasks?view=ready` and `/tasks?view=board`;
   - `/n/<display number>`, where the number is the task_ref's stored numeric id. A new redirect route resolves it to
-    the task page under the viewer's access, so neither the push nor the URL ever carries a title-derived id;
-  - the old `/next` and `/review`, kept indefinitely.
+    the task page under the viewer's access, so neither the push nor the URL ever carries a title-derived id.
 - Deleted: `inboxPage`, `render-next.ts`, the workbench page and rail, and the "clear the queue" links. Every link in
   the list above is repointed, and the guide is updated.
 
@@ -246,8 +259,11 @@ Tests:
 - A project-limited person redirected through each path learns nothing about another project.
 - `/n/<n>` refuses a number outside the viewer's projects with the same 404 as an unknown one.
 - Push rules: the new destinations are accepted; `/n/1x`, `/n/../x` and title ids are refused.
+- **Old-destination test:** for each of the seven old shapes, an old payload, through both the old worker fixture and
+  the new worker, lands on **its own destination**: the same page, or the named redirect target. Landing on a
+  fallback doesn't pass.
 - **Old-worker test:** the previous worker source, kept as a fixture, receives each new payload and lands on an allowed
-  page (its `/next` fallback redirects to Home). The new worker accepts every old payload.
+  page (a new shape it doesn't know falls back to `/next`, which redirects to Home).
 - A link sweep: no rendered `href` points at a retired GET.
 
 Journey: Home → Needs you → task → back; List ↔ Board; on the phone, an old `/next` link and a new push both land
@@ -378,141 +394,139 @@ A restart never re-enables a disabled label. Anything else raises the P1.2 need 
 Must refuse: a restart after `background off` or `stop`, during an update or drain, while the process lives, on an
 identity mismatch, or past the attempt cap.
 
-### P2.4 — Fast path: small, watched work starts right away
+### P2.4 — Fast path: file and approve in one step
+
+Alex's decision (after Codex round 2): the fast path is **filing and approving in one step**, not a locked-down
+profile. For an eligible small task that a person starts themselves, the New task form shows the exact terms the build
+would get, and pressing **Build** is the person's approval of exactly those terms. Safety is the same as approving a
+plan today, minus the separate plan step. The restricted FAST execution profile from v2 is dropped: Codex round 2
+showed it needs fence work this arc doesn't do (home reads, open check networking, the sandbox fallback, provider keys
+in the child environment, project tools, uncapped repair spend).
 
 Facts:
 - Sizing: `task-sizing.ts`, which uses `heuristicSizing` (`:52`, never risky) plus a classifier refine within 5 s
   (`refineFiledSizing` `:205`).
 - No-plan rule: `makesNoPlan` (`phase-routing.ts:128`).
-- Approval bases: the allowlist at `scope.ts:849-850`, and one dispatch predicate in `approval-authority.ts:25-44`.
-- Filing and sealing together: `fileAndSealUnderMode` (`scope.ts:1472-1514`).
-- Proof readers: `proofDetailOf` (`scope.ts:1884`) needs `{v:1, at, digest}`. `localSealStandsSql`
-  (`approval-authority.ts:57`) matches the local generation in the detail text with `LIKE '% · local <gen> %'`.
-- Check access: `sign-ins` lets checks read and send Claude, Codex and GitHub credentials (`check-access.ts:33-34`).
-  Checks run at build time, before disposal (`builder.ts:2731`). The wider levels seal only on a password ceremony
-  (`store.ts:9168`).
-- Completion accepts machine callers for ordinary work (`assignment.ts:508-511`). A project's publication grant pushes
-  right after a build (`dispose.ts:234-240`). The whole change, including revision ancestry, is
-  `familyChangedFiles` (`result-completion.ts:53`), which returns null when any part is unreadable.
-- Outside-request quarantine: `store.ts:9161` refuses automatic bases for youiyoux-filed tasks, keyed on an immutable
-  filed-via.
+- Approval: `approve()` (`scope.ts:1517-1600`) authenticates, checks the digest the person saw, runs the policy, release
+  and gate checks, writes the `approval proved` row (`approvalProofDetail`) and seals, all in one transaction.
+- Filing and sealing together already exists for modes: `fileAndSealUnderMode` (`scope.ts:1472-1514`).
+- Bases: the allowlist at `scope.ts:849-850`; the dispatch predicate at `approval-authority.ts:25-44`.
+- `proofDetailOf` (`scope.ts:1884`) accepts the v1 JSON record "with more fields allowed".
+- The whole change today: `familyChangedFiles` (`result-completion.ts:53`) drops `revisionAncestryStatus().problem`,
+  skips ancestors without diff artifacts and counts no lines (`store.ts:12703`). That is not enough for a line cap
+  (Codex round 2, finding 4).
+- Completion admits machine callers for ordinary work (`assignment.ts:508-511`). A publication grant pushes right after
+  a build (`dispose.ts:234-240`).
 
-**What "attended" promises, honestly.** The promise is *a person's authenticated initiation on a person surface*, with
-nothing more claimed.
+**What the person sees and approves.**
+- The form renders, from the **same proposal** the plan step would seal (`propose()` output: goal, requirements, routed
+  agents per phase, budget, permission profile, the project's network, write paths, check access, project tools, and
+  any macOS service widenings), the terms in the same words the approval card uses, with nothing hidden behind a
+  disclosure that the approval card shows open.
+- The form posts the proposal's digest. **Build** runs `approve()`'s own checks on that digest, inside the filing's
+  transaction, with the same proof methods and the same password rule as approving that plan today (P1.3's shared
+  function). A changed proposal between render and press refuses "changed", exactly as today.
+- So the project's usual access applies, whatever it is. The fast path neither narrows nor widens it. Where approving
+  that plan would need a typed password (protected work, escalated terms, wider check access: `store.ts:9168`), the
+  task is not eligible, and the form shows the ordinary Add task, then Approve plan.
+
+**Basis: the ordinary person basis, plus a `fastStart` marker.**
+- The seal writes the basis `approve()` writes today. No new entry in `APPROVAL_BASES`; `authorityStandsSql`,
+  `personSealSql`, `localSealStandsSql` and every reader stay as they are. Why: it *is* a person's yes to these exact
+  bytes, through the same proof, so it should stand on the same rules. A new basis would add a new authority path to
+  audit in every reader, for no extra safety.
+- The marker records what is different: the proof row's v1 JSON detail gains `fastStart: {rule, at}` (allowed by
+  `proofDetailOf`), and the task row gets `fast_start_at`, written in the same transaction.
+- The marker only adds restrictions (the start window and the Accept backstop below). It never grants anything.
+  Losing it would leave an ordinary person approval of exactly the terms shown, which is what approving a plan is
+  today.
+- The v2 proof contract (v2 detail, session binding) is dropped: it was there for the FAST profile's standing rules.
+
+**Who counts as attended** (unchanged from v2).
 - The person surfaces are:
   - a browser session (cookie: a typed or remembered password, SSO, passkey or Passwordless session);
   - the TUI as the local owner (a new `build-now` local-owner act beside `approve-plan`);
   - interactive `toolroll task new`.
-- Under the easy-start local-owner threat model (`local-owner.ts:1-8`), an unfenced process running as the same OS user
-  **is** that user: it can already approve plans with the remembered login (`scope.ts:1377`). The fast path claims no
-  presence proof beyond that and adds no road past `task approve`.
-- What it does reject: fenced build agents, every token (lead, coordinator, runner, remote, API), the MCP gateway, chat
-  bridges, flows, schedules, webhooks, triggers, issue imports, nightly jobs and the release tool.
-- Those rejections are decided **inside the writer and the dispatch guard**, from trusted admission context
-  (`machineActing()`, the request's caller kind and the proof method), never from the surface's say-so.
-  `task add` (agent-invocable, `surface.ts:162`) never fast-starts.
+- The promise is a person's authenticated initiation, under the easy-start same-user threat model
+  (`local-owner.ts:1-8`): an unfenced process running as the same OS user is that user, and can already approve with
+  the remembered login (`scope.ts:1377`). The fast path adds no road past `task approve`.
+- Rejected **inside the filing writer and the dispatch guard**, from trusted context (`machineActing()`, caller kind,
+  proof method): fenced build agents, every token (lead, coordinator, runner, remote, API), MCP, chat bridges, flows,
+  schedules, webhooks, triggers, issue imports (P2.7), nightly jobs and the release tool. `task add`
+  (agent-invocable, `surface.ts:162`) never uses it.
 
-**The FAST execution profile (sealed before anything runs).** A fast task's plan seals a restricted profile, and
-setup, build and checks all run under it:
-- checks **sandboxed**: never `sign-ins`, never unsandboxed;
-- **no credential access**: no GitHub or other sign-ins in the workspace or the checks. The agent's own provider sign-in
-  goes only through the gateway, exactly as today;
-- **workspace-only writes**: the project's extra write paths aren't applied;
-- **provider-only network**: the agent reaches its provider hosts, and checks get no network;
-- no macOS service widenings;
-- the project's approved setup command unchanged;
-- a **finite spend cap**: the per-build budget is required, at most the project's default and at most the fast cap.
-
-The FAST profile only narrows. If the project's own settings are narrower, those apply. If the project *needs* wider
-access (its checks require sign-ins, an unsandboxed level is stored, or write paths are required), the task is not
-eligible, and nothing is ever widened to fit. The existing rule that wider check access seals only on a password
-ceremony (`store.ts:9168`) is unchanged.
-
-**What counts as small.** One function, `fastStartEligible`, is read by the preview and again inside the seal's
-transaction:
+**Eligibility.** One function, `fastStartEligible`, is read by the form and again inside the transaction:
 - the heuristic size is small, **and** the classifier answered small and not risky within its budget. On this road the
-  filing waits for the classifier, at most 5 s. No answer means normal approval: the model can confirm a small size,
-  never grant one;
+  filing waits for it, at most 5 s. No answer means the ordinary road; the model can confirm "small", never grant it;
 - `makesNoPlan`; default quality;
-- the gate seals with one approver, no protected work, and declared paths present when the project protects any;
-- the FAST profile can be applied, as above;
-- no release or deploy terms, no CI hold, no trial, no fallback chain;
-- the monthly limit isn't reached; no org-policy refusal;
+- the approval gate seals with one approver, no protected work, and declared paths present when the project protects
+  any; no requester or two-person rule;
+- approving it today would take no typed password;
+- no release or deploy terms, no CI hold, **no trial selection** in the route (trials stay a person's separate
+  approval per task), no fallback chain;
+- the monthly limit isn't reached, and there is no org-policy refusal;
 - the project setting **Small tasks start right away** is on. The default is on for single-approver installs and off on
   servers with more than one approver. Turning it on is a person's logged settings act.
 
-**One proof contract (versioned).** `approval proved` detail v2 is the one shape every reader parses:
+**The start window.** A narrow-only conjunct beside `authorityStandsSql`: a task with `fast_start_at` dispatches its
+first build only within 30 minutes of it. After that the seal is cleared in a logged transaction, and the task shows the
+ordinary Approve plan. P2.1 retries ride the approval only inside the window. A person's Retry or Send back is a new
+person act.
 
-```
-{v:2, at, digest, method, account:{name, generation}, local:{generation, transport}|null,
- session:{id_hash}|null, basis, fast:{rule, profile_digest, sizing:{heuristic, classifier}, until}|null}
-```
+**The Accept backstop (verified, complete, fail closed).**
+- A new `verifiedChange(store, taskId, runId)` replaces `familyChangedFiles` for this check (the other callers can move
+  to it later). It reads:
+  - the complete revision ancestry, where any `revisionAncestryStatus().problem` refuses;
+  - the base commit from Toolroll's records (the recorded task base or `branch_base_move`), never from the checkout;
+  - the candidate head from the run record;
+  - a numstat of base → candidate through the hardened git helper, over objects Toolroll hashed.
+- It returns files and added plus removed lines per file. Any binary, renamed-without-count, submodule or unreadable
+  entry is **uncountable** and refuses. Any contributing build without its saved diff refuses. Null means refuse.
+- The caps are 3 files and 150 changed lines, with no protected path (`protectedChanges`) and no dependency, lockfile,
+  migration or schema file.
+- It is enforced in **completion** (a person only; a machine caller is refused for a `fast_start_at` task), in
+  **publication** (the project's grant doesn't push the build until a person accepts it, `dispose.ts:234`) and in
+  **merge**, all with the same result.
+- Over the caps: "This grew beyond a small change. Approve it to keep it." The person approves the actual expanded
+  candidate (a plan proposed with `candidate` = the exact head, the `dispose.ts:604` pattern) on the ordinary
+  ceremony. Only then can it be completed, published or merged.
+- The result still goes through the project's checks and is accepted by a person. No model review is added.
 
-- `proofDetailOf`, `personSealSql`, `localSealStandsSql` (which moves from the `LIKE` match to `json_extract` on
-  `local.generation`), `approvalProofDetail`, the evidence pack and the audit renderers are all updated **in one
-  change**. v1 rows and the legacy text stay readable as they are.
-- `session.id_hash` binds a browser-session fast seal to its session: signing out or ending that session (it stops
-  being saved, `session.ts:173`) stops the seal standing. `account.generation` revokes it on a password change.
-
-**When it stands.** A `fastSealStandsSql` clause in `authorityStandsSql`:
-- a person proof v2 at the seal's instant, method in `PERSON_PROOFS` minus `chat`, and no machine seal;
-- no flow trigger event, coordinator or quarantined filed-via (youiyoux, issue import);
-- the approver stands, and the setting is still on;
-- the bound session is still saved, the account generation is unchanged, and the local generation is unchanged;
-- the sealed profile is the FAST profile digest;
-- the **first dispatch within 30 minutes** of the seal. After that it lapses to an ordinary "Approve plan".
-
-P2.1 retries ride the seal only inside the window. A person's Retry or Send back is a new person act and re-checks
-everything.
-
-**Where the restrictions hold.** Every primitive checks them, so none of them depends on the Accept screen:
-- **Completion:** a fast task completes only by a person (`COMPLETION_BY_PERSON`). A machine caller (`assignment.ts:508`)
-  is refused, and auto-accept never applies.
-- **Publication:** the project's publication grant never pushes a fast task's build (`dispose.ts:234`). It publishes
-  only after a person's Accept, and only within caps.
-- **Merge:** a merge grant or `--match-head-commit` merge refuses a fast task until it is accepted and within caps.
-- **The change inspected** is the whole carried change: `familyChangedFiles` over the revision ancestry, against the
-  task's recorded base. If it is null or unreadable, everything fails closed (no completion, publication or merge).
-- **The caps** are 3 files and 150 changed lines, with no protected path (`protectedChanges`) and no dependency,
-  lockfile, migration or schema file.
-- **Growth beyond the caps** requires the person to approve **the actual expanded candidate**: a plan proposed with
-  `candidate` = the exact head (the `dispose.ts:604` pattern), shown with its diff summary, on the normal ceremony.
-  Only then can it be completed, published or merged.
-- **The basis's limits:** `fast` never counts as a person's yes for trials (`trialSealStandsSql`), releases or carries
-  (`releaseStandsSql`, `carrySealSql`), two-person votes or the counters that read `personSealSql` (`scope.ts:1915`),
-  wider check access, or the youiyoux quarantine. A mode never writes it.
-
-The result still goes through the project's checks and is accepted by a person. No model review is added (AGENTS.md
-"Lean verification").
+**Exclusions.** A fast-started task never anchors or joins a release or carry, never gets auto-check or auto-green,
+and is never auto-accepted. A mode never writes the marker.
 
 **Interactions.**
 - The mode road runs first when a mode auto-approves filings.
-- The lead, scouts, coordinators and chat get one-tap Approve on the card instead.
-- Route-result rows record the basis, and the size cohort is unchanged for earned rules.
-- A trial route is never fast.
-- Any two-person or requester rule makes the task ineligible.
+- The lead, scouts, coordinators and chat get one-tap Approve on the card (under the full terms, P1.5) instead.
+- Route-result rows record the marker, and the size cohort is unchanged for earned rules.
+
+**Safety self-review (AGENTS.md).**
+- Check and write together: eligibility, proof, digest check and seal happen in one transaction.
+- Never widen: nothing is widened; the terms are the project's own, shown before consent.
+- Don't let input choose what's trusted: the base, diff and paths come from Toolroll's records and hashed objects.
+- Approvals mean a yes to exactly this: the person approves the digest of the terms they saw, through `approve()`'s own
+  checks.
+- Credentials: there are none new.
 
 **Must refuse (attack tests).**
 - **Callers:** lead, coordinator, runner, remote and API tokens; MCP; each chat bridge; a flow, a schedule, a webhook;
   an issue import; `task add`; `--json`; a fenced agent calling the CLI inside the real `sandbox-exec` and
   `codex sandbox`; a PTY-driven `task new` from inside the fence.
-- **Plans:** escalated; checks at sign-ins or unsandboxed; required write paths; protected paths; no declared paths on a
-  protecting project; release or CI hold; a trial; a fallback chain; no or over-cap budget; the monthly limit reached;
-  classifier silent, risky or medium; heuristic medium; the setting off; a two-person or requester rule.
-- **Standing:** the window lapsed; the session ended; the password changed; local mode off or its generation moved;
-  the setting turned off; an edit after the seal; a profile digest other than FAST.
-- **Forgery:** a `fast` row with no proof, a v1 proof, a proof at another instant, a chat proof, a machine proof, a
-  proof naming another session; a replayed filing.
-- **Execution:** a check trying to read `~/.config/gh` or the Claude credentials, to reach github.com, or to write
-  outside the workspace, each run in the real sandbox and denied.
-- **Primitives:** machine completion; a publication-grant push; a merge before Accept; an over-cap, protected,
-  lockfile or migration diff through each of completion, publication and merge; an unreadable ancestor; a revision
-  that brings the whole change over the caps; approval of a stale candidate after growth.
+- **Plans:** anything that would need a typed password; protected paths; no declared paths on a protecting project; a
+  release or CI hold; a trial; a fallback chain; the monthly limit reached; classifier silent, risky or medium;
+  heuristic medium; the setting off; a requester or two-person rule.
+- **Terms:** a press whose digest differs from the proposal at the seal (the terms changed after rendering).
+- **Window:** a first dispatch after 30 minutes.
+- **Backstop:** a machine completion; a publication-grant push before Accept; a merge before Accept; an over-cap,
+  protected, lockfile or migration change through each of completion, publication and merge; an ancestry problem; a
+  missing ancestor diff; a binary or uncountable entry; a revision that takes the whole change over the caps; approval
+  of a stale candidate after growth.
+- **Exclusions:** a fast-started task in a release, a carry, auto-green or auto-accept.
 
-Journey: type "Fix the typo in the footer" → **Build now** → Ready → Accept. A protected path, or a large description,
-shows Approve plan.
-Parity: console New task (Build now / Add task), interactive `toolroll task new`, TUI `n` then Enter. Chat and the lead
-use one-tap Approve, a named and deliberate difference.
+Journey: type "Fix the typo in the footer" → the form shows the terms → **Build** → Ready → Accept (desktop and phone).
+A protected path or a large description shows the ordinary Add task, then Approve plan.
+Parity: console New task, interactive `toolroll task new` (it prints the same terms, then "Build now? [Y/n]"), and TUI
+`n` then Enter. Chat and the lead use one-tap Approve, a named and deliberate difference.
 
 ### P2.5 — Routing changes: one step to approve the new route
 
@@ -572,7 +586,7 @@ Build:
 - Issue text is preserved content (P1.1), shown as quoted outside text.
 
 Must refuse: a foreign host, an unregistered repo, or a returned identity that differs; a fork PR; a head sha that
-changed; a mode or fast seal on an imported task, including after a revision; a PATH-planted `gh`; inherited `GH_*`
+changed; a mode seal or a fast start on an imported task, including after a revision; a PATH-planted `gh`; inherited `GH_*`
 environment.
 
 ---
@@ -595,10 +609,23 @@ environment.
 
 ## Open decisions
 
-None blocking. Alex's defaults above are final. Two constants live in one place and are recorded in each seal's
-`fast.rule` version: the 30-minute first-dispatch window and the P2.1 episode limits (3 retries, budget × 2).
+None blocking. Alex's defaults above are final. Two sets of constants live in one place and are recorded in the
+`fastStart.rule` version:
+- the fast path's 30-minute start window and its 3-file / 150-line caps;
+- the P2.1 episode limits (3 retries, budget × 2).
 
-## Codex round 1 ledger
+## Follow-ups (not this arc)
+
+- **Spend across repair and continuation, for every build** (Codex round 2, finding 3). Protocol repair calls carry no
+  `maxBudgetUsd`, unfinished-work continuation gets the full cap again, repair admission counts turns not dollars, and
+  Claude's cap is per invocation (`operate.ts:3627`, `builder.ts:3185, 3399`, `provider.ts:1244`). The fix is one
+  per-task allowance reserved atomically across build, repair and continuation and enforced in admission and
+  invocation. It applies to all work, not just the fast path, so it gets its own plan.
+- **A real locked-down profile**, if ever wanted (Codex round 2, findings 1 and 2): effective home and neighbour reads,
+  offline check networking, no unsandboxed fallback, provider keys out of the child environment, and no project tools.
+  That is fence work for its own arc.
+
+## Codex round 1 ledger (v1 → v2; rows 2-4 were superseded in v3, see the round 2 ledger)
 
 | # | Sev | Finding | Fix in v2 |
 |---|---|---|---|
@@ -615,3 +642,16 @@ None blocking. Alex's defaults above are final. Two constants live in one place 
 | 11 | Med | Push allowlist omission; ids aren't machine numbers | P1.4 allowlists the exact new destinations, uses `/n/<stored numeric id>` (outside `/t/`, whose routes match any id), keeps old redirects forever, tests old workers against new payloads, and leaves the archive POST unchanged. |
 | 12 | Med | Vocabulary vs consent text; two `task accept` meanings | P1.1 tests product copy separately from preserved content with sentinels (which must render unchanged), and migrates `task accept` / `--despite` / `complete` explicitly with the exact-receipt rule kept. |
 | 13 | Med | Split presentation from authority; the automatic-review conflict | Two phases. Phase 1 adds no authority. Each Phase 2 slice has must-refuse criteria and attack tests. The automatic-review promise is removed (lean verification). |
+
+## Codex round 2 ledger (v2 → v3)
+
+| # | Sev | Finding | v3 |
+|---|---|---|---|
+| R1-2, 3 | partial | FAST profile assumptions vs runtime | Moot: the FAST profile is dropped (Alex). A fast start runs on the project's usual terms, shown before consent and approved through `approve()`'s own checks. |
+| 1 | High | No concrete runtime isolation (home reads, open check network, sandbox fallback, keys in env) | Moot for this arc (no locked-down claim). Recorded as a follow-up. |
+| 2 | High | Project tools bypass provider-only | Moot: tools are part of the usual terms the form shows. No restriction is claimed. |
+| 3 | High | Per-build cap doesn't cover repair or continuation | A separate follow-up for all builds, per Alex. Not in this arc. |
+| 4 | High | `familyChangedFiles` isn't complete or counted | `verifiedChange`: complete ancestry (any problem refuses), base from Toolroll's records, hashed base → candidate numstat with explicit lines, uncountable or missing refuses. The same result is used at completion, publication and merge. |
+| 5 | Med | Bare `accept` is ambiguous | `--finish` or `--digest` completes; `--despite` (with `--note` as its alias) is acceptance only and never combines with them; bare refuses for good. |
+| 6 | Med | Push allowlist drops old shapes | All seven old shapes are kept (`/next` and `/review` redirect, the rest unchanged), each tested to land on its own destination. |
+| R1-4 | closed → reverted | v2 proof contract | Dropped as unneeded: there is no new basis, and the marker rides the v1 JSON detail that `proofDetailOf` accepts. Readers are unchanged. |
