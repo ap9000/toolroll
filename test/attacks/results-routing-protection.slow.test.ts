@@ -30,7 +30,7 @@ describe("results-routing policy code needs a person", () => {
     ["src/route-hooks.ts", "export const ROUTING_HOOKS = [];\n"],
     ["src/contracts/route-results.ts", "export const REVISION_ORIGINS = [\"person\"];\n"],
   ])("%s changed: a person approves", (path, text) => {
-    needsPerson({}, { [path]: text }, `${path} changed (it's eval, nightly or model routing policy code)`);
+    needsPerson({}, { [path]: text }, `${path} changed (it's eval, nightly, model routing or learning policy code)`);
   });
 });
 

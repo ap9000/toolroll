@@ -231,7 +231,45 @@ export function parseHandshake(text) {
   // but reads only 64 KiB back, and a sealed report it can't read makes its whole check unavailable.
   const reportBytes = value.reportBytes === undefined ? OLDER_PLANE_REPORT_BYTES : value.reportBytes;
   if (!Number.isSafeInteger(reportBytes) || reportBytes <= 0) return null;
-  return { nonce: value.nonce, mode: value.mode, plan, watch, limitMs, owed, ciSubstitute, reportBytes, planDigest: plan === null ? null : createHash("sha256").update(JSON.stringify(plan)).digest("hex") };
+  // Advisory learning (docs/plans/learning-loops.md): exact cases only, at most 200. Never a reason to refuse the
+  // handshake, and never joined to `watch`: a plane that doesn't send it, or sends something else, gets no learning line.
+  const learn = Array.isArray(value.learn) ? [...new Set(value.learn.filter(isExactCase))].slice(0, LEARN_MAX_IDENTITIES) : [];
+  return { nonce: value.nonce, mode: value.mode, plan, watch, limitMs, owed, ciSubstitute, reportBytes, learn, planDigest: plan === null ? null : createHash("sha256").update(JSON.stringify(plan)).digest("hex") };
+}
+
+/** The advisory learning line's prefix, size cap and identity cap (src/contracts/release-check.ts LEARN_*). */
+export const LEARN_PREFIX = "TOOLROLL-LEARN ";
+export const LEARN_MAX_BYTES = 64 * 1024;
+export const LEARN_MAX_IDENTITIES = 200;
+/** An exact case (src/contracts/release-check.ts isExactCase): a unit test or a journey, never a file or group. */
+const EXACT_CASE = /^(?:unit:[^\u0000-\u001f\\:][^\u0000-\u001f\\]*?::[^\u0000-\u001f]+|journey:(?:app|flows):(?:scripted|real):[A-Za-z0-9._/-]{1,200}::[^\u0000-\u001f]+)$/;
+const isExactCase = identity => typeof identity === "string" && identity.length <= 2600 && EXACT_CASE.test(identity);
+
+/**
+ * The advisory learning line (docs/plans/learning-loops.md), printed before the report and never part of it: each
+ * identity the plane's handshake asked about (`learn`) that ran, `passed`, `failed` or `skipped`, as the harness pipes
+ * said it (a unit test from its own case line, never a whole file; a journey from its group's result). Null when
+ * nothing was asked or ran, or when the line would be over 64 KiB (no line is better than a cut one: the plane then
+ * records that learning wasn't recorded, and nothing else changes).
+ */
+export function learnLine({ handshake, unitLines, journeyRuns }) {
+  const asked = new Set(handshake?.learn ?? []);
+  if (asked.size === 0) return null;
+  const rank = { passed: 0, skipped: 1, failed: 2 };
+  const seen = new Map();
+  const note = (identity, state) => {
+    if (!asked.has(identity) || !(state in rank)) return;
+    const before = seen.get(identity);
+    if (before === undefined || rank[state] > rank[before]) seen.set(identity, state);
+  };
+  for (const line of unitLines ?? []) if (line?.kind === "unit-case" && typeof line.file === "string" && typeof line.name === "string") note(`unit:${line.file}::${line.name}`, line.state);
+  for (const run of journeyRuns ?? []) for (const line of run.lines ?? []) {
+    if (line?.kind !== "journey-group" || typeof line.group !== "string" || !Array.isArray(line.results)) continue;
+    for (const one of line.results) if (typeof one?.name === "string") note(`journey:${run.script}:${run.kind}:${line.group}::${one.name}`, one.state);
+  }
+  if (seen.size === 0) return null;
+  const text = `${LEARN_PREFIX}${JSON.stringify({ nonce: handshake.nonce, results: [...seen].map(([identity, state]) => ({ identity, state })) })}`;
+  return Buffer.byteLength(text) > LEARN_MAX_BYTES ? null : text;
 }
 
 /** What a plane whose handshake names no `reportBytes` reads back of a sealed report (0.9.77's structured-output cap). */
@@ -691,6 +729,13 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       unitLines: byLabel.has("unit") && direct ? unitLines : null, reusedFromCI: ci.passed,
       journeyRuns: ranJourneys.map(one => ({ script: one.script, kind: one.kind, lines: journeyLines.get(one.label) })),
       upgradeLines: byLabel.has("upgrade") ? upgradeLines : null });
+    // The advisory learning line goes first, on its own (docs/plans/learning-loops.md): the report never reads it.
+    let learning = null;
+    try {
+      learning = learnLine({ handshake, unitLines: byLabel.has("unit") && direct ? unitLines : null,
+        journeyRuns: ranJourneys.map(one => ({ script: one.script, kind: one.kind, lines: journeyLines.get(one.label) })) });
+    } catch { /* advisory: no learning line, and the report below is the same */ }
+    if (learning !== null) process.stdout.write(`${learning}\n`);
     const line = reportLine(report, handshake.reportBytes);
     if (line === null) console.log(`The check's report is over ${Math.round(Math.min(256 * 1024, handshake.reportBytes) / 1024)} KiB, more than this plane reads back, so none is given.`);
     else process.stdout.write(`${line}\n`);

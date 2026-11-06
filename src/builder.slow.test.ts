@@ -34,6 +34,14 @@ import {
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const T0 = new Date("2026-08-11T22:00:00.000Z");
+/** Learning loops (docs/plans/learning-loops.md, Protection 5): every check the builder settled has its facts row,
+ * whichever road it took (passed, failed, never started, reused, batched, off). Checked after every test here. */
+function everySettledCheckHasFacts(store: Store): void {
+  let missing: unknown[];
+  try { missing = store.handle.prepare("SELECT c.run FROM run_check c WHERE c.status IS NOT NULL AND NOT EXISTS (SELECT 1 FROM check_fact f WHERE f.run = c.run)").all(); }
+  catch { return; /* the test closed its store */ }
+  expect(missing, "settled checks with no check_fact row").toEqual([]);
+}
 
 /** The runner gate (MCP spec v6): every claim proves identity and the repo
  * tuple, so each fixture registers its runner against the worktree's repo
@@ -188,7 +196,7 @@ describe("the builder's gates", () => {
     agentCalls.length = 0;
   });
 
-  afterEach(() => store.close());
+  afterEach(() => { everySettledCheckHasFacts(store); store.close(); });
 
   const approveScope = (goal = "add a guard on the payout path") => {
     propose(store, { taskId: "t-1", goal, now: T0 });
@@ -1034,7 +1042,7 @@ describe("what the builder tells the agent", () => {
     asked = [];
   });
 
-  afterEach(() => store.close());
+  afterEach(() => { everySettledCheckHasFacts(store); store.close(); });
 
   const build1 = (over: Record<string, unknown> = {}) =>
     build(store, {
@@ -1275,7 +1283,7 @@ describe("what the builder does afterwards", () => {
     gitCalls.length = 0;
   });
 
-  afterEach(() => store.close());
+  afterEach(() => { everySettledCheckHasFacts(store); store.close(); });
 
   const withGit = (git: Runner, speaker: Runner = agent) =>
     build(store, {
@@ -1481,7 +1489,7 @@ describe("the gates cannot be talked around", () => {
     agentCalls.length = 0;
   });
 
-  afterEach(() => store.close());
+  afterEach(() => { everySettledCheckHasFacts(store); store.close(); });
 
   const lease = (over: Record<string, unknown> = {}) =>
     store.saveWorktree({
@@ -1595,7 +1603,7 @@ describe("scope text is data, not instructions", () => {
     prompt = "";
   });
 
-  afterEach(() => store.close());
+  afterEach(() => { everySettledCheckHasFacts(store); store.close(); });
 
   test("a goal that tries to add its own rules cannot", async () => {
     // Scope text is written by whoever filed the task. A newline and a bullet
@@ -1823,7 +1831,7 @@ describe("the lease marker never reaches a commit", () => {
     gitCalls.length = 0;
   });
 
-  afterEach(() => store.close());
+  afterEach(() => { everySettledCheckHasFacts(store); store.close(); });
 
   const withStatus = (stdout: string, said: "completed" | "no-change" = "completed") =>
     build(store, {
@@ -1902,7 +1910,7 @@ describe("the commit message", () => {
     committed = [];
   });
 
-  afterEach(() => store.close());
+  afterEach(() => { everySettledCheckHasFacts(store); store.close(); });
 
   const buildWith = (goal: string, agentSaid: string) => {
     propose(store, { taskId: "t-1", goal, now: T0 });
@@ -2005,7 +2013,7 @@ describe("the pulse", () => {
     gitCalls.length = 0;
   });
 
-  afterEach(() => store.close());
+  afterEach(() => { everySettledCheckHasFacts(store); store.close(); });
 
   const request = (leaseId: string, over: Record<string, unknown> = {}) => ({
     taskId: "t-1",
@@ -3306,7 +3314,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     agentCalls.length = 0;
   });
 
-  afterEach(() => store.close());
+  afterEach(() => { everySettledCheckHasFacts(store); store.close(); });
 
   const approveScope = (goal = "add a guard on the payout path") => {
     propose(store, { taskId: "t-1", goal, now: T0 });
@@ -4819,7 +4827,7 @@ describe("an agent that stops before its handoff keeps its work (run 2085)", () 
     sh("checkout", "-q", "-b", "feat/a");
   });
 
-  afterEach(() => store.close());
+  afterEach(() => { everySettledCheckHasFacts(store); store.close(); });
 
   const buildWith = (agent: Runner) => {
     const runId = store.startRun({

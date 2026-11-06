@@ -8,6 +8,7 @@ import type { ProviderId } from "./contracts/provider.js";
 import { isAcpProvider } from "./acp-agents.js";
 import { OBSERVATION_MAILBOX, observationBrief, parseObservationCases, collectObservations } from "./observations.js";
 import { checkCommandFor, effectiveCheckLevel, recordRunCheckLevel } from "./check-levels.js";
+import { captureCheckConditions, learnRequestFor, recordCheckFacts, type CheckConditions } from "./check-facts.js";
 import { queueBatchCheck } from "./batch-checks.js";
 import { batchesFullCheck } from "./batch-policy.js";
 import { skillsContext } from "./project-skills.js";
@@ -2662,9 +2663,12 @@ async function settleProof(
   let checkAttempt: PreparedAttempt | null = null;
   let releaseFacts: ReleaseCheckFacts | null = null;
   const verification: { last: ExecResult | null } = { last: null };
+  // What the check ran under, captured as its command starts (check-facts.ts): advisory, recorded at disposition.
+  const checkConditions: { last: CheckConditions | null } = { last: null };
   const checkLog: string[] = [];
   const checkOutcomes: string[] = [];
   const checkSuites: RunCheckSuite[] = [];
+  let settledReport: CheckReport | null = null;
   const noteCheckSuite = (name: string, result: ExecResult): void => {
     checkSuites.push({
       name,
@@ -2713,7 +2717,9 @@ async function settleProof(
       const release = decision.authority !== null || releaseCheckScope(store.getScope(request.taskId));
       try {
         checkAttempt = prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access, authority: decision.authority,
-          ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, release }, now());
+          ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, release,
+          // Advisory only (docs/plans/learning-loops.md): the project's tracked identities, a separate handshake field.
+          learn: learnRequestFor(store, repo, now()).learn }, now());
       } catch (error) {
         // A recorded last release that can't be verified (eval-harness review 2, finding 4): nothing runs.
         if (!(error instanceof CheckBaselineUnverifiable)) throw error;
@@ -2730,6 +2736,8 @@ async function settleProof(
     const checkProgress = new CheckProgressTracker(snapshot => progressWrites.push(snapshot));
     const runVerification = async (label: string, missing: string | null = null): Promise<ExecResult> => {
       const streamed = { stdout: false, stderr: false };
+      // The conditions it starts under (verified tree, command, access, inherited environment): advisory, never authority.
+      if (missing === null) checkConditions.last = captureCheckConditions({ repo, head: sealedHead, command: configured, access: checkLaunchOf(store, runId, captured.effective.profile).access, envNames: SETUP_ENV_ALLOWLIST });
       // The check runs under the stop watch (v52), owned by this run.
       const result: ExecResult = missing !== null
         ? { code: 127, stdout: "", stderr: `Toolroll did not start the check: ${missing} wasn't found.`, timedOut: false, notFound: false }
@@ -2918,7 +2926,7 @@ async function settleProof(
     const last = verification.last;
     let sealedReport: CheckReport | null = null;
     if (checkAttempt !== null && last !== null && !last.notFound) {
-      sealedReport = sealCheckOutcome(store, root, checkAttempt, { stdout: last.stdout, exitCode: last.timedOut ? null : last.code }, now());
+      sealedReport = settledReport = sealCheckOutcome(store, root, checkAttempt, { stdout: last.stdout, exitCode: last.timedOut ? null : last.code }, now());
       // Where the check's time went (latency-timeline.ts): each part's start and end, display only.
       keepCheckTimeline(store, { runId, taskId: request.taskId, report: sealedReport, stdout: last.stdout, now: now() });
     }
@@ -2988,6 +2996,15 @@ async function settleProof(
     exitCode: checkExitCode,
     suites,
   }, now());
+  // What the check ran under and reported, every failure in it, each tagged by source (check-facts.ts): advisory, never
+  // read for this outcome, a verdict or an approval.
+  // A failure to record them is said on the run and never reaches the check's outcome.
+  try {
+    recordCheckFacts(store, root, { runId, taskRef: captured.taskRef, repo, conditions: checkConditions.last, receipt: { status: checkStatus }, report: settledReport,
+      attempt: checkAttempt === null ? null : { nonce: checkAttempt.nonce, learn: checkAttempt.learn }, stdout: verification.last?.stdout ?? null, now: now() });
+  } catch (error) {
+    store.addRunNote(runId, "Toolroll", `This check's facts for the flaky-test list weren't recorded (${redactSecretText(error instanceof Error ? error.message : String(error))}); its result is unchanged.`, now());
+  }
 
   // 4. The sealed diff-stat was restated above, before the correction; it
   // is re-read now, after the gate, and the cached facts are adjudicated

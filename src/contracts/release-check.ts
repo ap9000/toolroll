@@ -166,8 +166,32 @@ export const obligationSnapshotSchema = versioned(1, {
 });
 export type ObligationSnapshot = z.infer<typeof obligationSnapshotSchema>;
 
-/** What the plane writes on the check's stdin before closing it. */
-export type CheckHandshake = { nonce: string; mode: "full" | "targeted"; plan: TargetedPlan | null; watch: string[]; owed?: CheckPart[]; ciSubstitute?: boolean };
+/** What the plane writes on the check's stdin before closing it. `learn` (docs/plans/learning-loops.md) is advisory and
+ * apart from everything else: exact case identities the check is asked to say it ran, on their own line
+ * (LEARN_PREFIX), never in the report and never part of what the check owes. */
+export type CheckHandshake = { nonce: string; mode: "full" | "targeted"; plan: TargetedPlan | null; watch: string[]; owed?: CheckPart[]; ciSubstitute?: boolean; learn?: string[] };
+
+// ------------------------------------------------------------------ advisory learning lines (docs/plans/learning-loops.md)
+
+/** The advisory learning line a check prints before its report: `TOOLROLL-LEARN <json>`, at most 64 KiB, holding only
+ * the requested identities that ran. Never part of the report: buildReport, reportLine and fullCheckProblem don't read
+ * it, and a missing, malformed or oversized one loses learning evidence only. */
+export const LEARN_PREFIX = "TOOLROLL-LEARN ";
+export const LEARN_MAX_BYTES = 64 * 1024;
+export const LEARN_MAX_IDENTITIES = 200;
+/** An exact case: a unit test (`unit:<file>::<name>`) or a journey (`journey:<script>:<kind>:<group>::<name>`), never a
+ * file, group, part or version; one line, no control characters, at most 2600 characters. */
+const EXACT_CASE = /^(?:unit:[^\u0000-\u001f\\:][^\u0000-\u001f\\]*?::[^\u0000-\u001f]+|journey:(?:app|flows):(?:scripted|real):[A-Za-z0-9._/-]{1,200}::[^\u0000-\u001f]+)$/;
+export const isExactCase = (identity: unknown): identity is string => typeof identity === "string" && identity.length <= 2600 && EXACT_CASE.test(identity);
+/** What the plane asks a check to report for learning: exact cases only, first seen first, at most 200. */
+export function learnRequest(identities: readonly unknown[]): string[] {
+  return [...new Set(identities.filter(isExactCase))].slice(0, LEARN_MAX_IDENTITIES);
+}
+export const learnLineSchema = z.strictObject({
+  nonce: hex64,
+  results: z.array(z.strictObject({ identity: z.string().min(1).max(2600), state: z.enum(["passed", "failed", "skipped"]) })).max(LEARN_MAX_IDENTITIES),
+});
+export type LearnLine = z.infer<typeof learnLineSchema>;
 
 // ------------------------------------------------------------------ identities
 
