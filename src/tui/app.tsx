@@ -6,6 +6,7 @@
  * a approve (the full plan first) or accept, c accept, b send back, r retry, s stop, 1–9 answer a question, w browser, ? help,
  * q quit. Every write goes through the TuiSource, which runs it as the local owner; a refusal shows its own words.
  */
+import { keyWords, SHORTCUTS, type TuiShortcut } from "../keymap.js";
 import { Box, Text, useApp, useInput, type Key } from "ink";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ComponentProps } from "react";
@@ -37,14 +38,16 @@ type Screen =
   | { kind: "quit" }
   | { kind: "background" };
 
-const HELP_LINES = [
+/** The keys (keymap.ts is the one table the console shares): its keys as this screen does them, then the terminal's own. */
+const TUI_SAYS: Readonly<Record<TuiShortcut, string>> = {
+  new: "new task", ink: "approve the plan (shows it in full first), or accept the result", "send-back": "send the result back",
+  retry: "retry", list: "back to the task list", help: "these keys",
+};
+export const HELP_LINES = [
   "j / k or ↑ / ↓   move",
   "Enter            open the task",
-  "n                new task",
-  "a                approve the plan (shows it in full first), or accept the result",
+  ...SHORTCUTS.filter(one => typeof one.tui === "string").map(one => `${keyWords(one.keys).padEnd(17)}${TUI_SAYS[one.tui as TuiShortcut]}`),
   "c                accept the result",
-  "b                send the result back",
-  "r                retry",
   "s                stop the running attempt",
   "1–9              answer the task's question",
   "w                open in the browser",
@@ -105,6 +108,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     onExit?.(how);
   };
 
+  const pendingG = useRef(false);
   /** One write, as the local owner: its words, or the way to a password when the local owner may not. */
   const act = async (one: TuiAct): Promise<boolean> => {
     setBusy("Working…");
@@ -151,6 +155,10 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
   const quit = () => { if (session.owned()) setScreen({ kind: "quit" }); else leave("leave"); };
   /** The acts every list and task screen shares. True when the key was one of them. */
   const shared = (input: string, id: string | null, runId: number | null): boolean => {
+    // g then h or t (keymap.ts): Home and Tasks are this list here.
+    if (pendingG.current) { pendingG.current = false; if (input === "h" || input === "t") { setScreen({ kind: "main" }); return true; } }
+    if (input === "g") { pendingG.current = true; return true; }
+    if (input === "/") { const gap = SHORTCUTS.find(one => one.keys === "/")!.tui; setMessage(typeof gap === "string" ? null : gap.none); return true; }
     if (input === "n") { setScreen({ kind: "compose", purpose: "new", id: null, text: "", project: 0 }); return true; }
     if (input === "w") { browser(); return true; }
     if (input === "?") { setScreen({ kind: "help" }); return true; }

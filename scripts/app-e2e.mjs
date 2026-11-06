@@ -39,7 +39,7 @@ const skipBuild = flag("--skip-build");
 const GROUPS = {
   console: { journeys: 16, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, putting old tasks away, projects and their network, knowledge, skills, tools, models, old routine links" },
   pages: { journeys: 8, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, the release approval sheet, signing out" },
-  task: { journeys: 4, about: "A task from an idea to an accepted result, then sent back twice" },
+  task: { journeys: 5, about: "A task from an idea to an accepted result, then sent back twice; the same by keyboard alone" },
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
   lead: { journeys: 4, real: 3, shared: 1, about: "The lead chat: questions, tasks and flows from plain words" },
@@ -783,6 +783,72 @@ await journey("task", SCRIPTED, "Send it back asking for more than the plan allo
   const source = branchFile(built.id, "src/math.js");
   if (!/multiply/.test(source) || !/subtract/.test(source)) throw new Error(`the build doesn't keep subtract and add multiply: ${source.slice(0, 300)}`);
   return { revision: child, change: reason.replace(/\s+/g, " ").slice(0, 240), run: built.id };
+});
+
+/** Press a key with nothing focused (shortcuts sleep in text fields), counting the posts it makes. */
+async function pressKey(key) {
+  await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+  const posts = [];
+  const counted = request => { if (request.method() === "POST") posts.push(new URL(request.url()).pathname); };
+  page.on("request", counted);
+  await page.keyboard.press(key);
+  await page.waitForTimeout(400);
+  page.off("request", counted);
+  return posts;
+}
+
+await journey("task", SCRIPTED, "Keyboard only: n opens New task, a presses Approve (its password still asked), and a presses Accept", ["File a task in the console; the planner (Claude) drafts its scope; approve it with your password"], async () => {
+  script({ role: "builder", when: [/greet/], answer: { files: {
+    "src/greet.js": "export const greet = name => `Hello, ${name}`;\n",
+    "test/greet.test.js": ["import test from 'node:test';", "import assert from 'node:assert/strict';", "import { greet } from '../src/greet.js';", "", "test('greets', () => assert.equal(greet('Ada'), 'Hello, Ada'));", ""].join("\n"),
+  }, conclusion: "Added greet(name) to src/greet.js, with a test." } });
+  // ? lists the shortcuts from the one table; Escape closes it.
+  await page.goto(`${base}/tasks`);
+  await pressKey("Shift+?");
+  const list = await page.locator(".kbd-help").innerText();
+  if (!/Approve or Accept/.test(list) || !/Send back/.test(list) || !/Retry/.test(list)) throw new Error(`the shortcuts list says: ${list.slice(0, 300)}`);
+  await page.keyboard.press("Escape");
+  // A press key with no such button on the page presses nothing.
+  const nothing = [...await pressKey("a"), ...await pressKey("r"), ...await pressKey("b")];
+  if (nothing.length > 0) throw new Error(`a key with no button posted: ${nothing.join(", ")}`);
+  // n: New task.
+  await Promise.all([page.waitForURL(/\/tasks\/new/), pressKey("n")]);
+  await page.fill('form[action="/tasks/add"] textarea[name="title"]', "Add a greet function to src/greet.js, with a test");
+  await Promise.all([page.waitForNavigation(), page.click('form[action="/tasks/add"] button.k-send')]);
+  const id = /\/t\/([^/?#]+)/.exec(page.url())?.[1];
+  if (!id) throw new Error(`filing didn't open the task: ${page.url()}`);
+  await plannerDrafted(id, "the planner's plan", ref => ref?.plan === "drafted" && rows(`SELECT 1 FROM task_scope WHERE task_id = '${id}'`).length > 0);
+  await page.goto(`${base}/t/${id}`);
+  await page.locator("form[data-task-approval]").waitFor({ timeout: 15_000 });
+  // a: presses Approve itself. Where the rules ask for the password, its box opens and nothing is sent until it's typed;
+  // Enter on the empty field sends nothing either.
+  const navigated = page.waitForNavigation({ timeout: 30_000 });
+  const first = await pressKey("a");
+  const pop = page.getByRole("dialog", { name: "Confirm with your password" });
+  let asked = false;
+  if (await pop.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false)) {
+    asked = true;
+    if (first.length > 0) throw new Error(`a posted before the password: ${first.join(", ")}`);
+    await pop.locator('input[name="token"]').focus();
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(400);
+    if (rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0]?.approved_by) throw new Error("an empty password field approved");
+    await pop.locator('input[name="token"]').fill(w.passwords.alex);
+    await page.keyboard.press("Enter");
+  }
+  await navigated;
+  if (rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0]?.approved_by !== "alex") throw new Error(`${id} wasn't approved by its keys`);
+  await builtAndChecked(id);
+  await page.goto(`${base}/t/${encodeURIComponent(id)}?tab=result`);
+  await page.locator("[data-result-decision]").first().waitFor({ timeout: 20_000 });
+  for (const looks of await page.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
+  // a: presses Accept, one request.
+  const accepted = page.waitForNavigation({ timeout: 30_000 });
+  const posts = await pressKey("a");
+  await accepted;
+  if (posts.length !== 1 || posts[0] !== `/t/${id}/complete`) throw new Error(`a on the result posted: ${posts.join(", ") || "nothing"}`);
+  await until("the task to read complete", async () => (await page.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500 });
+  return { task: id, passwordAsked: asked };
 });
 
 await journey("builds", REAL_MODEL, "A build stops to ask a question the plan leaves open; you answer on the decision page and it carries on", [], async () => {

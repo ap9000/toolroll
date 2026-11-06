@@ -14,6 +14,7 @@ import { DISCLOSURE_CSS } from "../disclosure.js";
 import { EVIDENCE_PACK_CSS } from "../evidence-pack.js";
 import { EXPORT_CSS } from "../export-ui.js";
 import { START_COMMAND } from "../first-run.js";
+import { SHORTCUTS, webKeymapScript } from "../keymap.js";
 import { GALLERY_CSS } from "../flow-gallery-ui.js";
 import { STARTERS_CSS } from "../flow-starters-ui.js";
 import { FLOWS_CSS } from "../flows-ui.js";
@@ -470,23 +471,22 @@ export function chromeScript(): string {
     `var next=at===-1?(delta>0?0:set.length-1):Math.max(0,Math.min(set.length-1,at+delta));` +
     `if(next===at)return;` +
     `set[next].focus();ev.preventDefault();}` +
-    // key routing: never inside editable targets, no modifiers, no IME
-    // composition (finding 4); repeats allowed only for j/k
+    // key routing (keymap.ts, one table with the terminal UI): never inside editable targets, no modifiers, no IME
+    // composition (finding 4); repeats allowed only for j/k. A press key presses only a control the page rendered.
+    webKeymapScript() +
     `var pending=null;` +
     `document.addEventListener("keydown",function(ev){` +
     `if(ev.isComposing||ev.metaKey||ev.ctrlKey||ev.altKey)return;` +
     `var t=ev.target;var tag=t&&t.tagName?t.tagName.toLowerCase():"";` +
-    `if(tag==="input"||tag==="textarea"||tag==="select"||tag==="button"||(t&&t.isContentEditable))return;` +
+    `if(tag==="input"||tag==="textarea"||tag==="select"||(t&&t.isContentEditable)||(t&&t.closest&&t.closest("[role=textbox],[role=dialog]:not(.kbd-help)")))return;` +
     `if(ev.key==="Escape"){if(helpOpen()){toggleHelp();ev.preventDefault();return;}close();return;}` +
     `if(helpOpen())return;` +
     `if(ev.repeat&&ev.key!=="j"&&ev.key!=="k")return;` +
-    `if(ev.key==="/"){show();ev.preventDefault();return;}` +
-    `if(ev.key==="?"){toggleHelp();ev.preventDefault();return;}` +
     `if(ev.key==="j"||ev.key==="k"){rove(ev.key==="j"?1:-1,ev);return;}` +
-    `if(pending==="g"){pending=null;` +
-    `var map={b:"/tasks?view=board",i:"/",w:"/tasks?scope=all",d:"/tasks?view=done",q:"/tasks?view=order",f:"/fleet",t:"/tasks",a:"/activity",p:"/projects"};` +
-    `if(map[ev.key]){go(map[ev.key]);ev.preventDefault();}return;}` +
-    `if(ev.key==="g"){pending="g";setTimeout(function(){pending=null;},800);}});` +
+    `if(pending==="g"){pending=null;var after=GKEYS[ev.key];if(after&&run(after))ev.preventDefault();return;}` +
+    `if(ev.key==="g"){pending="g";setTimeout(function(){pending=null;},800);return;}` +
+    `var act=Object.prototype.hasOwnProperty.call(KEYS,ev.key)?KEYS[ev.key]:null;` +
+    `if(act&&run(act))ev.preventDefault();});` +
     `})();`
   );
 }
@@ -555,17 +555,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
  * absent from sensitive pages. Navigation help in plain words — no key
  * ever posts. */
 export const KBD_HELP = html`<div class="kbd-help" hidden role="dialog" aria-label="keyboard shortcuts" tabindex="-1">\
-<h2>Keyboard shortcuts</h2><table>\
-<tr><td><kbd>/</kbd></td><td>jump to a page or an open task</td></tr>\
-<tr><td><kbd>g</kbd> then <kbd>i</kbd></td><td>go to the inbox</td></tr>\
-<tr><td><kbd>g</kbd> then <kbd>b</kbd></td><td>go to the board</td></tr>\
-<tr><td><kbd>g</kbd> then <kbd>q</kbd></td><td>go to the queue</td></tr>\
-<tr><td><kbd>g</kbd> then <kbd>f</kbd></td><td>go to the fleet</td></tr>\
-<tr><td><kbd>g</kbd> then <kbd>w</kbd></td><td>go to the workbench</td></tr>\
-<tr><td><kbd>g</kbd> then <kbd>t</kbd></td><td>go to the task list</td></tr>\
-<tr><td><kbd>g</kbd> then <kbd>a</kbd></td><td>go to the activity view</td></tr>\
-<tr><td><kbd>g</kbd> then <kbd>p</kbd></td><td>go to the projects</td></tr>\
-<tr><td><kbd>g</kbd> then <kbd>d</kbd></td><td>go to what is done</td></tr>\
+<h2>Keyboard shortcuts</h2><table>${SHORTCUTS.map(one => html`<tr><td>${joinHtml(one.keys.split(" ").map(key => html`<kbd>${key}</kbd>`), " then ")}</td><td>${one.says}</td></tr>`)}\
 <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>move through the rows on this page</td></tr>\
 <tr><td><kbd>Escape</kbd></td><td>close this</td></tr>\
 </table></div>`;
