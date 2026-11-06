@@ -17,6 +17,8 @@ import { addApprover, approve, propose } from "./scope.js";
 import { run } from "./exec.js";
 import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, readSealedJson } from "./check-report.js";
 import { setProjectCheckLevel } from "./check-levels.js";
+import { checkFactOf, checkResultsOf } from "./check-facts.js";
+import { watchObservation } from "./flaky.js";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const T0 = new Date("2026-10-25T10:00:00.000Z");
@@ -64,6 +66,8 @@ describe("a prepared candidate's Full check carries the handshake", () => {
     const authority = store.routeAuthorityFor(taskRef, "builder");
     if (!authority?.ok) throw new Error("route");
     const runId = store.startRun({ taskRef, leaseId: "test-lease", runner: "builder-1", branch: "feat/a", worktree: wt, route: authority.stamp, now: T0 });
+    // A tracked identity (learning loops): asked about on its own handshake field.
+    watchObservation(store, { repo: REPO, identity: "unit:src/a.test.ts::adds", observation: 1, now: T0 });
 
     let seenAttempt: ReturnType<typeof checkAttemptOf> = null;
     let seenStdin: string | undefined;
@@ -74,14 +78,19 @@ describe("a prepared candidate's Full check carries the handshake", () => {
       const handshake = JSON.parse(options?.stdin ?? "{}") as { nonce: string; mode: string };
       expect(JSON.stringify(options?.env ?? {})).not.toContain(handshake.nonce);
       const report = { version: 1, nonce: handshake.nonce, mode: handshake.mode, planDigest: null, exitCode: 0, parts: [], units: null, journeys: [], upgrades: null };
-      return { ...OK, stdout: `checks passed\nTOOLROLL_CHECK_REPORT ${JSON.stringify(report)}\n` };
+      const learned = `TOOLROLL-LEARN ${JSON.stringify({ nonce: handshake.nonce, results: [{ identity: "unit:src/a.test.ts::adds", state: "passed" }] })}`;
+      return { ...OK, stdout: `checks passed\n${learned}\nTOOLROLL_CHECK_REPORT ${JSON.stringify(report)}\n` };
     };
     const actualGit: Runner = async (file, args, options) => run(file, args, options);
     const result = await build(store, { taskId: "t-1", taskRef, runner: "builder-1", worktree: wt, runId, evidenceRoot: join(wt, ".evidence"), branch: "feat/a", now: T0,
       agent: (async () => OK) as Runner, git: actualGit, verify });
     expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
     expect(seenAttempt).toMatchObject({ run: runId, mode: "full" });
-    expect(JSON.parse(seenStdin!)).toMatchObject({ mode: "full", plan: null });
+    expect(JSON.parse(seenStdin!)).toMatchObject({ mode: "full", plan: null, watch: [], learn: ["unit:src/a.test.ts::adds"] });
+    // Its facts, recorded at disposition beside the check's own outcome (learning loops, slice 1).
+    expect(checkFactOf(store, runId)).toMatchObject({ repo: REPO, tree: expect.stringMatching(/^[0-9a-f]{40}$/), learnState: "recorded",
+      conditionsDigest: expect.stringMatching(/^[0-9a-f]{64}$/), conditionsClass: `${process.platform}-${process.arch}-node${process.versions.node.split(".")[0]}` });
+    expect(checkResultsOf(store, runId)).toEqual(expect.arrayContaining([{ identity: "check", state: "passed", source: "receipt" }, { identity: "unit:src/a.test.ts::adds", state: "passed", source: "learn" }]));
     expect(readSealedJson(store, join(wt, ".evidence"), runId, CHECK_REPORT_CAPTURE)).not.toBeNull();
     expect(readSealedJson(store, join(wt, ".evidence"), runId, CHECK_INVENTORY_CAPTURE)!.value).toMatchObject({ sealed: { units: ["src/a.test.ts"] } });
   });

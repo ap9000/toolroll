@@ -18,7 +18,7 @@ import { fullCheckProblem, projectGitDir } from "./check-report.js";
 import { sealedRun } from "./release-recheck.js";
 import { runCheckLevel } from "./check-levels.js";
 import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff, verifiedTreeEntries } from "./commit-extract.js";
-import { EVAL_HOOK_FILES, evalHookProblem, storeRewriteProblem } from "./eval-hooks.js";
+import { EVAL_HOOK_FILES, evalHookProblem, LEARNING_HOOK_FILES, learningHookProblem, storeRewriteProblem } from "./eval-hooks.js";
 import { mightName, testInfrastructure, type TestInfrastructure } from "./test-infra.js";
 import { chatControlHref } from "./chat-controls.js";
 import { INFRA_RERUNS_PER_CANDIDATE, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, prChecksVerdict, type CheckFailure } from "./release.js";
@@ -191,8 +191,11 @@ const TEST_FILE = /^(?!.*(^|\/)fixtures?\/)[^]*\.test\.ts$/;
  * accounting readings evals trust (reported-usage.ts, run-efficiency.ts). Where they are called from, and the store's
  * accounting reads, are held by eval-hooks.ts instead (evalHookProblem). Results routing's policy is here too
  * (docs/plans/results-routing.md, Protection 1): the record evaluator, the rules, the one writer module, this scan's
- * manifest and the record contract; their callers and pinned bodies are route-hooks.ts's (routingHookProblem). */
-const EVAL_POLICY = /^(evals\/|src\/evals[^/]*\.ts$|src\/eval-[^/]*\.ts$|src\/reviewer-evals\.ts$|src\/nightly-github\.ts$|src\/contracts\/evals[^/]*\.ts$|src\/reported-usage\.ts$|src\/run-efficiency\.ts$|src\/route-(?:results|rules|store|hooks)\.ts$|src\/contracts\/route-results\.ts$)/;
+ * manifest and the record contract; their callers and pinned bodies are route-hooks.ts's (routingHookProblem). The
+ * learning-loops policy modules are here whole (docs/plans/learning-loops.md, Protection 1): check facts, flaky tests
+ * (local and CI), lesson notes, memory use and tidy-up; their callers, pinned bodies and SQL writers are eval-hooks.ts's
+ * (learningHookProblem). */
+const EVAL_POLICY = /^(evals\/|src\/evals[^/]*\.ts$|src\/eval-[^/]*\.ts$|src\/reviewer-evals\.ts$|src\/nightly-github\.ts$|src\/contracts\/evals[^/]*\.ts$|src\/reported-usage\.ts$|src\/run-efficiency\.ts$|src\/route-(?:results|rules|store|hooks)\.ts$|src\/contracts\/route-results\.ts$|src\/(?:check-facts|flaky|flaky-ci|lesson-notes|memory-use|memory-tidy)\.ts$)/;
 
 /** Build or type configuration anywhere: a person approves it. */
 const BUILD_CONFIG = /(^|\/)(tsconfig[^/]*\.json|[^/]*\.config\.[cm]?[jt]s|\.npmrc|\.nvmrc|\.node-version)$/;
@@ -217,7 +220,7 @@ export function autoPathProblem(path: string): string | null {
   }
   // Test files under test/ carry the same trust as src's (Alex: test authors are trusted) — only the `.test.ts` files
   // themselves, never a helper, fixture, setup or config file beside them, nor one inside a fixtures folder.
-  if (EVAL_POLICY.test(normal)) return "it's eval, nightly or model routing policy code";
+  if (EVAL_POLICY.test(normal)) return "it's eval, nightly, model routing or learning policy code";
   if (testUnderTest) return null;
   if (BUILD_CONFIG.test(normal)) return "it configures the build or the checks";
   if (normal === "package.json" || normal === "package-lock.json") return null;
@@ -324,6 +327,12 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
   const routing = routingHookProblem({ candidate: routingAt(after.value.tree), base: routingAt(before.value.tree) },
     { paths: changed, candidate: changedAt(after.value.tree), base: changedAt(before.value.tree) });
   if (routing !== null) return `${routing}: a person decides`;
+  // Learning loops (eval-hooks.ts learningHookProblem): the calls that record a check's facts, the strictly pinned
+  // memory and check bodies the base holds, and no changed file writing a learning-loops table outside its writers.
+  const learningAt = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, LEARNING_HOOK_FILES); return (file: string): Buffer | null => blobs.ok ? blobs.value.get(file)?.bytes ?? null : null; };
+  const learning = learningHookProblem({ candidate: learningAt(after.value.tree), base: learningAt(before.value.tree) },
+    { paths: changed, candidate: changedAt(after.value.tree), base: changedAt(before.value.tree) });
+  if (learning !== null) return `${learning}: a person decides`;
   for (const change of diff.value) {
     const modes = [change.before?.mode, change.after?.mode].filter((one): one is string => one !== undefined);
     if (modes.includes("120000") || modes.includes("160000")) return `${change.path} is a symlink or submodule`;
