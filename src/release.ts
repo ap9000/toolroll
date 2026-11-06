@@ -298,7 +298,8 @@ export type ReleaseAdapters = {
     fileGate(input: { taskId: string; title: string; checkout: string; candidate: string; goal: string; acceptance: string;
       /** Release terms to file with the scope (task scope --release): the version, pull request and branch. */
       release?: { version: string; pr: number; branch: string; noCarry: boolean } }): Promise<{ scopeDigest: string }>;
-    complete(taskId: string, receipt: string): Promise<{ ok: true } | { ok: false; message: string }>;
+    /** `reason` "stopping": Toolroll is still proving the check's build stopped (stop-proof.ts); it clears on its own. */
+    complete(taskId: string, receipt: string): Promise<{ ok: true } | { ok: false; message: string; reason?: string }>;
     busy(): Promise<{ running: number; tasks: string[] }>;
     /** scripts/deploy-browser.mjs --run --stage --yes from the builder's checkout; runtime is its final JSON's `runtime`. */
     deploy(input: { run: number; worktree: string; stage: string; operation?: { id: string; secret: string } }): Promise<{ ok: true; runtime: string } | DeployStop>;
@@ -1128,7 +1129,12 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           await checked(gate, "complete");
           if (gate.completion?.digest !== check.receipt) {
             intend("complete");
-            const done = await adapters.toolroll.complete(j.task.id, check.receipt);
+            // Toolroll proves the check's build stopped by itself (stop-proof.ts) a short while after it finished: the
+            // release waits for that, never for a person to confirm it.
+            const done = await waitFor("quiet", "Toolroll to make sure the release check stopped", async () => {
+              const tried = await adapters.toolroll.complete(j.task.id, check.receipt);
+              return !tried.ok && tried.reason === "stopping" ? null : tried;
+            });
             if (!done.ok) throw new Stop("complete", `Couldn't mark task ${j.task.id} complete: ${done.message} Mark that exact result complete in the console, then rerun.`);
           }
           const after = await adapters.toolroll.gate(j.task.id);

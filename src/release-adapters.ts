@@ -478,7 +478,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       },
       async complete(taskId, receipt) {
         const answer = await toolroll("task", "complete", taskId, "--digest", receipt);
-        return answer["ok"] === true ? { ok: true } : { ok: false, message: refused(answer) };
+        return answer["ok"] === true ? { ok: true } : { ok: false, message: refused(answer), ...(typeof answer["reason"] === "string" ? { reason: answer["reason"] } : {}) };
       },
       async busy() {
         const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;

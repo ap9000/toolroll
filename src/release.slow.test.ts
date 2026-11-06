@@ -365,6 +365,27 @@ describe("toolroll release", () => {
     expect(s.calls).toEqual(["fileGate"]);
   });
 
+  test("release check 3312: complete waits while Toolroll proves the check stopped, then carries on with nobody asked", async () => {
+    const dir = stateDir();
+    const { s, adapters } = world();
+    const complete = adapters.toolroll.complete;
+    let stopping = 2;
+    adapters.toolroll.complete = async (task, receipt) => stopping-- > 0
+      ? { ok: false, reason: "stopping", message: "Toolroll is still making sure build #2757 stopped. This clears on its own." }
+      : complete(task, receipt);
+    const outcome = await runRelease(options(dir), adapters);
+    expect(outcome).toMatchObject({ ok: true });
+    expect(s.calls).toEqual(["fileGate", "complete", "deploy", "switchLinks", "merge", "deleteBranch", "createTag", "propose", "brewMerge"]);
+    expect(s.said.some(line => line.includes("Toolroll to make sure the release check stopped"))).toBe(true);
+    expect(s.said.join("\n")).not.toMatch(/confirm it stopped/i);
+  });
+
+  test("a completion refused for anything else still stops the release at complete", async () => {
+    const { adapters } = world();
+    adapters.toolroll.complete = async () => ({ ok: false, reason: "not-ready", message: "This assignment still has unresolved execution, scope or decisions." });
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "complete" });
+  });
+
   test("revoking the approver while the check runs stops completion", async () => {
     const { s, adapters } = world();
     s.onSleep.push(state => { if (state.gate.result && state.gate.approval) state.gate.approval.active = false; });

@@ -8,15 +8,15 @@
 
 /** What a person is asked for. */
 export type NeedKey =
-  | "approval" | "card" | "answer" | "questions" | "sign-in" | "confirm-stopped" | "check-stopped" | "hold"
+  | "approval" | "card" | "answer" | "questions" | "sign-in" | "stop-unproven" | "hold"
   | "choose-project" | "define-task" | "fix-request" | "choose-agent" | "fix-dependency" | "add-requirement"
   | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "replan" | "earlier-version" | "other";
 /** What the work waits for when no person can act. */
-export type WaitKey = "build-stopping" | "build-finishing" | "other-computer" | "card-reply" | "card-time" | "card-ci";
+export type WaitKey = "build-stopping" | "build-finishing" | "build-checking" | "other-computer" | "card-reply" | "card-time" | "card-ci";
 
 /** The action's code: the WorkAction that owns the act, or one of the acts a surface renders itself. */
 export type NeedActionCode =
-  | "approve-scope" | "approve-card" | "answer-decision" | "inspect-decisions" | "sign-in" | "confirm-stopped" | "inspect-hold"
+  | "approve-scope" | "approve-card" | "answer-decision" | "inspect-decisions" | "sign-in" | "recheck-stopped" | "inspect-hold"
   | "place-task" | "write-scope" | "select-agent" | "repair-dependency" | "repair-capability" | "start-worker" | "reconcile-run"
   | "open-result" | "retry-task" | "inspect-task";
 export type NeedAction = { code: NeedActionCode; label: string };
@@ -47,9 +47,10 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
   answer: { sentence: () => "Answer the question so the work can continue.", action: { code: "answer-decision", label: "Answer the question" }, useReason: always },
   questions: { sentence: () => "Too many questions are open. Answer one so this task can start.", action: { code: "inspect-decisions", label: "Answer questions" } },
   "sign-in": { sentence: context => `${context.provider ?? "Your agent"} needs you to sign in again. The task starts on its own after.`, action: { code: "sign-in", label: "Sign in again" }, useReason: reason => /sign in|API key/i.test(reason) },
-  "confirm-stopped": { sentence: context => `Toolroll can't confirm ${build(context)} stopped. Nothing from it is running.`, action: { code: "confirm-stopped", label: "Confirm it stopped" } },
-  // Toolroll can't look at all: never "nothing is running"; the person checks, says so, then confirms.
-  "check-stopped": { sentence: context => `Toolroll can't check whether ${build(context)} stopped. Make sure nothing from it is running, then confirm.`, action: { code: "confirm-stopped", label: "Confirm it stopped" } },
+  // Toolroll proves a build stopped itself (stop-proof.ts); nobody is asked to vouch for it. Only when this computer
+  // can't look, or something Toolroll didn't start is using the build's folder, is the work held: the person can close
+  // what's theirs and have it look again, nothing more.
+  "stop-unproven": { sentence: context => `Toolroll can't prove ${build(context)} stopped from this computer, so the work is held. Close anything of yours that is using its folder, then check again.`, action: { code: "recheck-stopped", label: "Check again" } },
   hold: { sentence: () => "A hold is keeping this task from starting. Review it to release it.", action: { code: "inspect-hold", label: "Review hold" } },
   "choose-project": { sentence: () => "Choose a project so a builder can start.", action: { code: "place-task", label: "Choose a project" } },
   "define-task": { sentence: () => "Say what the task should do so it can be planned.", action: { code: "write-scope", label: "Define the task" } },
@@ -95,7 +96,7 @@ export function askChipOf(read: { headline: string; need?: NeedKey | null; misma
   if (read.need === "start-builder" || read.need === "connect-builder") return "Builder offline";
   if (read.need === "answer" || read.need === "questions") return "Question";
   if (read.need === "hold") return "On hold";
-  if (read.need === "vanished" || read.need === "confirm-stopped" || read.need === "check-stopped") return "Stopped";
+  if (read.need === "vanished" || read.need === "stop-unproven") return "Stopped";
   if (read.need === "sign-in") return "Sign in";
   return null;
 }
@@ -121,12 +122,13 @@ export const NEED_ASK: Readonly<Record<NeedKey, Ask>> = {
   approval: "decide", card: "decide", answer: "decide", questions: "decide", "choose-project": "decide", "define-task": "decide",
   "fix-request": "decide", "choose-agent": "decide",
   "review-result": "review", rebuild: "review", replan: "decide",
-  "sign-in": "unblock", "confirm-stopped": "unblock", "check-stopped": "unblock", hold: "unblock", "fix-dependency": "unblock",
+  "sign-in": "unblock", "stop-unproven": "unblock", hold: "unblock", "fix-dependency": "unblock",
   "add-requirement": "unblock", "connect-builder": "unblock", "start-builder": "unblock", vanished: "unblock", "earlier-version": "unblock", other: "unblock",
 };
 
 export const WAITS: Readonly<Record<WaitKey, (context: NeedContext) => string>> = {
   "build-finishing": () => "Finishing up; this clears on its own.",
+  "build-checking": context => `Making sure ${build(context)} stopped. This clears on its own.`,
   "build-stopping": context => `Waiting for ${build(context)} to stop. Nothing is needed from you.`,
   "other-computer": context => `Waiting for the computer that ran ${build(context)} to confirm it stopped.`,
   "card-reply": () => "Waiting for a reply.",
@@ -154,15 +156,15 @@ export function waitSentence(key: WaitKey | undefined, reason: string | null, co
   return plain !== null && !hasInternalWords(plain) ? plain : "Waiting for the work to continue on its own.";
 }
 
-/** A finished run Toolroll can't prove stopped (store.stopQuiescenceFact):
- * a person can confirm it only when nothing of it may still be running.
- * `unknown`: Toolroll can't check, so the person confirms they checked. */
+/** A finished run Toolroll can't yet prove stopped (store.stopQuiescenceFact). Nobody is asked to confirm it:
+ * `unprovable` is Toolroll's own check still to run (stop-proof.ts), which settles by itself; `unknown` is that this
+ * computer can't look, or something Toolroll didn't start is in the build's folder — held, with nothing to vouch for. */
 export function processNeedOf(fact: { run: number; kind: "open" | "alive" | "elsewhere" | "unprovable" | "unknown" | "settling" } | null):
-  { need: "confirm-stopped" | "check-stopped"; build: number } | { wait: WaitKey; build: number } | null {
+  { need: "stop-unproven"; build: number } | { wait: WaitKey; build: number } | null {
   if (fact === null) return null;
   if (fact.kind === "settling") return { wait: "build-finishing", build: fact.run };
-  if (fact.kind === "unprovable") return { need: "confirm-stopped", build: fact.run };
-  if (fact.kind === "unknown") return { need: "check-stopped", build: fact.run };
+  if (fact.kind === "unprovable") return { wait: "build-checking", build: fact.run };
+  if (fact.kind === "unknown") return { need: "stop-unproven", build: fact.run };
   return { wait: fact.kind === "elsewhere" ? "other-computer" : "build-stopping", build: fact.run };
 }
 

@@ -45,6 +45,7 @@ import { validKeyTail } from "../live-records.js";
 import { runNotes } from "../live-notes.js";
 import { latestFinishedAttempt,retryNoteOf } from '../needs-you.js';
 import { REMOTE_MESSAGES } from "../operate-remote.js";
+import { proveRunStopped } from "../stop-proof.js";
 import { aggregateNewNames,observeWorktree,parseBaseTreeSnapshot,PEEK_LIMITS } from "../peek.js";
 import { isTaskSize,PHASES as ROUTE_PHASES,type RouteOverride } from "../phase-routing.js";
 import { applyModeToNewFiling,authorizePlanUnderMode } from "../plan-auto.js";
@@ -1338,13 +1339,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     return redirect(response, decisionBack);
   }
 
-  async function taskConfirmStopped(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, now, posted } = ctx;
-    const act = matchTaskPath(url.pathname, "/confirm-stopped$");
+  async function taskRecheckStopped(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, posted } = ctx;
+    const act = matchTaskPath(url.pathname, "/recheck-stopped$");
     if (act === null) return noPage(who, response);
-    const body = readForm(posted, CONSOLE_FORMS.confirmStopped);
-    // Confirming a finished build stopped is an approver's act behind the password, typed again — the same
-    // record as `toolroll run settle`, refused while anything of the run may still be running.
+    const body = readForm(posted, CONSOLE_FORMS.recheckStopped);
+    // Check again: Toolroll looks at this computer's processes for the build once more (stop-proof.ts) and settles it
+    // when none of them is the build's. Nobody vouches that a build stopped, so there is nothing to confirm here.
     const back = taskHref(act.taskId);
     const ref = store.lookupRef(act.taskId);
     if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/work");
@@ -1354,19 +1355,18 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (run === null || runTask === null || familyOf(runTask)?.root.id !== (familyOf(act.taskId)?.root.id ?? act.taskId)) {
       return taskScreen(response, who, act.taskId, "That build isn't part of this task.", 409);
     }
-    if (!authenticateApprover(who, body.get("token") ?? "", ref.repo).ok || !store.accountCanAccess(who.name, ref.repo)) {
-      return taskScreen(response, who, act.taskId, "That password didn't match. Nothing changed.", 403);
-    }
-    // When Toolroll can't check at all, the approver also says they checked: never a one-click confirmation.
-    if (store.stopQuiescenceFact(run.id)?.kind === "unknown" && body.get("checked") !== "yes") {
-      return taskScreen(response, who, act.taskId, `Make sure nothing from build #${run.id} is running, then tick the box to confirm.`, 409);
-    }
-    const settled = store.settleRunWitnessesByApprover({ runId: run.id, by: who.name, why: "Confirmed in the console that nothing from this build is running." }, now);
-    if (!settled.ok) {
-      return taskScreen(response, who, act.taskId, settled.reason === "alive" || settled.reason === "still-running"
-        ? `Something from build #${run.id} may still be running, so it can't be confirmed stopped yet.` : `Build #${run.id} can't be confirmed stopped.`, 409);
-    }
+    if (!store.accountCanAccess(who.name, ref.repo)) return taskScreen(response, who, act.taskId, "You can't act on this project's tasks.", 403);
+    const proved = await proveRunStopped(store, run.id, clock);
     bustBadge();
+    const left = store.stopQuiescenceFact(run.id);
+    if (left !== null) {
+      const words = proved.outcome === "blocked" ? `Build #${proved.run} ${proved.words}.`
+        : left.kind === "alive" || left.kind === "open" ? `Something from build #${left.run} may still be running. Toolroll stops what it proves is the build's on its own.`
+        : left.kind === "elsewhere" ? `Build #${left.run} ran on another computer; only that computer can check it stopped.`
+        : left.kind === "unknown" ? `Toolroll still can't prove build #${left.run} stopped from this computer.`
+        : `Toolroll is still making sure build #${left.run} stopped. This clears on its own.`;
+      return taskScreen(response, who, act.taskId, words, 409);
+    }
     const to = resultReturnTarget(body.get("return"), run.id, runTasks(run.taskRef));
     return redirect(response, body.get("return") ? to : back);
   }
@@ -3147,7 +3147,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "task.act.retry-review": taskAct("retry-review"),
     "task.act.complete": taskAct("complete"),
     "task.act.merge": taskMerge,
-    "task.act.confirm-stopped": taskConfirmStopped,
+    "task.act.recheck-stopped": taskRecheckStopped,
     "task.act.stop": taskAct("stop"),
     "task.act.stop-carrying": taskAct("stop-carrying"),
     "task.act.pause": taskAct("pause"),

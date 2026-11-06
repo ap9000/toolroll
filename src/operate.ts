@@ -33,6 +33,7 @@ import { personProof } from "./person-proof.js";
 import { RemoteMains } from "./remote-main.js";
 import { checkoutPlan, cleanCheckouts, discardCheckout, finishedCheckouts, slimKeptCheckouts, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
 import { closeOutCheckouts, closeOutRuns, stoppedWords } from "./run-closeout.js";
+import { proveFinishedRunsStopped, proveRunStopped } from "./stop-proof.js";
 import { MIN_DAYS, RETENTION_KINDS, countWords, dailyRetention, isRetentionKind, lastSweepAt, parsePeriod, periodLabel, periodWords, retentionPlan, sweepWords, type RetentionKind, type RetentionSweep } from "./retention.js";
 import { checkPolicy, parseList, policyParts, type SavedPolicy } from "./policy.js";
 import { billingOf, budgetHoldWords, budgetLabel, budgetStates, monthNamed, monthOf, spendItems, subagentNames, usd as spendUsd, type BudgetAgent, type BudgetHold } from "./spend.js";
@@ -3905,6 +3906,9 @@ async function reconcileCommand(
   // A witness reserved for a spawn that never made a process (a crash or a
   // thrown spawn) settles once its run's process groups are proven gone.
   store.settleUnspawnedWitnesses(clock());
+  // What no record proves stopped, Toolroll proves itself from this computer's processes (stop-proof.ts): nobody is
+  // asked to confirm a build stopped, so a release waiting on its check moves on by itself.
+  await proveFinishedRunsStopped(store, clock);
   store.settleQuiescentStops(clock());
   // An update whose updater ended while letting work finish must not leave new work paused.
   try { releaseStalledUpdate(dirname(context.databaseFile), clock()); } catch { /* status and the console say it */ }
@@ -11388,11 +11392,11 @@ async function resumeTaskCommand(
 }
 
 /**
- * `toolroll run settle <id> --why "<text>" --as <you> --token <t>`: an
- * approver's last resort for a finished run whose process witnesses can be
- * proven neither exited nor alive (a spawn interrupted before its pid was
- * written). Refuses while anything of the run is alive; the reason is kept
- * in the ledger against the approver's name. Signals nothing.
+ * `toolroll run settle <id> --as <you> --token <t>`: have Toolroll check again whether a finished run stopped. Nobody
+ * vouches that a build stopped (a person can't see whether a process exited): this runs Toolroll's own look at this
+ * computer's processes (stop-proof.ts), the one the worker makes on its own, and settles the run when none of them is
+ * the run's. A leftover proven the run's is stopped; anything else is left alone. `--why` is still accepted from older
+ * scripts and ignored.
  */
 async function runCommand(
   positional: readonly string[],
@@ -11402,26 +11406,31 @@ async function runCommand(
   const { store, write, json, clock } = context;
   const [action, id, ...extra] = positional;
   const command = "run settle";
-  const usage = "`toolroll run settle <run-id> --why \"<reason>\" --as <you> --token <t>`";
+  const usage = "`toolroll run settle <run-id>`";
   if (action !== "settle") return fail(write, json, "run", "usage", usage, EXIT.usage);
   const runId = Number(id ?? "");
-  const why = text(flags, "why")?.trim();
   if (id === undefined || extra.length > 0 || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(runId)) return fail(write, json, command, "usage", usage, EXIT.usage);
-  if (why === undefined || why === "" || why.length > 300 || /[\x00-\x1f\x7f]/.test(why)) return fail(write, json, command, "usage", "say why in one line with --why (at most 300 characters) — it is kept in the ledger", EXIT.usage);
   const run = store.getRun(runId);
   if (run === null) return fail(write, json, command, "unknown-run", `no run #${runId}`, EXIT.refused);
   const acting = await askCredentials(flags, context);
-  if (acting === null) return fail(write, json, command, "usage", "settling takes `--as <you> --token <t>` — it is an approver's act and is recorded against your name", EXIT.usage);
+  if (acting === null) return fail(write, json, command, "usage", "checking a run again takes `--as <you> --token <t>` (or your sign-in from `toolroll up`)", EXIT.usage);
   const authenticated = authenticateApprover(store, acting.name, acting.token);
   const repo = store.refById(run.taskRef)?.repo ?? null;
   if (!authenticated.ok || !store.accountCanAccess(acting.name, repo)) return fail(write, json, command, "not-an-approver", "that is not an approver for this run's project, or the token does not match", EXIT.refused);
-  const settled = store.settleRunWitnessesByApprover({ runId, by: acting.name, why }, clock());
-  if (!settled.ok) return fail(write, json, command, settled.reason, settled.detail, EXIT.refused, { run: runId });
-  return succeed(write, json, command, { run: runId, witnesses: settled.witnesses, repeated: settled.repeated }, () => [
-    settled.repeated
-      ? `Run #${runId} has no unsettled process witness; nothing changed.`
-      : `Settled run #${runId}: ${settled.witnesses.length} process witness${settled.witnesses.length === 1 ? "" : "es"} recorded as ended, with your reason in the ledger.`,
-  ]);
+  if (run.outcome === null) return fail(write, json, command, "still-running", `run #${runId} is still open`, EXIT.refused, { run: runId });
+  const proved = await proveRunStopped(store, runId, clock);
+  const stopped = store.stopQuiescenceFact(runId);
+  if (stopped === null) {
+    return succeed(write, json, command, { run: runId, outcome: proved.outcome === "skipped" ? "already-stopped" : "stopped", stoppedProcesses: proved.stopped ?? 0 }, () => [
+      proved.outcome === "skipped" ? `Run #${runId} had already stopped; nothing changed.`
+        : `Run #${runId} stopped: Toolroll checked this computer's processes and none of them is the run's${proved.stopped ? ` (it stopped ${proved.stopped} the run left running)` : ""}. The check is in the ledger.`,
+    ]);
+  }
+  const reason = proved.outcome === "blocked" ? "unproven" : stopped.kind === "alive" ? "alive" : "waiting";
+  const words = proved.outcome === "blocked" ? `Run #${proved.run} ${proved.words}.`
+    : stopped.kind === "alive" ? `Something of run #${stopped.run} is still running; Toolroll stops what is proven the run's on its own.`
+    : `Toolroll is still making sure run #${stopped.run} stopped. This clears on its own.`;
+  return fail(write, json, command, reason, words, EXIT.refused, { run: runId });
 }
 
 // ---- shared ---------------------------------------------------------------

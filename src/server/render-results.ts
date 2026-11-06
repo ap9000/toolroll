@@ -883,7 +883,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     checksRunning,
     blocked,
     canRequest: panel.panel.canRequest && panel.panel.request !== null,
-    need: need === null || need.accept != null ? null : need.rebuild != null ? "rebuild" : need.confirm !== null ? "confirm-stopped" : null,
+    need: need === null || need.accept != null ? null : need.rebuild != null ? "rebuild" : need.confirm !== null ? "recheck-stopped" : null,
     next: nextKind === "revise" || nextKind === "draft-repair" ? nextKind : null,
     unanswered: settled === null ? 0 : unanswered.length,
     notRight: 0,
@@ -2466,13 +2466,11 @@ export function needActionOf(assignment: AssignmentSnapshot | null, status: Task
     // Nothing here resolves it: no act at all, never a link back to the task (which sends the person here).
     if (status.need.key === "review-result" || here) return null;
   }
-  const confirm = action?.code === "confirm-stopped" && action.target.runId !== null && csrf !== ""
-    ? { action: `${taskHref(assignment.rootId)}/confirm-stopped`, run: action.target.runId, returnTo, checked: needsCheck(assignment) } : null;
+  const confirm = action?.code === "recheck-stopped" && action.target.runId !== null && csrf !== ""
+    ? { action: `${taskHref(assignment.rootId)}/recheck-stopped`, run: action.target.runId, returnTo } : null;
   return { label: status.need.action.label, href: assignmentActionHref(assignment) ?? taskHref(assignment.rootId), confirm };
 }
 
-/** A build Toolroll can't check at all: the approver ticks that they checked before confirming. */
-export const needsCheck = (assignment: AssignmentSnapshot): boolean => assignment.need != null && "key" in assignment.need && assignment.need.key === "check-stopped";
 
 /** The server page's form of the same: the need's action first, Request changes as the quiet second. */
 export function resultNeedAction(need: BrowserNeedAction, o: ResultPanelOptions, canRequest: boolean): Html {
@@ -2484,10 +2482,8 @@ export function resultNeedAction(need: BrowserNeedAction, o: ResultPanelOptions,
     : need.rebuild != null
     ? postForm(need.rebuild.action, html`<button type="submit" data-primary-action data-rebuild style="min-height:44px">${need.label}</button>`, { attrs: { class: "rebuild" } })
     : need.confirm !== null
-    ? postForm(need.confirm.action, html`${
-      need.confirm.checked === true ? html`<label><input type="checkbox" name="checked" value="yes" required> Nothing from build #${need.confirm.run} is running</label>` : ""
-      }${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`)}<button type="submit" style="min-height:44px">${need.label}</button>`,
-      { attrs: { id: "confirm-stopped", class: "confirm-stopped" }, returnTo: need.confirm.returnTo, hidden: { run: need.confirm.run } })
+    ? postForm(need.confirm.action, html`<button type="submit" data-primary-action style="min-height:44px">${need.label}</button>`,
+      { attrs: { id: "recheck-stopped", class: "recheck-stopped" }, returnTo: need.confirm.returnTo, hidden: { run: need.confirm.run } })
     : html`<a class="button-link" href="${need.href ?? "#"}" data-primary-action>${need.label}</a>`;
   return html`<div class="result-action" data-result-action="need">${control}${canRequest && o.csrf !== "" ? html`<a class="result-feedback-link" href="#request-changes">Request changes</a>` : ""}</div>`;
 }

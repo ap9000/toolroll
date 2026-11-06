@@ -95,15 +95,15 @@ test("while the plan is being edited nothing approves: no Approve, no dock, unti
   expect(approves().length).toBeGreaterThan(0);
 });
 
-test("Confirm it stopped is a step-up: a password popover, or one click with Passwordless on", () => {
-  const view = viewOf(cardOf("Needs you", { label: "Confirm it stopped", href: "#confirm-stopped" }), { confirmStopped: { action: "/t/t-1/confirm-stopped", run: 12 } });
+test("Check again asks Toolroll to look once more: one button, no password, nothing to vouch for", () => {
+  const view = viewOf(cardOf("Needs you", { label: "Check again", href: "#recheck-stopped" }), { recheckStopped: { action: "/t/t-1/recheck-stopped", run: 12 } });
   show(view);
-  act(() => host.querySelector<HTMLButtonElement>("#confirm-stopped button")!.click());
-  expect(popover()?.querySelector('input[type="password"]')).not.toBeNull();
-  expect(submitted).toEqual([]);
-  act(() => root!.render(createElement(Passwordless.Provider, { value: true }, createElement(TaskView, { key: "pwless", view, details: false, csrf: "csrf" }))));
-  act(() => host.querySelector<HTMLButtonElement>("#confirm-stopped button")!.click());
-  expect(submitted).toEqual([{ action: "/t/t-1/confirm-stopped", token: "" }]);
+  const form = host.querySelector<HTMLFormElement>("#recheck-stopped")!;
+  expect(form.getAttribute("action")).toBe("/t/t-1/recheck-stopped");
+  expect(form.querySelector<HTMLInputElement>('input[name="run"]')?.value).toBe("12");
+  expect(form.querySelector('input[type="password"], input[name="token"], input[type="checkbox"]')).toBeNull();
+  expect(form.querySelector("button")?.textContent).toBe("Check again");
+  expect(host.textContent).not.toMatch(/Confirm it stopped/);
 });
 
 test("the status card has one fold: the notices' lines sit under More with the reasons", () => {

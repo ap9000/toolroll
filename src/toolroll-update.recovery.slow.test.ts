@@ -10,6 +10,7 @@ import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore } from "./store.js";
+import { proveRunStopped } from "./stop-proof.js";
 import { updateAdmissionPaused, UPDATE_PAUSED } from "./desktop-update-gate.js";
 import {
   checkProvenance, findSigstoreVerifier, lastCompletedUpdate, launchRuntimeUpdate, machineSystem, prepareRuntimeUpdate, pruneRuntimes, readRuntimeUpdate, releaseNotes, requestRuntimeUpdateCancel, resumeRuntimeUpdate, runtimeUpdateStatus, markWhatsNewSeen,
@@ -580,20 +581,23 @@ test("u1: a record nothing can prove: within 2 minutes it stops waiting, new wor
     expect(outcome.phase).toBe("refused");
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.length).toBeLessThanOrEqual(61);
-    expect(seen[0]).toBe(`Update to 0.7.0 is waiting: Run #${run} finished, but Toolroll has no process ID for one of its processes, so it can't confirm that process ended. If nothing of it is running, run toolroll run settle ${run} --why "it is not running".`);
-    expect(outcome.message).toBe(`Stopped waiting after 2 minutes. Run #${run} finished, but Toolroll has no process ID for one of its processes, so it can't confirm that process ended. If nothing of it is running, run toolroll run settle ${run} --why "it is not running", then update again. New work resumed; nothing was changed.`);
+    expect(seen[0]).toBe(`Update to 0.7.0 is waiting: Run #${run} finished, and Toolroll is making sure none of its processes is still running. To have Toolroll check again, run toolroll run settle ${run}.`);
+    expect(outcome.message).toBe(`Stopped waiting after 2 minutes. Run #${run} finished, and Toolroll is making sure none of its processes is still running. To have Toolroll check again, run toolroll run settle ${run}, then update again. New work resumed; nothing was changed.`);
     expect(f.paused()).toBe(false);
     const j = readRuntimeUpdate(f.stateDir)!;
     for (const words of [outcome.message, j.detail, ...seen, ...j.steps.map(s => s.phase)]) expect(words).not.toMatch(/witness|unproven/i);
     // Status and the console say the same thing while it is still in the way.
-    expect(updateWaitingOf(f.stateDir, stillInTheWay(f))).toMatchObject({ stopped: true, run, action: `toolroll run settle ${run} --why "it is not running"` });
+    expect(updateWaitingOf(f.stateDir, stillInTheWay(f))).toMatchObject({ stopped: true, run, action: `toolroll run settle ${run}` });
     const html = htmlString(withFormToken("x", () => updatesHtml({ current: "0.6.0", latest: { version: "0.7.0" }, method: { kind: "npm", updateCommand: "npm install -g toolroll@latest" }, journal: j, running: false, whatsNew: null, rollbackTo: null, csrf: "x" }, {})));
     expect(html).toContain(`Update to 0.7.0 stopped: run #${run} is in the way`);
-    expect(html).toContain(`<code class="k-mono">toolroll run settle ${run} --why &quot;it is not running&quot;</code>`);
+    expect(html).toContain(`<code class="k-mono">toolroll run settle ${run}</code>`);
     expect(html).not.toMatch(/witness|unproven/i);
     // Once settled, nothing is in the way and nothing more is said.
     const s = openStore(f.databaseFile);
-    try { expect(s.settleRunWitnessesByApprover({ runId: run, by: "ada", why: "it is not running" }, new Date()).ok).toBe(true); } finally { s.close(); }
+    // Toolroll's own look settles it once past its grace: nothing of the run is running (nobody vouches).
+    try {
+      expect((await proveRunStopped(s, run, () => new Date(Date.now() + 5 * 60_000))).outcome).toBe("settled");
+    } finally { s.close(); }
     expect(updateWaitingOf(f.stateDir, stillInTheWay(f))).toBeNull();
     expect((await f.start()).phase).toBe("complete");
   } finally { f.close(); }
@@ -605,7 +609,7 @@ test("u1: --now settles what it can, and otherwise refuses at once in plain word
     const run = leftoverRecord(f, false);
     const outcome = await f.start({}, "now");
     expect(outcome.phase).toBe("refused");
-    expect(outcome.message).toBe(`Run #${run} finished, but Toolroll has no process ID for one of its processes, so it can't confirm that process ended. If nothing of it is running, run toolroll run settle ${run} --why "it is not running", then update again. Nothing was changed.`);
+    expect(outcome.message).toBe(`Run #${run} finished, and Toolroll is making sure none of its processes is still running. To have Toolroll check again, run toolroll run settle ${run}, then update again. Nothing was changed.`);
     expect(f.paused()).toBe(false);
   } finally { f.close(); }
 });
@@ -621,10 +625,10 @@ test("u2: toolroll status and every console page show a waiting update, what it 
     expect((await f.start()).phase).toBe("refused");
     const lines: string[] = [];
     expect(await runOperate("status", [], line => lines.push(line), { databaseFile: f.databaseFile, releaseIo: { fetch: async () => { throw new Error("offline"); } } } as never)).toBe(0);
-    expect(lines.join("\n").split("\n")[0]).toBe(`Update to 0.7.0 stopped waiting: Run #${run} finished, but Toolroll has no process ID for one of its processes, so it can't confirm that process ended. If nothing of it is running, run toolroll run settle ${run} --why "it is not running", then update again.`);
+    expect(lines.join("\n").split("\n")[0]).toBe(`Update to 0.7.0 stopped waiting: Run #${run} finished, and Toolroll is making sure none of its processes is still running. To have Toolroll check again, run toolroll run settle ${run}, then update again.`);
     const json: string[] = [];
     await runOperate("status", ["--json"], line => json.push(line), { databaseFile: f.databaseFile, releaseIo: { fetch: async () => { throw new Error("offline"); } } } as never);
-    expect(JSON.parse(json.join("\n")).updateWaiting).toMatchObject({ version: "0.7.0", stopped: true, run, action: `toolroll run settle ${run} --why "it is not running"` });
+    expect(JSON.parse(json.join("\n")).updateWaiting).toMatchObject({ version: "0.7.0", stopped: true, run, action: `toolroll run settle ${run}` });
     await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
     const address = server.address();
     if (address === null || typeof address !== "object") throw new Error("listen");
@@ -632,7 +636,7 @@ test("u2: toolroll status and every console page show a waiting update, what it 
     const cookie = (await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: alex.token }), redirect: "manual" }))
       .headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
     const page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
-    expect(page).toContain(`Update to 0.7.0 stopped: run #${run} is in the way. If nothing of it is running, run toolroll run settle ${run} --why &quot;it is not running&quot;, then update again.`);
+    expect(page).toContain(`Update to 0.7.0 stopped: run #${run} is in the way. To have Toolroll check again, run toolroll run settle ${run}, then update again.`);
     // Settings → Updates says it once, in its card, not again in a banner.
     const updates = await (await fetch(`${base}/settings/updates`, { headers: { cookie } })).text();
     expect(updates).toContain(`Update to 0.7.0 stopped: run #${run} is in the way`);

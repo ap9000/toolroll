@@ -6,7 +6,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
 import { openStore, type Store } from "./store.js";
@@ -1050,6 +1050,8 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
   test("saved verdicts and recovery reasons remain exact history without replacing current task status", async () => {
     const ref = seed("t-proof", "show me the proof");
     const run = finished("t-proof", ref, "built", 0.25);
+    // Its process exit is on record, so what reads here is the result's own state (not Toolroll still proving it stopped).
+    store.raw().prepare("INSERT INTO run_process (run, host, process_group, observed_at, exited_at) VALUES (?, ?, 0, ?, ?)").run(run, hostname(), T0.toISOString(), T0.toISOString());
     store.setTaskState("t-proof", "done", T0);
     await boot();
     const cookie = await login();
@@ -1299,6 +1301,8 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
   test("the legacy inbox does not turn saved assessments into a second assignment queue", async () => {
     const ref = seed("t-proof", "show me the proof");
     const run = finished("t-proof", ref, "built", 0.25);
+    // Its process exit is on record, so what reads here is the result's own state (not Toolroll still proving it stopped).
+    store.raw().prepare("INSERT INTO run_process (run, host, process_group, observed_at, exited_at) VALUES (?, ?, 0, ?, ?)").run(run, hostname(), T0.toISOString(), T0.toISOString());
     store.setTaskState("t-proof", "done", T0);
     store.saveProofVerdict(run, "refuted", ["claimed changed path not in the sealed diff: src/other.ts"], T0);
     await boot();
