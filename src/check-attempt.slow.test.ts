@@ -19,6 +19,7 @@ import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, readSealedJson } from ".
 import { setProjectCheckLevel } from "./check-levels.js";
 import { checkFactOf, checkResultsOf } from "./check-facts.js";
 import { watchObservation } from "./flaky.js";
+import { CHECK_LOAD_CAPTURE, readCheckLoad } from "./check-load.js";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const T0 = new Date("2026-10-25T10:00:00.000Z");
@@ -29,7 +30,8 @@ describe("a prepared candidate's Full check carries the handshake", () => {
   const repos: string[] = [];
   afterEach(() => { store?.close(); rmSync(wt, { recursive: true, force: true }); for (const one of repos.splice(0)) rmSync(one, { recursive: true, force: true }); });
 
-  test("the attempt is sealed before the command, the nonce rides on stdin, and the report is sealed after", async () => {
+  /** A project on main, a prepared candidate, an approved scope, a claimed builder and a started run, as a release has. */
+  function prepared() {
     // The project is its own checkout on main; the build runs in a linked worktree of it, and the plane reads the
     // verified tree from the project's own .git.
     const REPO = realpathSync(mkdtempSync(join(tmpdir(), "so-attempt-repo-")));
@@ -66,6 +68,11 @@ describe("a prepared candidate's Full check carries the handshake", () => {
     const authority = store.routeAuthorityFor(taskRef, "builder");
     if (!authority?.ok) throw new Error("route");
     const runId = store.startRun({ taskRef, leaseId: "test-lease", runner: "builder-1", branch: "feat/a", worktree: wt, route: authority.stamp, now: T0 });
+    return { REPO, taskRef, runId };
+  }
+
+  test("the attempt is sealed before the command, the nonce rides on stdin, and the report is sealed after", async () => {
+    const { REPO, taskRef, runId } = prepared();
     // A tracked identity (learning loops): asked about on its own handshake field.
     watchObservation(store, { repo: REPO, identity: "unit:src/a.test.ts::adds", observation: 1, now: T0 });
 
@@ -93,5 +100,30 @@ describe("a prepared candidate's Full check carries the handshake", () => {
     expect(checkResultsOf(store, runId)).toEqual(expect.arrayContaining([{ identity: "check", state: "passed", source: "receipt" }, { identity: "unit:src/a.test.ts::adds", state: "passed", source: "learn" }]));
     expect(readSealedJson(store, join(wt, ".evidence"), runId, CHECK_REPORT_CAPTURE)).not.toBeNull();
     expect(readSealedJson(store, join(wt, ".evidence"), runId, CHECK_INVENTORY_CAPTURE)!.value).toMatchObject({ sealed: { units: ["src/a.test.ts"] } });
+  });
+
+  // A busy machine (check-load.ts): the plane measures the load itself, gives the check time in proportion to the budget
+  // it lost (bounded), tells it on the handshake, and seals its own load record beside the receipt.
+  test.each([
+    ["a busy machine (load 18.9 on 24 cores): twice the approved limit", 18.9, 10_000],
+    ["a quiet machine (load 2 on 24 cores): the approved limit", 2, 5_000],
+  ] as const)("%s", async (_name, load, limitMs) => {
+    const { taskRef, runId } = prepared();
+    let seenTimeout: number | undefined, seenLimit: number | undefined;
+    const verify: Runner = async (_file, _args, options) => {
+      seenTimeout = options?.timeoutMs;
+      const handshake = JSON.parse(options?.stdin ?? "{}") as { nonce: string; mode: string; limitMs: number };
+      seenLimit = handshake.limitMs;
+      const report = { version: 1, nonce: handshake.nonce, mode: handshake.mode, planDigest: null, exitCode: 0, parts: [], units: null, journeys: [], upgrades: null };
+      return { ...OK, stdout: `TOOLROLL_CHECK_REPORT ${JSON.stringify(report)}\n` };
+    };
+    const result = await build(store, { taskId: "t-1", taskRef, runner: "builder-1", worktree: wt, runId, evidenceRoot: join(wt, ".evidence"), branch: "feat/a", now: T0,
+      agent: (async () => OK) as Runner, git: (async (file, args, options) => run(file, args, options)) as Runner, verify, machine: () => ({ cores: 24, load }) });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    expect(seenTimeout).toBe(limitMs);
+    expect(seenLimit).toBe(limitMs);
+    const record = readCheckLoad(readSealedJson(store, join(wt, ".evidence"), runId, CHECK_LOAD_CAPTURE)?.value);
+    expect(record).toMatchObject({ version: 1, cores: 24, grantMs: 5_000, limitMs, samples: [{ atMs: 0, load }], elapsedMs: expect.any(Number) });
+    expect(record!.why).toMatch(limitMs > 5_000 ? /extended to/ : /^the approved/);
   });
 });

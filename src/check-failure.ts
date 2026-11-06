@@ -5,7 +5,8 @@
  *   deterministic    typecheck, build, a failing test, a scripted journey, an upgrade, a required test gone:
  *                    nothing tolerated, never rerun to pass; the branch is fixed and the new commit released.
  *   infrastructure   independently confirmed by the plane itself: the check never started, this worker lost the
- *                    build, Toolroll's own shutdown stopped it — or, on GitHub, a job that failed before any of the
+ *                    build, Toolroll's own shutdown stopped it, it ran out of time on a machine the plane measured
+ *                    busy enough to cut its budget to half or less (check-load.ts) — or, on GitHub, a job that failed before any of the
  *                    workflow's own steps ran. At most one rerun per incident and two per candidate, under the same
  *                    approval; a pass after them counts.
  *   unknown          exit 1 with no failing test named, an unexplained timeout or signal, no result at all: an error
@@ -20,6 +21,7 @@
  */
 import { CHECK_REPORT_CAPTURE, readSealedJson } from "./check-report.js";
 import { readCheckReport, type CheckReport } from "./contracts/release-check.js";
+import { busyMachineTimeout, CHECK_LOAD_CAPTURE, readCheckLoad, type CheckLoadRecord } from "./check-load.js";
 import { regateTask } from "./dispose.js";
 import { INFRA_RERUNS_PER_CANDIDATE, INFRA_RERUNS_PER_INCIDENT, type FailureClassName } from "./release.js";
 import { releaseCheckScope, type Scope } from "./scope.js";
@@ -38,6 +40,8 @@ export const RELEASE_RECHECK_ACTION = "release check rerun";
 export type CheckFacts = {
   result: { configured: boolean; ran?: boolean; exitCode?: number; attemptFailed?: boolean; failure?: string };
   coverage?: string | undefined;
+  /** The approved limit of the command the receipt names (receipt.command.timeoutMs): a load record must be for it. */
+  grantMs?: number | undefined;
 };
 
 /** The failures that mean the check never started or never finished for a reason the plane itself saw. */
@@ -48,11 +52,16 @@ const PLANE_INFRA: Readonly<Record<string, string>> = {
   "stopped-by-toolroll": "Toolroll's own shutdown stopped the check before it finished",
 };
 
+/** How a timeout on a busy machine reads (its rerun is the release terms' "Toolroll's own machine fails"). */
+const busyWords = (why: string) => `${why}: Toolroll's own machine, so this commit's check runs again`;
+
 /**
- * One failed check, classified. `facts` come from the plane's sealed receipt; `report` (the check's own report, sealed
- * when valid) only ever picks among the classes that block. Null when the check passed.
+ * One failed check, classified. `facts` come from the plane's sealed receipt and `load` from the plane's own sealed load
+ * record (check-load.ts); `report` (the check's own report, sealed when valid) only ever picks among the classes that
+ * block — a timeout is excused only when the report names nothing else that failed, and only by the plane's own facts:
+ * its load readings cut the budget, and the check ran into its limit by the plane's own clock. Null when it passed.
  */
-export function classifyCheckFailure(facts: CheckFacts, report: CheckReport | null): ClassifiedFailure | null {
+export function classifyCheckFailure(facts: CheckFacts, report: CheckReport | null, load: CheckLoadRecord | null = null): ClassifiedFailure | null {
   const result = facts.result;
   const passedCoverage = facts.coverage === undefined || facts.coverage === "full" || facts.coverage === "composed";
   if (result.configured && result.ran === true && result.exitCode === 0 && passedCoverage) return null;
@@ -61,7 +70,12 @@ export function classifyCheckFailure(facts: CheckFacts, report: CheckReport | nu
     const failure = result.failure ?? "";
     const infra = PLANE_INFRA[failure];
     if (infra !== undefined) return { class: "infrastructure", why: infra };
-    if (failure === "timed-out" || failure === "retry-timed-out") return { class: "unknown", why: "the check timed out, and nothing says why" };
+    if (failure === "timed-out" || failure === "retry-timed-out") {
+      // The plane stopped it at its limit. With the plane's own record of a cut budget, the machine's fault; otherwise
+      // (a normal budget, or no record) a timeout nothing explains, as ever.
+      const busy = facts.grantMs === undefined ? null : busyMachineTimeout(load, facts.grantMs, true);
+      return busy !== null ? { class: "infrastructure", why: busyWords(busy) } : { class: "unknown", why: "the check timed out, and nothing says why" };
+    }
     if (failure === "baseline-unverifiable") return { class: "unknown", why: "the last release Toolroll recorded couldn't be verified, so what the check owed is unknown and it wasn't run" };
     if (failure === "no-result") return { class: "unknown", why: "the check gave no complete result (no valid report, or a part, file or journey with no outcome)" };
     if (failure === "coverage-incomplete") return { class: "deterministic", why: facts.coverage === "identity-removed" ? "a required test was removed, renamed or newly skipped" : "the check didn't cover everything it owed" };
@@ -70,13 +84,18 @@ export function classifyCheckFailure(facts: CheckFacts, report: CheckReport | nu
   // It ran and exited nonzero (or its coverage fell short): what failed, from its report — only among blocking classes.
   if (report === null) return { class: "unknown", why: `the check exited ${result.exitCode ?? "nonzero"} and gave no report naming what failed` };
   const deterministic: string[] = [], agent: string[] = [], unexplained: string[] = [];
+  // Whether everything unexplained is a part that ran out of time (never a signal, never an error no test owned).
+  let onlyTimeouts = true;
   for (const part of report.parts) {
     if (!part.selected || !part.ran || part.code === null) continue;
-    if (part.timedOut || part.signal != null) { unexplained.push(`${part.part} ${part.timedOut ? "timed out" : `was ended by ${part.signal}`}`); continue; }
+    if (part.timedOut || part.signal != null) {
+      if (!part.timedOut || part.signal != null) onlyTimeouts = false;
+      unexplained.push(`${part.part} ${part.timedOut ? "timed out" : `was ended by ${part.signal}`}`); continue;
+    }
     if ((part.part === "typecheck" || part.part === "build") && part.code !== 0) deterministic.push(`the ${part.part} failed`);
   }
   for (const file of report.units?.files ?? []) if (file.state === "failed") deterministic.push(`${file.file} failed`);
-  if ((report.units?.runErrors ?? 0) > 0 && !(report.units?.files ?? []).some(file => file.state === "failed")) unexplained.push(`${report.units!.runErrors} unit errors no test owned`);
+  if ((report.units?.runErrors ?? 0) > 0 && !(report.units?.files ?? []).some(file => file.state === "failed")) { onlyTimeouts = false; unexplained.push(`${report.units!.runErrors} unit errors no test owned`); }
   for (const run of report.journeys) for (const group of run.groups) {
     if (group.state !== "failed") continue;
     (run.kind === "real" ? agent : deterministic).push(`${run.script}${run.kind === "real" ? " real-model" : ""} journey group ${group.group} failed`);
@@ -85,7 +104,13 @@ export function classifyCheckFailure(facts: CheckFacts, report: CheckReport | nu
   const list = (items: string[]) => `${items.slice(0, 4).join("; ")}${items.length > 4 ? `; and ${items.length - 4} more` : ""}`;
   if (deterministic.length > 0) return { class: "deterministic", why: list(deterministic) };
   if (agent.length > 0) return { class: "agent-behaviour", why: list(agent) };
-  if (unexplained.length > 0) return { class: "unknown", why: list(unexplained) };
+  if (unexplained.length > 0) {
+    // Only parts that ran out of time, and the plane's own record says the machine cut the budget and the check ran
+    // into its limit: the machine's fault. The report can only withhold this (by naming anything else), never grant it.
+    const busy = onlyTimeouts && facts.grantMs !== undefined ? busyMachineTimeout(load, facts.grantMs, false) : null;
+    if (busy !== null) return { class: "infrastructure", why: busyWords(`${list(unexplained)}; ${busy}`) };
+    return { class: "unknown", why: list(unexplained) };
+  }
   return { class: "unknown", why: `the check exited ${result.exitCode ?? "nonzero"} with no failing test identified` };
 }
 
@@ -105,12 +130,15 @@ export function classifyRunCheck(store: Store, root: string, runId: number): Cla
   const gate = verificationEvidence(store, root, runId);
   if (!gate.ok) return { class: "unknown", why: `the check's receipt can't be read: ${gate.problem}` };
   if (gate.bytes === null) return { class: "unknown", why: "no machine check is recorded" };
-  let receipt: { result?: CheckFacts["result"]; coverage?: string };
+  let receipt: { result?: CheckFacts["result"]; coverage?: string; command?: { timeoutMs?: unknown } };
   try { receipt = JSON.parse(gate.bytes.toString()) as typeof receipt; } catch { return { class: "unknown", why: "the check's receipt can't be read" }; }
   if (receipt.result === undefined || typeof receipt.result !== "object") return { class: "unknown", why: "the check's receipt names no result" };
   const sealed = readSealedJson(store, root, runId, CHECK_REPORT_CAPTURE);
   const parsed = sealed === null ? null : readCheckReport(sealed.value);
-  return classifyCheckFailure({ result: receipt.result, coverage: receipt.coverage }, parsed?.ok === true ? parsed.value : null);
+  // The plane's own load record (check-load.ts): absent on older runs, and then nothing is excused.
+  const loadSealed = readSealedJson(store, root, runId, CHECK_LOAD_CAPTURE);
+  const grantMs = typeof receipt.command?.timeoutMs === "number" ? receipt.command.timeoutMs : undefined;
+  return classifyCheckFailure({ result: receipt.result, coverage: receipt.coverage, grantMs }, parsed?.ok === true ? parsed.value : null, loadSealed === null ? null : readCheckLoad(loadSealed.value));
 }
 
 /**

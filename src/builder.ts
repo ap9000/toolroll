@@ -13,7 +13,8 @@ import { queueBatchCheck } from "./batch-checks.js";
 import { batchesFullCheck } from "./batch-policy.js";
 import { skillsContext } from "./project-skills.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
-import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable, prepareCheckAttempt, reportFromOutput, sealCheckOutcome, type PreparedAttempt } from "./check-report.js";
+import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable, prepareCheckAttempt, reportFromOutput, sealCheckOutcome, sealJson, type PreparedAttempt } from "./check-report.js";
+import { CHECK_LOAD_CAPTURE, CheckLoadWatch, type MachineSample } from "./check-load.js";
 import { retriedInside } from "./check-failure.js";
 import type { CheckReport } from "./contracts/release-check.js";
 import { planTargetedRecheck, settleCoverage } from "./release-recheck.js";
@@ -304,6 +305,9 @@ export type BuildRequest = {
   /** Runs the repository's approved verification command (Priority 2), after
    * commit. Tests inject; production uses exec. */
   verify?: Runner;
+  /** Reads the machine's cores and load for a release check's limit and load record (check-load.ts). Tests inject;
+   * production reads the operating system. */
+  machine?: () => MachineSample;
   /**
    * The stop fence (audit IV-1, completed): re-proved AFTER the agent and
    * BEFORE the commit. A stop that lands while the agent runs preserves
@@ -2661,6 +2665,8 @@ async function settleProof(
   const gateCommand = batched ? null : configured;
   let verifyCommand: VerifyCommandFacts;
   let checkAttempt: PreparedAttempt | null = null;
+  // A release check's limit and the machine's load while it runs, measured by the plane itself (check-load.ts).
+  let loadWatch: CheckLoadWatch | null = null;
   let releaseFacts: ReleaseCheckFacts | null = null;
   const verification: { last: ExecResult | null } = { last: null };
   // What the check ran under, captured as its command starts (check-facts.ts): advisory, recorded at disposition.
@@ -2715,8 +2721,10 @@ async function settleProof(
       // A release's check (signed terms or an open authority): CI never stands in for its unit suite.
       // A release's check: signed terms, a release check purpose (pipeline-speed.md, P0) or an open authority.
       const release = decision.authority !== null || releaseCheckScope(store.getScope(request.taskId));
+      // A busy machine cuts the check's budget; the plane gives it time in proportion, bounded (check-load.ts).
+      loadWatch = new CheckLoadWatch(configured.timeoutMs, request.machine === undefined ? {} : { sample: request.machine });
       try {
-        checkAttempt = prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access, authority: decision.authority,
+        checkAttempt = prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access, authority: decision.authority, limitMs: loadWatch?.limitMs,
           ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, release,
           // Advisory only (docs/plans/learning-loops.md): the project's tracked identities, a separate handshake field.
           learn: learnRequestFor(store, repo, now()).learn }, now());
@@ -2727,6 +2735,8 @@ async function settleProof(
         baselineUnverifiable = error.message;
         recordCheckNote(error.message);
       }
+      if (checkAttempt === null && loadWatch !== null) { loadWatch.finish(); loadWatch = null; }
+      if (loadWatch !== null && loadWatch.limitMs !== configured.timeoutMs) store.addRunNote(runId, "Toolroll", `The release check's time limit: ${loadWatch.why}.`, now());
       if (checkAttempt !== null && decision.mode === "targeted") store.addRunNote(runId, "Toolroll", `Re-running only what failed at run #${decision.plan.base}: ${decision.plan.units.length} unit files, ${decision.plan.groups.reduce((n, one) => n + one.groups.length, 0)} journey groups, ${decision.plan.versions.length} upgrade versions${decision.plan.parts.length > 0 ? `, and in full: ${decision.plan.parts.join(", ")}` : ""}.`, now());
     } else checkAttempt = null;
     // Live progress is advisory (release check 3264 lost its log to one refused snapshot): display snapshots are
@@ -2741,9 +2751,9 @@ async function settleProof(
       // The check runs under the stop watch (v52), owned by this run.
       const result: ExecResult = missing !== null
         ? { code: 127, stdout: "", stderr: `Toolroll did not start the check: ${missing} wasn't found.`, timedOut: false, notFound: false }
-        : await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, verifyRunner)), verifyShell.file, verifyShell.args, {
+        : await underStopWatch(store, runId, () => { loadWatch?.attemptStarted(); return runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, verifyRunner)), verifyShell.file, verifyShell.args, {
         cwd: worktree,
-        timeoutMs: configured.timeoutMs,
+        timeoutMs: loadWatch?.limitMs ?? configured.timeoutMs,
         processGroup: true,
         owner: runOwnerTag(store, runId),
         beforeSpawn: () => !stopRequestedFor(store, runId, request.shouldStop),
@@ -2756,7 +2766,7 @@ async function settleProof(
         ...(checkAttempt === null ? {} : { stdin: checkAttempt.stdin }),
         onStdout: chunk => { streamed.stdout = true; checkProgress.feed(chunk, "stdout"); },
         onStderr: chunk => { streamed.stderr = true; checkProgress.feed(chunk, "stderr"); },
-      }));
+      }).finally(() => loadWatch?.attemptEnded()); });
       if (missing !== null) unstartedChecks.set(result, missing);
       if (!streamed.stdout) checkProgress.feed(result.stdout, "stdout");
       if (!streamed.stderr) checkProgress.feed(result.stderr, "stderr");
@@ -2921,6 +2931,13 @@ async function settleProof(
     // The display's final snapshot (Codex review round 1, finding 6): the writer keeps it until a write succeeds and
     // never throws; a display failure of any kind never keeps the check's outcome below from being sealed.
     try { checkProgress.finish(); } catch { /* display only */ }
+    // The plane's own load record (check-load.ts), sealed beside the receipt: the one thing that can call a timeout on a
+    // busy machine the machine's own fault. A record that can't be sealed excuses nothing; the check's outcome is unchanged.
+    if (loadWatch !== null) {
+      const record = loadWatch.finish();
+      try { sealJson(store, root, runId, "check-load.json", record, CHECK_LOAD_CAPTURE, now()); }
+      catch (error) { store.addRunNote(runId, "Toolroll", `This check's load record wasn't kept (${redactSecretText(error instanceof Error ? error.message : String(error))}), so a timeout in it can't be called the machine's own.`, now()); }
+    }
     if (!progressWrites.flush()) progressWrites.flush();
     // The check's own report (the last line carrying the nonce), sealed beside what was sealed before it ran.
     const last = verification.last;
