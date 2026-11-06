@@ -36,6 +36,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
 import { failedBeforeTests, type JobRecord } from "./github-jobs.js";
 import { mainHistoryOf, nightlyBoundary, type GhRead } from "./nightly-github.js";
+import { noteReleaseReady, noteReleaseStopped, recordReleaseCi } from "./release-approval.js";
+import { recordVerifiedRelease } from "./release-card.js";
 export { failedBeforeTests, type JobRecord } from "./github-jobs.js";
 import { extractCommit } from "./commit-extract.js";
 import { teardownGit, refusal as gitRefusal } from "./teardown-git.js";
@@ -851,6 +853,14 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
   const withStore = <T>(body: (store: Store) => T): T => { const store = open(); try { return body(store); } finally { done(store); } };
   return {
     ...(auto === undefined ? {} : { auto: autoReleaseAdapter(withStore, now, auto) }),
+    // One-tap release approval (trusted-release-reports.md, slice A): ids and the coordinator's own readings only; the
+    // plane decides from its own records whether anything is written.
+    ready: {
+      async asked(taskId) { withStore(store => { noteReleaseReady(store, { taskId, now: now() }); }); },
+      async ci(input) { withStore(store => { recordReleaseCi(store, { ...input, now: now() }); }); },
+      async stopped(input) { withStore(store => { noteReleaseStopped(store, { ...input, now: now() }); }); },
+      async verified(input) { withStore(store => { recordVerifiedRelease(store, { ...input, now: now() }); }); },
+    },
     // After a failed release check, and before a pass is taken: the plane's own classification (check-failure.ts).
     ...(auto === undefined ? {} : {
       async recheck(taskId: string) {

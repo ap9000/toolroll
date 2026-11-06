@@ -161,6 +161,8 @@ export const OPERATE_COMMANDS = new Set([
   "evals",
   // Only `lead token` reaches here; the central service's lead verbs answer first.
   "lead",
+  // Only `release approve` reaches here: every other `release` form is release-cli.ts, routed before this set.
+  "release",
   "onboard",
   "status",
   "ready",
@@ -418,6 +420,8 @@ async function dispatch(
     return runLinkCommand(first, rest, write, mainOptions.binSource);
   }
   if (first === "update") return (await import("./toolroll-update-cli.js")).runUpdateCommand(rest, write, mainOptions.update);
+  // `toolroll release approve`: a person's approval, with the operate commands' own credential prompt and context.
+  if (first === "release" && rest[0] === "approve") return runOperate("release", rest, write, mainOptions.operate ?? {});
   if (first === "release") {
     const { runReleaseCommand } = await import("./release-cli.js");
     return runReleaseCommand(rest, write, { releaseLease: lease => runOperate("worker", ["release", ...lease], write, mainOptions.operate ?? {}), ...mainOptions.release });

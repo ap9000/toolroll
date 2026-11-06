@@ -998,8 +998,8 @@ const NEXT = "f".repeat(40), TREE2 = "9".repeat(40), DIGEST2 = "scope-digest-2";
 
 /** The world with a release authority: a person's yes to the gate opens it, a carry moves its tip to a new task whose
  * scope is sealed `carried`, and the store's deploy and merge reservations, lease and operations are scripted. */
-function releaseWorld(options: { carryRefused?: string } = {}) {
-  const w = world();
+function releaseWorld(options: { carryRefused?: string; crashAfter?: Mutation } = {}) {
+  const w = world(options.crashAfter === undefined ? {} : { crashAfter: options.crashAfter });
   const { s, adapters } = w;
   const rel = {
     id: 1, generation: 1, state: "open", tipSha: SHA, tipTask: "", tasks: new Set<string>(), landed: [] as { sha: string; files: { path: string; added: number; deleted: number }[] }[],
@@ -2068,5 +2068,64 @@ describe("toolroll release: GitHub's nightly lane debt (evals-nightly.md, part A
     expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
     expect(asked).toEqual(expect.arrayContaining(["deploy", "merge", "tag"]));
     expect(s.said.join("\n")).toContain("GitHub nightly: couldn't be read (offline)");
+  });
+});
+
+describe("one-tap release approval: what the coordinator tells the plane (trusted-release-reports.md A5)", () => {
+  /** The plane's side, recorded: what was told, in order. */
+  const ready = (fail = false) => {
+    const calls: string[] = [];
+    const told = (line: string) => { calls.push(line); if (fail) throw new Error("the plane didn't answer"); };
+    return { calls, adapter: {
+      asked: async (taskId: string) => told(`asked:${taskId}`),
+      ci: async (input: { taskId: string; state: string; runs: readonly CheckRun[] }) => told(`ci:${input.taskId}:${input.state}:${input.runs.length}`),
+      stopped: async (input: { step: string; reason: string }) => told(`stopped:${input.step}:${input.reason}`),
+      verified: async (input: { merge: string }) => told(`verified:${input.merge}`),
+    } };
+  };
+
+  test("the gate's CI reading is kept once the task exists, the person is asked, and the verified merge is recorded", async () => {
+    const dir = stateDir();
+    const { s, adapters } = releaseWorld();
+    const r = ready();
+    adapters.release!.ready = r.adapter;
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    const task = s.gateId!;
+    expect(r.calls.filter(line => !line.startsWith("ci:") || line.startsWith(`ci:${task}`))).toEqual(expect.arrayContaining([`ci:${task}:passed:${REQUIRED_PR_CHECKS.length}`, `asked:${task}`, `verified:${MERGE}`]));
+    expect(r.calls.indexOf(`ci:${task}:passed:${REQUIRED_PR_CHECKS.length}`)).toBeLessThan(r.calls.indexOf(`asked:${task}`));
+    expect(r.calls.filter(line => line.startsWith("stopped"))).toEqual([]);
+  });
+
+  test("a crash between filing and asking is healed by the next run, which asks once; the stop was told", async () => {
+    const dir = stateDir();
+    const { s, adapters } = releaseWorld({ crashAfter: "fileGate" });
+    const r = ready();
+    adapters.release!.ready = r.adapter;
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "gate" });
+    expect(r.calls.filter(line => line.startsWith("asked"))).toEqual([]);
+    expect(r.calls).toContain("stopped:gate:error");
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    expect(r.calls.filter(line => line.startsWith("asked"))).toEqual([`asked:${s.gateId}`]);
+  });
+
+  test("a plane that fails to answer never changes the release", async () => {
+    const dir = stateDir();
+    const { adapters } = releaseWorld();
+    const r = ready(true);
+    adapters.release!.ready = r.adapter;
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    expect(r.calls.some(line => line.startsWith("asked"))).toBe(true);
+  });
+
+  test("a person's release that stops at CI tells them which step and why", async () => {
+    const dir = stateDir();
+    const { s, adapters } = releaseWorld();
+    const r = ready();
+    adapters.release!.ready = r.adapter;
+    s.gateSeesChecks = true;
+    s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0]!, status: "completed", conclusion: "failure" }]);
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "ci-failed" });
+    expect(r.calls.filter(line => line.startsWith("stopped"))).toEqual(["stopped:gate:ci-failed"]);
+    expect(r.calls.some(line => line.startsWith("asked"))).toBe(false);
   });
 });

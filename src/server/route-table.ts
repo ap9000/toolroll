@@ -30,6 +30,7 @@ export type ProjectResolver =
   | "form" // a `repo` field in the posted form (falls back to the session)
   | "form-path" // project selection/opening names `path`; blank explicitly means no project
   | "task" // the task named in /t/:id
+  | "task-ref" // the task ref number in /approve/:n (a release's opaque push locator)
   | "run" // the run behind /r/:id
   | "decision" // the run behind /d/:id
   | "incident" // the run behind /i/:id
@@ -377,6 +378,10 @@ get("tasks", "welcome", "/welcome", { limited: "collection", ...free });
 post("tasks", "welcome.sample", "/welcome/sample", { callers: ["cookie"], project: "none", ...approver("An approver adds projects.", "/welcome") });
 get("tasks", "task.page", `^\\/t\\/${TASK}$`, { project: "task", limited: "resource", ...free, sample: "/t/one" });
 get("tasks", "task.evidence", `^\\/t\\/${TASK}\\/evidence$`, { project: "task", limited: "resource", ...free, sample: "/t/one/evidence" });
+// One-tap release approval (trusted-release-reports.md A6/A7): the sheet, and the push's opaque locator, which only
+// redirects to it once the plane's own state says the task ref is a release in the person's projects.
+get("tasks", "task.release", `^\\/t\\/${TASK}\\/release$`, { project: "task", limited: "resource", ...free, sample: "/t/one/release" });
+get("tasks", "release.locate", `^\\/approve\\/${ID}$`, { project: "task-ref", limited: "resource", ...free, sample: "/approve/1" });
 get("pages", "ledger.export", "/ledger/export", { limited: "unscoped", ...free });
 get("tasks", "runs", "/runs", { limited: "collection", ...free }); // a redirect to /agents now
 get("pages", "menu", "/menu", { limited: "collection", ...free });

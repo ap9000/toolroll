@@ -65,6 +65,8 @@ import { sendSubagentSummaries } from "./subagent-admin.js";
 import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
 import { refreshConnections } from "./mcp-connect.js";
 import { releaseCheckPurposeFor, releaseTermsFor } from "./release-carry.js";
+import { approveReleaseCard, journalMatchesPlane, releaseApprovalCard, releaseCardLines, releaseTaskOf, waitingJournals, type WaitingJournal } from "./release-approval.js";
+import { journalFile } from "./release.js";
 import { refreshTrustedMains, settleReleaseChecks } from "./nightly-check.js";
 import { githubNightlyRepos, readGithubNightlies, type GhRead } from "./nightly-github.js";
 import { exec as releaseExec, githubReads } from "./release-adapters.js";
@@ -1479,6 +1481,9 @@ async function dispatch(
   switch (command) {
     case "status":
       return statusCommand(positional, flags, context);
+    // `toolroll release approve` (cli.ts routes only this verb here; every other `release` form is release-cli.ts).
+    case "release":
+      return releaseApproveCommand(positional, flags, context);
     case "evals":
       return evalsCommand(positional, flags, context);
     case "ready":
@@ -13844,3 +13849,88 @@ function memoryWriteVerb(positional: readonly string[]): boolean {
   return MEMORY_WRITE_VERBS.has(positional[0] ?? "");
 }
 const MEMORY_WRITE_REFUSAL = "Project memory is changed by a person with their own sign-in, not the lead. The lead proposes decisions in chat for you to confirm.";
+
+/**
+ * `toolroll release approve [<branch>] [--repo <path>]` (docs/plans/trusted-release-reports.md, slice A, A8): approve
+ * the release waiting for a person from this terminal, without copying a task id or a digest. The release journals are
+ * discovery only, read strictly; the plane's sealed release identity decides which release this is. The card prints
+ * control-free; the person is asked through `askCredentials` (or its remembered login, under its existing conditions);
+ * the card is built again AFTER that prompt and anything changed refuses; then the shared card wrapper hands the
+ * snapshot's scope digest to the unchanged approve(). `--json` never prompts.
+ */
+async function releaseApproveCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json } = context;
+  const command = "release approve";
+  const usage = "`toolroll release approve [<branch>] [--repo <path>]` (with --json: --as <you> --token <password> --digest <card digest>)";
+  const branchFlag = text(flags, "branch");
+  if (positional[0] !== "approve" || positional.length > 2 || (branchFlag !== undefined && positional.length > 1)) return fail(write, json, command, "usage", usage, EXIT.usage);
+  const branch = branchFlag ?? positional[1];
+  if (branch !== undefined && (!/^[A-Za-z0-9._/-]{1,255}$/.test(branch) || branch.startsWith("-") || branch.includes(".."))) return fail(write, json, command, "usage", `${branch} is not a branch name this command takes.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  const repo = repoFlag === undefined ? null : resolve(repoFlag);
+  const stateDir = dirname(context.databaseFile);
+  const { journals, unreadable } = waitingJournals(stateDir, name => journalFile(stateDir, name));
+  // The exact branch asked for, never another that shares its file name (feature/foo and feature_foo).
+  const named = branch === undefined ? journals : journals.filter(one => one.branch === branch);
+  if (branch !== undefined && named.length === 0 && unreadable.includes(basename(journalFile(stateDir, branch)))) {
+    return fail(write, json, command, "unreadable", `${branch}'s release journal can't be read as one; nothing was approved. Run \`toolroll release ${branch}\` again.`, EXIT.refused);
+  }
+  const matches: WaitingJournal[] = [], refusals: string[] = [];
+  for (const one of named) {
+    if (releaseTaskOf(store, one.taskId) !== null && approvalOf(store.getScope(one.taskId)).approved) continue;
+    const proved = journalMatchesPlane(store, one, repo);
+    if (proved.ok) matches.push(one); else refusals.push(proved.why);
+  }
+  if (matches.length === 0) {
+    const why = refusals.length > 0 ? `${refusals[0]}; nothing was approved` : branch === undefined ? "No release is waiting for your approval" : `No release of ${branch} is waiting for your approval`;
+    return fail(write, json, command, refusals.length > 0 ? "mismatch" : "none", `${why}.`, EXIT.refused);
+  }
+  if (matches.length > 1) {
+    return fail(write, json, command, "ambiguous", `More than one release is waiting: ${matches.map(one => `${one.branch} (${one.version})`).join(", ")}. Name the branch: \`toolroll release approve <branch>\`.`, EXIT.refused,
+      { releases: matches.map(one => ({ branch: one.branch, version: one.version, task: one.taskId })) });
+  }
+  const chosen = matches[0]!;
+  const built = releaseApprovalCard(store, chosen.taskId);
+  if (!built.ok) return fail(write, json, command, "none", built.why, EXIT.refused);
+  const shown = built.card;
+  const cardData = { task: shown.taskId, version: shown.seal.identity.packageVersion, branch: shown.seal.identity.branch, candidate: shown.seal.identity.approvedSha, digest: shown.digest, ci: shown.ci?.state ?? null };
+  if (shown.approved !== null) return fail(write, json, command, "approved", `Release ${cardData.version} is already approved by ${shown.approved.by}.`, EXIT.refused, { release: cardData });
+  if (shown.refusal !== null) {
+    if (!json) for (const line of releaseCardLines(shown)) write(line);
+    return fail(write, json, command, "refused", `Can't approve now: ${shown.refusal}`, EXIT.refused, { release: cardData });
+  }
+  let name: string, token: string;
+  if (json) {
+    const given = credentialsFrom(flags, context);
+    if (given.name === undefined || given.token === undefined || given.name === "" || given.token === "") return fail(write, json, command, "credentials", "Approving a release needs who is agreeing: --as <you> --token <password>. Nothing was approved.", EXIT.usage, { release: cardData });
+    if (text(flags, "digest") !== shown.digest) return fail(write, json, command, "unconfirmed", "Name the card you read: --digest <card digest>. Nothing was approved.", EXIT.refused, { release: cardData });
+    name = given.name; token = given.token;
+  } else {
+    for (const line of releaseCardLines(shown)) write(line);
+    write("");
+    if (interactive()) {
+      if (!await confirm(`Approve release ${cardData.version}?`)) { write("Nothing approved."); return EXIT.refused; }
+    } else if (!flags.has("yes") || text(flags, "digest") !== shown.digest) {
+      write(`Nothing has been approved. Agree to exactly this card with: toolroll release approve ${chosen.branch} --yes --digest ${shown.digest} --as <you> --token <your password>`);
+      return EXIT.refused;
+    }
+    const acting = await askCredentials(flags, context);
+    if (acting === null) return fail(write, json, command, "credentials", "Approving a release needs who is agreeing. Nothing was approved.", EXIT.usage);
+    name = acting.name; token = acting.token;
+  }
+  // After the prompt: the card again, from the plane. A change refuses; it is never approved in place of what was shown.
+  const again = releaseApprovalCard(store, chosen.taskId);
+  if (!again.ok || again.card.digest !== shown.digest) return fail(write, json, command, "changed", "This release changed while you were being asked; nothing was approved. Run the command again to read it.", EXIT.refused);
+  const now = context.clock();
+  const answer = approveReleaseCard(store, { taskId: chosen.taskId, cardDigest: shown.digest, approveNow: scopeDigest => approve(store, chosen.taskId, name, now, scopeDigest, token, mutationFrom(flags, now)) });
+  if (!answer.ok) {
+    if (answer.reason !== "approve") return fail(write, json, command, answer.reason, `${answer.message} Nothing was approved.`, EXIT.refused);
+    const refused = answer.result;
+    if (refused.reason === "policy") return fail(write, json, command, "policy", `${chosen.taskId}: ${refused.message}`, EXIT.refused);
+    return fail(write, json, command, refused.reason, describeApproveFailure(refused.reason, chosen.taskId), EXIT.refused);
+  }
+  return succeed(write, json, command, { release: cardData }, () => [
+    `Approved release ${cardData.version} (${cardData.candidate.slice(0, 7)}). The release check runs next; it deploys, merges and publishes once GitHub CI and the check pass.`,
+    ...(shown.stopped === null ? [] : [`The release isn't running: run \`toolroll release ${chosen.branch}\` to go on.`]),
+  ]);
+}
