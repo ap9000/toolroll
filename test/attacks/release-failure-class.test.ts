@@ -308,3 +308,53 @@ describe("a timeout on a busy machine: the same commit's check again, never a pa
     expect(reruns(f)).toEqual([[runs[0], "infrastructure"], [runs[1], "infrastructure"]]);
   }, 120_000);
 });
+
+/**
+ * An attempt interrupted before its candidate was loaded (release 0.9.93, run 3326: the worker stopped under it when
+ * another project's watch lease stopped renewing) ran no check: it is no check failure of the commit, and the next
+ * attempt's pass stands. An attempt that got as far as its check keeps today's rule — a later pass doesn't erase it.
+ */
+describe("an attempt that never reached its check is no check failure", () => {
+  /** A builder attempt the worker stopped before it loaded the candidate: no commit, no check attempt, no log. */
+  const interruptedBeforeCandidate = (f: ReleaseFixture) => {
+    const ref = f.store.refFor("built-in", f.taskId).id;
+    const authority = f.store.routeAuthorityFor(ref, "builder");
+    if (!authority?.ok) throw new Error("route");
+    const run = f.store.startRun({ taskRef: ref, leaseId: `l-${Math.random()}`, runner: "r", branch: "b", worktree: "/pool/x", route: authority.stamp, now: RELEASE_NOW });
+    f.store.stampRun(run, { scopeDigest: f.store.getScope(f.taskId)!.digest, baseRevision: "1".repeat(40) });
+    f.store.recordOutcomeFacts(run, { handoff: "The attempt was stopped before the prepared candidate was loaded." });
+    f.store.finishRun(run, { outcome: "failed", reason: "interrupted", now: RELEASE_NOW });
+    f.store.setTaskState(f.taskId, "queued", RELEASE_NOW);
+    return run;
+  };
+
+  test("interrupted before the candidate was loaded, then a pass on the same commit: the pass stands", () => {
+    const f = (fixture = releaseFixture());
+    interruptedBeforeCandidate(f);
+    const passed = attempt(f, allPass);
+    expect(releaseCheckStanding(f.store, EVIDENCE(f), { taskId: f.taskId, run: passed })).toMatchObject({ ok: true, earlier: [] });
+  }, 120_000);
+
+  test("an attempt that ran its check and was interrupted, or failed, keeps today's rule", () => {
+    const f = (fixture = releaseFixture());
+    // Its check ran and its builder was then interrupted: the attempt row, log and receipt are on record.
+    const ran = attempt(f, { failure: "timed-out" });
+    f.store.handle.prepare("UPDATE run SET outcome = 'failed', reason = 'interrupted' WHERE id = ?").run(ran);
+    const passed = attempt(f, allPass);
+    expect(releaseCheckStanding(f.store, EVIDENCE(f), { taskId: f.taskId, run: passed })).toMatchObject({ ok: false, why: expect.stringContaining(`run ${ran}`) });
+    fixture.close();
+    // Interrupted, but it had loaded its candidate (a commit is recorded): not "never reached its check".
+    const g = (fixture = releaseFixture());
+    const loaded = interruptedBeforeCandidate(g);
+    g.store.handle.prepare("UPDATE run SET head_revision = ? WHERE id = ?").run(g.approved, loaded);
+    const after = attempt(g, allPass);
+    expect(releaseCheckStanding(g.store, EVIDENCE(g), { taskId: g.taskId, run: after })).toMatchObject({ ok: false, why: expect.stringContaining(`run ${loaded}`) });
+    fixture.close();
+    // A build that failed (not interrupted) before its check: still unexplained, a person decides.
+    const h = (fixture = releaseFixture());
+    const failed = interruptedBeforeCandidate(h);
+    h.store.handle.prepare("UPDATE run SET reason = 'git' WHERE id = ?").run(failed);
+    const later = attempt(h, allPass);
+    expect(releaseCheckStanding(h.store, EVIDENCE(h), { taskId: h.taskId, run: later })).toMatchObject({ ok: false, why: expect.stringContaining("its build ended failed") });
+  }, 240_000);
+});

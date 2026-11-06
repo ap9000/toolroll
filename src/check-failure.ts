@@ -26,7 +26,8 @@ import { regateTask } from "./dispose.js";
 import { INFRA_RERUNS_PER_CANDIDATE, INFRA_RERUNS_PER_INCIDENT, type FailureClassName } from "./release.js";
 import { releaseCheckScope, type Scope } from "./scope.js";
 import type { Store } from "./store.js";
-import { verificationEvidence } from "./verification-evidence.js";
+import { isVerificationReceipt, verificationEvidence } from "./verification-evidence.js";
+import { checkAttemptOf } from "./store.js";
 
 export type FailureClass = FailureClassName;
 export type ClassifiedFailure = { class: FailureClass; why: string };
@@ -180,14 +181,28 @@ export function setupReplayWords(first: unknown): string {
   return `${SETUP_REPLAY_RETRY} (its first attempt's failure isn't classified)`;
 }
 
-type BuilderRun = { id: number; outcome: string | null; scopeDigest: string | null; finishedAt: string | null; passed: boolean };
+type BuilderRun = { id: number; outcome: string | null; scopeDigest: string | null; finishedAt: string | null; passed: boolean; noCheck: boolean };
 
-/** The task's finished builder runs under `digest`, oldest first, each with whether its check passed. */
+/**
+ * An attempt interrupted before its candidate was even loaded (run 3326: the worker stopped under it — "The attempt was
+ * stopped before the prepared candidate was loaded."): it ran no check, so it is no check failure of the commit. Only
+ * the plane's own records say so, all of them at once: the run ended failed/interrupted, recorded no commit, and has no
+ * check attempt (sealed before any check command runs), no recorded check and no check log or receipt. Any attempt that
+ * got as far as its check keeps every rule below.
+ */
+export function ranNoCheck(store: Store, row: { id: number; outcome: unknown; reason: unknown; head: unknown; checkRow: unknown }): boolean {
+  if (row.outcome !== "failed" || row.reason !== "interrupted" || row.head !== null || row.checkRow !== null) return false;
+  if (checkAttemptOf(store, row.id) !== null) return false;
+  return !store.artifactsFor(row.id).some(artifact => artifact.kind === "check-log" || isVerificationReceipt(artifact));
+}
+
+/** The task's finished builder runs under `digest`, oldest first, each with whether its check passed or never ran. */
 function builderRuns(store: Store, taskRef: number, digest: string): BuilderRun[] {
-  return store.handle.prepare(`SELECT r.id, r.outcome, r.scope_digest, r.finished_at, c.status FROM run r LEFT JOIN run_check c ON c.run = r.id
+  return store.handle.prepare(`SELECT r.id, r.outcome, r.reason, r.head_revision, r.scope_digest, r.finished_at, c.status, c.run AS check_row FROM run r LEFT JOIN run_check c ON c.run = r.id
       WHERE r.task_ref = ? AND r.role = 'builder' AND r.finished_at IS NOT NULL AND r.scope_digest = ? ORDER BY r.id`).all(taskRef, digest)
     .map(row => ({ id: Number(row["id"]), outcome: row["outcome"] === null ? null : String(row["outcome"]), scopeDigest: String(row["scope_digest"]), finishedAt: String(row["finished_at"]),
-      passed: (row["outcome"] === "built" || row["outcome"] === "no-change") && row["status"] === "passed" }));
+      passed: (row["outcome"] === "built" || row["outcome"] === "no-change") && row["status"] === "passed",
+      noCheck: ranNoCheck(store, { id: Number(row["id"]), outcome: row["outcome"], reason: row["reason"], head: row["head_revision"] ?? null, checkRow: row["check_row"] ?? null }) }));
 }
 
 /** The reruns the release asked for on this task (each source run once): run id → its class. */
@@ -216,6 +231,8 @@ export function releaseCheckStanding(store: Store, root: string, input: { taskId
   const earlier: { run: number; why: string }[] = [];
   for (const one of builderRuns(store, ref.id, digest)) {
     if (one.id >= input.run || one.passed) continue;
+    // Interrupted before its candidate was loaded: no check ran, so there is no check failure to stand against a pass.
+    if (one.noCheck) continue;
     const classified = one.outcome === "built" || one.outcome === "no-change" ? classifyRunCheck(store, root, one.id) : { class: "unknown" as const, why: `its build ended ${one.outcome ?? "without an outcome"}` };
     if (classified === null) continue;
     if (classified.class !== "infrastructure") return { ok: false, why: `an earlier check of this commit (run ${one.id}) failed: ${classified.why} (${classWords(classified.class)}). A later pass doesn't erase it, so a person decides`, retried };
