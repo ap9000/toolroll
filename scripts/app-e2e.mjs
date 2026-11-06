@@ -38,7 +38,7 @@ const skipBuild = flag("--skip-build");
  * real-model is scripted: it tests Toolroll's own behaviour with the model scripted. */
 const GROUPS = {
   console: { journeys: 16, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, putting old tasks away, projects and their network, knowledge, skills, tools, models, old routine links" },
-  pages: { journeys: 7, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, signing out" },
+  pages: { journeys: 8, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, the release approval sheet, signing out" },
   task: { journeys: 4, about: "A task from an idea to an accepted result, then sent back twice" },
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
@@ -2232,6 +2232,107 @@ await journey("pages", SCRIPTED, "The demo lead: type a request, approve, see it
       } finally { await context.close(); }
     }
   } finally { await stopGroups([demo.pid]); }
+});
+
+await journey("pages", SCRIPTED, "One-tap release approval: the push's locator opens one sheet with GitHub CI, what approving does, what changed and every term; a card that changed refuses and shows the new one; an expired sign-in comes back to it; on a phone the password keyboard keeps Approve release in view, and it approves", [], async () => {
+  // A release of the shop, filed as `toolroll release` files one (task add, then task scope --release): its branch has
+  // many commits with long subjects (synthetic, labelled), and its checks run outside the sandbox, so it seals a release
+  // check's purpose, as Toolroll's own releases do.
+  const gitShop = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+  const seed = gitShop("rev-parse", "HEAD");
+  gitShop("checkout", "-q", "-b", "release/shop-1.0.1");
+  for (let n = 1; n <= 30; n += 1) {
+    writeFileSync(join(repo, `notes-${n}.md`), `note ${n}\n`);
+    gitShop("add", "."); gitShop("commit", "-qm", `Synthetic journey commit ${n}: tidy the shop's checkout flow so a long subject wraps on a phone without pushing the page sideways`);
+  }
+  const candidate = gitShop("rev-parse", "HEAD");
+  gitShop("checkout", "-q", "main");
+  // The plane's record of the last verified release (the seed commit), so the change list reads verified Git objects.
+  sql(`INSERT INTO release_authority (repo, generation, version, pr, branch, base, anchor_task, anchor_digest, approved_sha, approved_tree, tip_sha, tip_task, policy_json, policy_digest, verify_command, verify_digest, access_digest, state, expires_at, created_at)
+    VALUES ('${repo}', 1, '1.0.0', 6, 'b', 'main', 't', 'd', '${seed}', '${seed}', '${seed}', 't', '{}', 'p', 1, 'v', 'a', 'merged', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, external_ref, reserved_at, finished_at)
+    VALUES ('op-journey', (SELECT max(id) FROM release_authority), 'merge', 't', '${seed}', 1, 'succeeded', '${seed}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');`);
+  const id = `release-1.0.1-${candidate.slice(0, 7)}`;
+  cli(["task", "add", "Release 1.0.1", "--id", id, "--repo", repo, "--checks", "full", ...auth]);
+  cli(["project", "check-access", "--repo", repo, "unsandboxed", ...auth]);
+  cli(["task", "scope", id, "--candidate", candidate, "--goal", `Verify shop 1.0.1 (release/shop-1.0.1 at ${candidate}) passes the approved release check before it is deployed, merged, tagged and published.`,
+    "--acceptance", "The approved release check passes on the candidate commit|check", "--release", "1.0.1:7:release/shop-1.0.1", ...auth]);
+  // Held, so the worker leaves it alone once it is approved: this journey checks the approval, not the release.
+  cli(["task", "hold", id, "--reason", "journey: approval only", ...auth]);
+  const ref = rows(`SELECT id FROM task_ref WHERE external_id = '${id}'`)[0].id;
+  const problems = [];
+  try {
+    // Desktop: the push's opaque locator lands on the sheet.
+    await page.goto(`${base}/approve/${ref}`);
+    await page.waitForURL(url => url.pathname === `/t/${id}/release`, { timeout: 15_000 });
+    await settle(page);
+    const text = await page.locator("main, body").first().innerText();
+    for (const words of ["Ready for your approval", "hasn't been read yet", "full access to this computer", "Every later commit asks again", "What changed: 30 commits", "Every term"]) {
+      if (!text.includes(words)) problems.push(`the sheet doesn't say "${words}"`);
+    }
+    if ((await page.locator('form[data-release-approve] button[type="submit"]').count()) !== 1) problems.push("the sheet doesn't have exactly one Approve release button");
+    await page.locator("summary", { hasText: "What changed" }).click();
+    await shot("release-sheet-desktop");
+    // The card changes while it is open (the coordinator's CI reading lands): Approve refuses and shows the new card.
+    sql(`INSERT INTO action_ledger (at, actor, repo, task_id, run_id, action, outcome, source, detail) VALUES ('${new Date().toISOString()}', 'toolroll', '${repo}', '${id}', NULL, 'release CI observed', 'running', 'work',
+      '${JSON.stringify({ v: 1, candidate, state: "running", failed: [], runs: [{ id: 1, name: "Unit tests", status: "queued", conclusion: null }] })}')`);
+    // Signed in moments ago, the desktop may stand on its remembered password (one click); otherwise it is typed.
+    if (await page.locator('form[data-release-approve] input[name="token"]').count() > 0) await page.fill('form[data-release-approve] input[name="token"]', w.passwords.alex);
+    await Promise.all([page.waitForLoadState("load"), page.click('form[data-release-approve] button[type="submit"]')]);
+    await settle(page);
+    const stale = await page.locator("main, body").first().innerText();
+    if (!stale.includes("This release changed while you were reading it")) problems.push("a changed card didn't refuse in words");
+    if (!stale.includes("0 of 1 checks finished")) problems.push("the refused sheet doesn't show the new CI reading");
+    if (rows(`SELECT approved_at FROM task_scope WHERE task_id = '${id}'`)[0].approved_at !== null) problems.push("a changed card was approved");
+    await shot("release-sheet-stale-desktop");
+    // An expired sign-in: the sheet asks to sign in again, and comes back to the sheet.
+    const later = await w.browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const guest = await later.newPage();
+    const asked = await guest.goto(`${base}/t/${id}/release`);
+    if (!guest.url().includes("/login")) problems.push(`a signed-out visit to the sheet answered ${asked?.status()} at ${guest.url()}`);
+    await guest.fill('input[name="name"]', "alex"); await guest.fill('input[name="token"]', w.passwords.alex);
+    await Promise.all([guest.waitForNavigation(), guest.press('input[name="token"]', "Enter")]);
+    if (!guest.url().includes(`/t/${id}/release`)) await guest.goto(`${base}/t/${id}/release`);
+    if (!(await guest.locator("body").innerText()).includes("Ready for your approval")) problems.push("signing in again didn't come back to the sheet");
+    await later.close();
+    // A phone: no sideways scroll with the long subjects, and with the keyboard up the password and Approve release are in view.
+    const phone = await alexPhone();
+    await phone.goto(`${base}/approve/${ref}`);
+    await phone.waitForURL(url => url.pathname === `/t/${id}/release`, { timeout: 15_000 });
+    // Forget the password this phone just signed in with, so the sheet asks for it (the keyboard case).
+    const forgot = await post("/session/forget-password", {}, phone);
+    if (forgot.status >= 400) problems.push(`forgetting the remembered password answered ${forgot.status}`);
+    await phone.reload();
+    await settle(phone);
+    await phone.locator("summary", { hasText: "What changed" }).click();
+    const wide = await phone.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    if (wide > 2) problems.push(`the sheet scrolls sideways on a phone by ${wide}px`);
+    await settle(phone);
+    await phone.screenshot({ path: join(w.out, "release-sheet-phone.png"), fullPage: true });
+    const password = phone.locator('form[data-release-approve] input[name="token"]');
+    if (await password.getAttribute("autocomplete") !== "current-password") problems.push("the phone's password field isn't a current-password field");
+    await phone.setViewportSize({ width: 390, height: 480 });
+    await password.tap().catch(() => password.click());
+    await password.fill(w.passwords.alex);
+    await settle(phone);
+    const button = phone.locator('form[data-release-approve] button[type="submit"]');
+    await button.scrollIntoViewIfNeeded();
+    const [field, press] = [await password.boundingBox(), await button.boundingBox()];
+    if (field === null || press === null || press.y + press.height > 480 || press.y - (field.y + field.height) > 160) problems.push(`with the keyboard up, Approve release isn't beside the password (${JSON.stringify({ field, press })})`);
+    await phone.screenshot({ path: join(w.out, "release-sheet-phone-keyboard.png") });
+    await Promise.all([phone.waitForLoadState("load"), button.click()]);
+    await settle(phone);
+    if (!(await phone.locator("body").innerText()).includes("Release approved")) problems.push("approving on the phone didn't show Release approved");
+    const proof = rows(`SELECT outcome FROM action_ledger WHERE task_id = '${id}' AND action = 'approval proved' ORDER BY id DESC LIMIT 1`)[0]?.outcome;
+    if (proof !== "password-now") problems.push(`the approval's proof is ${proof}`);
+    await phone.screenshot({ path: join(w.out, "release-sheet-phone-approved.png") });
+    await phone.setViewportSize({ width: 390, height: 844 });
+    await putPhoneDown();
+  } finally {
+    cli(["task", "archive", id, ...auth], { ok: [0, 1, 2, 3] });
+    cli(["project", "check-access", "--repo", repo, "sandboxed", ...auth], { ok: [0, 1, 2, 3] });
+  }
+  if (problems.length > 0) throw new Error(problems.join("; "));
 });
 
 await journey("pages", SCRIPTED, "Signing out ends the session: pages ask to sign in again", [], async () => {

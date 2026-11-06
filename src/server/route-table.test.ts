@@ -20,6 +20,8 @@ const LIMITED_ACCESS = {
   'board': 'collection', 'review': 'collection', 'ledger': 'unscoped', 'done': 'collection',
   'people.page': 'unscoped', 'tasks': 'collection', 'tasks.new': 'collection', 'welcome': 'collection',
   'task.page': 'resource', 'task.evidence': 'resource',
+  // One-tap release approval: the sheet and the push's locator are each one task's own page, admitted by its project.
+  'task.release': 'resource', 'release.locate': 'resource',
   'ledger.export': 'unscoped', 'runs': 'collection', 'menu': 'collection',
   'run.page': 'resource', 'run.evidence': 'resource',
   'flows.new': 'resource', 'flows.gallery': 'resource', 'flows.page': 'resource',
