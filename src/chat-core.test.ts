@@ -170,7 +170,7 @@ describe.each(CHAT_PROVIDERS)("the shared chat core on %s", provider => {
     await h.pass();
     const card = cardWith(h, m0, /^Accept$/);
     expect(card.text).toContain("Keep the guard readable");
-    expect(labels(card)).toEqual(["Accept", "Request changes", "Look first ↗"]);
+    expect(labels(card)).toEqual(["Accept", "Send back", "Look first ↗"]);
     // Opaque one-time tokens only: no task, run or digest rides a button.
     for (const button of card.buttons) if (button.token !== undefined) expect(button.token).toMatch(/^d:[0-9a-f]{24}$/);
 
@@ -184,7 +184,7 @@ describe.each(CHAT_PROVIDERS)("the shared chat core on %s", provider => {
     h.tap(armed, /^Cancel$/, m0);
     await h.pass();
     const restored = current(h, m0, card.message);
-    expect(labels(restored)).toEqual(["Accept", "Request changes", "Look first ↗"]);
+    expect(labels(restored)).toEqual(["Accept", "Send back", "Look first ↗"]);
     // The Yes that Cancel replaced is spent.
     h.tap(armed, /^Yes$/, m0);
     await h.pass();
@@ -235,8 +235,8 @@ describe.each(CHAT_PROVIDERS)("the shared chat core on %s", provider => {
     await pair(h, "alex", m0);
     const { run } = readyResult("guard-3", "Keep the guard readable");
     await h.pass();
-    const card = cardWith(h, m0, /^Request changes$/);
-    h.tap(card, /^Request changes$/, m0);
+    const card = cardWith(h, m0, /^Send back$/);
+    h.tap(card, /^Send back$/, m0);
     await h.pass();
     expect(h.cards(m0).at(-1)!.text).toContain('What should change? Your next message is the feedback for "Keep the guard readable".');
     h.say("Rename the helper to guardPayout.", m0);

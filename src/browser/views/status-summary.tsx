@@ -117,7 +117,7 @@ export function RecheckStoppedForm({ form, csrf, label = "Check again" }: { form
 
 /** Build again, for a result built to an earlier plan: one filled button, the
  * task page's requeue (it runs again on the same filing, under the current plan). */
-export function RebuildForm({ action, csrf, label = "Build again", className }: { action: string; csrf: string; label?: string; className?: string }) {
+export function RebuildForm({ action, csrf, label = "Retry", className }: { action: string; csrf: string; label?: string; className?: string }) {
   return <PostForm action={action} data-rebuild className="phone:w-full">
     <Button type="submit" variant="attention" className={cn("phone:w-full", className)} data-primary-action>{label}</Button>
   </PostForm>;

@@ -71,11 +71,11 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
   "start-builder": { sentence: () => "The builder is offline. Start the builder.", action: { code: "start-worker", label: "Start the builder" } },
   // The same act as before (it opens the build, where Retry is): only the words are plainer.
   vanished: { sentence: context => `${Build(context)} stopped unexpectedly. Retry it.`, action: { code: "reconcile-run", label: "Open the build" } },
-  "review-result": { sentence: () => "Check the result, then accept it or ask for changes.", action: { code: "open-result", label: "Open result" } },
+  "review-result": { sentence: () => "Check the result, then accept it or send it back.", action: { code: "open-result", label: "Open result" } },
   // Accepting it would not help: it was built to terms that are no longer the plan.
-  rebuild: { sentence: context => `${Build(context)} was made to an earlier plan. Build it again to the current plan.`, action: { code: "retry-task", label: "Build again" } },
+  rebuild: { sentence: context => `${Build(context)} was made to an earlier plan. Retry it on the current plan.`, action: { code: "retry-task", label: "Retry" } },
   // The plan was rewritten after the build and not yet approved: the yes comes first, then Build again.
-  replan: { sentence: context => `The plan changed after ${build(context)}. Approve the new plan, then build it again.`, action: { code: "approve-scope", label: "Approve plan" } },
+  replan: { sentence: context => `The plan changed after ${build(context)}. Approve the new plan, then retry it.`, action: { code: "approve-scope", label: "Approve plan" } },
   "earlier-version": { sentence: context => context.task == null ? "An earlier version of this task still needs you. Finish it first." : `An earlier version, ${context.task}, still needs you. Finish it first.`,
     action: { code: "inspect-task", label: "Open earlier version" } },
   // An actionable need, never a quiet Waiting: a person opens it to retry or archive it.

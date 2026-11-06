@@ -727,7 +727,7 @@ export function proposalCardParts(view: ProposalCardView, inert: boolean, decisi
       icon: html`<path d="M14.7 6.3a4 4 0 0 0-5 5L4 17l3 3 5.7-5.7a4 4 0 0 0 5-5l-2.4 2.4-3-3z"/>`,
     },
     agents: { label: "Agents change", action: "change agents", icon: html`<circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="m4.9 4.9 2.2 2.2"/><path d="m16.9 16.9 2.2 2.2"/><path d="M2 12h3"/><path d="M19 12h3"/><path d="m4.9 19.1 2.2-2.2"/><path d="m16.9 7.1 2.2-2.2"/>` },
-    review: { label: text("operation") === "revise" ? "Changes to make" : "Note for later", action: text("operation") === "revise" ? "Request changes" : "Save for later", icon: html`<path d="M4 5h16v12H8l-4 3z"/>` },
+    review: { label: text("operation") === "revise" ? "Changes to make" : "Note for later", action: text("operation") === "revise" ? "Send back" : "Save for later", icon: html`<path d="M4 5h16v12H8l-4 3z"/>` },
     control: { label: "Open control", action: "Open", icon: html`<path d="M5 12h14m-6-6 6 6-6 6"/>` },
     action: { label: text("title") || "Review action", action: sharedActionPayload(payload) ? CHAT_ACTIONS[sharedActionPayload(payload)!.operation].label : "Unavailable", icon: html`<path d="M5 12h14m-6-6 6 6-6 6"/>` },
     task_action: { label: payload["operation"] === "stop" ? "Stop task?" : payload["operation"] === "resume" ? "Resume task?" : "Task update", action: isChatTaskAction(payload["operation"]) ? CHAT_TASK_ACTIONS[payload["operation"]].label : "Unavailable", icon: html`<path d="M5 12h14m-6-6 6 6-6 6"/>` },

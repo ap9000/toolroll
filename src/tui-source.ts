@@ -125,6 +125,8 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         case "stop": argv = ["task", "stop", act.id, "--run", String(act.runId)]; done = "Stopping. Its work so far is kept."; break;
         case "revise": argv = ["task", "revise", act.id, "--feedback", act.text]; done = "Sent back with your note."; break;
         case "answer": argv = ["decide", String(act.decision), "--choose", act.option]; done = "Answered."; break;
+        // Retry is today's requeue (the console's Retry), the same command and the same refusals.
+        case "retry": argv = ["task", "retry", act.id]; done = "Queued again. A builder starts it next."; break;
         case "complete": {
           const store = read();
           let digest: string | undefined;

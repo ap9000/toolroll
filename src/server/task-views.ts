@@ -8,8 +8,8 @@ import { releaseProgressFor, shipChecksForTask, type CiCheckRow, type ShipChecks
 import type { TimingRow } from "../design/kit.js";
 import { releaseCiRunningOf } from "../release-ci-hold.js";
 import { releaseObligationsOf } from "../release-recheck.js";
-import { approvalProofOf, freshlyApprovable, freshnessFor, localApprovalEligible, withFreshness } from "../scope.js";
-import { localOwnerRefusal } from "../local-owner.js";
+import { approvalProofOf, freshnessFor, withFreshness } from "../scope.js";
+import { approvalPasswordField } from "../approval-password.js";
 import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
 import { recentGitReads, taskBaseOf } from "../task-base.js";
@@ -63,7 +63,7 @@ import { chatResultHref,reviewHref,taskChatHref,taskHref,type ServeOptions } fro
 import { decisionsFor,type TaskChatFocus } from "./render-chat.js";
 import { type ProjectPeek,type WorkRow } from "./render-pages.js";
 import { completionReceiptView,diffFileAnchor,evidenceLinksFor,followUpsFor,orderChangedFiles,parseReviewDiff,proofBundleView,receiptStatusOf,withinSignedTouches,type CompletionReceiptView,type ResultDetail,type TaskPullRequest } from "./render-results.js";
-import { approvalFormDigest,consentDoorOf,nonceHashOf,publicationFactsOf,resumeCeremonyPage,resumeDigestOf,taskBody,taskPage,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView } from "./render-tasks.js";
+import { approvalFormDigest,consentDoorOf,nonceHashOf,publicationFactsOf,resumeCeremonyPage,resumeDigestOf,taskBody,taskPage,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView,type LocalApprovalView } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import type { TaskPageExtras } from "./runtime.js";
 import type { BrowserTaskView } from "../browser-workspace.js";
@@ -559,19 +559,17 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         })(),
         // Cockpit B2: whether this person's remembered password may approve these exact terms (the same rule approve()
         // applies), and since when.
-        approvalFresh: (() => {
+        // The one password rule every approve form reads (approval-password.ts): remembered since when, or a local
+        // owner's no-password approval (eligible, or why not and where to go).
+        ...((): { approvalFresh: string | null; approvalLocal: LocalApprovalView | null } => {
           const scope = ref === null ? null : runtime.store.getScope(ref.externalId);
-          if (scope === null || who?.via !== "cookie") return null;
+          if (scope === null || ref === null || who?.via !== "cookie") return { approvalFresh: null, approvalLocal: null };
           const fresh = withFreshness("approve-standard", () => freshnessFor(who.name, Date.now(), true));
-          if (fresh === null) return null;
-          const gate = runtime.store.approvalGate(ref!.externalId, who.name, "person");
-          return freshlyApprovable(runtime.store, ref!.externalId, scope, gate.verdict === "seal" && !gate.protectedWork) ? new Date(fresh.at).toISOString() : null;
-        })(),
-        // Easy-start C5: a laptop's local owner approves eligible work with no password (the seal applies the same rule).
-        approvalLocal: (() => {
-          if (ref === null || who?.via !== "cookie" || who.authority !== "local-owner") return null;
-          if (localApprovalEligible(runtime.store, who.name, ref.externalId).ok) return { eligible: true as const };
-          return { eligible: false as const, ...localOwnerRefusal(runtime.store.accountOf(who.name)?.passwordSet === true, taskHref(ref.externalId)) };
+          const field = approvalPasswordField(runtime.store, { name: who.name, taskId: ref.externalId, scope, passwordless: false,
+            localOwner: who.authority === "local-owner", freshAt: fresh?.at ?? null, returnTo: taskHref(ref.externalId) });
+          return { approvalFresh: field.field === "remembered" ? field.since : null,
+            approvalLocal: field.field === "none" && field.why === "local-owner" ? { eligible: true as const }
+              : field.field === "local-refused" ? { eligible: false as const, message: field.message, href: field.href, action: field.action } : null };
         })(),
         steerRecent: ref === null ? [] : runtime.store.runsFor(ref.id).filter(one => one.outcome !== null).map(one => one.id).sort((a, b) => b - a).slice(0, 5),
         // The running attempt's composer, for an approver on a browser session (steer-controls.ts).

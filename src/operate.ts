@@ -85,6 +85,7 @@ import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
 import { pullRequestLines, runTaskMergeCommand, runTaskOutcomeCommand } from "./task-outcome-cli.js";
+import { withTaskAlias } from "./task-aliases.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 /**
  * The commands that actually move work: authoring tasks, and the claim loop.
@@ -1024,6 +1025,8 @@ export async function runOperate(
   write: Write,
   options: OperateOptions = {},
 ): Promise<number> {
+  // People's names for task commands (task-aliases.ts) are the commands they name, before any rule reads the command.
+  if (command === "task") argv = withTaskAlias(["task", ...argv]).slice(1);
   // Each command gets its own remembered-login holder (Passwordless: "cli-login" is this command's, never the next one's).
   return withPasswordSource(CLI_PASSWORD_SOURCE, () => rememberedLogin.run({ login: null }, () => runOperateLocal(command, argv, write, options)));
 }
@@ -1252,6 +1255,8 @@ export async function runOperateAs(
   const source: RemoteSource = opts.source === "mcp" ? "mcp" : "api";
   const options = opts.options ?? {};
   const now = options.now ?? new Date();
+  // People's names for task commands are the commands they name, before the remote policy reads the command.
+  argv = [...withTaskAlias(argv)];
   const [root = "", ...rest] = argv;
   const json = rest.includes("--json");
   let invocation = root;

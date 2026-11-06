@@ -51,6 +51,9 @@ and any task command + --help prints it too
                                the yes — nothing builds without one
   toolroll task accept <id> --finish
                                accept the result you read (--despite "<why>": accept it with a reason, without finishing)
+  toolroll task send-back <id> --feedback "<what to change>"
+                               send the result back for changes
+  toolroll task retry <id>  build it again
   toolroll chat --as <you> --token <t>
                                talk to your lead: one conversation across every
                                project; it proposes, you confirm (--say "…" for one turn)

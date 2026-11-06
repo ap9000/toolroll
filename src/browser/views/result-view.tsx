@@ -306,7 +306,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
           <KButton type="submit" variant={ink ? "primary" : "outline"} label="Run checks" {...mark} />
         </PostForm>;
       case "request-changes":
-        return <KLinkButton key={kind} variant={ink ? "primary" : "outline"} label="Request changes" href="#request-changes" {...mark} />;
+        return <KLinkButton key={kind} variant={ink ? "primary" : "outline"} label="Send back" href="#request-changes" {...mark} />;
       case "rebuild":
         return need?.rebuild == null ? null : <RebuildForm key={kind} action={need.rebuild.action} csrf={csrf} label={need.label} className="min-h-11" />;
       case "recheck-stopped":
@@ -359,7 +359,7 @@ function Panel({ panel, children }: { panel: BrowserResultPanel; children?: Reac
     {children}
     {/* With nothing saved yet, the form waits hidden until Request changes
         (or a line note) opens it; the page script opens it in place. */}
-    {panel.request !== null && <section id="request-changes" aria-label="Request changes" className={cn("result-request so-result-request-box", panel.requestQuiet && "is-quiet")}>
+    {panel.request !== null && <section id="request-changes" aria-label="Send back" className={cn("result-request so-result-request-box", panel.requestQuiet && "is-quiet")}>
       <Html html={panel.request} className="so-result-request" />
     </section>}
   </div>;

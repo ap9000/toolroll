@@ -15,7 +15,7 @@ import { projectName } from "../project.js";
 import { coverageStateWords,coverageWords,type CriterionEvidenceRef,type CriterionMatrixRow,dispatchStatusToken,GOAL_ASSESSMENT_PENDING,manualReviewCriterionOf,manualReviewOnly,passFraction,personCheckWords,plainReasonWords,type ProofVerdict,reviewConflict,semanticCoverage } from "../proof.js";
 import { type PullRequestView } from "../pull-request-flow.js";
 import { qualityModeTitle } from "../quality.js";
-import { acceptWithChecksOf,type ResultActFacts,resultActsOf } from "../result-acts.js";
+import { acceptWithChecksOf,type ResultActFacts,resultActsOf,SEND_BACK_PUBLISHED,SEND_BACK_UNPUBLISHED } from "../result-acts.js";
 import { SCREENSHOT_CAPTURE,structuredHandoffView,type StructuredHandoffView,terminalDiffView,type TerminalDiffView } from "../result-evidence-readers.js";
 import { ADD_TESTS_ACTION,type FollowUpCheck,followUpChecksOf } from "../result-follow-ups.js";
 import type { RunEfficiency } from "../run-efficiency.js";
@@ -1027,10 +1027,10 @@ function reviewNextActionParts(view: ReviewCockpitView, csrf: string, back?: str
     return card("inspect-task", "No build to review", "This task was accepted without a build record.", html`<a class="button-link" href="${taskHref(view.taskId)}">Open the task</a>`);
   }
   if (detail.ciFailing && csrf !== "") {
-    return card("draft-repair", "CI is failing on its pull request", "Toolroll confirmed the failure. Draft one repair task, then approve it before it runs.", postForm(`/r/${run.id}/draft-repair`, html`<button type="submit">Draft a repair task</button>`));
+    return card("draft-repair", "CI is failing on its pull request", `Toolroll confirmed the failure. ${SEND_BACK_PUBLISHED}`, postForm(`/r/${run.id}/draft-repair`, html`<button type="submit">Send back</button>`));
   }
   if (detail.comments.length > 0 && csrf !== "") {
-    return card("revise", `${detail.comments.length} note${detail.comments.length === 1 ? "" : "s"} ready`, "Create one revision from these notes. You approve it before it runs.", postForm(`/r/${run.id}/revise`, html`${revisionSealFields(detail.comments, detail.sourceDigest)}<button type="submit">Revise</button>`, { returnTo: back ?? reviewHref(view.taskId) }));
+    return card("revise", `${detail.comments.length} note${detail.comments.length === 1 ? "" : "s"} ready`, SEND_BACK_UNPUBLISHED, postForm(`/r/${run.id}/revise`, html`${revisionSealFields(detail.comments, detail.sourceDigest)}<button type="submit">Send back</button>`, { returnTo: back ?? reviewHref(view.taskId) }));
   }
   return null;
 }
@@ -2314,7 +2314,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     );
     if (o.csrf !== "" && !detail.canAnnotate) {
       requestParts.push(
-        postForm(`/r/${runId}/revise`, html`${revisionSealFields(detail.comments, detail.sourceDigest)}<div><strong>${detail.comments.length} note${detail.comments.length === 1 ? "" : "s"} ready</strong></div><button type="submit">Request changes</button>`,
+        postForm(`/r/${runId}/revise`, html`${revisionSealFields(detail.comments, detail.sourceDigest)}<div><strong>${detail.comments.length} note${detail.comments.length === 1 ? "" : "s"} ready</strong></div><button type="submit">Send back</button>`,
           { attrs: { class: "card revision-from-comments" }, returnTo: o.returnTo }),
       );
     }
@@ -2328,7 +2328,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     requestParts.push(html`<p class="result-revision" data-result-revision="${revision.id}" data-result-revision-approved="${revision.approved ? "1" : "0"}" data-tone="${revision.tone}"><strong>Revision</strong> <a href="${taskHref(revision.id)}">${revision.title}</a> <span class="meta">· ${revision.standing}</span></p>`);
   }
   if (o.csrf === "") {
-    requestParts.push(html`<p class="meta">Sign in with a browser session to request changes.</p>`);
+    requestParts.push(html`<p class="meta">Sign in with a browser session to send it back.</p>`);
   } else if (!detail.canAnnotate) {
     requestParts.push(html`<p class="meta" data-result-feedback="unavailable">${terminal === null ? "This result has no saved diff to attach notes to." : "The saved diff no longer checks out, so notes can't attach to it."} <a href="${taskChatHref(detail.rootId ?? detail.taskId)}">Discuss in chat →</a></p>`);
   } else {
@@ -2343,7 +2343,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
         html`<details class="result-pin"><summary>Attach to a file or line</summary>`,
         html`<div class="diff-comment-target"><label>File<input type="text" name="path" placeholder="src/…" aria-label="file" class="mono"></label>`,
         html`<label>Line<input type="text" name="line" placeholder="—" aria-label="line" inputmode="numeric"></label></div></details>`,
-        html`<div class="result-feedback-actions"><button type="submit" name="intent" value="revise" data-request-changes>Request changes</button><button type="submit" name="intent" value="note" class="quiet" data-save-feedback>Save for later</button></div>`,
+        html`<div class="result-feedback-actions"><button type="submit" name="intent" value="revise" data-request-changes>Send back</button><button type="submit" name="intent" value="note" class="quiet" data-save-feedback>Save for later</button></div>`,
       ]), { attrs: { class: "diff-comment-form", id: "comment-form" }, returnTo: o.returnTo, hidden: { tab: o.tab, request: o.requestToken } })
       }</details>`,
     );
@@ -2485,7 +2485,7 @@ export function resultNeedAction(need: BrowserNeedAction, o: ResultPanelOptions,
     ? postForm(need.confirm.action, html`<button type="submit" data-primary-action style="min-height:44px">${need.label}</button>`,
       { attrs: { id: "recheck-stopped", class: "recheck-stopped" }, returnTo: need.confirm.returnTo, hidden: { run: need.confirm.run } })
     : html`<a class="button-link" href="${need.href ?? "#"}" data-primary-action>${need.label}</a>`;
-  return html`<div class="result-action" data-result-action="need">${control}${canRequest && o.csrf !== "" ? html`<a class="result-feedback-link" href="#request-changes">Request changes</a>` : ""}</div>`;
+  return html`<div class="result-action" data-result-action="need">${control}${canRequest && o.csrf !== "" ? html`<a class="result-feedback-link" href="#request-changes">Send back</a>` : ""}</div>`;
 }
 
 /** The outcome in one bounded sentence (repair 2026-09-14): the handoff's
@@ -2506,13 +2506,13 @@ export function conciseOutcomeOf(conclusion: string): string {
 export function resultPrimaryAction(detail: ResultDetail, o: ResultPanelOptions, prUrl: string | null): Html {
   const wrap = (kind: string, control: Html): Html => html`<div class="result-action" data-result-action="${kind}">${control}</div>`;
   if (detail.ciFailing && o.csrf !== "") {
-    return wrap("draft-repair", postForm(`/r/${detail.run.id}/draft-repair`, html`<button type="submit">Draft a repair task</button>`));
+    return wrap("draft-repair", postForm(`/r/${detail.run.id}/draft-repair`, html`<p class="meta">${SEND_BACK_PUBLISHED}</p><button type="submit">Send back</button>`));
   }
   if (detail.comments.length > 0 && o.csrf !== "") return wrap("revise", html`<a class="result-feedback-link" href="#request-changes">Review saved notes</a>`);
   if (detail.publication !== null && detail.publication.prNumber !== null && prUrl !== null) return wrap("open-pr", html`<a class="button-link" href="${prUrl}">Open PR #${detail.publication.prNumber}</a>`);
   if (detail.assignment == null && detail.proof?.matrix.some(row => row.assessment !== undefined) && detail.proof.reasons.includes(GOAL_ASSESSMENT_PENDING)) return wrap("open-result", html`<a class="button-link" href="${reviewHref(detail.taskId)}">Open result</a>`);
   if (detail.assignment == null && detail.proof?.matrix.some(row => row.assessment !== undefined && row.review?.judgement === "cannot-tell")) return wrap("review-evidence", html`<a class="button-link" href="${o.hrefFor("checks")}">Review the checks</a>`);
-  if (detail.canAnnotate && o.csrf !== "") return wrap("request-changes", html`<a class="result-feedback-link" href="#request-changes">Request changes</a>`);
+  if (detail.canAnnotate && o.csrf !== "") return wrap("request-changes", html`<a class="result-feedback-link" href="#request-changes">Send back</a>`);
   return html``;
 }
 

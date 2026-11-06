@@ -551,7 +551,7 @@ export function lastErrorLineOf(log: string): { line: number; text: string } | n
 }
 
 /** The result page's own sentence when the decision is on it. */
-export const RESULT_DECISION_SENTENCE = "Review the change, then accept it or ask for changes.";
+export const RESULT_DECISION_SENTENCE = "Review the change, then accept it or send it back.";
 
 /** What the result page's Accept says, from facts it already shows: the
  * recorded checks, the requirements not met, whether the saved proof reads,

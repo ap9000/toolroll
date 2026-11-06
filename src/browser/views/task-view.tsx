@@ -177,7 +177,7 @@ function usePlanEditing(): boolean {
   return editing;
 }
 
-function ApprovalBox({ approve, latest, onEdit }: { approve: NonNullable<BrowserTaskView["approve"]>; latest: BrowserTaskView["approve"]; onEdit: (() => void) | null }) {
+function ApprovalBox({ approve, latest, onEdit, reject = false }: { approve: NonNullable<BrowserTaskView["approve"]>; latest: BrowserTaskView["approve"]; onEdit: (() => void) | null; reject?: boolean }) {
   const ref = useRef<HTMLFormElement>(null);
   const editing = usePlanEditing();
   const changed = latest == null || latest.fields["digest"] !== approve.fields["digest"];
@@ -196,7 +196,8 @@ function ApprovalBox({ approve, latest, onEdit }: { approve: NonNullable<Browser
       acts={changed ? <KButton variant="primary" label="Reload" onClick={() => window.location.reload()} />
         : editing ? <KButton label="Back to the edit" onClick={() => onEdit?.()} />
         : <><KApprove kind={approve.kind} facts={facts} label={approve.label} docked terms={terms} text={approve.text} onApprove={approveNow} />
-          {onEdit !== null && <KButton label="Edit plan" onClick={onEdit} />}</>}
+          {onEdit !== null && <KButton label="Request changes" onClick={onEdit} />}
+          {reject && <KLinkButton variant="ghost" label="Reject" href="#cancel-task" data-approval-reject="" />}</>}
       terms={changed ? "The plan changed since this page loaded. Reload to see the version you would approve."
         : editing ? "You’re editing the plan. Save it (it then asks for approval again) or cancel the edit to approve this version." : terms} />
     {/* On a phone the one primary lives in the dock: the same act, the same form. */}
@@ -269,7 +270,7 @@ function StatusBox({ view, card, csrf, approved }: { view: BrowserTaskView; card
     : pausedWords({ until: pause.until ?? null, limitMs: pause.limitMs ?? null }, iso => shortWhen(iso, new Date(), viewerZone(), true));
   const waits = card.status.headline === "Needs you" || card.status.headline === "Ready for review";
   const acts: ReactNode = confirm != null && csrf !== "" ? <RecheckStopped form={confirm} label={card.action?.label ?? "Check again"} />
-    : rebuild != null && csrf !== "" ? <PostForm action={rebuild.action} data-rebuild><KButton type="submit" variant="primary" label={card.action?.label ?? "Build again"} data-primary-action="" /></PostForm>
+    : rebuild != null && csrf !== "" ? <PostForm action={rebuild.action} data-rebuild><KButton type="submit" variant="primary" label={card.action?.label ?? "Retry"} data-primary-action="" /></PostForm>
     : retrying ? <RetryForm action={retry.action} note={retry.note ?? failure?.suggestion} />
     : <>
       {stuck?.action != null ? <KLinkButton label={stuck.action.label} href={stuck.action.href} data-stuck-action="" />
@@ -580,7 +581,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   const first = hasResult ? "Result" : view.scout ? "Investigation" : "Plan";
   const meta = <>{view.project !== null && <>{view.project} · </>}<span className="k-mono">{view.id}</span>{view.scout && <> · research only</>}
     {people.length > 0 && <> · <AlsoViewing people={people} /></>}</>;
-  const record = view.more?.find(one => one.kind === "link" && one.label === "Audit record");
+  const record = view.audit ?? null;
   const needs = view.status?.status.headline === "Needs you" || view.status?.status.headline === "Ready for review";
   const primary = approve === null && needs && view.status?.action != null && view.recheckStopped == null && view.rebuild == null && view.retry == null
     ? <KLinkButton variant="primary" label={view.status.action.label} href={view.status.action.href} /> : null;
@@ -588,10 +589,10 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     <div className="k-doc" onClick={inPage}>
       <KDocHeader back={["/work", "Tasks"]} title={view.title} meta={meta}
         right={<nav className="k-acts so-task-tools" aria-label="Task tools">
-          {record !== undefined && record.kind === "link" && <KLinkButton variant="ghost" sm className="k-desk-only" label="Full record" href={record.href} />}
+          {record !== null && <KLinkButton variant="ghost" sm className="k-desk-only" label={record.label} href={record.href} />}
           <KButton ref={detailsButton} variant="ghost" sm lead="panel" label="Details" className="k-desk-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} data-open-details="" />
           <KButton variant="ghost" sm iconOnly="panel" label="Details" className="k-phone-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} />
-          <MoreMenu items={[...(view.more ?? []).map(one => one === record ? { ...one, label: "Full record" } : one), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} showTab={showTab} />
+          <MoreMenu items={[...(view.more ?? []), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} showTab={showTab} />
         </nav>} />
       {view.version !== null && <KInfoLine>{view.version.label} · <a className="k-link" href={view.version.current.href}>{view.version.current.label}</a></KInfoLine>}
       {view.archived != null && <KSlots status={<><KChip word="Archived" /><h2>Put away</h2></>}
@@ -602,7 +603,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
         </PostForm> : null}
         terms={view.archived.restore !== null ? "Restoring puts it back in Tasks. Its history and results were kept." : "An approver can restore it."} />}
       {view.journey != null && <KSteps steps={stepsOf(view.journey)} />}
-      {approve !== null && <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} />}
+      {approve !== null && <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} />}
       {/* The approval box is the status while the plan waits on this person: never a second box saying the same. */}
       {approve !== null ? null : view.status !== null ? <StatusBox view={view} card={view.status} csrf={csrf} approved={view.approved ?? null} /> : <Html html={view.statusHtml} />}
       {/* The older approval region (a blocked or closed approval, a fold of updated terms): installed once, and a new

@@ -313,6 +313,8 @@ export type BrowserTaskView = {
   approved?: { by: string; at: string; automatic: boolean; rule: string | null; how: string; version: string } | null;
   /** ⋯ More actions: the task's secondary acts, the same order on the task and agent pages, destructive last. */
   more?: BrowserTaskMore[];
+  /** The task's full audit record (its link in the header); it moved out of More (docs/plans/plain-toolroll.md P1.3). */
+  audit?: { label: string; href: string } | null;
 };
 export type BrowserTaskTab = "activity" | "result" | "plan" | "attempts";
 /** One ⋯ item: a plain link, a copy of this page's address, a one-click POST (never a ceremony), or a go-to that switches

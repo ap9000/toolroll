@@ -43,7 +43,7 @@ describe("the brief's states", () => {
   test("checks failed: the only red headline, its checks row red too", () => {
     const status = taskStatusOf({ stage: "finished", checks: failed, pullRequest: pr("none") });
     expect([status.headline, status.tone]).toEqual(["Failed", "danger"]);
-    expect(status.sentence).toBe("Checks failed on a1b2c3d. See what broke, then retry or ask for changes.");
+    expect(status.sentence).toBe("Checks failed on a1b2c3d. See what broke, then retry or send it back.");
     expect(row(status, "checks")).toMatchObject({ text: "Failed (exit 1)", mark: "failed" });
   });
 

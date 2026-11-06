@@ -674,7 +674,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     label = signInReason({ provider: provider as ProviderId, authMode: authMode === 'api-key' ? 'api-key' : 'subscription' });
     detail = `${label}. It starts again on its own once ${providerName(provider)} works.`;
   }
-  if (code === 'running' && n(row, 'version_count') > 1) label = 'Revising';
+  if (code === 'running' && n(row, 'version_count') > 1) label = 'Building again';
   // Replaced, never "Cancelled": the successor is one tap away.
   const successor = code === 'cancelled' ? s(row, 'replaced_by') : null;
   if (successor !== null) { detail = `${replacedWords(successor)}.`; actionLabel = `Open ${successor}`; }

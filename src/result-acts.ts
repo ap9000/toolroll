@@ -1,26 +1,25 @@
-/** The result page's acts (2026-10-02), chosen in one place: exactly one ink
- * act, the one that resolves the result's state, and never navigation; at
- * most one outline act beside it. A result that can't be accepted says why
- * in one line before them.
+/** The result page's acts (2026-10-02; docs/plans/plain-toolroll.md P1.3), chosen in one place: three verbs, each a
+ * relabel over the post it has always made. Exactly one ink act at most, the one that resolves the result's state,
+ * and never navigation; at most one outline act beside it. A result that can't be accepted says why in one line
+ * before them. Run checks stays in the Checks row, and a person's own checks in the Checks list: neither is an act here.
  *
- *   everything met                      → Accept and finish
- *   a "You check this one" unanswered   → the next check, then Accept without your check
- *   a check you marked Not right        → Request changes, then Accept anyway
- *   checks queued or running            → Checks running (disabled), then Accept without checks
- *   checks didn't run, a check exists   → Run checks, then Accept without checks
+ *   everything met                      → Accept
+ *   a "You check this one" unanswered   → (the check itself, above), then Accept without your check
+ *   a check you marked Not right        → Send back, then Accept anyway
+ *   checks queued or running            → (Checks running, in its row), then Accept without checks
+ *   checks didn't run, a check exists   → (Run checks, in its row), then Accept without checks
  *   report and changes disagree,
- *   or the proof is refuted             → Request changes, then Accept (as allowed);
+ *   or the proof is refuted             → Send back, then Accept (as allowed);
  *                                         never Accept as ink, even with no form here
- *   a Needs you form resolves it        → that form (Build again, Check again)
- *   saved notes or a failing PR         → Revise / Draft a repair task
- *   a failed build                      → Retry (its note starts with what to change), then Run checks when they
- *                                         didn't run; never Accept: a failed build is not a result to accept
+ *   a Needs you form resolves it        → that form (Retry: Build again; Check again)
+ *   saved notes or a failing PR         → Send back (the revision from the notes, or the repair of the PR)
+ *   a failed build                      → Retry (its note starts with what to change); never Accept: a failed build
+ *                                         is not a result to accept
  *   a failed task's delivered result    → Retry, then Accept anyway (in outline, with a reason) where it may be
- *                                         accepted; Run checks stays in its Checks row
+ *                                         accepted
  *
- * Accepting finishes the task in one request (Accept and finish): the person's
- * acceptance, when one is owed, and the completion together. This only decides
- * which act is ink; the page recomputes it as the person answers each check. */
+ * Accepting finishes the task in one request: the person's acceptance, when one is owed, and the completion
+ * together. This only decides which act is ink; the page recomputes it as the person answers each check. */
 
 import type { ProofVerdict } from "./proof.js";
 
@@ -89,25 +88,43 @@ export type ResultActs = {
   line: string | null;
 };
 
+/** The three verbs, and the posts each one makes (docs/plans/plain-toolroll.md P1.3): Accept is today's Accept (and
+ * finish), or Accept anyway with a reason; Send back is today's request for changes and its revision from saved notes
+ * for an unpublished result, or the repair of a published one; Retry is today's Retry, or Build again. Confirm it
+ * stopped keeps its own words (it is leaving: another branch removes it). */
+export type ResultVerb = "Accept" | "Send back" | "Retry";
+export const RESULT_VERB: Readonly<Record<ResultActKind, ResultVerb | null>> = {
+  accept: "Accept", "accept-anyway": "Accept",
+  "request-changes": "Send back", revise: "Send back", "draft-repair": "Send back",
+  retry: "Retry", rebuild: "Retry",
+  "confirm-stopped": null,
+  // Never in the act row: Run checks lives in the Checks row, and a person's own checks in the Checks list.
+  "next-check": null, "checks-running": null, "run-checks": null,
+};
+/** What Send back does, said on its own confirm line: the rule is fixed by whether the result is already published. */
+export const SEND_BACK_UNPUBLISHED = "Sends it back with your notes. The same task builds again once you approve the revision.";
+export const SEND_BACK_PUBLISHED = "It's already published, so this files a fix as a new version for you to approve.";
+
 export function resultActsOf(facts: ResultActFacts): ResultActs {
   const request = facts.canRequest ? "request-changes" as const : null;
   const accept = facts.accept === null ? null : "accept" as const;
   if (facts.failed != null) {
-    const checks = facts.runChecks && !facts.checksRunning ? "run-checks" as const : facts.checksRunning ? "checks-running" as const : null;
     const anyway = facts.failed.acceptAnyway === true ? "accept-anyway" as const : null;
-    return facts.failed.retry ? { primary: "retry", secondary: anyway ?? checks, line: null } : { primary: checks, secondary: anyway, line: null };
+    return facts.failed.retry ? { primary: "retry", secondary: anyway, line: null } : { primary: null, secondary: anyway, line: null };
   }
   if (facts.need !== null) return { primary: facts.need, secondary: request, line: null };
-  if (facts.next !== null) return { primary: facts.next, secondary: accept ?? request, line: null };
+  // Saved notes or a failing pull request: Send back is ink, and Accept the quiet other way.
+  if (facts.next !== null) return { primary: facts.next, secondary: accept, line: null };
   // Can't be accepted yet: Accept is never the ink act, even when the feedback form isn't here.
   if (facts.blocked !== null) return { primary: request, secondary: accept, line: facts.blocked };
-  // The person's own checks come first: the next one is ink until each is answered.
-  if (accept !== null && (facts.unanswered ?? 0) > 0) return { primary: "next-check", secondary: accept, line: null };
+  // The person's own checks come first, in the Checks list above: nothing here is ink until each is answered.
+  if (accept !== null && (facts.unanswered ?? 0) > 0) return { primary: null, secondary: accept, line: null };
   if (accept !== null && (facts.notRight ?? 0) > 0) return { primary: request, secondary: accept, line: null };
-  if (facts.checksRunning) return { primary: "checks-running", secondary: accept ?? request, line: null };
+  // Checks running, or not run: their row says so and offers Run checks; Accept waits in outline.
+  if (facts.checksRunning) return { primary: null, secondary: accept ?? request, line: null };
   if (facts.accept === null) return { primary: null, secondary: request, line: null };
   if (facts.accept.ready) return { primary: "accept", secondary: request, line: null };
-  if (facts.runChecks) return { primary: "run-checks", secondary: "accept", line: null };
+  if (facts.runChecks) return { primary: null, secondary: "accept", line: null };
   return { primary: "accept", secondary: request, line: null };
 }
 

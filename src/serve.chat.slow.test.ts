@@ -1157,7 +1157,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(html).toContain('<div class="approval-row"><dt>Goal</dt><dd><p class="approval-goal">do a</p></dd></div>');
     expect(html).toContain('<div class="approval-row"><dt>Done when</dt>');
     expect(html).toContain("Your password signs this approval.");
-    expect(html.match(/<button type="submit" data-primary-action>Approve & start<\/button>/g)).toHaveLength(1);
+    expect(html.match(/<button type="submit" data-primary-action>Approve<\/button>/g)).toHaveLength(1);
     expect(html).toContain('action="/t/a/approve"');
     expect(html).toContain('name="return" value="/chat?task=a"');
     expect(html).toContain('data-poll="0"');

@@ -262,7 +262,7 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
       return pr?.state === "merged" ? `${by} ${pr.number === null ? "Its pull request" : `Pull request #${pr.number}`} merged.` : by;
     }
     case "Failed":
-      if (facts.checks?.status === "failed") return `${facts.checks.level === "quick" ? "Quick checks" : "Checks"} failed${sha === null ? "" : ` on ${sha}`}. See what broke, then retry or ask for changes.`;
+      if (facts.checks?.status === "failed") return `${facts.checks.level === "quick" ? "Quick checks" : "Checks"} failed${sha === null ? "" : ` on ${sha}`}. See what broke, then retry or send it back.`;
       return reason ?? "The last attempt stopped before it finished. Review it, then retry.";
     case "Stopped": return reason ?? "Stopped by a person. The work so far is kept.";
   }
@@ -502,7 +502,7 @@ const quoted = (statement: string | undefined): string => {
 function unresolvedAsk(row: RequirementRow, word: RequirementWord): string {
   const what = word === "Not shown yet" && screenshotMissing(row) ? "A screenshot is missing for"
     : word === "Not shown yet" ? "Nothing shows this requirement is met" : word === "Unverified" ? "This requirement couldn't be verified" : "This requirement isn't met";
-  return `${what}: ${quoted(row.statement) || row.id || "a requirement"}. Ask for changes, or accept the result with a reason.`;
+  return `${what}: ${quoted(row.statement) || row.id || "a requirement"}. Send it back, or accept the result with a reason.`;
 }
 /** Requirements from the stored matrix: met, the ones only a person confirms, and the total. */
 export function requirementsOf(matrix: readonly RequirementRow[] | null | undefined, release?: ReleaseState): NonNullable<TaskStatusFacts["requirements"]> | null {
@@ -531,7 +531,7 @@ export function completionBlockersOf(f: {
   const release = releaseStateOf(f.checks);
   const backing = checkBackingOf(f.checks);
   if (!f.report && f.checks?.status === "failed") {
-    blockers.push({ key: "check-failed", message: `Checks failed${f.checks.exitCode === null ? "" : ` (exit ${f.checks.exitCode})`}. Fix them and run checks again, or ask for changes.` });
+    blockers.push({ key: "check-failed", message: `Checks failed${f.checks.exitCode === null ? "" : ` (exit ${f.checks.exitCode})`}. Fix them and run checks again, or send it back.` });
   } else if (!f.report && f.checkRequired && f.checks?.status !== "passed" && release === undefined) {
     blockers.push({ key: "check-missing", message: checksUnderway(f.checks) ? "Its project check hasn't finished yet. Accept it once it passes."
       : f.checks?.status === "unavailable" ? f.checks.cause === "command-changed" ? `${CHECK_COMMAND_CHANGED.replace(/; run checks again\.$/, ".")} Run checks again, then accept it.` : `${CHECK_UNREADABLE} Run checks on it, then accept it.`
@@ -544,7 +544,7 @@ export function completionBlockersOf(f: {
     if (unresolved.length === 1) blockers.push({ key: "criteria", message: unresolvedAsk(unresolved[0]!.row, unresolved[0]!.word) });
     else if (unresolved.length > 1) {
       const ids = unresolved.map(one => one.row.id ?? "?");
-      blockers.push({ key: "criteria", message: `${unresolved.length} requirements ${unresolved.every(one => one.word === "Unverified") ? "couldn't be verified" : "aren't met yet"} (${ids.slice(0, 6).join(", ")}${ids.length > 6 ? ", …" : ""}). Ask for changes, or accept the result with a reason.` });
+      blockers.push({ key: "criteria", message: `${unresolved.length} requirements ${unresolved.every(one => one.word === "Unverified") ? "couldn't be verified" : "aren't met yet"} (${ids.slice(0, 6).join(", ")}${ids.length > 6 ? ", …" : ""}). Send it back, or accept the result with a reason.` });
     }
   }
   if (f.high > 0) blockers.push({ key: "high", message: `The automatic review found ${f.high === 1 ? "a high-severity problem" : `${f.high} high-severity problems`}. Send it back before accepting it.` });

@@ -509,7 +509,7 @@ describe("checks Off are checked at release", () => {
       return { code, said: lines.join("\n"), state: read(id).state };
     };
     built("refuse-failed", "Round totals", ago(14), "full", 1);
-    expect(await complete("refuse-failed")).toEqual({ code: EXIT.refused, said: "Checks failed (exit 1). Fix them and run checks again, or ask for changes.", state: "ready-to-check" });
+    expect(await complete("refuse-failed")).toEqual({ code: EXIT.refused, said: "Checks failed (exit 1). Fix them and run checks again, or send it back.", state: "ready-to-check" });
 
     built("refuse-missing", "Trim the footer", ago(13), "full");
     store.handle.prepare("DELETE FROM artifact WHERE run = ? AND kind IN ('check-log', 'verification-receipt')").run(runs["refuse-missing"]!);
@@ -522,7 +522,7 @@ describe("checks Off are checked at release", () => {
     const proof = store.proofVerdictFor(run)!;
     store.handle.prepare("DELETE FROM proof_verdict WHERE run = ?").run(run);
     store.saveProofVerdict(run, "short", ["criterion \"c1\" is not met"], ago(12), [{ ...proof.matrix[0]!, state: "failed", detail: ["not met"] }], "short");
-    expect(await complete("refuse-criteria")).toMatchObject({ code: EXIT.refused, said: "This requirement isn't met: Show stock levels. Ask for changes, or accept the result with a reason.", state: "ready-to-check" });
+    expect(await complete("refuse-criteria")).toMatchObject({ code: EXIT.refused, said: "This requirement isn't met: Show stock levels. Send it back, or accept the result with a reason.", state: "ready-to-check" });
 
     built("refuse-high", "Cache prices", ago(11), "full");
     store.handle.prepare(`INSERT INTO build_review (run, task_id, repo, state, findings_json, queued_at, finished_at) VALUES (?, 'refuse-high', ?, 'reviewed', ?, ?, ?)`)

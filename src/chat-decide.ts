@@ -63,7 +63,7 @@ export type DecideButton = { label: string; token: string } | { label: string; l
 /** The words, said once. */
 export const DECIDE_LABELS = {
   accept: "Accept",
-  changes: "Request changes",
+  changes: "Send back",
   retry: "Retry",
   approve: "Approve & start",
   "not-now": "Not now",

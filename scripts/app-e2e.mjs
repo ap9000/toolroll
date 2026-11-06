@@ -701,6 +701,9 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
 async function sendBack(id, note) {
   const run = latestBuild(id);
   await page.goto(`${base}/review?result=${encodeURIComponent(id)}&run=${run.id}`);
+  // Three verbs (docs/plans/plain-toolroll.md P1.3): the result's acts read Accept, Send back or Retry, nothing else.
+  const verbs = await page.locator("[data-result-acts] [data-act]").allInnerTexts();
+  if (verbs.some(one => !/^(Accept( anyway| without checks| without your check)?|Send back|Retry|Confirm it stopped)$/.test(one.trim()))) throw new Error(`the result's acts say: ${verbs.join(" · ")}`);
   await page.locator('a[href="#request-changes"]').first().click();
   const box = page.locator('#comment-form textarea[name="note"]');
   await box.waitFor({ timeout: 10_000 });

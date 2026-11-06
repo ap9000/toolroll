@@ -56,6 +56,7 @@ import type { OperateOptions } from "./operate.js";
 import { renderReport, renderPulls, renderGraph, type PullGroup, type RemoteMap } from "./render.js";
 import { DEFAULT_MAX_DEPTH } from "./scan.js";
 import { HELP, INTERNALS_HELP } from "./cli-help.js";
+import { withTaskAlias } from "./task-aliases.js";
 import { quickAnswer } from "./cli-fast.js";
 import {
   BIN_NAME,
@@ -387,6 +388,8 @@ async function dispatch(
   write: Write,
   mainOptions: MainOptions,
 ): Promise<number> {
+  // People's names for task commands (task send-back, retry, recheck) are the commands they name, before anything else.
+  argv = withTaskAlias(argv);
   // v115: routines became scheduled flows. Every old `routine …` invocation answers with one line pointing there —
   // hidden from help and the contract, before anything remote or local opens, changing nothing.
   if (argv[0] === "routine") return routinesMoved(argv, write);

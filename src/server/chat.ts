@@ -1,6 +1,6 @@
-import { freshFacts, freshlyApprovable, freshnessFor, spendingOnlyOnSuccess, withFreshness } from "../scope.js";
+import { freshFacts, freshnessFor, spendingOnlyOnSuccess, withFreshness } from "../scope.js";
+import { approvalPasswordField } from "../approval-password.js";
 import { CHAT_ACTION_LOCAL_ACTS, localOwnerRefusal } from "../local-owner.js";
-import { localApprovalEligible } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 import { DEPRECATED_PAGE } from "../deprecations.js";
 /** chat handlers, moved without changing their route bodies. */
@@ -418,18 +418,20 @@ export function createChatHandlers(runtime: ServerRuntime) {
       const evidenceLink=action.operation==='result_accept'?html`<a href="/r/${Number(action.request['run'])}">Inspect this result</a>`:'';
       // Cockpit B2: approving standard work may stand on a password remembered on this session, exactly as on the task
       // page (the same rule approve() applies when the form comes back); the field then may be left empty.
+      // The one password rule every approve form reads (approval-password.ts).
       const freshSince=(()=>{
         const task=typeof action.request['task']==='string'?action.request['task']:null;
         if(action.operation!=='scope_approve'||task===null)return null;
         const scope=store.getScope(task),fresh=withFreshness('approve-standard',()=>freshnessFor(who.name,Date.now(),true));
-        if(scope===null||fresh===null)return null;
-        const gate=store.approvalGate(task,who.name,'person');
-        return freshlyApprovable(store,task,scope,gate.verdict==='seal'&&!gate.protectedWork)?new Date(fresh.at):null;
+        if(scope===null)return null;
+        const field=approvalPasswordField(store,{name:who.name,taskId:task,scope,passwordless:false,localOwner:false,freshAt:fresh?.at??null,returnTo:'/chat'});
+        return field.field==='remembered'?new Date(field.since):null;
       })();
       // Easy-start C5: a laptop's local owner confirms its own acts without a password (an approval only when it is
       // eligible: localApprovalEligible, the rule the seal applies again); anything else says how to get a password.
       const reviewTask=typeof action.request['task']==='string'?action.request['task']:null;
-      const localOk=who.authority==='local-owner'&&CHAT_ACTION_LOCAL_ACTS[action.operation]!==null&&(action.operation!=='scope_approve'||(reviewTask!==null&&localApprovalEligible(store,who.name,reviewTask).ok));
+      const localScope=reviewTask===null?null:store.getScope(reviewTask);
+      const localOk=who.authority==='local-owner'&&CHAT_ACTION_LOCAL_ACTS[action.operation]!==null&&(action.operation!=='scope_approve'||(reviewTask!==null&&localScope!==null&&approvalPasswordField(store,{name:who.name,taskId:reviewTask,scope:localScope,passwordless:false,localOwner:true,freshAt:null,returnTo:'/chat'}).field==='none'));
       const localWords=who.authority==='local-owner'&&!localOk?localOwnerRefusal(store.accountOf(who.name)?.passwordSet===true,'/chat'):null;
       const passwordField=!CHAT_ACTIONS[action.operation].password||localOk?'':localWords!==null?html`<p class="approval-password-note">${localWords.message} <a href="${localWords.href}">${localWords.action}</a></p>`:reauth(freshSince===null
         ?html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`

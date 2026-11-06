@@ -197,7 +197,7 @@ describe("decisions finish in the chat app", () => {
     await pass();
     const card = script.cardWith(BOB, /^Accept$/);
     expect(card.text).toBe("Keep the guard readable is ready. Your tests passed. Accept it?");
-    expect(card.labels).toEqual(["Accept", "Request changes", "Look first ↗"]);
+    expect(card.labels).toEqual(["Accept", "Send back", "Look first ↗"]);
     expect(card.rows.find(one => one.text === "Look first")!.url).toBe(`${ORIGIN}/chat?task=guard-1&result=${run}&tab=changes`);
     // Opaque tokens only: no task, run or digest rides the button.
     expect(card.token(/^Accept$/)).toMatch(/^d:[0-9a-f]{24}$/);
@@ -211,7 +211,7 @@ describe("decisions finish in the chat app", () => {
     await tapIn(BOB, armed.token(/^Cancel$/), card.messageId);
     const restored = script.current(BOB, card.messageId);
     expect(restored.text).toBe(card.text);
-    expect(restored.labels).toEqual(["Accept", "Request changes", "Look first ↗"]);
+    expect(restored.labels).toEqual(["Accept", "Send back", "Look first ↗"]);
     // The Yes the Cancel replaced is spent.
     await tapIn(BOB, armed.token(/^Yes$/), card.messageId);
     expect(script.acks().at(-1)).toBe("That button was already used or has expired.");
@@ -245,18 +245,18 @@ describe("decisions finish in the chat app", () => {
 
     // Another person's card for the same result: its first tap says so too.
     const other = script.cardWith(ALEX, /^Accept$/);
-    await tapIn(ALEX, other.token(/^Request changes$/), other.messageId);
+    await tapIn(ALEX, other.token(/^Send back$/), other.messageId);
     expect(script.current(ALEX, other.messageId).text).toContain("This task is already finished. Nothing was done.");
     // A button is the person's own: bob's token from alex's chat does nothing.
-    await tapIn(ALEX, card.token(/^Request changes$/), card.messageId, card.text);
+    await tapIn(ALEX, card.token(/^Send back$/), card.messageId, card.text);
     expect(script.acks().at(-1)).toBe("That button isn't for this chat.");
   });
 
   test("c1: Request changes asks what should change, and the next message becomes the revision's feedback", async () => {
     const { run } = readyResult("guard-3", "Keep the guard readable");
     await pass();
-    const card = script.cardWith(BOB, /^Request changes$/);
-    await tapIn(BOB, card.token(/^Request changes$/), card.messageId);
+    const card = script.cardWith(BOB, /^Send back$/);
+    await tapIn(BOB, card.token(/^Send back$/), card.messageId);
     expect(script.acks().at(-1)).toBe("What should change?");
     const prompt = script.inChat(BOB).filter(call => call.method === "sendMessage").at(-1)!;
     expect(String(prompt.params["text"])).toBe('What should change? Your next message is the feedback for "Keep the guard readable".');
@@ -537,7 +537,7 @@ describe("decisions finish in the chat app", () => {
       "These buttons work only for the person they were sent to. Nothing was done.",
     ]);
     expect(assignment("guard-14")?.state).toBe("ready-to-check");
-    expect(script.current(BOB, card.messageId).labels).toEqual(["Accept", "Request changes", "Look first ↗"]);
+    expect(script.current(BOB, card.messageId).labels).toEqual(["Accept", "Send back", "Look first ↗"]);
   });
 
   test("c3: an agent's question pushes with its options as buttons, and a tap answers it", async () => {

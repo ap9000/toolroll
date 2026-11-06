@@ -3,7 +3,7 @@
  *
  * Screens: Setup (the welcome's steps, until the first task), Main (tasks | live output | what needs you), New task,
  * Task, the plan before approving it, a revision's words, and Needs password. Keys: j/k move, Enter opens, n new task,
- * a approve (the full plan first), s stop, r revise, c complete, 1–9 answer a question, w open the browser, ? help,
+ * a approve (the full plan first) or accept, c accept, b send back, r retry, s stop, 1–9 answer a question, w browser, ? help,
  * q quit. Every write goes through the TuiSource, which runs it as the local owner; a refusal shows its own words.
  */
 import { Box, Text, useApp, useInput, type Key } from "ink";
@@ -41,10 +41,11 @@ const HELP_LINES = [
   "j / k or ↑ / ↓   move",
   "Enter            open the task",
   "n                new task",
-  "a                approve the plan (shows it in full first)",
-  "s                stop the running attempt",
-  "r                send the result back",
+  "a                approve the plan (shows it in full first), or accept the result",
   "c                accept the result",
+  "b                send the result back",
+  "r                retry",
+  "s                stop the running attempt",
   "1–9              answer the task's question",
   "w                open in the browser",
   "Esc              back",
@@ -130,6 +131,12 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     if (task.plan === null) setMessage("No plan is waiting for your approval on this task.");
     else setScreen({ kind: "approve", task });
   });
+  /** `a`: the task's own ink act — its plan (shown in full first), or else its finished result. */
+  const approveOrAccept = (id: string) => openTask(id, task => {
+    if (task.plan !== null) setScreen({ kind: "approve", task });
+    else if (task.hasResult) void act({ kind: "complete", id });
+    else setMessage("No plan or result is waiting for you on this task.");
+  });
   const stop = (id: string, runId: number | null) => {
     if (runId === null) { setMessage("Nothing is running on this task."); return; }
     void act({ kind: "stop", id, runId });
@@ -149,9 +156,11 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     if (input === "?") { setScreen({ kind: "help" }); return true; }
     if (input === "q") { quit(); return true; }
     if (id === null) return false;
-    if (input === "a") { void approve(id); return true; }
+    // One keymap (docs/plans/plain-toolroll.md P1.3): a the page's ink act (Approve, or Accept), c Accept, b Send back, r Retry.
+    if (input === "a") { void approveOrAccept(id); return true; }
     if (input === "s") { stop(id, runId); return true; }
-    if (input === "r") { setScreen({ kind: "compose", purpose: "revise", id, text: "", project: 0 }); return true; }
+    if (input === "b") { setScreen({ kind: "compose", purpose: "revise", id, text: "", project: 0 }); return true; }
+    if (input === "r") { void act({ kind: "retry", id }); return true; }
     if (input === "c") { void act({ kind: "complete", id }); return true; }
     return false;
   };
@@ -235,8 +244,8 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
 
   function hints(): string {
     switch (screen.kind) {
-      case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve · s stop · r send back · c accept · w browser · ? help · q quit";
-      case "task": return "a approve · s stop · r send back · c accept · 1–9 answer · w browser · Esc back";
+      case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve/accept · b send back · r retry · s stop · w browser · ? help · q quit";
+      case "task": return "a approve/accept · b send back · r retry · s stop · 1–9 answer · w browser · Esc back";
       case "approve": return "y approve · Esc cancel";
       case "compose": return screen.purpose === "new" && (snapshot?.projects.length ?? 0) > 1 ? "Enter send · Tab project · Esc cancel" : "Enter send · Esc cancel";
       case "quit": return "s stop · b background · Esc cancel";

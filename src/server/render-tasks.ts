@@ -191,7 +191,7 @@ export function revisionSentence(revision: Extract<RevisionView, { sourceRun: nu
     if (missed.length > 0) return `Fixes what ${build} missed: ${missed.map(clean).join("; ")}.`;
   }
   const notes = revision.comments.map(one => clean(one.note)).filter(one => one !== "");
-  return notes.length === 0 ? `Revises ${build}.` : `Fixes what ${build} missed: ${notes.join("; ")}.`;
+  return notes.length === 0 ? `Sends back ${build}.` : `Fixes what ${build} missed: ${notes.join("; ")}.`;
 }
 
 /** A planner's amendment, said plainly and kept in view: approving binds
@@ -308,7 +308,8 @@ export function approvalSheetHtml(input: ApprovalSheetInput): Html {
         : html`<p class="approval-password-note" id="${parts.passwordNote}" data-approval-fresh>Your password from ${whenTime(input.freshSince)} is remembered on this computer — leave this blank to approve with it, or type it again.</p>`,
       html`<button type="submit" data-primary-action>${parts.submit}</button></div>`,
       html`<p class="approval-after">${parts.after}</p>`,
-      html`<div class="approval-secondary">${parts.editor ?? html`<a class="approval-link" href="${input.editHref}">Edit plan</a>`}<a class="approval-link" href="${input.notNowHref}">Not now</a></div>`,
+      // Approve, Request changes, Reject (docs/plans/plain-toolroll.md P1.3): Reject is the task's own Cancel, one tap away.
+      html`<div class="approval-secondary">${parts.editor ?? html`<a class="approval-link" href="${input.editHref}">Request changes</a>`}<a class="approval-link" href="${input.surface === "task" ? "#cancel-task" : input.notNowHref}">${input.surface === "task" ? "Reject" : "Not now"}</a></div>`,
       parts.details,
     ]), {
       attrs: { class: "approve-form approval-sheet", id: input.surface === "task" ? "approve" : null, "data-sticky": input.sticky },
@@ -383,7 +384,7 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
     : input.deliverable === "report"
     ? html`An agent investigates without changing the repository. You'll hear when its report is ready.`
     : html`An agent starts in its own branch. You'll hear when it's ready to review.`;
-  const submit = rebuild !== null ? html`Approve & build again` : html`Approve & start`;
+  const submit = rebuild !== null ? html`Approve and retry` : html`Approve`;
 
   // Everything else the digest binds, one tap away.
   const detail = (title: string, body: Html, attrs: Html = html``): Html => isEmptyHtml(body) ? html`` : html`<section class="approval-detail"${attrs}><h3>${title}</h3>${body}</section>`;
@@ -458,7 +459,7 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   const addedHow = draft?.get("requirement-new-how") ?? "manual-review";
   const editor = edit === null ? null : joinHtml([
     html`<details class="approval-edit" id="plan-editor"${draft === null && !edit.open ? "" : html` open`}>`,
-    html`<summary class="approval-link"><span class="approval-edit-open">Edit plan</span><span class="approval-edit-close">Cancel</span></summary>`,
+    html`<summary class="approval-link"><span class="approval-edit-open">Request changes</span><span class="approval-edit-close">Cancel</span></summary>`,
     html`<div class="approval-editor">`,
     edit.problem === null ? "" : html`<p class="problem" role="alert">${edit.problem}</p>`,
     field("goal", draft?.get("goal") ?? goalShown, 3, "Goal"),
@@ -513,7 +514,7 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
       routeEvidenceHtml(route, "approval-evidence"),
       consent,
   ]);
-  return { lead, rows, editor, editorForm, details, submit, label: rebuild !== null ? "Approve and build again" : "Approve and start", after, allowing, passwordNote };
+  return { lead, rows, editor, editorForm, details, submit, label: rebuild !== null ? "Approve and retry" : "Approve", after, allowing, passwordNote };
 }
 /** Earlier versions of a task still in flight, in plain words: queued
  * while they only wait, running once one has started; null when none. */
@@ -1137,23 +1138,19 @@ export function resumeCeremonyPage(chrome: Chrome, data: {
   gate: DispatchDiagnosis | null;
   approved: boolean;
 }): Screen {
-  const back = html`<p class="meta"><a href="${data.returnTo === "chat" ? taskChatHref(data.taskId) : taskHref(data.taskId)}">Keep paused</a></p>`;
   const control = data.control;
+  // One card, one button (docs/plans/plain-toolroll.md P1.3): the same post, nonce, run and password rule as before.
+  const blocked = !data.approved ? "The plan isn't approved as it stands, so nothing builds until it is approved again."
+    : data.gate === null ? null : `${data.gate.summary}: ${data.gate.detail}`;
   return screen("resume", joinHtml([
-    html`<h1>Resume task?</h1><p class="resume-target"><strong>${data.taskTitle}</strong> · ${data.taskId} · Run #${control.run}</p>`,
-    html`<div class="card resume-ceremony">`,
-    html`<p class="row">Lifts this stop’s hold. Other holds stay in place.</p>`,
-    html`<p class="row">Continues saved work${control.committed ? " and its commit" : ""} under the current approved plan. The next attempt needs new checks; the earlier handoff can't count as a new result.</p>`,
-    html`<p class="row">Resuming grants no new approval or publishing permission. The plan, budget, agents, checks and review limits still apply.</p>`,
-    html`<details><summary>Stop record and saved work</summary><p>Run #${control.run} was stopped by <span class="mono">${control.stop.requestedBy}</span> at ${stopWhen(control.stop.requestedAt)}${control.stop.settledAt === null ? "" : ` and settled ${stopWhen(control.stop.settledAt)} (${control.stop.settlement ?? "?"})`}.</p>${control.worktree === null ? "" : html`<p class="mono">${control.worktree}</p>`}</details>`,
-    data.approved ? "" : html`<p class="row problem-words"><strong>The plan isn't approved as it stands</strong> — resuming lifts the pause, but no builder starts until the plan is approved again</p>`,
-    data.gate === null ? "" : html`<p class="row"><strong>Before work starts:</strong> ${data.gate.summary} — ${data.gate.detail}</p>`,
-    html`</div>`,
+    html`<h1>Resume build #${control.run}?</h1>`,
     postForm(`${taskHref(data.taskId)}/resume`, joinHtml([
-      html`${reauth(html`<label>Confirm with your password<input type="password" name="token" autocomplete="current-password"></label>`)}`,
-      html`<button type="submit">Resume task</button>`,
+      html`<p class="resume-target"><strong>${data.taskTitle}</strong></p>`,
+      html`<p class="row">It continues from the saved work${control.committed ? " and its commit" : ""}. Resuming approves nothing new.</p>`,
+      blocked === null ? "" : html`<p class="row problem-words">${blocked}</p>`,
+      html`${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label>`)}`,
+      html`<button type="submit">Resume</button>`,
     ], "\n"), { attrs: { class: "card resume-form" }, returnTo: data.returnTo, hidden: { nonce: data.nonceValue, run: control.run } }),
-    back,
   ], "\n"), { chrome });
 }
 
@@ -2690,7 +2687,7 @@ export function taskBodyParts(data: {
       "plan",
       // The recipe road rides with the scope it reuses (UI polish
       // 2026-09-13), off the title-to-action path.
-      joinHtml([html`<h2>Plan</h2>`, scopeCard, releaseCardHtml(task.id, data.release ?? null, data.canStopRelease === true), data.repo !== null && data.scope !== null ? html`<p class="meta"><a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this plan as a recipe →</a></p>` : "", agentsCardHtml(task.id, data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm], "\n"),
+      joinHtml([html`<h2>Plan</h2>`, scopeCard, releaseCardHtml(task.id, data.release ?? null, data.canStopRelease === true), html`<p class="meta">${data.repo !== null && data.scope !== null ? html`<a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this plan as a recipe →</a> · ` : ""}<a href="${taskHref(data.rootId ?? task.id)}/evidence">Audit record →</a></p>`, agentsCardHtml(task.id, data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm], "\n"),
       scopeDraft !== undefined || (data.plan !== "requested" && approveForm === "" && !(scope === null && canPlan)),
       undefined, "scope",
     ),
@@ -2895,8 +2892,6 @@ export function taskBodyParts(data: {
     ...(data.csrf !== "" ? [{ group: "work" as const, label: "Task options", kind: "goto" as const, tab: "plan" as const, target: "task-diagnostics" }] : []),
     ...(data.canPutAway === true && data.csrf !== "" && data.archived == null && !building ? [{ group: "work" as const, label: "Archive", kind: "post" as const, action: `${taskHref(task.id)}/archive`, fields: { return: taskHref(task.id) } }] : []),
     { group: "share", label: "Copy link", kind: "copy" },
-    ...(facts.some(one => one.label === "Audit") ? [{ group: "share" as const, label: "Audit record", kind: "link" as const, href: `${taskHref(rootOf)}/evidence` }] : []),
-    ...(data.repo !== null && data.scope !== null ? [{ group: "share" as const, label: "Reuse as recipe", kind: "link" as const, href: `/recipes/from-task?task=${encodeURIComponent(task.id)}` }] : []),
     ...(cancelForm !== "" ? [{ group: "danger" as const, label: "Cancel task", kind: "goto" as const, tab: "plan" as const, target: "cancel-task" }] : []),
   ];
   const view: BrowserTaskView = {
@@ -2934,6 +2929,7 @@ export function taskBodyParts(data: {
     approve: data.archived != null || sheetInput === null || dependencyChoiceNeeded || data.csrf === "" ? null : approveKitOf(sheetInput, data.approvalFresh ?? null),
     approved: scope !== null && approval.approved ? approvedKitOf(scope, approval, data.approvalProof ?? null) : null,
     more,
+    audit: facts.some(one => one.label === "Audit") ? { label: "Full record", href: `${taskHref(rootOf)}/evidence` } : null,
     recheckStopped: data.csrf !== "" && data.assignment?.primaryAction?.code === "recheck-stopped" && data.assignment.primaryAction.target.runId !== null
       ? { action: `${taskHref(data.assignment.rootId)}/recheck-stopped`, run: data.assignment.primaryAction.target.runId } : null,
     rebuild,

@@ -1054,7 +1054,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(first.panel!.requirements).toMatchObject({ met: 0, total: 1, yours: 1, missed: 0 });
     // Checks didn't run and the item is still the person's: Accept without your check, naming it, and that it finishes the task.
     expect(first.decision).toEqual({ label: "Accept without your check", ready: false, why: `Not checked yet: “${statement}”.`,
-      effect: "Finishes the task. The branch stays; publishing isn't set up.", sentence: "Review the change, then accept it or ask for changes.",
+      effect: "Finishes the task. The branch stays; publishing isn't set up.", sentence: "Review the change, then accept it or send it back.",
       base: { label: "Accept without checks", ready: false, why: "Checks didn't run." } });
     // One request: the completion carries the acceptance the person's check owes.
     expect(first.complete).toMatchObject({ action: "/t/t-look/complete", run, accept: { note: null } });
@@ -1313,7 +1313,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const decision = ((await (await fetch(url(`/review?result=t-complete&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
     expect(decision.selected!.complete).toBeNull();
     // The one ink act is Request changes, after one line saying why and what to do.
-    expect(decision.selected!.acts).toMatchObject({ primary: "request-changes", line: "Checks failed (exit 1). Fix them and run checks again, or ask for changes." });
+    expect(decision.selected!.acts).toMatchObject({ primary: "request-changes", line: "Checks failed (exit 1). Fix them and run checks again, or send it back." });
     const receipt = assignmentOf(store, "t-complete", new Date(), { principal: "operator", repos: null }, evidenceRoot)!.receipt!.digest;
     const csrf = csrfOf(html);
     const chatResult = await (await fetch(url(`/chat?task=t-complete&result=${run}`), { headers: { cookie } })).text();
@@ -1332,7 +1332,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // A failed check refuses completion (the one readiness guard, task-status.ts): said plainly, nothing recorded.
     const done = await post(cookie, "/t/t-complete/complete", { csrf, run: String(run), receipt: receipt! });
     expect(done.status).toBe(409);
-    expect(await done.text()).toContain("Checks failed (exit 1). Fix them and run checks again, or ask for changes.");
+    expect(await done.text()).toContain("Checks failed (exit 1). Fix them and run checks again, or send it back.");
     expect(store.proofVerdictFor(run)).toEqual(before);
     expect(store.getScope('t-complete')).toEqual(approvedBefore);
     expect(store.runsFor(ref)).toEqual(runsBefore);

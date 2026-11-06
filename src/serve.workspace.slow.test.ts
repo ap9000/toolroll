@@ -425,7 +425,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
         expect(exactTask.action, path).toBe(act !== undefined && path.startsWith("/chat/task-status") ? action ?? work.action : task.action);
       }
     };
-    await agree(id, "needs-approval", "Approve plan", "Approve & start");
+    await agree(id, "needs-approval", "Approve plan", "Approve");
     approve(store, id, "alex", now, store.getScope(id)!.digest, approverToken);
     await agree(id, "no-worker-registered", "Connect a builder");
     // Connect a builder leads to Start a builder and its command, never back to the task's own page.
@@ -494,7 +494,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const signed = store.getScope('t-scope-status')!;
     propose(store, { taskId: 't-scope-status', goal: 'Changed request', touches: signed.touches, acceptance: signed.acceptance, now });
     store.unhold(heldRef);
-    await agree('t-scope-status', 'needs-approval', 'Approve plan', 'Approve & start');
+    await agree('t-scope-status', 'needs-approval', 'Approve plan', 'Approve');
     expect(store.getScope('t-scope-status')!.approvedDigest).toBe(signed.approvedDigest);
     store.setTaskState('t-scope-status', 'failed', now);
     await agree('t-scope-status', 'failed', 'Review and retry');
@@ -505,7 +505,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const oldResultScope = store.getScope('t-status-check')!;
     propose(store, { taskId: 't-status-check', goal: 'A new scope after the failed check', touches: oldResultScope.touches, acceptance: oldResultScope.acceptance, now });
     store.setTaskState('t-status-check', 'queued', now);
-    await agree('t-status-check', 'needs-approval', 'Approve plan', 'Approve & start');
+    await agree('t-status-check', 'needs-approval', 'Approve plan', 'Approve');
   });
 
   test("pilot 2: a pending status refresh preserves focused controls, open details and dirty inputs; the composer keeps its draft and selection", async () => {

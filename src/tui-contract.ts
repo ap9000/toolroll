@@ -56,6 +56,7 @@ export type TuiAct =
   | { readonly kind: "stop"; readonly id: string; readonly runId: number }
   | { readonly kind: "revise"; readonly id: string; readonly text: string }
   | { readonly kind: "complete"; readonly id: string }
+  | { readonly kind: "retry"; readonly id: string }
   | { readonly kind: "answer"; readonly decision: number; readonly option: string };
 
 /** A write's answer: its words. `needsPassword`: refused because the local owner may not do it. */
