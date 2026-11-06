@@ -22,7 +22,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { readVerifiedCommit, verifiedBlobs, verifiedTreeEntries, type VerifiedEntry } from "./commit-extract.js";
 import {
-  CHECK_PARTS, CHECK_REPORT_MAX_BYTES, CHECK_REPORT_PREFIX, readCheckReport,
+  CHECK_PARTS, CHECK_REPORT_MAX_BYTES, CHECK_REPORT_PREFIX, learnRequest, readCheckReport,
   type CheckContext, type CheckPart, type CheckInventory, type CheckReport, type ObligationSnapshot, type SealedInventory, type TargetedPlan,
 } from "./contracts/release-check.js";
 import { readVerifiedArtifact, storeEvidence } from "./evidence.js";
@@ -187,6 +187,8 @@ export type PreparedAttempt = {
   snapshot: ObligationSnapshot | null;
   /** The identities the check was asked to report one by one (required ones). */
   watch: string[];
+  /** The exact cases the check was asked about for learning only (docs/plans/learning-loops.md): never gate evidence. */
+  learn: string[];
 };
 
 /** A Full check's preparation refused (eval-harness review 2, finding 4): the plane recorded a release whose commit it
@@ -205,6 +207,9 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
   /** A release's check (signed release terms or a release authority): CI never stands in for its unit suite. Sealed in
    * the inventory (whose digest the attempt row holds); only an explicit false lets CI stand in. */
   release?: boolean;
+  /** Exact cases asked about for learning only (docs/plans/learning-loops.md): a separate handshake field, at most 200,
+   * that never joins `watch`, the inventory or anything the check owes. */
+  learn?: readonly string[];
 }, now: Date): PreparedAttempt | null {
   if (checkAttemptOf(store, input.runId) !== null) return null;
   const gitDir = projectGitDir(input.repo);
@@ -242,8 +247,9 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
   // The command's own limit rides along, so the check ends itself (logs and report printed) before the plane stops it.
   // `reportBytes`: the largest report this plane reads back once sealed. A plane that doesn't say (0.9.77 and older) reads
   // only 64 KiB, so the check gives it no larger report rather than one that poisons the receipt (scripts/release-check.mjs).
-  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])], limitMs: input.command.timeoutMs, reportBytes: CHECK_ARTIFACT_CAP, ...(plan === null ? { owed, ciSubstitute } : {}) });
-  return { runId: input.runId, nonce, stdin, mode, inventory, context, plan, snapshot, watch: [...(input.watch ?? [])] };
+  const learn = learnRequest(input.learn ?? []);
+  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])], limitMs: input.command.timeoutMs, reportBytes: CHECK_ARTIFACT_CAP, ...(plan === null ? { owed, ciSubstitute } : {}), ...(learn.length > 0 ? { learn } : {}) });
+  return { runId: input.runId, nonce, stdin, mode, inventory, context, plan, snapshot, watch: [...(input.watch ?? [])], learn };
 }
 
 /** Seal one JSON payload as a structured-output artifact under its capture label. */

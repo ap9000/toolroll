@@ -431,6 +431,7 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // v147: an account's password flag reads set (1), a browser session reads full with no local binding or key, and the
   // console record reads no key epoch.
   // v148: a run's execution class and a revision's origin read none (NULL), and a project's suggestion switch reads on.
+  // v149 adds tables only (the learning-loops records): no saved row changes, so no rule is needed for it.
   ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS))
     .map(([table, rule]) => [table, { ...EARLIER_RULES[table], ...rule }])),
 };

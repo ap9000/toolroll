@@ -1170,7 +1170,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v148 adds, and changes no saved row (docs/plans/results-routing.md): the results-routing tables (V148_SCHEMA, new
 // tables only) and a run's execution class, a revision's origin and a project's "Suggest cheaper models" switch
 // (V148_ADDED_COLUMNS: saved rows read NULL, NULL and 1).
-export const SCHEMA_VERSION = 148;
+// v149 adds, and changes no saved row (docs/plans/learning-loops.md): every learning-loops table (V149_SCHEMA, new
+// tables only) — each check's recorded conditions and results, mixed-outcome observations, tracked identities, lesson
+// notes and their tallies, memory use, tidy-up proposals and decision merges.
+export const SCHEMA_VERSION = 149;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1308,7 +1311,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1572,7 +1575,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -1721,6 +1724,229 @@ export const V148_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v148 migration's steps after v147's, in order (OpenOptions.migrationStep may stop after each). */
 export const V148_STEPS = Object.freeze(["results-tables", "exec-class", "revision-origin", "suggest-models"] as const);
+/**
+ * v149 (docs/plans/learning-loops.md): every table the learning-loops arc uses, landed at once because a current store
+ * runs no DDL. Slice 1 writes check_fact, check_result and learning_watch; the rest are written from later slices.
+ * Each table has one writer module (the migration aside), which release-auto's learning scan (eval-hooks.ts
+ * learningWriteProblem) holds a release to: check_fact and check_result → check-facts.ts; local_observation → flaky.ts;
+ * ci_flaky_observation and ci_pairing_rejected → flaky-ci.ts; learning_watch → flaky.ts and lesson-notes.ts;
+ * lesson_note and lesson_note_tally → lesson-notes.ts; memory_use → memory-use.ts; memory_tidy_proposal and
+ * decision_merge → memory-tidy.ts.
+ *
+ * Nothing here is ever read for authority: a check's outcome, a verdict and an approval never change because of it.
+ *
+ * Deletion follows today's semantics (runs are never deleted by ordinary work; removing a project keeps its results).
+ * The tables are keyed by repo path with no foreign key to `project`; their run keys are plain REFERENCES with no ON
+ * DELETE action. check_fact, learning_watch, lesson_note, lesson_note_tally, memory_use, memory_tidy_proposal and
+ * decision_merge are kept and never deleted (their triggers allow only the columns their one writer sets: a watch's
+ * `until`, a tally's counters, a proposal's decision, a merge's undo). check_result, local_observation,
+ * ci_flaky_observation and ci_pairing_rejected are pruned after 180 days by the storage sweep's own step (a later
+ * slice), the only DELETE on them; their rows never change. The whole-project deletion (project-delete.ts), which
+ * lifts every guard for its one transaction, takes them with the project as it takes everything else.
+ */
+export const V149_SCHEMA = `
+CREATE TABLE IF NOT EXISTS check_fact (
+  run               INTEGER PRIMARY KEY REFERENCES run(id),
+  repo              TEXT,
+  task_ref          INTEGER NOT NULL,
+  head              TEXT,
+  tree              TEXT,
+  command_digest    TEXT,
+  access            TEXT,
+  harness_digest    TEXT,
+  lockfile          TEXT,
+  conditions_digest TEXT,
+  conditions_class  TEXT,
+  purpose           TEXT NOT NULL CHECK (purpose IN ('ordinary','release','nightly')),
+  learn_state       TEXT NOT NULL CHECK (learn_state IN ('recorded','not-recorded','not-asked')),
+  learn_why         TEXT,
+  recorded_at       TEXT NOT NULL,
+  CHECK ((learn_state = 'not-recorded') = (learn_why IS NOT NULL)),
+  CHECK ((conditions_digest IS NULL) = (conditions_class IS NULL)),
+  CHECK (conditions_digest IS NULL OR tree IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS check_fact_by_repo ON check_fact (repo, recorded_at);
+CREATE INDEX IF NOT EXISTS check_fact_by_tree ON check_fact (tree, conditions_digest);
+CREATE TABLE IF NOT EXISTS check_result (
+  run         INTEGER NOT NULL REFERENCES check_fact(run),
+  identity    TEXT NOT NULL CHECK (length(identity) BETWEEN 1 AND 2600),
+  state       TEXT NOT NULL CHECK (state IN ('failed','passed','skipped','passed-on-retry')),
+  source      TEXT NOT NULL CHECK (source IN ('receipt','report','log','learn')),
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (run, identity, source)
+);
+CREATE INDEX IF NOT EXISTS check_result_by_identity ON check_result (identity, run);
+CREATE TABLE IF NOT EXISTS local_observation (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo              TEXT NOT NULL,
+  identity          TEXT NOT NULL,
+  failed_run        INTEGER NOT NULL REFERENCES run(id),
+  passed_run        INTEGER NOT NULL REFERENCES run(id),
+  tree              TEXT NOT NULL,
+  conditions_digest TEXT NOT NULL,
+  kind              TEXT NOT NULL CHECK (kind IN ('regate','same-tree','in-check-retry')),
+  observed_at       TEXT NOT NULL,
+  UNIQUE (identity, failed_run, passed_run),
+  CHECK ((kind = 'in-check-retry') = (failed_run = passed_run))
+);
+CREATE INDEX IF NOT EXISTS local_observation_by_repo ON local_observation (repo, identity, observed_at);
+CREATE TABLE IF NOT EXISTS ci_flaky_observation (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo              TEXT NOT NULL,
+  provider          TEXT NOT NULL CHECK (provider = 'github'),
+  repository        TEXT NOT NULL,
+  workflow          TEXT NOT NULL,
+  lane_id           TEXT NOT NULL,
+  lane_name         TEXT NOT NULL,
+  workflow_run_id   INTEGER NOT NULL CHECK (workflow_run_id >= 1),
+  head_sha          TEXT NOT NULL,
+  failed_attempt    INTEGER NOT NULL CHECK (failed_attempt >= 1),
+  failed_job_id     INTEGER NOT NULL,
+  failed_conclusion TEXT NOT NULL,
+  passed_attempt    INTEGER NOT NULL,
+  passed_job_id     INTEGER NOT NULL,
+  passed_conclusion TEXT NOT NULL,
+  observed_at       TEXT NOT NULL,
+  UNIQUE (provider, repository, workflow_run_id, lane_id, failed_attempt, passed_attempt),
+  CHECK (passed_attempt > failed_attempt)
+);
+CREATE INDEX IF NOT EXISTS ci_flaky_observation_by_repo ON ci_flaky_observation (repo, lane_id, observed_at);
+CREATE TABLE IF NOT EXISTS ci_pairing_rejected (
+  provider        TEXT NOT NULL CHECK (provider = 'github'),
+  repository      TEXT NOT NULL,
+  workflow_run_id INTEGER NOT NULL CHECK (workflow_run_id >= 1),
+  attempt         INTEGER NOT NULL CHECK (attempt >= 1),
+  lane_id         TEXT,
+  why             TEXT NOT NULL,
+  at              TEXT NOT NULL,
+  PRIMARY KEY (provider, repository, workflow_run_id, attempt, why)
+);
+CREATE TABLE IF NOT EXISTS learning_watch (
+  repo       TEXT NOT NULL,
+  identity   TEXT NOT NULL CHECK (length(identity) BETWEEN 1 AND 2600),
+  reason     TEXT NOT NULL CHECK (reason IN ('note','observation')),
+  source_ref TEXT NOT NULL,
+  since      TEXT NOT NULL,
+  until      TEXT,
+  PRIMARY KEY (repo, identity, reason, source_ref),
+  CHECK (until IS NULL OR until >= since)
+);
+CREATE INDEX IF NOT EXISTS learning_watch_open ON learning_watch (repo, since) WHERE until IS NULL;
+CREATE TABLE IF NOT EXISTS lesson_note (
+  proposal                INTEGER PRIMARY KEY REFERENCES memory_proposal(id),
+  repo                    TEXT NOT NULL,
+  failed_run              INTEGER NOT NULL REFERENCES run(id),
+  passing_run             INTEGER NOT NULL REFERENCES run(id),
+  repair_chain            INTEGER REFERENCES repair_chain(id),
+  revision_origin         TEXT CHECK (revision_origin IS NULL OR revision_origin IN ('person','automatic-review','flow','lead','machine')),
+  identities_json         TEXT NOT NULL,
+  changed_paths_json      TEXT NOT NULL,
+  test_files_changed_json TEXT NOT NULL,
+  facts_digest            TEXT NOT NULL,
+  created_at              TEXT NOT NULL,
+  CHECK (failed_run <> passing_run)
+);
+CREATE INDEX IF NOT EXISTS lesson_note_by_repo ON lesson_note (repo, created_at);
+CREATE TABLE IF NOT EXISTS lesson_note_tally (
+  note                INTEGER NOT NULL REFERENCES lesson_note(proposal),
+  month               TEXT NOT NULL CHECK (month GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'),
+  executions          INTEGER NOT NULL DEFAULT 0 CHECK (executions >= 0),
+  failures            INTEGER NOT NULL DEFAULT 0 CHECK (failures >= 0 AND failures <= executions),
+  mixed_failures      INTEGER NOT NULL DEFAULT 0 CHECK (mixed_failures >= 0),
+  received_executions INTEGER NOT NULL DEFAULT 0 CHECK (received_executions >= 0 AND received_executions <= executions),
+  received_failures   INTEGER NOT NULL DEFAULT 0 CHECK (received_failures >= 0 AND received_failures <= received_executions AND received_failures <= failures),
+  unreported_checks   INTEGER NOT NULL DEFAULT 0 CHECK (unreported_checks >= 0),
+  sources_json        TEXT NOT NULL DEFAULT '[]',
+  partial             INTEGER NOT NULL DEFAULT 0 CHECK (partial IN (0,1)),
+  PRIMARY KEY (note, month)
+);
+CREATE TABLE IF NOT EXISTS memory_use (
+  run         INTEGER NOT NULL REFERENCES run(id),
+  repo        TEXT,
+  kind        TEXT NOT NULL CHECK (kind IN ('lesson','reference','decision')),
+  item        TEXT NOT NULL,
+  version     INTEGER,
+  phase       TEXT NOT NULL,
+  included_at TEXT,
+  PRIMARY KEY (run, kind, item)
+);
+CREATE INDEX IF NOT EXISTS memory_use_by_item ON memory_use (repo, kind, item, run);
+CREATE TABLE IF NOT EXISTS memory_tidy_proposal (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo          TEXT NOT NULL,
+  kind          TEXT NOT NULL CHECK (kind IN ('retire','merge','contradiction','note-failing','restore','unmerge')),
+  items_json    TEXT NOT NULL,
+  after_text    TEXT,
+  rationale     TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  source        TEXT NOT NULL CHECK (source IN ('usage','duplicate','model','note','person')),
+  status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected','stale')),
+  created_at    TEXT NOT NULL,
+  decided_by    TEXT,
+  decided_proof TEXT,
+  decided_at    TEXT,
+  CHECK ((status = 'pending') = (decided_at IS NULL)),
+  CHECK (status IN ('accepted','rejected') OR (decided_by IS NULL AND decided_proof IS NULL)),
+  CHECK (status NOT IN ('accepted','rejected') OR decided_by IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS memory_tidy_proposal_pending ON memory_tidy_proposal (repo, status, kind);
+CREATE TABLE IF NOT EXISTS decision_merge (
+  merge                INTEGER NOT NULL,
+  successor            INTEGER NOT NULL REFERENCES project_decision(id),
+  successor_revision   INTEGER NOT NULL CHECK (successor_revision >= 1),
+  predecessor          INTEGER NOT NULL REFERENCES project_decision(id),
+  predecessor_revision INTEGER NOT NULL CHECK (predecessor_revision >= 1),
+  at                   TEXT NOT NULL,
+  by                   TEXT NOT NULL,
+  undone_at            TEXT,
+  undone_by            TEXT,
+  PRIMARY KEY (merge, predecessor),
+  CHECK (successor <> predecessor),
+  CHECK ((undone_at IS NULL) = (undone_by IS NULL))
+);
+CREATE INDEX IF NOT EXISTS decision_merge_by_successor ON decision_merge (successor);
+CREATE INDEX IF NOT EXISTS decision_merge_by_predecessor ON decision_merge (predecessor);
+CREATE TRIGGER IF NOT EXISTS check_fact_no_update BEFORE UPDATE ON check_fact BEGIN SELECT RAISE(ABORT,'check facts are recorded once'); END;
+CREATE TRIGGER IF NOT EXISTS check_fact_no_delete BEFORE DELETE ON check_fact BEGIN SELECT RAISE(ABORT,'check facts are kept'); END;
+CREATE TRIGGER IF NOT EXISTS check_result_no_update BEFORE UPDATE ON check_result BEGIN SELECT RAISE(ABORT,'check results are recorded once'); END;
+CREATE TRIGGER IF NOT EXISTS local_observation_no_update BEFORE UPDATE ON local_observation BEGIN SELECT RAISE(ABORT,'observations are recorded once'); END;
+CREATE TRIGGER IF NOT EXISTS ci_flaky_observation_no_update BEFORE UPDATE ON ci_flaky_observation BEGIN SELECT RAISE(ABORT,'observations are recorded once'); END;
+CREATE TRIGGER IF NOT EXISTS ci_pairing_rejected_no_update BEFORE UPDATE ON ci_pairing_rejected BEGIN SELECT RAISE(ABORT,'rejected pairings are recorded once'); END;
+CREATE TRIGGER IF NOT EXISTS learning_watch_only_ends BEFORE UPDATE ON learning_watch
+  WHEN NEW.repo IS NOT OLD.repo OR NEW.identity IS NOT OLD.identity OR NEW.reason IS NOT OLD.reason OR NEW.source_ref IS NOT OLD.source_ref
+    OR NEW.since IS NOT OLD.since OR OLD.until IS NOT NULL OR NEW.until IS NULL
+  BEGIN SELECT RAISE(ABORT,'a tracked identity only ends, once'); END;
+CREATE TRIGGER IF NOT EXISTS learning_watch_no_delete BEFORE DELETE ON learning_watch BEGIN SELECT RAISE(ABORT,'tracked identities are kept'); END;
+CREATE TRIGGER IF NOT EXISTS lesson_note_no_update BEFORE UPDATE ON lesson_note BEGIN SELECT RAISE(ABORT,'lesson note facts are recorded once'); END;
+CREATE TRIGGER IF NOT EXISTS lesson_note_no_delete BEFORE DELETE ON lesson_note BEGIN SELECT RAISE(ABORT,'lesson notes are kept'); END;
+CREATE TRIGGER IF NOT EXISTS lesson_note_tally_only_counts BEFORE UPDATE ON lesson_note_tally
+  WHEN NEW.note IS NOT OLD.note OR NEW.month IS NOT OLD.month OR NEW.executions < OLD.executions OR NEW.failures < OLD.failures
+    OR NEW.mixed_failures < OLD.mixed_failures OR NEW.received_executions < OLD.received_executions OR NEW.received_failures < OLD.received_failures
+    OR NEW.unreported_checks < OLD.unreported_checks OR NEW.partial < OLD.partial
+  BEGIN SELECT RAISE(ABORT,'a tally only counts up'); END;
+CREATE TRIGGER IF NOT EXISTS lesson_note_tally_no_delete BEFORE DELETE ON lesson_note_tally BEGIN SELECT RAISE(ABORT,'tallies are never pruned'); END;
+CREATE TRIGGER IF NOT EXISTS memory_use_no_update BEFORE UPDATE ON memory_use BEGIN SELECT RAISE(ABORT,'memory use is recorded once'); END;
+CREATE TRIGGER IF NOT EXISTS memory_use_no_delete BEFORE DELETE ON memory_use BEGIN SELECT RAISE(ABORT,'memory use is kept'); END;
+CREATE TRIGGER IF NOT EXISTS memory_tidy_proposal_only_decides BEFORE UPDATE ON memory_tidy_proposal
+  WHEN NEW.id IS NOT OLD.id OR NEW.repo IS NOT OLD.repo OR NEW.kind IS NOT OLD.kind OR NEW.items_json IS NOT OLD.items_json
+    OR NEW.after_text IS NOT OLD.after_text OR NEW.rationale IS NOT OLD.rationale OR NEW.evidence_json IS NOT OLD.evidence_json
+    OR NEW.source IS NOT OLD.source OR NEW.created_at IS NOT OLD.created_at OR OLD.status <> 'pending'
+  BEGIN SELECT RAISE(ABORT,'a tidy-up proposal is decided once'); END;
+CREATE TRIGGER IF NOT EXISTS memory_tidy_proposal_no_delete BEFORE DELETE ON memory_tidy_proposal BEGIN SELECT RAISE(ABORT,'tidy-up proposals are kept'); END;
+CREATE TRIGGER IF NOT EXISTS decision_merge_only_undone BEFORE UPDATE ON decision_merge
+  WHEN NEW.merge IS NOT OLD.merge OR NEW.successor IS NOT OLD.successor OR NEW.successor_revision IS NOT OLD.successor_revision
+    OR NEW.predecessor IS NOT OLD.predecessor OR NEW.predecessor_revision IS NOT OLD.predecessor_revision OR NEW.at IS NOT OLD.at
+    OR NEW.by IS NOT OLD.by OR OLD.undone_at IS NOT NULL
+  BEGIN SELECT RAISE(ABORT,'a merge is undone once, never rewritten'); END;
+CREATE TRIGGER IF NOT EXISTS decision_merge_no_delete BEFORE DELETE ON decision_merge BEGIN SELECT RAISE(ABORT,'merges are kept'); END;
+`;
+/** The tables V149_SCHEMA adds, in the order a test drops them to make the v148 shape (dependents first). */
+export const V149_TABLES = Object.freeze(["check_result", "check_fact", "local_observation", "ci_flaky_observation", "ci_pairing_rejected", "learning_watch",
+  "lesson_note_tally", "lesson_note", "memory_use", "memory_tidy_proposal", "decision_merge"] as const);
+/** The v149 tables a whole-project deletion clears by repo (the rest hang off these or a deleted run or decision). */
+export const V149_REPO_TABLES = Object.freeze(["check_fact", "local_observation", "ci_flaky_observation", "learning_watch", "lesson_note", "memory_use", "memory_tidy_proposal"] as const);
+/** The v149 migration's steps after v148's, in order (OpenOptions.migrationStep may stop after each). */
+export const V149_STEPS = Object.freeze(["learning-tables"] as const);
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6047,6 +6273,9 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   step("revision-origin");
   for (const [column, { definition }] of Object.entries(V148_ADDED_COLUMNS["project"]!)) addColumn(db, "project", column, definition);
   step("suggest-models");
+  // v149: the learning-loops tables (new tables only; docs/plans/learning-loops.md). Idempotent, as v148's steps are.
+  db.exec(V149_SCHEMA);
+  step("learning-tables");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
