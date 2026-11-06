@@ -86,6 +86,7 @@ import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
 import { pullRequestLines, runTaskMergeCommand, runTaskOutcomeCommand } from "./task-outcome-cli.js";
 import { withTaskAlias } from "./task-aliases.js";
+import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 /**
  * The commands that actually move work: authoring tasks, and the claim loop.
@@ -855,7 +856,7 @@ export const TASK_ACTIONS = [
   "add", "list", "show", "wait", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign",
   "reopen", "scope", "approve", "hold", "unhold", "require", "requeue", "regate", "plan",
   "review", "accept", "repair", "route", "stop", "resume", "complete", "revise", "merge", "ask",
-  "checks", "add-tests", "archive", "restore", "tidy", "ship",
+  "checks", "add-tests", "archive", "restore", "tidy", "ship", "ready",
 ] as const;
 export const PUBLISH_ACTIONS = ["setup", "grant", "revoke", "status", "unblock", "rearm", "merge", "refire"] as const;
 export const CONFIG_ACTIONS = ["show", "set", "clear"] as const;
@@ -9283,6 +9284,8 @@ function taskAction(
       return runTaskChecks(rest, flags, context);
     case "ship":
       return taskShipCommand(rest, context);
+    case "ready":
+      return taskReadyCommand(rest, context);
     case "add-tests":
       return addTestsTask(rest, flags, context);
     case "list":
@@ -13963,4 +13966,23 @@ async function releaseApproveCommand(positional: readonly string[], flags: Map<s
     `Approved release ${cardData.version} (${cardData.candidate.slice(0, 7)}). The release check runs next; it deploys, merges and publishes once GitHub CI and the check pass.`,
     ...(shown.stopped === null ? [] : [`The release isn't running: run \`toolroll release ${chosen.branch}\` to go on.`]),
   ]);
+}
+
+/**
+ * `toolroll task ready <task>` (read-only; docs/plans/plain-toolroll.md P1.6): "Can I merge?" — the task's checklist
+ * from the records the task page reads (merge-checklist.ts), each blocker with the existing act that clears it. A task
+ * outside the caller's projects is no task here.
+ */
+function taskReadyCommand(positional: readonly string[], context: Context): number {
+  const { store, write, json } = context;
+  const command = "task ready";
+  const id = positional[0];
+  if (id === undefined || positional.length > 1) return fail(write, json, command, "usage", "`toolroll task ready <task>`", EXIT.usage);
+  const lens = context.principal?.lens ?? null;
+  const ref = store.lookupRef(id);
+  if (ref === null || store.getTask(id) === null || (lens !== null && (ref.repo === null || !lens.includes(ref.repo)))) return fail(write, json, command, "unknown-task", `no task \`${id}\``, EXIT.refused);
+  const now = (context.clock ?? (() => context.now))();
+  const list = mergeChecklistOf(store, id, now, { principal: "operator", repos: lens, includeUnplaced: lens === null, dependencyRepos: lens }, context.evidenceRoot);
+  if (list === null) return fail(write, json, command, "unknown-task", `no task \`${id}\``, EXIT.refused);
+  return succeed(write, json, command, list, () => checklistLines(list));
 }

@@ -65,6 +65,7 @@ import { type ProjectPeek,type WorkRow } from "./render-pages.js";
 import { completionReceiptView,diffFileAnchor,evidenceLinksFor,followUpsFor,orderChangedFiles,parseReviewDiff,proofBundleView,receiptStatusOf,withinSignedTouches,type CompletionReceiptView,type ResultDetail,type TaskPullRequest } from "./render-results.js";
 import { approvalFormDigest,consentDoorOf,nonceHashOf,publicationFactsOf,resumeCeremonyPage,resumeDigestOf,taskBody,taskPage,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView,type LocalApprovalView } from "./render-tasks.js";
 import { type Who } from "./session.js";
+import { mergeReadyViewOf } from "./merge-ready-view.js";
 import type { TaskPageExtras } from "./runtime.js";
 import type { BrowserTaskView } from "../browser-workspace.js";
 import { RESULT_REVIEW_SCRIPT } from "../result-review.js";
@@ -888,7 +889,9 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     // Ship (its pull request's checks, each on one time axis) and a release's own steps, read from the store now.
     const rootId = family?.root.id ?? taskId;
     const oneTaskView = onePage?.kind === "task" ? { ...onePage, ship: shipViewOf(shipChecksForTask(runtime.store, rootId), runtime.clock()),
-      release: releaseStepsViewOf(releaseProgressFor(runtime.store, rootId), runtime.clock()) } : onePage;
+      release: releaseStepsViewOf(releaseProgressFor(runtime.store, rootId), runtime.clock()),
+      // "Can I merge?" (P1.6): the checklist from the same assignment this page read, each blocker with its own form.
+      mergeReady: mergeReadyViewOf(runtime.store, taskId, data.assignment, who, presentedData.runChecks ?? null, taskHref(taskId)) } : onePage;
     // The Result tab's no-script page, under the task's own (the same HTML its result page serves), and its script.
     if (extras.result != null) {
       page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result">${extras.result.html}</section>`;

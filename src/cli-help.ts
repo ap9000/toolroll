@@ -54,6 +54,7 @@ and any task command + --help prints it too
   toolroll task send-back <id> --feedback "<what to change>"
                                send the result back for changes
   toolroll task retry <id>  build it again
+  toolroll task ready <id>  can I merge it? each check, and what clears a blocker
   toolroll chat --as <you> --token <t>
                                talk to your lead: one conversation across every
                                project; it proposes, you confirm (--say "…" for one turn)

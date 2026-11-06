@@ -229,6 +229,43 @@ function ReleaseBox({ release }: { release: NonNullable<BrowserTaskView["release
   </section>;
 }
 
+/** "Can I merge?" (docs/plans/plain-toolroll.md P1.6; `toolroll task ready` is its twin): one row per fact from
+ * Toolroll's records, and each blocker's existing act. Ask the agent to fix is Send back with the blocker as its note,
+ * editable before it is sent; Run checks and Retry post exactly as their own boxes do. Nothing here acts on its own. */
+function MergeReadyBox({ ready, retry }: { ready: NonNullable<BrowserTaskView["mergeReady"]>; retry: BrowserTaskView["retry"] }) {
+  const MARK: Readonly<Record<string, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?" };
+  const chip = ready.answer === "yes" || ready.answer === "merged" ? <KChip word={ready.answer === "merged" ? "Merged" : "Ready"} tone="done" />
+    : ready.answer === "no" ? <KChip word="Not yet" tone="needs" /> : <KChip word="Not yet" />;
+  return <section className="k-sec so-merge-ready" aria-label="Can I merge?" data-merge-ready={ready.answer}>
+    <KSlots status={<>{chip}<h3>Can I merge?</h3></>} text={ready.sentence} />
+    <ul className="so-merge-rows">
+      {ready.rows.map(row => <li key={row.key} data-merge-row={row.key} data-mark={row.mark}>
+        <span className="so-merge-mark" aria-hidden="true">{MARK[row.mark] ?? ""}</span>
+        <span><strong>{row.label}</strong> <span className="meta">{row.say}</span></span>
+        {row.act?.kind === "run-checks" && <PostForm action={row.act.action} className="inline" data-merge-act="run-checks">
+          <input type="hidden" name="level" value={row.act.level} />
+          <input type="hidden" name="return" value={row.act.returnTo} />
+          <KButton type="submit" sm label="Run checks" />
+        </PostForm>}
+        {row.act?.kind === "retry" && retry != null && <PostForm action={retry.action} className="inline" data-merge-act="retry">
+          <KButton type="submit" sm label="Retry" />
+        </PostForm>}
+        {row.act?.kind === "fix" && <KDisclose summary="Ask the agent to fix">
+          <PostForm action={row.act.action} className="k-field" data-merge-act="fix">
+            <input type="hidden" name="intent" value="revise" />
+            <input type="hidden" name="batch" value={row.act.batch} />
+            <input type="hidden" name="source" value={row.act.source} />
+            <input type="hidden" name="request" value={row.act.request} />
+            <input type="hidden" name="return" value={row.act.returnTo} />
+            <KTextarea name="note" rows={3} maxLength={TEXT_LIMITS.note} defaultValue={row.act.note} aria-label="What the agent should fix" />
+            <div className="k-acts"><KButton type="submit" label="Ask the agent to fix" title="Sends it back with this note, as Send back does" /></div>
+          </PostForm>
+        </KDisclose>}
+      </li>)}
+    </ul>
+  </section>;
+}
+
 /** The status box's heading: the specific thing it is about, the chip already saying its status. */
 function headingOf(card: AssignmentCard): string {
   const need = card.status.need?.key ?? null;
@@ -610,6 +647,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
           region when what it is changes (folded or open, and the exact plan it signs). */}
       {approvalHere && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
       {view.release != null && <ReleaseBox release={view.release} />}
+      {view.mergeReady != null && <MergeReadyBox ready={view.mergeReady} retry={view.retry ?? null} />}
       {view.ship != null && <ShipBox ship={view.ship} />}
       {view.lead.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />)}
       {view.questions !== "" && <Html html={view.questions} className="so-task-questions" />}

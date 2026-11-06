@@ -35,6 +35,8 @@ export type TuiTask = {
   /** A finished result that can be marked Complete or sent back with a revision. */
   readonly hasResult: boolean;
   readonly decisions: readonly TuiDecision[];
+  /** "Can I merge?" (merge-checklist.ts, `toolroll task ready`'s lines): the answer, then each check. Empty: no result. */
+  readonly ready?: readonly string[];
 };
 
 /** The welcome's steps, as lines (welcome-facts.ts). */

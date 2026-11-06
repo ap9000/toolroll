@@ -9,6 +9,7 @@
  */
 import { dirname, join } from "node:path";
 import { assignmentOf } from "./assignment.js";
+import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { runAsLocalOwner } from "./local-owner.js";
 import type { OperateOptions } from "./operate.js";
 import { snapshotLiveRuns } from "./peek-cli.js";
@@ -100,9 +101,15 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       try { hasResult = store !== null && assignmentOf(store, id, clock(), { principal: "operator", repos: null })?.receipt != null; } catch { hasResult = false; }
       const decisions: TuiDecision[] = store === null ? [] : store.listDecisions("unanswered").filter(one => one.taskId === id)
         .map(one => ({ id: one.id, question: terminalText(one.question), options: one.options.map(option => ({ id: option.id, label: terminalText(option.label) })) }));
+      // "Can I merge?": the same checklist and lines as `toolroll task ready`, read from the same records.
+      let ready: string[] = [];
+      try {
+        const list = !hasResult || store === null ? null : mergeChecklistOf(store, id, clock(), { principal: "operator", repos: null }, evidenceRoot);
+        ready = list === null ? [] : checklistLines(list).map(line => terminalText(line));
+      } catch { ready = []; }
       return {
         id, title: shown(task["title"], id), status: shown(status["label"], words(work["state"])), detail: shown(status["detail"]),
-        plan, liveRunId: typeof work["liveRunId"] === "number" ? work["liveRunId"] : null, hasResult, decisions,
+        plan, liveRunId: typeof work["liveRunId"] === "number" ? work["liveRunId"] : null, hasResult, decisions, ready,
       };
     },
 

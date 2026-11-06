@@ -306,6 +306,8 @@ export type BrowserTaskView = {
     termsWords?: string } | null;
   /** Ship: the pull request's checks, each on one time axis (task ship's twin). Null: no checks read yet. */
   ship?: { pr: number; head: string; state: "running" | "passed" | "failed" | "none"; rows: import("./design/kit.js").TimingRow[]; summary: string; observedAt: string } | null;
+  /** "Can I merge?" (merge-checklist.ts; `toolroll task ready` is its twin): each row and its blocker's form. Null: no result yet. */
+  mergeReady?: MergeReadyView | null;
   /** A release's own steps (release status's twin). Null: this task is no release, or nothing recorded. */
   release?: { tag: string; version: string; pr: number | null; state: "running" | "waiting" | "failed" | "done"; rows: import("./design/kit.js").TimingRow[];
     headline: string; stopped: { step: string; message: string; at: string } | null; startedAt: string } | null;
@@ -935,3 +937,14 @@ export function browserNavigationOf(path: string, project: string | null = null,
     { label: 'Settings', href: '/settings', active: under('/settings', '/spend', '/mode', '/people', '/ledger', '/menu') },
   ];
 }
+
+/** One "Can I merge?" act, as the task page's form for it (server/merge-ready-view.ts builds it). */
+export type MergeReadyAct =
+  | { kind: "run-checks"; action: string; level: "quick" | "full"; returnTo: string }
+  | { kind: "retry" }
+  | { kind: "fix"; action: string; note: string; batch: string; source: string; request: string; returnTo: string };
+/** The task page's "Can I merge?" panel. */
+export type MergeReadyView = {
+  answer: "yes" | "no" | "not-yet" | "merged"; sentence: string;
+  rows: { key: string; label: string; mark: "yes" | "no" | "waiting" | "unknown" | "skip"; say: string; act: MergeReadyAct | null }[];
+};

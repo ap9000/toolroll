@@ -301,6 +301,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
             <SafeText bold>{task.title}</SafeText>
             <SafeText>{`${task.status}${task.detail === "" ? "" : ` · ${task.detail}`}`}</SafeText>
             {task.plan === null ? null : <Text>A plan waits for your approval (a).</Text>}
+            {(task.ready?.length ?? 0) === 0 ? null : <Box flexDirection="column" marginTop={1}>{task.ready!.map((line, index) => <SafeText key={index} {...(index === 0 ? { bold: true } : {})}>{line}</SafeText>)}</Box>}
             {question === undefined ? null : (
               <Box flexDirection="column" marginTop={1}>
                 <SafeText bold>{question.question}</SafeText>
