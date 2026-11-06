@@ -58,7 +58,7 @@ self.addEventListener("push", function (event) {
     // A count, never content. Honest no-op where unsupported.
     event.waitUntil(self.registration.setAppBadge(Math.floor(data.waiting)).catch(function () {}));
   }
-  event.waitUntil(self.registration.showNotification("Toolroll", { body: body, tag: tag, data: { url: url } }));
+  event.waitUntil(self.registration.showNotification("Toolroll", { body: body, tag: tag, data: { url: url }, actions: [{ action: "open", title: "Open" }] }));
 });
 self.addEventListener("message", function (event) {
   // The page recomputes on load/focus and is authoritative over any stale
@@ -68,6 +68,7 @@ self.addEventListener("message", function (event) {
   if (badge <= 0 && self.registration.clearAppBadge) { self.registration.clearAppBadge().catch(function () {}); return; }
   self.registration.setAppBadge(Math.floor(badge)).catch(function () {});
 });
+// A tap on the ping and its one "Open" action land in the same place.
 self.addEventListener("notificationclick", function (event) {
   event.notification.close();
   if (self.registration.clearAppBadge) self.registration.clearAppBadge().catch(function () {});

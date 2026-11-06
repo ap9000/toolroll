@@ -170,7 +170,7 @@ describe.each(CHAT_PROVIDERS)("the shared chat core on %s", provider => {
     await h.pass();
     const card = cardWith(h, m0, /^Accept$/);
     expect(card.text).toContain("Keep the guard readable");
-    expect(labels(card)).toEqual(["Accept", "Send back", "Look first ↗"]);
+    expect(labels(card)).toEqual(["Accept", "Send back", "Open result ↗"]);
     // Opaque one-time tokens only: no task, run or digest rides a button.
     for (const button of card.buttons) if (button.token !== undefined) expect(button.token).toMatch(/^d:[0-9a-f]{24}$/);
 
@@ -184,7 +184,7 @@ describe.each(CHAT_PROVIDERS)("the shared chat core on %s", provider => {
     h.tap(armed, /^Cancel$/, m0);
     await h.pass();
     const restored = current(h, m0, card.message);
-    expect(labels(restored)).toEqual(["Accept", "Send back", "Look first ↗"]);
+    expect(labels(restored)).toEqual(["Accept", "Send back", "Open result ↗"]);
     // The Yes that Cancel replaced is spent.
     h.tap(armed, /^Yes$/, m0);
     await h.pass();
@@ -226,7 +226,7 @@ describe.each(CHAT_PROVIDERS)("the shared chat core on %s", provider => {
     await h.pass();
     const stale = current(h, m0, card.message);
     expect(stale.text).toContain("This task is already finished. Nothing was done.");
-    expect(labels(stale)).toEqual(["Look first ↗"]);
+    expect(labels(stale)).toEqual(["Open result ↗"]);
     expect(store.settledBy(store.refFor("built-in", "guard-2").id)).toBe("sam");
   });
 
@@ -486,7 +486,7 @@ describe("c1: approving from chat follows the chat apps the signed mode names", 
       acceptance: [{ id: "c1", statement: "Over-limit payouts are refused.", how: null, evidence: ["check"] }], now });
     store.enqueueNotification({ dedupeKey: `plan-ready:${id}`, kind: "plan-ready", subject: `${id}: plan ready for review`, body: "Review and approve it.", source: { taskRef: ref } }, now);
   };
-  const approveButtons = (h: ChatHarness) => h.cards(h.member(0)).filter(card => card.buttons.some(button => button.label === "Approve & start" && button.token !== undefined));
+  const approveButtons = (h: ChatHarness) => h.cards(h.member(0)).filter(card => card.buttons.some(button => button.label === "Review plan" && button.token !== undefined));
   const approved = (id: string) => { const scope = store.getScope(id)!; return scope.approvedDigest === scope.digest; };
 
   test("an existing Telegram-only grant approves on Telegram, and never on Slack, Discord or Teams until a new signature names them", async () => {
@@ -507,7 +507,7 @@ describe("c1: approving from chat follows the chat apps the signed mode names", 
     });
     expect(legacyMode).toBeGreaterThan(0);
 
-    // Offered: only Telegram's card carries Approve & start; the others keep their link to the console.
+    // Offered: only Telegram's card carries Review plan (and Approve & start under its terms); the others keep their link to the console.
     planWaiting("plan-1", "Refuse over-limit payouts");
     for (const h of harnesses) await h.pass();
     expect(Object.fromEntries(harnesses.map(h => [h.provider, approveButtons(h).length]))).toEqual({ telegram: 1, slack: 0, discord: 0, teams: 0 });
@@ -520,22 +520,22 @@ describe("c1: approving from chat follows the chat apps the signed mode names", 
     for (const h of harnesses) await h.pass();
     const armed = others.map(h => {
       const card = approveButtons(h).find(one => one.text.includes("Log refused payouts"))!;
-      h.tap(card, /^Approve & start$/, h.member(0));
+      h.tap(card, /^Review plan$/, h.member(0));
       return { h, message: card.message };
     });
     for (const { h } of armed) await h.pass();
     sign(legacy);
     for (const { h, message } of armed) {
-      h.tap(current(h, h.member(0), message), /^Yes$/, h.member(0));
+      h.tap(current(h, h.member(0), message), /^Approve & start$/, h.member(0));
       await h.pass();
       expect(approved("plan-2"), h.provider).toBe(false);
       expect(current(h, h.member(0), message).text, h.provider).toContain("Your mode approves from Telegram only. Sign it again to approve from");
     }
     // Telegram's own two taps still approve under that same grant.
     const card = approveButtons(telegram!).find(one => one.text.includes("Refuse over-limit payouts"))!;
-    telegram!.tap(card, /^Approve & start$/, telegram!.member(0));
+    telegram!.tap(card, /^Review plan$/, telegram!.member(0));
     await telegram!.pass();
-    telegram!.tap(current(telegram!, telegram!.member(0), card.message), /^Yes$/, telegram!.member(0));
+    telegram!.tap(current(telegram!, telegram!.member(0), card.message), /^Approve & start$/, telegram!.member(0));
     await telegram!.pass();
     expect(approved("plan-1")).toBe(true);
 
@@ -549,9 +549,9 @@ describe("c1: approving from chat follows the chat apps the signed mode names", 
       planWaiting(id, `Guard payouts ${index}`);
       for (const one of harnesses) await one.pass();
       const offer = approveButtons(h).find(one => one.text.includes(`Guard payouts ${index}`))!;
-      h.tap(offer, /^Approve & start$/, h.member(0));
+      h.tap(offer, /^Review plan$/, h.member(0));
       await h.pass();
-      h.tap(current(h, h.member(0), offer.message), /^Yes$/, h.member(0));
+      h.tap(current(h, h.member(0), offer.message), /^Approve & start$/, h.member(0));
       await h.pass();
       expect(approved(id), h.provider).toBe(true);
     }

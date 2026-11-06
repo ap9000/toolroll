@@ -250,6 +250,19 @@ describe("product copy says no banned word; preserved content renders unchanged"
     }
   });
 
+  test("a plan card is one line, one button and Details on all four chat apps; its button is never an approval", () => {
+    const who = verifyApproverStanding(store, "sam", store.accountOf("sam")!.generation, [REPO]);
+    if (!who.ok) throw new Error("who");
+    for (const channel of ["telegram", "slack", "discord", "teams"] as const) {
+      const offer = decideOffer(store, { kind: "plan", taskId: "plan-draft" }, who.who, NOW, channel, dir)!;
+      expect(offer.text, channel).toMatch(/^#[0-9]+: plan ready · [^\n]+$/);
+      const buttons = offer.rows.flat();
+      expect(buttons.map(one => one.label), channel).toEqual(["Review plan", "Details"]);
+      // The one act is the approve offer, which only shows the terms: a yes is minted under them, never here.
+      expect(buttons.filter(one => "act" in one).map(one => "act" in one ? one.act : ""), channel).toEqual(["approve"]);
+    }
+  });
+
   test("push payloads", () => {
     for (const pushClass of Object.keys(PUSH_WORDS) as (keyof typeof PUSH_WORDS)[]) {
       const payload = JSON.parse(buildPushPayload({ id: 1, pushClass, link: null, body: "", run: null } as never)) as { title: string; body: string };
