@@ -386,6 +386,8 @@ export function receiptPublicationWords(publication: PublicationFacts): string {
  * already reads elsewhere. */
 export type WorkFacts = {
   id: string;
+  /** The machine runs this task's check on a prepared candidate; no agent runs (machine-check.ts). */
+  machine?: boolean;
   title: string;
   repo: string | null;
   state: TaskState;
@@ -609,7 +611,7 @@ export function workStatusOf(facts: WorkFacts, resultDisplay?: DisplayStatus): W
   const stage = done && read.stage !== "needs-you" && read.stage !== "failed" ? "finished" as const : read.stage;
   const level = facts.result?.checkLevel ?? null;
   const shared = taskStatusOf({ stage, ...(read.need === undefined ? {} : { need: read.need }), ...(read.wait === undefined ? {} : { wait: read.wait }), reason: plainReasonOf(stage, status.token, status.detail),
-    report: facts.result?.role === "scout", checks: stage !== "finished" ? null : VERIFIED_RESULT.has(status.token) ? { status: "passed", exitCode: null, head: null, level }
+    report: facts.result?.role === "scout", ...(facts.machine === true ? { machine: true } : {}), checks: stage !== "finished" ? null : VERIFIED_RESULT.has(status.token) ? { status: "passed", exitCode: null, head: null, level }
       : level === "off" ? { status: "not-run", exitCode: null, head: null, level } : null });
   return { ...status, label: shared.headline, tone: workToneOf(shared.headline), detail: stage === "finished" && level !== "off" ? status.detail : shared.sentence };
 }

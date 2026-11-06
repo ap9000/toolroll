@@ -2,7 +2,7 @@
  * page): a task with a prepared candidate is checked out by the machine and no agent runs, so its status says the check
  * that is running, its step and its progress, from the check's own records, never "an agent", and it has no notes to
  * read and no word to send. Presentation only: it reads the run, its check progress and the release's steps. */
-import type { Store } from "../store.js";
+import type { Store } from "./store.js";
 
 /** The words for a machine-run check now running on `runId`, or null when an agent builds this task (or nothing runs). */
 export function machineCheckWords(store: Store, taskId: string, runId: number | null, release: { at?: { step: string; name: string; index: number; of: number } | null } | null, now: Date): string | null {

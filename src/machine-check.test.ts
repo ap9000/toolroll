@@ -17,6 +17,10 @@ import { releaseStepsViewOf } from "./server/task-views.js";
 import { releaseProgressFor } from "./store.js";
 import { workCountsByProject, workIndexPage } from "./work-index.js";
 import { workspaceOf } from "../test/serve-kit.js";
+import { taskWorkSummaryOf } from "./work-summary.js";
+import { telegramProgressCard } from "./telegram-progress.js";
+import { runOperate } from "./operate.js";
+import { MACHINE_CHECK_RUNNING } from "./task-status.js";
 
 const NOW = new Date("2026-11-05T12:00:00.000Z");
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
@@ -109,6 +113,31 @@ describe("a release check the machine runs", () => {
     expect(at("approval")).toBe("waiting");
     for (const step of ["check", "ci", "quiet", "deploy", "publish"]) expect(at(step), step).toBe("running");
     expect(releaseProgressFor(store, "release-1.2.3")).not.toBeNull();
+  });
+});
+
+describe("every other surface says the same: the check is running, never an agent", () => {
+  const access = { principal: "operator" as const, repos: [REPO] };
+  test("the Tasks list row (and the TUI, which reads it)", () => {
+    const row = workIndexPage(store, NOW, access, {}).items.find(one => one.rootId === "release-1.2.3")!;
+    expect(row.status.label).toBe("Building");
+    expect(row.status.detail).toBe(MACHINE_CHECK_RUNNING);
+  });
+  test("the work summary agents and the lead read", () => {
+    expect(taskWorkSummaryOf(store, "release-1.2.3", NOW, access)!.status.detail).toBe(MACHINE_CHECK_RUNNING);
+  });
+  test("the chat's progress card", () => {
+    const run = store.runsFor(store.lookupRef("release-1.2.3")!.id)[0]!;
+    const card = telegramProgressCard(store, run, "release-1.2.3", REPO, NOW, dir);
+    expect(card.status.sentence).toBe(MACHINE_CHECK_RUNNING);
+    expect(card.text).not.toMatch(/an agent/i);
+  });
+  test("the CLI's task show", async () => {
+    const out: string[] = [];
+    await runOperate("task", ["show", "release-1.2.3", "--json", "--db", join(dir, "state.db")], line => { out.push(line); }, { now: NOW });
+    const text = out.join("\n");
+    expect(text).toContain(MACHINE_CHECK_RUNNING);
+    expect(text).not.toMatch(/An agent is working on it/);
   });
 });
 

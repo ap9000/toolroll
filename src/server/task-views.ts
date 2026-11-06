@@ -66,7 +66,7 @@ import { completionReceiptView,diffFileAnchor,evidenceLinksFor,followUpsFor,orde
 import { approvalFormDigest,consentDoorOf,nonceHashOf,publicationFactsOf,resumeCeremonyPage,resumeDigestOf,taskBody,taskPage,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView,type LocalApprovalView } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { mergeReadyViewOf } from "./merge-ready-view.js";
-import { machineChecked, machineCheckWords } from "./machine-check.js";
+import { machineChecked, machineCheckWords } from "../machine-check.js";
 import type { TaskPageExtras } from "./runtime.js";
 import type { BrowserTaskView } from "../browser-workspace.js";
 import { RESULT_REVIEW_SCRIPT } from "../result-review.js";
@@ -206,6 +206,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
               },
       publication: latest === null ? null : publicationFactsOf(runtime.store.publicationForRun(latest.id)),
       liveRunId: live === null ? null : live.id,
+      ...(machineChecked(runtime.store, task.id) ? { machine: true } : {}),
       openDecision: ref === null ? null : openWorkDecisionOf(runtime.store, ref.id, now),
       unfinishedRunId: runs.find(one => one.outcome === null && one.role !== "reviewer")?.id ?? null,
       control: ref === null ? { kind: "none" } : taskControlOf(runtime.store, ref.id, now),

@@ -187,6 +187,8 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     (SELECT id FROM run WHERE task_ref=c.ref_id AND lease_id=c.live_lease AND outcome IS NULL ORDER BY id DESC LIMIT 1) live_run,
     h.owner_kind hold_kind,h.reason hold_reason,h.until hold_until,
     sc.task_id scope_id,sc.digest,sc.approved_at,sc.proposed_at,sc.profile_state,
+    -- A prepared candidate: the machine checks out that commit and runs its check; no agent runs (machine-check.ts).
+    (typeof(sc.candidate)='text' AND sc.candidate<>'') machine_check,
     -- The pause the dispatch gate itself left this task waiting on (the provider it resolved, pins,
     -- configuration and planners included) first; the approved terms answer before any gate has looked.
     EXISTS(SELECT 1 FROM provider_auth_pause p WHERE p.id=c.auth_wait_pause AND p.lifted_at IS NULL AND ${GATE_PAUSE_ON_TASK}) gate_signed_out,
@@ -472,7 +474,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'plan_changed',scope_digest IS NOT NULL AND digest IS NOT scope_digest,'head_ok',length(head_revision)=40 AND head_revision NOT GLOB '*[^a-f0-9]*','stop_run',stop_run,'unfinished',unfinished,'signed_out',signed_out,
     'question_run',(SELECT run FROM decision WHERE id=page.question_id),'agent_ask',page.agent_ask,
     'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
-    'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),
+    'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),'machine_check',COALESCE(machine_check,0),
     'question_task',(SELECT r.external_id FROM decision d JOIN run ON run.id=d.run JOIN task_ref r ON r.id=run.task_ref WHERE d.id=page.question_id)) FROM page`)
     .all({ ...parameters(now, access, options, custody), $taskId: taskId, $roots: options.roots === undefined ? null : JSON.stringify(options.roots), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $recent: new Date(now.getTime()-86_400_000).toISOString() });
   const selected = rows.slice(1).map(row => JSON.parse(String(row['row_json'])) as Row);
@@ -724,6 +726,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   const shared = taskStatusOf({ stage: reading.stage, ...(reading.need === undefined ? {} : { need: reading.need }), ...(reading.wait === undefined ? {} : { wait: reading.wait }),
     ...(process === null ? (Object.keys(context).length === 0 ? {} : { needContext: context }) : { needContext: { build: process.build } }),
     reason: finished ? null : plainReasonOf(reading.stage, code, detail || null), report: s(row, 'result_role') === 'scout',
+    ...(n(row, 'machine_check') === 1 ? { machine: true } : {}),
     checks: ready !== null ? ready.checks : listedChecks,
     ...(ready === null ? {} : { requirements: ready.requirements ?? null, ...(ready.accepted ? { accepted: true } : {}), ...(ready.blockers === undefined ? {} : { blockers: ready.blockers }) }),
     completedBy: code !== 'complete' || landed !== null ? null : n(row, 'completed_by_lead') === 1 ? 'the lead' : String(row['checked_actor']).replace(/^(?:operator|coordinator|lead):/, ''),

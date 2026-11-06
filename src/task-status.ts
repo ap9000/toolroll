@@ -34,6 +34,8 @@ export const CHECKS_LABEL = "Project checks";
 export const PR_CI_LABEL = "PR CI";
 /** The one verb for opening a saved result, on every surface. */
 export const OPEN_RESULT = "Open result";
+/** A machine-run check under way (a prepared candidate: no agent runs), on every surface that has no richer words. */
+export const MACHINE_CHECK_RUNNING = "Running the check on the prepared version.";
 
 export type DetailKey = "checks" | "pull-request" | "requirements" | "evidence";
 /** The row's small icon: the only coloured part of a detail. `failed` is red
@@ -165,6 +167,9 @@ export type TaskStatusFacts = {
   reason?: string | null;
   /** A research report rather than a code change. */
   report?: boolean;
+  /** The machine runs this task's check on a prepared candidate; no agent runs (machine-check.ts). Building then says
+   * the check is running, never "an agent". */
+  machine?: boolean;
   checks?: ChecksFact | null;
   pullRequest?: PullRequestFact | null;
   /** `unverified`: the report is refuted, so no requirement counts as met however it was marked. `missed`: the ones it
@@ -238,7 +243,8 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
     case "Needs you": return facts.stage === "finished" ? resultAsk(facts) ?? needSentence("review-result", reason, facts.needContext) : needSentence(facts.need ?? "other", reason, facts.needContext);
     case "Waiting": return waitSentence(facts.wait, reason, facts.needContext);
     case "Building": return facts.stage === "checking" ? "Checks are running on the change."
-      : facts.stage === "reviewing" ? "Reviewing the change before it reaches you." : reason ?? "An agent is working on it.";
+      : facts.stage === "reviewing" ? "Reviewing the change before it reaches you."
+      : facts.machine === true ? MACHINE_CHECK_RUNNING : reason ?? "An agent is working on it.";
     case "Ready for review":
       if (facts.report) return "The report is ready to read. Read it, then accept it.";
       if (releaseStateOf(facts.checks) === "covered") return `Checked at release on ${short(facts.checks!.release!.head) ?? "its release"}. Review the change, then accept it.`;

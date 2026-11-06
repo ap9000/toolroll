@@ -4,6 +4,7 @@
  * CLI show: Ready for review once the saved result can be inspected, Complete
  * once the lead or a person has marked that exact result. Slack, Discord and
  * Teams send this same card. */
+import { machineChecked } from "./machine-check.js";
 import { assignmentOf, type AssignmentSnapshot } from "./assignment.js";
 import { chatResultHref, chatControlHref } from "./chat-controls.js";
 import { phoneText, projectLabel, type PhoneTaskLink } from "./telegram-status.js";
@@ -66,7 +67,8 @@ export function telegramProgressCard(store: Store, run: Run, taskId: string, pro
   } else if (operatorHold) {
     facts = { stage: "stopped", reason: `On hold: ${phoneText(operatorHold.reason, 150)}` };
   } else if (run.outcome === null) {
-    facts = { stage: run.phase !== null && run.phase !== "agent-running" ? "checking" : run.role === "planner" ? "planning" : "building" };
+    facts = { stage: run.phase !== null && run.phase !== "agent-running" ? "checking" : run.role === "planner" ? "planning" : "building",
+      ...(machineChecked(store, taskId) ? { machine: true } : {}) };
   } else if (run.outcome === "parked") {
     facts = { stage: "needs-you", need: "answer" };
   } else if (run.outcome === "interrupted" || run.reason === "interrupted") {

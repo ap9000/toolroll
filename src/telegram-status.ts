@@ -1,4 +1,5 @@
 import { publicChatText } from './chat-display.js';
+import { machineChecked } from "./machine-check.js";
 import { manualReviewOnly } from "./proof.js";
 /** Read-only phone views over the same dispatch and proof records as chat.
  * No provider calls, repository access, new workflow state, or inferred success. */
@@ -73,6 +74,7 @@ function headlineFor(store: Store, id: string, d: DispatchDiagnosis, read_: Phon
   }
   const finished = read.stage === "finished" || read.stage === "complete" || read.stage === "failed";
   return taskStatusOf({ stage: read.stage, ...(read.need === undefined ? {} : { need: read.need }), ...(read.wait === undefined ? {} : { wait: read.wait }), reason: finished ? null : plainReasonOf(read.stage, d.code, d.detail),
+    ...(machineChecked(store, id) ? { machine: true } : {}),
     checks: read.stage === "failed" && d.code === "proof-refuted" ? { status: "failed", exitCode: null, head: null } : null });
 }
 
