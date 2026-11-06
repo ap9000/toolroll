@@ -1,17 +1,28 @@
 # Plain Toolroll — plan
 
-Status: **v1** (2026-11-05). Branch `plain-toolroll`, off main 5b5681d7. Nothing in `src/` changes with this document.
+Status: **v2** (2026-11-05). Branch `plain-toolroll`, rebased on main f98078fb (0.9.92). Nothing in `src/` changes with
+this document.
 
 Inputs: the UI and CLI copy audit (109 findings, file:line) and the comparison with Conductor, Orca and Paperclip, both
-from 2026-11-05. Finding numbers below (`#N`) are the audit's. The audit was taken at the same commit; line numbers were
-spot-checked here and may drift by a line or two.
+from 2026-11-05. Finding numbers (`#N`) are the audit's. Line numbers were spot-checked here and may drift by one or two.
+
+Review history:
+- Codex round 1 (on v1, 8b6d673): NO-GO, with 1 Critical, 9 High and 3 Medium findings. Each was checked against the
+  code and all are accepted. v2 closes them; the ledger is at the end.
+- Round 2 is the last round for this arc (budget: 2). Anything still open after it goes to Alex with options.
 
 ## What and why
 
-Toolroll asks people things only the machine can know, speaks its own internals ("scope", "digest", "sealed",
+Toolroll asks people things only the machine can know. It speaks its own internals ("scope", "digest", "sealed",
 "witness"), offers about 11 verbs on a result, and spreads one job across ten list pages. The competitors are simpler
-in four ways that matter: one noun, prompt-first starts, one readiness list, and one-line phone pings. Toolroll stays
-ahead on approvals, evidence and unattended safety; this arc keeps all of that and removes the rest.
+in four ways that matter: one noun, prompt-first starts, one readiness list and one-line phone pings. Toolroll stays
+ahead on approvals, evidence and unattended safety, and this arc keeps all of that.
+
+The arc has two phases:
+- **Phase 1 changes presentation only.** No act gains or loses authority. It ships first and fixes most of what people
+  see.
+- **Phase 2 changes authority.** Each slice ships alone and carries its own safety acceptance criteria and attack
+  tests.
 
 Alex's decisions (final):
 
@@ -19,473 +30,588 @@ Alex's decisions (final):
    and restarts its own builder service. Needs you holds only real decisions; everything else is a plain
    "Waiting: Toolroll is …" line. Never ask a person to vouch for machine facts.
 2. **One vocabulary.** "Plan", never "scope", wherever a person reads it. No digests, "signs", "sealed" or "binds" on
-   approvals. One word each for builder, approver, finishing a result, archiving and numbering. Extend `BANNED_WORDS`
-   and test every person-facing renderer.
+   approvals. One word each for builder, approver, finishing a result, archiving and numbering.
 3. **Fewer choices.** Results: Accept / Send back / Retry. Approvals: Approve / Request changes / Reject, with a password
-   field only when the act needs one. One `toolroll release <branch>` that decides by itself. A routing change keeps
-   the approval unless cost, model class or access changed.
+   field only when the act needs one. One `toolroll release <branch>`. Routing changes ask as little as possible.
 4. **Fast path.** Small tasks a person is watching skip plan approval and build straight away. Plan approval stays for
    large or risky work, flows, schedules, anything unattended, protected paths, and release or merge.
-5. **Pages.** Keep Home and Tasks (with a Board view). Retire `/inbox`, `/work`, `/next`, `/workbench`, `/board`,
-   `/review`, `/queue` and the portfolio overview, with redirects.
-6. **From the comparison.** One-line phone pings with one button; one "Can I merge?" checklist per task with "Ask the
-   agent to fix" per blocker; start a task from a GitHub issue or PR; keyboard shortcuts on the primary verbs.
+5. **Pages.** Keep Home and Tasks (with a Board view), and retire the rest with redirects.
+6. **From the comparison.** One-line pings with one button; a "Can I merge?" checklist; start from a GitHub issue or PR;
+   keyboard shortcuts.
+
+Defaults Alex kept:
+- The fast path is on for single-approver installs and off on shared servers.
+- The fast path's small caps are 3 files and 150 changed lines.
+- `/tasks` is the page.
 
 Out of scope: the "Confirm it stopped" removal. It is being built on branch `auto-stop-proof` (auto-settle of
-`unprovable` runs, teardown-then-settle of `unknown` ones, deletion of `NEEDS["confirm-stopped"]` /
-`["check-stopped"]`, `ConfirmStopped*` forms and `POST /t/:id/confirm-stopped` as a person act). This plan builds on it
-and does not repeat it. Slice 1 only lands after it, or rebases onto it.
+`unprovable` runs; teardown-then-settle of `unknown` ones; deletion of `NEEDS["confirm-stopped"]` and
+`["check-stopped"]`, the `ConfirmStopped*` forms and `POST /t/:id/confirm-stopped` as a person act). This plan builds on
+it and does not repeat it.
 
-## The words (one vocabulary)
+## The words
 
-| Say | Never say to a person |
+| Say | Never say in product copy |
 |---|---|
 | **plan** | scope, contract, terms (as a noun for the plan) |
 | **Approved by Alex · 2:14 pm** | signs, signed, sealed, seal, binds, digest, version hex |
 | **builder** | worker, runner, computer (as a role), watch, daemon, background service |
-| **approver** (says yes to work), **owner** (runs this Toolroll) | operator, instance operator, admin, "someone who manages this Toolroll" |
-| **Accept** (finishing a result) | Complete, mark complete, Accept and finish, finish |
-| **Send back** (result), **Request changes** (plan) | Revise, Draft a repair task, re-file |
+| **approver** (says yes to work), **owner** (runs this Toolroll) | operator, instance operator, admin |
+| **Accept** (finishing a result) | Complete, mark complete, Accept and finish |
+| **Send back** (a result), **Request changes** (a plan) | Revise, Draft a repair task, re-file |
 | **Archive** | put away, tidy |
 | **build #N** | run #N, attempt #N, result #N |
-| **automatic review** | independent review, previous assessment, reviewer (as a status) |
 | **your lead** | coordinator, mate |
 | **research** | scout, scouting |
 | **requirement** | criterion, evidence, proof, verdict, caveat |
 | **Waiting: Toolroll is …** | reconcile, requeue, claim, lease, custody, incident, plane, fence, attested, receipt, regate, carried, incarnation, admission, quiescence, witness |
 
-Code, the database, `--json` output, the agent contract (`docs/agents.md`, `audience: "agent"` rows in
-`src/surface.ts`) and the audit page's hash detail keep their own words. Only what a person reads changes.
+**Product copy** is the text Toolroll writes. **Preserved content** is everything a person, an agent or an outside
+source wrote: goals, requirements, notes, agent reports, issue text, commit messages, and the exact terms a consent
+shows. Preserved content is never rewritten to satisfy the word list. That includes approval terms: a person consents
+to exactly what was filed (AGENTS.md: keep full approval terms visible before consent). Code, the database, `--json`,
+the agent contract (`docs/agents.md`, `audience: "agent"` rows in `src/surface.ts`) and the audit page's hash detail
+keep their own words.
 
-## Slices
+## Every slice carries
 
-Each slice ships alone, behind nothing, in this order (cheapest and most visible first). Every slice carries:
+- **Tests:** the slice's focused rule tests and its rows in the product-copy vocabulary test (P1.1). Per AGENTS.md
+  "Lean verification", there are no per-string wording tests: the vocabulary test is one rule table, the same kind of
+  contract as `BANNED_WORDS`.
+- **Journeys:** one scripted journey at desktop (1280×800) and one at phone (390×844), covering the slice's empty,
+  long-content and failure states. Screenshots go in `evidence/` and are never committed.
+- **Parity:** the same act and the same words in the console, the CLI, the TUI and chat (lead chat and the chat apps),
+  or a named gap.
+- **Fix rounds** run only the affected tests. The full suite is GitHub CI and the release check.
 
-- **Tests**: the focused rule tests named in the slice, plus its rows in the renderer vocabulary test (slice 2 adds it;
-  slice 1 extends the existing `needs-you.test.ts` checks). Per AGENTS.md "Lean verification", no per-string wording
-  tests: the vocabulary test is one rule table, the same kind of contract `BANNED_WORDS` already is.
-- **Journeys**: one scripted journey at desktop (1280×800) and one at phone (390×844), including the slice's empty,
-  long-content and failure states. Screenshots go in `evidence/`, never committed.
-- **Parity**: the same act and the same words in the console, the CLI, the terminal UI and chat (lead chat and the
-  chat apps), or a named gap.
-- Fix rounds run only the affected tests; the full suite is GitHub CI and the release check.
+---
 
-### Slice 1 — Needs you is honest (decision 1)
+# Phase 1 — presentation only
 
-Facts:
-- Two word tables disagree. `src/needs-you.ts` has `NEEDS`/`WAITS`; `src/work-index.ts:98-100` (`PERSON_CODES`) and
-  `:643-676` label 15 codes "Needs your decision", including `stopping` (#10), `history-problem` (#11),
-  `earlier-active` (#12), `waiting-incident` (#13), `vanished-run` (#2), `no-worker-online` (#9).
-- `planning-ready` / `scouting-ready` / `worker-at-capacity` say "Planner ready", "Scout ready", "worker capacity"
-  (`work-index.ts:670-675`, #14, #15).
-- `needs-you.ts:66-69`: "Start the builder" / "Check the build" ask the person to do plumbing.
-- Results ask for machine work: "verification needed" (`workspace-ui.ts:305-327`, #35), "check result couldn't be
-  read" (`:335`, #37), "check command changed; run checks again" (`task-status.ts:125`, #36), raw "awaits independent
-  goal assessment" reasons (`proof.ts:478, 765, 786` via `render-results.ts:520-605`, #33).
-- Pushes for things that need nothing: "Independent review requested" (`store.ts:11989`), "went dead holding work"
-  (`operate.ts:3914`), "worktrees need review" (`worktree-notices.ts:13`), "repair ancestry" (`dispose.ts:782`)
-  (#53-#57).
+Phase 1 adds no automatic act and no new approval basis. It does not change who may do what, or when anything
+dispatches, completes, publishes or merges. A Phase 1 slice that turns out to need an authority change stops, and the
+change moves to Phase 2.
 
-Build:
-- `work-index.ts` reads `NEEDS`/`WAITS` and stops keeping its own word table. A code is a person need only if it maps to
-  a `NEEDS` key (approval, question, result to review, sign-in, hold, choose project or agent, earlier task, retry limit
-  reached). Everything else maps to a `WAITS` key.
-- New waits: `stopping` → "Waiting: Toolroll is stopping build #N."; `history-problem` → an incident plus a quiet note on
-  the task, never Needs you; `planning-ready` → "Waiting to plan"; `scouting-ready` → "Waiting to research";
-  `worker-at-capacity` → "Waiting its turn: builders are busy."
-- **Vanished build** → Toolroll retries it under the existing backoff and strike rules (`retry-scheduled`), shown as
-  "Waiting: build #N stopped unexpectedly; Toolroll is starting it again." Needs you only after the strike limit:
-  "Build #N keeps stopping. Retry, or change the plan."
-- **Builder offline** → when the builder is this computer's installed service (`laptop-service.ts`,
-  `laptop-background.ts`), Toolroll restarts it and shows "Waiting: Toolroll is restarting the builder." Ask only when
-  the builder is another computer or the restart fails, with one label everywhere: "Start the builder". Delete "Check
-  connection" (`agents-view.tsx:128-137`).
-- **Results** → no verdict, unreadable check record or changed check command: Toolroll reruns the project's machine
-  check once and shows "Waiting: running the project's checks…". No check configured: "No automatic check for this
-  project. Review the changes yourself." These are machine checks only. AGENTS.md "Lean verification" still holds:
-  no model review, repair or resubmission loop is added. A report/changes mismatch stays a person's call (Send back).
-- "Earlier work is still active" names and links the earlier task: "T-9 (an earlier version) is still running. Stop it
-  or wait for it to finish."
-- Lifecycle pushes that need nothing go to the activity log only (#52-#57, #60).
-
-Tests: a `CODE_NEED` rule table, so every work-index code is a need or a wait and none is both. Auto-retry stops at the
-strike limit. The service restart runs only for this computer's own installed service (stored records, never a path from
-the checkout), and a failed restart becomes the need. A check rerun happens once per changed check-command record, never
-in a loop.
-Journey: a vanished build reads Waiting, then Ready, with no click. An offline local builder restarts itself.
-Parity: TUI rows show the same Waiting sentence; `toolroll task show` prints it; chat cards carry it; no chat push for
-waits.
-
-### Slice 2 — One vocabulary (decision 2)
+### P1.1 — One vocabulary in product copy
 
 Facts:
 - "Scope" appears about 190 times on the task and result pages (#6): `render-pages.ts:116`, `render-tasks.ts:569-619,
-  1979-2605`, `render-results.ts:744-767`. Needs you, the kit approve box and the TUI already say "plan".
-- Digest and seal copy: `render-tasks.ts:3090` ("Approving signs plan version 3f2a9c1b04de"), `:1989-1994, 2321-2341`
-  (digest chips), `:2196, 2200` ("sealed into its scope"), `:105-135` ("filed contract", "binds the AMENDED terms"),
-  `:900-905, 3059-3071` ("carried"), `render-chat.ts:841` ("seals these agents").
-- Run reason words: `needs-you.ts:191-225` (`RUN_REASON_WORDS`: "lease", "operator", "scout"), #106.
-- CLI people text: `operate.ts:1889, 9946, 10223, 10761, 10827, 11417`; "operator act" in about 18 places (#90);
-  `cli-help.ts:8, 52-70` puts `claim`, `heartbeat`, `reap`, `tick`, `reconcile` in top-level help (#81).
-- TUI: `tui/app.tsx:44-47` ("mark the result Complete").
-- `BANNED_WORDS` (`needs-you.ts:138`) holds six words and is checked only on Needs you and Waiting sentences
-  (`needs-you.test.ts:52-79, 209-215, 479-490`).
+  1979-2605`, `render-results.ts:744-767`.
+- Digest and seal copy appears in `render-tasks.ts:3090` ("Approving signs plan version 3f2a9c1b04de"),
+  `:1989-1994, 2321-2341`, `:2196, 2200`, `:105-135` and `:900-905, 3059-3071` ("carried"), and in
+  `render-chat.ts:841`.
+- Run reason words come from `needs-you.ts:191-225` (`RUN_REASON_WORDS`). CLI people text: `operate.ts:1889, 9946,
+  10223, 10761, 10827, 11417`, plus "operator act" in about 18 places (#90). Agent plumbing sits in top-level help at
+  `cli-help.ts:52-70`. The TUI help is at `tui/app.tsx:40-50`.
+- `BANNED_WORDS` (`needs-you.ts:138`) has six words and covers only Needs you and Waiting sentences.
+- **Two CLI meanings collide.** `task accept` today records an *acceptance with limitations* that changes neither checks
+  nor completion (`surface.ts:317`). `task complete` is the exact-receipt completion (`task-outcome-cli.ts:45-60`: a
+  `--digest` is required under `--json` or a coordinator).
 
 Build:
-- Move the word list to `src/plain-words.ts` (`needs-you.ts` re-exports it), with the "Never say" column above, word
-  boundaries, case-insensitive, and an exemption list (the audit page's hash detail, `--json`, the agent contract,
-  `toolroll internals --help`).
-- Approval and approved cards: "Approved by Alex · 2:14 pm"; "Edited after approval" when the plan changed; the plan
-  version moves into a Details disclosure. The filed-contract panel becomes "The planner changed 2 things from your
-  request:" plus the list (#20). The pipe grammar for requirements becomes one row per requirement with a "How we'll
-  know" picker; the CLI keeps the grammar (#19).
-- `RUN_REASON_WORDS`, result requirement details (`proof.ts:43-700` through one plain mapper, #44), lifecycle subjects
-  (#60-#62), CLI people messages and the TUI help use the table.
-- `cli-help.ts`: agent and runner plumbing moves under `toolroll internals --help`. The old commands keep working.
-- Rename people-facing CLI verbs with old ones kept as aliases: `task accept` (alias `complete`), `task archive`
-  (alias `tidy`), `task recheck` (alias `regate`).
+- `src/plain-words.ts` holds the table, with word boundaries and no case. `needs-you.ts` re-exports it.
+- Approved cards read "Approved by Alex · 2:14 pm" and "Edited after approval". The plan version moves into Details.
+  The approval card still shows the full plan terms.
+- The filed-contract panel says "The planner changed 2 things from your request:" and lists the changes; the full
+  filed words stay one tap away (#20).
+- Requirement rows get a "How we'll know" picker, and the CLI keeps the grammar (#19).
+- `RUN_REASON_WORDS`, Toolroll's requirement-detail sentences (`proof.ts:43-700` through one mapper over its own
+  strings), lifecycle subjects and CLI people messages use the table.
+- `cli-help.ts`: plumbing moves under `toolroll internals --help`, and the commands keep working.
+- **CLI verb migration, explicit:**
+  - `task accept <id>` becomes the person's Accept: the same exact-receipt road as `task complete` today, with the
+    same `--digest` rule under `--json` and for coordinators.
+  - Today's acceptance-with-limitations becomes `task accept <id> --despite "<reason>"`. That is the "Accept anyway"
+    outline act, with a reason required.
+  - `task complete` stays as an alias of the new `task accept`.
+  - The old bare `task accept` meaning is reachable only with `--despite`. A bare call that today would have recorded a
+    limitation refuses with words naming `--despite`, so nobody silently completes where they meant to note a
+    limitation.
+  - `task archive` (alias `tidy`) and `task recheck` (alias `regate`) are renames only.
 
-Tests: **the renderer vocabulary test** (`src/plain-words.test.ts`). One rule table of person-facing renderers × seeded
-fixture states (plan draft, approved, edited after approval, building, waiting, failed, Ready, accepted, release card,
-Needs you, Home, Tasks, Board, settings groups, push payloads, chat cards, TUI frames, CLI people output). Each renders
-over real HTTP or its pure function, visible text plus `aria-label`, `title` and `placeholder` are extracted, and no
-banned word may appear. A new renderer joins by adding a row. Plus a static check that every `NEEDS`/`WAITS` sentence
-and `RUN_REASON_WORDS` value passes.
-Journey: file, approve, build, accept. Screenshots show no "scope", hex or "signs".
-Parity: TUI, CLI people output and the four chat apps are rows in the same test.
+Tests:
+- **The product-copy vocabulary test** (`src/plain-words.test.ts`) is one rule table of renderers × seeded fixture
+  states. It covers: plan draft, approved, edited after approval, building, waiting, failed, Ready, accepted, release
+  card, Needs you, Home, Tasks, Board, settings, push payloads, chat cards, TUI frames and CLI people output.
+- Fixtures fill every person- or agent-authored field with a **sentinel** that contains banned words ("scope digest
+  sealed lease"). The test extracts visible text plus `aria-label`, `title` and `placeholder`, and removes exactly the
+  sentinel spans. What remains is product copy, and it must hold no banned word.
+- A second assertion makes every sentinel appear byte-identical where it is rendered. Preserved content is never
+  rewritten.
+- `task accept` / `--despite` / `complete`: one contract table. Completion still requires the exact receipt, and a bare
+  legacy-shaped call refuses.
 
-Slice 2 may ship in two parts (2a: plan and approval cards, Needs you, push, chat, TUI; 2b: results, release, CLI). The
-test lands in 2a with those rows and grows in 2b.
+Journey: file → approve → build → accept, with no "scope", hex or "signs" in product copy.
+Parity: the TUI, the CLI and the four chat apps are rows in the same test.
+It may ship as P1.1a (cards, Needs you, push, chat, TUI) and P1.1b (results, release, CLI).
 
-### Slice 3 — Three verbs on results and approvals (decision 3)
+### P1.2 — Needs you is honest (reclassification only)
+
+Facts: `work-index.ts:98-100` (`PERSON_CODES`) and `:643-676` label 15 codes "Needs your decision".
+- Some of those codes need nothing from a person: `stopping` (#10), `planning-ready`, `scouting-ready`,
+  `worker-at-capacity` (#14, #15) and `retry-scheduled`.
+- Others are real needs with poor words: `vanished-run` (#2), `no-worker-online` (#9), `earlier-active` (#12),
+  `waiting-incident` (#13), `history-problem` (#11), and the result asks in `workspace-ui.ts:305-342` (#35-#39).
+
+Build: `work-index.ts` reads `NEEDS`/`WAITS` and stops keeping its own word table.
+- Codes that need nothing from a person become waits: `stopping` → "Waiting: Toolroll is stopping build #N.";
+  `planning-ready` → "Waiting to plan"; `scouting-ready` → "Waiting to research"; `worker-at-capacity` → "Waiting its
+  turn: builders are busy."; `retry-scheduled` → "Waiting: Toolroll retries build #N at 2:14 pm."
+- Codes that stay needs get plain words over **the same acts they have today**:
+  - `vanished-run`: "Build #N stopped unexpectedly. Retry it."
+  - `no-worker-online`: "The builder is offline. Start the builder." That is one label everywhere, and "Check
+    connection" is deleted.
+  - `earlier-active` names and links the earlier task.
+  - `waiting-incident`: "The last attempts failed the same way (reason). Retry, or change the plan."
+  - `history-problem`: "Toolroll can't read this task's history. Open it to retry or archive it." This is an
+    actionable need, never a quiet Waiting.
+  - Result asks: "No check result for this build yet — Run checks" and "Ready · no project check set up".
+- Pushes that need nothing (#52-#57, #60) go to the activity log only. Removing a notification removes no authority.
+- The automatic acts (retry, recheck, restart) are Phase 2, P2.1-P2.3. Each code that one of them would handle
+  stays a need until its slice ships.
+
+Tests: a `CODE_NEED` rule table, where every code is a need or a wait and never both. Each need keeps its existing
+action code, which proves no act changed. No push is sent for a wait.
+Journey: a stopping build reads Waiting; a vanished build reads one plain need with Retry.
+Parity: the TUI rows, `toolroll task show` and chat cards use the same sentence.
+
+### P1.3 — Three verbs, as relabels over today's acts
+
+Facts: `result-acts.ts:57` (`ResultActKind`, 11 kinds) feeds about 11 verbs on the result page (#51). The resume
+ceremony page is `render-tasks.ts:1093-1135` (#17). The More menu is `render-tasks.ts:2866-2878`.
+
+Build: the act row shows only:
+- results: **Accept**, **Send back** and **Retry**;
+- plans: **Approve**, **Request changes** and **Reject**.
+
+Each maps one-to-one onto an existing post:
+- Accept → today's Accept and finish, or "Accept anyway" (outline, with a reason) where today's rules allow it.
+- Send back → today's Request changes or Revise for an unpublished result, and Draft a repair task for a published or
+  merged one. The rule is fixed and shown on the button's confirm line.
+- Retry → today's Retry or Build again.
+
+"Run checks" stays in the Checks row. Resume stays the existing road, but its page collapses to one card with one
+button over the same post and the same proof rule. The password field shows exactly when today's rules
+(`freshlyApprovable` `scope.ts:1642`, `localApprovalEligible` `:2120`, Passwordless, protected and escalated work) ask
+for one, read by one shared function so every form agrees. The More menu loses Evidence pack and Reuse as recipe, which
+move to the Plan tab.
+
+Tests:
+- The `result-acts` rule table maps each state to one ink act from the three.
+- Each verb posts to the same handler with the same fields as before (a route-for-route table).
+- The shared password function agrees with the handlers on every row: protected, escalated, coordinator-filed,
+  Passwordless on and off, and local owner.
+
+Journey: open result → line note → Send back → revision → Accept.
+Parity: TUI `a` Accept (`c` is an alias), `b` Send back, `r` Retry. Chat cards carry the same three. CLI `task accept
+| send-back | retry` are aliases of today's commands.
+
+### P1.4 — Home and Tasks, with permanent redirects
 
 Facts:
-- `result-acts.ts:57` `ResultActKind` has 11 kinds; the page and its More menu show about 11 verbs (#51).
-- The result-page stop form always asks for a password; the task-page one doesn't under Passwordless
-  (`status-summary.tsx:108-121` vs `task-view.tsx:151-162`). `auto-stop-proof` deletes both forms; the rule below
-  covers every form that is left.
-- Resuming your own paused task is a separate ceremony page (`render-tasks.ts:1093-1135`, #16, #17), and chat dead-ends
-  there (`chat-task-actions.ts:11, 53`, #96).
-- The task page More menu has about 10 items (`render-tasks.ts:2866-2878`).
+- Routes: `route-table.ts:339-362` serves `/inbox`, `/work`, `/next`, `/workbench` (the portfolio:
+  `render-pages.ts:780`, `pages.ts:64`), `/board`, `/review`, `/queue`, and `/tasks` (today a redirect to `/work`,
+  `:361`).
+- The legacy page: `inboxPage` is at `render-pages.ts:57`.
+- Push and service-worker allowlists: `push.ts:230-236` (`LINK_SHAPES`, `CLASS_FALLBACK` → `/next`, `/review`) and
+  `pages-assets.ts:47-73` (the worker's `SHAPES`, fallback `/next`). **An installed phone keeps its old worker until it
+  updates.**
+- Task ids are not machine numbers: `task add` derives them from titles (`operate.ts:9408` `slug(title, now)`) or
+  takes `--id`. Task routes match `/t/[^/]+/…` (`route-table.ts:254`), so any new number route must live outside `/t/`.
+- Other links: `serve.ts:1460-1484`, `shell.tsx:26` (#109), `chat-quiet.ts:112, 184, 243`, `render-chat.ts:317-350`,
+  `nightly-github.ts:512, 873, 886`, `render-pages.ts:228, 520, 839, 1049, 1253`, `provider-auth.ts:185`,
+  `limits-ui.ts:91`, `publish.ts:665`, and `docs/guide/`.
 
 Build:
-- Results: **Accept** (ink when ready; outline "Accept anyway" with a reason when something failed), **Send back**
-  (note required), **Retry**. Send back picks the road by a fixed rule: an unpublished result gets a revision on the
-  same task; a published or merged one gets a repair task. "Run checks" leaves the act row and stays in the Checks row.
-- Plans: **Approve**, **Request changes** (note), **Reject**.
-- Password field only when the act needs one. One shared function decides it, from the same rules as today
-  (`freshlyApprovable`, `localApprovalEligible`, `scope.ts:1642, 2120`; Passwordless; protected and escalated work), and
-  every form asks it.
-- Resume is one button on the task card. When the plan is no longer approved, it shows Approve instead (no separate
-  page).
-- More menu: Dependencies, Holds and Task options move to the Plan tab; Evidence pack and Reuse as recipe leave the
-  default menu.
+- `/` **Home** holds Needs you, Running and Waiting. `/tasks` **Tasks** has List / Board / Ready / Archived and an
+  all-projects scope that replaces the portfolio.
+- Permanent GET redirects with the target's access rules: `/work` → `/tasks`, `/inbox` → `/`, `/next` → `/`,
+  `/workbench` → `/tasks?scope=all`, `/board` → `/tasks?view=board`, `/board?view=order` and `/queue` →
+  `/tasks?view=order`, `/review` → `/tasks?view=ready`, `/done` → `/tasks?view=done`. Only the query keys each target
+  knows are kept.
+- **Archive keeps its POST exactly.** `POST /work/put-away` keeps its path, step-up and approver rule. Only the GET
+  preview gets a new address (`/tasks/archive`, with the old GET redirecting there).
+- Push links: `CLASS_FALLBACK` becomes `/` and `/tasks?view=ready`. `LINK_SHAPES` and the worker `SHAPES` allow
+  exactly:
+  - the new fixed destinations `/`, `/tasks?view=ready` and `/tasks?view=board`;
+  - `/n/<display number>`, where the number is the task_ref's stored numeric id. A new redirect route resolves it to
+    the task page under the viewer's access, so neither the push nor the URL ever carries a title-derived id;
+  - the old `/next` and `/review`, kept indefinitely.
+- Deleted: `inboxPage`, `render-next.ts`, the workbench page and rail, and the "clear the queue" links. Every link in
+  the list above is repointed, and the guide is updated.
 
-Tests: a `result-acts` rule table maps each state to exactly one ink act from the three, plus at most one outline. Send
-back's road rule. The password rule table covers protected, escalated, coordinator-filed, Passwordless on and off, and
-local owner. Resume refuses when the approval no longer stands.
-Journey: open result → leave a line note → Send back → revision appears → Accept (desktop and phone).
-Parity: TUI `a` Accept (`c` kept as alias), `b` Send back, `r` Retry; chat cards carry the same three; CLI `task
-accept | send-back | retry`.
+Tests:
+- `route-table.test.ts`: every retired GET is a redirect row with no page handler, and the archive POST row is
+  unchanged.
+- A project-limited person redirected through each path learns nothing about another project.
+- `/n/<n>` refuses a number outside the viewer's projects with the same 404 as an unknown one.
+- Push rules: the new destinations are accepted; `/n/1x`, `/n/../x` and title ids are refused.
+- **Old-worker test:** the previous worker source, kept as a fixture, receives each new payload and lands on an allowed
+  page (its `/next` fallback redirects to Home). The new worker accepts every old payload.
+- A link sweep: no rendered `href` points at a retired GET.
 
-### Slice 4 — A routing change keeps the approval (decision 3)
+Journey: Home → Needs you → task → back; List ↔ Board; on the phone, an old `/next` link and a new push both land
+right.
+Parity: `toolroll open --web` lands on Home, and chat links use the new paths.
 
-Facts: an upgrade or routing change voids approvals and asks for a fake edit-and-save: "This scope predates agent
-routing… re-file" (`render-tasks.ts:586-619, 865, 916`, #7), the push "its approval no longer matches the build routing"
-(`dispose.ts:464`, #8), and the CLI "the approval sealed under the previous route is now stale" (`operate.ts:10761,
-10827`). `approve()` refuses unrouted rows (`scope.ts:1566`). `surface.ts:319`: "phase and size changes require renewed
-approval".
+### P1.5 — One-line pings with one button
+
+Facts: `PUSH_WORDS` (`push.ts:222-228`) are generic. Push payloads carry static words and machine numbers only
+(`push.ts:239`). Chat cards carry every word of the terms (`chat-terms.ts`).
 
 Build:
-- A new approval covers a **route class** per phase: provider, model tier, how it is paid (subscription, API key, paid
-  fallback) and access (permission level, network, check access, write paths). Toolroll may pick the exact model inside
-  that class at dispatch, and records it on the run's route stamp. The approve card says so in one line: "Uses Claude
-  (everyday tier). Toolroll may use a newer model in the same tier."
-- A re-route inside the class keeps the approval. One outside it (higher cost class, a different tier or provider,
-  wider access, a trial) shows one Approve with only what changed: "The builder changed from Claude Sonnet to Claude
-  Opus. Approve to continue." No "re-file". Unrouted legacy rows get the same one-step Approve, with Toolroll
-  re-routing them first.
-- **Old approvals keep their exact binding.** They were a yes to an exact route, and widening them to a class would
-  mint an approval nobody gave. Only approvals given after this ships cover a class.
+- Push: one line per class, built from the display number, "#41: plan ready", "#41 is ready to review", "#41 has a
+  question". One tap opens `/n/41`. There are no titles in push, and one "Open" action where the platform supports it.
+- Chat apps: one line, one button and Details. The button is never an approval: **Review plan** expands the full terms
+  in the card, and the existing Approve sits under them with the existing terms digest check. **Open result** for
+  results; **Answer** choices inline for questions.
 
-Safety: the class goes into the digest, so a changed class is a changed plan. The dispatch belt (`authorityStandsSql`)
-and the build belt re-check "exact model ∈ approved class" at the moment of use. Trials stay person-only
-(`trialSealStandsSql`, `approval-authority.ts:47`). Earned rules may only narrow cost.
-Tests: a re-route inside the class dispatches; each outside dimension refuses (cost, tier, provider, access, trial); a
-legacy exact approval never accepts a different model; a forged class field in `approved_route_json` without a matching
-digest refuses.
-Journey: an upgrade changes the default model in the same tier, and the task builds without asking. A tier change shows
-the one-line Approve.
-Parity: CLI `task approve` prints the same one-line change; chat cards carry it; the TUI `a` shows it.
+Tests: the payload rule table (one line, allowed link shapes, no free text). A chat Approve is reachable only from the
+expanded terms. Stale cards are refused, as today.
+Journey: phone push → tap → the right act; Telegram → Review plan → Approve.
+Parity: one card builder for the four chat apps. The TUI has no pings (named gap).
 
-### Slice 5 — Fast path: small, watched work starts right away (decision 4)
+### P1.6 — "Can I merge?" checklist
+
+Facts: readiness is spread over `task-status.ts:24-69`, `server/last-checks.ts`, `workspace-ui.ts:271-342`,
+`release-card.ts` and `render-tasks.ts:3064-3071` (#79).
+
+Build: one panel per task, read from those same sources with nothing recomputed. Rows: plan approved · build finished ·
+project checks passed on this commit · requirements met · pull request open · PR CI on this exact head · up to date with
+main · no conflicts · review comments answered · release check (for releases). Each blocker carries an existing act:
+Run checks, Retry, or **Ask the agent to fix**. Ask the agent to fix is Send back (P1.3) with a prefilled note naming
+the blocker, and it is the person's act. Nothing here acts on its own.
+Tests: each row reads its one source (the `one-vocabulary.test.ts` pattern). Ask the agent to fix posts the same
+revision as Send back.
+Journey: failing PR CI → Ask the agent to fix → revision → all rows green.
+Parity: `toolroll task ready <id>` (`--json` for agents), the lead answers "Can I merge #41?", and the TUI task view
+shows the panel.
+
+### P1.7 — Keyboard shortcuts
+
+Build: one keymap for the console and the TUI:
+- `n` new task;
+- `a` the page's ink act (Approve or Accept);
+- `b` Send back or Request changes;
+- `r` Retry;
+- `/` search (`browser/search.tsx:125`);
+- `g h` Home, `g t` Tasks;
+- `?` the list.
+
+A shortcut only presses the rendered button, so any password field or confirm still appears. Shortcuts are off in
+inputs and when the button isn't rendered.
+Tests: one shared table for web and TUI. A shortcut never posts a form whose button isn't rendered, and it never
+submits a step-up form without its field (a real-browser test).
+Journey: keyboard only: new task → Approve → Accept.
+
+---
+
+# Phase 2 — authority changes
+
+Each slice below changes what Toolroll may do on its own, or what an approval covers. Each one:
+- runs the AGENTS.md safety self-review before commit;
+- states its acceptance criteria as **must-refuse** cases;
+- ships its attack tests against the real store and, where it applies, the real sandbox (`sandbox-exec`,
+  `codex sandbox`);
+- turns a P1.2 need into a wait only when that slice lands.
+
+### P2.1 — Automatic retry of a vanished build
+
+Facts: normal failure settlement charges a strike (`claim.ts:1222` `addStrike`, then `attempts-exhausted` at
+`MAX_STRIKES`). Dead-runner recovery marks runs interrupted and requeues them without a strike (`store.ts:21769`,
+`operate.ts:3623`), so repeated restarts could evade the limit. Per-run budgets are nullable and bound no episode.
+
+Build:
+- Recovery charges the strike **in the same transaction** that marks the run interrupted and requeues the task. It is
+  idempotent per run: a run is charged once, whoever recovers it.
+- A persisted **episode** per task (attempts and spend since the last person act) has limits: at most 3 automatic
+  retries, and a spend ceiling equal to the plan's budget × 2, with each claim reserving its budget against the
+  ceiling.
+- No budget on the plan means no automatic retry. The task stays the P1.2 need.
+- Stop, hold, custody, archive and approval standing are all re-read at the requeue. Any one of them blocks the retry.
+- Reaching a limit raises the P1.2 need ("Build #N keeps stopping. Retry, or change the plan").
+
+Must refuse:
+- a second charge for one run;
+- a retry past the attempt or spend limit, including under concurrent recoverers and a crash between the charge and the
+  requeue;
+- a retry of a stopped, held, archived or no-longer-approved task;
+- a retry on a plan with no budget.
+
+### P2.2 — Automatic recheck under a check-only authorization
+
+Facts: the rerun road proposes a candidate scope that an approver or a mode must seal (`dispose.ts:600-608`), and it
+refuses while a verdict is missing (`dispose.ts:558-562`).
+
+Build:
+- A durable **check-only authorization** row: task, exact candidate commit, the approved check command's digest, the
+  sealed check access, a cap of 1 automatic run per (candidate, command digest), and an expiry.
+- It is written only from the existing approval of that exact candidate. It never reseals the plan and never starts a
+  build or agent.
+- It runs the check with the access that was sealed, or narrower. It never runs wider, and never unsandboxed because a
+  record went missing.
+- A missing or unreadable verdict reruns only when the authorization stands. Otherwise the P1.2 need stays.
+- A changed check command is a different digest. The old authorization doesn't cover it, so the person approves it.
+  The approval card shows the new command.
+
+Must refuse:
+- a rerun on a different commit or command digest;
+- a second automatic rerun (concurrent workers, a crash after the claim);
+- a rerun wider than the sealed access;
+- any agent or build started by the authorization.
+
+### P2.3 — Restarting this computer's own builder
+
+Facts: the laptop service runs the console and the builder together (`laptop-service.ts:4`). Its start helper
+re-enables a disabled label (`laptop-background.ts:163-165`: `background off` disabled it, and loading it is "the
+person's explicit yes").
+
+Build: Toolroll restarts the service only when all of these hold:
+- a recorded **desired state** of running (set by `background on`, `up`, or install; cleared by `background off`, `stop`
+  and uninstall), read from Toolroll's store;
+- no stop, update, deploy drain or admission pause in progress;
+- the service's process has verifiably exited (launchd/systemd state, plus no live pid for the recorded runtime);
+- the recorded runtime identity (build and database format) matches what would be started;
+- under 3 attempts in 30 minutes.
+
+A restart never re-enables a disabled label. Anything else raises the P1.2 need with one label, "Start the builder".
+Must refuse: a restart after `background off` or `stop`, during an update or drain, while the process lives, on an
+identity mismatch, or past the attempt cap.
+
+### P2.4 — Fast path: small, watched work starts right away
 
 Facts:
-- Sizing exists: `task-sizing.ts` sizes every filing from the description at once (`heuristicSizing`, `:52`, never
-  risky), then a classifier (Haiku or Jev) refines it within 5 s (`refineFiledSizing`, `:205`; `SIZING_BUDGET_MS`).
-  `makesNoPlan` (`phase-routing.ts:128`) is "small, not risky, routine risk", and such tasks already skip the planner.
-- Approval bases are an allowlist (`scope.ts:849-850`, `approvalOf` `:1659-1675`) read by one dispatch predicate
-  (`approval-authority.ts:25-44`). Person proofs are `PERSON_PROOFS` (`:20`).
-- Model for the code: `fileAndSealUnderMode` (`scope.ts:1472-1514`) files and seals in one transaction.
-- Who may approve without retyping already has two rules: `freshlyApprovable` (`scope.ts:1642`) and
-  `localApprovalEligible` (`scope.ts:2120`): one approver, standard permissions, not coordinator-filed, not release,
-  sandboxed checks.
-- Protected work is judged from declared paths (`store.ts:9854-9873`, `approval-policy.ts:99-103`; no paths counts as
-  protected when the project protects paths). The built diff can be checked with `protectedChanges`
-  (`approval-policy.ts:92`).
-- `task add` is an agent-invocable command (`surface.ts:162`, `agentMayInvoke: true`). Under Passwordless, a
-  remembered CLI login proves as `cli-login` (`scope.ts:1377`), which any process in the person's shell can use.
+- Sizing: `task-sizing.ts`, which uses `heuristicSizing` (`:52`, never risky) plus a classifier refine within 5 s
+  (`refineFiledSizing` `:205`).
+- No-plan rule: `makesNoPlan` (`phase-routing.ts:128`).
+- Approval bases: the allowlist at `scope.ts:849-850`, and one dispatch predicate in `approval-authority.ts:25-44`.
+- Filing and sealing together: `fileAndSealUnderMode` (`scope.ts:1472-1514`).
+- Proof readers: `proofDetailOf` (`scope.ts:1884`) needs `{v:1, at, digest}`. `localSealStandsSql`
+  (`approval-authority.ts:57`) matches the local generation in the detail text with `LIKE '% · local <gen> %'`.
+- Check access: `sign-ins` lets checks read and send Claude, Codex and GitHub credentials (`check-access.ts:33-34`).
+  Checks run at build time, before disposal (`builder.ts:2731`). The wider levels seal only on a password ceremony
+  (`store.ts:9168`).
+- Completion accepts machine callers for ordinary work (`assignment.ts:508-511`). A project's publication grant pushes
+  right after a build (`dispose.ts:234-240`). The whole change, including revision ancestry, is
+  `familyChangedFiles` (`result-completion.ts:53`), which returns null when any part is unreadable.
+- Outside-request quarantine: `store.ts:9161` refuses automatic bases for youiyoux-filed tasks, keyed on an immutable
+  filed-via.
 
-Design:
+**What "attended" promises, honestly.** The promise is *a person's authenticated initiation on a person surface*, with
+nothing more claimed.
+- The person surfaces are:
+  - a browser session (cookie: a typed or remembered password, SSO, passkey or Passwordless session);
+  - the TUI as the local owner (a new `build-now` local-owner act beside `approve-plan`);
+  - interactive `toolroll task new`.
+- Under the easy-start local-owner threat model (`local-owner.ts:1-8`), an unfenced process running as the same OS user
+  **is** that user: it can already approve plans with the remembered login (`scope.ts:1377`). The fast path claims no
+  presence proof beyond that and adds no road past `task approve`.
+- What it does reject: fenced build agents, every token (lead, coordinator, runner, remote, API), the MCP gateway, chat
+  bridges, flows, schedules, webhooks, triggers, issue imports, nightly jobs and the release tool.
+- Those rejections are decided **inside the writer and the dispatch guard**, from trusted admission context
+  (`machineActing()`, the request's caller kind and the proof method), never from the surface's say-so.
+  `task add` (agent-invocable, `surface.ts:162`) never fast-starts.
 
-**Who counts as attended.** A person filing their own task, at that moment, from an interactive person surface:
-- the console in a browser session (cookie): typed or remembered password, SSO, passkey, or Passwordless session;
-- the terminal UI as the local owner (a new `build-now` local-owner act, beside `approve-plan`);
-- `toolroll task new` in an interactive terminal, after a typed "Build now? [Y/n]".
+**The FAST execution profile (sealed before anything runs).** A fast task's plan seals a restricted profile, and
+setup, build and checks all run under it:
+- checks **sandboxed**: never `sign-ins`, never unsandboxed;
+- **no credential access**: no GitHub or other sign-ins in the workspace or the checks. The agent's own provider sign-in
+  goes only through the gateway, exactly as today;
+- **workspace-only writes**: the project's extra write paths aren't applied;
+- **provider-only network**: the agent reaches its provider hosts, and checks get no network;
+- no macOS service widenings;
+- the project's approved setup command unchanged;
+- a **finite spend cap**: the per-build budget is required, at most the project's default and at most the fast cap.
 
-Never: `task add`, `--json`, a non-TTY stdin or stdout, a process inside a Toolroll fence, the lead or any coordinator,
-lead, runner, remote or API token, the MCP gateway, the chat apps, flows, schedules, webhooks, GitHub or Linear
-triggers, issue imports (slice 10), nightly jobs, the release tool, or a revision an agent asked for. Chat gets one-tap
-**Approve** on the card instead. That is an ordinary person approval, not the fast path.
+The FAST profile only narrows. If the project's own settings are narrower, those apply. If the project *needs* wider
+access (its checks require sign-ins, an unsandboxed level is stored, or write paths are required), the task is not
+eligible, and nothing is ever widened to fit. The existing rule that wider check access seals only on a password
+ceremony (`store.ts:9168`) is unchanged.
 
-**What counts as small.** All of these, decided by one function `fastStartEligible(store, by, input, proof)` that the
-New task preview and the seal both call (the seal re-reads it inside its transaction):
-- the description's own size is small (`heuristicSizing`), **and** the classifier answered small and not risky within
-  its budget. On this road the filing waits for the classifier (5 s at most); no answer means normal plan approval. The
-  model can only confirm a size the deterministic rule already gave, never widen it;
-- `makesNoPlan` on the routed task: routine risk, default quality;
-- the approval gate seals with one approver and no protected work, with declared paths present when the project
-  protects any;
-- a standard permission profile (never escalated), checks not stored as unsandboxed, no network widening;
-- no release or deploy terms, no CI hold, no trial selection in the route, no fallback chain with paid fallback;
-- a budget at or under the project's per-build default, and the monthly spend limit not reached; the org policy
-  (`scopePolicyRefusal`) has nothing to say;
-- the project's **Small tasks start right away** setting is on (open decision 1).
+**What counts as small.** One function, `fastStartEligible`, is read by the preview and again inside the seal's
+transaction:
+- the heuristic size is small, **and** the classifier answered small and not risky within its budget. On this road the
+  filing waits for the classifier, at most 5 s. No answer means normal approval: the model can confirm a small size,
+  never grant one;
+- `makesNoPlan`; default quality;
+- the gate seals with one approver, no protected work, and declared paths present when the project protects any;
+- the FAST profile can be applied, as above;
+- no release or deploy terms, no CI hold, no trial, no fallback chain;
+- the monthly limit isn't reached; no org-policy refusal;
+- the project setting **Small tasks start right away** is on. The default is on for single-approver installs and off on
+  servers with more than one approver. Turning it on is a person's logged settings act.
 
-**What is sealed and recorded.** The same plan bytes and digest as a normal approval: goal, requirements, route class,
-budget, profile. New basis `fast` in `APPROVAL_BASES`. One `approval proved` ledger row at the seal's instant, with the
-person's proof method and a versioned detail: `{v:1, digest, fast:{rule:1, surface, heuristic, classifier:{size,
-risky, reason, model}, until}}`. A `task_act` `approved` with `lead = 0`. The task page says "Started right away: a small
-change you started yourself", and its Plan tab shows the plan with "Approve plan" hidden.
+**One proof contract (versioned).** `approval proved` detail v2 is the one shape every reader parses:
 
-**When it stands** (a new clause in `authorityStandsSql`, `fastSealStandsSql`, conjunctive with the release, local and
-trial clauses that are already there):
-- a person proof at the seal's instant, outcome in `PERSON_PROOFS` minus `chat`, and no machine seal;
-- no flow trigger event, no coordinator, not a quarantined author;
-- the approver still stands in the project, and the project setting is still on;
-- **first dispatch within 30 minutes of the seal.** After that it lapses to an ordinary "Approve plan" in Needs you.
-  Automatic retries (slice 1) ride the fast seal only inside that window. A person's Retry or Send back is a new person
-  act and re-checks eligibility.
+```
+{v:2, at, digest, method, account:{name, generation}, local:{generation, transport}|null,
+ session:{id_hash}|null, basis, fast:{rule, profile_digest, sizing:{heuristic, classifier}, until}|null}
+```
 
-**What it never does.** It never carries into a release, carry, merge or publication grant, auto-check or auto-green,
-or any mode. A mode never writes a `fast` seal, and turning a mode off doesn't touch one. The result still goes through
-the project's checks and the automatic review, and is accepted by a person. A fast task is never auto-accepted.
+- `proofDetailOf`, `personSealSql`, `localSealStandsSql` (which moves from the `LIKE` match to `json_extract` on
+  `local.generation`), `approvalProofDetail`, the evidence pack and the audit renderers are all updated **in one
+  change**. v1 rows and the legacy text stay readable as they are.
+- `session.id_hash` binds a browser-session fast seal to its session: signing out or ending that session (it stops
+  being saved, `session.ts:173`) stops the seal standing. `account.generation` revokes it on a password change.
 
-**The result guard (deterministic, at disposal).** If the built diff touches a protected path (`protectedChanges`),
-changes dependencies, lockfiles, migrations or schema files, or exceeds the small cap (open decision 2), the result reads
-"This grew beyond a small change. Approve its plan to keep it." Accept is then refused until the plan gets a normal
-approval, with the password wherever that approval would take one. This is why a wrong size answer can waste one small
-build but can't ship anything unapproved.
+**When it stands.** A `fastSealStandsSql` clause in `authorityStandsSql`:
+- a person proof v2 at the seal's instant, method in `PERSON_PROOFS` minus `chat`, and no machine seal;
+- no flow trigger event, coordinator or quarantined filed-via (youiyoux, issue import);
+- the approver stands, and the setting is still on;
+- the bound session is still saved, the account generation is unchanged, and the local generation is unchanged;
+- the sealed profile is the FAST profile digest;
+- the **first dispatch within 30 minutes** of the seal. After that it lapses to an ordinary "Approve plan".
+
+P2.1 retries ride the seal only inside the window. A person's Retry or Send back is a new person act and re-checks
+everything.
+
+**Where the restrictions hold.** Every primitive checks them, so none of them depends on the Accept screen:
+- **Completion:** a fast task completes only by a person (`COMPLETION_BY_PERSON`). A machine caller (`assignment.ts:508`)
+  is refused, and auto-accept never applies.
+- **Publication:** the project's publication grant never pushes a fast task's build (`dispose.ts:234`). It publishes
+  only after a person's Accept, and only within caps.
+- **Merge:** a merge grant or `--match-head-commit` merge refuses a fast task until it is accepted and within caps.
+- **The change inspected** is the whole carried change: `familyChangedFiles` over the revision ancestry, against the
+  task's recorded base. If it is null or unreadable, everything fails closed (no completion, publication or merge).
+- **The caps** are 3 files and 150 changed lines, with no protected path (`protectedChanges`) and no dependency,
+  lockfile, migration or schema file.
+- **Growth beyond the caps** requires the person to approve **the actual expanded candidate**: a plan proposed with
+  `candidate` = the exact head (the `dispose.ts:604` pattern), shown with its diff summary, on the normal ceremony.
+  Only then can it be completed, published or merged.
+- **The basis's limits:** `fast` never counts as a person's yes for trials (`trialSealStandsSql`), releases or carries
+  (`releaseStandsSql`, `carrySealSql`), two-person votes or the counters that read `personSealSql` (`scope.ts:1915`),
+  wider check access, or the youiyoux quarantine. A mode never writes it.
+
+The result still goes through the project's checks and is accepted by a person. No model review is added (AGENTS.md
+"Lean verification").
 
 **Interactions.**
-- *Modes*: the mode road (`fileAndSealUnderMode`) runs first when an active mode auto-approves filings. The fast path is
-  for everything else and is person-only.
-- *Local owner*: allowed through the TUI `build-now` act. `localSealStandsSql` still applies (local mode on, same
-  generation, checks not unsandboxed).
-- *Lead filings and chat*: lead-, scout- and coordinator-filed plans never fast-start. The card's Approve is one tap.
-- *Budgets*: the plan carries the default per-build budget; the monthly limit is re-read at the seal and at the claim.
-- *Results-routing records and trials*: route-result rows record the basis so the Results page can separate fast tasks.
-  They stay in their size cohort for earned rules. A route with a trial is never fast. A trial stays a person's approval
-  per task (`trialSealStandsSql`).
-- *Two-person and requester rules*: any vote verdict, or `notRequester`, refuses the fast path.
+- The mode road runs first when a mode auto-approves filings.
+- The lead, scouts, coordinators and chat get one-tap Approve on the card instead.
+- Route-result rows record the basis, and the size cohort is unchanged for earned rules.
+- A trial route is never fast.
+- Any two-person or requester rule makes the task ineligible.
 
-**Safety self-review (AGENTS.md), answered in the design.**
-- *Check and write together*: eligibility, proof and seal are one transaction (the `fileAndSealUnderMode` pattern), and
-  everything is re-read inside it.
-- *Never widen implicitly*: turning the setting on is a person's logged settings act. The classifier can only confirm
-  "small", never decide it alone.
-- *Don't let input choose what's trusted*: size comes from the person's own description and a no-tools classifier.
-  Paths, protection, profile and budget come from Toolroll's records. The result guard reads the captured diff, never
-  the agent's report.
-- *Approvals mean a person's yes to exactly this*: the person's act at filing, on these exact bytes, recorded with its
-  proof. Every machine and agent road is excluded by surface and proof method, and re-checked at dispatch.
-- *Credentials*: there are no new credentials. The CLI road refuses non-interactive and in-fence use, so a remembered
-  login in a script can't use it. Under Passwordless an agent in the person's own shell can already run
-  `task approve`; the fast path adds no road past that, and `task add` stays excluded.
+**Must refuse (attack tests).**
+- **Callers:** lead, coordinator, runner, remote and API tokens; MCP; each chat bridge; a flow, a schedule, a webhook;
+  an issue import; `task add`; `--json`; a fenced agent calling the CLI inside the real `sandbox-exec` and
+  `codex sandbox`; a PTY-driven `task new` from inside the fence.
+- **Plans:** escalated; checks at sign-ins or unsandboxed; required write paths; protected paths; no declared paths on a
+  protecting project; release or CI hold; a trial; a fallback chain; no or over-cap budget; the monthly limit reached;
+  classifier silent, risky or medium; heuristic medium; the setting off; a two-person or requester rule.
+- **Standing:** the window lapsed; the session ended; the password changed; local mode off or its generation moved;
+  the setting turned off; an edit after the seal; a profile digest other than FAST.
+- **Forgery:** a `fast` row with no proof, a v1 proof, a proof at another instant, a chat proof, a machine proof, a
+  proof naming another session; a replayed filing.
+- **Execution:** a check trying to read `~/.config/gh` or the Claude credentials, to reach github.com, or to write
+  outside the workspace, each run in the real sandbox and denied.
+- **Primitives:** machine completion; a publication-grant push; a merge before Accept; an over-cap, protected,
+  lockfile or migration diff through each of completion, publication and merge; an unreadable ancestor; a revision
+  that brings the whole change over the caps; approval of a stale candidate after growth.
 
-Tests (a rule table plus bypass attempts, run against the real store):
-- each refusal row: lead token, coordinator, remote or API token, MCP, chat bridge, flow, schedule, webhook, issue
-  import, `task add`, `--json`, non-TTY, inside-fence environment, escalated, unsandboxed, protected path, no declared
-  paths on a protecting project, release terms, CI hold, trial, paid fallback chain, over budget, monthly limit
-  reached, classifier silent, classifier says risky or medium, heuristic medium, setting off, two-person project,
-  requester rule;
-- standing: the window lapses into Needs you; a signed-out or revoked approver, local mode off or moved, or the setting
-  turned off stops dispatch; an edit after the seal reads "changed";
-- forgery: a `fast` basis row with no proof row, a proof row at another instant, a `chat` proof, or a machine proof
-  never stands; a replayed filing makes one task;
-- result guard: protected path, lockfile, migration and over-cap diffs refuse Accept until a normal approval;
-- never carries: a fast task can't anchor or join a release, get a merge grant, or be auto-accepted.
+Journey: type "Fix the typo in the footer" → **Build now** → Ready → Accept. A protected path, or a large description,
+shows Approve plan.
+Parity: console New task (Build now / Add task), interactive `toolroll task new`, TUI `n` then Enter. Chat and the lead
+use one-tap Approve, a named and deliberate difference.
 
-Journey: a person types "Fix the typo in the footer" → **Build now** → building within seconds → Ready → Accept (desktop
-and phone). The same with a protected path shows Approve plan. A large description shows Approve plan.
-Parity: console New task (Build now / Add task), `toolroll task new` (interactive prompt), TUI `n` then Enter. Chat and
-lead: one-tap Approve, a named and deliberate difference.
+### P2.5 — Routing changes: one step to approve the new route
 
-Review: Codex reviews this slice's design before any code, and the code before merge. That is at most 2 rounds, per the
-arc review budget.
+Facts: a sealed route is exact, and a global configuration change never rewrites it (`phase-routing.ts:44-48`). What
+the audit saw (#7, #8) is the task-level re-route and the legacy unrouted rows: "re-file the scope"
+(`render-tasks.ts:586-619, 865, 916`), the push at `dispose.ts:464`, and `operate.ts:10761, 10827`. Tiers are labels the
+operator configures, not guarantees of price or capability (`phase-routing.ts:31`).
 
-### Slice 6 — Two pages: Home and Tasks (decision 5)
+Build: **no route classes.** Approvals stay bound to the exact route.
+- When the route a task would dispatch on differs from the sealed one, Toolroll proposes the new exact route itself (no
+  edit-and-save). Needs you shows one Approve with one "what changed" line: "The builder changes from Claude Sonnet 4.5
+  to Claude Opus 5 (API key → subscription). Approve to continue."
+- Legacy unrouted rows get the same treatment after Toolroll routes them.
+- Pins, trials and exact-model result attribution are unchanged.
 
-Facts:
-- `route-table.ts:339-362` serves `/inbox`, `/work`, `/next`, `/workbench`, `/board`, `/review`, `/queue`, `/tasks`
-  (today a redirect to `/work`), `/morning`, `/activity`, `/done`. The portfolio overview is the Workbench
-  (`render-pages.ts:780` "Portfolio"; `pages.ts:64` `portfolioOverview`, `workbenchRail`).
-- The legacy `inboxPage` (`render-pages.ts:57`) still carries "Approve a scope / Retry stalled work".
-- Push links: `push.ts:230-236` (`LINK_SHAPES`, `CLASS_FALLBACK` → `/next`, `/review`). The service worker's own
-  allowlist: `pages-assets.ts:47` `SHAPES`, default `/next`. **Installed phones keep the old worker until it updates, so
-  `/next` and `/review` must redirect forever.**
-- Other links: `serve.ts:1460-1484` (palette), `shell.tsx:26` (Needs-you count → `/work?view=needs-you`, #109),
-  `chat-quiet.ts:112, 184, 243`, `render-chat.ts:317-350`, `nightly-github.ts:512, 873, 886`, `render-pages.ts:228,
-  520, 839, 1049, 1253`, `provider-auth.ts:185`, `limits-ui.ts:91`, `publish.ts:665`, and docs under `docs/guide/`.
+Must refuse: dispatch on any route other than the sealed bytes; an Approve whose shown diff doesn't match the proposed
+route digest.
 
-Build:
-- `/` **Home**: Needs you, Running, Waiting. `/tasks` **Tasks**: the list, with views List / Board / Ready / Archived
-  and an all-projects scope that replaces the portfolio.
-- Redirects (302, query kept where it means something, the same access rules as the target): `/work` → `/tasks`,
-  `/inbox` → `/`, `/next` → `/#needs-you`, `/workbench` → `/tasks?scope=all`, `/board` → `/tasks?view=board`,
-  `/board?view=order` and `/queue` → `/tasks?view=board&order=1`, `/review` → `/tasks?view=ready`, `/done` →
-  `/tasks?view=done`. `/work/put-away` → `/tasks/archive`.
-- Push: `CLASS_FALLBACK` points at `/` and `/tasks?view=ready`. `LINK_SHAPES` and the worker's `SHAPES` gain `/` and
-  `/t/<id>` (id shape `[A-Za-z0-9._-]{1,64}`), and keep `/next` and `/review`.
-- Delete `inboxPage`, `render-next.ts`, the workbench page and rail, and the "clear the queue" links. Repoint every link
-  above. Update `docs/guide/` and the README screenshots list.
-
-Tests: `route-table.test.ts`: every retired path is a redirect row with no page handler, and a project-limited person is
-redirected without learning another project. Push link rules: new shapes accepted, a crafted `/t/../x` refused, old
-fallbacks still accepted. A link sweep: no `href` in rendered pages points at a retired path.
-Journey: Home → Needs you → task → back; Tasks list ↔ Board; an old `/next` link on the phone lands on Home.
-Parity: the TUI already has one list; `toolroll open --web` lands on Home; chat links point at
-the new paths.
-
-### Slice 7 — One-line phone pings with one button (decision 6)
-
-Facts: `PUSH_WORDS` (`push.ts:222-228`) is generic ("the plane needs attention", #63). Chat cards carry every word of the
-terms (`chat-terms.ts`). Push payloads hold only static words and machine-minted numbers (`push.ts:239`).
-
-Build:
-- Push: one line per class with the task number, "T-12: plan ready", "T-12 is ready to review", "T-12 has a
-  question", plus one tap to `/t/T-12`. No titles or terms in push (the privacy rule stays). Web push `actions` adds one
-  "Open" button where the platform supports it.
-- Chat apps: one line plus one button plus "Details". The button is the next act where consent needs nothing more:
-  **Answer** choices inline for questions, **Open result** for results, and **Review plan** for approvals. AGENTS.md
-  keeps the full terms visible before consent, so a one-liner never approves; Review plan expands the terms in the card
-  and its Approve sits under them.
-- Waiting events no longer ping (slice 1).
-
-Tests: the push payload rule table (one line, the `/t/<id>` shape, no free text). Chat cards: the approval button never
-approves without the expanded terms. A stale card is refused, as it is today.
-Journey: phone push → tap → task page on the right act. A Telegram card → Review plan → Approve.
-Parity: the four chat apps share one card builder. The TUI has no pings (named).
-
-### Slice 8 — "Can I merge?" checklist per task (decision 6)
-
-Facts: readiness is spread over `task-status.ts:24-69` (headlines, Project checks, PR CI, Checked at release),
-`server/last-checks.ts`, `workspace-ui.ts:271-342`, `release-card.ts`, and the release card's "Still to pass (N)"
-(`render-tasks.ts:3064-3071`, #79).
-
-Build: one panel on the task page, "Can I merge?", built from those same sources with nothing recomputed. Rows: plan
-approved · build finished · project checks passed on this commit · requirements met (and your checks) · pull request
-open · PR CI on this exact head · up to date with main · no conflicts · review comments answered · release check (when
-it's a release). Each blocker carries one act:
-- machine-fixable ones (rerun checks, update from main) Toolroll does itself and shows as Waiting;
-- agent-fixable ones carry **Ask the agent to fix**, which is Send back (slice 3) with a prefilled note naming the
-  blocker. That is the person's act, through the same revision road.
-
-It replaces the scattered Ready / publication-grant / release-check wording on the task page.
-Tests: the panel reads each source once (the `one-vocabulary.test.ts` pattern). "Ask the agent to fix" posts the same
-revision as Send back, with the note. Toolroll never sends an agent back on its own.
-Journey: a task with failing PR CI → Ask the agent to fix → revision → all rows green (desktop and phone).
-Parity: `toolroll task ready <id>` prints the list (`--json` for agents); lead chat answers "Can I merge T-12?" with the
-list; TUI task view shows it.
-
-### Slice 9 — One `toolroll release <branch>` (decision 3)
+### P2.6 — One `toolroll release <branch>`
 
 Facts: the loop between `release <branch>`, `--recover-deploy`, `--release-gate` and `publish-ok`
-(`release-cli.ts:47-103`; `release.ts:527-529, 691, 699, 787, 831, 999, 1099, 1230, 1362, 1401`;
-`release-authority.ts:160`; `deploy-rescue.ts:53-94`; #64-#74). "The branch is behind main; update it and push"
-(`release.ts:1230, 1401`).
+(`release-cli.ts:47-103`; `release.ts:527-529, 691, 699, 787, 831, 999, 1099, 1230, 1362, 1390-1401`;
+`deploy-rescue.ts:53-94`). Carries are limited to tests, docs and the changelog, plus identical production output
+(`release-carry.ts:1-14`).
 
 Build:
-- `toolroll release <branch>` reads the journal and decides by itself: finish forward, roll back, lift a pause the
-  journal proves was left before the swap, wait for a person's approval and then resume, or wait for another running
-  release (named by host and pid). It prints what it did in one line.
-- A held auto-approved release gets a web button on the release task, and the release resumes on its own.
-- **Behind main**: Toolroll updates the branch through the hardened git/gh helper and waits for CI. The person's
-  approval carries to the updated head only when the PR's own patch against the new main is byte-identical (equal
-  patch-id, no conflict resolution). That carry is recorded like the release-once carries (`release_carry`, a new
-  reason `main-update`). Any other change asks.
-- `--recover-deploy`, `--release-gate` and `publish-ok` stay as hidden aliases under `toolroll internals`.
+- `toolroll release <branch>` reads the journal and picks one action: finish forward, roll back, lift a pause the
+  journal proves was left before the swap, wait for another running release (named by host and pid), or wait for
+  approval and then resume. It prints what it did.
+- A held auto-approved release gets a web button and resumes itself.
+- **Behind main:** Toolroll updates the branch through the hardened git/gh helper, under the release's lease and the
+  PR's expected head (`--match-head-commit`-style compare-and-swap; a concurrent push aborts). The updated head is a
+  **new candidate**: it needs the approval and fresh CI and native check like any other. There is **no patch-id
+  carry**; a delegated "main-update" policy would be a separate plan.
+- The old flags stay as hidden aliases under `toolroll internals`.
 
-Safety: this touches the release tool, so the full AGENTS.md self-review applies. Every decision and its write happen in
-one transaction with a re-read journal. The `main-update` carry is an approval carry and must prove exact patch identity
-at the moment of use. A deploy still refuses unchecked or not-accepted work (`deploy-gate.ts`).
-Tests: each journal phase maps to exactly one action. A rerun after a crash at each phase converges. The `main-update`
-carry refuses a changed patch, a conflict-resolved merge and a force-pushed head. Two concurrent releases: one runs, one
-waits.
-Journey (CLI): behind main → updated → CI → checked → merged → deployed, in one command.
-Parity: the release task page shows the same one-line status; lead chat reports it.
+Must refuse: two coordinators acting on one release; an update racing a push; any approval reused across the update;
+deploy of an unchecked or unaccepted candidate (`deploy-gate.ts`). Each journal phase × crash converges.
 
-### Slice 10 — Start a task from a GitHub issue or PR (decision 6)
+### P2.7 — Start a task from a GitHub issue or PR
 
-Build: a "From an issue or PR" field on New task, `toolroll task new --from <url>`, and lead chat "work on <url>". The
-URL's owner/repo must match a registered project by Toolroll's own records (`githubIdentityOf`,
-`render-pages.ts:1090`, fully anchored forms), never the checkout's config. It is fetched through `runGhTree`
-(`onboard.ts:81`), bounded and strictly parsed. Title and body become the goal draft as quoted outside text ("From issue
-#41"), and the link is saved on the task. A PR starts a task on its branch only when the head is in the same repository
-(no forks). **These tasks always get plan approval**, because their words came from outside (never the fast path).
-Tests: foreign host or unregistered repo refuses; a fork PR refuses; hostile body text stays data; the task records its
-source and never fast-starts.
-Journey: paste an issue URL → plan drafted → Approve → build.
-Parity: CLI, console and lead chat share one importer.
+Facts: `runGhTree` (`onboard.ts:81-96`) resolves `gh` through PATH and inherits the environment. The outside-request
+quarantine is enforced centrally at the seal (`store.ts:9161`, immutable filed-via). `task_source` keeps outside
+provenance and its revisions copy it (`task-source.ts:1-10`).
 
-### Slice 11 — Keyboard shortcuts on the primary verbs (decision 6)
+Build:
+- A "From an issue or PR" field, `toolroll task new --from <url>`, and the lead's "work on <url>" share one importer.
+- The importer runs a **pinned `gh`** (resolved once to a real path and recorded) with a controlled environment (an
+  allowlist; no `GH_HOST`, `GH_REPO` or config dir from the caller) and an explicit `--repo`.
+- It validates the returned owner/repo against the project's registered identity from Toolroll's records, and for a
+  PR, that the head repository is the same repository (no forks) and the head sha matches what was shown.
+- It persists **immutable provenance** (`task_source` plus a new filed-via `issue-import`) **before** any seal exists.
+  `sealScopeApproval` refuses every automatic basis (mode, grant, schedule, auto-check, auto-green, carry, fast) for it,
+  centrally, beside the youiyoux quarantine. Only a person's ceremony, or a chat tap with the full terms digest, seals
+  it.
+- Provenance is copied through revisions and repairs.
+- Issue text is preserved content (P1.1), shown as quoted outside text.
 
-Build: one keymap for the console and the TUI. `n` new task; `a` the page's ink act (Approve plan, or Accept result);
-`b` Send back / Request changes; `r` Retry; `/` search (exists, `browser/search.tsx:125`); `g h` Home; `g t` Tasks; `?`
-the list. A shortcut only presses the visible button, so a password field or confirm still appears. Shortcuts are off
-inside inputs and when no such button is shown. Hints show on the buttons (`kbd`) and in `?`.
-Tests: the keymap is one table shared by web and TUI. A shortcut never posts a form whose button isn't rendered.
-Journey: keyboard only, desktop: new task → Build now → Accept.
-Parity: TUI help lines (`tui/app.tsx:40-50`) come from the same table.
+Must refuse: a foreign host, an unregistered repo, or a returned identity that differs; a fork PR; a head sha that
+changed; a mode or fast seal on an imported task, including after a revision; a PATH-planted `gh`; inherited `GH_*`
+environment.
+
+---
 
 ## What gets deleted
 
-- `NEEDS`/`WAITS` duplicates in `work-index.ts:643-676`; the `stopping`, `history-problem`, `process-needs-attention`
-  and `vanished-run` person rows (slice 1; the stop forms go on `auto-stop-proof`).
-- The "display only — this is not evidence" caveat on live output (`render-tasks.ts:1710`, `render-history.ts:64`).
-- Digest chips on approval and approved cards; the filed-contract panel; "re-file the scope" copy and its edit-and-save
-  road; the CLI digest line on the web archive page (`render-pages.ts:1257`).
-- Result acts `revise`, `draft-repair`, `rebuild` and `run-checks` as separate act kinds (folded into Send back,
-  Retry and the Checks row); the resume ceremony page.
-- `inboxPage`, `render-next.ts`, the workbench page and rail, and the "clear the queue" links; page handlers for the
-  retired routes (redirect rows stay).
-- Lifecycle pushes that need nothing.
-- Top-level help for `claim`, `heartbeat`, `reap`, `tick`, `reconcile`, `run settle` and the release recovery flags
-  (moved under `toolroll internals`).
+- Phase 1:
+  - `work-index.ts`'s own word table;
+  - "Check connection";
+  - the "display only — this is not evidence" caveat (`render-tasks.ts:1710`, `render-history.ts:64`);
+  - digest chips on approval cards;
+  - "re-file" copy;
+  - the CLI digest line on the archive page (`render-pages.ts:1257`);
+  - the separate resume page;
+  - `inboxPage`, `render-next.ts`, the workbench page and rail;
+  - page handlers for retired GETs (their redirect rows stay);
+  - lifecycle pushes that need nothing;
+  - top-level help for plumbing commands.
+- Phase 2: the edit-and-save re-route road (P2.5); the release recovery flags from people-facing help (P2.6).
 
-## Open decisions (recommendations first)
+## Open decisions
 
-1. **Fast path default.** *Recommend:* on for installs with one approver (laptop and local owner), off on servers with
-   more than one approver until an owner turns it on per project. The setting lives in project settings as "Small tasks
-   start right away".
-2. **"Small" caps for the result guard and the window.** *Recommend:* at most 3 files and 150 changed lines, with no
-   protected, dependency, lockfile, migration or schema file, and a 30-minute window for first dispatch. These are
-   constants in one place, recorded in each seal's `rule` version.
-3. **Tasks URL.** *Recommend:* `/tasks` is the page and `/work` redirects. The page is called Tasks everywhere. Today
-   it's the other way round (`route-table.ts:361`).
+None blocking. Alex's defaults above are final. Two constants live in one place and are recorded in each seal's
+`fast.rule` version: the 30-minute first-dispatch window and the P2.1 episode limits (3 retries, budget × 2).
 
-## Review
+## Codex round 1 ledger
 
-This plan goes to Codex once before slice 1, for the whole arc, with slices 4, 5 and 9 named as the approval-touching
-ones. Slice 5 gets its own design and code review. That is at most 2 rounds per arc; anything still open after that
-goes to Alex with options.
+| # | Sev | Finding | Fix in v2 |
+|---|---|---|---|
+| 1 | High | A PTY prompt isn't presence; CLI fast-start can't promise "never an agent" | P2.4 states the promise as authenticated initiation under the easy-start same-user model. Fenced agents, tokens, MCP, chat and automation are rejected in the writer and dispatch guard from trusted context. There are PTY-in-fence attack tests. |
+| 2 | **Critical** | The Accept backstop comes after checks that could read sign-ins | The FAST execution profile is sealed before anything runs: sandboxed checks, no credentials, workspace-only writes, provider-only network, a finite cap. It only narrows, ineligible otherwise. There are real-sandbox exfiltration tests. |
+| 3 | High | Guards are needed beyond Accept | Restrictions are enforced in completion, publication and merge. The whole carried change with ancestry is inspected and fails closed when unreadable. Growth needs approval of the exact expanded candidate. `fast` is excluded from trial, release, carry and person-only counters. |
+| 4 | High | The proof record doesn't match its readers | One v2 proof contract (at, account and local generations, session binding), with every reader updated in one change, `localSealStandsSql` on `json_extract`, and v1 still readable. |
+| 5 | High | Route classes lack trustworthy membership | Dropped. One-step approval of the new exact route with a "what changed" line. The premise is corrected: global configuration changes already leave sealed routes alone. |
+| 6 | High | Vanished recovery doesn't charge strikes | P2.1 charges the strike atomically with the requeue, once per run, with persisted episode attempt and spend limits and reservations, and re-reads stop, hold and custody. |
+| 7 | High | Automatic recheck is new authority | P2.2 adds a durable check-only authorization per exact candidate, command digest and access, capped at 1. It never reseals and never runs wider. |
+| 8 | High | Restart vs intentional shutdown | P2.3 requires a recorded desired state, no drain, update or stop, a verified exit, matching runtime identity and bounded attempts, and never re-enables a disabled label. History corruption is an actionable need (P1.2). |
+| 9 | High | Patch-id can't authorize an updated release | P2.6 updates under a lease and compare-and-swap, then asks for approval and fresh CI and check on the new candidate. No carry. |
+| 10 | High | Issue quarantine must survive every route | P2.7 persists immutable provenance before any seal, rejects automatic bases centrally at `sealScopeApproval`, validates identity, runs a pinned gh with a controlled environment, and keeps provenance through revisions. |
+| 11 | Med | Push allowlist omission; ids aren't machine numbers | P1.4 allowlists the exact new destinations, uses `/n/<stored numeric id>` (outside `/t/`, whose routes match any id), keeps old redirects forever, tests old workers against new payloads, and leaves the archive POST unchanged. |
+| 12 | Med | Vocabulary vs consent text; two `task accept` meanings | P1.1 tests product copy separately from preserved content with sentinels (which must render unchanged), and migrates `task accept` / `--despite` / `complete` explicitly with the exact-receipt rule kept. |
+| 13 | Med | Split presentation from authority; the automatic-review conflict | Two phases. Phase 1 adds no authority. Each Phase 2 slice has must-refuse criteria and attack tests. The automatic-review promise is removed (lean verification). |
