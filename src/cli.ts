@@ -418,6 +418,8 @@ async function dispatch(
     return runLinkCommand(first, rest, write, mainOptions.binSource);
   }
   if (first === "update") return (await import("./toolroll-update-cli.js")).runUpdateCommand(rest, write, mainOptions.update);
+  // `toolroll release approve`: a person's approval, with the operate commands' own credential prompt and context.
+  if (first === "release" && rest[0] === "approve") return runOperate("release", rest, write, mainOptions.operate ?? {});
   if (first === "release") {
     const { runReleaseCommand } = await import("./release-cli.js");
     return runReleaseCommand(rest, write, { releaseLease: lease => runOperate("worker", ["release", ...lease], write, mainOptions.operate ?? {}), ...mainOptions.release });
