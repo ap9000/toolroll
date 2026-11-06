@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
-import { BANNED_WORDS, CODE_NEED, NEEDS, WAITS, hasInternalWords, needSentence, processNeedOf, type NeedKey, type WaitKey } from "./needs-you.js";
+import { bannedWordsIn, CODE_NEED, NEEDS, WAITS, hasInternalWords, needSentence, processNeedOf, type NeedKey, type WaitKey } from "./needs-you.js";
 import { stageOfCode, taskStatusOf } from "./task-status.js";
 import { assignmentActionHref } from "./assignment-ui.js";
 import { browserWorkActionHref } from "./browser-crew.js";
@@ -51,7 +51,7 @@ describe("every reason", () => {
         const status = taskStatusOf({ stage: "needs-you", need: key, needContext: context });
         expect(status.headline, key).toBe("Needs you");
         expect(hasInternalWords(status.sentence), `${key}: ${status.sentence}`).toBe(false);
-        for (const word of BANNED_WORDS) expect(status.sentence.toLowerCase(), key).not.toContain(word);
+        expect(bannedWordsIn(status.sentence), key).toEqual([]);
         expect(status.sentence, key).toMatch(/^[A-Z].*[.]$/);
         expect(status.need, key).toEqual({ key, action: NEEDS[key].action });
         expect(status.primaryAction?.label, key).toBe(NEEDS[key].action.label);
@@ -502,7 +502,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     const brief = htmlString(leadBriefHtml(assignmentCatchUp(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 8 }, root)));
     expect(brief).toContain(`href="/t/half-contained#recheck-stopped" data-catch-up-action>Check again</a>`);
     expect(brief).not.toContain("Confirm it stopped");
-    expect(hasInternalWords(brief)).toBe(false);
+    expect(bannedWordsIn(brief.replace(/<[^>]*>/g, " ")), brief).toEqual([]);
   });
 
   test("the reconcile pass proves an unrecorded spawn stopped with nobody asked, and the result becomes Ready", async () => {

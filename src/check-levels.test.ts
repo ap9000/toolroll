@@ -247,11 +247,11 @@ describe("c2: Off reads Ready for review and says no check ran; a Quick pass rea
   test("the shared status function", () => {
     const off = taskStatusOf({ stage: "finished", checks: { status: "not-run", exitCode: null, head: HEAD, level: "off" }, links: { runChecks: "/r/1?tab=checks#follow-ups" } });
     expect(off.headline).toBe("Ready for review");
-    expect(off.sentence).toBe("Checked at release. Review the change, then mark it complete.");
+    expect(off.sentence).toBe("Checked at release. Review the change, then accept it.");
     expect(off.details[0]).toMatchObject({ key: "checks", text: "Checked at release", mark: "none", action: { label: "Run checks" } });
     const quick = taskStatusOf({ stage: "finished", checks: { status: "passed", exitCode: 0, head: HEAD, level: "quick" } });
     expect(quick.headline).toBe("Ready for review");
-    expect(quick.sentence).toBe(`Quick checks passed on ${HEAD.slice(0, 7)}. Review the change, then mark it complete.`);
+    expect(quick.sentence).toBe(`Quick checks passed on ${HEAD.slice(0, 7)}. Review the change, then accept it.`);
     expect(quick.details[0]).toMatchObject({ text: `Quick checks passed on ${HEAD.slice(0, 7)}`, mark: "ok" });
     // A full pass keeps its words; a failed quick check is Failed, in red.
     expect(taskStatusOf({ stage: "finished", checks: { status: "passed", exitCode: 0, head: HEAD, level: "full" } }).details[0]!.text).toBe(`Passed on ${HEAD.slice(0, 7)}`);
@@ -464,7 +464,7 @@ describe("checks Off are checked at release", () => {
     const status = () => assignmentTaskStatusOf(read("off-before-release"));
     expect(before.readiness).toEqual({ verdict: "short", checksOff: true, blockers: [] });
     expect(requirementWordOf(before.receipt!.proof!.matrix[0]!, null, "pending")).toBe("Checked at release");
-    expect(status()).toMatchObject({ headline: "Ready for review", sentence: "Checked at release. Review the change, then mark it complete." });
+    expect(status()).toMatchObject({ headline: "Ready for review", sentence: "Checked at release. Review the change, then accept it." });
     expect(status().details.find(one => one.key === "requirements")).toMatchObject({ text: "0 of 1 met · 1 at release" });
 
     // Not covered: a release check on an older commit, a failed one, and a quick one.
@@ -483,7 +483,7 @@ describe("checks Off are checked at release", () => {
     expect(releaseCoverageOf(store, undefined, REPO, offHead)).toBeNull();
     const after = read("off-before-release");
     expect(after.receipt!.checks.release).toEqual({ run: runs["release-full"], head: later });
-    expect(status()).toMatchObject({ headline: "Ready for review", sentence: `Checked at release on ${later.slice(0, 7)}. Review the change, then mark it complete.` });
+    expect(status()).toMatchObject({ headline: "Ready for review", sentence: `Checked at release on ${later.slice(0, 7)}. Review the change, then accept it.` });
     expect(status().details.find(one => one.key === "checks")).toMatchObject({ text: `Passed at release on ${later.slice(0, 7)}`, mark: "ok" });
     expect(status().details.find(one => one.key === "requirements")).toMatchObject({ text: "1 of 1 met", mark: "ok" });
     // Derived at read time: the sealed receipt digest and the stored proof are unchanged.
@@ -498,7 +498,7 @@ describe("checks Off are checked at release", () => {
     // task complete says nothing about checks that were deliberately Off.
     const lines: string[] = [];
     expect(await runOperate("task", ["complete", "off-before-release", "--as", "sam", "--token", password], line => lines.push(line), { databaseFile, now: NOW })).toBe(EXIT.ok);
-    expect(lines.join("\n")).toMatch(/^off-before-release · Complete\nResult: off-before-release · run \d+ · [a-f0-9]{40}$/);
+    expect(lines.join("\n")).toMatch(/^off-before-release · Accepted\nResult: off-before-release · build #\d+ · [a-f0-9]{7}$/);
     expect(lines.join("\n")).not.toMatch(/check/i);
   });
 
@@ -515,7 +515,7 @@ describe("checks Off are checked at release", () => {
     store.handle.prepare("DELETE FROM artifact WHERE run = ? AND kind IN ('check-log', 'verification-receipt')").run(runs["refuse-missing"]!);
     expect(read("refuse-missing").receipt!.checks.status).not.toBe("passed");
     expect(await complete("refuse-missing")).toMatchObject({ code: EXIT.refused, state: "ready-to-check" });
-    expect((await complete("refuse-missing")).said).toContain("Run checks on it, then mark it complete.");
+    expect((await complete("refuse-missing")).said).toContain("Run checks on it, then accept it.");
 
     built("refuse-criteria", "Show stock levels", ago(12), "full");
     const run = runs["refuse-criteria"]!;
@@ -529,8 +529,8 @@ describe("checks Off are checked at release", () => {
       .run(runs["refuse-high"]!, REPO, JSON.stringify({ version: 1, findings: [{ severity: "HIGH", file: "src/prices.ts", line: 4, scenario: "A stale price is charged after a change." }] }), ago(11).toISOString(), ago(11).toISOString());
     const high = read("refuse-high");
     expect(high.readiness).toMatchObject({ verdict: "refuted", blockers: [{ key: "high" }] });
-    expect(assignmentTaskStatusOf(high)).toMatchObject({ headline: "Needs you", sentence: "The automatic review found a high-severity problem. Ask for changes before marking it complete." });
-    expect(await complete("refuse-high")).toMatchObject({ code: EXIT.refused, said: "The automatic review found a high-severity problem. Ask for changes before marking it complete.", state: "ready-to-check" });
+    expect(assignmentTaskStatusOf(high)).toMatchObject({ headline: "Needs you", sentence: "The automatic review found a high-severity problem. Send it back before accepting it." });
+    expect(await complete("refuse-high")).toMatchObject({ code: EXIT.refused, said: "The automatic review found a high-severity problem. Send it back before accepting it.", state: "ready-to-check" });
     // A pending review is never verified.
     store.handle.prepare("UPDATE build_review SET state = 'pending', findings_json = NULL WHERE run = ?").run(runs["refuse-high"]!);
     expect(read("refuse-high").readiness?.verdict).toBe("short");

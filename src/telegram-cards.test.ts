@@ -300,8 +300,8 @@ describe("decide-in-chat cards", () => {
   test("a result: sent, armed, accepted and finished as the operator", async () => {
     readyResult("guard-1", "Keep the guard readable");
     await pass();
-    const card = seen("Result", "sent", script.cardWith(BOB, /^Accept and finish$/));
-    await tapIn(BOB, card.token(/^Accept and finish$/), card.messageId);
+    const card = seen("Result", "sent", script.cardWith(BOB, /^Accept$/));
+    await tapIn(BOB, card.token(/^Accept$/), card.messageId);
     seen("Result", "armed", script.current(BOB, card.messageId));
     await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId);
     seen("Result", "finished", script.current(BOB, card.messageId));

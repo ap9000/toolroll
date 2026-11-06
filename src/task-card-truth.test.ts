@@ -233,8 +233,8 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
     // A check command approved again since says exactly that, never that saved files are missing.
     if (one.id === "verified-command-changed") {
       expect(row!.text).toBe("Check command changed since");
-      expect(status.sentence).toBe("The check command changed since this check. Run checks again, then mark it complete.");
-      expect(status.details.find(detail => detail.key === "evidence")?.text, "Saved evidence").toBe("Complete");
+      expect(status.sentence).toBe("The check command changed since this check. Run checks again, then accept it.");
+      expect(status.details.find(detail => detail.key === "evidence")?.text, "Saved files").toBe("All kept");
     }
 
     // ---- the Tasks list row: the same headline, never a pass the card doesn't show

@@ -168,29 +168,29 @@ describe.each(CHAT_PROVIDERS)("the shared chat core on %s", provider => {
     await pair(h, "alex", m0);
     readyResult("guard-1", "Keep the guard readable");
     await h.pass();
-    const card = cardWith(h, m0, /^Accept and finish$/);
+    const card = cardWith(h, m0, /^Accept$/);
     expect(card.text).toContain("Keep the guard readable");
-    expect(labels(card)).toEqual(["Accept and finish", "Request changes", "Look first ↗"]);
+    expect(labels(card)).toEqual(["Accept", "Request changes", "Look first ↗"]);
     // Opaque one-time tokens only: no task, run or digest rides a button.
     for (const button of card.buttons) if (button.token !== undefined) expect(button.token).toMatch(/^d:[0-9a-f]{24}$/);
 
-    h.tap(card, /^Accept and finish$/, m0);
+    h.tap(card, /^Accept$/, m0);
     await h.pass();
     const armed = current(h, m0, card.message);
-    expect(armed.text).toContain('Accept and finish "Keep the guard readable"?');
+    expect(armed.text).toContain('Accept "Keep the guard readable"?');
     expect(labels(armed)).toEqual(["Yes", "Cancel"]);
     expect(assignment("guard-1")?.state).toBe("ready-to-check");
 
     h.tap(armed, /^Cancel$/, m0);
     await h.pass();
     const restored = current(h, m0, card.message);
-    expect(labels(restored)).toEqual(["Accept and finish", "Request changes", "Look first ↗"]);
+    expect(labels(restored)).toEqual(["Accept", "Request changes", "Look first ↗"]);
     // The Yes that Cancel replaced is spent.
     h.tap(armed, /^Yes$/, m0);
     await h.pass();
     expect(assignment("guard-1")?.state).toBe("ready-to-check");
 
-    h.tap(restored, /^Accept and finish$/, m0);
+    h.tap(restored, /^Accept$/, m0);
     await h.pass();
     const yes = current(h, m0, card.message);
     h.tap(yes, /^Yes$/, m0);
@@ -211,14 +211,14 @@ describe.each(CHAT_PROVIDERS)("the shared chat core on %s", provider => {
     await pair(h, "sam", m1);
     readyResult("guard-2", "Keep the guard readable");
     await h.pass();
-    const card = cardWith(h, m0, /^Accept and finish$/);
+    const card = cardWith(h, m0, /^Accept$/);
     // Sam taps alex's button from sam's own chat: it isn't sam's, and nothing happens.
-    const accept = card.buttons.find(one => one.label === "Accept and finish")!;
+    const accept = card.buttons.find(one => one.label === "Accept")!;
     h.tapToken(accept.token!, card.message, m1, accept.action);
     await h.pass();
     expect(current(h, m0, card.message)).toEqual(card);
     // Armed in chat, then finished on the console: the Yes acts on nothing and the card says why.
-    h.tap(card, /^Accept and finish$/, m0);
+    h.tap(card, /^Accept$/, m0);
     await h.pass();
     const armed = current(h, m0, card.message);
     expect(checkAssignmentAsOperator(store, "guard-2", assignment("guard-2")!.receipt!.digest, who("sam"), now, dir).ok).toBe(true);

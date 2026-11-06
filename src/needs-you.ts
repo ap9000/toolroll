@@ -136,10 +136,10 @@ export const WAITS: Readonly<Record<WaitKey, (context: NeedContext) => string>> 
   "card-ci": () => "Waiting for the pull request's checks.",
 };
 
-/** Words that name the machine's internals; no Needs you or Waiting sentence carries them. */
-export const BANNED_WORDS = ["witness", "unproven", "quiescence", "quiescent", "digest", "scope digest"] as const;
-const BANNED = new RegExp(`\\b(?:${BANNED_WORDS.join("|")})\\b`, "i");
-export const hasInternalWords = (text: string): boolean => BANNED.test(text);
+/** Words that name the machine's internals (plain-words.ts, the one table); no Needs you or Waiting sentence carries
+ * them, and a recorded reason that does is replaced by the need's own words. */
+export { BANNED_WORDS, PLAIN_WORDS, bannedWordsIn, hasInternalWords } from "./plain-words.js";
+import { hasInternalWords } from "./plain-words.js";
 
 /** The sentence for a need: its recorded reason when the need keeps one and
  * it reads plainly, otherwise the need's own words. */
@@ -190,28 +190,28 @@ export const RUN_REASON_WORDS: Readonly<Record<string, string>> = {
   git: "a git step failed",
   "malformed-decision": "the agent's question was malformed",
   "malformed-plan": "the plan was malformed",
-  fenced: "another worker took the task over",
-  unapproved: "the scope was not approved",
-  "scope-changed": "the scope changed after approval",
+  fenced: "another builder took the task over",
+  unapproved: "the plan was not approved",
+  "scope-changed": "the plan changed after approval",
   capability: "a requirement was missing",
   setup: "the workspace preparation step failed",
   "provider-init": "the agent could not start",
   "commit-failure": "the commit failed",
   "protected-branch": "refused to touch a protected branch",
   "wrong-branch": "the checkout was on the wrong branch",
-  "not-leased": "the lease was not valid",
-  "no-claim": "the lease was not valid",
-  "not-yours": "the lease was not valid",
-  "no-run-record": "the run record was missing",
-  "missing-mailbox": "the resume mailbox could not be read",
-  "unreadable-mailbox": "the resume mailbox could not be read",
+  "not-leased": "the builder lost its hold on the task",
+  "no-claim": "the builder lost its hold on the task",
+  "not-yours": "the builder lost its hold on the task",
+  "no-run-record": "the build's record was missing",
+  "missing-mailbox": "the saved notes to resume from could not be read",
+  "unreadable-mailbox": "the saved notes to resume from could not be read",
   "revision-brief": "the revision brief could not be read",
   "repaired-park": "resumed from a parked question",
-  stopped: "stopped by the operator",
-  acceptance: "the result didn't meet its signed requirements",
-  evidence: "its evidence could not be saved",
+  stopped: "stopped by a person",
+  acceptance: "the result didn't meet its approved requirements",
+  evidence: "its saved files could not be kept",
   interrupted: "the attempt was interrupted",
-  orphaned: "the attempt lost its worker",
+  orphaned: "the attempt lost its builder",
   "retryable-infra": "a temporary problem on the machine stopped it",
   unknown: "the attempt stopped unexpectedly",
   "spawn-failed": "the agent process could not start",
@@ -219,12 +219,12 @@ export const RUN_REASON_WORDS: Readonly<Record<string, string>> = {
   "auth-expired": "the agent's sign-in expired",
   "budget-unenforceable": "its spending limit could not be enforced",
   "stale-source": "the request changed while the plan was being made",
-  "stale-approval": "the approval no longer matched the scope",
+  "stale-approval": "the approval no longer matched the plan",
   "source-invalid": "the plan's source could not be recorded",
   "external-closed": "the linked issue was closed while it was being built",
   "repair-admission": "the repair could not start",
   "reviewer-error": "the review failed",
-  "malformed-report": "the scout's report was malformed",
+  "malformed-report": "the research report was malformed",
   "attempts-exhausted": "it failed too many times in a row",
   "plan-revised": "the plan changed, so a fresh attempt took over",
 };
@@ -281,7 +281,7 @@ export function failedAttemptSentence(reason: string | null | undefined): string
 /** What to change before the next attempt, by a stopped run's recorded reason: one plain suggestion, the note Retry
  * starts with. A reason with no suggestion of its own gets the general one. */
 const STOP_SUGGESTIONS: Readonly<Record<string, string>> = {
-  acceptance: "Before handing off, check each signed requirement against the changes.",
+  acceptance: "Before handing off, check each approved requirement against the changes.",
   timeout: "Split the work into smaller steps, or name the one part to finish first.",
   "no-op": "Say exactly which files or behaviour should change.",
   agent: "Say what to do differently this time, or name the part to try first.",

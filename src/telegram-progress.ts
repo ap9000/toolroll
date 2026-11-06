@@ -59,8 +59,8 @@ export function telegramProgressCard(store: Store, run: Run, taskId: string, pro
       ...(pullRequest === undefined ? {} : { pullRequest }) };
   } else if (accessBlocked) {
     facts = { stage: "needs-you", need: "other", reason: holds.some(hold => hold.ownerKind === "backoff")
-      ? "The worker can't read the project folder. It retries after a short pause; check its folder access."
-      : "The worker can't read the project folder. Restore its access, then resume." };
+      ? "The builder can't read the project folder. It retries after a short pause; check its folder access."
+      : "The builder can't read the project folder. Restore its access, then resume." };
   } else if (run.outcome === null && stop !== null && stop.resumedAt === null) {
     facts = { stage: "stopped", reason: stop.settledAt === null ? "Stopping. Waiting for the running process to end." : "Paused by a person. Inspect the saved work, then resume." };
   } else if (operatorHold) {

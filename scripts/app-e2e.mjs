@@ -526,7 +526,7 @@ await journey("console", SCRIPTED, "The command line answers: the task list, the
   if (!/^toolroll — /.test(help) || !/toolroll task add/.test(help)) throw new Error(`help doesn't name the toolroll command: ${help.slice(0, 200)}`);
 });
 
-await journey("console", SCRIPTED, "Put away old tasks: Needs you → Put away old tasks shows each one and why → untick one, confirm with your password → it's gone from Needs you; Archived → Restore brings it back", [], async () => {
+await journey("console", SCRIPTED, "Archive old tasks: Needs you → Archive old tasks shows each one and why → untick one, confirm with your password → it's gone from Needs you; Archived → Restore brings it back", [], async () => {
   // Two finished tasks from long ago (their age set directly, as time would): the preview offers both, with why.
   for (const [id, title] of [["tidy-old-copy", "Old onboarding copy"], ["tidy-old-banner", "Old launch banner"]]) {
     cli(["task", "add", title, "--id", id, "--repo", repo]);
@@ -537,14 +537,13 @@ await journey("console", SCRIPTED, "Put away old tasks: Needs you → Put away o
   const taskRow = id => page.locator(`.k-row:has(a.k-row-t[href="/t/${id}"])`);
   await page.goto(`${base}/work?view=needs-you`);
   await taskRow("tidy-old-copy").first().waitFor({ timeout: 15_000 });
-  // Put away old tasks is in the list's task tools menu.
+  // Archive old tasks is in the list's task tools menu.
   await page.locator('button[aria-label="More task tools"]:visible').first().click();
-  await Promise.all([page.waitForNavigation(), page.locator(".k-pop-menu button", { hasText: "Put away old tasks" }).first().click()]);
+  await Promise.all([page.waitForNavigation(), page.locator(".k-pop-menu button", { hasText: "Archive old tasks" }).first().click()]);
   const preview = page.locator("form#put-away");
   await preview.waitFor({ timeout: 15_000 });
   const text = await page.locator("body").innerText();
   if (!/Finished more than 14 days ago/.test(text) || !/Old onboarding copy/.test(text) || !/untouched for more than 14 days/.test(text)) throw new Error(`the preview: ${text.slice(0, 400)}`);
-  if (!/toolroll task tidy --apply --digest [0-9a-f]{32}/.test(text)) throw new Error("the preview doesn't name its CLI twin");
   await shot("put-away-preview");
   await preview.locator('input[name="task"][value="tidy-old-banner"]').uncheck();
   const password = preview.locator('input[name="password"]');
@@ -664,6 +663,10 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   if (new URL(page.url()).pathname !== new URL(opened).pathname) throw new Error(`the result left the task page: ${page.url()}`);
   const panel = page.locator("[data-task-panel=\"plan\"] [data-result-panel]").first();
   await panel.waitFor({ timeout: 20_000 });
+  // One vocabulary (docs/plans/plain-toolroll.md P1.1): the task page's own words say "plan", never scope, a digest or "signs".
+  const said = await page.locator("body").innerText();
+  const internal = /\b(?:scope|signs|sealed|binds|digest)\b|\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{12,64}\b/i.exec(said);
+  if (internal !== null) throw new Error(`the task page says "${internal[0]}": …${said.slice(Math.max(0, internal.index - 80), internal.index + 40)}…`);
   // How it ran: one line in the result's record — its time and tokens as recorded (docs/plans/run-efficiency.md).
   const ran = await page.locator('[data-task-panel="plan"] #how-it-ran summary').first().innerText();
   if (!/tokens in/.test(ran) || !/ out/.test(ran)) throw new Error(`How it ran says: ${ran.slice(0, 200)}`);
@@ -675,7 +678,7 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   // A requirement the planner left for a person: each Looks right counts at once, and Accept waits on them.
   for (const looks of await page.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
   const decision = await page.locator("[data-result-decision]").first().innerText();
-  if (!/^Accept (and finish|without checks)$/m.test(decision) || !/Finishes the task/.test(decision)) throw new Error(`the decision says: ${decision.slice(0, 200)}`);
+  if (!/^Accept( without checks)?$/m.test(decision) || !/Finishes the task/.test(decision)) throw new Error(`the decision says: ${decision.slice(0, 200)}`);
   await page.locator('a[data-result-tab="changes"]').click();
   await until("the changed files", async () => /src\/math\.js/.test(await page.locator("body").innerText()), { timeoutMs: 10_000, everyMs: 500 });
   await shot("result-changes");

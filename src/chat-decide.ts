@@ -62,7 +62,7 @@ export type DecideButton = { label: string; token: string } | { label: string; l
 
 /** The words, said once. */
 export const DECIDE_LABELS = {
-  accept: "Accept and finish",
+  accept: "Accept",
   changes: "Request changes",
   retry: "Retry",
   approve: "Approve & start",
@@ -622,7 +622,7 @@ export function releaseInChat(store: Store, taskId: string, approver: string, no
 }
 
 const QUESTIONS: Record<"accept" | "retry" | "approve" | "merge", (name: string) => string> = {
-  accept: name => `Accept and finish "${name}"?`,
+  accept: name => `Accept "${name}"?`,
   retry: name => `Retry "${name}"? It queues another attempt.`,
   approve: name => `Approve and start "${name}"?`,
   merge: name => `Merge "${name}"?`,
@@ -729,7 +729,7 @@ export function planWhereNow(store: Store, taskId: string, who: VerifiedApprover
   return { said: `"${name}" is under way.`, rows: [] };
 }
 
-const QUESTION_STARTS = ["Accept and finish \"", "Retry \"", "Approve and start \"", "Merge \"", "Approve release "];
+const QUESTION_STARTS = ["Accept \"", "Accept and finish \"", "Retry \"", "Approve and start \"", "Merge \"", "Approve release "];
 /** The card's words without a question this module appended. */
 function cardBody(shown: string): string {
   const at = shown.lastIndexOf("\n\n");

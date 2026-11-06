@@ -189,7 +189,7 @@ export type BrowserTaskRow = {
   rank: number;
   action: BrowserLink | null; detail: string | null; problem: string | null; notes: string[];
   /** Put away, or Restore in Archived (task-tidy.md): a POST to the task's own route; null for a viewer or live work. */
-  tidy?: { action: string; label: 'Put away' | 'Restore'; returnTo: string } | null;
+  tidy?: { action: string; label: 'Archive' | 'Restore'; returnTo: string } | null;
 };
 /** One limit: a plan's usage window ("Claude · 5-hour, 48%") or a monthly budget ("shop · Budget, $4.20 of $10"). */
 export type BrowserTaskGroup = WorkIndexGroup;

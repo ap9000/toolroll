@@ -3,9 +3,9 @@ import { acceptWordsOf, buildProgressOf, lastErrorLineOf, missedRequirementOf, r
 import { failedAttemptSentence, INTERNAL_ERROR, isInternalErrorReason, latestFinishedAttempt, missedRequirementLine, missedRequirementSuggestion, RETRY_NOTE_LIMIT, retryNoteOf, RUN_REASON_WORDS } from "./needs-you.js";
 
 describe("the result's Accept words", () => {
-  test("Accept and finish only when every requirement is met and the checks passed; it says it finishes, and never that it publishes", () => {
+  test("Accept only when every requirement is met and the checks passed; it says it finishes, and never that it publishes", () => {
     expect(acceptWordsOf({ checks: "passed", unmet: 0, action: "complete", publishing: "pull-request", proof: true }))
-      .toEqual({ label: "Accept and finish", ready: true, why: null, effect: "Finishes the task. No pull request opens; you can open one from the task after." });
+      .toEqual({ label: "Accept", ready: true, why: null, effect: "Finishes the task. No pull request opens; you can open one from the task after." });
     expect(acceptWordsOf({ checks: "passed", unmet: 0, action: "complete", publishing: "other", proof: true }).effect).toBe("Finishes the task. Nothing is published.");
   });
 
@@ -58,7 +58,7 @@ describe("a report that doesn't match its saved changes, said plainly", () => {
         reason: 'criterion "c2"\'s screenshot evidence "evidence/a.png" could not be verified: not a PNG' },
     ]);
     const [unsigned] = reportMismatchesOf(['caveat 2 names "c9", which is no signed or answered criterion — every caveat names an exact criterion id: skipped the ledger'], criteria, changes);
-    expect(unsigned).toMatchObject({ text: "The report's note 2 is about \"c9\", which isn't one of the signed requirements: skipped the ledger", note: 2 });
+    expect(unsigned).toMatchObject({ text: "The report's note 2 is about \"c9\", which isn't one of the approved requirements: skipped the ledger", note: 2 });
   });
 });
 

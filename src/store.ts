@@ -2842,10 +2842,10 @@ function lifecycleWords(value: string, cap: number): string {
 const LIFECYCLE_PHASE_WORDS: Record<RunPhase, { subject: string; body: string }> = {
   "agent-running": { subject: "agent working", body: "The agent is working in its own checkout. Nothing is finished yet." },
   "validating-handoff": { subject: "checking the handoff", body: "The agent finished its turn; what it handed back is being checked." },
-  "capturing-evidence": { subject: "capturing evidence", body: "The diff, checks and proof are being captured." },
+  "capturing-evidence": { subject: "saving its files", body: "The diff, checks and report are being saved." },
   "committing": { subject: "committing", body: "The work is being committed on the task branch." },
-  "verifying-proof": { subject: "verifying the proof", body: "The proof is being checked against the approved acceptance criteria." },
-  "correcting-proof": { subject: "correcting the proof", body: "The proof did not match the sealed result; a bounded correction turn is running." },
+  "verifying-proof": { subject: "checking the report", body: "The report is being checked against the approved requirements." },
+  "correcting-proof": { subject: "correcting the report", body: "The report didn't match the saved result; one short correction turn is running." },
 };
 
 /** An operator's cancellation as one closed sentence: the reason, if any,
@@ -2859,10 +2859,10 @@ function cancellationWords(reason: string | null): string {
 
 /** What an independent review concluded, in the words the saved result shows. */
 const LIFECYCLE_REVIEW_WORDS: Record<"verified" | "attested" | "short" | "refuted" | "none", { subject: string; body: string }> = {
-  verified: { subject: "checks verified", body: "Every acceptance check was verified against the saved result." },
-  refuted: { subject: "evidence conflicts with the result", body: "The reviewer found evidence that contradicts the saved result. It is not accepted as done." },
-  attested: { subject: "agent-reported evidence only", body: "The result rests on agent-reported evidence that was not independently verified." },
-  short: { subject: "required evidence is missing", body: "Required evidence is missing from the saved result." },
+  verified: { subject: "checks verified", body: "Every requirement was checked against the saved result." },
+  refuted: { subject: "the report doesn't match the result", body: "The reviewer found something that contradicts the saved result. It is not accepted as done." },
+  attested: { subject: "only the agent's own checks", body: "The result rests on checks the agent reported, not checked independently." },
+  short: { subject: "a requirement isn't shown", body: "Something a requirement needs is missing from the saved result." },
   none: { subject: "comments only", body: "The reviewer left comments; no acceptance judgement was recorded." },
 };
 
@@ -7813,7 +7813,7 @@ export class Store {
                 {
                   taskRef: ref.id, kind: "task-queued", identity: `t${ref.id}`,
                   subject: "Back in the queue",
-                  body: prior["state"] === "running" ? "Its worker released it without finishing; another attempt can start." : "Reopened for another attempt.",
+                  body: prior["state"] === "running" ? "Its builder let it go without finishing; another attempt can start." : "Reopened for another attempt.",
                   link: chatControlHref("task", id),
                 },
                 now,
@@ -9523,20 +9523,20 @@ export class Store {
               this.noteLifecycle(
                 {
                   taskRef: Number(ref["id"]), kind: "scope-approved", identity: `t${Number(ref["id"])}`,
-                  subject: "Scope approved",
+                  subject: "Plan approved",
                   body: basis === undefined
-                    ? `Approved by ${lifecycleWords(by, 40)}. A connected worker can take it next.`
+                    ? `Approved by ${lifecycleWords(by, 40)}. A connected builder can take it next.`
                     : basis.kind === "chat"
-                      ? `Approved by ${lifecycleWords(by, 40)} in chat. A connected worker can take it next.`
+                      ? `Approved by ${lifecycleWords(by, 40)} in chat. A connected builder can take it next.`
                       : basis.kind === "grant"
-                        ? "Approved automatically: its flow runs on its own. A connected worker can take it next."
+                        ? "Approved automatically: its flow runs on its own. A connected builder can take it next."
                         : basis.kind === "schedule"
-                          ? "Approved by its standing order. A connected worker can take it next."
+                          ? "Approved by its standing order. A connected builder can take it next."
                           : basis.kind === "auto-check"
                             ? "Checking automatically: it approves itself once CI and the release check pass."
                           : basis.kind === "auto-green"
                             ? "Approved automatically: CI and the release check passed."
-                          : "Approved automatically under the operating mode. A connected worker can take it next.",
+                          : "Approved automatically under the operating mode. A connected builder can take it next.",
                   link: chatControlHref("task", taskId),
                 },
                 now,
@@ -12225,7 +12225,7 @@ export class Store {
           {
             taskRef: run.taskRef, run: runId, kind: "review-requested", identity: `r${runId}`,
             subject: "Independent review requested",
-            body: `${automatic ? "Queued automatically" : `Requested by ${lifecycleWords(by, 40)}`} for attempt #${runId}'s saved result. A connected reviewer runs it next.`,
+            body: `${automatic ? "Queued automatically" : `Requested by ${lifecycleWords(by, 40)}`} for build #${runId}'s saved result. A connected reviewer runs it next.`,
             link: chatResultHref(reviewedTask, runId, "checks"),
           },
           now,
@@ -13693,10 +13693,10 @@ export class Store {
       this.noteLifecycle(
         {
           taskRef, kind: "task-requeued", identity: `t${taskRef}`,
-          subject: "Requeued",
+          subject: "Queued again",
           body: rejectedRun !== null
-            ? `Its last result (attempt #${rejectedRun}) was not accepted; the next attempt continues on the same branch under the current scope.`
-            : `${incidents.length > 0 ? "Its incident is resolved and its" : "Its"} failure streak is cleared; a worker can take it again.`,
+            ? `Its last result (build #${rejectedRun}) was not accepted; the next attempt continues on the same branch under the current plan.`
+            : `Its repeated failures are cleared; a builder can take it again.`,
           link: chatControlHref("task", taskId),
         },
         now,
@@ -15512,16 +15512,16 @@ export class Store {
     const stopped = result.outcome === "failed" && result.reason === "interrupted" && this.stopOf(id) !== null;
     if (role === "builder") {
       if (stopped) {
-        this.noteLifecycle({ taskRef, run: id, kind: "run-stopped", identity: `r${id}`, subject: `Attempt #${id} stopped`, body: "Its work is preserved. Resume this attempt from the task page when ready.", link: chatControlHref("recovery", taskId) }, now);
+        this.noteLifecycle({ taskRef, run: id, kind: "run-stopped", identity: `r${id}`, subject: `Build #${id} stopped`, body: "Its work is preserved. Resume this attempt from the task page when ready.", link: chatControlHref("recovery", taskId) }, now);
       } else if (result.outcome === "built") {
         this.noteLifecycle({
           taskRef, run: id, kind: "run-finished", identity: `r${id}`,
-          subject: `Attempt #${id} built`,
+          subject: `Build #${id} built`,
           body: result.committed === false ? "It finished without a commit; the handoff explains why." : "The result is saved locally. It is not yet independently reviewed or published.",
           link: chatResultHref(taskId, id, "changes"),
         }, now);
       } else if (result.outcome === "no-change") {
-        this.noteLifecycle({ taskRef, run: id, kind: "run-finished", identity: `r${id}`, subject: `Attempt #${id} finished with no changes`, body: "Nothing needed to change; the handoff explains why.", link: chatResultHref(taskId, id) }, now);
+        this.noteLifecycle({ taskRef, run: id, kind: "run-finished", identity: `r${id}`, subject: `Build #${id} finished with no changes`, body: "Nothing needed to change; the handoff explains why.", link: chatResultHref(taskId, id) }, now);
       }
       return;
     }
@@ -16148,12 +16148,12 @@ export class Store {
       const agent = lifecycleWords(`${provider ?? "claude"}${model === null ? "" : ` · ${model}`}`, 60);
       const words =
         role === "reviewer"
-          ? { subject: `Independent review started (attempt ${reviewAttempt ?? 1})`, body: `Reviewing the saved result of attempt #${run.parentRun}. Running on ${agent}.`, link: chatResultHref(taskId, run.parentRun as number, "checks") }
+          ? { subject: `Independent review started (attempt ${reviewAttempt ?? 1})`, body: `Reviewing the saved result of build #${run.parentRun}. Running on ${agent}.`, link: chatResultHref(taskId, run.parentRun as number, "checks") }
           : role === "planner"
-            ? { subject: `Planning started (run #${id})`, body: `Drafting the scope and plan on ${agent}.`, link: chatControlHref("planning", taskId) }
+            ? { subject: "Planning started", body: `Drafting the plan on ${agent}.`, link: chatControlHref("planning", taskId) }
             : role === "scout"
-              ? { subject: `Scouting started (run #${id})`, body: `A read-only look on ${agent}; what comes back is a report.`, link: chatControlHref("task", taskId) }
-              : { subject: road.road === "recovered" ? `Attempt #${id} resumed from its preserved draft` : `Attempt #${id} started`, body: `Building on ${agent}.`, link: chatControlHref("task", taskId) };
+              ? { subject: "Research started", body: `A read-only look on ${agent}; what comes back is a report.`, link: chatControlHref("task", taskId) }
+              : { subject: road.road === "recovered" ? `Build #${id} resumed from its saved draft` : `Build #${id} started`, body: `Building on ${agent}.`, link: chatControlHref("task", taskId) };
       this.noteLifecycle({ taskRef: run.taskRef, run: id, kind: "run-started", identity: `r${id}`, ...words }, run.now);
     }
     return id;
@@ -17241,7 +17241,7 @@ export class Store {
       const taskId = this.externalIdFor(taskRef);
       if (taskId === null) return;
       const words = LIFECYCLE_PHASE_WORDS[phase];
-      this.noteLifecycle({ taskRef, run: id, kind: "run-phase", identity: `r${id}`, subject: `Attempt #${id}: ${words.subject}`, body: words.body, link: chatControlHref("task", taskId) }, now);
+      this.noteLifecycle({ taskRef, run: id, kind: "run-phase", identity: `r${id}`, subject: `Build #${id}: ${words.subject}`, body: words.body, link: chatControlHref("task", taskId) }, now);
     });
   }
 
@@ -22306,7 +22306,7 @@ export class Store {
         this.noteLifecycle(
           run.role === "reviewer"
             ? { taskRef: run.taskRef, run: run.id, kind: "run-stopping", identity: `r${run.id}`, subject: `Stopping review #${run.id}`, body: "The review is being stopped. The saved result is unchanged.", link: chatControlHref("recovery", stoppedTask) }
-            : { taskRef: run.taskRef, run: run.id, kind: "run-stopping", identity: `r${run.id}`, subject: `Stopping attempt #${run.id}`, body: "Its processes are being stopped and its work is preserved. The task stays paused until this attempt is resumed.", link: chatControlHref("recovery", stoppedTask) },
+            : { taskRef: run.taskRef, run: run.id, kind: "run-stopping", identity: `r${run.id}`, subject: `Stopping build #${run.id}`, body: "Its processes are being stopped and its work is kept. The task stays paused until this build is resumed.", link: chatControlHref("recovery", stoppedTask) },
           now,
         );
       }
@@ -22673,7 +22673,7 @@ export class Store {
       const resumedTask = this.externalIdFor(args.taskRef);
       if (resumedTask !== null) {
         this.noteLifecycle(
-          { taskRef: args.taskRef, run: args.runId, kind: "run-resumed", identity: `r${args.runId}`, subject: `Attempt #${args.runId} resumed`, body: "The next pass takes a fresh claim and continues from the preserved work.", link: chatControlHref("task", resumedTask) },
+          { taskRef: args.taskRef, run: args.runId, kind: "run-resumed", identity: `r${args.runId}`, subject: `Build #${args.runId} resumed`, body: "The next attempt continues from the saved work.", link: chatControlHref("task", resumedTask) },
           now,
         );
       }
@@ -25644,7 +25644,7 @@ export function carryReleaseApproval(store: Store, w: CarryWrite, now: Date, rec
     store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: w.taskId, runId: null, action: "release carried", outcome: "carried", source: "work",
       detail: `release ${a.id} · carry ${carryId} · ${a.tipSha} → ${w.to} · ${w.files} files · ${w.changedLines} lines · request ${w.requestId}` });
     // One quiet task notification, no push.
-    store.enqueueNotification({ dedupeKey: `release-carried:${a.id}:${carryId}`, kind: "release-carried", subject: `Carried to ${w.to.slice(0, 7)}`,
+    store.enqueueNotification({ dedupeKey: `release-carried:${a.id}:${carryId}`, kind: "release-carried", subject: `Release now includes ${w.to.slice(0, 7)}`,
       body: `Release ${a.version} now ships ${w.to.slice(0, 7)} (${w.files} file${w.files === 1 ? "" : "s"}, ${w.changedLines} line${w.changedLines === 1 ? "" : "s"}) under ${anchor.approvedBy ?? "the"} release approval.`,
       link: chatControlHref("task", w.taskId), source: { taskRef: ref.id } }, now);
     return { ok: true as const, taskId: w.taskId, carry: releaseCarryTo(store, a.id, w.to)! };

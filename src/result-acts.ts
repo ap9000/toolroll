@@ -115,7 +115,7 @@ export function resultActsOf(facts: ResultActFacts): ResultActs {
  * server's words for everything but the person's own checks (`base`) and how
  * those stand on this page: an unanswered check names itself; a check marked
  * Not right says so; otherwise the base words stand. */
-export type AcceptLabel = "Accept and finish" | "Accept without checks" | "Accept without your check" | "Accept anyway";
+export type AcceptLabel = "Accept" | "Accept without checks" | "Accept without your check" | "Accept anyway";
 export function acceptWithChecksOf(base: { label: AcceptLabel; ready: boolean; why: string | null }, checks: { unanswered: readonly string[]; notRight: readonly string[] }): { label: AcceptLabel; ready: boolean; why: string | null } {
   const named = (all: readonly string[]): string => `“${all[0]!.replace(/[.!?]+$/, "")}”${all.length > 1 ? ` and ${all.length - 1} more` : ""}`;
   if (checks.unanswered.length > 0) return { label: "Accept without your check", ready: false, why: `Not checked yet: ${named(checks.unanswered)}.` };

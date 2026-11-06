@@ -320,7 +320,7 @@ export function renderInstallationStatus(status: InstallationStatus, limited = f
     for (const one of status.tasks) lines.push(`  ${one.headline.padEnd(16)} ${one.title} (${one.task}) — ${one.sentence}`);
   }
   lines.push(status.running.count === 0 ? "Building: none" : `Building: ${status.running.count} — ${status.running.tasks.map(one => `${one.task} (#${one.run}, ${one.phase})`).join(", ")}${status.running.count > status.running.tasks.length ? ", …" : ""}`);
-  lines.push(status.queued.count === 0 ? "Queued: none" : `Queued: ${status.queued.count} — ${status.queued.tasks.map(one => `${one.task} (${one.reason})`).join(", ")}${status.queued.count > status.queued.tasks.length ? ", …" : ""}`);
+  lines.push(status.queued.count === 0 ? "Queued: none" : `Queued: ${status.queued.count} — ${status.queued.tasks.map(one => `${one.task} (${queueReasonWords(one.reason)})`).join(", ")}${status.queued.count > status.queued.tasks.length ? ", …" : ""}`);
   lines.push(status.waitingForReview.count === 0 ? "Ready for review: none" : `Ready for review: ${status.waitingForReview.count} — ${status.waitingForReview.results.map(one => one.run === null ? one.task : `${one.task} (#${one.run})`).join(", ")}${status.waitingForReview.count > status.waitingForReview.results.length ? ", …" : ""}`);
   // Neither the release check nor plan windows belong to a person's projects: a limited report leaves both out.
   if (limited) return lines;
@@ -354,5 +354,10 @@ export function renderInstallationStatus(status: InstallationStatus, limited = f
 export function renderTaskWait(snapshot: TaskWaitSnapshot, outcome: string = snapshot.outcome): string {
   const check = snapshot.check.status === "unknown" ? "checks unknown" : snapshot.check.status === "not-run" ? "checks not run" : `checks ${snapshot.check.status}${snapshot.check.exitCode === null ? "" : ` (exit ${snapshot.check.exitCode})`}`;
   const run = snapshot.run === null ? "no run" : snapshot.replacedRun === null ? `run #${snapshot.run}` : `run #${snapshot.run}, a retry that replaced run #${snapshot.replacedRun}`;
-  return `${outcome} | ${run} | ${check} | next: ${snapshot.next}`;
+  return `${outcome} | ${run} | ${check} | next: ${snapshot.next === "Wait for a worker" ? "Wait for a builder" : snapshot.next}`;
+}
+
+/** A queue reason as people read it (the JSON keeps its own words). */
+export function queueReasonWords(reason: string): string {
+  return reason === "ready for a worker" ? "ready for a builder" : reason === "needs a scope" ? "needs a plan" : reason;
 }

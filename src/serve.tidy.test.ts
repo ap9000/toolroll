@@ -62,7 +62,7 @@ describe("Put away old tasks on the console", () => {
     rmSync(evidenceRoot, { recursive: true, force: true });
   });
 
-  test("the preview lists each task with why, binds a digest, names the CLI twin, and changes nothing", async () => {
+  test("the preview lists each task with why, binds a digest, and changes nothing", async () => {
     const alex = await loginAs("alex", alexToken);
     const response = await page(alex, "/work/put-away");
     expect(response.status).toBe(200);
@@ -73,7 +73,8 @@ describe("Put away old tasks on the console", () => {
     expect(html).toContain("A newer run, “Is the site current? — Oct 31”, replaces it.");
     const digest = digestOf(html);
     expect(digest).toMatch(/^[0-9a-f]{32}$/);
-    expect(html).toContain(`toolroll task tidy --apply --digest ${digest}`);
+    // The archive page names no CLI digest line (docs/plans/plain-toolroll.md: deleted in Phase 1).
+    expect(html).not.toContain("toolroll task tidy --apply --digest");
     expect(archived()).toEqual([]);
     expect((await page(await loginAs("vera", veraToken), "/work/put-away")).status).toBe(403);
   });

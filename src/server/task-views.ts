@@ -920,12 +920,12 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const runId = Number(named);
     const stop = runtime.store.stopOf(runId);
     const run = runtime.store.getRun(runId);
-    if (stop === null || run === null || stop.taskRef !== ref.id) return taskScreen(response, who, taskId, `run #${runId} is not a stopped attempt of this task`, 409);
-    if (run.role === "reviewer") return taskScreen(response, who, taskId, `run #${runId} is a historical review run — nothing reruns it; open the saved result instead`, 409);
-    if (stop.resumedAt !== null) return taskScreen(response, who, taskId, `run #${runId} was already resumed by ${stop.resumedBy ?? "?"}`, 409);
+    if (stop === null || run === null || stop.taskRef !== ref.id) return taskScreen(response, who, taskId, `build #${runId} is not a stopped attempt of this task`, 409);
+    if (run.role === "reviewer") return taskScreen(response, who, taskId, `build #${runId} was an old review. Nothing reruns it; open the saved result instead`, 409);
+    if (stop.resumedAt !== null) return taskScreen(response, who, taskId, `build #${runId} was already resumed by ${stop.resumedBy ?? "?"}`, 409);
     const control = taskControlOf(runtime.store, ref.id, now);
     if (control.kind !== "paused" || control.run !== runId) {
-      return taskScreen(response, who, taskId, control.kind === "stopping" ? `run #${runId} is still stopping — its processes are not yet established gone` : `run #${runId} is no longer the attempt a resume can name — reload and decide against the current state`, 409);
+      return taskScreen(response, who, taskId, control.kind === "stopping" ? `build #${runId} is still stopping. Toolroll is making sure it has ended` : `build #${runId} is no longer the one to resume. Reload and decide again`, 409);
     }
     const digest = resumeDigestOf(taskId, runId, stop.settledAt ?? "", runtime.store.getScope(taskId));
     const nonceValue = randomBytes(18).toString("base64url");

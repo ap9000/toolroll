@@ -168,7 +168,7 @@ export const CHAT_ACTIONS = {
   // What the owner's own lead knows about them: theirs alone, in no project (lead-about.ts).
   lead_about_you: { label: "Remember", protected: false, password: false },
   scope_approve: { label: "Approve work", protected: true, password: true },
-  result_accept: { label: "Accept and finish", protected: true, password: false },
+  result_accept: { label: "Accept", protected: true, password: false },
   task_cancel: { label: "Cancel task", protected: true, password: false },
   task_resume: { label: "Resume task", protected: true, password: true },
 } as const;

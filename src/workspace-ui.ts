@@ -36,8 +36,8 @@ export const WORK_VIEWS: readonly { key: WorkView; label: string; hint: string; 
   { key: "needs-you", label: "Needs you", hint: "Tasks waiting on an answer, approval, or your inspection.", empty: "Nothing needs you right now. Queued and running work continues on its own." },
   { key: "running", label: "Running", hint: "Attempts a builder owns right now.", empty: "Nothing is running right now. Approved tasks start when a builder with capacity is connected." },
   { key: "queued", label: "Queued", hint: "Tasks that start on their own: waiting for a builder, a dependency or a retry.", empty: "Nothing is queued." },
-  { key: "completed", label: "Finished", hint: "Tasks the lead or user has marked complete. Recorded check results remain available.", empty: "Nothing has finished in this view yet." },
-  { key: "archived", label: "Archived", hint: "Tasks put away by you or by tidy. Their history and results are kept.", empty: "Nothing is put away." },
+  { key: "completed", label: "Finished", hint: "Tasks the lead or you accepted. Recorded check results stay available.", empty: "Nothing has finished in this view yet." },
+  { key: "archived", label: "Archived", hint: "Tasks archived by you or automatically. Their history and results are kept.", empty: "Nothing is archived." },
 ];
 
 export function parseWorkView(raw: string | null): WorkView {
@@ -226,8 +226,8 @@ function machineVerdictWords(result: ResultFacts, check: ChecksFact | null | und
     const exit = failedCheckExit(result.reasons);
     return `the approved check failed against it${exit === null ? "" : ` (exit ${exit})`}`;
   }
-  if (problem === "mismatched") return "its evidence did not match the sealed record";
-  return "its required evidence was missing";
+  if (problem === "mismatched") return "its saved files didn't match the record";
+  return "its required files were missing";
 }
 
 /** The approved check passed (task-status.ts approvedCheckStateOf): its own pass, or checks Off covered by a passing
@@ -268,7 +268,7 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
       // Acceptance records a person's decision; it neither proves nor
       // disproves anything about the checks. The machine's own verdict is
       // restated as recorded.
-      detail: withPublication(`An approver accepted this result by hand, and the recorded exception says why. The machine's verdict is unchanged: ${machineVerdictWords(result, check)}.`),
+      detail: withPublication(`An approver accepted this result by hand, and their reason says why. The checks are unchanged: ${machineVerdictWords(result, check)}.`),
       tone: "done",
       action: { label: "Open the recorded exception", kind: "open-review" },
     };
@@ -316,8 +316,8 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
     // at adjudication; only a verdict-less no-change reads its two
     // presence facts here.
     return result.recordComplete === false && result.verdict === null
-      ? { token: "record-incomplete", label: "No-change result, record incomplete", detail: "The build concluded nothing needed to change, but its handoff or sealed diff is missing.", tone: "problem", action: { label: "Open the record", kind: "open-run" } }
-      : { token: "no-change", label: "No changes were needed", detail: withPublication("The build concluded nothing needed to change; its handoff and sealed diff are on record."), tone: "done", action: { label: OPEN_RESULT, kind: "open-result" } };
+      ? { token: "record-incomplete", label: "No-change result, record incomplete", detail: "The build concluded nothing needed to change, but its handoff or saved diff is missing.", tone: "problem", action: { label: "Open the record", kind: "open-run" } }
+      : { token: "no-change", label: "No changes were needed", detail: withPublication("The build concluded nothing needed to change; its handoff and saved diff are on record."), tone: "done", action: { label: OPEN_RESULT, kind: "open-result" } };
   }
   if (result.verdict === null) {
     return {
@@ -504,7 +504,7 @@ export function reportMismatchesOf(reasons: readonly string[],
     const review = CONTRADICTED_BY_REVIEW.exec(reason);
     if (review !== null) return [{ text: plainReasonWords(reason), ...place(review[1]!), note: null, reason }];
     const unsigned = UNSIGNED_NOTE.exec(reason);
-    if (unsigned !== null) return [{ text: `The report's note ${unsigned[1]} is about ${unsigned[2]}, which isn't one of the signed requirements: ${unsigned[3]}`, path: null, lines: null, inChanges: null, note: Number(unsigned[1]), reason }];
+    if (unsigned !== null) return [{ text: `The report's note ${unsigned[1]} is about ${unsigned[2]}, which isn't one of the approved requirements: ${unsigned[3]}`, path: null, lines: null, inChanges: null, note: Number(unsigned[1]), reason }];
     if (FAILED_CHECK.test(reason)) return [];
     return [{ text: sentenceOf(plainReasonWords(reason)), path: null, lines: null, inChanges: null, note: note === null ? null : Number(note), reason }];
   });
@@ -583,7 +583,7 @@ export function acceptWordsOf(facts: AcceptFacts): AcceptWords {
     : facts.publishing === "pull-request" ? "Finishes the task. No pull request opens; you can open one from the task after."
     : facts.publishing === "off" ? "Finishes the task. The branch stays; publishing isn't set up."
     : "Finishes the task. Nothing is published.";
-  return { label: ready ? "Accept and finish" : "Accept without checks", ready, why: ready ? null : `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`, effect };
+  return { label: ready ? "Accept" : "Accept without checks", ready, why: ready ? null : `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`, effect };
 }
 
 export function resultHeadlineOf<T extends DisplayStatus>(status: T): T {

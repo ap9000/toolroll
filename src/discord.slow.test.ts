@@ -1030,10 +1030,10 @@ test("mark complete confirms behind a second tap in Discord and records the assi
   draft({ ...payload });
   await drain();
   const c = card();
-  expect(sentText()).toContain("Accept and finish: Clear Discord progress");
+  expect(sentText()).toContain("Accept: Clear Discord progress");
   await tap(c.token, c.message);
   expect(sentText()).toContain("This records that you handled this exact result. Confirm?");
-  expect(JSON.stringify(sends().at(-1)?.body.components)).toContain("Yes, accept and finish");
+  expect(JSON.stringify(sends().at(-1)?.body.components)).toContain("Yes, accept");
   expect(assignmentOf(store, "sample", now, { principal: "operator", repos: projects }, join(dir, "evidence"))?.state).toBe("ready-to-check");
   const yes = state.prepare("SELECT token FROM chat_action WHERE provider=:provider AND part=? AND phase='yes' AND consumed IS NULL").get(c.id)!;
   await tap(String(yes.token), c.message);

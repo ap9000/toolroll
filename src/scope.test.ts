@@ -129,7 +129,7 @@ describe("agreeing what a task is allowed to become", () => {
     approve(store, "t-1", "alex", later(1_000), store.getScope("t-1")!.digest, approverToken);
     propose(store, { taskId: "t-1", goal: "something else", now: later(2_000) });
 
-    expect(describeScope(store.getScope("t-1")!).join("\n")).toContain("then the scope was rewritten");
+    expect(describeScope(store.getScope("t-1")!).join("\n")).toContain("edited after approval");
   });
 
   test("re-approving the rewritten scope restores it", () => {
@@ -1108,7 +1108,7 @@ describe("a prepared candidate is signed into the scope (v69)", () => {
       const scope = propose(store, { taskId: "t-c", goal: "Install commit", candidate: "c".repeat(40), now: new Date("2026-09-19T00:00:00.000Z") });
       expect(scope.candidate).toBe("c".repeat(40));
       expect(store.getScope("t-c")?.candidate).toBe("c".repeat(40));
-      expect(describeScope(store.getScope("t-c")!).some(line => line.includes("candidate    " + "c".repeat(40)))).toBe(true);
+      expect(describeScope(store.getScope("t-c")!).some(line => line.includes("commit       " + "c".repeat(7)))).toBe(true);
     } finally { store.close(); }
   });
 });

@@ -214,7 +214,7 @@ describe("one headline on every surface", () => {
 
   test("the chat card (Telegram, Slack, Discord, Teams)", () => {
     const card = telegramProgressCard(store, store.getRun(runs["fix-checkout-tax"]!)!, "fix-checkout-tax", REPO, NOW, root);
-    expect(card.text.split("\n").slice(1, 3)).toEqual(["✅ Complete", "Marked complete by sam."]);
+    expect(card.text.split("\n").slice(1, 3)).toEqual(["✅ Complete", "Accepted by sam."]);
     expect(card.text).toContain("✓ Project checks · Passed on");
     expect(card.text).toContain("⚠ Pull request · Couldn't open — Open it on GitHub");
     expect(card.text).not.toMatch(/Publication failed|✕/);

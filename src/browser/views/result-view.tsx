@@ -455,7 +455,7 @@ function Details({ selected }: { selected: Selected }) {
   const why = panel?.status == null ? [] : statusWhyLines(panel.status);
   const record = selected.record;
   const rows: { id: string; title: string; hint: ReactNode; count?: number; body: ReactNode }[] = [
-    { id: "intent", title: "Approved scope", hint: selected.intent === null ? null
+    { id: "intent", title: "Approved plan", hint: selected.intent === null ? null
       : <>{selected.intent.approval}{selected.intent.approvedAt != null && <> · <time dateTime={selected.intent.approvedAt} title={whenTitle(selected.intent.approvedAt)}>{threadWhen(selected.intent.approvedAt)}</time></>}</>,
       body: selected.intent === null ? <p className="text-sm text-muted-foreground">No scope was filed for this task, so there is no approved goal or boundary to review.</p> : <Html html={selected.intent.html} className="so-result-intent" /> },
     ...(selected.notes.length === 0 ? [] : [{ id: "notes", title: "Notes", hint: null, count: selected.notes.length,

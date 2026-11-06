@@ -43,8 +43,8 @@ const HELP_LINES = [
   "n                new task",
   "a                approve the plan (shows it in full first)",
   "s                stop the running attempt",
-  "r                request a revision",
-  "c                mark the result Complete",
+  "r                send the result back",
+  "c                accept the result",
   "1–9              answer the task's question",
   "w                open in the browser",
   "Esc              back",
@@ -235,8 +235,8 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
 
   function hints(): string {
     switch (screen.kind) {
-      case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve · s stop · r revise · c complete · w browser · ? help · q quit";
-      case "task": return "a approve · s stop · r revise · c complete · 1–9 answer · w browser · Esc back";
+      case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve · s stop · r send back · c accept · w browser · ? help · q quit";
+      case "task": return "a approve · s stop · r send back · c accept · 1–9 answer · w browser · Esc back";
       case "approve": return "y approve · Esc cancel";
       case "compose": return screen.purpose === "new" && (snapshot?.projects.length ?? 0) > 1 ? "Enter send · Tab project · Esc cancel" : "Enter send · Esc cancel";
       case "quit": return "s stop · b background · Esc cancel";

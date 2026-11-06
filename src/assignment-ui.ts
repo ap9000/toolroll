@@ -67,7 +67,7 @@ export function assignmentAttemptsOf(assignment: AssignmentSnapshot): Assignment
 export function assignmentAttemptsHtml(assignment: AssignmentSnapshot): Html {
   if (assignment.attempts.length === 0) return html``;
   return html`<details class="assignment-attempts"><summary>Attempts <span class="meta">${assignment.attempts.length}</span></summary><ol>${assignmentAttemptsOf(assignment).map(attempt =>
-    html`<li data-attempt-task="${attempt.taskId}" data-history-version="${attempt.taskId}"><a href="${attempt.href}">${attempt.label}</a>${attempt.runId === null ? '' : html` <a href="/r/${attempt.runId}">Run #${attempt.runId}</a>`}${attempt.detail === null ? '' : html`<p class="meta">${attempt.detail}</p>`}</li>`
+    html`<li data-attempt-task="${attempt.taskId}" data-history-version="${attempt.taskId}"><a href="${attempt.href}">${attempt.label}</a>${attempt.runId === null ? '' : html` <a href="/r/${attempt.runId}">Build #${attempt.runId}</a>`}${attempt.detail === null ? '' : html`<p class="meta">${attempt.detail}</p>`}</li>`
   )}</ol>${assignment.owner === null ? '' : html`<p class="meta">Lead: ${assignment.owner.label}${assignment.owner.active ? '' : ' · access ended'}</p>`}<p class="work-meta work-id">Task <span class="mono">${assignment.rootId}</span></p></details>`;
 }
 

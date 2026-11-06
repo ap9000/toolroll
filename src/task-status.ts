@@ -232,7 +232,7 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
   const reason = facts.reason?.trim() || null;
   const sha = short(facts.checks?.head ?? null);
   switch (headline) {
-    case "Queued": return reason ?? "Waiting for a worker.";
+    case "Queued": return reason ?? "Waiting for a builder.";
     case "Planning": return reason ?? "The lead is writing the plan.";
     // One plain sentence per need (needs-you.ts); a recorded reason only where the need keeps one.
     case "Needs you": return facts.stage === "finished" ? resultAsk(facts) ?? needSentence("review-result", reason, facts.needContext) : needSentence(facts.need ?? "other", reason, facts.needContext);
@@ -240,24 +240,24 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
     case "Building": return facts.stage === "checking" ? "Checks are running on the change."
       : facts.stage === "reviewing" ? "Reviewing the change before it reaches you." : reason ?? "An agent is working on it.";
     case "Ready for review":
-      if (facts.report) return "The report is ready to read. Read it, then mark it complete.";
-      if (releaseStateOf(facts.checks) === "covered") return `Checked at release on ${short(facts.checks!.release!.head) ?? "its release"}. Review the change, then mark it complete.`;
-      if (facts.checks?.level === "off" && facts.checks.status !== "passed") return "Checked at release. Review the change, then mark it complete.";
+      if (facts.report) return "The report is ready to read. Read it, then accept it.";
+      if (releaseStateOf(facts.checks) === "covered") return `Checked at release on ${short(facts.checks!.release!.head) ?? "its release"}. Review the change, then accept it.`;
+      if (facts.checks?.level === "off" && facts.checks.status !== "passed") return "Checked at release. Review the change, then accept it.";
       if (facts.checks?.status === "passed") {
         // The Checks row names the others and the batch commit; the sentence doesn't repeat them.
         const peers = facts.checks.batch?.state === "together" ? facts.checks.batch.peers.length : 0;
-        if (peers > 0) return `Checks passed together with ${peers === 1 ? "1 other result" : `${peers} other results`}. Review the change, then mark it complete.`;
-        return `${facts.checks.level === "quick" ? "Quick checks" : "Checks"} passed${sha === null ? "" : ` on ${sha}`}. Review the change, then mark it complete.`;
+        if (peers > 0) return `Checks passed together with ${peers === 1 ? "1 other result" : `${peers} other results`}. Review the change, then accept it.`;
+        return `${facts.checks.level === "quick" ? "Quick checks" : "Checks"} passed${sha === null ? "" : ` on ${sha}`}. Review the change, then accept it.`;
       }
-      if (facts.checks?.batch?.state === "waiting") return "Its full check runs with other results within 10 minutes. Review the change, then mark it complete.";
-      if (facts.checks?.status === "unavailable") return `${facts.checks.cause === "command-changed" ? CHECK_COMMAND_CHANGED : CHECK_UNREADABLE} Review the change, then mark it complete.`;
+      if (facts.checks?.batch?.state === "waiting") return "Its full check runs with other results within 10 minutes. Review the change, then accept it.";
+      if (facts.checks?.status === "unavailable") return `${facts.checks.cause === "command-changed" ? CHECK_COMMAND_CHANGED : CHECK_UNREADABLE} Review the change, then accept it.`;
       // Never claim a check that isn't known to have passed.
-      if (facts.checks == null) return "Review the change, then mark it complete.";
-      return "Built without a passing project check. Review the change, then mark it complete.";
+      if (facts.checks == null) return "Review the change, then accept it.";
+      return "Built without a passing project check. Review the change, then accept it.";
     case "Complete": {
       // Landed work says why once; its merged pull request is that reason, not a second sentence.
-      if (facts.landed) return `Marked complete automatically: ${facts.landed}.`;
-      const by = facts.completedBy ? `Marked complete by ${facts.completedBy}.` : "Marked complete.";
+      if (facts.landed) return `Accepted automatically: ${facts.landed}.`;
+      const by = facts.completedBy ? `Accepted by ${facts.completedBy}.` : "Accepted.";
       const pr = facts.pullRequest;
       return pr?.state === "merged" ? `${by} ${pr.number === null ? "Its pull request" : `Pull request #${pr.number}`} merged.` : by;
     }
@@ -335,10 +335,10 @@ function detailsOf(headline: Headline, facts: TaskStatusFacts): StatusDetail[] {
   const evidence = facts.evidence;
   if (evidence != null) {
     const action = { label: "See what was kept", href: facts.links?.result ?? null };
-    if (evidence.damaged > 0) row("evidence", "Saved evidence", "Some saved files changed", problem(headline), headline === "Failed" ? {} : { action });
-    else if (evidence.missing > 0) row("evidence", "Saved evidence", "Some saved files are missing", problem(headline), headline === "Failed" ? {} : { action });
-    else if (evidence.shortened > 0) row("evidence", "Saved evidence", "Some output shortened", "note", { action });
-    else row("evidence", "Saved evidence", "Complete", "ok");
+    if (evidence.damaged > 0) row("evidence", "Saved files", "Some saved files changed", problem(headline), headline === "Failed" ? {} : { action });
+    else if (evidence.missing > 0) row("evidence", "Saved files", "Some saved files are missing", problem(headline), headline === "Failed" ? {} : { action });
+    else if (evidence.shortened > 0) row("evidence", "Saved files", "Some output shortened", "note", { action });
+    else row("evidence", "Saved files", "All kept", "ok");
   }
   return rows;
 }
@@ -521,7 +521,7 @@ export function requirementsOf(matrix: readonly RequirementRow[] | null | undefi
   const words = matrix.map(row => requirementWordOf(row, null, release));
   const yours = matrix.find((_, index) => words[index] === "You check");
   const unshown = matrix.filter((row, index) => words[index] === "Not shown yet" && screenshotMissing(row));
-  const ask = yours !== undefined ? `Check this requirement yourself, then mark it complete: ${quoted(yours.statement)}`
+  const ask = yours !== undefined ? `Check this requirement yourself, then accept it: ${quoted(yours.statement)}`
     : unshown.length > 0 ? unresolvedAsk(unshown[0]!, "Not shown yet") : null;
   return { met: words.filter(word => word === "Met").length, total: matrix.length, yours: words.filter(word => word === "You check").length,
     missed: words.filter(word => word === "Not met" || word === "Not shown yet").length,
@@ -544,9 +544,9 @@ export function completionBlockersOf(f: {
   if (!f.report && f.checks?.status === "failed") {
     blockers.push({ key: "check-failed", message: `Checks failed${f.checks.exitCode === null ? "" : ` (exit ${f.checks.exitCode})`}. Fix them and run checks again, or ask for changes.` });
   } else if (!f.report && f.checkRequired && f.checks?.status !== "passed" && release === undefined) {
-    blockers.push({ key: "check-missing", message: checksUnderway(f.checks) ? "Its project check hasn't finished yet. Mark it complete once it passes."
-      : f.checks?.status === "unavailable" ? f.checks.cause === "command-changed" ? `${CHECK_COMMAND_CHANGED.replace(/; run checks again\.$/, ".")} Run checks again, then mark it complete.` : `${CHECK_UNREADABLE} Run checks on it, then mark it complete.`
-      : "No passing project check is recorded for this result. Run checks on it, then mark it complete." });
+    blockers.push({ key: "check-missing", message: checksUnderway(f.checks) ? "Its project check hasn't finished yet. Accept it once it passes."
+      : f.checks?.status === "unavailable" ? f.checks.cause === "command-changed" ? `${CHECK_COMMAND_CHANGED.replace(/; run checks again\.$/, ".")} Run checks again, then accept it.` : `${CHECK_UNREADABLE} Run checks on it, then accept it.`
+      : "No passing project check is recorded for this result. Run checks on it, then accept it." });
   }
   if (!f.accepted && f.checks?.status !== "failed") {
     const refuted = f.verdict === "refuted";
@@ -558,7 +558,7 @@ export function completionBlockersOf(f: {
       blockers.push({ key: "criteria", message: `${unresolved.length} requirements ${unresolved.every(one => one.word === "Unverified") ? "couldn't be verified" : "aren't met yet"} (${ids.slice(0, 6).join(", ")}${ids.length > 6 ? ", …" : ""}). Ask for changes, or accept the result with a reason.` });
     }
   }
-  if (f.high > 0) blockers.push({ key: "high", message: `The automatic review found ${f.high === 1 ? "a high-severity problem" : `${f.high} high-severity problems`}. Ask for changes before marking it complete.` });
+  if (f.high > 0) blockers.push({ key: "high", message: `The automatic review found ${f.high === 1 ? "a high-severity problem" : `${f.high} high-severity problems`}. Send it back before accepting it.` });
   return blockers;
 }
 

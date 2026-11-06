@@ -176,7 +176,7 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     expect(granted.ok).toBe(true);
     const after = await (await fetch(url("/t/t-rubric"), { headers: { cookie } })).text();
     const cardAcceptance = after.indexOf(">Acceptance<");
-    const cardSeal = after.indexOf("approval binds to this exact wording");
+    const cardSeal = after.indexOf("Approved by alex");
     expect(cardAcceptance).toBeGreaterThan(-1);
     expect(cardAcceptance).toBeLessThan(cardSeal);
 
@@ -610,6 +610,21 @@ describe("the project switcher (board pass): one tap from any screen, forms with
     const approved = await fetch(url("/t/t-edit/approve"), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf: csrfOf(edited), nonce, digest, token: approverToken }), redirect: "manual" });
     expect(approved.status).toBe(303);
     expect(store.getScope("t-edit")).toMatchObject({ approvedDigest: after.digest, approvedBy: "alex" });
+    // "How we'll know" (#19): a chosen kind replaces a line's evidence, "keep" leaves it, and the new line takes its own;
+    // the saved plan is a new version, waiting for approval like any edit.
+    expect(edited).toContain('aria-label="How we&#39;ll know requirement 1 is met"');
+    const hidden2 = hidden.map(([name, value]) => [name, name === "sawDigest" ? after.digest : value] as [string, string]);
+    const repicked = await fetch(url("/t/t-edit/scope"), { method: "POST", headers: { cookie }, body: new URLSearchParams([...hidden2, ["goal", "guard the payout path and log refusals"], ["touches", "src/payout.ts\nsrc/log.ts"], ["not", "billing and sign-in"],
+      ["requirement", "Negative and zero payouts are refused."], ["requirement-how", "check"], ["requirement", "Refusals are logged."], ["requirement-how", "keep"],
+      ["requirement", "The refusal reads plainly"], ["requirement-how", "bogus"], ["requirement-new", "The log names the payout"], ["requirement-new-how", "screenshot"]]), redirect: "manual" });
+    expect(repicked.status).toBe(303);
+    expect(store.getScope("t-edit")!.acceptance).toEqual([
+      { id: "c1", statement: "Negative and zero payouts are refused.", how: null, evidence: ["check"] },
+      { id: "c3", statement: "Refusals are logged.", how: "read the log", evidence: ["check"] },
+      { id: "c4", statement: "The refusal reads plainly", how: null, evidence: ["manual-review"] },
+      { id: "c2", statement: "The log names the payout", how: null, evidence: ["screenshot"] },
+    ]);
+    expect(store.getScope("t-edit")!.approvedDigest).not.toBe(store.getScope("t-edit")!.digest);
   });
 
   test("Edit plan in place keeps what it doesn't show: a stale draft stays stale, permissions never change, the cap round-trips exactly", async () => {

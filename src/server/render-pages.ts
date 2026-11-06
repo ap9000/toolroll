@@ -241,8 +241,8 @@ export function inboxPage(chrome: Chrome, data: {
     data.rollup ? null : html`<h2>Capture new work</h2>`,
     data.rollup ? null : postForm("/tasks/add", joinHtml([
       html`<label>What should get done<input type="text" name="title" placeholder="task title" maxlength="200"></label>`,
-      html`<label>What success looks like <span class="meta">(becomes the scope you approve on the next screen)</span><textarea name="goal" rows="2"></textarea></label>`,
-      html`<button type="submit">Queue it → approve its scope next</button>`,
+      html`<label>What success looks like <span class="meta">(becomes the plan you approve on the next screen)</span><textarea name="goal" rows="2"></textarea></label>`,
+      html`<button type="submit">Queue it → approve its plan next</button>`,
     ], "\n"), { attrs: { class: "card" }, projectRevision: data.revision }),
   ], "\n"), {
     chrome,
@@ -313,7 +313,7 @@ export function boardWorkers(runners: readonly Runner[], scope: { all: boolean; 
  * this reader cannot see reads "no build on this board", never "free".
  */
 function workerStrip(runners: readonly Runner[], cards: readonly BoardCard[], now: Date): Html {
-  if (runners.length === 0) return html`<p class="meta crew-empty">No workers yet — work waits in the queue until one joins.</p>`;
+  if (runners.length === 0) return html`<p class="meta crew-empty">No builders yet — work waits in the queue until one joins.</p>`;
   const tiles = runners.map(runner => {
     const builds = cards
       .filter(card => card.lane === "building" && card.claim !== null && card.claim.runner === runner.name)
@@ -440,7 +440,7 @@ export function boardBody(
   })();
   const queuedCard = (card: BoardCard): Html =>
     html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="t">${card.title}</span><span class="why">${card.reason}</span><span class="id">${card.taskId}</span>${facts([
-      card.assignedRunner === null ? ["worker", "any free worker"] : ["worker", card.assignedRunner, "mono"],
+      card.assignedRunner === null ? ["builder", "any free builder"] : ["builder", card.assignedRunner, "mono"],
     ])}${chips([
       queuedHeads.get(`${card.assignedRunner ?? ""}|${card.repo ?? ""}`) === card.taskId
         ? html`<span class="badge">${card.assignedRunner === null ? "next up" : `next for ${card.assignedRunner}`}</span>`
@@ -525,13 +525,13 @@ export function boardBody(
 
   return joinHtml([
     html`<h1>Board</h1>`,
-    data.all ? null : html`<p class="meta board-view"><strong>State</strong> · <a href="/board?view=order">order →</a> <span class="meta">drag to reorder, or to reserve a task for one worker</span></p>`,
+    data.all ? null : html`<p class="meta board-view"><strong>State</strong> · <a href="/board?view=order">order →</a> <span class="meta">drag to reorder, or to keep a task for one builder</span></p>`,
     deltaLine,
     toggle,
     workerStrip(data.workers, data.cards, data.now),
     html`<div class="board" data-now="${String(data.now.getTime())}">`,
     lane("attention", "Needs you", "These wait for a person.", plain),
-    lane("queued", "Queued", "Starts when a worker is free.", queuedCard),
+    lane("queued", "Queued", "Starts when a builder is free.", queuedCard),
     lane("waiting", "Waiting", "Paused until a time, another task, or a requirement is ready.", plain),
     lane("building", "Building", "One agent per card, in its own workspace.", building),
     html`<details class="lane lane-done"${data.done.length === 0 ? null : html` open`}><summary><h2>${laneChip("done", html`<a href="/done">Done recently</a>`)}</h2></summary><p class="hint">The most recent. The full list is under Done.</p>${doneCards}</details>`,
@@ -652,7 +652,7 @@ export function homePage(chrome: Chrome, data: {
           html`<div class="card">`,
           html`<p><strong>Nothing is queued yet — here is the whole loop:</strong></p>`,
           html`<p>1. <a href="/tasks/new">Add a task</a> — plain words for work you want done${data.repo === null ? null : html` in <span class="mono">${data.repo}</span>`}.</p>`,
-          html`<p>2. Open it and write its scope — the goal, and what it must not become. Approve exactly that.</p>`,
+          html`<p>2. Open it and write its plan — the goal, and what it must not become. Approve exactly that.</p>`,
           html`<p>3. Keep Toolroll running on the builder machine. Approved tasks build unattended, each on its own branch.</p>`,
           html`<p class="meta">When an agent is unsure it stops and asks — those questions land here, under “waiting on you”.</p>`,
           html`</div>`,
@@ -730,9 +730,9 @@ export function workPage(
   };
   const href = (view: WorkView, cursor?: string, state: TaskState | null = data.state ?? null): string => query({ view, ...(cursor === undefined ? {} : { cursor }), state });
   // Put away (or Restore, in Archived): one quiet act per row, never on a task with work going on.
-  const tidyAct = (row: WorkIndexItem): { action: string; label: 'Put away' | 'Restore' } | null =>
+  const tidyAct = (row: WorkIndexItem): { action: string; label: 'Archive' | 'Restore' } | null =>
     data.canPutAway !== true ? null : row.archived !== undefined ? { action: `${taskHref(row.rootId)}/restore`, label: 'Restore' }
-      : row.liveRunId !== null || row.unfinishedRunId !== null || row.status.views.includes('running') ? null : { action: `${taskHref(row.rootId)}/archive`, label: 'Put away' };
+      : row.liveRunId !== null || row.unfinishedRunId !== null || row.status.views.includes('running') ? null : { action: `${taskHref(row.rootId)}/archive`, label: 'Archive' };
   const returnTo = href(data.view, undefined);
   const current = WORK_VIEWS.find(one => one.key === data.view)!;
   const filtered = (data.state ?? null) !== null;
@@ -776,7 +776,7 @@ export function workPage(
     ['running', 'Running', data.board.running, 'running', 'Nothing running.'],
     ['finished', 'Finished', data.board.finished, 'completed', 'Nothing has finished yet.'],
   ] as const).map(([key, label, page, view, empty]) => ({ key, label, count: page.totals[view], href: query({ view, layout: 'list' }), empty, rows: page.items.map(rowOf) }));
-  const putAwayLink = data.canPutAway === true && data.view !== 'archived' ? { label: 'Put away old tasks', href: '/work/put-away' } : null;
+  const putAwayLink = data.canPutAway === true && data.view !== 'archived' ? { label: 'Archive old tasks', href: '/work/put-away' } : null;
   const toolLinks = [['/board?view=order', 'Order the queue'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']]), ['/ledger', 'Action ledger']];
   const newTaskHref = lens === null ? '/tasks/new' : `/tasks/new?project=${encodeURIComponent(lens)}`;
   const emptyNow = data.work.items.length > 0 ? null : filtered && !data.previous ? { text: `No tasks are ${data.state} in this view.`, action: { label: 'Show every state', href: href(data.view, undefined, null) } } : {
@@ -1107,7 +1107,7 @@ export function queueCard(one: QueueCardTask, revision: number, queueRevision: n
   // and the reservation owner. Money is not in this query and is not
   // invented here — it stays on the task page, labeled.
   const state = one.taken
-    ? html`<span class="badge">Being taken — keeps its claim</span>`
+    ? html`<span class="badge">Starting — a builder has it</span>`
     : column === "anyone"
       ? html`<span class="badge">Queued</span>`
       : html`<span class="badge">Reserved for ${column}</span>`;
@@ -1147,21 +1147,21 @@ export function queueBody(
               ? replaceMarkup(
                   replaceMarkup(queueCard(one, revision, queueRevision, workers, key), /<\/p>\n/, () => html`</p>`),
                   /<p class="row meta">/,
-                  () => html`<p class="meta">Every worker has reserved work — this waits until a column empties</p><p class="row meta">`,
+                  () => html`<p class="meta">Every builder has work kept for it — this waits until a column empties</p><p class="row meta">`,
                 )
               : queueCard(one, revision, queueRevision, workers, key),
           ), "\n")
     }</section>`;
   const noteForm = (worker: { name: string; retired: boolean; note: string | null; capacity: number; building: number }): Html =>
     worker.retired
-      ? html`<p class="meta">This worker is retired — drag these elsewhere, or register the name again</p>`
+      ? html`<p class="meta">This builder is retired — drag these elsewhere, or register the name again</p>`
       : html`<p class="meta mono">${worker.building} building in this project · unattended capacity ${worker.capacity}</p>${postForm(
           "/queue/note",
           html`<input type="text" name="note" value="${worker.note ?? ""}" data-initial="${worker.note ?? ""}" placeholder="what this worker is working through" aria-label="column note" maxlength="200"><button type="submit">Save</button>`,
           { attrs: { class: "row" }, projectRevision: revision, hidden: { runner: worker.name } },
         )}<p class="meta">Takes from the shared queue when this column is empty</p>`;
   return html`<div class="lanes" data-queue-revision="${queueRevision}">${column("shared queue", "anyone", html`<p class="meta">Workers take from here when their column is empty — top card first</p>`, shared, "nothing waiting — every task is reserved or running")}${joinHtml(
-    workers.map(worker => column(worker.name + (worker.retired ? " (retired)" : ""), worker.name, noteForm(worker), columnOf(worker.name), "nothing queued — this worker will take from the shared queue")),
+    workers.map(worker => column(worker.name + (worker.retired ? " (retired)" : ""), worker.name, noteForm(worker), columnOf(worker.name), "nothing queued — this builder takes from the shared queue")),
     "\n",
   )}</div>`;
 }
@@ -1249,17 +1249,15 @@ export function queueScript(): string {
 export function putAwayPage(chrome: Chrome, data: { items: readonly TidyItem[]; days: number; digest: string; now: Date; problem: string | null; releasesSkipped: string | null }): Screen {
   const groups = tidyGroups(data.items, data.days);
   const count = data.items.length;
-  const daysArg = data.days === TIDY_DEFAULT_DAYS ? "" : ` --days ${data.days}`;
-  const crumbs = html`<nav class="kit-crumbs" aria-label="Breadcrumb"><ol><li><a href="/work">Tasks</a></li><li><span aria-current="page">Put away old tasks</span></li></ol></nav>`;
+  const crumbs = html`<nav class="kit-crumbs" aria-label="Breadcrumb"><ol><li><a href="/work">Tasks</a></li><li><span aria-current="page">Archive old tasks</span></li></ol></nav>`;
   const daysForm = html`<form method="get" action="/work/put-away" class="put-away-days"><label>Also finished tasks untouched for <input type="number" name="days" min="1" max="365" value="${String(data.days)}" inputmode="numeric"> days</label><button type="submit" class="secondary">Update list</button></form>`;
   const list = joinHtml(groups.map(group => html`<fieldset class="put-away-group" data-tidy-group="${group.rule}"><legend>${group.label}<span class="count">${String(group.items.length)}</span></legend><ul>${group.items.map(item =>
     html`<li><label class="put-away-item" data-tidy-task="${item.taskId}"><input type="checkbox" name="task" value="${item.taskId}" checked><span class="put-away-title">${item.title}</span><span class="put-away-why">${item.reason}</span><span class="put-away-id">${item.taskId}${item.repo === null ? "" : ` · ${projectName(item.repo)}`}${item.members.length > 1 ? ` · ${item.members.length} versions` : ""}</span></label></li>`)}</ul></fieldset>`));
-  const cli = html`<p class="put-away-cli" data-tidy-cli>Or run: <code>toolroll task tidy --apply --digest ${data.digest}${daysArg}</code></p>`;
   const body = count === 0
-    ? html`<p class="kit-state">Nothing to put away right now.</p><p><a href="/work?view=archived">See archived tasks →</a></p>`
+    ? html`<p class="kit-state">Nothing to archive right now.</p><p><a href="/work?view=archived">See archived tasks →</a></p>`
     : stepUpForm({ proof: "tasks-put-away", action: "/work/put-away", id: "put-away", hidden: { digest: data.digest, days: data.days },
-      body: html`${list}${cli}`, save: { label: "Put away selected", idle: `${count} ${count === 1 ? "task" : "tasks"} selected` }, confirm: `Put away the selected tasks. You can restore any of them from Archived.` });
-  return screen("Put away old tasks", html`<div class="put-away">${crumbs}<h1>Put away old tasks</h1>\
-<p class="kit-state">${count === 0 ? "Old releases, routine runs and fixed CI notices are put away automatically." : `${count} ${count === 1 ? "task" : "tasks"} can be put away. They leave every list and keep their history.`}</p>\
+      body: html`${list}`, save: { label: "Archive selected", idle: `${count} ${count === 1 ? "task" : "tasks"} selected` }, confirm: `Archive the selected tasks. You can restore any of them from Archived.` });
+  return screen("Archive old tasks", html`<div class="put-away">${crumbs}<h1>Archive old tasks</h1>\
+<p class="kit-state">${count === 0 ? "Old releases, routine runs and fixed CI notices are archived automatically." : `${count} ${count === 1 ? "task" : "tasks"} can be archived. They leave every list and keep their history.`}</p>\
 ${data.problem ? html`<p class="kit-problem" role="alert">${data.problem}</p>` : ""}${data.releasesSkipped === null ? "" : html`<p class="kit-hint">Release tasks were left out: ${data.releasesSkipped}.</p>`}${daysForm}${body}</div>`, { chrome });
 }

@@ -1790,8 +1790,8 @@ export function scopeAuthorityOf(scope: Scope, env: ScopeAuthorityEnv = {}): Sco
 export function acceptanceWords(criteria: readonly AcceptanceCriterion[]): string[] {
   if (criteria.length === 0) return [];
   return [
-    `  acceptance   ${criteria[0]!.id}: ${criteria[0]!.statement} [requires: ${criteria[0]!.evidence.join(", ")}]`,
-    ...criteria.slice(1).map(c => `               ${c.id}: ${c.statement} [requires: ${c.evidence.join(", ")}]`),
+    `  done when    ${criteria[0]!.id}: ${criteria[0]!.statement} [shown by: ${criteria[0]!.evidence.join(", ")}]`,
+    ...criteria.slice(1).map(c => `               ${c.id}: ${c.statement} [shown by: ${c.evidence.join(", ")}]`),
   ];
 }
 
@@ -1811,8 +1811,8 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
   return [
     `  goal         ${scope.goal}`,
     ...(scope.outOfScope === null ? [] : [`  not this     ${scope.outOfScope}`]),
-    ...(scope.candidate ? [`  candidate    ${scope.candidate} — checked out by the machine, no agent runs`] : []),
-    ...(scope.touches.length === 0 ? [] : [`  touches      ${scope.touches.join(", ")}`]),
+    ...(scope.candidate ? [`  commit       ${scope.candidate.slice(0, 7)} — checked out by Toolroll, no agent runs`] : []),
+    ...(scope.touches.length === 0 ? [] : [`  files        ${scope.touches.join(", ")}`]),
     ...acceptanceWords(scope.acceptance),
     ...(scope.budgetMicrousd === null
       ? []
@@ -1829,7 +1829,7 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
     ...(scope.profile === null || scope.profile === undefined ? [] : ((terms) => [`  reads        ${terms.reads}`, ...(terms.mach === null ? [] : [`  services     ${terms.mach}`])])(sandboxTermsWords(scope.profile))),
     ...releaseTermsWords(scope.releaseTerms ?? null),
     ...(scope.releaseCheck == null ? [] : [`  release      ${releaseCheckSentence(scope.releaseCheck)}`]),
-    `  reference    ${scope.digest}`,
+    `  version      ${scope.digest.slice(0, 8)} (the full plan version is in --json)`,
     `  approved     ${describeApproval(approval)}`,
   ];
 }
@@ -1864,7 +1864,7 @@ function releaseTermsWords(terms: ReleaseTerms | null): string[] {
 function describeApproval(approval: Approval): string {
   if (approval.approved) return `yes, by ${approval.by} at ${approval.at}`;
   if (approval.reason === "changed") {
-    return "no — it was approved, then the scope was rewritten; approve it again";
+    return "no — edited after approval; approve it again";
   }
   return "no — nothing will build this until somebody agrees to it";
 }

@@ -29,6 +29,7 @@ import { starterForWork } from "../flow-starters.js";
 import { type Gap } from "../gaps.js";
 import { readAuthModeStrict } from "../keys.js";
 import { failedAttemptSentence,type FailureExplanation,retryNoteOf,START_BUILDER_COMMAND,startBuilderHref } from "../needs-you.js";
+import { planVersionWords } from "../plain-words.js";
 import { chosenWords, makesNoPlan, PHASES as ROUTE_PHASES, type RouteOverride, type RouteProjection, TASK_SIZES } from "../phase-routing.js";
 import { type MilestoneState,parseExecutionPlanDocument } from "../plan.js";
 import { type ContractChange } from "../planner-source.js";
@@ -81,11 +82,11 @@ export function contractChangeHtml(change: ContractChange): Html {
     case "outOfScope":
       return html`<li>${tag} <strong>not this</strong>${change.before === null ? "" : html`<div class="contract-before">was: ${change.before}</div>`}${change.after === null ? html`<div class="contract-after">now: <em>no exclusions</em></div>` : html`<div class="contract-after">now: ${change.after}</div>`}</li>`;
     case "touches":
-      return html`<li>${tag} <strong>touches</strong> <span class="mono">${change.path}</span></li>`;
+      return html`<li>${tag} <strong>files</strong> <span class="mono">${change.path}</span></li>`;
     case "acceptance": {
       const criterion = (one: { statement: string; evidence: readonly string[]; how: string | null } | null): Html | "" =>
         one === null ? "" : html`${one.statement} <span class="meta">[requires: ${one.evidence.join(", ")}]</span>${one.how === null ? "" : html`<div class="meta">how: ${one.how}</div>`}`;
-      return html`<li>${tag} <strong>criterion <code>${change.id}</code></strong>${change.kind === "changed" ? html` <span class="meta">(${change.moved.join(", ")})</span>` : ""}${
+      return html`<li>${tag} <strong>requirement <code>${change.id}</code></strong>${change.kind === "changed" ? html` <span class="meta">(${change.moved.join(", ")})</span>` : ""}${
         change.before === null ? "" : html`<div class="contract-before">${change.kind === "removed" ? "removed: " : "was: "}${criterion(change.before)}</div>`}${
         change.after === null ? "" : html`<div class="contract-after">${change.kind === "added" ? "added: " : "now: "}${criterion(change.after)}</div>`}</li>`;
     }
@@ -102,25 +103,25 @@ export function contractChangeHtml(change: ContractChange): Html {
  */
 export function planContractHtml(view: PlanContractView | null, mode: "full" | "ceremony"): Html {
   if (view === null) {
-    return mode === "full" ? html`` : html`<p class="meta contract-note">no contract record for this draft — compare the scope above against what you filed before signing</p>`;
+    return mode === "full" ? html`` : html`<p class="meta contract-note">No record compares this plan with your request. Check the plan above against what you asked for before approving.</p>`;
   }
   if ("problem" in view) {
-    return html`<div class="contract-panel contract-problem"><p class="approval-label">filed contract</p><p class="meta">${view.problem} · <a href="/r/${view.run}">run ${view.run}</a></p></div>`;
+    return html`<div class="contract-panel contract-problem"><p class="approval-label">Your request</p><p class="meta">${view.problem} · <a href="/r/${view.run}">Planner's record</a></p></div>`;
   }
-  const stale = view.current ? "" : html`<p class="meta">The scope was edited after this draft landed — the record below describes the draft as the planner proposed it</p>`;
+  const stale = view.current ? "" : html`<p class="meta">The plan was edited after the planner drafted it. The record below is the planner's draft.</p>`;
   if (!view.filed) {
     return mode === "full"
-      ? html`<div class="contract-panel contract-drafted"><p class="approval-label">filed contract</p><p class="meta">No scope was filed before planning — the planner drafted this contract from the title and the repository; review every term as new</p>${stale}</div>`
-      : html`<p class="meta contract-note">no scope was filed before planning — every term above is the planner's proposal</p>`;
+      ? html`<div class="contract-panel contract-drafted"><p class="approval-label">Your request</p><p class="meta">Nothing was filed before planning. The planner wrote this plan from the title and the project, so review every part as new.</p>${stale}</div>`
+      : html`<p class="meta contract-note">Nothing was filed before planning: every part above is the planner's.</p>`;
   }
   if (view.revision === true) {
     // A send-back: the terms were copied from the previous version, and the planner updated them with the notes.
     if (view.changes.length === 0) {
-      return html`<div class="contract-panel contract-preserved"><p class="approval-label">updated plan</p><p><strong>Same terms as before</strong> <span class="meta">your notes fit the previous plan · <a href="/r/${view.run}">run ${view.run}</a></span></p>${stale}</div>`;
+      return html`<div class="contract-panel contract-preserved"><p class="approval-label">updated plan</p><p><strong>Same plan as before</strong> <span class="meta">your notes fit the previous plan · <a href="/r/${view.run}">Planner's record</a></span></p>${stale}</div>`;
     }
     return joinHtml([
       html`<div class="contract-panel contract-amended"${mode === "full" ? html` id="contract-amendment"` : ""}><p class="approval-label">updated plan</p>`,
-      html`<p><strong>${view.changes.length} change${view.changes.length === 1 ? "" : "s"} from your notes</strong> <span class="meta">— approving accepts the updated terms ${mode === "full" ? "in the scope" : "above"} · <a href="/r/${view.run}">run ${view.run}</a></span></p>`,
+      html`<p><strong>The planner changed ${view.changes.length === 1 ? "1 thing" : `${view.changes.length} things`} from your notes:</strong> <span class="meta">approving accepts the updated plan ${mode === "full" ? "shown in the plan" : "above"} · <a href="/r/${view.run}">Planner's record</a></span></p>`,
       view.amendment === null ? "" : html`<p class="recap contract-reason"><strong>Why:</strong> ${view.amendment}</p>`,
       html`<ul class="recap contract-changes">${view.changes.map(contractChangeHtml)}</ul>`,
       stale,
@@ -128,11 +129,11 @@ export function planContractHtml(view: PlanContractView | null, mode: "full" | "
     ]);
   }
   if (view.changes.length === 0) {
-    return html`<div class="contract-panel contract-preserved"><p class="approval-label">filed contract</p><p><strong>Preserved exactly</strong> <span class="meta">the plan reproduces the filed goal, exclusions, touches, and acceptance criteria — approving binds the terms you filed · <a href="/r/${view.run}">run ${view.run}</a></span></p>${stale}</div>`;
+    return html`<div class="contract-panel contract-preserved"><p class="approval-label">Your request</p><p><strong>Kept exactly</strong> <span class="meta">the plan keeps your goal, exclusions, files and requirements word for word · <a href="/r/${view.run}">Planner's record</a></span></p>${stale}</div>`;
   }
   return joinHtml([
-    html`<div class="contract-panel contract-amended"${mode === "full" ? html` id="contract-amendment"` : ""}><p class="approval-label">filed contract · amendment proposed</p>`,
-    html`<p><strong>${view.changes.length} change${view.changes.length === 1 ? "" : "s"} to what you filed</strong> <span class="meta">— approving binds the AMENDED terms shown ${mode === "full" ? "in the scope" : "above"}, not the ones you filed · <a href="/r/${view.run}">run ${view.run}</a></span></p>`,
+    html`<div class="contract-panel contract-amended"${mode === "full" ? html` id="contract-amendment"` : ""}><p class="approval-label">Your request · changes proposed</p>`,
+    html`<p><strong>The planner changed ${view.changes.length === 1 ? "1 thing" : `${view.changes.length} things`} from your request:</strong> <span class="meta">approving accepts the changed plan ${mode === "full" ? "shown in the plan" : "above"}, not your original words · <a href="/r/${view.run}">Planner's record</a></span></p>`,
     view.amendment === null
       ? html`<p class="meta">The planner stated no reason for the amendment</p>`
       : html`<p class="recap contract-reason"><strong>Why:</strong> ${view.amendment}</p>`,
@@ -303,7 +304,7 @@ export function approvalSheetHtml(input: ApprovalSheetInput): Html {
       input.localOwner != null ? html`` : html`${reauth(html`<label class="approval-password"><span class="visually-hidden">Your password</span><input type="password" name="token" autocomplete="current-password" placeholder="Your password" aria-describedby="${parts.passwordNote}"></label>`)}`,
       input.localOwner?.eligible === true ? html``
         : input.localOwner != null ? html`<p class="approval-password-note" id="${parts.passwordNote}">${input.localOwner.message} <a href="${input.localOwner.href}">${input.localOwner.action}</a></p>`
-        : input.freshSince == null ? html`<p class="approval-password-note" id="${parts.passwordNote}">Your password signs this approval.</p>`
+        : input.freshSince == null ? html`<p class="approval-password-note" id="${parts.passwordNote}">Type your password to approve.</p>`
         : html`<p class="approval-password-note" id="${parts.passwordNote}" data-approval-fresh>Your password from ${whenTime(input.freshSince)} is remembered on this computer — leave this blank to approve with it, or type it again.</p>`,
       html`<button type="submit" data-primary-action>${parts.submit}</button></div>`,
       html`<p class="approval-after">${parts.after}</p>`,
@@ -334,7 +335,7 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   const sentence = input.revision !== null && (repairText === null || input.revision.comments.length > 0) ? revisionSentence(input.revision, scope.acceptance)
     : repairText === null ? null
     : repairText[2] !== undefined ? `Fixes what ${builtBy} missed: ${statementsOf(repairText[2])}.`
-    : repairText[3] !== undefined ? `Collects the evidence ${builtBy} was missing for: ${statementsOf(repairText[3])}. The saved code stays the same.`
+    : repairText[3] !== undefined ? `Shows what ${builtBy} couldn't show for: ${statementsOf(repairText[3])}. The saved code stays the same.`
     : `Fixes the checks that failed in ${builtBy}.`;
   const plan = input.planDocument === null ? null : parseExecutionPlanDocument(input.planDocument);
   const milestones = plan !== null && plan.ok ? plan.document.milestones : [];
@@ -397,9 +398,9 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   const amendment = approvalAmendmentHtml(contract);
   const contractDetail = input.planDocument === null || !isEmptyHtml(amendment) ? html``
     : contract === null || contract === undefined ? html`<p class="meta">No record compares this plan with what was filed. Check the rows above against your request.</p>`
-    : "problem" in contract ? html`<p class="meta">${contract.problem} · <a href="/r/${contract.run}">run ${contract.run}</a></p>`
+    : "problem" in contract ? html`<p class="meta">${contract.problem} · <a href="/r/${contract.run}">Planner's record</a></p>`
     : !contract.filed && contract.revision !== true ? html`<p class="meta">Nothing was filed before planning, so every term is the planner's proposal.</p>`
-    : html`<p class="meta">${contract.revision === true ? "Same terms as the previous version." : "The plan keeps exactly what you filed."} <a href="/r/${contract.run}">Planning run ${contract.run}</a></p>`;
+    : html`<p class="meta">${contract.revision === true ? "Same terms as the previous version." : "The plan keeps exactly what you filed."} <a href="/r/${contract.run}">Planner's record</a></p>`;
   const criteriaDetail = scope.acceptance.length === 0 ? html``
     : html`<ul class="approval-signed-criteria">${scope.acceptance.map(one => html`<li><code>${one.id}</code> ${one.statement} <span class="meta">shown by ${one.evidence.map(kind => EVIDENCE_PLAIN[kind] ?? kind).join(", ")}</span></li>`)}</ul>`;
   const projection = route?.projection ?? null;
@@ -422,13 +423,13 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   const details = joinHtml([
     html`<details class="approval-details"><summary>Plan details</summary>`,
     revisionDetail,
-    repairText === null ? "" : detail("Signed goal", html`<p>${scope.goal}</p>`),
+    repairText === null ? "" : detail("Full goal", html`<p>${scope.goal}</p>`),
     detail("Plan record", contractDetail),
-    detail("Signed criteria", criteriaDetail),
+    detail("Requirements", criteriaDetail),
     detail("Why these agents", agentsDetail, html` id="${input.surface === "task" ? "approval-agents" : "chat-approval-agents"}"`),
     detail("Runtime limits", limits),
     scope.candidate ? detail("Saved commit", html`<p><code class="approval-commit">${scope.candidate}</code></p>`) : "",
-    detail("Seal", html`<p class="meta">Approval binds to this exact wording. <span class="seal mono">signs ${shortDigest(scope.digest)}</span></p>`),
+    detail("Plan version", html`<p class="meta">Approving agrees to exactly this plan. <span class="seal mono" title="${planVersionWords(scope.digest)}">${planVersionWords(scope.digest)}</span></p>`),
     html`</details>`,
   ]);
   const passwordNote = input.surface === "task" ? "approval-password-note" : "chat-approval-password-note";
@@ -444,10 +445,17 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
     html`<label class="approval-field"><span class="approval-field-label">${label}</span>${hint === "" ? "" : html`<span class="approval-field-hint">${hint}</span>`}<textarea name="${name}" rows="${Math.min(10, Math.max(rows, value.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / 80)), 0)))}" form="${editForm}">${value}</textarea></label>`;
   // Done when, one line per requirement in the signed order; the server
   // matches them back by position (the digest guard keeps that order).
-  const requirement = (name: string, value: string, label: string, placeholder = ""): Html =>
-    html`<li><input type="text" name="${name}" value="${value}" aria-label="${label}"${placeholder === "" ? "" : html` placeholder="${placeholder}"`} form="${editForm}"></li>`;
+  // Each requirement says how we'll know it is met (#19): a picker over the kinds a plan names, read back by position.
+  const howPicker = (name: string, chosen: string, label: string, planned: readonly string[] | null): Html =>
+    html`<select name="${name}" aria-label="${label}" form="${editForm}" class="approval-how">${
+      planned !== null && planned.length > 1 ? html`<option value="keep"${chosen === "keep" ? html` selected` : ""}>${`As planned: ${planned.map(kind => EVIDENCE_PLAIN[kind] ?? kind).join(", ")}`}</option>` : ""}${
+      HOW_WE_KNOW.map(kind => html`<option value="${kind}"${chosen === kind ? html` selected` : ""}>${HOW_WE_KNOW_WORDS[kind]}</option>`)}</select>`;
+  const requirement = (name: string, value: string, label: string, how: Html, placeholder = ""): Html =>
+    html`<li><input type="text" name="${name}" value="${value}" aria-label="${label}"${placeholder === "" ? "" : html` placeholder="${placeholder}"`} form="${editForm}">${how}</li>`;
   const requirements = draft?.getAll("requirement") ?? scope.acceptance.map(one => one.statement);
+  const hows = draft?.getAll("requirement-how") ?? scope.acceptance.map(one => one.evidence.length === 1 ? one.evidence[0]! : "keep");
   const added = draft?.get("requirement-new") ?? "";
+  const addedHow = draft?.get("requirement-new-how") ?? "manual-review";
   const editor = edit === null ? null : joinHtml([
     html`<details class="approval-edit" id="plan-editor"${draft === null && !edit.open ? "" : html` open`}>`,
     html`<summary class="approval-link"><span class="approval-edit-open">Edit plan</span><span class="approval-edit-close">Cancel</span></summary>`,
@@ -457,9 +465,10 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
     field("touches", draft?.get("touches") ?? scope.touches.join("\n"), 2, "Changes", "Only in these paths, one per line. Leave empty for any file."),
     field("not", draft?.get("not") ?? scope.outOfScope ?? "", 2, "Won’t touch"),
     html`<fieldset class="approval-field"><legend class="approval-field-label">Done when</legend>`,
-    html`<span class="approval-field-hint">Clear a line to drop it.</span><ul class="approval-requirements">`,
-    requirements.map((one, index) => requirement("requirement", one, `Requirement ${index + 1}`)),
-    requirement("requirement-new", added, "Add a requirement", "Add a requirement"),
+    html`<span class="approval-field-hint">Clear a line to drop it. Beside each, how we'll know it is met.</span><ul class="approval-requirements">`,
+    requirements.map((one, index) => requirement("requirement", one, `Requirement ${index + 1}`,
+      howPicker("requirement-how", hows[index] ?? "manual-review", `How we'll know requirement ${index + 1} is met`, scope.acceptance[index]?.evidence ?? null))),
+    requirement("requirement-new", added, "Add a requirement", howPicker("requirement-new-how", addedHow, "How we'll know the new requirement is met", null), "Add a requirement"),
     html`</ul></fieldset>`,
     html`<div class="approval-edit-act"><button type="submit" form="${editForm}">Save plan</button>`,
     // A plan with written steps keeps its own editor for them.
@@ -519,6 +528,9 @@ export class PermissionsWouldChange extends Error {}
 
 /** Evidence kinds in plain words, for the signed criteria in Details. */
 export const EVIDENCE_PLAIN: Record<string, string> = { check: "the project check", screenshot: "screenshots", "changed-path": "changed files", "manual-review": "your own check" };
+/** The kinds a requirement's "How we'll know" picker offers, in the order it lists them (#19). */
+export const HOW_WE_KNOW = ["check", "screenshot", "changed-path", "manual-review"] as const;
+export const HOW_WE_KNOW_WORDS: Record<(typeof HOW_WE_KNOW)[number], string> = { check: "The project check passes", screenshot: "A screenshot shows it", "changed-path": "The changed files show it", "manual-review": "You check it yourself" };
 
 /** The permission choice a sealed profile carries, as the scope form names it. */
 export function permissionModeOfProfile(profile: Scope["profile"] | null | undefined): UnattendedPermissionMode | null {
@@ -534,22 +546,29 @@ export function permissionModeOfProfile(profile: Scope["profile"] | null | undef
 /** Done when, from the in-place editor: each line keeps its requirement's
  * id by position, and its evidence and guidance while its words stand; a
  * rewritten one is yours to check, like an added one; an emptied one is
- * dropped. */
-export function requirementsFromEditor(body: FormView<"requirement" | "requirement-new">, current: readonly AcceptanceCriterion[]): unknown[] {
+ * dropped. A "How we'll know" choice beside a line (#19) names its one kind
+ * instead; "keep", or no choice at all (an older form), changes nothing. The
+ * saved plan is a new version either way: it needs approving like any edit. */
+export function requirementsFromEditor(body: FormView<"requirement" | "requirement-new" | "requirement-how" | "requirement-new-how">, current: readonly AcceptanceCriterion[]): unknown[] {
   const used = new Set(current.map(one => one.id));
   let next = 1;
   while (used.has(`c${next}`)) next++;
   const plain = (raw: string): string => raw.replace(/\s+/g, " ").trim();
+  const hows = body.getAll("requirement-how");
+  const howOf = (raw: string | undefined): AcceptanceCriterion["evidence"][number] | null =>
+    raw !== undefined && (HOW_WE_KNOW as readonly string[]).includes(raw) ? raw as AcceptanceCriterion["evidence"][number] : null;
   const kept = body.getAll("requirement").slice(0, current.length).flatMap((raw, index) => {
     const statement = plain(raw);
     const criterion = current[index]!;
+    const how = howOf(hows[index]);
     if (statement === "") return [];
+    const evidence = how === null ? null : [how];
     return statement === plain(criterion.statement)
-      ? [{ id: criterion.id, statement: criterion.statement, evidence: [...criterion.evidence], how: criterion.how }]
-      : [{ id: criterion.id, statement, evidence: ["manual-review" as const], how: null }];
+      ? [{ id: criterion.id, statement: criterion.statement, evidence: evidence ?? [...criterion.evidence], how: criterion.how }]
+      : [{ id: criterion.id, statement, evidence: evidence ?? ["manual-review" as const], how: null }];
   });
   const added = plain(body.get("requirement-new") ?? "");
-  return added === "" ? kept : [...kept, { id: `c${next}`, statement: added, evidence: ["manual-review"], how: null }];
+  return added === "" ? kept : [...kept, { id: `c${next}`, statement: added, evidence: [howOf(body.get("requirement-new-how") ?? undefined) ?? "manual-review"], how: null }];
 }
 
 /**
@@ -566,9 +585,9 @@ export function requirementsFromEditor(body: FormView<"requirement" | "requireme
 export type ConsentDoor = { open: true } | { open: false; title: string; why: string; road: "scope" | "agents" };
 
 export function consentDoorOf(scope: Scope | null, route: RouteView | null | undefined): ConsentDoor {
-  if (scope === null) return { open: false, title: "There is no scope to approve yet", why: "write the scope first", road: "scope" };
+  if (scope === null) return { open: false, title: "There is no plan to approve yet", why: "write the plan first", road: "scope" };
   if (scope.profileState === "unresolved") {
-    return { open: false, title: "The agent setup isn’t ready yet", why: scope.unresolvedReason ?? "the scope cannot say exactly what would run", road: "scope" };
+    return { open: false, title: "The agent setup isn’t ready yet", why: scope.unresolvedReason ?? "the plan can't say exactly what would run", road: "scope" };
   }
   // THE SAME STRICT PROJECTION THE SEAL USES (v48 integrity): before any
   // nonce, password field, or approve action renders, the stored scope
@@ -583,16 +602,16 @@ export function consentDoorOf(scope: Scope | null, route: RouteView | null | und
       return { open: false, title: "The provider’s auth mode can’t be read", why: `${authority.problem} — restate it, then approve`, road: "agents" };
     }
     if (authority.reason === "unrouted") {
-      return { open: false, title: "This scope predates agent routing", why: "its approval no longer stands, and an approval now must name exactly which agent plans, builds, and revises — re-file the scope (edit and save it) to route it under today’s agents, then approve it", road: "scope" };
+      return { open: false, title: "This plan was made before agents were chosen per task", why: "its approval no longer stands. An approval now names exactly which agent plans, builds and fixes it: edit and save the plan to choose today’s agents, then approve it", road: "scope" };
     }
-    return { open: false, title: "The agents on file can’t be read", why: `${authority.problem} — re-file the scope (edit and save it) so it is routed again under today’s agents`, road: "scope" };
+    return { open: false, title: "The agents on file can’t be read", why: `${authority.problem}. Edit and save the plan to choose today’s agents again`, road: "scope" };
   }
   if (route === null || route === undefined) return { open: true };
   if (route.kind === "unreadable") {
-    return { open: false, title: "The agents on file can’t be read", why: `${route.problem} — re-file the scope (edit and save it) so it is routed again under today’s agents`, road: "scope" };
+    return { open: false, title: "The agents on file can’t be read", why: `${route.problem}. Edit and save the plan to choose today’s agents again`, road: "scope" };
   }
   if (route.kind === "legacy") {
-    return { open: false, title: "This scope predates agent routing", why: "its approval no longer stands, and an approval now must name exactly which agent plans, builds, and revises — re-file the scope (edit and save it) to route it under today’s agents, then approve it", road: "scope" };
+    return { open: false, title: "This plan was made before agents were chosen per task", why: "its approval no longer stands. An approval now names exactly which agent plans, builds and fixes it: edit and save the plan to choose today’s agents, then approve it", road: "scope" };
   }
   if (route.projection !== null && route.projection.problems.length > 0) {
     return { open: false, title: "The agents on file can’t run", why: `${route.projection.problems.join("; ")} — change the agents, then approve`, road: "agents" };
@@ -604,7 +623,7 @@ export function consentDoorOf(scope: Scope | null, route: RouteView | null | und
  * the reason and the one act that opens it. */
 export function consentClosedHtml(taskId: string, door: ConsentDoor & { open: false }, surface: "task" | "chat" | "next"): Html {
   const href = `${taskHref(taskId)}#${door.road === "agents" ? "agents" : "scope"}`;
-  const act = door.road === "agents" ? "Change the agents →" : "Edit and re-file the scope →";
+  const act = door.road === "agents" ? "Change the agents →" : "Edit the plan →";
   if (surface === "chat") {
     return html`<section class="card chat-action-card consent-closed" id="task-chat-action"><span class="eyebrow">approval needs attention</span><h2>${door.title}</h2><p class="meta">${door.why}</p><a class="button-link" href="${href}">${act}</a></section>`;
   }
@@ -616,12 +635,12 @@ export function consentClosedHtml(taskId: string, door: ConsentDoor & { open: fa
 
 export function profileWords(scope: Pick<Scope, "profile" | "profileState" | "unresolvedReason" | "digestVersion">): Html {
   if (scope.profileState === "unresolved") {
-    return html`<p class="meta"><strong>Filed but unapprovable</strong> — ${scope.unresolvedReason ?? "the scope cannot say exactly what would run"}. Restate the scope to fix it.</p>`;
+    return html`<p class="meta"><strong>Filed, but it can't be approved yet</strong> — ${scope.unresolvedReason ?? "the plan can't say exactly what would run"}. Edit the plan to fix it.</p>`;
   }
   const profile = scope.profile ?? null;
   if (profile === null) {
     return (scope.digestVersion ?? 1) < 2
-      ? html`<p class="meta">Approved before routing was bound — pinned at upgrade to the configuration of that day</p>`
+      ? html`<p class="meta">Approved before agents were chosen per task: it keeps the setup of that day</p>`
       : html``;
   }
   const repair = profile.repairModel === "inherit" ? "same model" : profile.repairModel;
@@ -637,7 +656,7 @@ export function profileWords(scope: Pick<Scope, "profile" | "profileState" | "un
       : profile.provider === "gemini"
         ? html`<p class="meta">Runs on <span class="mono">gemini · ${profile.model}</span> — ${profile.approvalArgv === "yolo" ? "Full access via --approval-mode yolo; every tool auto-approved" : "Auto via --approval-mode auto_edit; edits auto-approved, other tools refused"}, no turn limit (${Math.round(profile.timeoutSeconds / 60)} min ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}), spend reported in tokens only; repairs on ${repair}, ${Math.round(profile.repairTimeoutSeconds / 60)} min</p>`
         : isAcpProfile(profile)
-          ? html`<p class="meta">Runs on <span class="mono">${ACP_AGENTS[profile.provider].name} (via ACP) · ${profile.model}</span> — full access inside the OS fence; the agent runs any tool it chooses and nothing asks. No turn limit: stops after ${Math.round(profile.timeoutSeconds / 60)} min, or ${Math.round(profile.idleTimeoutSeconds / 60)} min silent; repairs on ${repair}, ${Math.round(profile.repairTimeoutSeconds / 60)} min, or ${Math.round(profile.repairIdleTimeoutSeconds / 60)} min silent.</p>`
+          ? html`<p class="meta">Runs on <span class="mono">${ACP_AGENTS[profile.provider].name} (via ACP) · ${profile.model}</span> — full access inside Toolroll's sandbox; the agent runs any tool it chooses and nothing asks. No turn limit: stops after ${Math.round(profile.timeoutSeconds / 60)} min, or ${Math.round(profile.idleTimeoutSeconds / 60)} min silent; repairs on ${repair}, ${Math.round(profile.repairTimeoutSeconds / 60)} min, or ${Math.round(profile.repairIdleTimeoutSeconds / 60)} min silent.</p>`
         : html`<p class="meta">Runs on <span class="mono">${profile.provider} · ${profile.model}</span> — ${profile.sandboxMode === "danger-full-access" ? "FULL permissions via --dangerously-bypass-approvals-and-sandbox; nothing asks" : "workspace-write sandbox"}, no turn limit (${Math.round(profile.timeoutSeconds / 60)} min ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}); repairs on ${repair}, ${Math.round(profile.repairTimeoutSeconds / 60)} min</p>`;
   // What the build may reach is part of what is approved (egress.ts): said on every approval form.
   // Its sandbox terms (project-sandbox.ts): what it reads always, and any widening, part of what the yes agrees to.
@@ -862,7 +881,7 @@ export function agentsCardHtml(taskId: string, view: RouteView | null | undefine
     routeEvidenceHtml(view),
     p === null
       ? view.kind === "unreadable"
-        ? html`<p class="agents-halted">Nothing runs for this task until its scope is filed again and approved.</p>`
+        ? html`<p class="agents-halted">Nothing runs for this task until its plan is saved again and approved.</p>`
         : ""
       : joinHtml([
         p.halted ? html`<p class="agents-halted">Paused: a provider these agents need is reported unavailable. Nothing else is used in its place — choose another agent below, or restore the provider and report readiness again.</p>` : "",
@@ -902,7 +921,7 @@ export function approvalProofWords(proof: { method: string; at: string } | null 
   if (proof.method === "session") return " (passwordless: your signed-in session)";
   if (proof.method === "cli-login") return " (passwordless: this computer's remembered login)";
   if (proof.method === "chat") return " (from your paired chat)";
-  if (proof.method === "carried") return " (carried from the release approval)";
+  if (proof.method === "carried") return " (from the release approval)";
   // Easy-start C5: this computer's owner approving attended work in local mode, with no password.
   if (proof.method === "local-owner") return " (on this computer, no password)";
   return "";
@@ -912,9 +931,9 @@ const whenText = (iso: string): string => new Intl.DateTimeFormat("en-US", { hou
 export function approveRefusalWords(reason: string): string {
   if (reason === "requester" || reason === "person-required") return gateWords({ verdict: "refuse", reason });
   if (reason === "machine-proof") return "not approved: only a person can approve this. Approve it on the task page or from your paired chat";
-  if (reason === "archived") return "not approved: this task is put away. Restore it first";
-  if (reason === "unrouted") return "not approved: this scope predates agent routing and its old approval no longer stands — edit and re-file the scope so it is routed under today’s agents, then approve it";
-  if (reason === "profile-unresolved") return "not approved: the scope cannot name an exact agent for every role — fix the agent setup and re-file it";
+  if (reason === "archived") return "not approved: this task is archived. Restore it first";
+  if (reason === "unrouted") return "not approved: this plan was made before agents were chosen per task, so its old approval no longer stands. Edit and save the plan to choose today’s agents, then approve it";
+  if (reason === "profile-unresolved") return "not approved: the plan can't name an exact agent for every role. Fix the agent setup, then save the plan again";
   if (reason === "password-now") return "not approved: this needs your password typed now — protected work, raised permissions, or a plan an agent wrote can't use a remembered one";
   // A wrong password, someone who isn't an approver (or not for this project), a revoked login: one answer for all, so
   // the refusal never tells a guesser which it was.
@@ -1057,7 +1076,7 @@ export function taskControlHtml(control: TaskControlView, taskId: string, csrf: 
   const runForm = (path: string, className: string, button: Html): Html =>
     postForm(`${taskHref(taskId)}/${path}`, button, { attrs: { class: className }, returnTo: surface, hidden: { run: control.run } });
   const role = (word: TaskControlView & { kind: "stop" | "stopping" | "paused" }): string =>
-    word.role === "planner" ? "plan attempt" : word.role === "scout" ? "scouting attempt" : word.role === "reviewer" ? "review" : "build";
+    word.role === "planner" ? "plan attempt" : word.role === "scout" ? "research attempt" : word.role === "reviewer" ? "review" : "build";
   if (control.kind === "stop" && surface === "chat") {
     return joinHtml([
       html`<section class="card task-control" id="task-control" data-task-control="stop" data-control-run="${control.run}"><details class="chat-stop-confirm"><summary>Stop task</summary>`,
@@ -1069,7 +1088,7 @@ export function taskControlHtml(control: TaskControlView, taskId: string, csrf: 
   if (control.kind === "stop") {
     return joinHtml([
       html`<section class="card task-control" id="task-control" data-task-control="stop" data-control-run="${control.run}" aria-label="stop this attempt">`,
-      html`<div class="task-control-copy"><details><summary>Stop details · ${role(control)} #${control.run}</summary><p class="meta">Stopping ends only this attempt's own processes. Its branch, uncommitted work, evidence, and decisions stay preserved; other tasks keep running.</p></details></div>`,
+      html`<div class="task-control-copy"><details><summary>Stop details · ${role(control)} #${control.run}</summary><p class="meta">Stopping ends only this attempt's own processes. Its branch, uncommitted work, saved files and decisions are kept; other tasks keep running.</p></details></div>`,
       stopElsewhere || !guarded || livePause === null || livePause.run !== control.run ? "" : pauseFormsHtml(taskId, livePause),
       stopElsewhere ? "" : guarded
         ? runForm("stop", "inline task-control-form task-stop-form", html`<button type="submit" class="danger task-control-button">Stop</button>`)
@@ -1090,7 +1109,7 @@ export function taskControlHtml(control: TaskControlView, taskId: string, csrf: 
     const settled = control.stop.settledAt === null ? "" : ` · settled ${stopWhen(control.stop.settledAt)} (${control.stop.settlement ?? "?"})`;
     const kept = control.stop.settlement === "finished"
       ? html`The attempt reached its own ending (${control.outcome ?? "?"}) before the stop took effect; that outcome stands.`
-      : html`${control.committed ? "Its commit is on the branch as a reviewable artifact; a" : "A"}ny uncommitted work is preserved${control.worktree === null ? "" : html` in <span class="mono">${control.worktree}</span>`}. Resuming takes a fresh claim, re-proves the signed scope, and requires fresh proof — nothing is approved by resuming.`;
+      : html`${control.committed ? "Its commit is on the branch as a reviewable artifact; a" : "A"}ny uncommitted work is preserved${control.worktree === null ? "" : html` in <span class="mono">${control.worktree}</span>`}. Resuming checks the approved plan again and needs new checks — resuming approves nothing.`;
     return joinHtml([
       html`<section class="card task-control" id="task-control" data-task-control="paused" data-control-run="${control.run}" aria-label="paused attempt">`,
       html`<div class="task-control-copy"><span class="eyebrow">paused</span><strong>${role(control)} #${control.run} was stopped by <span class="mono">${control.stop.requestedBy}</span></strong>`,
@@ -1124,10 +1143,10 @@ export function resumeCeremonyPage(chrome: Chrome, data: {
     html`<h1>Resume task?</h1><p class="resume-target"><strong>${data.taskTitle}</strong> · ${data.taskId} · Run #${control.run}</p>`,
     html`<div class="card resume-ceremony">`,
     html`<p class="row">Lifts this stop’s hold. Other holds stay in place.</p>`,
-    html`<p class="row">Continues saved work${control.committed ? " and its commit" : ""} under the current approved scope. The next attempt needs fresh evidence; the earlier handoff cannot count as a new result.</p>`,
-    html`<p class="row">Resuming grants no new approval or publishing permission. Scope, budget, agents, verification, and review limits still apply.</p>`,
+    html`<p class="row">Continues saved work${control.committed ? " and its commit" : ""} under the current approved plan. The next attempt needs new checks; the earlier handoff can't count as a new result.</p>`,
+    html`<p class="row">Resuming grants no new approval or publishing permission. The plan, budget, agents, checks and review limits still apply.</p>`,
     html`<details><summary>Stop record and saved work</summary><p>Run #${control.run} was stopped by <span class="mono">${control.stop.requestedBy}</span> at ${stopWhen(control.stop.requestedAt)}${control.stop.settledAt === null ? "" : ` and settled ${stopWhen(control.stop.settledAt)} (${control.stop.settlement ?? "?"})`}.</p>${control.worktree === null ? "" : html`<p class="mono">${control.worktree}</p>`}</details>`,
-    data.approved ? "" : html`<p class="row problem-words"><strong>The scope is not approved as it stands</strong> — resuming lifts the pause, but no worker spends until the scope is approved again</p>`,
+    data.approved ? "" : html`<p class="row problem-words"><strong>The plan isn't approved as it stands</strong> — resuming lifts the pause, but no builder starts until the plan is approved again</p>`,
     data.gate === null ? "" : html`<p class="row"><strong>Before work starts:</strong> ${data.gate.summary} — ${data.gate.detail}</p>`,
     html`</div>`,
     postForm(`${taskHref(data.taskId)}/resume`, joinHtml([
@@ -1314,7 +1333,7 @@ export function planRevisionLedgerHtml(ledger: PlanRevisionLedgerView | null | u
         html`<div class="plan-revision-pending"><span class="eyebrow">decision needed</span><h3>The agent recommends a plan change</h3>`,
         html`<p>${pendingRevision.reason}</p>`,
         html`<p class="meta">Revision ${pendingRevision.revision}${pendingRevision.authorityKind === "authority-change" ? ` changes ${pendingRevision.changedFields.map(changedAuthority).join(" and ")} from what you approved, so work is paused until you decide.` : " only changes the route, not the approved outcome."}${
-          pendingRevision.evidenceLink === null ? "" : ` Evidence: ${pendingRevision.evidenceLink}.`}</p>`,
+          pendingRevision.evidenceLink === null ? "" : ` Why: ${pendingRevision.evidenceLink}.`}</p>`,
         executionPlanHtml(pendingRevision.document, true),
         csrf === "" || pendingRevision.id === null
           ? ""
@@ -1360,7 +1379,7 @@ export function executionPlanHtml(document: string, compact = false): Html {
     html`<div class="execution-milestones"><span class="approval-label">milestones</span>${items(plan.milestones, true)}</div>`,
     html`<div class="execution-support"><div><span class="approval-label">dependencies</span>${items(plan.dependencies)}</div>`,
     html`<div><span class="approval-label">risks &amp; mitigations</span>${items(plan.risks)}</div></div>`,
-    html`<div class="execution-proof"><span class="approval-label">proof of done</span>${items(plan.proof)}</div>`,
+    html`<div class="execution-proof"><span class="approval-label">how we'll know it's done</span>${items(plan.proof)}</div>`,
     html`</div>`,
   ]);
 }
@@ -1424,7 +1443,7 @@ export function revisionLineageWords(lineage: RevisionLineage): string[] {
   const chain = lineage.ancestors.length > 1 ? ` · lineage ${lineage.ancestors.join(" → ")}` : "";
   words.push(`revises ${lineage.sourceTask}${lineage.sourceRun === null ? "" : ` (build #${lineage.sourceRun})`}${chain}`);
   if (!lineage.sourceHadScope) {
-    words.push("the source had no scope — nothing was inherited; the placeholder rubric waits for a real one");
+    words.push("the earlier version had no plan, so nothing was copied; the placeholder requirements wait for real ones");
   } else if (lineage.terms !== null) {
     const terms = lineage.terms;
     words.push(
@@ -1707,7 +1726,7 @@ export function taskBodyParts(data: {
     const transcript =
       liveRun.provider !== "claude"
           ? html`<p class="meta">The live transcript needs the claude harness for now — this build runs on ${liveRun.provider}</p>`
-          : html`<p class="meta">What the agent is saying · display only — this is not evidence, and the machine running the agent could alter it</p><pre id="live-transcript" class="mono" style="max-height:18rem;overflow:auto;white-space:pre-wrap"></pre><p class="meta" id="live-transcript-state"></p>`;
+          : html`<p class="meta">What the agent is saying</p><pre id="live-transcript" class="mono" style="max-height:18rem;overflow:auto;white-space:pre-wrap"></pre><p class="meta" id="live-transcript-state"></p>`;
     return html`<div class="card attempt-live" data-live-run="${liveRun.id}">${head}${peek}${transcript}${door}</div>`;
   })();
 
@@ -1729,9 +1748,9 @@ export function taskBodyParts(data: {
 
     if (task.state !== "done") {
       const diagnosis = data.dispatch ?? null;
-      if (diagnosis === null) return box("problem", "Dispatch unknown", "Refresh this task before relying on its scheduler state.", "unknown");
+      if (diagnosis === null) return box("problem", "Can't tell yet", "Reload this task to see whether it can start.", "unknown");
       if (diagnosis.code === "running" && liveRun !== undefined) {
-        return box("ok", diagnosis.summary, html`Worker <span class="mono">${liveRun.runner}</span> owns <a href="/r/${liveRun.id}">build #${liveRun.id}</a>.`, diagnosis.code);
+        return box("ok", diagnosis.summary, html`Builder <span class="mono">${liveRun.runner}</span> is on <a href="/r/${liveRun.id}">build #${liveRun.id}</a>.`, diagnosis.code);
       }
       const blocker = diagnosis.blockerTaskId === null
         ? null
@@ -1739,9 +1758,9 @@ export function taskBodyParts(data: {
       const action = ((): Html | "" => {
         switch (diagnosis.action) {
           case "start-worker": return "";
-          case "write-scope": return html` <a href="#scope">Write the success contract</a> or use <strong>plan first</strong>.`;
+          case "write-scope": return html` <a href="#scope">Write the plan</a> or use <strong>plan first</strong>.`;
           case "select-agent": return html` <a href="#scope">Choose an available provider and model</a>.`;
-          case "approve-scope": return html` <a href="#approve">Review and sign the exact scope</a>.`;
+          case "approve-scope": return html` <a href="#approve">Review the plan and approve it</a>.`;
           case "answer-decision": return html` <a href="#decisions">Answer the waiting question</a>.`;
           case "unhold": return html` Use <strong>Remove hold</strong> when it can continue.`;
           // The reason is the detail itself; Retry is the status card's own act, said once.
@@ -1873,7 +1892,7 @@ export function taskBodyParts(data: {
       const machineNote =
         !reviewConflict(proof.proofMatrix, proof.machineVerdict, proof.proofVerdict)
           ? ""
-          : html`<p class="meta">An independent review found conflicting evidence.</p>`;
+          : html`<p class="meta">An independent review found the report doesn't match the changes.</p>`;
       const chainHtml = repairChainHtml(proof.repairChain);
       // v51: semantic coverage sits beside the matrix, never inside the
       // verdict word — what the independent reviewer settled, under the
@@ -1894,7 +1913,7 @@ export function taskBodyParts(data: {
       if (resultStatus.token === "evidence-damaged") {
         return withReview(
           box("problem", resultStatus.label, html`<a href="/r/${proof.runId}">Build #${proof.runId}</a> finished. ${resultStatus.detail}${publicationWords}`, "evidence-damaged"),
-          html`<div class="proof-review-actions"><a class="button-link" href="/r/${proof.runId}">Review the evidence problems</a></div>`,
+          html`<div class="proof-review-actions"><a class="button-link" href="/r/${proof.runId}">Review what doesn't match</a></div>`,
           proofDetails,
         );
       }
@@ -1932,7 +1951,7 @@ export function taskBodyParts(data: {
         proofDetails,
       );
     }
-    return box("problem", "Dispatch unknown", "Refresh this task before relying on its scheduler state.", "unknown");
+    return box("problem", "Can't tell yet", "Reload this task to see whether it can start.", "unknown");
   })();
   // Operator steering (arc 1, v120): notes for the agent, each wearing the
   // same words the CLI and the lead use — read (and when), waiting for the
@@ -1953,7 +1972,7 @@ export function taskBodyParts(data: {
         postForm(`${taskHref(task.id)}/steer`, html`<input type="text" name="note" placeholder="guidance for the agent" aria-label="steering note" style="width:100%;max-width:28rem">${
           data.steeringRun == null ? "" : html`<input type="hidden" name="run" value="${String(data.steeringRun)}"><input type="hidden" name="key" value="${randomUUID()}"><input type="hidden" name="return" value="task">`
         }<button type="submit">${data.steeringRun == null ? "Save for the next attempt" : "Steer"}</button>`, { attrs: { class: "row" } }),
-        html`<p class="meta">${steerDestinationWords(steeringLive)} A note can't widen the approved scope.</p>`,
+        html`<p class="meta">${steerDestinationWords(steeringLive)} A note can't widen the approved plan.</p>`,
       ]);
   const steeringCard =
     steerRows === "" && steerForm === "" ? "" : html`<h2>Steering</h2>${steerRows}${steerForm}`;
@@ -1966,7 +1985,7 @@ export function taskBodyParts(data: {
         joinHtml(data.holds.map(
           hold => html`<p class="row">${holdOwnerWords(hold.ownerKind)} — ${hold.reason}${hold.until === null ? "" : html` <span class="meta">until ${whenTime(hold.until)}</span>`}</p>`,
         ), "\n"),
-        html`<p class="meta">Only your hold can be lifted here — waits caused by questions, incidents, or retry delays clear on their own</p>`,
+        html`<p class="meta">Only your hold can be lifted here. Waits for a question, repeated failures or a retry clear on their own.</p>`,
       ]);
 
   const approval = approvalOf(scope);
@@ -1976,22 +1995,22 @@ export function taskBodyParts(data: {
   const scopeDraft = inlineScopeDraft ? undefined : data.scopeDraft;
   const scopeCard =
     scope === null
-      ? html`<p class="meta">No scope proposed — nothing builds this until one is approved</p>`
+      ? html`<p class="meta">No plan yet. Nothing builds until one is approved.</p>`
       : joinHtml([
           html`<div class="card">`,
           html`<p><strong>Goal</strong></p><p class="recap">${scope.goal}</p>`,
           scope.outOfScope === null ? "" : html`<p><strong>Not this</strong></p><p class="recap">${scope.outOfScope}</p>`,
-          scope.touches.length === 0 ? "" : html`<p class="scope-paths"><strong>Touches</strong> ${scope.touches.join(", ")}</p>`,
+          scope.touches.length === 0 ? "" : html`<p class="scope-paths"><strong>Files</strong> ${scope.touches.join(", ")}</p>`,
           html`<p><strong>Quality</strong> ${qualityModeTitle(scope.qualityMode ?? "default")}</p>`,
           acceptanceCeremonyHtml(scope.acceptance),
           scope.releaseTerms == null ? "" : html`<p><strong>Release</strong></p><p class="recap">${releaseTermsSentence(scope.releaseTerms)}</p>${data.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : ""}${scope.releaseTerms.policy.carry ? html`<details><summary>What asks again</summary><ul>${joinHtml(releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`), "")}</ul></details>` : ""}`,
           approval.approved && data.autoRelease != null
-            ? html`<p class="meta scope-seal">${autoReleaseWords(data.autoRelease)} · <span class="seal">signs ${shortDigest(scope.digest)}</span></p>`
+            ? html`<p class="meta scope-seal">${autoReleaseWords(data.autoRelease)}</p>${planVersionDetailsHtml(scope.digest)}`
             : approval.approved && data.release?.kind === "carried"
-            ? html`<p class="meta scope-seal">Carried from ${data.release.approver ?? "a person"}'s release approval · <a href="${taskHref(data.release.anchorTask)}">Release ${data.release.version}</a> · <span class="seal">signs ${shortDigest(scope.digest)}</span></p>`
+            ? html`<p class="meta scope-seal">Approved with ${data.release.approver ?? "a person"}'s release approval · <a href="${taskHref(data.release.anchorTask)}">Release ${data.release.version}</a></p>${planVersionDetailsHtml(scope.digest)}`
             : approval.approved
-            ? html`<p class="meta scope-seal">Approved by ${approval.by}${approvalProofWords(data.approvalProof)} · ${whenTime(approval.at)} · <span class="seal">signs ${shortDigest(scope.digest)}</span><span class="so-sr-only"> — approval binds to this exact wording</span></p>`
-            : html`<p class="meta"><span class="seal">signs ${shortDigest(scope.digest)}</span> — approval binds to this exact wording</p><p class="meta">Not approved${approval.reason === "changed" ? " — approved once, then rewritten" : ""}</p>`,
+            ? html`<p class="meta scope-seal">Approved by ${approval.by}${approvalProofWords(data.approvalProof)} · ${whenTime(approval.at)}</p>${planVersionDetailsHtml(scope.digest)}`
+            : html`<p class="meta">${approval.reason === "changed" ? "Edited after approval" : "Not approved"}</p>${planVersionDetailsHtml(scope.digest)}`,
           html`</div>`,
         ], "\n");
 
@@ -2002,20 +2021,20 @@ export function taskBodyParts(data: {
   const reportCard =
     data.report === null || data.report === undefined
       ? data.deliverable === "report"
-        ? html`<div class="card"><p><strong>Scout task</strong> <span class="meta">delivers a report, never a branch — a read-only session investigates the goal and its report appears here when it finishes</span></p></div>`
+        ? html`<div class="card"><p><strong>Research task</strong> <span class="meta">delivers a report, never a branch. A read-only session looks into the goal, and its report appears here when it finishes.</span></p></div>`
         : ""
       : !data.report.ok
-        ? html`<div class="card"><p><strong>The report</strong></p><p class="meta">${data.report.problem} · <a href="/r/${data.report.run}">run ${data.report.run}</a></p></div>`
+        ? html`<div class="card"><p><strong>The report</strong></p><p class="meta">${data.report.problem} · <a href="/r/${data.report.run}">build #${data.report.run}</a></p></div>`
         : joinHtml([
             html`<div class="card report">`,
-            html`<p><strong>${data.report.report.title}</strong> <span class="meta">the scout's report · <a href="/r/${data.report.run}">run ${data.report.run}</a></span></p>`,
+            html`<p><strong>${data.report.report.title}</strong> <span class="meta">the research report · <a href="/r/${data.report.run}">build #${data.report.run}</a></span></p>`,
             html`<p class="report-summary">${data.report.report.summary}</p>`,
             reportItemsHtml(data.report.report.items, data.report.shots, data.report.run),
             html`<pre class="recap plan-doc">${data.report.report.report}</pre>`,
             ...(data.report.report.followUps.length === 0
               ? []
               : [
-                  html`<p><strong>Follow-ups the scout proposes</strong> <span class="meta">each files as a task in this repository; its scope still needs your approval</span></p>`,
+                  html`<p><strong>Follow-ups the research proposes</strong> <span class="meta">each files as a task in this project; its plan still needs your approval</span></p>`,
                   ...data.report.report.followUps.map(
                     (one, index) => joinHtml([
                       html`<div class="follow-up"><p><strong>${one.title}</strong></p><p class="meta">${one.goal}</p>`,
@@ -2065,7 +2084,7 @@ export function taskBodyParts(data: {
       : joinHtml([
         approval.approved ? html`<details class="card planner-plan planner-plan-collapsed"><summary class="execution-plan-head">` : html`<section class="card planner-plan"><div class="execution-plan-head">`,
         html`<div><span class="eyebrow">execution plan</span><h2>${approval.approved ? `${planMilestoneCount ?? "Full"} step${planMilestoneCount === 1 ? "" : "s"} · open to review` : "How the agent will tackle this"}</h2>`,
-        approval.approved ? html`<p class="meta">The agent can adapt this route when evidence changes; your approved outcome stays fixed.</p>` : "",
+        approval.approved ? html`<p class="meta">The agent can adapt this route as it learns more; your approved outcome stays fixed.</p>` : "",
         html`</div><span class="plan-lock">${planStanding}</span>${approval.approved ? html`</summary><div class="planner-plan-body">` : html`</div>`}`,
         executionPlanHtml(displayedPlanDocument ?? data.planDocument),
         approval.approved || sheetStatesContract ? "" : planContractHtml(data.planContract ?? null, "full"),
@@ -2151,26 +2170,26 @@ export function taskBodyParts(data: {
     scope === null || approval.approved || data.plan === "requested"
       ? ""
       : data.revision !== null && data.revision !== undefined && "problem" in data.revision
-        ? html`<div class="card approve-form" id="approve"><p><strong>This task is waiting on you: approval is blocked.</strong></p><p class="meta">${data.revision.problem} — a revision approves only against a brief that verifies</p></div>`
+        ? html`<div class="card approve-form" id="approve"><p><strong>This task is waiting on you: approval is blocked.</strong></p><p class="meta">${data.revision.problem}. A revision can be approved only when its saved notes can be read.</p></div>`
         : scope.profileState === "unresolved"
-          ? html`<div class="card approve-form" id="approve"><p><strong>This task is waiting on you: its scope cannot be approved yet.</strong></p>${profileWords(scope)}<p class="ceremony-road"><a class="button-link" href="#scope">Edit the scope to fix it →</a></p></div>`
+          ? html`<div class="card approve-form" id="approve"><p><strong>This task is waiting on you: its plan can't be approved yet.</strong></p>${profileWords(scope)}<p class="ceremony-road"><a class="button-link" href="#scope">Edit the plan to fix it →</a></p></div>`
         : !consentDoor.open
           ? consentClosedHtml(task.id, consentDoor, "task")
         : approvalSheetHtml(sheetInput!);
 
   const scopeForm = joinHtml([
-    html`<details${scope === null || scopeDraft !== undefined ? html` open` : ""}><summary>${scope === null ? "Write the scope" : "Edit the scope"}${
-      approval.approved ? " (editing voids the approval)" : ""
+    html`<details${scope === null || scopeDraft !== undefined ? html` open` : ""}><summary>${scope === null ? "Write the plan" : "Edit the plan"}${
+      approval.approved ? " (it asks for approval again)" : ""
     }</summary>`,
     postForm(`${taskHref(task.id)}/scope`, joinHtml([
     "",
     scopeDraft === undefined || data.problem === null ? "" : html`<div class="problem" role="alert" id="scope-error">${data.problem}</div>`,
     html`<label>Goal<textarea name="goal" rows="3"${scopeDraft === undefined ? "" : html` autofocus aria-describedby="scope-error"`}>${scopeDraft?.get("goal") ?? scope?.goal ?? ""}</textarea></label>`,
     html`<label>Not this<textarea name="not" rows="2">${scopeDraft?.get("not") ?? scope?.outOfScope ?? ""}</textarea></label>`,
-    html`<label>Touches <span class="meta">(one per line)</span><textarea name="touches" rows="2">${
+    html`<label>Files <span class="meta">(one per line)</span><textarea name="touches" rows="2">${
       scopeDraft?.get("touches") ?? (scope?.touches ?? []).join("\n")
     }</textarea></label>`,
-    html`<label>Acceptance <span class="meta">(required — one criterion per line: <code>statement | evidence,kinds | how</code>; evidence kinds are check, screenshot, changed-path, manual-review; id is optional and auto-numbered)</span><textarea name="acceptance" rows="3" placeholder="The button opens the settings panel | screenshot">${
+    html`<label>Done when <span class="meta">(required — one requirement per line: <code>what | how we'll know | note</code>; how we'll know is check, screenshot, changed-path or manual-review; ids number themselves)</span><textarea name="acceptance" rows="3" placeholder="The button opens the settings panel | screenshot">${
       scopeDraft?.get("acceptance") ?? acceptanceToLines(scope?.acceptance ?? []).join("\n")
     }</textarea></label>`,
     ((): Html => {
@@ -2193,13 +2212,13 @@ export function taskBodyParts(data: {
               ? scope.profile.sandboxMode === "danger-full-access" ? "bypassPermissions" : "auto"
               : null;
       const selected: UnattendedPermissionMode = scopeDraft?.get("permission-mode") === "bypassPermissions" ? "bypassPermissions" : scopeDraft?.get("permission-mode") === "auto" ? "auto" : data.permissionMode ?? profileMode ?? data.permissionDefault ?? "auto";
-      return html`<fieldset class="permission-field"><legend>Agent permissions</legend>${permissionModeChoices("permission-mode", selected)}<p class="meta permission-note">This task’s choice is sealed into its scope. Full access prevents permission prompts or sandbox limits from pausing supported unattended agents.</p></fieldset>`;
+      return html`<fieldset class="permission-field"><legend>Agent permissions</legend>${permissionModeChoices("permission-mode", selected)}<p class="meta permission-note">This choice is part of the task's plan. Full access keeps permission prompts and sandbox limits from pausing agents that support it.</p></fieldset>`;
     })(),
     ((): Html => {
       const selected: QualityMode = scopeDraft?.get("quality-mode") === "strict" ? "strict" : scopeDraft?.get("quality-mode") === "default" ? "default" : scope?.qualityMode ?? data.qualityMode ?? data.qualityDefault ?? "default";
-      return html`<fieldset class="permission-field"><legend>Quality</legend>${qualityModeChoices("quality-mode", selected)}<p class="meta permission-note">This choice is signed into the scope. Inspect the saved work and actual check results when it is ready. Publication and deployment need their own authorization.</p></fieldset>`;
+      return html`<fieldset class="permission-field"><legend>Quality</legend>${qualityModeChoices("quality-mode", selected)}<p class="meta permission-note">This choice is part of the plan. Look at the saved work and the actual check results when it's ready. Publishing and deploying need their own approval.</p></fieldset>`;
     })(),
-    html`<button type="submit">Save scope</button>`,
+    html`<button type="submit">Save plan</button>`,
     "",
     ], "\n"), { attrs: { class: "scope-editor" }, hidden: { sawDigest: scopeDraft?.get("sawDigest") ?? scope?.digest ?? "" } }),
     html`</details>`,
@@ -2306,7 +2325,7 @@ export function taskBodyParts(data: {
   // facts a reader scans before anything else, in one row grammar.
   const workerRow =
     liveRun !== undefined
-      ? prop("worker", html`${liveRun.runner} · <a href="/r/${liveRun.id}">build #${liveRun.id}</a> running`)
+      ? prop("builder", html`${liveRun.runner} · <a href="/r/${liveRun.id}">build #${liveRun.id}</a> running`)
       : data.runs[0] !== undefined
         ? prop("last attempt", html`<a href="/r/${data.runs[0].id}">${runNoun(data.runs[0])} #${data.runs[0].id}</a> · ${data.runs[0].role === "planner" && data.runs[0].reason === "plan-drafted" ? "planned" : data.runs[0].reason === "interrupted" ? "interrupted" : data.runs[0].id === liveHistoryRunId ? "running" : data.runs[0].outcome ?? "never finished"} · ${data.runs[0].runner}`)
         : "";
@@ -2316,34 +2335,34 @@ export function taskBodyParts(data: {
       : "";
   const scopeRow =
     scope === null
-      ? prop("scope", "none yet")
+      ? prop("plan", "none yet")
       : approval.approved && data.autoRelease != null
-        ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · ${autoReleaseWords(data.autoRelease)}`)
+        ? prop("approved plan", html`${autoReleaseWords(data.autoRelease)}`)
       : approval.approved && data.release?.kind === "carried"
-        ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · carried from ${data.release.approver ?? "a person"}'s release approval · <a href="${taskHref(data.release.anchorTask)}">Release ${data.release.version}</a>`)
+        ? prop("approved plan", html`approved with ${data.release.approver ?? "a person"}'s release approval · <a href="${taskHref(data.release.anchorTask)}">Release ${data.release.version}</a>`)
       : approval.approved
-        ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by}${approvalProofWords(data.approvalProof)} · ${whenTime(approval.at)}`)
-        : prop("scope", approval.reason === "changed" ? "rewritten since its approval — needs a new yes" : "not approved");
-  const strikesRow = data.strikes > 0 ? prop("strikes", `${data.strikes} failed attempt(s)`) : "";
+        ? prop("approved plan", html`Approved by ${approval.by}${approvalProofWords(data.approvalProof)} · ${whenTime(approval.at)} · ${qualityModeTitle(scope.qualityMode ?? "default")}`)
+        : prop("plan", approval.reason === "changed" ? "Edited after approval: it needs a new approval" : "not approved");
+  const strikesRow = data.strikes > 0 ? prop("failed attempts", `${data.strikes} in a row`) : "";
   const propsCard = html`<div class="card props">${workerRow}${queueRow}${scopeRow}${publishesRow}${economics}${strikesRow}</div>`;
   // The same facts for the rebuilt page, row for row.
   const facts: BrowserTaskFact[] = [];
   const lastRun = data.runs[0];
-  if (liveRun !== undefined) facts.push({ label: "Worker", parts: [`${liveRun.runner} · `, { label: `build #${liveRun.id}`, href: `/r/${liveRun.id}` }, " running"] });
+  if (liveRun !== undefined) facts.push({ label: "Builder", parts: [`${liveRun.runner} · `, { label: `build #${liveRun.id}`, href: `/r/${liveRun.id}` }, " running"] });
   else if (lastRun !== undefined) facts.push({ label: "Last attempt", parts: [{ label: `${runNoun(lastRun)} #${lastRun.id}`, href: `/r/${lastRun.id}` },
     ` · ${lastRun.role === "planner" && lastRun.reason === "plan-drafted" ? "planned" : lastRun.reason === "interrupted" ? "interrupted" : lastRun.id === liveHistoryRunId ? "running" : lastRun.outcome ?? "never finished"} · ${lastRun.runner}`] });
   if (data.position !== null && data.position !== undefined && task.state === "queued") {
     facts.push({ label: "Queue", parts: [`${data.position.position} of ${data.position.total}${data.position.column === null ? " in the shared queue" : ` in ${data.position.column}'s queue`} · `, { label: "Reorder", href: "/board?view=order" }] });
   }
-  facts.push(scope === null ? { label: "Scope", parts: ["none yet"] }
-    : approval.approved && data.autoRelease != null ? { label: "Approved scope", parts: [autoReleaseWords(data.autoRelease)] }
-    : approval.approved && data.release?.kind === "carried" ? { label: "Approved scope", parts: [`Carried from ${data.release.approver ?? "a person"}'s release approval · `, { label: `Release ${data.release.version}`, href: taskHref(data.release.anchorTask) }] }
-    : approval.approved ? { label: "Approved scope", parts: [{ seal: `signs ${scope.digest.length <= 12 ? scope.digest : `${scope.digest.slice(0, 12)}…`}` }, ` · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by}${approvalProofWords(data.approvalProof)}`, ...(approval.at === null ? [] : [" · ", { at: approval.at }])] }
-    : { label: "Scope", parts: [approval.reason === "changed" ? "rewritten since its approval — needs a new yes" : "not approved"] });
+  facts.push(scope === null ? { label: "Plan", parts: ["none yet"] }
+    : approval.approved && data.autoRelease != null ? { label: "Approved plan", parts: [autoReleaseWords(data.autoRelease)] }
+    : approval.approved && data.release?.kind === "carried" ? { label: "Approved plan", parts: [`Approved with ${data.release.approver ?? "a person"}'s release approval · `, { label: `Release ${data.release.version}`, href: taskHref(data.release.anchorTask) }] }
+    : approval.approved ? { label: "Approved plan", parts: [`Approved by ${approval.by}${approvalProofWords(data.approvalProof)}`, ...(approval.at === null ? [] : [" · ", { at: approval.at }]), ` · ${qualityModeTitle(scope.qualityMode ?? "default")}`] }
+    : { label: "Plan", parts: [approval.reason === "changed" ? "Edited after approval: it needs a new approval" : "not approved"] });
   if (data.release?.kind === "anchor") facts.push({ label: "Release", parts: [`Approved for release ${data.release.version}`, ...(data.release.landed.length === 0 ? [] : [` · later commits: ${data.release.landed.map(one => one.sha.slice(0, 7)).join(", ")}`]), ...(data.release.carrying ? [] : [` · later commits ask again`])] });
   facts.push({ label: "Publishes as", parts: [publishesAs] });
   // v102: who asked for it, and what the project's approval rules need.
-  if (data.filer != null) facts.push({ label: "Filed by", parts: [data.filer.name === null ? "automation" : data.filer.kind === "coordinator" ? `${data.filer.name}, through a coordinator` : data.filer.name] });
+  if (data.filer != null) facts.push({ label: "Filed by", parts: [data.filer.name === null ? "automation" : data.filer.kind === "coordinator" ? `${data.filer.name}, through your lead` : data.filer.name] });
   if (data.approvalRules != null) {
     const votes = data.approvalRules.votes;
     facts.push({ label: "Approval rules", parts: [data.approvalRules.needsTwo && !approval.approved
@@ -2351,7 +2370,7 @@ export function taskBodyParts(data: {
       : data.approvalRules.words] });
   }
   // v103: everything an auditor asks about this task, printable or as JSON.
-  facts.push({ label: "Audit", parts: [{ label: "Evidence pack", href: `${taskHref(task.id)}/evidence` }] });
+  facts.push({ label: "Audit", parts: [{ label: "Audit record", href: `${taskHref(task.id)}/evidence` }] });
   if (data.budgetHold != null) facts.push({ label: "Budget", parts: [`${data.budgetHold} · `, { label: "Spend", href: "/spend" }] });
   if (data.policyHold != null) facts.push({ label: "Policy", parts: [`${data.policyHold} · `, { label: "Policy", href: "/settings/policy" }] });
   // The pull-request card already says this once, with its action.
@@ -2457,7 +2476,7 @@ export function taskBodyParts(data: {
   const waitsForCard =
     waitRows === "" && waitAdd === ""
       ? ""
-      : html`<h2>Waits for</h2>${waitRows === "" ? html`<p class="meta">Nothing — it starts when a worker is free</p>` : waitRows}${waitAdd}`;
+      : html`<h2>Waits for</h2>${waitRows === "" ? html`<p class="meta">Nothing. It starts when a builder is free.</p>` : waitRows}${waitAdd}`;
 
   // The acts bar (task page pass): every verb in one row under the title,
   // the one that resolves this task's state first and primary — retry on a
@@ -2471,13 +2490,13 @@ export function taskBodyParts(data: {
   const cardRetries = task.state === "failed" && data.assignment != null && data.csrf !== "";
   const primaryAct =
     stopControlsActive || cardRetries ? null : stalled && !data.claimed
-      ? { html: act("requeue", "Retry, keeping the branch and workspace"), why: "Resolves the incidents, clears the failed attempts and queues the task again. The branch and workspace are kept.", whyClass: "retry" }
+      ? { html: act("requeue", "Retry, keeping the branch and workspace"), why: "Clears the repeated failures and queues the task again. The branch and workspace are kept.", whyClass: "retry" }
       : canPlan
-        ? { html: act("plan", "plan first"), why: "plan first sends an agent to read the repository, ask you questions, and propose a scope — nothing builds until you approve it", whyClass: "plan" }
+        ? { html: act("plan", "plan first"), why: "plan first sends an agent to read the project, ask you questions and propose a plan. Nothing builds until you approve it.", whyClass: "plan" }
         : data.plan === "requested"
           ? null
         : task.state === "queued" && !data.claimed && (data.position?.position ?? 1) > 1
-          ? { html: act("next", "build this next"), why: "moves it to the front of its queue — the next free worker looks here first; approval is still required", whyClass: "next" }
+          ? { html: act("next", "build this next"), why: "moves it to the front of its queue: the next free builder takes it first. It still needs approval.", whyClass: "next" }
           : null;
   const holdAct = postForm(`${taskHref(task.id)}/hold`,
     html`<input type="text" name="reason" class="inline" placeholder="reason (optional)" aria-label="hold reason"><button type="submit">Hold the next attempt</button>`,
@@ -2540,7 +2559,7 @@ export function taskBodyParts(data: {
             : data.filedVia === null || data.filedVia === undefined
               ? ""
               : ` · filed via ${data.filedVia}`
-      }${data.deliverable === "report" ? html` · <span class="badge">Scout</span>` : ""}</p>`;
+      }${data.deliverable === "report" ? html` · <span class="badge">Research</span>` : ""}</p>`;
   // A pull request that can be merged (or opened) owns the one primary action; the result stays in its section.
   const pullRequestActs = data.csrf !== "" && (data.pullRequest?.view?.canMerge === true || (data.pullRequest?.view == null && data.pullRequest?.offer != null));
   const pullRequestFact = data.pullRequest?.fact != null && data.pullRequest.view?.runId === data.assignment?.receipt?.runId ? data.pullRequest.fact : undefined;
@@ -2586,7 +2605,7 @@ export function taskBodyParts(data: {
     return joinHtml([
       html`<div class="card"><p><strong>External work</strong> <span class="meta">${link} · ${state}</span></p>`,
       reopenable
-        ? postForm(`${taskHref(task.id)}/reopen`, html`${reauth(html`<input type="password" name="token" placeholder="your password" aria-label="your password" autocomplete="current-password">`)}<button type="submit">Reopen — the approved scope stands</button>`, { attrs: { class: "row" } })
+        ? postForm(`${taskHref(task.id)}/reopen`, html`${reauth(html`<input type="password" name="token" placeholder="your password" aria-label="your password" autocomplete="current-password">`)}<button type="submit">Reopen — the approved plan stands</button>`, { attrs: { class: "row" } })
         : "",
       html`</div>`,
     ]);
@@ -2601,8 +2620,8 @@ export function taskBodyParts(data: {
         // The quarantine speaks here too (round-2 finding 5): the planner
         // is as fenced as the builder on a coordinator filing, so "plan
         // first" would recommend a road that refuses.
-        ? html`<div class="card"><p><strong>This task is waiting on you: an agent filed it, and it has no scope.</strong></p><p class="meta">Filed by <span class="mono">${data.coordinator.label}</span> — nothing plans, claims, or runs until you write a scope below and sign it. Your signature runs their request.</p></div>`
-        : html`<div class="card task-scope-needed"><p><strong>No approved scope yet</strong></p><p class="meta"><strong>Plan first</strong> drafts it from the repository, or <a href="#scope">write it yourself</a>.</p></div>`
+        ? html`<div class="card"><p><strong>This task is waiting on you: an agent filed it, and it has no plan.</strong></p><p class="meta">Filed by <span class="mono">${data.coordinator.label}</span> — nothing plans or runs until you write a plan below and approve it. Your approval runs their request.</p></div>`
+        : html`<div class="card task-scope-needed"><p><strong>No approved plan yet</strong></p><p class="meta"><strong>Plan first</strong> drafts it from the repository, or <a href="#scope">write it yourself</a>.</p></div>`
       : "";
   const approvalHtml = dependencyChoiceNeeded || approveForm === "" ? "" : approvalLeads
     ? html`<section class="task-plan-review" aria-label="Approve the plan">${approveForm}</section>`
@@ -2640,7 +2659,7 @@ export function taskBodyParts(data: {
       : section(
           "proposals",
           // Confirm and dismiss come back to this task.
-          html`<h2>Proposed by coordinators</h2>${coordinatorProposalsSection(
+          html`<h2>Proposed by your lead</h2>${coordinatorProposalsSection(
             data.coordinatorProposals.rows,
             data.coordinatorProposals.decisions,
             data.coordinatorProposals.now,
@@ -2651,7 +2670,7 @@ export function taskBodyParts(data: {
           data.coordinatorProposals.rows.length,
         ),
     section("decisions", decisions, true, data.decisions.length),
-    section("incidents", incidents, true, data.incidents.length),
+    section("repeated failures", incidents, true, data.incidents.length, "incidents"),
     data.publication === null || data.publication === undefined
       ? ""
       : html`<p class="row"><span class="meta">published</span> ${
@@ -2668,11 +2687,12 @@ export function taskBodyParts(data: {
     section("usage", spendCard, false),
     section("steering", steeringCard, (data.steering ?? []).length > 0, (data.steering ?? []).length),
     section(
-      "scope",
+      "plan",
       // The recipe road rides with the scope it reuses (UI polish
       // 2026-09-13), off the title-to-action path.
-      joinHtml([html`<h2>Scope</h2>`, scopeCard, releaseCardHtml(task.id, data.release ?? null, data.canStopRelease === true), data.repo !== null && data.scope !== null ? html`<p class="meta"><a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this scope as a recipe →</a></p>` : "", agentsCardHtml(task.id, data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm], "\n"),
+      joinHtml([html`<h2>Plan</h2>`, scopeCard, releaseCardHtml(task.id, data.release ?? null, data.canStopRelease === true), data.repo !== null && data.scope !== null ? html`<p class="meta"><a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this plan as a recipe →</a></p>` : "", agentsCardHtml(task.id, data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm], "\n"),
       scopeDraft !== undefined || (data.plan !== "requested" && approveForm === "" && !(scope === null && canPlan)),
+      undefined, "scope",
     ),
     dependencyChoiceNeeded ? "" : section("waits for", waitsForCard, (data.waitsFor ?? []).length > 0, (data.waitsFor ?? []).length),
     section("holds", holds, true, data.holds.length),
@@ -2777,7 +2797,7 @@ export function taskBodyParts(data: {
   work.push({ label: "Agent", parts: [lastRunForAgent !== undefined ? `${lastRunForAgent.provider}${lastRunForAgent.model === null ? "" : ` · ${lastRunForAgent.model}`} on ${lastRunForAgent.runner}`
     : data.route?.legacy != null ? `${data.route.legacy.provider} · ${data.route.legacy.model}` : "The project's default"] });
   if (scope !== null) work.push({ label: "Checks level", parts: [qualityModeTitle(scope.qualityMode ?? "default")] });
-  for (const label of ["Worker", "Last attempt", "Queue", "Budget", "Policy", "Strikes"]) {
+  for (const label of ["Builder", "Last attempt", "Queue", "Budget", "Policy", "Strikes"]) {
     const fact = facts.find(one => one.label === label);
     if (fact !== undefined) work.push(fact);
   }
@@ -2795,8 +2815,8 @@ export function taskBodyParts(data: {
     links.push({ label: "Pull request", parts: [prHref === null ? `#${pr.prNumber ?? "?"}` : { label: `#${pr.prNumber ?? "?"}`, href: prHref }, ` · ${pr.label}`] });
   }
   const review: BrowserTaskFact[] = [];
-  const approvedScope = facts.find(one => one.label === "Approved scope" || one.label === "Scope");
-  if (approvedScope !== undefined) review.push({ ...approvedScope, label: approvedScope.label === "Approved scope" ? "Approvals" : "Scope" });
+  const approvedScope = facts.find(one => one.label === "Approved plan" || one.label === "Plan");
+  if (approvedScope !== undefined) review.push({ ...approvedScope, label: approvedScope.label === "Approved plan" ? "Approvals" : "Plan" });
   review.push({ label: "Who reviews", parts: [facts.find(one => one.label === "Approval rules")?.parts[0] as string | undefined ?? "Any approver in this project"] });
   review.push({ label: "Publishes as", parts: [publishesAs] });
   if (data.resultRecord != null) review.push({ label: "Result record", parts: [data.resultRecord] });
@@ -2873,9 +2893,9 @@ export function taskBodyParts(data: {
     ...(sectionIds.has("waits-for") ? [{ group: "work" as const, label: "Dependencies", kind: "goto" as const, tab: "plan" as const, target: "waits-for" }] : []),
     ...(sectionIds.has("holds") ? [{ group: "work" as const, label: "Holds", kind: "goto" as const, tab: "plan" as const, target: "holds" }] : []),
     ...(data.csrf !== "" ? [{ group: "work" as const, label: "Task options", kind: "goto" as const, tab: "plan" as const, target: "task-diagnostics" }] : []),
-    ...(data.canPutAway === true && data.csrf !== "" && data.archived == null && !building ? [{ group: "work" as const, label: "Put away", kind: "post" as const, action: `${taskHref(task.id)}/archive`, fields: { return: taskHref(task.id) } }] : []),
+    ...(data.canPutAway === true && data.csrf !== "" && data.archived == null && !building ? [{ group: "work" as const, label: "Archive", kind: "post" as const, action: `${taskHref(task.id)}/archive`, fields: { return: taskHref(task.id) } }] : []),
     { group: "share", label: "Copy link", kind: "copy" },
-    ...(facts.some(one => one.label === "Audit") ? [{ group: "share" as const, label: "Evidence pack", kind: "link" as const, href: `${taskHref(rootOf)}/evidence` }] : []),
+    ...(facts.some(one => one.label === "Audit") ? [{ group: "share" as const, label: "Audit record", kind: "link" as const, href: `${taskHref(rootOf)}/evidence` }] : []),
     ...(data.repo !== null && data.scope !== null ? [{ group: "share" as const, label: "Reuse as recipe", kind: "link" as const, href: `/recipes/from-task?task=${encodeURIComponent(task.id)}` }] : []),
     ...(cancelForm !== "" ? [{ group: "danger" as const, label: "Cancel task", kind: "goto" as const, tab: "plan" as const, target: "cancel-task" }] : []),
   ];
@@ -3056,7 +3076,7 @@ export function taskOf(store: Store, decision: Decision): string {
  * stop carrying. A carried task says whose approval it was carried from. */
 export function releaseCardHtml(taskId: string, release: ReleaseView | null, canStop: boolean): Html {
   if (release === null) return html``;
-  if (release.kind === "carried") return html`<div class="card" id="release"><p><strong>Carried from ${release.approver ?? "a person"}'s release approval</strong></p><p class="meta"><a href="${taskHref(release.anchorTask)}">Release ${release.version}</a> · pull request #${release.pr}</p></div>`;
+  if (release.kind === "carried") return html`<div class="card" id="release"><p><strong>Approved with ${release.approver ?? "a person"}'s release approval</strong></p><p class="meta"><a href="${taskHref(release.anchorTask)}">Release ${release.version}</a> · pull request #${release.pr}</p></div>`;
   const until = new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" }).format(new Date(release.expiresAt));
   const landed = release.landed.length === 0 ? html`<p class="meta">No later commits yet.</p>`
     : html`<ul>${joinHtml(release.landed.map(one => html`<li><a href="${taskHref(one.task)}">${one.sha.slice(0, 7)}</a> · ${one.files.map(file => `${file.path} (+${file.added} −${file.deleted})`).join(", ")}</li>`), "")}</ul>`;
@@ -3068,7 +3088,7 @@ export function releaseCardHtml(taskId: string, release: ReleaseView | null, can
     release.obligations.length === 0 ? "" : html`<details><summary>Still to pass (${release.obligations.length})</summary><ul>${joinHtml(release.obligations.map(one => html`<li>${one}</li>`), "")}</ul></details>`,
     release.nightly === null ? "" : html`<p class="meta">Nightly check of main: ${release.nightly.outcome ?? "running"} at ${release.nightly.sha.slice(0, 7)}${release.openMainFailures > 0 ? ` · ${release.openMainFailures} open failure${release.openMainFailures === 1 ? "" : "s"}` : ""}</p>`,
     ...release.githubNightly.map(line => html`<p class="meta">${line}</p>`),
-    release.carrying && canStop ? postForm(`${taskHref(taskId)}/stop-carrying`, html`<button type="submit" class="secondary">Stop carrying later commits</button>`, { attrs: { class: "inline" } }) : "",
+    release.carrying && canStop ? postForm(`${taskHref(taskId)}/stop-carrying`, html`<button type="submit" class="secondary">Ask again for later commits</button>`, { attrs: { class: "inline" } }) : "",
     html`</div>`,
   ], "\n");
 }
@@ -3087,7 +3107,7 @@ export function approveKitOf(input: ApprovalSheetInput, freshSince: string | nul
     fields: { nonce: input.nonce, digest: input.digest, ...(rebuild === null ? {} : { rebuild: String(rebuild) }) },
     label: parts.label,
     heading: rebuild !== null ? "The plan changed" : input.deliverable === "report" ? "Investigation ready" : "Plan ready",
-    text: `Approving signs plan version ${input.scope.digest.slice(0, 12)} and ${after}.${allowing}`,
+    text: `Approving ${after}.${allowing}`,
     kind: "standard",
     facts: { passwordless: passwordlessRendering() || input.localOwner?.eligible === true, remembered: until !== null },
     rememberedUntil: until,
@@ -3102,7 +3122,12 @@ export function approvedKitOf(scope: Scope, approval: { approved: true; at: stri
   if (!approval.approved) return null;
   const basis = scope.approvalBasis ?? null;
   const rule = basis === "mode" ? "your operating mode for this project" : basis === "grant" ? "its flow, which runs on its own" : basis === "schedule" ? "the schedule you approved"
-    : basis === "auto-green" || basis === "auto-check" ? "this project’s release approval (CI and the release check passed)" : basis === "carried" ? "the release approval it was carried under" : null;
+    : basis === "auto-green" || basis === "auto-check" ? "this project’s release approval (CI and the release check passed)" : basis === "carried" ? "the release approval it came with" : null;
   const how = approvalProofWords(proof).replace(/^ \(|\)$/g, "");
   return { by: approval.by, at: approval.at, automatic: rule !== null, rule, how: how === "" ? (rule === null ? "password typed" : "") : how, version: scope.digest.slice(0, 12) };
+}
+
+/** The plan version, in Details: a short handle a person can compare, never on the approval line itself. */
+export function planVersionDetailsHtml(digest: string): Html {
+  return html`<details class="scope-version"><summary class="meta">Details</summary><p class="meta"><span class="mono">${planVersionWords(digest)}</span></p></details>`;
 }

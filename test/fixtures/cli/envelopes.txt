@@ -4126,10 +4126,50 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "task accept",
-      "synopsis": "record an explicit acceptance with limitations; does not change checks or prove deployment",
+      "synopsis": "accept a result: --finish (or --digest <receipt>) is exactly task complete's completion of the exact receipt; --despite \"<reason>\" records an acceptance with limitations and never completes; a bare call refuses",
       "audience": "operator",
       "agentMayInvoke": false,
       "mutation": "unkeyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "finish",
+          "takesValue": false,
+          "meaning": "accept and finish: task complete's exact-receipt completion; --json and scoped agents pass --digest"
+        },
+        {
+          "name": "digest",
+          "takesValue": true,
+          "meaning": "the exact receipt from assignment show; accepts and finishes exactly that result"
+        },
+        {
+          "name": "despite",
+          "takesValue": true,
+          "meaning": "accept with this reason, without finishing; never combines with --finish or --digest (--note is its alias)"
+        }
+      ],
+      "notableReasons": [
+        "usage",
+        "unknown-task",
+        "no-run",
+        "not-ready"
+      ],
       "remote": "step-up"
     },
     {
@@ -5848,8 +5888,8 @@ $ task show t-readme --json → 0
   "dispatch": {
     "condition": "waiting",
     "code": "needs-scope",
-    "summary": "Needs a scope",
-    "detail": "Write the success contract or ask the planner to draft it.",
+    "summary": "Needs a plan",
+    "detail": "Write the plan, or ask the planner to draft it.",
     "action": "write-scope",
     "nextAt": null,
     "role": "builder",
@@ -6072,8 +6112,8 @@ $ ready --json → 0
       "dispatch": {
         "condition": "waiting",
         "code": "needs-scope",
-        "summary": "Needs a scope",
-        "detail": "Write the success contract or ask the planner to draft it.",
+        "summary": "Needs a plan",
+        "detail": "Write the plan, or ask the planner to draft it.",
         "action": "write-scope",
         "nextAt": null,
         "role": "builder",

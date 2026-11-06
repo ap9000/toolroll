@@ -967,11 +967,11 @@ describe("Slack shared chat", () => {
     draft({ ...payload });
     await drain();
     const c = latestCard();
-    expect(String(sends().at(-1)?.args["text"])).toContain("Accept and finish: Clarify Slack progress");
+    expect(String(sends().at(-1)?.args["text"])).toContain("Accept: Clarify Slack progress");
     await tap(c.token, c.ts);
     const armed = sends().at(-1)!;
     expect(String(armed.args["text"])).toContain("This records that you handled this exact result. Confirm?");
-    expect(JSON.stringify(armed.args["blocks"])).toContain("Yes, accept and finish");
+    expect(JSON.stringify(armed.args["blocks"])).toContain("Yes, accept");
     expect(assignmentOf(store, "sample", now, { principal: "operator", repos: projects }, join(dir, "evidence"))?.state).toBe("ready-to-check");
     const yes = state.prepare("SELECT token FROM chat_action WHERE provider=:provider AND part=? AND phase='yes' AND consumed IS NULL").get(c.id)!;
     await tap(String(yes.token), c.ts);

@@ -519,8 +519,33 @@ export function plainReasonWords(reason: string): string {
   if (unassigned !== null) return `The agent left a note without saying which requirement it affects: ${unassigned[1]}`;
   const reviewed = /^(?:reviewer:)?([^\s"]+) (contradicts|needs more evidence for) criterion "[^"]+": ([\s\S]*)$/i.exec(reason);
   if (reviewed !== null) return `${reviewed[1]} ${reviewed[2]!.toLowerCase() === "contradicts" ? "says a requirement is not met" : "isn't sure a requirement is met"}: ${reviewed[3]}`;
+  for (const [pattern, words] of REASON_WORDS) {
+    const match = pattern.exec(reason);
+    if (match !== null) return words(match);
+  }
   return reason;
 }
+
+/** The kinds a requirement is shown by, in a few words. */
+const KIND_WORDS: Readonly<Record<string, string>> = { check: "the project check", screenshot: "a screenshot", "changed-path": "the changed files", "manual-review": "your own check" };
+const kindWords = (kind: string | undefined): string => KIND_WORDS[kind ?? ""] ?? kind ?? "";
+/** Toolroll's own verification reasons as a person reads them (the one mapper over this file's strings; the record
+ * keeps the exact words, and anything not listed passes through as written). */
+const REASON_WORDS: ReadonlyArray<readonly [RegExp, (match: RegExpExecArray) => string]> = [
+  [/^the proof does not answer approved criterion "([^"]+)"$/, m => `The agent didn't answer requirement ${m[1]}.`],
+  [/^criterion "([^"]+)" was signed as "([\s\S]*)" and the proof restates it as "([\s\S]*)"$/, m => `The agent restated requirement ${m[1]} as "${m[3]}" (approved as "${m[2]}").`],
+  [/^criterion "([^"]+)" requires ([a-z-]+) evidence, which the proof does not reference$/, m => `Requirement ${m[1]} wasn't shown by ${kindWords(m[2])}.`],
+  [/^criterion ([^\s]+) can wait for the final check only when its signed requirements include check evidence$/, m => `Requirement ${m[1]} can wait for the final check only when the project check is how we'll know.`],
+  [/^criterion ([^\s]+) names a ([a-z-]+) ref that resolves to nothing — ([\s\S]*)$/, m => `Requirement ${m[1]} points at ${kindWords(m[2])} that doesn't exist: ${m[3]}.`],
+  [/^criterion "([^"]+)"'s check "([\s\S]*)" exited (-?\d+)$/, m => `Requirement ${m[1]}'s check "${m[2]}" exited ${m[3]}.`],
+  [/^changed lists ("[^"]*"), which the sealed diff does not contain$/, m => `The agent says it changed ${m[1]}, but the saved diff doesn't.`],
+  [/^changed omits ("[^"]*"), which the sealed diff contains$/, m => `The agent didn't list ${m[1]}, which the saved diff changes.`],
+  [/^claimed changed path not in the sealed diff: ([\s\S]*)$/, m => `The agent says it changed ${m[1]}, but the saved diff doesn't.`],
+  [/^the terminal handoff is missing$/, () => "The agent's handoff is missing."],
+  [/^the machine-captured diff is missing or failed to capture$/, () => "The saved diff is missing."],
+  [/^the sealed diff is unavailable or truncated; ([\s\S]*)$/, () => "The saved diff is missing or cut short, so the change can't be checked."],
+  [/^the repository's approved verification command exited (-?\d+)$/, m => `The project check exited ${m[1]}.`],
+];
 
 /** A requirement only a person can confirm, as a person would say it. */
 export function personCheckWords(statement: string | null): string {
@@ -1202,7 +1227,7 @@ export function passFraction(matrix: readonly CriterionMatrixRow[]): { passed: n
  * the words never drift between the two (Priority 2's rule, extended). */
 export function matrixWords(matrix: readonly CriterionMatrixRow[]): string[] {
   if (matrix.length === 0) return [];
-  const lines: string[] = ["  acceptance matrix"];
+  const lines: string[] = ["  requirements"];
   for (const row of matrix) {
     lines.push(`    [${row.state}] ${row.id}: ${row.statement} (requires: ${row.requiredEvidence.join(", ")})`);
     if (row.answered.length > 0) {
@@ -1247,16 +1272,16 @@ export function shownVerdictOf(stored: ProofVerdict | null, facts: { checkFailed
  * pattern) so the task page, run page, board, CLI, and chat cannot say
  * three different things about the same run. */
 export function verdictWords(verdict: ProofVerdict, reasons: readonly string[]): { word: string; detail: string } {
-  const detail = reasons.length > 0 ? reasons.join("; ") : "";
+  const detail = reasons.length > 0 ? reasons.map(plainReasonWords).join("; ") : "";
   switch (verdict) {
     case "verified":
       return { word: "complete — verified", detail };
     case "attested":
-      return { word: "complete — evidence attested", detail };
+      return { word: "complete — as the agent reported", detail };
     case "short":
-      return { word: "missing evidence", detail };
+      return { word: "not all requirements shown yet", detail };
     case "refuted":
-      return { word: "conflicting evidence", detail };
+      return { word: "the report doesn't match the changes", detail };
   }
 }
 

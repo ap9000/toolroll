@@ -186,7 +186,7 @@ function ApprovalBox({ approve, latest, onEdit }: { approve: NonNullable<Browser
   const terms = approve.termsWords ?? termsOf(approve.kind, facts);
   // Belt and braces: a press that lands while the editor opened is refused in place, never sent.
   const approveNow = (password: string | null) => editorOpen()
-    ? Promise.resolve("Save or cancel your edit first: approving now would sign the plan as it was. Nothing changed.")
+    ? Promise.resolve("Save or cancel your edit first: approving now would approve the plan as it was. Nothing changed.")
     : submitNative(ref.current, password);
   const live = !changed && !editing;
   return <PostForm ref={ref} action={approve.action} className="k-approve" data-approval-kind={approve.kind} data-task-approval data-editing={editing ? "" : undefined}>
@@ -250,8 +250,8 @@ function headingOf(card: AssignmentCard): string {
 /** How the plan was approved, in one line: by whom, when and how, or the rule that approved it automatically. */
 function approvedWords(approved: NonNullable<BrowserTaskView["approved"]>): string {
   const at = shortWhen(approved.at, new Date(), viewerZone());
-  return approved.automatic ? `Approved automatically by ${approved.rule ?? "a rule"} · ${at} · plan version ${approved.version}`
-    : `Approved by ${approved.by} · ${at}${approved.how === "" ? "" : ` · ${approved.how}`} · plan version ${approved.version}`;
+  return approved.automatic ? `Approved automatically by ${approved.rule ?? "a rule"} · ${at}`
+    : `Approved by ${approved.by} · ${at}${approved.how === "" ? "" : ` · ${approved.how}`}`;
 }
 
 /** The status box: chip and heading, one sentence, the one act, and a terms line (src/design/KIT.md "Approval"
@@ -466,7 +466,7 @@ function AttemptsPanel({ view }: { view: BrowserTaskView }) {
         const headline = HEADLINES.find(one => one === word) as Headline | undefined;
         return <KRow key={attempt.taskId} href={attempt.href} chip={headline === undefined ? <KChip word={word} /> : <KHeadlineChip headline={headline} />}
           title={parts.length > 1 ? parts.slice(0, -1).join(" · ") : attempt.label} desc={attempt.detail ?? ""}
-          meta={attempt.runId === null ? undefined : <span className="k-num">Run #{attempt.runId}</span>} />;
+          meta={attempt.runId === null ? undefined : <span className="k-num">Build #{attempt.runId}</span>} />;
       })}
     </section>}
     {earlier.length > 0 && <section aria-label="Earlier builds" data-earlier-attempts={earlier.length}>
@@ -580,7 +580,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   const first = hasResult ? "Result" : view.scout ? "Investigation" : "Plan";
   const meta = <>{view.project !== null && <>{view.project} · </>}<span className="k-mono">{view.id}</span>{view.scout && <> · research only</>}
     {people.length > 0 && <> · <AlsoViewing people={people} /></>}</>;
-  const record = view.more?.find(one => one.kind === "link" && one.label === "Evidence pack");
+  const record = view.more?.find(one => one.kind === "link" && one.label === "Audit record");
   const needs = view.status?.status.headline === "Needs you" || view.status?.status.headline === "Ready for review";
   const primary = approve === null && needs && view.status?.action != null && view.recheckStopped == null && view.rebuild == null && view.retry == null
     ? <KLinkButton variant="primary" label={view.status.action.label} href={view.status.action.href} /> : null;

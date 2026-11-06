@@ -1229,6 +1229,9 @@
   .approval-field-hint { color: var(--muted-foreground); font-size: 12px; line-height: 1.5; }
   .approval-field textarea, .approval-field input[type=text] { width: 100%; max-width: 75ch; margin: 0; font-family: var(--font-sans); font-size: 14px; line-height: 1.55; }
   .approval-requirements { display: grid; gap: 6px; margin: 2px 0 0; padding: 0; list-style: none; }
+  .approval-requirements li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .approval-requirements li input[type=text] { flex: 1 1 22rem; }
+  .approval-how { flex: 0 1 auto; max-width: 100%; min-height: 2.125rem; margin: 0; font-size: 13px; }
   .approval-edit-act { display: flex; flex-wrap: wrap; align-items: center; gap: var(--so-space-sm); }
   .approval-edit-act button { margin: 0; min-height: 2.125rem; white-space: nowrap; }
   .approval-link { display: inline-flex; align-items: center; min-height: 32px; padding: 0 var(--so-space-md); border: 1px solid var(--border); border-radius: var(--so-radius-md); background: var(--card); color: var(--foreground); font-size: 13px; font-weight: 500; text-decoration: none; }

@@ -228,7 +228,7 @@ export const PUSH_WORDS: Record<PushClass, { title: string; body: string }> = {
   decision: { title: "Toolroll", body: "a decision needs you" },
   pick: { title: "Toolroll", body: "agents finished — pick a winner" },
   merge: { title: "Toolroll", body: "a pull request needs a person" },
-  attention: { title: "Toolroll", body: "the plane needs attention" },
+  attention: { title: "Toolroll", body: "Toolroll needs your attention" },
   progress: { title: "Toolroll", body: "checks in progress" },
   release: { title: "Toolroll", body: RELEASE_PUSH_WORDS },
 };

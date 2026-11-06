@@ -123,14 +123,14 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         case "new": argv = ["task", "add", act.text, ...(act.repo === null ? [] : ["--repo", act.repo])]; done = "Filed. Its plan will be ready for you to approve."; break;
         case "approve": argv = ["task", "approve", act.id, "--yes", "--digest", act.digest]; done = "Approved. An agent starts on it."; break;
         case "stop": argv = ["task", "stop", act.id, "--run", String(act.runId)]; done = "Stopping. Its work so far is kept."; break;
-        case "revise": argv = ["task", "revise", act.id, "--feedback", act.text]; done = "Revision requested."; break;
+        case "revise": argv = ["task", "revise", act.id, "--feedback", act.text]; done = "Sent back with your note."; break;
         case "answer": argv = ["decide", String(act.decision), "--choose", act.option]; done = "Answered."; break;
         case "complete": {
           const store = read();
           let digest: string | undefined;
           try { digest = store === null ? undefined : assignmentOf(store, act.id, clock(), { principal: "operator", repos: null })?.receipt?.digest; } catch { digest = undefined; }
-          if (digest === undefined) return { ok: false, message: "This task has no finished result to mark Complete.", needsPassword: false };
-          argv = ["task", "complete", act.id, "--digest", digest]; done = "Marked Complete."; break;
+          if (digest === undefined) return { ok: false, message: "This task has no finished result to accept.", needsPassword: false };
+          argv = ["task", "complete", act.id, "--digest", digest]; done = "Accepted."; break;
         }
       }
       const answer = await command(argv);
