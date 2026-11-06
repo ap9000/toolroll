@@ -116,7 +116,7 @@ describe("scout tasks, against real git", () => {
     const cwd = options?.cwd ?? "";
     options?.onSpawn?.(1_000_001);
     // The note may also carry this host's boot identity (v53).
-    expect(readFileSync(join(cwd, ".standing-orders-lease"), "utf8")).toMatch(/^1000001 builder-1 group ([0-9a-f-]{36}|unknown) \S+\n$/);
+    expect(readFileSync(join(cwd, ".standing-orders-lease"), "utf8")).toMatch(/^1000001 builder-1 group ([0-9a-f-]{36}|unknown) \S+ ([0-9a-f]{32}|unknown)\n$/);
     const prompt = String(args[args.indexOf("-p") + 1] ?? "");
     prompts.push(prompt);
     const name = REPORT_FILE.exec(prompt)?.[0];

@@ -115,6 +115,7 @@ import { keepSlowRequest, Timeline } from "./latency-timeline.js";
 import { readFileSync } from "node:fs";
 import { createServer,type IncomingMessage,type Server,type ServerResponse } from "node:http";
 import { homedir,hostname } from "node:os";
+import { sameMachineHost } from "./machine-identity.js";
 import { dirname,join } from "node:path";
 import { pinnedAccent } from "./accent-colors.js";
 import {
@@ -1169,8 +1170,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const here = hostname();
     const registered = store.listRunners().filter(one => one.retiredAt === null);
     const workers = registered.filter(one => runnerAlive(one, now));
-    if (workers.some(one => one.host !== here && store.providerReadiness(one.name).some(seen => seen.state === "ready"))) return true;
-    return options.localRunner !== undefined || registered.length === 0 || workers.some(one => one.host === here) ? localAgentSignedIn() : false;
+    // This machine under any of its own names (machine-identity.ts): a hostname that moved with the network is still here.
+    if (workers.some(one => !sameMachineHost(one.host, here) && store.providerReadiness(one.name).some(seen => seen.state === "ready"))) return true;
+    return options.localRunner !== undefined || registered.length === 0 || workers.some(one => sameMachineHost(one.host, here)) ? localAgentSignedIn() : false;
   }
   let localSignIn: { at: number; signedIn: boolean; states: Record<"claude" | "codex", ProviderConnection["state"] | "unverified"> } | null = null;
   let localSignInChecking: Promise<void> | null = null;

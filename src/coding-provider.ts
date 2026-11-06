@@ -8,6 +8,7 @@ import type { CodingPermissions } from "./coding-workspace.js";
 import type { Store } from "./store.js";
 import { poolRootOf } from "./worktree.js";
 import { currentBootId } from "./boot-identity.js";
+import { currentMachineId } from "./machine-identity.js";
 import { createContainer, currentContainment, type Container } from "./containment.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { observeProcessTree, sampleProcessTree, stopProcessTree, type ProcessObservationFailure } from "./process-tree.js";
@@ -26,6 +27,8 @@ export type CodingCustody = {
   observationFailures?: ProcessObservationFailure[];
   host: string;
   bootId: string | null;
+  /** v150: this machine's stable id (machine-identity.ts); absent in custody saved before it. */
+  machineId?: string | null;
   container?: { backend: string; id: string; identity?: string };
 };
 
@@ -117,7 +120,7 @@ export function createCodexCodingProvider(options: { cwd?: string; command?: str
   const descendants = new Map<string, { pid: number; group: boolean }>();
   let ancestryUnknown = false;
   const observationFailures: ProcessObservationFailure[] = [];
-  const host = hostname();
+  const host = hostname(), machineId = currentMachineId();
   // Bind the boot at creation, not when an old snapshot is requested later.
   const bootId = currentBootId();
   let nextId = 0;
@@ -130,7 +133,7 @@ export function createCodexCodingProvider(options: { cwd?: string; command?: str
     return {
       pid, group: pid !== null && process.platform !== "win32",
       descendants: [...descendants.values()].map(one => ({ ...one })),
-      observationUnknown: ancestryUnknown, host, bootId,
+      observationUnknown: ancestryUnknown, host, bootId, machineId,
       ...(observationFailures.length === 0 ? {} : { observationFailures: observationFailures.map(one => ({ ...one })) }),
       ...(container === null ? {} : { container: { backend: container.backend, id: container.id, ...(container.identity === undefined ? {} : { identity: container.identity }) } }),
     };

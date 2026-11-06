@@ -26,6 +26,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync } from "node:fs";
 import { bootIdentity, provenDeadByBootChange, type BootIdentity } from "./boot-identity.js";
+import { sameMachineHost } from "./machine-identity.js";
 import { containmentStatus, currentContainment } from "./containment.js";
 import { daemonStatus, type ServiceDefinition, type ServiceStatus, type SupervisorRunner } from "./daemon.js";
 import { isAlive } from "./runner.js";
@@ -57,7 +58,7 @@ export type RestartBaseline = {
     pendingStops: { run: number; taskRef: number; requestedAt: string; problem: string | null }[];
     openRuns: { id: number; taskRef: number; role: string; runner: string; leaseId: string }[];
     runningTasks: string[];
-    witnesses: { run: number; pid: number | null; host: string; bootId: string | null; containment: string | null; open: boolean }[];
+    witnesses: { run: number; pid: number | null; host: string; bootId: string | null; containment: string | null; open: boolean; machineId?: string | null }[];
   };
   limits: readonly string[];
 };
@@ -103,8 +104,8 @@ export async function recordRestartBaseline(inputs: BaselineInputs): Promise<Res
     .map(row => ({ run: Number(row["run"]), taskRef: Number(row["task_ref"]), requestedAt: String(row["requested_at"]), problem: store.stopQuiescenceProblem(Number(row["run"])) }));
   const openRuns = raw.prepare("SELECT id, task_ref, role, runner, lease_id FROM run WHERE outcome IS NULL ORDER BY id").all()
     .map(row => ({ id: Number(row["id"]), taskRef: Number(row["task_ref"]), role: String(row["role"]), runner: String(row["runner"]), leaseId: String(row["lease_id"]) }));
-  const witnesses = raw.prepare("SELECT run, pid, host, boot_id, containment, exited_at FROM run_process WHERE exited_at IS NULL ORDER BY id").all()
-    .map(row => ({ run: Number(row["run"]), pid: row["pid"] === null ? null : Number(row["pid"]), host: String(row["host"]), bootId: row["boot_id"] === null ? null : String(row["boot_id"]), containment: row["containment"] === null ? null : String(row["containment"]), open: true }));
+  const witnesses = raw.prepare("SELECT run, pid, host, boot_id, containment, exited_at, machine_id FROM run_process WHERE exited_at IS NULL ORDER BY id").all()
+    .map(row => ({ run: Number(row["run"]), pid: row["pid"] === null ? null : Number(row["pid"]), host: String(row["host"]), bootId: row["boot_id"] === null ? null : String(row["boot_id"]), containment: row["containment"] === null ? null : String(row["containment"]), open: true, machineId: row["machine_id"] == null ? null : String(row["machine_id"]) }));
   return {
     version: 2,
     runnerName: inputs.runnerName ?? null,
@@ -176,7 +177,8 @@ export async function verifyRestartRecovery(inputs: VerifyInputs): Promise<Resta
   checks.push({ name: "database", ok: sameDatabase, detail: sameDatabase ? "same database file identity" : "database identity differs or baseline predates identity verification; no recovery mutations performed" });
 
   // 1. Boot identity, as the OS reports it.
-  const sameHost = baseline.host === current.host;
+  // This machine under any of its own names (machine-identity.ts): a reboot onto another network can move the hostname.
+  const sameHost = sameMachineHost(baseline.host, current.host);
   const bootChanged = !sameHost || baseline.boot.id === null || current.boot.id === null
     ? null
     : provenDeadByBootChange({ host: current.host, bootId: baseline.boot.id }, { host: current.host, bootId: current.boot.id });
@@ -207,7 +209,7 @@ export async function verifyRestartRecovery(inputs: VerifyInputs): Promise<Resta
   }
   const baselineBeats = new Map(baseline.database.runners.map(one => [one.name, one.heartbeatAt]));
   const liveRunners = current.database.runners.filter(one => !one.retired);
-  const fresh = liveRunners.filter(one => one.host === current.host && one.alive && (baseline.runnerName === null || one.name === baseline.runnerName) && baselineBeats.has(one.name) && one.heartbeatAt > baselineBeats.get(one.name)!);
+  const fresh = liveRunners.filter(one => sameMachineHost(one.host, current.host) && one.alive && (baseline.runnerName === null || one.name === baseline.runnerName) && baselineBeats.has(one.name) && one.heartbeatAt > baselineBeats.get(one.name)!);
   checks.push({
     name: "heartbeat",
     ok: fresh.length > 0,
@@ -241,8 +243,8 @@ export async function verifyRestartRecovery(inputs: VerifyInputs): Promise<Resta
         ? `every run open at the baseline has ended (${baseline.database.openRuns.map(run => `#${run.id}`).join(", ")})`
         : `still open from before: ${staleOpen.map(run => `#${run.id} (${run.role}, ${run.runner})`).join(", ")} — recovery has not run, or its lease is still live`,
   });
-  const oldWitnesses = baseline.database.witnesses.filter(one => one.bootId !== null && current.boot.id !== null && one.host === current.host);
-  const survivors = oldWitnesses.filter(one => !provenDeadByBootChange({ host: one.host, bootId: one.bootId }, { host: current.host, bootId: current.boot.id }));
+  const oldWitnesses = baseline.database.witnesses.filter(one => one.bootId !== null && current.boot.id !== null && sameMachineHost(one.host, current.host, one.machineId));
+  const survivors = oldWitnesses.filter(one => !provenDeadByBootChange({ host: one.host, bootId: one.bootId }, { host: one.host, bootId: current.boot.id }));
   checks.push({
     name: "old-boot-custody",
     ok: bootChanged !== true || survivors.length === 0,

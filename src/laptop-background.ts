@@ -24,6 +24,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, hostname } from "node:os";
+import { sameMachineHost } from "./machine-identity.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { proveLiveConsole, type AttachProof } from "./console-instance.js";
@@ -221,7 +222,7 @@ export type ControllerProof = {
 export function findController(store: Store, databaseFile: string, console_: { pid: number; port: number; url: string }, s: Pick<Resolved, "probe" | "parentOf" | "host">): ControllerProof | { why: string } {
   let why = "no Toolroll process record names the running console";
   for (const runner of store.listRunners()) {
-    if (runner.retiredAt !== null || runner.host !== s.host) continue;
+    if (runner.retiredAt !== null || !sameMachineHost(runner.host, s.host)) continue;
     const holder = store.getRunner(runner.name);
     if (holder === null) continue;
     let file: string;

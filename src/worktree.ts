@@ -29,6 +29,7 @@ import { hostname } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
+import { currentMachineId, isThisMachine } from "./machine-identity.js";
 import type { Run, Store, WorktreeRow } from "./store.js";
 import { HANDOFF_PREFIX, MAILBOX_SUFFIX, looksLikeProtocolFile, readMailbox } from "./evidence.js";
 import { parseHandoff } from "./decision.js";
@@ -131,18 +132,20 @@ const busy = new Map<string, "leasing" | "removing">();
 
 // Outside the checkout so removal cannot erase the reservation before git and the row update finish.
 const reservationPath = (path: string) => `${path}.occupancy`;
-type Reservation = { pid: number; host: string; bootId: string | null; token: string };
+// machineId (v150): this machine's stable id, so a hostname that moved with the network still reads as this machine.
+type Reservation = { pid: number; host: string; bootId: string | null; token: string; machineId?: string | null };
 function reservation(path: string): Reservation | null {
   try {
     const note = JSON.parse(readFileSync(reservationPath(path), "utf8")) as Reservation;
-    if (Number.isSafeInteger(note.pid) && note.pid > 0 && typeof note.host === "string" && typeof note.token === "string") return note;
+    if (Number.isSafeInteger(note.pid) && note.pid > 0 && typeof note.host === "string" && typeof note.token === "string"
+      && (note.machineId === undefined || note.machineId === null || typeof note.machineId === "string")) return note;
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; }
   // An unreadable reservation is occupied, never a reason to delete someone's checkout.
   return { pid: 0, host: "unknown", bootId: null, token: "unknown" };
 }
 function reservationAlive(note: Reservation): boolean {
-  if (note.pid === 0 || note.host !== hostname()) return true;
-  if (note.bootId !== null && provenDeadByBootChange(note)) return false;
+  if (note.pid === 0 || !isThisMachine(note)) return true;
+  if (note.bootId !== null && provenDeadByBootChange(note, { host: note.host, bootId: currentBootId() })) return false;
   try { process.kill(note.pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
@@ -150,7 +153,7 @@ function reservationAlive(note: Reservation): boolean {
 /** A short store transaction arbitrates marker creation/recovery, never git, a scan or deletion.
  * Atomic rename publishes a complete owner; a crash cannot leave a half-written reservation. */
 function reserveCheckout(store: Store, path: string): (() => void) | null {
-  const note: Reservation = { pid: process.pid, host: hostname(), bootId: currentBootId(), token: randomBytes(12).toString("hex") };
+  const note: Reservation = { pid: process.pid, host: hostname(), bootId: currentBootId(), token: randomBytes(12).toString("hex"), machineId: currentMachineId() };
   const file = reservationPath(path), temp = `${file}.${note.token}`;
   const held = store.transact(() => {
     const prior = reservation(path);
@@ -242,13 +245,13 @@ export function recordWorktreeProcess(store: Store, path: string, runner: string
   // verified boot change nothing of it survives, and the checkout is free
   // without a PID probe that a reused pid could answer wrongly.
   const bootId = currentBootId();
-  writeFileSync(join(path, MARKER), `${pid} ${runner} group ${bootId ?? "unknown"} ${hostname()}\n`, "utf8");
+  writeFileSync(join(path, MARKER), `${pid} ${runner} group ${bootId ?? "unknown"} ${hostname()} ${currentMachineId() ?? "unknown"}\n`, "utf8");
 }
 
 /** Read-only occupancy witness shared with stop settlement. */
 export function worktreeProcessOccupancy(path: string): { held: true; by: number } | { held: false } {
   const reserved = reservation(path);
-  if (reserved !== null && (reserved.pid !== process.pid || reserved.host !== hostname()) && reservationAlive(reserved)) return { held: true, by: reserved.pid };
+  if (reserved !== null && (reserved.pid !== process.pid || !isThisMachine(reserved)) && reservationAlive(reserved)) return { held: true, by: reserved.pid };
   const note = join(path, MARKER);
   if (!existsSync(note)) return { held: false };
 
@@ -256,13 +259,15 @@ export function worktreeProcessOccupancy(path: string): { held: true; by: number
   const pid = Number(parts[0]);
   if (!Number.isInteger(pid) || pid <= 0) return { held: false };
   const noteHost = parts[4];
-  if (noteHost !== undefined && noteHost !== hostname()) return { held: true, by: pid };
+  // The sixth word (v150) is the writer's machine id; "unknown", or a note from before it, is matched by name.
+  const noteMachine = parts[5] === undefined || parts[5] === "unknown" ? null : parts[5];
+  if (noteHost !== undefined && !isThisMachine({ host: noteHost, machineId: noteMachine })) return { held: true, by: pid };
   if (pid === process.pid && parts[2] !== "group") return { held: false };
   // A note from a previous, VERIFIED boot of this host names a process
   // that cannot exist any more; a note without a boot id (legacy) or a
   // boot this host cannot verify keeps the probe below.
   const noteBoot = parts[3];
-  if (noteBoot !== undefined && noteHost !== undefined && provenDeadByBootChange({ host: noteHost, bootId: noteBoot })) return { held: false };
+  if (noteBoot !== undefined && noteHost !== undefined && provenDeadByBootChange({ host: noteHost, bootId: noteBoot }, { host: noteHost, bootId: currentBootId() })) return { held: false };
 
   // A shell/provider can exit before its descendants. A recorded POSIX
   // process group remains an owner until that whole group has gone.
@@ -678,7 +683,7 @@ export class WorktreePool {
   /** Leave a note naming the process holding this checkout. */
   private mark(path: string, runner: string, pid = process.pid): boolean {
     try {
-      writeFileSync(join(path, MARKER), `${pid} ${runner} process ${currentBootId() ?? "unknown"} ${hostname()}\n`, "utf8");
+      writeFileSync(join(path, MARKER), `${pid} ${runner} process ${currentBootId() ?? "unknown"} ${hostname()} ${currentMachineId() ?? "unknown"}\n`, "utf8");
       return true;
     } catch {
       return false;
@@ -945,7 +950,7 @@ export class WorktreePool {
       const now = this.store.getWorktree(row.path);
       if (!idle(now) || !wanted(now!)) return { ok: false, message: `${row.path} is in use` };
       // Held while it slims: another process's lease sees this process in it.
-      try { writeFileSync(note, `${process.pid} storage-retention slimming ${currentBootId() ?? "unknown"} ${hostname()}\n`, "utf8"); held = true; } catch { return { ok: false, message: `${row.path} couldn't be held` }; }
+      try { writeFileSync(note, `${process.pid} storage-retention slimming ${currentBootId() ?? "unknown"} ${hostname()} ${currentMachineId() ?? "unknown"}\n`, "utf8"); held = true; } catch { return { ok: false, message: `${row.path} couldn't be held` }; }
       const sizes = diskBytes(drop.map(one => join(row.path, one)));
       this.store.forgetWorktreeSetup(row.path);
       for (const one of drop) rmSync(join(row.path, one), { recursive: true, force: true, maxRetries: 3 });
@@ -986,7 +991,7 @@ export class WorktreePool {
   private async removeWorkingCopy(row: WorktreeRow): Promise<boolean> {
     // Held while it goes: another process's lease sees this process in it (the busy map is this process's only).
     const note = join(row.path, MARKER);
-    try { writeFileSync(note, `${process.pid} storage-retention removing ${currentBootId() ?? "unknown"} ${hostname()}\n`, "utf8"); } catch { return false; }
+    try { writeFileSync(note, `${process.pid} storage-retention removing ${currentBootId() ?? "unknown"} ${hostname()} ${currentMachineId() ?? "unknown"}\n`, "utf8"); } catch { return false; }
     const gone = await this.teardown(row.repo, ["worktree", "remove", "--force", row.path]);
     if (gone.code !== 0) { rmSync(note, { force: true }); return false; }
     this.forgetRemoved(row);

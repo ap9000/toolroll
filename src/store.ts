@@ -77,6 +77,7 @@ import { ownedProcessCount, runOwnerTag } from "./exec.js";
 import { worktreeProcessOccupancy } from "./worktree.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
+import { currentMachineId, isThisMachine, liveHostAliases, rememberHostAliases, thisMachine, type ThisMachine } from "./machine-identity.js";
 import { containerEmptiness } from "./container-state.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
@@ -1177,7 +1178,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v149 adds, and changes no saved row (docs/plans/learning-loops.md): every learning-loops table (V149_SCHEMA, new
 // tables only) — each check's recorded conditions and results, mixed-outcome observations, tracked identities, lesson
 // notes and their tallies, memory use, tidy-up proposals and decision merges.
-export const SCHEMA_VERSION = 149;
+// v150 adds, and changes no saved row: this machine's stable id on each process witness (run_process.machine_id;
+// saved witnesses read NULL and keep being matched by host name) and the hostnames each machine id was seen under
+// (machine_host_alias, a new table; machine-identity.ts). V150_SCHEMA, V150_ADDED_COLUMNS.
+export const SCHEMA_VERSION = 150;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1315,7 +1319,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1579,7 +1583,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -1951,6 +1955,29 @@ export const V149_TABLES = Object.freeze(["check_result", "check_fact", "local_o
 export const V149_REPO_TABLES = Object.freeze(["check_fact", "local_observation", "ci_flaky_observation", "learning_watch", "lesson_note", "memory_use", "memory_tidy_proposal"] as const);
 /** The v149 migration's steps after v148's, in order (OpenOptions.migrationStep may stop after each). */
 export const V149_STEPS = Object.freeze(["learning-tables"] as const);
+/**
+ * v150 (machine-identity.ts): which computer a process witness belongs to, by the machine's stable id rather than its
+ * network hostname (which follows the network on a Mac with no HostName set). machine_host_alias records each
+ * hostname this machine read while it knew its own id, written only by a process on that machine, beside the id it
+ * read; a witness with no id (every saved one) is this machine's when its host is one of them. Never read for any
+ * other machine's id.
+ */
+export const V150_SCHEMA = `
+CREATE TABLE IF NOT EXISTS machine_host_alias (
+  machine_id    TEXT NOT NULL CHECK (length(machine_id) = 32),
+  host          TEXT NOT NULL CHECK (host <> ''),
+  first_seen_at TEXT NOT NULL,
+  PRIMARY KEY (machine_id, host)
+);
+`;
+/** The tables V150_SCHEMA adds. */
+export const V150_TABLES = Object.freeze(["machine_host_alias"] as const);
+/** v150: a process witness's machine id (saved witnesses read NULL: matched by host name, as before). */
+export const V150_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  run_process: { machine_id: { definition: "TEXT CHECK (machine_id IS NULL OR length(machine_id) = 32)", saved: "NULL" } },
+});
+/** The v150 migration's steps after v149's, in order (OpenOptions.migrationStep may stop after each). */
+export const V150_STEPS = Object.freeze(["machine-aliases", "witness-machine"] as const);
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6280,6 +6307,12 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   // v149: the learning-loops tables (new tables only; docs/plans/learning-loops.md). Idempotent, as v148's steps are.
   db.exec(V149_SCHEMA);
   step("learning-tables");
+  // v150: this machine's stable id on each process witness and the hostnames it was seen under (V150_SCHEMA,
+  // V150_ADDED_COLUMNS: saved witnesses read NULL). Idempotent, as v149's step is.
+  db.exec(V150_SCHEMA);
+  step("machine-aliases");
+  for (const [column, { definition }] of Object.entries(V150_ADDED_COLUMNS["run_process"]!)) addColumn(db, "run_process", column, definition);
+  step("witness-machine");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -7508,6 +7541,8 @@ export class Store {
     this.db = instrumentDatabase(trackWorkspaceWrites(db), this.telemetry);
     // And on each instance: the sealed methods as its own locked properties, so nothing shadows one later.
     lockStoreMoneyMethods(this);
+    // This machine's recorded names (v150), for the custody checks that hold no store (machine-identity.ts).
+    rememberStoredHostAliases(this.db);
   }
 
   /** TESTS ONLY: raw database access for migration fixtures. Production
@@ -22362,6 +22397,7 @@ export class Store {
       if (run.outcome === null) return fact(id, "open", `run #${id} is still open`);
       if (ownedProcessCount(runOwnerTag(this, id)) > 0) return fact(id, "alive", `run #${id} still has an owned subprocess`);
       const witnesses = this.db.prepare("SELECT * FROM run_process WHERE run = ? ORDER BY id").all(id);
+      const here = storeMachine(this.db);
       let incompleteSpawn = false;
       if (run.providerStartedAt !== null && witnesses.length === 0 && !this.processesSummarized(id)) {
         return provable(id, `run #${id} may have spawned before its process witness was recorded; exit is unproven`, "no-witness");
@@ -22370,14 +22406,16 @@ export class Store {
         // A recorded group exit proves the whole group ended, not just its
         // leader. Re-probing its number could mistake reuse for the old group.
         if (witness["exited_at"] !== null) continue;
-        const host = String(witness["host"]);
         const bootId = witness["boot_id"] === null || witness["boot_id"] === undefined ? null : String(witness["boot_id"]);
-        // A VERIFIED boot change on this host (v53): nothing of the old
+        // This machine by its stable id, or by one of its own names for a witness from before v150 (machine-identity.ts):
+        // a hostname that moved with the network never makes this machine's own witness another computer's.
+        const local = witnessIsLocal(witness, here);
+        // A VERIFIED boot change on this machine (v53): nothing of the old
         // boot survives — an incomplete spawn, a reused pid and a native
         // object alike are gone. Every other case keeps the conservative
         // road below.
-        if (provenDeadByBootChange({ host, bootId })) continue;
-        if (host !== hostname()) return fact(id, "elsewhere", `run #${id}'s process belongs to another host; exit is unproven here`);
+        if (local && provenDeadByBootChange({ host: String(witness["host"]), bootId }, { host: String(witness["host"]), bootId: currentBootId() })) continue;
+        if (!local) return fact(id, "elsewhere", `run #${id}'s process belongs to another host; exit is unproven here`);
         const backend = witness["containment"] === null || witness["containment"] === undefined ? null : String(witness["containment"]);
         const container = witness["container"] === null || witness["container"] === undefined ? null : String(witness["container"]);
         if (backend !== null || container !== null) {
@@ -22424,8 +22462,9 @@ export class Store {
   }
 
   reserveRunProcess(runId: number, now: Date, group = true): number {
-    return Number(this.db.prepare("INSERT INTO run_process (run,host,process_group,observed_at,boot_id) VALUES (?,?,?,?,?)")
-      .run(runId, hostname(), group ? 1 : 0, now.toISOString(), currentBootId()).lastInsertRowid);
+    recordMachineHostAliases(this.db, now);
+    return Number(this.db.prepare("INSERT INTO run_process (run,host,process_group,observed_at,boot_id,machine_id) VALUES (?,?,?,?,?,?)")
+      .run(runId, hostname(), group ? 1 : 0, now.toISOString(), currentBootId(), currentMachineId()).lastInsertRowid);
   }
 
   /** The run's process witnesses not yet proved exited — after first saving whatever exit evidence is available. */
@@ -22447,11 +22486,12 @@ export class Store {
     // check uses: ESRCH, or a process now holding the pid that was born after
     // the run ended. An open run has no finish time, so only ESRCH counts.
     const finishedAt = this.getRun(runId)?.finishedAt ?? null;
+    const here = storeMachine(this.db);
     let recorded = 0;
     for (const row of rows) {
       const host = String(row["host"]), bootId = row["boot_id"] == null ? null : String(row["boot_id"]);
-      if (host !== hostname() || typeof row["observed_at"] !== "string" || !Number.isFinite(Date.parse(row["observed_at"])) || Date.parse(row["observed_at"]) > now.getTime()) continue;
-      let gone = provenDeadByBootChange({ host, bootId });
+      if (!witnessIsLocal(row, here) || typeof row["observed_at"] !== "string" || !Number.isFinite(Date.parse(row["observed_at"])) || Date.parse(row["observed_at"]) > now.getTime()) continue;
+      let gone = provenDeadByBootChange({ host, bootId }, { host, bootId: currentBootId() });
       if (!gone) {
         const backend = row["containment"] == null ? null : String(row["containment"]);
         const container = row["container"] == null ? null : String(row["container"]);
@@ -22463,9 +22503,9 @@ export class Store {
         }
       }
       if (gone) recorded += Number(this.db.prepare(`UPDATE run_process SET exited_at = ?
-        WHERE id = ? AND run = ? AND exited_at IS NULL AND pid IS ? AND host = ? AND process_group = ?
+        WHERE id = ? AND run = ? AND exited_at IS NULL AND pid IS ? AND host = ? AND machine_id IS ? AND process_group = ?
           AND observed_at = ? AND boot_id IS ? AND containment IS ? AND container IS ? AND container_identity IS ?`)
-        .run(now.toISOString(), row["id"], runId, row["pid"], row["host"], row["process_group"], row["observed_at"], row["boot_id"], row["containment"], row["container"], row["container_identity"]).changes);
+        .run(now.toISOString(), row["id"], runId, row["pid"], row["host"], row["machine_id"] ?? null, row["process_group"], row["observed_at"], row["boot_id"], row["containment"], row["container"], row["container_identity"]).changes);
     }
     return recorded;
   }
@@ -22476,12 +22516,13 @@ export class Store {
    * yet stays open and is passed over, never holding newer runs behind it:
    * every finished run is visited, a batch at a time. Never signals. */
   recordFinishedRunExits(now: Date, batch = 200): number {
+    const local = localWitnessSql(storeMachine(this.db), "p");
     const page = this.db.prepare(`SELECT DISTINCT p.run FROM run_process p JOIN run r ON r.id = p.run
-      WHERE p.exited_at IS NULL AND p.host = ? AND p.run > ? AND r.outcome IS NOT NULL AND r.finished_at IS NOT NULL
+      WHERE p.exited_at IS NULL AND ${local.sql} AND p.run > ? AND r.outcome IS NOT NULL AND r.finished_at IS NOT NULL
       ORDER BY p.run LIMIT ?`);
     let recorded = 0;
     for (let after = 0; ;) {
-      const runs = page.all(hostname(), after, batch).map(row => Number(row["run"]));
+      const runs = page.all(...local.params, after, batch).map(row => Number(row["run"]));
       for (const run of runs) recorded += this.recordRunProcessExits(run, now);
       if (runs.length < batch) break;
       after = runs[runs.length - 1]!;
@@ -22515,10 +22556,11 @@ export class Store {
    * entry. A sole pid-less witness has no group to prove gone and stays for
    * Toolroll's own look (stop-proof.ts). Native witnesses keep their OS-only road. */
   settleUnspawnedWitnesses(now: Date, onlyRun?: number): number {
+    const local = localWitnessSql(storeMachine(this.db), "p");
     const candidates = this.db.prepare(`SELECT DISTINCT p.run FROM run_process p JOIN run r ON r.id = p.run
       WHERE p.exited_at IS NULL AND p.pid IS NULL AND p.containment IS NULL AND p.container IS NULL
-        AND p.host = ? AND r.outcome IS NOT NULL AND r.finished_at IS NOT NULL
-        AND (? IS NULL OR p.run = ?) ORDER BY p.run`).all(hostname(), onlyRun ?? null, onlyRun ?? null);
+        AND ${local.sql} AND r.outcome IS NOT NULL AND r.finished_at IS NOT NULL
+        AND (? IS NULL OR p.run = ?) ORDER BY p.run`).all(...local.params, onlyRun ?? null, onlyRun ?? null);
     let settled = 0;
     for (const candidate of candidates) {
       const runId = Number(candidate["run"]);
@@ -22551,10 +22593,11 @@ export class Store {
    * their fences; only an observed single-process exit avoids a new probe. */
   private settleableUnspawnedWitnesses(run: Run, rows: Record<string, unknown>[]): Record<string, unknown>[] {
     if (run.outcome === null || run.finishedAt === null || ownedProcessCount(runOwnerTag(this, run.id)) > 0) return [];
-    const pidless = rows.filter(row => row["exited_at"] === null && row["pid"] === null && row["containment"] === null && row["container"] === null && row["host"] === hostname());
+    const here = storeMachine(this.db);
+    const pidless = rows.filter(row => row["exited_at"] === null && row["pid"] === null && row["containment"] === null && row["container"] === null && witnessIsLocal(row, here));
     const others = rows.filter(row => !pidless.includes(row));
     if (pidless.length === 0 || others.length === 0 || others.some(row => row["exited_at"] === null)) return [];
-    const known = others.filter(row => row["pid"] !== null && row["host"] === hostname());
+    const known = others.filter(row => row["pid"] !== null && witnessIsLocal(row, here));
     if (known.length === 0 || known.some(row => processMayBeAlive(Number(row["pid"]), row["process_group"] === 1,
       { observedAt: row["observed_at"], finishedAt: run.finishedAt, exitedAt: row["exited_at"] }))) return [];
     return pidless;
@@ -22568,8 +22611,9 @@ export class Store {
       if (Number(changed.changes) !== 1) throw new Error("spawn witness custody changed");
       return;
     }
-    this.db.prepare("INSERT INTO run_process (run,pid,host,process_group,observed_at,boot_id) VALUES (?,?,?,?,?,?)")
-      .run(runId, pid, hostname(), group ? 1 : 0, now.toISOString(), currentBootId());
+    recordMachineHostAliases(this.db, now);
+    this.db.prepare("INSERT INTO run_process (run,pid,host,process_group,observed_at,boot_id,machine_id) VALUES (?,?,?,?,?,?,?)")
+      .run(runId, pid, hostname(), group ? 1 : 0, now.toISOString(), currentBootId(), currentMachineId());
   }
 
   /** The native OS object a witnessed spawn ran inside (v53) — recorded
@@ -22591,10 +22635,11 @@ export class Store {
    * must independently prove gone; this never grants authority to signal. */
   runCustodyProvenGone(runId: number): boolean {
     const rows = this.db.prepare("SELECT * FROM run_process WHERE run = ?").all(runId);
+    const here = storeMachine(this.db);
     // A summarized run's witnesses all exited, each on recorded proof.
     return (rows.length > 0 || this.processesSummarized(runId)) && rows.every(row => {
-      if (String(row["host"]) !== hostname()) return false;
-      if (provenDeadByBootChange({ host: String(row["host"]), bootId: row["boot_id"] == null ? null : String(row["boot_id"]) })) return true;
+      if (!witnessIsLocal(row, here)) return false;
+      if (provenDeadByBootChange({ host: String(row["host"]), bootId: row["boot_id"] == null ? null : String(row["boot_id"]) }, { host: String(row["host"]), bootId: currentBootId() })) return true;
       if (row["containment"] == null || row["container"] == null) return false;
       return row["container_empty_at"] != null || containerEmptiness(String(row["containment"]), String(row["container"]), process.platform, row["container_identity"] == null ? null : String(row["container_identity"])) === "empty";
     });
@@ -26744,13 +26789,15 @@ export function settleRunStopByObservation(store: Store, args: { runId: number; 
     const at = now.toISOString();
     let what: string;
     if (args.cause === "incomplete-spawn") {
+      const local = localWitnessSql(storeMachine(db));
       const changed = db.prepare(`UPDATE run_process SET exited_at = ? WHERE run = ? AND exited_at IS NULL AND pid IS NULL
-        AND containment IS NULL AND container IS NULL AND host = ?`).run(at, args.runId, hostname()).changes;
+        AND containment IS NULL AND container IS NULL AND ${local.sql}`).run(at, args.runId, ...local.params).changes;
       if (Number(changed) === 0) return false;
       what = `${Number(changed)} process witness${Number(changed) === 1 ? "" : "es"} with no process ID recorded ended`;
     } else if (args.cause === "no-witness") {
-      db.prepare("INSERT INTO run_process (run,host,process_group,observed_at,boot_id,exited_at) VALUES (?,?,0,?,?,?)")
-        .run(args.runId, hostname(), at, currentBootId(), at);
+      recordMachineHostAliases(db, now);
+      db.prepare("INSERT INTO run_process (run,host,process_group,observed_at,boot_id,exited_at,machine_id) VALUES (?,?,0,?,?,?,?)")
+        .run(args.runId, hostname(), at, currentBootId(), at, currentMachineId());
       what = "its missing process witness recorded ended";
     } else {
       store.recordAction({ at, actor: "system", repo: ref?.repo ?? null, taskId: ref?.externalId ?? null, runId: args.runId,
@@ -26763,4 +26810,49 @@ export function settleRunStopByObservation(store: Store, args: { runId: number; 
     store.settleQuiescentStops(now);
     return true;
   });
+}
+
+/**
+ * This machine as the store knows it (v150, machine-identity.ts): its stable id and every name it is known by, the
+ * hostnames recorded beside its own id included. Read fresh each time, so a name recorded by another process on this
+ * machine counts at once.
+ */
+export function storeMachine(db: Database): ThisMachine {
+  const id = currentMachineId();
+  let recorded: string[] = [];
+  if (id !== null) {
+    try { recorded = db.prepare("SELECT host FROM machine_host_alias WHERE machine_id = ?").all(id).map(row => String(row["host"])); }
+    catch { recorded = []; }
+    rememberHostAliases(id, recorded);
+  }
+  return thisMachine(recorded);
+}
+
+/** Load this machine's recorded names for the checks that hold no store; a store that can't read them loads none. */
+export function rememberStoredHostAliases(db: Database): void {
+  try { storeMachine(db); } catch { /* none recorded, or no table to read: only the live names count */ }
+}
+
+/** Record the names this machine is known by right now beside its own id, read here at this moment (never a name a
+ * witness, a note or another computer supplied). Nothing when this machine's id is unknown. */
+export function recordMachineHostAliases(db: Database, now: Date): void {
+  const id = currentMachineId();
+  if (id === null) return;
+  const names = liveHostAliases();
+  const insert = db.prepare("INSERT OR IGNORE INTO machine_host_alias (machine_id, host, first_seen_at) VALUES (?, ?, ?)");
+  for (const host of names) insert.run(id, host, now.toISOString());
+  rememberHostAliases(id, names);
+}
+
+/** Whether a run_process row is this machine's (machine-identity.ts isThisMachine). */
+export function witnessIsLocal(row: Record<string, unknown>, here: ThisMachine): boolean {
+  return isThisMachine({ host: String(row["host"]), machineId: row["machine_id"] == null ? null : String(row["machine_id"]) }, here);
+}
+
+/** The same rule as witnessIsLocal, as SQL over run_process (optionally aliased): its id is ours, or it has none and
+ * its host is one of our names. With our id unknown, `machine_id = NULL` matches nothing: an id-bearing witness is
+ * never taken for ours. */
+export function localWitnessSql(here: ThisMachine, alias?: string): { sql: string; params: [string | null, string] } {
+  const p = alias === undefined ? "" : `${alias}.`;
+  return { sql: `(${p}machine_id = ? OR (${p}machine_id IS NULL AND ${p}host IN (SELECT value FROM json_each(?))))`, params: [here.id, JSON.stringify(here.hosts)] };
 }
