@@ -1,6 +1,6 @@
 # Trusted release reports: one-tap release approval now, a separate gate later
 
-Status: plan v2, 2026-11-05. Branch `trusted-release-reports`, off main at `5b5681d7`. Docs only.
+Status: plan v3, 2026-11-05. Slice A revised after Codex round 2 (NO-GO as written; every finding folded in below). Built on branch `one-tap-release`, off main at `5b5681d7`.
 
 v1 proposed letting releases approve themselves by turning `reportsProtected` into a proof. Codex round 1 was NO-GO,
 with 2 Critical and 7 High/Medium findings, all checked against the code below.
@@ -46,14 +46,25 @@ tap" becomes possible only with H3 (a sandboxed check, measured first).
 - **CLI.** It prints `toolroll task approve <id> --digest <digest>` (release.ts:989), which has to be copied by hand.
   The CLI can already ask for a password without echoing it (operate.ts:11096-11110 `askCredentials`/`askHidden`).
 
-**What proves the person today** (`approve`, scope.ts:1517 onward). Slice A keeps all of this unchanged:
-- a password typed now;
-- with Passwordless on, the person's live signed-in browser session (scope.ts:1382-1383);
-- at this computer's CLI, its remembered login (`cli-login`, scope.ts:1376-1377);
-- a remembered password only for everyday terms (`freshlyApprovable`, scope.ts:1640). Escalated, protected or
-  coordinator-filed terms take a password typed now (scope.ts:1584-1587);
-- project rules, the organisation policy, CI holds and the release-terms seal checks are all re-checked at the seal
+**What proves the person today** (`approve`, scope.ts:1517 onward; Codex round 2 corrected this list). Slice A keeps
+all of it unchanged and adds no proof:
+- a password typed now (`password-now`);
+- an explicit, unconsumed identity-provider re-check made on request (`sso-now`, one step-up, five minutes,
+  scope.ts:1250-1330);
+- with Passwordless on, the person's live signed-in browser session (`session`), under its existing conditions;
+- at this computer's CLI, its remembered login (`cli-login`, under Passwordless only), read through `askCredentials`
+  and its command context (operate.ts:11096), never reconstructed;
+- a remembered password or re-check (`fresh-password`, `fresh-sso`): local, time-limited, and only where
+  `freshlyApprovable` says so (scope.ts:1640). Escalated, protected or coordinator-filed terms take a password typed now;
+- project rules, the organisation policy, CI holds and the release seal checks are all re-checked at the seal
   (scope.ts:1573-1581).
+
+What does **not** approve a release, and stays so:
+- **the local owner** of a laptop install, even typing a password into that session: releases need the existing
+  full-sign-in transition (`localApprovalEligible` refuses `release`, scope.ts:2127; the local-owner prover decides
+  first, scope.ts:1345);
+- machine credentials (a lead token, a remote API token): `machine-proof`;
+- paired chat stays its own ceremony (the release card with Continue then Approve), unchanged.
 
 **Carrying later test-only commits** (`toolroll release carry`, release-cli.ts:60-63) needs release terms. Terms need
 a sandboxed check, or "unsandboxed carry", which stays off (release-carry.ts:161). So on Toolroll today **every new
@@ -66,65 +77,123 @@ commit asks again**. Carrying becomes available with H3.
 
 ## Slice A: one push, one screen, one proof (ships first, alone)
 
-**When.** At the gate step, right after the release task is filed (release.ts:954-962). That is the moment a person's
-yes becomes possible. One notification is sent per task and digest (dedupe key `release-ready:<task>:<digest>`).
-- No reminder follows.
-- A refusal or failure later sends the existing attention push.
-- A new commit files a new task, so it gets its own notification.
-- With automatic approval on and working (not today), this notification is skipped.
+Slice A v3 (after Codex round 2: NO-GO as written, 7 findings plus the proof inventory above, all checked against the
+code; see the table at the end of this section).
 
-**What the push says.**
-- A new closed class, `release`, with one fixed phrase: "A release is ready for your approval."
-- Its link is the task's approval sheet, `/tasks/<id>/approve`, added to the push link patterns.
-- Nothing about the release itself travels through the push service.
-- The in-app notification and the Needs you item carry the words that depend on the state:
-  - CI still running: "Release 0.9.x (abc1234) is ready to approve. You can approve now and walk away: Toolroll runs
-    the release check after your yes, and deploys, merges and publishes only once GitHub CI and the check pass. You're
-    told only if something fails."
-  - CI already green: "GitHub CI passed on abc1234. Approve to run the release check, deploy, merge and publish."
+**A1. One card, both sealed forms.** Toolroll's own releases seal the release-check *purpose* (`releaseCheck`), not
+release terms: its checks run unsandboxed, so terms can't be made (operate.ts:10553-10561, release-carry.ts:161).
+- The card reads whichever the scope sealed (`releaseTerms` or `releaseCheck`); the identity both share is the
+  repository, version, branch, pull request, base, approved commit and tree, grant and check access.
+- The full terms list every field of the sealed form, each with a label (a contract test holds both schemas' leaves
+  to the labels), never "none" for a purpose that is there.
+- Before consent the card says what an unsandboxed check means: "The release check runs this commit's code with full
+  access to this computer." (sign-ins: "with your sign-ins").
+- **Verified release history is defined apart from carrying.** The baseline is the newest of: a merged release
+  authority's succeeded merge (today's record, for terms), or a *verified release* row the coordinator records once
+  the merged tree was proved equal to the approved one (the tree step). The plane re-reads the merge commit as a
+  verified Git object from the project's own Git directory and requires its tree to equal the sealed approved tree
+  before writing the row. Nothing else (a tag, a ref, a journal) counts.
 
-**The sheet** (`/tasks/<id>/approve`, one screen, also the target of the Needs you item for a release task):
-- **What:** version, pull request, branch, the exact commit, the check access line ("Checks: not sandboxed"), and
-  whether later test-only commits carry the approval ("No: every new commit asks again" on Toolroll today). All of it
-  comes from `releaseCardOf`.
-- **What changed:** the change list since the last verified release (`releaseChangeList`). Commits and files are
-  folded, with a link to the full terms.
-- **Checks:** PR CI right now (passed / running, with the count / failed, with names), read by the plane. The release
-  check: "runs after your yes".
-- **Approve:** the existing approval ceremony, bound to `cardDigest`. If anything shown changed, Approve refuses and
-  the sheet reloads. Proof is as today (above). Under Passwordless a live session is one tap; otherwise one typed
-  password. Nothing here widens what any proof can approve.
-- **Refused states are shown, not hidden:** CI failed, a check already failed, the scope changed, or a CI hold from an
-  older coordinator.
+**A2. The change list is complete and bound to the candidate, or says it isn't.**
+- With a verified baseline: every commit from the baseline to the approved commit, as verified Git objects (as today).
+- With none: the pull request's commits from GitHub, **paginated**, accepted only when GitHub's pull request head is the
+  approved commit, the newest listed commit is the approved commit, and the count equals the pull request's own commit
+  count (GitHub lists at most 250: more is "incomplete").
+- Anything short of that is said: "couldn't be read" or "incomplete (N of M)". Never a shortened list.
+- Commits only. The file list is dropped (`ChangeList` has no source for it that is bound to the candidate).
 
-**CLI parity: `toolroll release approve [<branch>] [--repo <path>]`.**
-- It finds the release's own journal for the branch (the running or saved release), reads the task id and scope
-  digest from it, and checks them again against the plane (`toolroll.gate`: same candidate, same digest, not yet
-  approved).
-- It prints the same card in the terminal: version, PR, commit, CI right now, the change list, the check access.
-- It asks for the password without echoing it (`askCredentials`), or uses the remembered login where Passwordless
-  already allows it. It never needs `--token` on the command line.
-- It then calls the same `approve` path with the card digest.
-- If more than one release could match, it names them and asks for the branch.
-- `--json` answers with one envelope, and never prompts.
+**A3. Subjects are display text, made safe.** Commit subjects are cleaned once, at ingestion, by the terminal
+sanitizer (src/terminal-text.ts: escape sequences, C0/C1 controls, carriage returns, bidi and format characters,
+OSC-8 hyperlinks) and bounded. The digest binds the cleaned text, so every surface shows what was bound. Browsers also
+escape it as text.
 
-**Tests (Slice A).**
-- Filing sends exactly one `release` notification. The push payload holds only the fixed phrase and the sheet link.
-  The inbox body names the CI state.
-- A refile after a resume sends nothing new; a new candidate sends a new one.
-- The sheet's Approve with a stale `cardDigest` refuses.
-- Each proof case gives the same answer as today's task page:
-  - a typed password approves;
-  - under Passwordless, a live session approves;
-  - a remembered password on escalated terms is refused with `password-now`;
-  - a lead token, an API token or chat are refused here.
-- Approving while CI runs: nothing deploys until CI passes (existing release tests, extended to the sheet).
-- `release approve`:
-  - finds the task for a branch;
-  - refuses when the journal's digest differs from the plane's;
-  - refuses `--json` without a credential;
-  - with two releases open, names both;
-  - does not echo the password.
+**A4. The card snapshot and one shared approval wrapper.**
+- The card snapshot binds the scope digest, the plan form digest, the baseline and change list, **the CI snapshot**
+  (state; each check run's id, status and conclusion: a new attempt is a new id), and **the refusal state** (CI failed,
+  a check already failed, a CI hold, already approved, the scope changed). Its digest is the card digest.
+- `approveReleaseCard` is the one wrapper the sheet and the CLI call: rebuild the authoritative card; compare the
+  submitted card digest; then, in one transaction, re-read the store parts (scope digest, CI snapshot, refusal state)
+  and refuse on any change; then pass **that snapshot's scope digest** into the unchanged transactional `approve()`.
+  The digest is never swapped after prompting: a change refuses and the person reads the new card.
+- Proofs are `approve()`'s, unchanged (above).
+
+**A5. When the person hears, and the notification's whole life.**
+- **Asked:** on entering the approval step (fresh filing *or* a resumed gate), the coordinator asks the plane to file
+  one notification keyed by the task and the **stable scope digest** (`release-ready:<task ref>:<scope digest>`). A
+  crash between filing and asking is healed on the next run, which enters the approval step again. The automatic road
+  (off today) skips it.
+- **Retired:** the seal resolves the task's `release-ready` rows (any road: sheet, task page, CLI, chat), so a push
+  not yet delivered is never sent after the approval; asking for a new task or digest resolves every older
+  `release-ready` row of the project; and the push pass re-proves the row (below) and resolves an obsolete one
+  instead of sending it.
+- **Stops:** a manual release that stops (CI failed, the check failed, the deploy, merge, tag or publication failed,
+  or it stopped waiting) files one deduplicated attention notification (`release-stopped:<task>:<step>:<reason>`) with
+  the stop's words in the app and the fixed attention phrase in the push. The automatic road keeps its own notices.
+
+**A6. The push.**
+- Push words: the fixed phrase "A release is ready for your approval". The row is stored with the existing
+  `decision` class (no schema change). The `release` class and its link are **derived at send time from the plane's
+  own state**: the row is a `release-ready` row, its task ref is a release scope (terms or purpose, with a candidate),
+  not approved, and its scope digest is the row's. Never from a title, a task id prefix or the stored link. Anything
+  else is sent as `decision` to `/next`, or retired when obsolete.
+- The link is an opaque locator, `/approve/<task ref>` (a machine number: no version, commit or branch). Both
+  allowlists take it (push.ts `LINK_SHAPES`, the service worker in pages-assets.ts). An older installed worker sends it
+  to `/next`, as today.
+- `/approve/<n>` resolves the task ref through the console's project admission (a new `task-ref` resolver) and the
+  person's project access, proves it is a release scope from the plane's state, and only redirects (303) to the sheet.
+  A push GET never approves.
+
+**A7. The sheet** (`/t/<id>/release`, one screen):
+- **Status:** "Release 0.9.x is ready for your approval", or why it can't be approved now (shown, not hidden).
+- **CI:** GitHub CI as the coordinator last read it on the exact commit: passed / running (n of m finished) / failed
+  (names) / not read yet.
+- **What approving does:** "Approving runs the release check on abc1234, then deploys, merges, tags and publishes once
+  GitHub CI and the check pass." Then the unsandboxed sentence, and whether later commits carry (on Toolroll today:
+  "Every later commit asks again"). When the release isn't running: "The release isn't running: after you approve, run
+  `toolroll release <branch>`."
+- **What changed** (folded) and **every term** (open, before the button).
+- **Approve release:** one button; the existing approval POST (`/t/<id>/approve`, cookie only, step-up, project and
+  role checks, CSRF, the browser mutation key, the single-use person/task/digest nonce) with `sheet=release`, bound to
+  the card digest. A changed card refuses and the sheet shows the new one.
+- Proof as today. Under Passwordless a live session is one tap; otherwise one typed password.
+
+**A8. CLI parity: `toolroll release approve [<branch>] [--repo <path>]`.**
+- Journals are discovery only, read strictly (exact fields and shapes; the file name must be the one the journal's own
+  branch maps to), at the approval step.
+- The requested branch must equal the journal's branch **exactly** and the plane's sealed release identity (branch,
+  version, pull request, candidate, scope digest), and the journal's checkout, the task's project and the sealed
+  repository must be the same real path (`realpath`), and `--repo` too when given. `feature/foo` and `feature_foo`
+  never match each other. Two candidates name both and ask for the branch.
+- It prints the card (control-free), asks through `askCredentials` (or its remembered login, under its existing
+  conditions), then **rebuilds the card after the password prompt** and refuses if it changed; then the shared wrapper.
+  It never re-reads a changed journal to approve another target.
+- `--json` never prompts: without a credential it refuses with the card; with one it needs `--digest <card digest>`.
+
+**Tests (Slice A).** Unit and attack tests for: both sealed forms on the card (every field labelled, the unsandboxed
+sentence); verified history; pagination, head mismatch, count mismatch, more than 250; ANSI, `\r`, bidi and OSC-8
+subjects in the terminal and browser output; the wrapper refusing a changed scope, CI attempt, refusal state and a
+stale card, and approving with the snapshot's scope digest; the proof matrix (password, sso-now, Passwordless session,
+remembered password on escalated terms → `password-now`, local owner refused, lead and API tokens refused); the
+notification lifecycle (one per task and digest, the crash boundary between filing and asking, approval before
+delivery sends nothing, supersession, stops); the push payload (fixed phrase, `/approve/<n>`, a fake release-named task
+gets `decision` and `/next`, an existing worker's allowlist); the locator (another project's task, a non-release
+task); `release approve` (finds the task, digest mismatch refuses, `--json` without a credential refuses, two releases
+named, the slash/underscore collision, a changed card after the prompt refuses). One scripted journey opens the sheet
+at desktop and phone: long changes, CI not read, a stale approval, an expired sign-in, reconnecting, the password
+keyboard.
+
+**Codex round 2 findings, checked and where each lands.**
+
+| # | Finding | Checked | Where |
+|---|---|---|---|
+| 1 H | The card omits the purpose Toolroll uses; baseline only from authorities | yes: operate.ts:10553, release-card.ts:143, :267, store.ts:9261 | A1 |
+| 2 H | `cardDigest` doesn't bind CI or refusal state; `approve()` takes a scope digest | yes: release-card.ts:254, scope.ts:1555, tasks.ts:2503 | A4 |
+| 3 M | Push link carries version and SHA; the worker rejects it | yes: release.ts:456, push.ts:245, pages-assets.ts:48 | A6 |
+| 4 M | Journal names collide; `readJournal` checks little | yes: release.ts:431, :448 | A8 |
+| 5 M | No lifecycle: crash between filing and asking, obsolete sends, stops | yes: release.ts:933, store.ts:15352, release.ts:1313 | A5 |
+| 6 M | Fallback change list unpaginated, not bound to the candidate; no file source | yes: release-card.ts:212, :234 | A2 |
+| 7 M | Terminal spoofing through commit subjects | yes: release-card.ts:208, :263 | A3 |
+| P | Proof inventory: sso-now, session/CLI conditions, local owner, machines, chat | yes: scope.ts:1250, :1345, :2127 | Proof list above |
 
 ## Hardening slices (each justified on its own merits, none enables automatic approval)
 
@@ -244,6 +313,6 @@ automatic road, and its release takes a person's yes as usual. After it: **H1**,
 
 ## Open decisions
 
-1. **One push per release at filing, no reminder.** Recommend yes. The attention push still covers every failure.
-2. **New push class `release`, or reuse `decision`.** Recommend a new class: a fixed phrase that says "release" makes
-   one tap obvious on the lock screen and still leaks nothing.
+1. **One push per release at filing, no reminder.** Recommend yes. A stop now files its own attention notice (A5).
+2. **New push class `release`, or reuse `decision`.** Taken in v3: `release` is a push class derived at send time from
+   the plane's state, stored as `decision` (no schema change); the fixed phrase says "release" and leaks nothing.
