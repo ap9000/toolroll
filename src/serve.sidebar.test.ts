@@ -182,10 +182,11 @@ describe("the sidebar's project states", () => {
         approvedAt: null, approvedBy: null, approvedDigest: null });
       const signedIn = await fetch(`${at}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: alexToken }), redirect: "manual" });
       const cookie = (signedIn.headers.get("set-cookie") ?? "").split(";")[0]!;
-      // A remembered password makes /next one click (no password field); forgotten, it asks for the password.
+      // A remembered password makes the approval one click (no password field); forgotten, it asks for the password.
       const formCsrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(`${at}/tasks/new`, { headers: { cookie } })).text())![1]!;
-      expect((await fetch(`${at}/session/forget-password`, { method: "POST", headers: { cookie, origin: at }, body: new URLSearchParams({ csrf: formCsrf, return: "/next" }), redirect: "manual" })).status).toBe(303);
-      const pending = workspaceOf(await (await fetch(`${at}/next`, { headers: { cookie } })).text());
+      expect((await fetch(`${at}/session/forget-password`, { method: "POST", headers: { cookie, origin: at }, body: new URLSearchParams({ csrf: formCsrf, return: "/" }), redirect: "manual" })).status).toBe(303);
+      // The approval lives on the task's own page (the old /next is Home now, P1.4).
+      const pending = workspaceOf(await (await fetch(`${at}/t/t-yes`, { headers: { cookie } })).text());
       expect(pending.sensitive).toBe(true);
       expect(pending.projectStates).toBeUndefined();
       // Work with no project yet is its own entry for a reader who may see it.

@@ -201,7 +201,7 @@ test("chrome completed before another worker job is revalidated at render after 
     const resume = new Promise<void>(resolve => { release = resolve; });
     reads.workCounts = async (...args) => { const value = await count(...args); countEntered(); await resume; return value; };
     reads.projectSummary = async (...args) => { const value = await summary(...args); summaryReturned(); return value; };
-    const response = serverRequest(server, "/board?format=workspace", { cookie: `${SESSION_COOKIE}=${sessionId}` });
+    const response = serverRequest(server, "/tasks?view=board&format=workspace", { cookie: `${SESSION_COOKIE}=${sessionId}` });
     await Promise.race([Promise.all([waiting, summaryReady]), response.then(result => { throw new Error(`answered before prefetch: ${result.status}`); })]);
     // Let the resolved summary finish filling while counts remain outstanding; this is an event boundary, not a delay.
     await new Promise<void>(resolve => setImmediate(resolve));
