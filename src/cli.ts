@@ -161,6 +161,8 @@ export const OPERATE_COMMANDS = new Set([
   "evals",
   // Only `lead token` reaches here; the central service's lead verbs answer first.
   "lead",
+  // Only `release approve` reaches here: every other `release` form is release-cli.ts, routed before this set.
+  "release",
   "onboard",
   "status",
   "ready",
