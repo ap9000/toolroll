@@ -221,6 +221,21 @@ export type ReleaseAuthorityAdapter = {
    * and the tag: one bounded read of GitHub (20 s), this candidate's exemptions read again, then the plane's stored
    * debt. A warning never holds; a hold stops the release. Absent: a plane that can't read it. */
   nightly?(input: { taskId: string; candidate: string; pr: number; phase: "deploy" | "merge" | "tag" }): Promise<{ ok: true; warning: string | null } | { ok: false; why: string; warning: string | null }>;
+  /** One-tap release approval (docs/plans/trusted-release-reports.md, slice A): what the plane tells a person and
+   * keeps for the approval sheet. Best effort: a failure here never changes the release. Absent on an older plane. */
+  ready?: ReleaseReadyAdapter;
+};
+
+/** What the coordinator tells the plane for a person's release (release-approval.ts). Ids and its own readings only. */
+export type ReleaseReadyAdapter = {
+  /** The approval step was entered (a fresh filing or a resumed one): one notification per task and scope digest. */
+  asked(taskId: string): Promise<void>;
+  /** The pull request's required checks on the candidate, as this coordinator just read them. */
+  ci(input: { taskId: string; candidate: string; state: "passed" | "running" | "failed"; failed: readonly string[]; runs: readonly CheckRun[] }): Promise<void>;
+  /** A person's release stopped: one attention notification per task, step and reason. */
+  stopped(input: { taskId: string; step: string; reason: string; message: string }): Promise<void>;
+  /** Main's merge commit was proved to hold the approved tree: the plane checks it again and keeps the release's record. */
+  verified(input: { taskId: string; merge: string }): Promise<void>;
 };
 
 /** The plane's automatic release approval, as the coordinator asks it. Every answer is the plane's own: the coordinator
@@ -672,6 +687,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     };
     // ---- one approval per release (release-once.md) -------------------------------------------------------------
     const rel = adapters.release;
+    /** One-tap release approval: tell the plane, never stopping or changing the release whatever it answers. */
+    const tell = async (act: (ready: ReleaseReadyAdapter) => Promise<void>) => { if (rel?.ready === undefined) return; try { await act(rel.ready); } catch { /* best effort */ } };
+    /** The last pull request checks this run read on the candidate (the gate reads them before the task exists). */
+    let lastCi: { candidate: string; state: "passed" | "running" | "failed"; failed: readonly string[]; runs: readonly CheckRun[] } | null = null;
+    const noteCi = async (runs: readonly CheckRun[], verdict: { state: "passed" | "pending" | "failed"; failed?: readonly string[] }) => {
+      lastCi = { candidate: j.candidate.sha, state: verdict.state === "pending" ? "running" : verdict.state, failed: verdict.failed ?? [], runs: runs.filter(run => (REQUIRED_PR_CHECKS as readonly string[]).includes(run.name)) };
+      const seen = lastCi;
+      await tell(ready => ready.ci({ taskId: j.task.id, ...seen }));
+    };
+    const currentCi = () => lastCi;
     let epoch: number | null = null;
     // This invocation's own lease owner (review round 1): two runs of the same journal never share an epoch.
     const owner = `${j.id}:${randomUUID()}`;
@@ -850,6 +875,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       try { runs = await adapters.github.checks(j.github, j.candidate.sha); }
       catch (error) { if (transientNetworkError(error)) return false; throw error; }
       const verdict = prChecksVerdict(runs, j.candidate.sha, REQUIRED_PR_CHECKS, { workflow: REQUIRED_PR_CHECKS_WORKFLOW });
+      await noteCi(runs, verdict);
       if (verdict.state === "failed") {
         throw new Stop("ci-failed", `GitHub's checks failed on ${j.candidate.sha.slice(0, 7)}: ${verdict.failed.join(", ")}. ${nothing}. ${j.approval === null ? "" : `The approval covers ${j.candidate.sha.slice(0, 7)} only. `}Rerun the failed job on GitHub and run \`${resume}\` again, or fix the branch and release the new commit with \`toolroll release ${releaseBranchArg(j.branch)} --repo ${j.checkout} --new\`.`);
       }
@@ -941,7 +967,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             // The gate only stops on a check that already failed: the task is filed and a person asked while CI runs, and
             // the release check runs beside it (pipeline-speed.md, D2 and "Decision: a person's release asks during
             // CI"). The automatic approval waits for CI (the check step); nothing deploys before it passes (the deploy).
-            const settled = await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { pendingIsEnough: true });
+            const settled = await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { pendingIsEnough: true, seen: (runs, verdict) => noteCi(runs, verdict) });
             // Recorded before the task exists, so its approval card says CI still runs from the first moment.
             if (!settled) await rel?.auto?.ciRunning?.(j.task.id, j.candidate.sha);
             j.ciAhead = !settled;
@@ -957,6 +983,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
               ...(rel === undefined ? {} : { release: { version: j.packageVersion, pr: j.pr, branch: j.branch, noCarry: options.noCarry === true } }),
             });
             j.task.scopeDigest = filed.scopeDigest;
+            // The checks the gate read before the task existed, kept for its approval sheet now that it does.
+            const seen = currentCi();
+            if (seen !== null) await tell(ready => ready.ci({ taskId: j.task.id, ...seen }));
           }
           advance("approval");
           break;
@@ -986,7 +1015,11 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           // Filed while CI still runs: the person is asked now (Alex, 2026-10-29), and told nothing deploys until CI passes.
           // A check that already failed asks nobody (as at the gate).
           if (j.ciAhead === true) await ciWhileRunning("Nothing was deployed or merged", true);
+          // One push, on every entry to this step (a fresh filing or a resumed one): the plane files it once per task and
+          // scope digest, so a crash between filing and here is healed by the next run.
+          await tell(ready => ready.asked(j.task.id));
           say(`  The release scope needs your approval: \`toolroll task approve ${j.task.id} --digest ${j.task.scopeDigest}\`, or open the task in the console.`);
+          say(`  Or approve it from here: \`toolroll release approve ${releaseBranchArg(j.branch)}\`.`);
           if (j.ciAhead === true) say(`  ${CI_RUNNING_WORDS}`);
           const approved = await waitFor("approval", `a person to approve task ${j.task.id}`, async () => {
             await watch("dispatch");
@@ -1258,6 +1291,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           const tree = await adapters.repo.tree(merge.sha);
           merge.tree = tree;
           if (tree !== j.candidate.tree) throw new Stop("tree-mismatch", `Main's merge commit ${merge.sha.slice(0, 7)} has tree ${tree.slice(0, 12)}, not the gated ${j.candidate.tree.slice(0, 12)}: main changed what was checked. Nothing was tagged; the deployed build stays as it is.`);
+          // The release's verified record (trusted-release-reports.md A1): the next release's change list starts here.
+          await tell(ready => ready.verified({ taskId: j.task.id, merge: merge.sha }));
           advance("tag");
           break;
         }
@@ -1316,6 +1351,11 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       journal.stopped = { step: journal.step, reason: stop.reason, message: stop.message, at: adapters.now().toISOString() };
       try { save(); } catch { /* the stop is still reported */ }
       mark(journal.step, "failed", stop.message);
+      // A person's release that stops tells them (trusted-release-reports.md A5); the automatic road keeps its own notices.
+      const ready = adapters.release?.ready;
+      if (ready !== undefined && journal.auto?.state !== "checking" && journal.auto?.state !== "approved") {
+        try { await ready.stopped({ taskId: journal.task.id, step: journal.step, reason: stop.reason, message: stop.message }); } catch { /* best effort */ }
+      }
     }
     return { ok: false, reason: stop.reason, message: stop.message, step: journal?.step ?? step, journal, file, resume };
   }
@@ -1424,7 +1464,7 @@ async function mainProtection(adapters: ReleaseAdapters, j: ReleaseJournal, auto
  * once they all passed. `nothing` says what hasn't happened yet when a check failed.
  */
 async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <T>(what: string, probe: () => Promise<T | null>) => Promise<T>,
-  options: { pendingIsEnough?: boolean; nothing?: string } = {}): Promise<boolean> {
+  options: { pendingIsEnough?: boolean; nothing?: string; seen?: (runs: readonly CheckRun[], verdict: { state: "passed" | "pending" | "failed"; failed?: readonly string[] }) => Promise<void> } = {}): Promise<boolean> {
   const nothing = options.nothing ?? "Nothing was filed or sent for approval";
   const sha = j.candidate.sha.slice(0, 7);
   const required: readonly string[] = REQUIRED_PR_CHECKS;
@@ -1439,6 +1479,7 @@ async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <
         return null;
       }
       const verdict = prChecksVerdict(runs.filter(run => required.includes(run.name)), j.candidate.sha, required, { workflow: REQUIRED_PR_CHECKS_WORKFLOW });
+      await options.seen?.(runs, verdict);
       if (verdict.state === "failed") {
         throw new Stop("ci-failed", `Pull request checks already failed on ${sha}: ${verdict.failed.join(", ")}. ${nothing}. Fix the branch, then release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\` (or rerun the failed job on GitHub and run this command again).`);
       }
@@ -1583,6 +1624,6 @@ export function workflowIs(path: string | null | undefined, file: string): boole
 }
 
 /** The words `toolroll release` reads as its own (release-cli.ts), never as a branch: such a branch is named with --branch. */
-const RELEASE_WORDS = new Set(["status", "nightly", "carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok"]);
+const RELEASE_WORDS = new Set(["status", "nightly", "carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok", "approve"]);
 /** How a person names this branch to `toolroll release` again. */
 export function releaseBranchArg(branch: string): string { return RELEASE_WORDS.has(branch) ? `--branch ${branch}` : branch; }

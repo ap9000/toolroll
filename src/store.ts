@@ -9277,6 +9277,11 @@ export class Store {
             this.db
               .prepare("UPDATE notification SET resolved_at = ? WHERE dedupe_key LIKE ? AND resolved_at IS NULL")
               .run(now.toISOString(), `stale-approval:${Number(ref["id"])}:%`);
+            // One-tap release approval (trusted-release-reports.md A5): the yes, by any road, retires the task's
+            // "ready for your approval" rows, so a push not delivered yet is never sent after it.
+            this.db
+              .prepare("UPDATE notification SET resolved_at = ? WHERE kind = 'release-ready' AND task_ref = ? AND resolved_at IS NULL")
+              .run(now.toISOString(), Number(ref["id"]));
             // The approval fact (Telegram task updates): a NEW yes on these
             // exact bytes. Re-sealing an approval that already stands on
             // the same digest is the same state and says nothing.
