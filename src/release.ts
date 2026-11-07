@@ -95,6 +95,8 @@ export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = {
   "youiyoux · UI drift": ".github/workflows/youiyoux.yml",
   "journeys · app (scripted)": ".github/workflows/journeys.yml",
   "journeys · flows (scripted)": ".github/workflows/journeys.yml",
+  "upgrade path · scope": ".github/workflows/upgrade-path.yml",
+  "upgrade path": ".github/workflows/upgrade-path.yml",
 };
 
 /**

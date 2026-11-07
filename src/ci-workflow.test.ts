@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { parse } from "yaml";
 import { areaLanes, diffEntries, docsPath, parseNameStatus } from "../scripts/ci-scope.mjs";
+import { pullRequestChanges, upgradeScope } from "../scripts/ci-upgrade-scope.mjs";
 import { laneVerdict, NATIVE_JOBS, NATIVE_WORKFLOW, standingRun } from "../scripts/ci-native-wait.mjs";
 import { parseRequired, PROOF_EVENTS, proofProblem } from "../scripts/release-proof.mjs";
 import { ADVISORY_PR_CHECKS, RELEASE_TAG_CHECKS, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW } from "./release.js";
@@ -53,6 +54,7 @@ function triggered(one: Workflow, event: Event): boolean {
  */
 const RELEASE_BRANCH = "github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-')";
 const LANE = "${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}";
+const UPGRADE = "${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.upgrade == 'skip') }}";
 const UNPROVEN = "${{ always() && !(needs.proof.result == 'success' && needs.proof.outputs.proven == 'true') }}";
 const CONDITIONS: Record<string, (event: Event) => boolean> = {
   "${{ always() }}": () => true,
@@ -60,6 +62,8 @@ const CONDITIONS: Record<string, (event: Event) => boolean> = {
   [`\${{ always() && (${RELEASE_BRANCH}) }}`]: event => event.kind !== "pull_request" || event.branch.startsWith("release-"),
   // ci-scope.mjs's own decision over the event's paths (as modifications); the lane runs unless it said docs-only.
   [LANE]: event => event.kind !== "pull_request" || areaLanes({ event: "pull_request", headRef: event.branch, entries: event.paths.map(path => ({ status: "M", paths: [path] })) }).run,
+  // upgrade-path.yml: the release check's own rule over the event's paths; it runs unless the rule said skip.
+  [UPGRADE]: event => event.kind !== "pull_request" || upgradeScope(event.paths).run,
   // main-push.yml: the full CI whenever the merge commit isn't proven tested (these tests take it unproven).
   [UNPROVEN]: () => true,
 };
@@ -104,7 +108,7 @@ const NATIVE = Object.values(NATIVE_JOBS) as string[];
 const REPEAT = "Windows Job Object containment · c2 repeat";
 /** Checks a pull request also runs that no release waits for (youiyoux.yml: it fails a pull request that adds UI
  * drift, but a release never waits for it). */
-const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journeys · flows (scripted)"];
+const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journeys · flows (scripted)", "upgrade path · scope", "upgrade path"];
 const runsOf = (job: Job) => (job.steps ?? []).map(step => step.run ?? "");
 
 describe("the CI workflows", () => {
@@ -187,7 +191,7 @@ describe("the CI workflows", () => {
   test("test-matrix: a documentation-only pull request skips the area lanes and nothing else; anything more runs them", () => {
     const docs = pr(["docs/plans/test-matrix.md", "CHANGELOG.md", "README.md"]);
     expect(names(docs)).toEqual(names(pr(["src/release.ts"])));
-    expect(executed(docs)).toEqual([...shardNames("24"), "node 24 · ubuntu-latest", "node 24 · macos-latest", SCOPE, NATIVE_SCOPE, ...ADVISORY].sort());
+    expect(executed(docs)).toEqual([...shardNames("24"), "node 24 · ubuntu-latest", "node 24 · macos-latest", SCOPE, NATIVE_SCOPE, ...ADVISORY.filter(name => name !== "upgrade path")].sort());
     // One file beyond documentation, or a release branch, runs every lane.
     for (const event of [pr(["docs/a.md", "src/x.ts"]), pr(["docs/a.md"], "release-0.9.80"), pr(["docs/a.json"]), pr(["test/attacks/a.test.ts"])]) {
       expect(executed(event).filter(name => AREA.includes(name)).sort(), JSON.stringify(event)).toEqual([...AREA].sort());
@@ -239,6 +243,7 @@ describe("the CI workflows", () => {
       `native-lanes.yml: linux-fence ${LANE}`, `native-lanes.yml: linux-native-containment ${LANE}`, `native-lanes.yml: native-windows ${LANE}`,
       `release-candidate.yml: macos \${{ always() && (${RELEASE_BRANCH}) }}`, `release-candidate.yml: macos-shard \${{ ${RELEASE_BRANCH} }}`,
       `release-candidate.yml: test \${{ always() && (${RELEASE_BRANCH}) }}`, `release-candidate.yml: test-shard \${{ ${RELEASE_BRANCH} }}`,
+      `upgrade-path.yml: upgrade ${UPGRADE}`,
     ].sort());
     for (const one of conditional) expect(Object.keys(CONDITIONS), one).toContain(one.slice(one.indexOf("${{")));
   });
@@ -615,6 +620,64 @@ describe("ci-speed: superseded runs, the macOS lane and the scripted journeys", 
     // No model calls: no secret, no provider key, and never another --journeys.
     expect(JSON.stringify(journeys)).not.toMatch(/secrets\.|API_KEY|--journeys (real|all)/);
     expect(job.env?.["TESTED_SHA"]).toBe("${{ github.event.pull_request.head.sha || github.sha }}");
+  });
+});
+
+describe("the upgrade test on pull requests (.github/workflows/upgrade-path.yml)", () => {
+  const upgrade = workflow("upgrade-path.yml");
+  const job = upgrade.jobs["upgrade"]!, scope = upgrade.jobs["scope"]!;
+
+  test("it is advisory, reads only, holds no secret, and the release check keeps its own step", () => {
+    expect(upgrade.on).toEqual({ pull_request: null });
+    expect(upgrade.permissions).toEqual({ contents: "read" });
+    expect(JSON.stringify(upgrade)).not.toMatch(/secrets\.|API_KEY|NPM_TOKEN|GITHUB_TOKEN/);
+    expect(Object.entries(ADVISORY_PR_CHECKS).filter(([, file]) => file === ".github/workflows/upgrade-path.yml").map(([name]) => name).sort()).toEqual(["upgrade path", "upgrade path · scope"]);
+    expect(REQUIRED_PR_CHECKS.filter(name => name.startsWith("upgrade path"))).toEqual([]);
+    expect(readFileSync(join(import.meta.dirname, "..", "scripts", "release-check.mjs"), "utf8")).toContain('"scripts/upgrade-path.mjs"');
+  });
+
+  test("the candidate's code runs only as the candidate's user, from the base revision's harness, with its canary", () => {
+    const runs = runsOf(job).filter(one => one !== "");
+    const loaders = runs.filter(one => /\b(npm (ci|run)|upgrade-path\.mjs)\b/.test(one) && !one.includes("config get cache"));
+    expect(loaders.length).toBeGreaterThanOrEqual(3);
+    for (const one of loaders) expect(one, one).toMatch(/^"\$RUNNER_TEMP\/candidate" run /);
+    expect(runs.some(one => one.includes('"$RUNNER_TEMP/candidate" canary'))).toBe(true);
+    expect(runs.find(one => one.includes("prepare --workspace"))).toContain("harness=.trusted-base/scripts");
+    for (const step of job.steps ?? []) if (step.uses?.startsWith("actions/checkout")) expect(step.with?.["persist-credentials"]).toBe(false);
+    // Nothing the workflow hands the candidate is outside the harness's allowlist, so the base revision's copy takes it.
+    expect(runs.find(one => one.includes("upgrade-path.mjs"))).toBe('"$RUNNER_TEMP/candidate" run --env CI=true -- node scripts/upgrade-path.mjs');
+  });
+
+  test("the scope job loads nothing of the candidate's: it runs the base revision's rule", () => {
+    const decide = runsOf(scope).find(one => one.includes("decide"))!;
+    expect(decide).toContain("script=.trusted-base/scripts/ci-upgrade-scope.mjs");
+    expect(runsOf(scope).join("\n")).not.toMatch(/npm (ci|install|run)/);
+  });
+
+  test.each([
+    // [what, changed files, the test runs]
+    ["the store", ["src/store.ts"], true],
+    ["the updater", ["src/toolroll-update.ts"], true],
+    ["a new runtime file", ["src/new-thing.ts"], true],
+    ["a script it loads", ["scripts/provider-gate.mjs"], true],
+    ["a diff that couldn't be read", null, true],
+    ["docs", ["docs/plans/x.md", "CHANGELOG.md"], false],
+    ["tests", ["src/store.test.ts", "test/helper.ts"], false],
+    ["the browser's code and styles", ["src/browser/page.tsx", "src/server/console.css"], false],
+    ["a journey script", ["scripts/app-e2e.mjs"], false],
+    ["docs beside the store", ["docs/a.md", "src/store.ts"], true],
+  ] as [string, string[] | null, boolean][])("%s", (_what, changed, runs) => {
+    expect(upgradeScope(changed).run).toBe(runs);
+  });
+
+  test("it reads the merge base to the head commit, and a diff it can't read runs the test", () => {
+    const base = "a".repeat(40), head = "b".repeat(40), from = "c".repeat(40);
+    const asked: string[][] = [];
+    const git = (args: string[]) => { asked.push(args); return args[0] === "merge-base" ? `${from}\n` : "src/store.ts\0"; };
+    expect(pullRequestChanges(git, base, head)).toEqual(["src/store.ts"]);
+    expect(asked[1]).toEqual(["diff", "--no-renames", "--name-only", "-z", from, head, "--"]);
+    expect(pullRequestChanges(() => { throw new Error("no such commit"); }, base, head)).toBeNull();
+    expect(pullRequestChanges(git, "not-a-sha", head)).toBeNull();
   });
 });
 
