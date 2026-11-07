@@ -95,7 +95,7 @@ export function handoverNoteOf(store: Store, root: string, taskId: string, now: 
 export function handoverLines(note: HandoverNote): string[] {
   const list = (title: string, lines: readonly string[]): string[] => lines.length === 0 ? [] : [title, ...lines.map(one => `  ${one}`)];
   return [
-    note.revision === null ? "Current revision: none yet" : `Current revision: ${note.revision.head.slice(0, 12)}${note.revision.branch === null ? "" : ` on ${note.revision.branch}`} (build #${note.revision.run})`,
+    note.revision === null ? "Current revision: none yet" : `Current revision: ${note.revision.head.slice(0, 7)}${note.revision.branch === null ? "" : ` on ${note.revision.branch}`} (build #${note.revision.run})`,
     ...list("Accepted decisions:", note.acceptedDecisions),
     ...list("Rejected approaches:", note.rejectedApproaches),
     ...list("Open findings:", note.openFindings),
