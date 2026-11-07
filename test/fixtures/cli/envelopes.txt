@@ -1591,7 +1591,7 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "card",
-      "synopsis": "show Toolroll's own data as chat's cards do: tasks, results, flows, flow_zones, spend, projects, workers, mode, integrations, providers (read only)",
+      "synopsis": "show Toolroll's own data as chat's cards do: tasks, results, flows, flow_zones, spend, projects, workers, mode, integrations, providers, findings, handover (read only)",
       "audience": "agent",
       "agentMayInvoke": true,
       "mutation": "none",
@@ -1600,6 +1600,11 @@ $ contract --commands --json → 0
           "name": "repo",
           "takesValue": true,
           "meaning": "one project; default: all of yours"
+        },
+        {
+          "name": "task",
+          "takesValue": true,
+          "meaning": "findings and handover: the task"
         },
         {
           "name": "state",

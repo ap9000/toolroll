@@ -484,7 +484,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#<module>": 1,
     "src/operate.ts#acceptTaskProof@99": 1,
     // finding, task before-after, task failing-first, captures mark: an ordinary credentialed operator act.
-    "src/operate.ts#followThroughContext@232>prove@3": 1,
+    "src/operate.ts#followThroughContext@233>prove@3": 1,
     // task archive / restore / tidy --apply: an ordinary credentialed operator act (task-tidy.md), a person's only.
     "src/operate.ts#archiveTasksCommand@201": 1,
     "src/operate.ts#restoreTasksCommand@202": 1,

@@ -14269,7 +14269,7 @@ async function cardCommand(positional: readonly string[], flags: Map<string, str
   const acting = await askCredentials(flags, context);
   const verified = acting === null || currentLocalOwner() !== null ? null : verifyApproverByPassword(context.store, acting.name, acting.token, context.store.knownRepos().filter(repo => context.store.accountCanAccess(acting.name, repo)));
   const who = currentLocalOwner() !== null ? localReader(context) : verified !== null && verified.ok ? verified.who : null;
-  return runCardCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: who?.name ?? null, repos: who?.repos ?? [] });
+  return runCardCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: who?.name ?? null, repos: who?.repos ?? [], evidenceRoot: context.evidenceRoot });
 }
 
 /** The laptop's local owner as a reader: its name and its projects. Never a proof: every write proves its own act. */
