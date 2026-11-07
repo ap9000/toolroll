@@ -17,12 +17,17 @@ import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { codexFenceArgv, fenceFor, runFolders, srtTermsOf, taskBoundary, trustedWorktreeBinding, type FenceGrants, type FencePolicy } from "../../src/agent-fence.js";
 import { run } from "../../src/exec.js";
-import { CONTAINER_LOOK_MS, containersListable, linkCacheFile, lookOutcome, protectedStorageDenies, readLinkCache } from "../../src/protected-storage.js";
+import { CONTAINER_LOOK_MS, containersListable, linkCacheFile, lookOutcome, protectedStorageDenies, readLinkCache, rootsAnswering } from "../../src/protected-storage.js";
 import { readDenyPath } from "../../src/project-sandbox.js";
 import { codexSandbox, git, lines, marker, needs, osFence, repository, underCodex, underSandbox, useScratch, write } from "./harness.js";
 
 const scratch = useScratch("protected-storage");
 const mac = process.platform === "darwin";
+/** A look held at `stuck`: it finishes what comes before, and then runs out of time. */
+const rootsLookAt = (stuck: string) => (roots: readonly string[]) => {
+  const at = roots.indexOf(stuck);
+  return at < 0 ? { finished: [...roots], outcome: "listable" as const } : { finished: roots.slice(0, at), outcome: "waiting" as const };
+};
 /** Where each app keeps its data on this platform, relative to home. */
 const AT = mac
   ? { slack: "Library/Application Support/Slack", discord: "Library/Application Support/discord", chrome: "Library/Application Support/Google/Chrome",
@@ -136,12 +141,41 @@ describe("protected storage: chat apps, browser profiles and password managers, 
     protectedStorageDenies(home, {}, "linux", () => {}, () => { throw new Error("asked"); });
   });
 
+  // The 0.9.94 deploy: an open() of a root outside the containers waited on the prompt, on the console's own thread.
+  test("a root outside the containers that doesn't answer is never opened here, and stays denied; the others are walked", () => {
+    const { home } = containerHome();
+    const opened: string[] = [];
+    const list = (path: string) => { opened.push(path); return readdirSync(path, { withFileTypes: true }); };
+    const safari = join(home, "Library/Safari"), cookies = join(home, "Library/Cookies");
+    for (const path of [safari, cookies]) mkdirSync(path, { recursive: true });
+    const denies = protectedStorageDenies(home, {}, "darwin", () => {}, () => true, list, roots => new Set(roots.filter(root => root !== safari)));
+    expect(opened).toContain(cookies);
+    expect(opened.filter(path => path === safari || path.startsWith(`${safari}/`))).toEqual([]);
+    expect(denies).toContain(safari);
+  });
+
+  test("one root that waits costs only itself, a failed look refuses, and a waiting root is looked at again later", () => {
+    const [a, b, c, d] = ["/l/a", "/l/b", "/l/c", "/l/d"].map(one => `${one}-${Math.random()}`) as [string, string, string, string];
+    let clock = 1_000;
+    const asked: string[][] = [];
+    const look = (roots: readonly string[]) => { asked.push([...roots]); return roots[0] === b ? { finished: [], outcome: "waiting" as const } : { finished: roots.filter(root => root !== b), outcome: "listable" as const }; };
+    expect([...rootsAnswering([a, b, c], rootsLookAt(b), () => clock)].sort()).toEqual([a, c].sort());
+    expect(asked).toEqual([]);
+    expect([...rootsAnswering([a, b, c], look, () => clock)].sort()).toEqual([a, c].sort());
+    expect(asked).toEqual([]);
+    clock += 11 * 60_000;
+    rootsAnswering([a, b, c], look, () => clock);
+    expect(asked).toEqual([[b]]);
+    expect(() => rootsAnswering([d], () => ({ finished: [], outcome: "failed" }))).toThrow(/nothing was launched/);
+  });
+
   test("a complete walk is kept (owner-only), and macOS waiting later still denies what it found", () => {
     const { home, cache } = containerHome();
     const walked = protectedStorageDenies(home, {}, "darwin", () => {}, () => true);
     for (const path of ["Stash", "Moved"]) expect(walked, path).toContain(join(home, path));
     expect(statSync(cache).mode & 0o777).toBe(0o600);
-    expect(readLinkCache(cache, home)).toEqual([join(home, "Moved"), join(home, "Stash")]);
+    // Every root's links are kept, a browser profile's too: a root that stops answering later keeps its denies.
+    expect(readLinkCache(cache, home)).toEqual(expect.arrayContaining([join(home, "Moved"), join(home, "Stash")]));
     const waiting = protectedStorageDenies(home, {}, "darwin", () => {}, () => false);
     for (const path of ["Stash", "Moved"]) expect(waiting, path).toContain(join(home, path));
     // Kept for this home only, as a plain file of the right shape: anything else is no cache.

@@ -129,18 +129,32 @@ export function protectedStorageNames(home: string = homedir(), env: Readonly<Re
 /** The absolute `Path=` entries of a profiles.ini in `root`, read only as the plain file it is, bounded. */
 function profilesElsewhere(root: string): string[] {
   const file = join(root, "profiles.ini");
+  try { lstatSync(file); } catch { return []; }
+  // On a Mac the open itself can wait for a person, so a child does it, killed at its limit: only the child waits.
+  const text = process.platform === "darwin" ? profilesIniOffThread(file) : profilesIniHere(file);
+  return (text ?? "").split(/\r?\n/)
+    .map(line => /^\s*Path\s*=\s*(.+?)\s*$/i.exec(line)?.[1] ?? null)
+    .filter((path): path is string => path !== null && isAbsolute(path));
+}
+
+function profilesIniHere(file: string): string | null {
   let fd: number;
-  try { fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0)); } catch { return []; }
+  try { fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0)); } catch { return null; }
   try {
     const held = fstatSync(fd);
-    if (!held.isFile()) return [];
+    if (!held.isFile()) return null;
     const buffer = Buffer.alloc(Math.min(held.size, 64 * 1024));
-    const read = readSync(fd, buffer, 0, buffer.length, 0);
-    return buffer.subarray(0, read).toString("utf8").split(/\r?\n/)
-      .map(line => /^\s*Path\s*=\s*(.+?)\s*$/i.exec(line)?.[1] ?? null)
-      .filter((path): path is string => path !== null && isAbsolute(path));
-  } catch { return []; }
+    return buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, 0)).toString("utf8");
+  } catch { return null; }
   finally { closeSync(fd); }
+}
+
+const PROFILES_READ = `const fs=require("fs");const fd=fs.openSync(process.argv[1],fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+if(!fs.fstatSync(fd).isFile())process.exit(1);const b=Buffer.alloc(65536);process.stdout.write(b.subarray(0,fs.readSync(fd,b,0,b.length,0)));`;
+
+function profilesIniOffThread(file: string): string | null {
+  const read = spawnSync(process.execPath, ["-e", PROFILES_READ, file], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: CONTAINER_LOOK_MS, killSignal: "SIGKILL", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+  return read.error === undefined && read.status === 0 ? read.stdout : null;
 }
 
 const unwalkedSaid = new Set<string>();
@@ -151,9 +165,10 @@ const unwalkedSaid = new Set<string>();
  * A link macOS makes in a sandboxed app's container to the same place under the home folder (its Desktop, Downloads,
  * Fonts…) is the system's own mirror of the person's folders, not the app's data, and isn't followed (systemMirror).
  *
- * On a Mac, listing inside another app's container waits for the person to answer macOS's "access data from other apps"
+ * On a Mac, listing inside a protected root (another app's container, and any other this look finds) can wait for the
+ * person to answer macOS's "access data from other apps"
  * prompt when the process asking has no answer yet (a plane run by launchd: every launch, and the console with it, hung
- * there in release check 3249). So the containers are walked only after a time-limited look in a child process
+ * there in release check 3249). So every root is walked only after a time-limited look in a child process
  * (`containers`, containersListable) shows they can be listed without waiting. A look that fails any other way refuses
  * the launch (it throws). When macOS is waiting on the person, the containers stay denied by name and real path, and
  * the outward links the last complete walk found (kept in the plane's own state folder, linkCacheFile) stay denied too;
@@ -161,7 +176,8 @@ const unwalkedSaid = new Set<string>();
  */
 export function protectedStorageDenies(home: string = homedir(), env: Readonly<Record<string, string | undefined>> = process.env, platform: NodeJS.Platform = process.platform,
   say: (line: string) => void = line => process.stderr.write(`${line}\n`), containers: (roots: readonly string[]) => boolean = roots => containersListable(roots),
-  list: (path: string) => import("node:fs").Dirent[] = path => readdirSync(path, { withFileTypes: true })): string[] {
+  list: (path: string) => import("node:fs").Dirent[] = path => readdirSync(path, { withFileTypes: true }),
+  others: (roots: readonly string[]) => ReadonlySet<string> = roots => rootsAnswering(roots)): string[] {
   const base = real(home);
   const out = new Set<string>();
   const add = (path: string) => { if (!tooWide(path, base)) out.add(path); };
@@ -176,23 +192,29 @@ export function protectedStorageDenies(home: string = homedir(), env: Readonly<R
   const held = platform === "darwin" ? present.filter(one => inAppContainer(one.root, base)).map(one => one.root) : [];
   // Throws when the look itself failed: the launch is refused, never fenced with less.
   const listable = held.length === 0 || containers(held);
-  const cache = held.length === 0 ? null : linkCacheFile(base, env);
-  if (!listable) {
+  // Any other root can stop an open() until a person answers too (the 0.9.94 deploy froze on the console's own thread),
+  // so on a Mac each is looked at the same way. Only a root that answered is walked here; the rest stay denied.
+  const plain = platform === "darwin" ? [...new Set(present.map(one => one.root))].filter(root => !held.includes(root)) : [];
+  const answering = plain.length === 0 ? new Set<string>() : others(plain);
+  const silent = plain.filter(root => !answering.has(root));
+  const cache = held.length + plain.length === 0 ? null : linkCacheFile(base, env);
+  if (!listable || silent.length > 0) {
     const kept = cache === null ? null : readLinkCache(cache, base);
     for (const target of kept ?? []) add(target);
     if (!unwalkedSaid.has(CONTAINERS_UNLISTED)) {
       unwalkedSaid.add(CONTAINERS_UNLISTED);
-      say(`toolroll: fence: macOS didn't let Toolroll look inside other apps' containers without asking you; they stay denied, ${kept === null ? "but links inside them weren't checked" : "with the links found inside them when they were last checked"}. Allow Toolroll's service to access data from other apps (Privacy & Security) to check them now.`);
+      say(`toolroll: fence: macOS didn't let Toolroll look inside other apps' containers without asking you; they stay denied, ${kept === null ? "but links inside them weren't checked" : "with the links found inside them when they were last checked"}. Allow Toolroll's service to access data from other apps (Privacy & Security) to check them.`);
     }
   }
   const walked = { complete: true }, inside: string[] = [];
   for (const { name, root } of present) {
     const container = held.includes(root);
-    if (container && !listable) continue;
-    for (const target of outwardLinks(name, root, base, say, list, container ? walked : undefined)) { add(target); if (container) inside.push(target); }
+    if ((container && !listable) || silent.includes(root)) continue;
+    const kept = container || plain.includes(root);
+    for (const target of outwardLinks(name, root, base, say, list, kept ? walked : undefined)) { add(target); if (kept) inside.push(target); }
   }
   // Only a walk of every container that met no error but "not there" or "not allowed" is kept for later.
-  if (listable && held.length > 0 && walked.complete && cache !== null) writeLinkCache(cache, base, inside);
+  if (listable && silent.length === 0 && walked.complete && cache !== null) writeLinkCache(cache, base, inside);
   return [...out].sort();
 }
 
@@ -295,6 +317,52 @@ export function containersListable(roots: readonly string[], look: (roots: reado
   const listable = answer === "listable";
   containerLooks.set(key, { listable, at: now() });
   return listable;
+}
+
+/** Each root's last answer outside the containers: a yes stands (macOS keeps it), a no is looked at again after CONTAINER_RELOOK_MS. */
+const rootLooks = new Map<string, { listable: boolean; at: number }>();
+
+/** What a look at several roots saw: those it finished, and how it ended. */
+export type RootsLook = { finished: readonly string[]; outcome: ContainerLook };
+
+/**
+ * Which of these roots can be walked without macOS stopping to ask the person. The look walks them in order and names each
+ * as it finishes, so one that waits costs only itself: it is set aside and the look goes on with the rest. A look that
+ * fails any other way refuses the launch, as containersListable does. At most two limits' wait in all: what is left then
+ * counts as waiting, stays denied by name and real path, and is looked at again later.
+ */
+export function rootsAnswering(roots: readonly string[], look: (roots: readonly string[]) => RootsLook = lookAtRoots, now: () => number = Date.now): ReadonlySet<string> {
+  const answering = new Set<string>();
+  let pending = roots.filter(root => {
+    const last = rootLooks.get(root);
+    if (last?.listable === true) answering.add(root);
+    return last === undefined || (!last.listable && now() - last.at >= CONTAINER_RELOOK_MS);
+  });
+  for (let waits = 0; pending.length > 0;) {
+    const seen = look(pending);
+    if (seen.outcome === "failed") throw new Error("Toolroll couldn't look inside other apps' data to fence it (the look failed), so nothing was launched.");
+    for (const root of seen.finished) { answering.add(root); rootLooks.set(root, { listable: true, at: now() }); }
+    pending = pending.filter(root => !seen.finished.includes(root));
+    if (seen.outcome === "listable" || pending.length === 0) break;
+    // The first root it didn't finish is the one it was held at.
+    rootLooks.set(pending[0]!, { listable: false, at: now() });
+    pending = pending.slice(1);
+    if (++waits >= 2) { for (const root of pending) rootLooks.set(root, { listable: false, at: now() }); break; }
+  }
+  return answering;
+}
+
+/** The look at several roots, in a child: the same walk, writing each root's place when it finishes. */
+const ROOTS_LOOK = `${"const fs=require(\"fs\"),path=require(\"path\");const [depth,limit,...roots]=process.argv.slice(1);"}
+roots.forEach((root,at)=>{let seen=0;const queue=[{p:root,d:0}];while(queue.length>0){const {p,d}=queue.shift();let entries;
+try{entries=fs.readdirSync(p,{withFileTypes:true});}catch{continue;}for(const e of entries){if(++seen>Number(limit)){queue.length=0;break;}
+if(!e.isSymbolicLink()&&e.isDirectory()&&d+1<Number(depth))queue.push({p:path.join(p,e.name),d:d+1});}}fs.writeSync(1,at+"\\n");});`;
+
+function lookAtRoots(roots: readonly string[]): RootsLook {
+  const result = spawnSync(process.execPath, ["-e", ROOTS_LOOK, String(PROTECTED_WALK.depth), String(PROTECTED_WALK.entries), ...roots],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: CONTAINER_LOOK_MS, killSignal: "SIGKILL", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+  const finished = String(result.stdout ?? "").split("\n").filter(line => /^[0-9]+$/.test(line)).map(line => roots[Number(line)]).filter((root): root is string => root !== undefined);
+  return { finished, outcome: lookOutcome(result) };
 }
 
 /** The child-process look (containersListable): node (or Electron as node) walks the roots, killed at its limit. */
