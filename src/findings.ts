@@ -340,9 +340,20 @@ export function recordReviewFindings(store: Store, input: { run: number; taskId:
 const BRIEF_FINDINGS = 10;
 const BRIEF_EXCERPT = 500;
 
+export const NOT_ON_TASK = "That result isn't on this task.";
+
+/** Whether a run belongs to this task's family. Admission proves the task named, never a run a form or flag names beside
+ * it, so every act that takes a run checks it here: no finding's text crosses a task or a project. */
+export function runOnTask(store: Store, runId: number, taskId: string): boolean {
+  const run = Number.isSafeInteger(runId) ? store.getRun(runId) : null;
+  const owner = run === null ? null : store.externalIdFor(run.taskRef);
+  return owner !== null && store.lookupRef(taskId) !== null && familyRootOf(store, owner) === familyRootOf(store, taskId);
+}
+
 /** Send one of a result's review findings: `<run>:<number>`, counted from 1 as the result lists them. */
 export function sendReviewFinding(store: Store, taskId: string, pointer: string, by: string, now: Date): SendAnswer {
   const match = /^([1-9][0-9]{0,14}):([1-9][0-9]{0,3})$/.exec(pointer);
+  if (match !== null && !runOnTask(store, Number(match[1]), taskId)) return { ok: false, reason: "invalid", message: NOT_ON_TASK };
   const view = match === null ? null : buildReviewOf(store, Number(match[1]));
   const finding = view === null ? undefined : [...view.high, ...view.followUps][Number(match![2]) - 1];
   if (finding === undefined) return { ok: false, reason: "invalid", message: `That result has no review finding ${pointer}.` };
@@ -351,6 +362,7 @@ export function sendReviewFinding(store: Store, taskId: string, pointer: string,
 
 /** Send a result's failed check, with the end of its sealed log as the evidence. The summary is Toolroll's own words. */
 export function sendCheckFinding(store: Store, root: string, taskId: string, runId: number, by: string, now: Date): SendAnswer {
+  if (!runOnTask(store, runId, taskId)) return { ok: false, reason: "invalid", message: NOT_ON_TASK };
   const failure = Number.isSafeInteger(runId) ? failedVerificationEvidence(store, root, runId) : { kind: "none" as const };
   if (failure.kind !== "failed") return { ok: false, reason: "invalid", message: `Attempt #${runId} has no failed check to send.` };
   const head = store.getRun(runId)?.headRevision ?? null;

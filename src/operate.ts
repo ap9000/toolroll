@@ -10144,10 +10144,12 @@ async function repairTaskCommand(
   if (chain === null && flags.get("yes") === true) {
     const acting = await askCredentials(flags, context);
     if (acting === null) return fail(write, json, "task repair", "usage", "Evidence collection requires --as and --token.", EXIT.usage);
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
+    // A failed check names its project: the password proves the person, and their access to the run they named.
+    const failed = checkRepairOfRun(store, runId);
+    const authenticated = authenticateApprover(store, acting.name, acting.token, failed?.repo);
     if (!authenticated.ok) return fail(write, json, "task repair", authenticated.reason, describeApproveFailure(authenticated.reason, String(runId)), EXIT.refused);
     // A failed check waiting for a person: this draft is what they asked for, and its approval below is the normal one.
-    if (checkRepairOfRun(store, runId) !== null) {
+    if (failed !== null) {
       const started = startCheckRepair(store, context.evidenceRoot, runId, clock());
       if (!started.ok) return fail(write, json, "task repair", "refused", started.message, EXIT.refused);
       chain = store.repairChainFor(runId);
@@ -14283,10 +14285,10 @@ function followThroughContext(context: Context, flags: Map<string, string | true
     store, evidenceRoot, now: clock(),
     ok: (command, result, lines) => succeed(write, json, command, result, lines),
     no: (command, reason, message) => fail(write, json, command, reason, message, reason === "usage" ? EXIT.usage : EXIT.refused),
-    prove: async command => {
+    prove: async (command, repo) => {
       const acting = await askCredentials(flags, context);
       if (acting === null) { fail(write, json, command, "usage", "this takes `--as <you> --token <t>`", EXIT.usage); return null; }
-      const authed = authenticateApprover(store, acting.name, acting.token);
+      const authed = authenticateApprover(store, acting.name, acting.token, repo);
       if (!authed.ok) { fail(write, json, command, "not-an-approver", "that is not an approver, or the token does not match", EXIT.refused); return null; }
       return acting.name;
     },

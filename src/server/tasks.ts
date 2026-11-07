@@ -39,7 +39,7 @@ import { fileGithubItem, readGithubItem } from "../github-import.js";
 import { allowAutoPublish, autoPublishHeld } from "../release-auto.js";
 import { startCheckRepair } from "../check-repair.js";
 import { askFailingFirst, dropFailingFirst, rerunEvidence, saveEvidencePair } from "../evidence-pair.js";
-import { closeFinding, familyRootOf, getFinding, resendFinding, sendFinding, sendReviewFinding } from "../findings.js";
+import { closeFinding, familyRootOf, getFinding, NOT_ON_TASK, resendFinding, runOnTask, sendFinding, sendReviewFinding } from "../findings.js";
 import { labelProviderCapture, providerCapture } from "../provider-capture.js";
 import { fastStartBuild, keepGrownChange, prepareFastStart, type PasswordFacts } from "../fast-start.js";
 import { evidencePack } from "../evidence-pack.js";
@@ -3021,7 +3021,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const refused = (message: string) => taskScreen(response, who, taskId, message, 409);
     /** A finding or a run named by a form must belong to this task's family: this page's project was the one admitted. */
     const ownFinding = () => { const found = getFinding(store, number("finding")); return found !== null && found.familyRoot === familyRootOf(store, taskId) ? found : null; };
-    const ownRun = () => { const run = store.getRun(number("run")); const owner = run === null ? null : store.externalIdFor(run.taskRef); return owner !== null && familyRootOf(store, owner) === familyRootOf(store, taskId) ? run : null; };
+    const ownRun = () => runOnTask(store, number("run"), taskId);
     switch (body.get("act")) {
       case "send": {
         const line = body.get("line") ?? "";
@@ -3041,12 +3041,12 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         return closed.ok ? back() : refused(closed.message);
       }
       case "repair": {
-        if (ownRun() === null) return refused("That result isn't on this task.");
+        if (!ownRun()) return refused(NOT_ON_TASK);
         const started = startCheckRepair(store, evidenceRoot, number("run"), now);
         return started.ok ? redirect(response, taskHref(started.draft)) : refused(started.message);
       }
       case "save-evidence": {
-        if (ownRun() === null) return refused("That result isn't on this task.");
+        if (!ownRun()) return refused(NOT_ON_TASK);
         const saved = saveEvidencePair(store, evidenceRoot, { taskId, runId: number("run"), by: who.name }, now);
         return saved.ok ? back() : refused(saved.message);
       }
@@ -3059,9 +3059,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       case "mark": {
         const capture = providerCapture(store, number("capture"));
         const label = body.get("label");
-        const run = capture === null ? null : store.getRun(capture.run);
-        const owner = run == null ? null : store.externalIdFor(run.taskRef);
-        if (capture === null || owner === null || familyRootOf(store, owner) !== familyRootOf(store, taskId) || (label !== "exhausted" && label !== "not-exhausted")) return refused("That capture isn't on this task.");
+        if (capture === null || !runOnTask(store, capture.run, taskId) || (label !== "exhausted" && label !== "not-exhausted")) return refused("That capture isn't on this task.");
         labelProviderCapture(store, capture.id, label, who.name);
         return back();
       }

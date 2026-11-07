@@ -73,6 +73,26 @@ test("a form can't reach another task's finding or a result it doesn't own", asy
   expect((await post("/t/t-1/follow-through", { act: "nonsense" })).status).toBe(409);
 });
 
+test("a project-limited person can't pull another project's review or failed check into their own task", async () => {
+  const hidden = realpathSync(mkdtempSync(join(tmpdir(), "so-ft-hidden-")));
+  try {
+    const lim = addApprover(store, "lim", T0, { name: "alex", token });
+    if (!lim.ok) throw new Error("lim");
+    store.createTask({ id: "t-hidden", title: "Hidden" }, T0);
+    const ref = store.refFor("built-in", "t-hidden", "ours");
+    store.placeTask(ref.id, hidden);
+    const run = store.startRun({ taskRef: ref.id, leaseId: "h", runner: "r", branch: "x", worktree: "/w", now: T0, route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" } });
+    store.handle.prepare("INSERT INTO build_review (run, task_id, repo, state, findings_json, queued_at) VALUES (?, 't-hidden', ?, 'reviewed', ?, ?)").run(run, hidden, JSON.stringify({ version: 1, findings: [{ severity: "LOW", file: "secret.ts", line: 1, scenario: "the hidden project's words" }] }), T0.toISOString());
+    expect(store.setAccountProjects("lim", [repo], "alex", T0)).toEqual({ ok: true });
+    const response = await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name: "lim", token: lim.token }), redirect: "manual" });
+    cookie = (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
+    const refused = await post("/t/t-1/follow-through", { act: "send", pointer: `${run}:1` });
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain("on this task");
+    expect(findingsOfTask(store, "t-1")).toEqual([]);
+  } finally { rmSync(hidden, { recursive: true, force: true }); }
+});
+
 test("the handover note reads on the task page", async () => {
   sendFinding(store, { taskId: "t-1", source: "person", by: "alex", summary: "the cache never clears" }, T0);
   const view = (await page("/t/t-1")).view as BrowserTaskView;

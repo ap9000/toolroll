@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, s
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { steerFolderName } from "./evidence.js";
-import { closeFinding, FINDING_ROUND_LIMIT, findingsBriefLines, findingStandingWords, findingsOfTask, getFinding, recordReviewFindings, resendFinding, sameFinding, saveFindingAnswer, sendFinding, settleFindingAnswers, attachFindings } from "./findings.js";
+import { closeFinding, FINDING_ROUND_LIMIT, findingsBriefLines, findingStandingWords, findingsOfTask, getFinding, recordReviewFindings, NOT_ON_TASK, resendFinding, sameFinding, saveFindingAnswer, sendCheckFinding, sendFinding, sendReviewFinding, settleFindingAnswers, attachFindings } from "./findings.js";
 import { claudeSteerHooks, closeSteerMailbox, findingNoteName, openSteerMailbox, pulseSteerMailbox, STEER_ANSWERS, STEER_FINDINGS, STEER_HANDLED } from "./steer-mailbox.js";
 import { BUILT_IN, openStore, type Store } from "./store.js";
 
@@ -133,6 +133,24 @@ describe("the bound", () => {
     expect(sendFinding(store, { ...person, summary: "and a slow query" }, T0)).toMatchObject({ ok: true, standing: "next-attempt" });
     expect(findingsOfTask(store, "t-1").filter(found => found.source === "person")).toHaveLength(2);
     expect(sameFinding({ file: null, line: 1, summary: "x" }, { file: null, line: 1, summary: "x" })).toBe(false);
+  });
+});
+
+describe("a pointer stays on its task", () => {
+  const reviewed = (run: number) => store.handle.prepare("INSERT INTO build_review (run, task_id, repo, state, findings_json, queued_at) VALUES (?, 't-2', 'r', 'reviewed', ?, ?)")
+    .run(run, JSON.stringify({ version: 1, findings: [{ severity: "LOW", file: "secret.ts", line: 1, scenario: "another project's words" }] }), T0.toISOString());
+
+  test("a review finding or a failed check from another task is refused, whatever the run holds", () => {
+    store.createTask({ id: "t-2", title: "other work" }, T0);
+    const otherRef = store.refFor(BUILT_IN, "t-2").id;
+    const other = store.startRun({ taskRef: otherRef, leaseId: "other", runner: "builder-1", branch: "feat/b", worktree, now: T0, ...legacy });
+    reviewed(other);
+    expect(sendReviewFinding(store, "t-1", `${other}:1`, "alex", T0)).toEqual({ ok: false, reason: "invalid", message: NOT_ON_TASK });
+    expect(sendCheckFinding(store, "/ev", "t-1", other, "alex", T0)).toEqual({ ok: false, reason: "invalid", message: NOT_ON_TASK });
+    expect(sendCheckFinding(store, "/ev", "t-1", 987654, "alex", T0)).toMatchObject({ ok: false, message: NOT_ON_TASK });
+    expect(findingsOfTask(store, "t-1")).toEqual([]);
+    expect(sendReviewFinding(store, "t-2", `${other}:1`, "alex", T0)).toMatchObject({ ok: true });
+    expect(findingsOfTask(store, "t-2")[0]?.summary).toBe("another project's words");
   });
 });
 

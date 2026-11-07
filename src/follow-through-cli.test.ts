@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { modeWords, type ModeTerms } from "./modes.js";
 import { runOperate } from "./operate.js";
 import { addApprover } from "./scope.js";
-import { openStore } from "./store.js";
+import { BUILT_IN, openStore } from "./store.js";
 
 const T0 = new Date("2026-11-07T12:00:00.000Z");
 let dir: string, db: string, token: string;
@@ -16,6 +16,7 @@ const run = async (...argv: string[]) => {
   return { code, body: JSON.parse(lines.at(-1) ?? "{}") as Record<string, unknown> };
 };
 const as = () => ["--as", "alex", "--token", token];
+const run_ = run;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "so-ft-cli-"));
@@ -46,6 +47,44 @@ describe("finding", () => {
   test("a send names exactly one source", async () => {
     expect((await run("finding", "send", "t-1", "--note", "x", "--from-check", "1", ...as())).body).toMatchObject({ ok: false, reason: "usage" });
     expect((await run("finding", "send", "t-1", "--from-check", "99", ...as())).body).toMatchObject({ ok: false, reason: "refused" });
+  });
+});
+
+describe("a project-limited person at the terminal", () => {
+  /** Task t-a in a project lim may use, t-b in one lim can't see, and a run with a saved review on t-b. */
+  const world = (): { lim: string; run: number } => {
+    const store = openStore(db);
+    const a = join(dir, "a"), b = join(dir, "b");
+    for (const [id, repo] of [["t-a", a], ["t-b", b]] as const) { store.createTask({ id, title: id }, T0); store.placeTask(store.refFor(BUILT_IN, id, "ours").id, repo); }
+    const lim = addApprover(store, "lim", T0, { name: "alex", token });
+    if (!lim.ok) throw new Error("lim");
+    expect(store.setAccountProjects("lim", [a], "alex", T0)).toEqual({ ok: true });
+    const run = store.startRun({ taskRef: store.refFor(BUILT_IN, "t-b").id, leaseId: "b", runner: "r", branch: "x", worktree: "/w", now: T0, route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" } });
+    store.handle.prepare("INSERT INTO build_review (run, task_id, repo, state, findings_json, queued_at) VALUES (?, 't-b', ?, 'reviewed', ?, ?)").run(run, b, JSON.stringify({ version: 1, findings: [{ severity: "LOW", file: "secret.ts", line: 1, scenario: "the other project's words" }] }), T0.toISOString());
+    store.close();
+    return { lim: lim.token, run };
+  };
+
+  test("pointing their own task at a run they can't see gets nothing across", async () => {
+    const { lim, run } = world();
+    const who = ["--as", "lim", "--token", lim];
+    for (const pointer of [["--from-review", `${run}:1`], ["--from-check", String(run)]]) {
+      expect((await run_("finding", "send", "t-a", ...pointer, ...who)).body).toMatchObject({ ok: false, reason: "refused", message: "That result isn't on this task." });
+    }
+    expect((await run_("finding", "list", "--task", "t-a")).body["findings"]).toEqual([]);
+  });
+
+  test("every write needs access to the record's own project", async () => {
+    const { lim } = world();
+    const who = ["--as", "lim", "--token", lim];
+    const sent = await run_("finding", "send", "t-b", "--note", "from outside", ...as());
+    const id = String(sent.body["finding"]);
+    expect((await run_("finding", "send", "t-b", "--note", "nope", ...who)).body).toMatchObject({ ok: false, reason: "not-an-approver" });
+    expect((await run_("finding", "close", id, "--note", "nope", ...who)).body).toMatchObject({ ok: false, reason: "not-an-approver" });
+    expect((await run_("finding", "resend", id, ...who)).body).toMatchObject({ ok: false, reason: "not-an-approver" });
+    expect((await run_("task", "before-after", "t-b", "rerun", ...who)).body).toMatchObject({ ok: false, reason: "not-an-approver" });
+    expect((await run_("task", "failing-first", "t-b", "on", ...who)).body).toMatchObject({ ok: false, reason: "not-an-approver" });
+    expect((await run_("finding", "send", "t-a", "--note", "mine", ...who)).body).toMatchObject({ ok: true });
   });
 });
 

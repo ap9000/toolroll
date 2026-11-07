@@ -17,7 +17,8 @@ export type FollowThroughContext = {
   store: Store; evidenceRoot: string; now: Date;
   ok: (command: string, result: Record<string, unknown>, lines: () => string[]) => number;
   no: (command: string, reason: "usage" | "unknown-task" | "refused", message: string) => number;
-  prove: (command: string) => Promise<string | null>;
+  /** A verified person with access to `repo`: every write names the project of the record it touches. */
+  prove: (command: string, repo: string | null) => Promise<string | null>;
 };
 type Flags = Map<string, string | true>;
 const text = (flags: Flags, name: string): string | undefined => { const value = flags.get(name); return typeof value === "string" ? value : undefined; };
@@ -48,7 +49,7 @@ export async function findingCommand(positional: readonly string[], flags: Flags
   if (action === "send") {
     const review = text(flags, "from-review"), check = text(flags, "from-check"), note = text(flags, "note");
     if (target === undefined || [review, check, note].filter(one => one !== undefined).length !== 1) return no(command, "usage", '`toolroll finding send <task> --note "..." [--path <file> --line <n> --action "..."] --as <you> --token <t>`, or --from-review <run>:<number>, or --from-check <run>');
-    const by = await prove(command);
+    const by = await prove(command, store.lookupRef(target)?.repo ?? null);
     if (by === null) return 1;
     const lineWords = text(flags, "line");
     const sent = review !== undefined ? sendReviewFinding(store, target, review, by, now)
@@ -58,7 +59,7 @@ export async function findingCommand(positional: readonly string[], flags: Flags
     return ok(command, { finding: sent.id, standing: sent.standing, round: sent.round }, () => [sendWords(sent)]);
   }
   if (action === "resend") {
-    const by = await prove(command);
+    const by = await prove(command, getFinding(store, Number(target))?.repo ?? null);
     if (by === null) return 1;
     const sent = resendFinding(store, Number(target), now);
     if (!sent.ok) return no(command, sent.reason === "unknown-task" ? "unknown-task" : "refused", sent.message);
@@ -67,7 +68,7 @@ export async function findingCommand(positional: readonly string[], flags: Flags
   if (action === "close") {
     const note = text(flags, "note");
     if (target === undefined || note === undefined) return no(command, "usage", '`toolroll finding close <id> --note "why" --as <you> --token <t>`');
-    const by = await prove(command);
+    const by = await prove(command, getFinding(store, Number(target))?.repo ?? null);
     if (by === null) return 1;
     const closed = closeFinding(store, Number(target), by, note, now);
     return closed.ok ? ok(command, { finding: Number(target), closedBy: by }, () => [`Finding #${target} is closed.`]) : no(command, "refused", closed.message);
@@ -89,15 +90,16 @@ export async function evidenceCommand(positional: readonly string[], flags: Flag
   const [id, action] = positional;
   const command = "task before-after";
   if (id === undefined || store.lookupRef(id) === null) return no(command, id === undefined ? "usage" : "unknown-task", id === undefined ? "`toolroll task before-after <id> [save [--run <n>] | rerun] --as <you> --token <t>`" : `no task \`${id}\``);
+  const repo = store.lookupRef(id)?.repo ?? null;
   if (action === "save") {
-    const by = await prove(command);
+    const by = await prove(command, repo);
     if (by === null) return 1;
     const run = text(flags, "run");
     const saved = saveEvidencePair(store, evidenceRoot, { taskId: id, ...(run === undefined ? {} : { runId: Number(run) }), by }, now);
     return saved.ok ? ok(command, { pair: saved.id, existing: saved.existing }, () => [saved.existing ? "That failure is already saved." : "Saved the failing result."]) : no(command, saved.reason === "unknown" ? "unknown-task" : "refused", saved.message);
   }
   if (action === "rerun") {
-    const by = await prove(command);
+    const by = await prove(command, repo);
     if (by === null) return 1;
     const asked = rerunEvidence(store, id, by, now);
     return asked.ok ? ok(command, { run: asked.run, head: asked.head, request: asked.request }, () => [`The same check runs on ${asked.head.slice(0, 7)} (build #${asked.run}), with no agent.`]) : no(command, "refused", asked.message);
@@ -115,7 +117,7 @@ export async function failingFirstCommand(positional: readonly string[], context
   const command = "task failing-first";
   if (id === undefined || (state !== "on" && state !== "off")) return no(command, "usage", "`toolroll task failing-first <id> on|off --as <you> --token <t>`");
   if (store.lookupRef(id) === null) return no(command, "unknown-task", `no task \`${id}\``);
-  const by = await prove(command);
+  const by = await prove(command, store.lookupRef(id)?.repo ?? null);
   if (by === null) return 1;
   if (state === "on") askFailingFirst(store, id, by, now); else dropFailingFirst(store, id);
   return ok(command, { task: id, on: state === "on" }, () => [state === "on" ? "The next attempt writes a failing test first." : "Failing test first is off."]);
@@ -135,7 +137,7 @@ export async function capturesCommand(positional: readonly string[], context: Fo
     if (action === "show") return ok(command, { capture }, () => [`#${capture.id} ${capture.provider} · exit ${capture.exitCode ?? "none"}${capture.code === null ? "" : ` · ${capture.code}`}`, capture.text]);
     if (action === "export") return ok(command, { fixture: captureFixture(capture) }, () => [JSON.stringify(captureFixture(capture), null, 2)]);
     if (label !== "exhausted" && label !== "not-exhausted") return no(command, "usage", "`toolroll captures mark <id> exhausted|not-exhausted --as <you> --token <t>`");
-    const by = await prove(command);
+    const by = await prove(command, capture.repo);
     if (by === null) return 1;
     labelProviderCapture(store, capture.id, label, by);
     return ok(command, { capture: capture.id, label }, () => [`Capture #${capture.id} is marked ${label}. Nothing routes on this.`]);
