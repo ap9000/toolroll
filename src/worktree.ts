@@ -107,7 +107,7 @@ export type LeaseResult =
 export type LeaseFailure = "held" | "dirty" | "git" | "unverified" | "unknown-runner" | "in-use";
 
 /** Why storage retention left a checkout in place. */
-export type KeptWhy = "has changes" | "has commits" | "unreadable" | "git refused";
+export type KeptWhy = "has changes" | "has commits" | "not on its branch" | "unreadable" | "git refused";
 
 /**
  * The note a lease leaves in the checkout, naming the process holding it.
@@ -214,6 +214,15 @@ function safePoolPath(root: string, target: string): boolean {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false; }
   }
   return true;
+}
+
+/** The checkout itself, strictly inside the pool as real paths, reached by real folders only: never a link out of it. */
+function insidePool(root: string, path: string): boolean {
+  if (!safePoolPath(root, path)) return false;
+  try {
+    const real = realpathSync(path), base = realpathSync(root);
+    return real !== base && real.startsWith(base + sep) && lstatSync(path).isDirectory();
+  } catch { return false; }
 }
 
 function normalisePath(path: string): string {
@@ -883,14 +892,41 @@ export class WorktreePool {
   }
 
   /**
+   * Whether a checkout a task may still come back to can go, beyond `inspect`: a later lease of its branch must make the
+   * same checkout, and every commit its task recorded must outlive it (git's garbage collection counts a worktree's HEAD
+   * and reflog; once they go only a branch holds a commit). So: the folder is the pool's own, the checkout belongs to its
+   * project by the plane's record (`boundDirs`, not its `.git` file), its HEAD is its recorded branch, every recorded
+   * `heads` commit is on a branch, and no ref lives only in this worktree. Reads only; anything unreadable keeps it.
+   */
+  async proveRecreatable(row: WorktreeRow, heads: readonly string[]): Promise<"clean" | KeptWhy> {
+    if (row.branch === "unknown" || !insidePool(this.options.root, row.path) || heads.some(one => !/^[0-9a-f]{40,64}$/.test(one))) return "unreadable";
+    const git = teardownGit(this.runner, { repo: row.repo });
+    const head = await git(row.path, [...READ_ONLY, "symbolic-ref", "-q", "HEAD"]);
+    if (head.code === 1) return "not on its branch";
+    if (head.code !== 0) return "unreadable";
+    if (head.stdout.trim() !== `refs/heads/${row.branch}`) return "not on its branch";
+    const branch = await git(row.repo, [...READ_ONLY, "rev-parse", "--verify", "--quiet", `refs/heads/${row.branch}^{commit}`]);
+    if (branch.code !== 0) return "unreadable";
+    if (heads.length > 0) {
+      const unheld = await git(row.repo, [...READ_ONLY, "rev-list", "-1", ...heads, "--not", "--branches"]);
+      if (unheld.code !== 0) return "unreadable";
+      if (unheld.stdout.trim() !== "") return "has commits";
+    }
+    const own = await git(row.path, [...READ_ONLY, "for-each-ref", "--count=1", "refs/worktree", "refs/bisect", "refs/rewritten"]);
+    if (own.code !== 0) return "unreadable";
+    return own.stdout.trim() === "" ? "clean" : "has commits";
+  }
+
+  /**
    * Keep storage in check: remove the working copies nobody needs any more. Of `rows`, a checkout goes when it is
    * let go, nothing holds it, `wanted` says it may go (asked again right before it goes, so a task coming back or a
    * lease since keeps it) and `inspect` finds it clean, then clean still right before it goes (git refuses an edit
    * made after that). Only the working copy goes: its branch, and so every commit,
    * stays, and a later lease of the same branch makes a new one. At most `max` go per pass. Every git command goes
-   * through `git` when given: landed cleanup passes its hardened teardown git (teardown-git.ts).
+   * through `git` when given: landed cleanup passes its hardened teardown git (teardown-git.ts). `proof` is asked last,
+   * inside the reservation, for what `inspect` doesn't cover (idle cleanup: `proveRecreatable`).
    */
-  async prune(rows: readonly WorktreeRow[], wanted: (row: WorktreeRow, fresh: boolean) => boolean | Promise<boolean>, max = Infinity, git: Git = this.teardown): Promise<{ removed: WorktreeRow[]; kept: { path: string; why: KeptWhy }[] }> {
+  async prune(rows: readonly WorktreeRow[], wanted: (row: WorktreeRow, fresh: boolean) => boolean | Promise<boolean>, max = Infinity, git: Git = this.teardown, proof?: (row: WorktreeRow) => Promise<"clean" | KeptWhy>): Promise<{ removed: WorktreeRow[]; kept: { path: string; why: KeptWhy }[] }> {
     const removed: WorktreeRow[] = [];
     const kept: { path: string; why: KeptWhy }[] = [];
     const idle = (row: WorktreeRow | null, releasedAt: string) =>
@@ -914,6 +950,8 @@ export class WorktreePool {
         // Landed cleanup rechecks Git here; existing synchronous guards keep their synchronous path.
         const allowed = wanted(now as WorktreeRow, true);
         if (!(typeof allowed === "boolean" ? allowed : await allowed)) continue;
+        const proven = proof === undefined ? "clean" : await proof(now as WorktreeRow);
+        if (proven !== "clean") { kept.push({ path: row.path, why: proven }); continue; }
         const gone = await this.removeCleanCopy(row, git);
         if (gone !== "removed") { kept.push({ path: row.path, why: gone }); continue; }
         removed.push(row);

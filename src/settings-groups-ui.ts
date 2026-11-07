@@ -538,7 +538,7 @@ export function systemGroup(facts: SettingsFacts, flags: Record<string, boolean>
   const links = facts.operator ? settingsLinks("In this group", [
     settingsLink({ href: "/settings/updates", title: "Updates", status: facts.updates === null ? "Toolroll’s own version" : `Toolroll ${facts.updates.current}` }),
     settingsLink({ href: "/settings/backups", title: "Backups", status: facts.backup?.words ?? "When and where the database is copied", needs: facts.backup?.failed ? 1 : 0 }),
-    settingsLink({ href: "/settings/storage", title: "Storage", status: "Checkouts on this computer, and cleaning them up" }),
+    settingsLink({ href: "/settings/storage", title: "Storage", status: "Task folders on this computer, and cleaning them up" }),
     settingsLink({ href: "/settings/retention", title: "Retention", status: "How long run logs and chats are kept" }),
     settingsLink({ href: "/settings/monitoring", title: "Monitoring", status: "Send the audit stream and traces to your own systems" }),
     settingsLink({ href: "/settings/data", title: "Data export", status: "Everything except secrets, as one download" }),

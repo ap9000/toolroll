@@ -137,8 +137,8 @@ import { lastSweep,saveSweep,storageSweepOff } from "../storage-sweep.js";
 import { sweepSchedule } from "../storage-sweep-schedule.js";
 import { storageHtml } from "../storage-ui.js";
 import { landedSummary } from "../landed-cleanup.js";
-import { bytesWords,parseCleanup } from "../storage.js";
-import { isDigestTime,liveBackupState,localModeOf,RESULT_SCREENSHOTS,setLiveBackupSettings,setLocalModeOff,type ResultScreenshots } from "../store.js";
+import { bytesWords,parseCleanup,parseIdle } from "../storage.js";
+import { checkoutIdle,isDigestTime,liveBackupState,setCheckoutIdle,localModeOf,RESULT_SCREENSHOTS,setLiveBackupSettings,setLocalModeOff,type ResultScreenshots } from "../store.js";
 import { defaultLiveFolder,liveFolderOf,liveFolderProblem } from "../live-backup.js";
 import { LIVE_EVERY } from "../backup-ui.js";
 import { checkTeamsCredentials,clearTeamsCredentials,loadTeamsCredentials,saveTeamsCredentials,TeamsError } from "../teams-api.js";
@@ -457,10 +457,10 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const measured = lastChecks.known<CheckoutPlan>("storage");
     const check = postForm("/settings/storage/check", btn("Check now", { sm: true, type: "submit" }));
     if (measured === null) {
-      return sendScreen(response, 200, screen("Storage", settingsSubPage("system", "Storage", settingsSection({ id: "storage", title: "Checkouts not measured yet", lead: "Toolroll measures the checkouts in the background. Check now measures them at once.", body: check })),
+      return sendScreen(response, 200, screen("Storage", settingsSubPage("system", "Storage", settingsSection({ id: "storage", title: "Task folders not measured yet", lead: "Toolroll measures the task folders in the background. Check now measures them at once.", body: check })),
         { chrome: chromeFor(project, "settings") }));
     }
-    const plan = { ...measured.value, cleanup: store.checkoutCleanup() };
+    const plan = { ...measured.value, cleanup: store.checkoutCleanup(), idle: checkoutIdle(store) };
     const sweep = { last: lastSweep(store), off: storageSweepOff(), schedule: sweepSchedule(store, now) };
     return sendScreen(response, 200, screen("Storage", settingsSubPage("system", "Storage", html`${(storageHtml({ plan, csrf: who.session.csrf, sweep, landed: landedSummary(store), measured: html`<div class="k-acts"><span class="k-note">Measured ${new Date(measured.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</span>${check}</div>` }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings") }));
@@ -1084,14 +1084,17 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     // What the page shows next is measured again after the change.
     const said = sayTo(response, "/settings/storage");
     const back = async (kind: Parameters<typeof said>[0], words: string) => { await measureStorage(databaseFile).catch(() => undefined); return said(kind, words); };
-    const what = op === "clean" ? "clean up" : op === "discard" ? "discard a checkout" : "change checkout cleanup";
+    const what = op === "clean" ? "clean up" : op === "discard" ? "discard a task folder" : "change automatic cleanup";
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", `Enter your Toolroll password to ${what}.`);
     if (op === "cleanup") {
       const cleanup = parseCleanup(body.get("cleanup") ?? "");
-      if (cleanup === undefined) return back("problem", "Choose when a finished task's checkout is removed.");
-      const before = store.checkoutCleanup();
+      if (cleanup === undefined) return back("problem", "Choose when a finished task's folder is removed.");
+      const idle = body.get("idle") === null ? checkoutIdle(store) : parseIdle(body.get("idle") ?? "");
+      if (idle === undefined) return back("problem", "Choose when an idle task's folder is removed.");
+      const same = cleanup === store.checkoutCleanup() && idle === checkoutIdle(store);
       store.setCheckoutCleanup(cleanup, who.name, now);
-      return back("said", cleanup === before ? "Nothing changed." : "Saved.");
+      setCheckoutIdle(store, idle, who.name, now);
+      return back("said", same ? "Nothing changed." : "Saved.");
     }
     const pool = storagePool(databaseFile);
     if (op === "clean") {
@@ -1101,7 +1104,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       if (body.get("preview") !== previewDigest(plan)) return back("problem", "What a clean-up would remove changed since you looked. Check the list again.");
       const done = await cleanCheckouts(store, pool, clock, { manual: true, actor: who.name, only: new Set(plan.go.map(one => one.path)) });
       saveSweep(store, { at: clock().toISOString(), source: "manual", actor: who.name, parts: [{ kind: "checkouts", count: done.removed.length, bytes: done.freed, failed: done.kept.filter(one => one.why === "git refused").length, items: done.removed.slice(0, 20).map(one => one.path) }] });
-      return back("said", done.removed.length === 0 ? "Nothing was removed: those checkouts are no longer ready to go." : `Removed ${done.removed.length} checkout${done.removed.length === 1 ? "" : "s"}, about ${bytesWords(done.freed)}. Their branches stay.`);
+      return back("said", done.removed.length === 0 ? "Nothing was removed: those task folders are no longer ready to go." : `Removed ${done.removed.length} task folder${done.removed.length === 1 ? "" : "s"}, about ${bytesWords(done.freed)}. Their branches stay.`);
     }
     const done = await discardCheckout(store, pool, body.get("path") ?? "", now, who.name);
     return done.ok ? back("said", `Discarded, about ${bytesWords(done.bytes)}. Its branch stays.`) : back("problem", done.message);

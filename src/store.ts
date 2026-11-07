@@ -122,7 +122,7 @@ import { REQUEST_BUDGET_SCHEMA } from "./request-budget.js";
 import { REVIEW_SCHEMA, reviewSwitchWords, type ReviewSwitch } from "./review-switch.js";
 import { SPEND_SCHEMA, billingOf, budgetStates, canPrice, claudeMachineBilling, countsToward, filersOf, monthOf, priceWork, seenBilling as seenBillingOf, spendItems, subagentFilers, usd, type Billing, type Budget, type BudgetAgent, type BudgetHold, type BudgetScope, type BudgetState, type SpendItem } from "./spend.js";
 import { DEFAULT_PERIODS, RETENTION_SCHEMA, periodWords, widenRetentionSchema, type RetentionKind, type RetentionPeriods } from "./retention.js";
-import { CHECKOUT_CLEANUP_SCHEMA, LANDED_CLEANUP_SCHEMA, STORAGE_SWEEP_SCHEMA, DEFAULT_CLEANUP, cleanupWords, type CheckoutCleanup } from "./storage.js";
+import { CHECKOUT_CLEANUP_SCHEMA, LANDED_CLEANUP_SCHEMA, STORAGE_SWEEP_SCHEMA, DEFAULT_CLEANUP, DEFAULT_IDLE, V150_ADDED_COLUMNS, cleanupWords, idleWords, type CheckoutCleanup, type CheckoutIdle } from "./storage.js";
 import { inReadOnlyRequest } from "./read-only-request.js";
 import { IN_RANGE, LEDGER_CHAIN_SCHEMA, safeWhole, sealLedger, verifyLedgerChain, type LedgerChainReport, type VerifiedHead } from "./ledger-chain.js";
 import { NO_RULES, filerFor, isProtectedWork, protectedChanges, rulesWords, type ApprovalGate, type ApprovalRules, type ApproverKind, type Filer, type FilerKind } from "./approval-policy.js";
@@ -1177,7 +1177,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v149 adds, and changes no saved row (docs/plans/learning-loops.md): every learning-loops table (V149_SCHEMA, new
 // tables only) — each check's recorded conditions and results, mixed-outcome observations, tracked identities, lesson
 // notes and their tallies, memory use, tidy-up proposals and decision merges.
-export const SCHEMA_VERSION = 149;
+// v150 adds, and changes no saved row: how long a task stays idle before its clean folder goes
+// (V150_ADDED_COLUMNS: a saved cleanup setting reads NULL, the default).
+export const SCHEMA_VERSION = 150;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1315,7 +1317,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1579,7 +1581,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -1951,6 +1953,8 @@ export const V149_TABLES = Object.freeze(["check_result", "check_fact", "local_o
 export const V149_REPO_TABLES = Object.freeze(["check_fact", "local_observation", "ci_flaky_observation", "learning_watch", "lesson_note", "memory_use", "memory_tidy_proposal"] as const);
 /** The v149 migration's steps after v148's, in order (OpenOptions.migrationStep may stop after each). */
 export const V149_STEPS = Object.freeze(["learning-tables"] as const);
+/** The v150 migration's steps after v149's, in order (OpenOptions.migrationStep may stop after each). */
+export const V150_STEPS = Object.freeze(["checkout-idle"] as const);
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6280,6 +6284,9 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   // v149: the learning-loops tables (new tables only; docs/plans/learning-loops.md). Idempotent, as v148's steps are.
   db.exec(V149_SCHEMA);
   step("learning-tables");
+  // v150: the idle limit beside the cleanup setting (V150_ADDED_COLUMNS: a saved row reads NULL). Idempotent, as v149's step is.
+  for (const [column, { definition }] of Object.entries(V150_ADDED_COLUMNS["checkout_cleanup_setting"]!)) addColumn(db, "checkout_cleanup_setting", column, definition);
+  step("checkout-idle");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -26762,5 +26769,24 @@ export function settleRunStopByObservation(store: Store, args: { runId: number; 
     compactSettledRunProcesses(db, now, args.runId);
     store.settleQuiescentStops(now);
     return true;
+  });
+}
+
+// ---- Idle cleanup (checkout-cleanup.ts) ----------------------------------------------------------------------------
+
+/** Settings → Storage: how long a task stays idle before its clean folder goes (the default until someone chooses). */
+export function checkoutIdle(store: Store): CheckoutIdle {
+  const row = store.handle.prepare("SELECT idle FROM checkout_cleanup_setting WHERE id = 1").get();
+  return row === undefined || row["idle"] === null ? DEFAULT_IDLE : String(row["idle"]) as CheckoutIdle;
+}
+
+/** Choose how long a task stays idle before its clean folder goes; the ledger keeps before → after. */
+export function setCheckoutIdle(store: Store, idle: CheckoutIdle, by: string, now: Date): CheckoutIdle {
+  return store.transact(() => {
+    const before = checkoutIdle(store);
+    store.handle.prepare("INSERT INTO checkout_cleanup_setting (id, cleanup, idle, updated_by, updated_at) VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET idle = excluded.idle, updated_by = excluded.updated_by, updated_at = excluded.updated_at")
+      .run(store.checkoutCleanup(), idle, by, now.toISOString());
+    if (before !== idle) store.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: "idle cleanup changed", outcome: "changed", source: "policy", detail: `${idleWords(before)} → ${idleWords(idle)}` });
+    return checkoutIdle(store);
   });
 }

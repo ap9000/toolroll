@@ -21,7 +21,7 @@ import { parseProtectedPaths } from "./approval-policy.js";
 import { rulesSummary } from "./approval-rules-ui.js";
 import { evidencePack, exportDay, ledgerExportChunks, standaloneEvidenceHtml, type LedgerExport } from "./evidence-pack.js";
 import { matchesOutsideCheckpoint } from "./ledger-chain.js";
-import { CLEANUP_CHOICES, bytesWords, cleanupWords, diskBytes, parseCleanup, storageReport } from "./storage.js";
+import { CLEANUP_CHOICES, bytesWords, cleanupWords, diskBytes, idleCleanupWords, idleWords, parseCleanup, parseIdle, storageReport } from "./storage.js";
 import { removeStaleTestTemp, tempRoots, testTempFolders } from "./test-temp.js";
 import { storageSweepSupervisor } from "./storage-sweep-process.js";
 import { idleStorageSweep, sweepSchedule, sweepScheduleWords } from "./storage-sweep-schedule.js";
@@ -118,7 +118,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
-  openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
+  checkoutIdle, setCheckoutIdle, openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -476,7 +476,9 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll storage                   where the disk goes: database, build checkouts, releases, evidence, leftover test temp folders
   toolroll storage clean [--yes]     preview removing finished tasks' clean checkouts (their branches stay) and test temp folders older than a day; --yes removes them
   toolroll storage clean --landed [--yes]   preview work that landed in main over a week ago: marks its results complete, removes their clean checkouts and local branches; --yes does it (instance operator)
-  toolroll storage cleanup <when>    remove a finished task's clean checkout: finished|2d|7d|never (instance operator)
+  toolroll storage cleanup <when>    remove a finished task's clean folder: finished|2d|7d|never (instance operator)
+  toolroll storage cleanup idle <days>
+                                     remove an idle task's clean folder: 7|14|30|never (instance operator)
   toolroll storage discard <path> --yes   throw away a checkout kept for its changes; its branch stays
   toolroll integrations [--json]     which integrations work: Connected, Not set up or Broken, and what to do (--saved: no new checks)
   toolroll monitoring                where the audit stream and traces go, and how each destination is doing
@@ -11939,9 +11941,11 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
   };
   const refused = (what: string) => fail(context.write, context.json, command, "refused", `An instance operator ${what}: pass --as and --token (or use the remembered login).`, EXIT.refused);
   const summary = (plan: CheckoutPlan): string[] => [
-    `Checkouts: ${plan.count}, ${bytesWords(plan.totalBytes)}. ${plan.waitingReview} waiting for review, ${plan.withChanges} kept because they have changes.`,
-    plan.go.length === 0 ? "A clean up now would free nothing." : `A clean up now would free about ${bytesWords(plan.freeBytes)} (${plan.go.length} checkout${plan.go.length === 1 ? "" : "s"}): toolroll storage clean`,
-    `A finished task's clean checkout is removed ${cleanupWords(plan.cleanup)}; its branch stays.`,
+    `Task folders: ${plan.count}, ${bytesWords(plan.totalBytes)}. ${plan.waitingReview} waiting for review, ${plan.withChanges} with uncommitted changes.`,
+    plan.go.length === 0 ? "A clean up now would free nothing." : `A clean up now would free about ${bytesWords(plan.freeBytes)} (${plan.go.length} task folder${plan.go.length === 1 ? "" : "s"}): toolroll storage clean`,
+    `A finished task's clean folder is removed ${cleanupWords(plan.cleanup)}; its branch stays.`,
+    idleCleanupWords(plan),
+    ...uncommittedLines(plan),
   ];
   const itemLine = (one: CheckoutItem) => `  ${bytesWords(one.bytes).padStart(8)}  ${one.path}${one.why === null ? "" : `  (${whyWords(one)})`}`;
   // Test temp folders the tests, journeys and scripts left (a killed run, an older version): those nothing touched for a day go.
@@ -11997,14 +12001,24 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
   if (action === "cleanup") {
     if (rest.length === 0) {
       const cleanup = store.checkoutCleanup();
-      return succeed(context.write, context.json, command, { cleanup }, () => [`A finished task's clean checkout is removed ${cleanupWords(cleanup)}; its branch stays.`]);
+      const idle = checkoutIdle(store);
+      return succeed(context.write, context.json, command, { cleanup, idle }, () => [`A finished task's clean folder is removed ${cleanupWords(cleanup)}; its branch stays.`, `A task's clean folder is removed ${idleWords(idle)}; its branch stays.`]);
+    }
+    const usage = `Use storage cleanup <${CLEANUP_CHOICES.map(one => one.value).join("|")}> or storage cleanup idle <7|14|30|never>.`;
+    if (rest[0] === "idle") {
+      const idle = rest.length === 2 ? parseIdle(rest[1]!) : undefined;
+      if (idle === undefined) return fail(context.write, context.json, command, "usage", usage, EXIT.usage);
+      const actor = await operator();
+      if (actor === null) return refused("sets idle cleanup");
+      const saved = setCheckoutIdle(store, idle, actor, context.clock());
+      return succeed(context.write, context.json, command, { idle: saved }, () => [`Saved. A task's clean folder is removed ${idleWords(saved)}; its branch stays.`]);
     }
     const cleanup = rest.length === 1 ? parseCleanup(rest[0]!) : undefined;
-    if (cleanup === undefined) return fail(context.write, context.json, command, "usage", `Use storage cleanup <${CLEANUP_CHOICES.map(one => one.value).join("|")}>.`, EXIT.usage);
+    if (cleanup === undefined) return fail(context.write, context.json, command, "usage", usage, EXIT.usage);
     const actor = await operator();
     if (actor === null) return refused("sets checkout cleanup");
     const saved = store.setCheckoutCleanup(cleanup, actor, context.clock());
-    return succeed(context.write, context.json, command, { cleanup: saved }, () => [`Saved. A finished task's clean checkout is removed ${cleanupWords(saved)}; its branch stays.`]);
+    return succeed(context.write, context.json, command, { cleanup: saved }, () => [`Saved. A finished task's clean folder is removed ${cleanupWords(saved)}; its branch stays.`]);
   }
   if (action === "clean" && flags.has("landed")) {
     if (rest.length > 0 || flags.get("landed") !== true) return fail(context.write, context.json, "storage clean --landed", "usage", "Use storage clean --landed to preview, then storage clean --landed --yes.", EXIT.usage);
@@ -12022,7 +12036,7 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
       const sharedBytes = sharedGo.reduce((sum, one) => sum + one.bytes, 0);
       const anything = plan.go.length > 0 || temp.stale > 0 || sharedGo.length > 0;
       return succeed(context.write, context.json, command, { preview: true, go: plan.go, stay: plan.stay, freeBytes: plan.freeBytes, testTemp: temp, sharedGo, sharedFreeBytes: sharedBytes }, () => [
-        ...(plan.go.length === 0 ? [anything ? "No checkouts to clean up." : "Nothing to clean up."] : [`Would remove ${plan.go.length} checkout${plan.go.length === 1 ? "" : "s"}, freeing about ${bytesWords(plan.freeBytes)} (their branches stay):`, ...plan.go.map(itemLine)]),
+        ...(plan.go.length === 0 ? [anything ? "No task folders to clean up." : "Nothing to clean up."] : [`Would remove ${plan.go.length} task folder${plan.go.length === 1 ? "" : "s"}, freeing about ${bytesWords(plan.freeBytes)} (their branches stay):`, ...plan.go.map(itemLine)]),
         ...(sharedGo.length === 0 ? [] : [`Would remove ${sharedGo.length} shared dependency install${sharedGo.length === 1 ? "" : "s"} no checkout uses, about ${bytesWords(sharedBytes)}:`, ...sharedGo.map(sharedLine)]),
         ...(plan.stay.length === 0 ? [] : [`Stays (${plan.stay.length}):`, ...plan.stay.map(itemLine)]),
         ...(temp.stale === 0 ? [] : [`Would remove ${temp.stale} test temp folder${temp.stale === 1 ? "" : "s"} older than a day, about ${bytesWords(temp.staleBytes)}.`]),
@@ -12055,7 +12069,7 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
     ];
     saveSweep(store, { at: context.clock().toISOString(), source: "manual", actor, parts });
     return succeed(context.write, context.json, command, { removed: done.removed, kept: done.kept, freedBytes: done.freed, testTempRemoved: swept.removed.length, testTempFailed: swept.failed, sharedRemoved, sharedFreedBytes: sharedFreed }, () => [
-      done.removed.length === 0 ? (swept.removed.length === 0 && sharedRemoved.length === 0 ? "Nothing to clean up." : "No checkouts to clean up.") : `Removed ${done.removed.length} checkout${done.removed.length === 1 ? "" : "s"}, about ${bytesWords(done.freed)}; their branches stay.`,
+      done.removed.length === 0 ? (swept.removed.length === 0 && sharedRemoved.length === 0 ? "Nothing to clean up." : "No task folders to clean up.") : `Removed ${done.removed.length} task folder${done.removed.length === 1 ? "" : "s"}, about ${bytesWords(done.freed)}; their branches stay.`,
       ...done.removed.map(itemLine),
       ...(sharedRemoved.length === 0 ? [] : [`Removed ${sharedRemoved.length} shared dependency install${sharedRemoved.length === 1 ? "" : "s"} no checkout used, about ${bytesWords(sharedFreed)}.`, ...sharedRemoved.map(sharedLine)]),
       ...done.kept.map(one => `  kept ${one.path} (${whyWords({ why: one.why })})`),
@@ -12125,7 +12139,8 @@ async function landedCommandWith(remotes: RemoteMains, yes: boolean, operator: (
 }
 
 function checkoutSummary(plan: CheckoutPlan) {
-  return { count: plan.count, totalBytes: plan.totalBytes, waitingReview: plan.waitingReview, withChanges: plan.withChanges, cleanBytes: plan.freeBytes, cleanCount: plan.go.length, cleanup: plan.cleanup };
+  return { count: plan.count, totalBytes: plan.totalBytes, waitingReview: plan.waitingReview, withChanges: plan.withChanges, cleanBytes: plan.freeBytes, cleanCount: plan.go.length, cleanup: plan.cleanup,
+    idle: plan.idle, idleCount: plan.idleCount, idleBytes: plan.idleBytes, uncommitted: plan.stay.filter(one => one.why === "has changes").map(one => ({ path: one.path, taskId: one.taskId, bytes: one.bytes })) };
 }
 
 /** `review [show] | on | off --repo <path>`: the project's one automatic review
@@ -13933,4 +13948,12 @@ async function releaseApproveCommand(positional: readonly string[], flags: Map<s
     `Approved release ${cardData.version} (${cardData.candidate.slice(0, 7)}). The release check runs next; it deploys, merges and publishes once GitHub CI and the check pass.`,
     ...(shown.stopped === null ? [] : [`The release isn't running: run \`toolroll release ${chosen.branch}\` to go on.`]),
   ]);
+}
+
+/** The folders with uncommitted changes: `toolroll storage` lists them so a person can decide. Never removed automatically. */
+function uncommittedLines(plan: CheckoutPlan): string[] {
+  const changed = plan.stay.filter(one => one.why === "has changes");
+  if (changed.length === 0) return [];
+  return [`${changed.length === 1 ? "This folder has" : "These folders have"} uncommitted changes and stay${changed.length === 1 ? "s" : ""} until you decide (toolroll storage discard <path> --yes throws one away):`,
+    ...changed.map(one => `  ${bytesWords(one.bytes).padStart(8)}  ${one.path}${one.taskId === null ? "" : `  (${one.taskId})`}`)];
 }

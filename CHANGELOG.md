@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **Toolroll cleans up task folders nobody is using.** A task idle for 14
+  days now loses its working folder even if its result is still waiting for
+  review or the task never finished, as long as nothing would be lost: no
+  uncommitted changes, every commit on its branch, nothing running in it.
+  Reviewing, Accept, Send back, Run checks, Retry and Resume all keep working;
+  the next run makes the folder again from its branch. Choose 7, 14 or 30
+  days or never in Settings → Storage, or with
+  `toolroll storage cleanup idle <days>`. `toolroll storage` shows what the
+  next sweep would free.
+- **Folders with uncommitted changes are listed, never removed.** Settings →
+  Storage and `toolroll storage` now show them so you can decide. Storage
+  calls these "task folders" now.
+
 ## 0.9.93 — 2026-11-06
 
 - **Approve a release with one tap.** When a release is ready for your yes,

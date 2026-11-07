@@ -1,15 +1,16 @@
 /**
- * Settings → Storage: how much space task checkouts use, what a clean-up would free now, the clean-up's preview (what
+ * Settings → Storage: how much space task folders (checkouts) use, what a clean-up would free now, what the next sweep's
+ * idle cleanup takes and when, the folders with uncommitted changes a person decides about, the clean-up's preview (what
  * goes, what stays and why, with paths) and its Remove behind the password, what the last storage sweep removed and
  * when (its paths in a disclosure) and why the next one waits, what landed work's teardown did and still waits on (in a
- * disclosure, with the one-time command for older work), and when a finished task's clean checkout goes by itself. An
- * instance operator's page, built from the revamp kit; the Settings frame adds the title.
+ * disclosure, with the one-time command for older work), and when a task's clean folder goes by itself. An instance
+ * operator's page, built from the revamp kit; the Settings frame adds the title.
  */
 import { homedir } from "node:os";
 import { basename } from "node:path";
 import { html, joinHtml, type Html } from "./html.js";
 import { previewDigest, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
-import { CLEANUP_CHOICES, bytesWords } from "./storage.js";
+import { CLEANUP_CHOICES, IDLE_CHOICES, bytesWords, idleCleanupWords } from "./storage.js";
 import { sweepDetails, sweepWords, type SweepRecord } from "./storage-sweep.js";
 import { sweepScheduleWords, type SweepSchedule } from "./storage-sweep-schedule.js";
 import type { LandedSummary } from "./landed-cleanup.js";
@@ -59,19 +60,19 @@ function sweepHtml(sweep: NonNullable<StorageView["sweep"]>): Html {
 /** Landed work, on demand: what its teardown did, what it waits on and why, and the one-time command for older work. */
 function landedHtml(landed: LandedSummary): Html {
   const done = landed.completed + landed.checkouts + landed.branches === 0 ? "No landed work cleaned up yet."
-    : `${plural(landed.completed, "task")} marked complete; ${plural(landed.checkouts, "checkout")} and ${plural(landed.branches, "local branch", "local branches")} removed.`;
+    : `${plural(landed.completed, "task")} marked complete; ${plural(landed.checkouts, "task folder")} and ${plural(landed.branches, "local branch", "local branches")} removed.`;
   const waiting = landed.waiting.length === 0 ? "" : html`<div data-landed-waiting>${note(`Waiting (${landed.waiting.length}):`)}${landed.waiting.map(one =>
     settingsRecord({ title: html`<span class="k-mono">${tilde(one.target)}</span>`, sub: one.why ?? "" }))}</div>`;
   return html`<div data-landed>${disclose("Landed work", joinHtml([note(done), waiting,
     note(html`For work that landed before this: <code class="k-mono">toolroll storage clean --landed</code> shows what would go; add <code class="k-mono">--yes</code> to do it.`)]))}</div>`;
 }
 
-/** One checkout: the task it was for, its size, where it is (the home folder as ~), why it stays, and Discard when it has changes. */
+/** One task folder: the task it was for, its size, where it is (the home folder as ~), why it stays, and Discard when it has changes. */
 function item(one: CheckoutItem): Html {
   const why = one.why === null ? "" : `${whyWords(one)[0]!.toUpperCase()}${whyWords(one).slice(1)}`;
   const discard = one.why === "has changes"
     ? disclose("Discard", kitSectionForm({ proof: "storage-discard", action: "/settings/storage/discard", id: `discard-${previewId(one.path)}`, hidden: { path: one.path },
-        save: { label: "Discard changes", variant: "danger" }, body: note("Throws away this checkout and its uncommitted changes. Its branch stays.") }))
+        save: { label: "Discard changes", variant: "danger" }, body: note("Throws away this folder and its uncommitted changes. Its branch stays.") }))
     : "";
   return settingsRecord({ title: one.taskId ?? basename(one.path), attrs: { "data-checkout": one.path }, when: bytesWords(one.bytes),
     sub: html`<span class="k-mono">${tilde(one.path)}</span>${why === "" ? "" : ` · ${why}`}`, more: discard });
@@ -81,29 +82,38 @@ const previewId = (path: string): string => path.replace(/[^a-z0-9]+/gi, "-").re
 
 export function storageHtml(view: StorageView, said: { said?: string | null; problem?: string | null }): Html {
   const { plan } = view;
-  const facts = [plural(plan.count, "checkout"), `${plan.waitingReview} waiting for review`, `${plan.withChanges} kept for their changes`].join(" · ");
+  const facts = [plural(plan.count, "task folder"), `${plan.waitingReview} waiting for review`, `${plan.withChanges} with uncommitted changes`].join(" · ");
   const frees = plan.go.length === 0 ? "Nothing to clean up now." : `Cleaning up now frees about ${bytesWords(plan.freeBytes)}.`;
-  const checkouts = settingsSection({ id: "checkouts", title: `Checkouts use ${bytesWords(plan.totalBytes)}`,
+  const checkouts = settingsSection({ id: "checkouts", title: `Task folders use ${bytesWords(plan.totalBytes)}`,
     body: joinHtml([
       said.problem ? notice(said.problem) : said.said ? infoLine(said.said) : "",
       html`<p class="k-note" data-checkout-bytes="${plan.totalBytes}">${facts}</p>`,
       view.measured ?? "",
       html`<p class="k-note" data-clean-bytes="${plan.freeBytes}">${frees}</p>`,
+      html`<p class="k-note" data-idle-bytes="${plan.idleBytes}">${idleCleanupWords(plan)}</p>`,
       view.sweep === undefined ? "" : sweepHtml(view.sweep),
       view.landed === undefined ? "" : landedHtml(view.landed),
     ]) });
   const remove = plan.go.length === 0 ? "" : kitSectionForm({ proof: "storage-clean", action: "/settings/storage/clean", id: "clean-form", hidden: { preview: previewDigest(plan) },
-    save: { label: `Remove ${plural(plan.go.length, "checkout")}`, variant: "danger" }, body: html`` });
+    save: { label: `Remove ${plural(plan.go.length, "task folder")}`, variant: "danger" }, body: html`` });
   const goes = plan.go.length === 0 ? note("Nothing to remove now.")
     : html`<div data-goes>${plan.go.map(one => item(one))}</div>`;
-  const stays = plan.stay.length === 0 ? "" : disclose(`Stays (${plan.stay.length})`, html`<div data-stays>${plan.stay.map(one => item(one))}</div>`);
+  const changed = plan.stay.filter(one => one.why === "has changes");
+  const others = plan.stay.filter(one => one.why !== "has changes");
+  const stays = others.length === 0 ? "" : disclose(`Stays (${others.length})`, html`<div data-stays>${others.map(one => item(one))}</div>`);
+  // Never removed by itself: a person looks at each and keeps it or discards it.
+  const changes = changed.length === 0 ? "" : settingsSection({ id: "uncommitted", title: `Uncommitted changes (${changed.length})`,
+    lead: `${changed.length === 1 ? "This folder has" : "These folders have"} work that isn't on any branch, about ${bytesWords(changed.reduce((sum, one) => sum + one.bytes, 0))}. Toolroll never removes ${changed.length === 1 ? "it" : "them"} by itself.`,
+    body: html`<div data-uncommitted>${changed.map(one => item(one))}</div>` });
   const cleanUp = settingsSection({ id: "clean-up", title: "Clean up now",
-    lead: plan.go.length === 0 ? "Nothing to remove now." : `Removes ${plural(plan.go.length, "checkout")}, about ${bytesWords(plan.freeBytes)}. Their branches stay, so nothing committed is lost.`,
+    lead: plan.go.length === 0 ? "Nothing to remove now." : `Removes ${plural(plan.go.length, "task folder")}, about ${bytesWords(plan.freeBytes)}. Their branches stay, so nothing committed is lost.`,
     body: html`<div data-clean-up>${joinHtml([plan.go.length === 0 ? "" : goes, remove, stays])}</div>` });
   const automatic = settingsSection({ id: "automatic-cleanup", title: "Automatic cleanup",
-    lead: "Its branch stays. Checkouts with changes, commits on no branch, in use, or waiting for review are kept. When a task's work is already in main, Toolroll marks it complete and removes its checkout and local branches.",
+    lead: "Branches stay, so a later run, revision or retry makes a new folder. Folders with uncommitted changes, commits on no branch, or in use are kept. When a task's work is already in main, Toolroll marks it complete and removes its folder and local branches.",
     body: kitSectionForm({ proof: "storage-cleanup", action: "/settings/storage", id: "cleanup-form", gate: true,
-      body: formRow("Remove a finished task's clean checkout", null, select({ id: "storage-cleanup", name: "cleanup", label: "Remove a finished task's clean checkout", current: plan.cleanup,
-        items: CLEANUP_CHOICES.map(one => [one.value, one.label] as const) }), "inline") }) });
-  return joinHtml([checkouts, cleanUp, automatic]);
+      body: joinHtml([formRow("Remove a finished task's clean folder", null, select({ id: "storage-cleanup", name: "cleanup", label: "Remove a finished task's clean folder", current: plan.cleanup,
+        items: CLEANUP_CHOICES.map(one => [one.value, one.label] as const) }), "inline"),
+      formRow("Remove an idle task's clean folder", "Even with its result waiting for review or the task unfinished. Idle means no run, no one acting on it and no open lease.", select({ id: "storage-idle", name: "idle", label: "Remove an idle task's clean folder", current: plan.idle,
+        items: IDLE_CHOICES.map(one => [one.value, one.label] as const) }), "inline")]) }) });
+  return joinHtml([checkouts, changes, cleanUp, automatic]);
 }

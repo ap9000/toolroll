@@ -4,7 +4,7 @@
  * Build checkouts and staged releases are the big ones; the worker removes a
  * finished task's clean checkout as the checkout cleanup setting says
  * (checkout-cleanup.ts), and the daily storage sweep (storage-sweep.ts) takes
- * what slips through: stale test temp folders, leftover processes, extra
+ * idle tasks' clean checkouts and what slips through: stale test temp folders, leftover processes, extra
  * staged runtimes and dependency installs unused for a week.
  */
 import { execFile, spawnSync } from "node:child_process";
@@ -12,7 +12,7 @@ import { lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { DEPS_FOLDER, sharedCopies } from "./shared-deps.js";
 import type { Store } from "./store.js";
-import { checkoutCleanupSchema, type CheckoutCleanup } from "./contracts/storage.js";
+import { checkoutCleanupSchema, checkoutIdleSchema, type CheckoutCleanup, type CheckoutIdle } from "./contracts/storage.js";
 
 /** Settings → Storage: when a finished task's clean checkout is removed. One row, or none (the default). */
 export const CHECKOUT_CLEANUP_SCHEMA = `
@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS storage_sweep (
 );
 `;
 
-export type { CheckoutCleanup } from "./contracts/storage.js";
+export type { CheckoutCleanup, CheckoutIdle } from "./contracts/storage.js";
 export const DEFAULT_CLEANUP: CheckoutCleanup = "finished";
 export const CLEANUP_CHOICES: readonly { value: CheckoutCleanup; label: string; days: number | null }[] = [
   { value: "finished", label: "When its task is complete or cancelled", days: 0 },
@@ -100,6 +100,44 @@ export function cleanupWords(cleanup: CheckoutCleanup): string {
   return cleanup === "finished" ? "when its task is complete or cancelled"
     : cleanup === "never" ? "never (only when you clean up)"
     : `${cleanup === "2d" ? "2 days" : "a week"} after its task is complete or cancelled`;
+}
+
+/**
+ * v150: how long a task stays idle (no run, no person's act, no open lease) before its clean folder goes, even with its
+ * result waiting for review or the task unfinished (checkout-cleanup.ts). Saved rows read NULL: the default.
+ */
+export const V150_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  checkout_cleanup_setting: { idle: { definition: "TEXT CHECK (idle IN ('7d', '14d', '30d', 'never'))", saved: "NULL" } },
+});
+export const DEFAULT_IDLE: CheckoutIdle = "14d";
+export const IDLE_CHOICES: readonly { value: CheckoutIdle; label: string; days: number | null }[] = [
+  { value: "7d", label: "After 7 days idle", days: 7 },
+  { value: "14d", label: "After 14 days idle", days: 14 },
+  { value: "30d", label: "After 30 days idle", days: 30 },
+  { value: "never", label: "Never", days: null },
+];
+
+/** `7`, `14d`, `30 days`, `never` (or off); undefined when it's none of those. */
+export function parseIdle(text: string): CheckoutIdle | undefined {
+  const value = text.trim().toLowerCase().replace(/\s+/g, " ");
+  if (value === "off") return "never";
+  const days = /^(\d+)( ?d| days?)?$/.exec(value)?.[1];
+  const parsed = checkoutIdleSchema.safeParse(days === undefined ? value : `${days}d`);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** After "A task's clean folder is removed ". */
+export function idleWords(idle: CheckoutIdle): string {
+  const days = IDLE_CHOICES.find(one => one.value === idle)!.days;
+  return days === null ? "never for being idle" : `after ${days} days idle`;
+}
+
+/** What the next sweep's idle cleanup takes, for `toolroll storage` and Settings → Storage. The sweep's own line says when. */
+export function idleCleanupWords(plan: { cleanup: CheckoutCleanup; idle: CheckoutIdle; idleCount: number; idleBytes: number }): string {
+  if (plan.cleanup === "never" || plan.idle === "never") return "Idle cleanup is off.";
+  const limit = `${idleWords(plan.idle)[0]!.toUpperCase()}${idleWords(plan.idle).slice(1)}`;
+  if (plan.idleCount === 0) return `${limit}, a task's clean folder goes. None are due.`;
+  return `${limit}, a task's clean folder goes: the next sweep frees about ${bytesWords(plan.idleBytes)} (${plan.idleCount} folder${plan.idleCount === 1 ? "" : "s"}).`;
 }
 
 /** Bytes each path holds on disk: one `du` for them all (fast on a 300 MB checkout), a walk where it can't answer. */
