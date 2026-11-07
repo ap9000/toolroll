@@ -108,8 +108,8 @@ export const LEAD_TOOL_INPUTS = {
   }),
   get_flow_insights: z.strictObject({ repo: repoId.optional(), flow: id.optional(), days: z.int().min(1).max(90).optional(), card: id.optional(), entry: id.optional() }),
   get_skills: z.strictObject({ repo: repoId, version: z.string().regex(/^[a-f0-9]{20}$/).optional(), offset: offset.optional() }),
-  get_flaky_tests: z.strictObject({ repo: repoId, row: text("knowledgeReference").optional() }),
   get_project_knowledge: z.strictObject({ repo: repoId, reference: text("knowledgeReference").optional(), decision: id.optional() }),
+  get_flaky_tests: z.strictObject({ repo: repoId, row: text("knowledgeReference").optional() }),
   get_task_conversation: z.strictObject({ task: taskRef, limit: z.int().min(1).max(30).optional() }),
   commit_to: z.strictObject({
     what: text("promise").min(3), when: z.enum(["task", "run", "check", "time"]), task: taskRef.optional(), run: id.optional(),

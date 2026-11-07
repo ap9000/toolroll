@@ -58,6 +58,7 @@
     "get_flow_insights": [{}, { "flow": 2, "days": 7 }, { "flow": 2, "card": 5, "entry": 1 }],
     "get_skills": [{ "repo": "r1" }, { "repo": "r1", "version": "0123456789abcdef0123", "offset": 2000 }],
     "get_project_knowledge": [{ "repo": "r1" }, { "repo": "r1", "reference": "b1fb88421b160846cd99" }, { "repo": "r1", "decision": 3 }],
+    "get_flaky_tests": [{ "repo": "r1" }, { "repo": "r1", "row": "src/app.test.ts" }],
     "get_task_conversation": [{ "task": "t-42" }, { "task": "t-42", "limit": 30 }],
     "commit_to": [
       { "what": "Tell you when the checks pass", "when": "check", "task": "t-42", "result": "passed" },
