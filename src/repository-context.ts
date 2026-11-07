@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { scanForSecrets } from './evidence.js';
-import type ts from 'typescript-parser';
+import { compilerOptionsOf, extractFile, resolveAll } from './code-extract.js';
 
 const VERSION = 1;
 const MAX_FILES = 1200, MAX_FILE_BYTES = 256_000, MAX_SOURCE_BYTES = 12_000_000;
@@ -172,50 +172,24 @@ async function buildIndex(snapshot: Snapshot): Promise<Index> {
   const byPath = new Map(snapshot.sources.map(source => [resolve(snapshot.checkout.repo, source.file), source]));
   const directories = new Set<string>([snapshot.checkout.repo]);
   for (const file of byPath.keys()) { let dir = dirname(file); while (inside(snapshot.checkout.repo, dir)) { directories.add(dir); if (dir === snapshot.checkout.repo) break; dir = dirname(dir); } }
-  let options: ts.CompilerOptions = { module: compiler.ModuleKind.NodeNext, moduleResolution: compiler.ModuleResolutionKind.NodeNext, allowJs: true, resolveJsonModule: true };
   const config = byPath.get(join(snapshot.checkout.repo, 'tsconfig.json'));
+  const { options, problem } = compilerOptionsOf(compiler, join(snapshot.checkout.repo, 'tsconfig.json'), config?.text, snapshot.checkout.repo);
   const warnings: string[] = [];
-  if (config) {
-    const parsed = compiler.parseConfigFileTextToJson(join(snapshot.checkout.repo, config.file), config.text);
-    if (!parsed.error && parsed.config?.compilerOptions) {
-      const converted = compiler.convertCompilerOptionsFromJson(parsed.config.compilerOptions, snapshot.checkout.repo);
-      options = { ...options, ...converted.options };
-      if (parsed.config.extends) warnings.push('Inherited tsconfig settings are not indexed; unresolved aliases remain omitted.');
-    } else warnings.push('TypeScript configuration could not be read; relative imports still work.');
-  }
+  if (problem === 'extends') warnings.push('Inherited tsconfig settings are not indexed; unresolved aliases remain omitted.');
+  else if (problem === 'unreadable') warnings.push('TypeScript configuration could not be read; relative imports still work.');
+  const resolveOne = resolveAll(compiler, snapshot.checkout.repo, byPath, directories, options, resolve);
   const nodes: SymbolNode[] = [], relationships: RepositoryRelationship[] = [];
   let unresolved = 0, parseFailures = 0;
-  const host: ts.ModuleResolutionHost = {
-    fileExists: file => byPath.has(resolve(file)),
-    readFile: file => byPath.get(resolve(file))?.text,
-    directoryExists: dir => directories.has(resolve(dir)),
-    getCurrentDirectory: () => snapshot.checkout.repo,
-    realpath: file => resolve(file),
-  };
   for (const source of snapshot.sources.filter(s => CODE.test(s.file))) {
     const fileName = resolve(snapshot.checkout.repo, source.file);
-    const tree = compiler.createSourceFile(fileName, source.text, compiler.ScriptTarget.Latest, true);
-    if ((tree as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics?.length) parseFailures++;
-    const line = (pos: number) => tree.getLineAndCharacterOfPosition(Math.min(pos, source.text.length)).line + 1;
-    const relationship = (specifier: string, kind: RepositoryRelationship['kind'], at: number) => {
-      const resolved = compiler.resolveModuleName(specifier, fileName, options, host).resolvedModule?.resolvedFileName;
-      if (!resolved || !byPath.has(resolve(resolved))) { unresolved++; return; }
-      if (relationships.length < MAX_EDGES) relationships.push({ from: source.file, to: byPath.get(resolve(resolved))!.file, kind, file: source.file, line: line(at), provenance: 'explicit' });
-    };
-    const visit = (node: ts.Node) => {
-      if (nodes.length < MAX_NODES && (compiler.isFunctionDeclaration(node) || compiler.isClassDeclaration(node) || compiler.isInterfaceDeclaration(node) || compiler.isTypeAliasDeclaration(node) || compiler.isEnumDeclaration(node) || compiler.isMethodDeclaration(node) || compiler.isVariableDeclaration(node))) {
-        const name = node.name;
-        if (name && compiler.isIdentifier(name)) nodes.push({ file: source.file, name: name.text, line: line(node.getStart(tree)), endLine: line(node.end) });
-      }
-      if (compiler.isImportDeclaration(node) && compiler.isStringLiteral(node.moduleSpecifier)) relationship(node.moduleSpecifier.text, 'imports', node.getStart(tree));
-      if (compiler.isExportDeclaration(node) && node.moduleSpecifier && compiler.isStringLiteral(node.moduleSpecifier)) relationship(node.moduleSpecifier.text, 're-exports', node.getStart(tree));
-      if (compiler.isCallExpression(node) && node.arguments.length === 1 && compiler.isStringLiteral(node.arguments[0]!)) {
-        if (node.expression.kind === compiler.SyntaxKind.ImportKeyword) relationship((node.arguments[0] as ts.StringLiteral).text, 'dynamic-import', node.getStart(tree));
-        // require may be shadowed; do not present a guessed call as a proven relationship.
-      }
-      compiler.forEachChild(node, visit);
-    };
-    visit(tree);
+    const read = extractFile(compiler, fileName, source.text);
+    if (read.parseFailed) parseFailures++;
+    for (const one of read.declarations) if (nodes.length < MAX_NODES) nodes.push({ file: source.file, name: one.name, line: one.line, endLine: one.endLine });
+    for (const one of read.specifiers) {
+      const resolved = resolveOne(one.specifier, fileName);
+      if (resolved === null) { unresolved++; continue; }
+      if (relationships.length < MAX_EDGES) relationships.push({ from: source.file, to: byPath.get(resolved)!.file, kind: one.kind, file: source.file, line: one.line, provenance: 'explicit' });
+    }
   }
   if (unresolved) warnings.push(`${unresolved} external or unresolved imports were omitted.`);
   if (parseFailures) warnings.push(`${parseFailures} files had syntax errors; extracted relationships may be incomplete.`);

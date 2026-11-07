@@ -68,6 +68,8 @@ import { releaseCheckPurposeFor, releaseTermsFor } from "./release-carry.js";
 import { approveReleaseCard, journalMatchesPlane, releaseApprovalCard, releaseCardLines, releaseTaskOf, waitingJournals, type WaitingJournal } from "./release-approval.js";
 import { journalFile } from "./release.js";
 import { refreshTrustedMains, settleReleaseChecks } from "./nightly-check.js";
+import { refreshCodeMaps } from "./code-map-build.js";
+import { runMapCommand } from "./code-map-cli.js";
 import { githubNightlyRepos, readGithubNightlies, type GhRead } from "./nightly-github.js";
 import { exec as releaseExec, githubReads } from "./release-adapters.js";
 import { releaseTools } from "./release-git.js";
@@ -475,6 +477,10 @@ export const OPERATE_HELP = `toolroll — operating the queue
                                         the project's own demo or dev server, the one non-public address a
                                         report's scout may screenshot
   toolroll task evidence <id>        the task's evidence pack as JSON (--html for a printable page; --out <file>)
+  toolroll map [<project>] [--json]  a project's code map, made by Toolroll from main: areas and how they use each other
+  toolroll map area <id> | file <path> | search <words> [--cursor <c>]
+                                     one area, one file, or files and exported names; --cursor reads the next page of the same version
+  toolroll map refresh               ask for a check of main now (an approver)
   toolroll storage                   where the disk goes: database, build checkouts, releases, evidence, leftover test temp folders
   toolroll storage clean [--yes]     preview removing finished tasks' clean checkouts (their branches stay) and test temp folders older than a day; --yes removes them
   toolroll storage clean --landed [--yes]   preview work that landed in main over a week ago: marks its results complete, removes their clean checkouts and local branches; --yes does it (instance operator)
@@ -1568,6 +1574,8 @@ async function dispatch(
       const verified = acting === null || lead ? null : authenticateApprover(context.store, acting.name, acting.token, repo === undefined ? null : resolve(repo));
       return runKnowledgeApply(flags, { ...context, now: context.clock(), actor: verified !== null && verified.ok ? acting!.name : null });
     }
+    case "map":
+      return mapCommand(positional, flags, context);
     case "models": {
       // A local owner's lowering act (models turn-off / dismiss, through the terminal UI) asks for no credential: the
       // rule door re-checks the owner and its exact act itself.
@@ -7000,6 +7008,18 @@ async function runWatchLoop(args: {
     },
   });
 
+  // The code map (docs/plans/code-map.md §2): its own beat, so a slow remote holds nothing else. A test's injected agent
+  // runner means a test: no real fetch.
+  const codeMapChecks = startMaintenance({
+    intervalMs: 60_000,
+    shouldStop: stopping,
+    onError: error => progress(`watch: a code map check failed — ${describe(error)}; it tries again`),
+    run: async () => {
+      if (store.isDemo() || context.agentRunner !== undefined) return;
+      await refreshCodeMaps(store, { scratch: join(context.evidenceRoot, ".code-map"), clock: context.clock });
+    },
+  });
+
   // Flows on their own cadence (flow-cadence.ts), not between builds: while builds hold every slot of this
   // project, a card whose step finished still moves within one beat. Moves run apart from triggers, replies
   // and steps, so a long check script doesn't hold them either. Neither starts a build: a card entering a
@@ -7284,6 +7304,7 @@ async function runWatchLoop(args: {
     await Promise.all(lanes);
     await maintenance.stop();
     await followUpChecks.stop();
+    await codeMapChecks.stop();
     await flowMoves.stop();
     await flowSteps.stop();
     await modelWatch.stop();
@@ -14008,4 +14029,24 @@ function uncommittedLines(plan: CheckoutPlan): string[] {
   if (changed.length === 0) return [];
   return [`${changed.length === 1 ? "This folder has" : "These folders have"} uncommitted changes and stay${changed.length === 1 ? "s" : ""} until you decide (toolroll storage discard <path> --yes throws one away):`,
     ...changed.map(one => `  ${bytesWords(one.bytes).padStart(8)}  ${one.path}${one.taskId === null ? "" : `  (${one.taskId})`}`)];
+}
+
+/** `toolroll map` (code-map-cli.ts): who is asking, and which projects they can open. A read needs no sign-in on this
+ * computer's own database, as `knowledge search`; a sign-in limits it to that person's projects. */
+async function mapCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store } = context;
+  const local = currentLocalOwner();
+  const { name, token } = credentialsFrom(flags, context);
+  let actor: string | null = null;
+  let repos: readonly string[] | null = null;
+  const all = [...new Set([...store.knownRepos(), ...store.listProjects().map(one => one.path)])];
+  if (local !== null) { actor = local.account; repos = all.filter(repo => store.accountCanAccess(local.account, repo)); }
+  else if (name !== undefined && token !== undefined) {
+    if (!authenticateAccount(store, name, token).ok) return fail(context.write, context.json, "map", "unauthenticated", "Sign in again: that login doesn't work here.", EXIT.refused);
+    const remote = activeRemote();
+    actor = name;
+    repos = all.filter(repo => store.accountCanAccess(name, repo) && (remote === null || remote.allows(repo)));
+  } else repos = all;
+  return runMapCommand(positional, flags, { store, write: context.write, json: context.json, now: context.clock(), actor, repos,
+    approver: repo => local === null && name !== undefined && token !== undefined && authenticateApprover(store, name, token, repo).ok });
 }

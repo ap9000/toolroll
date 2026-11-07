@@ -1,6 +1,7 @@
 import { KNOWLEDGE_DESCRIPTORS } from "./knowledge-cli.js";
 import { MEMORY_DESCRIPTORS } from "./memory-cli.js";
 import { MODELS_DESCRIPTORS } from "./models-cli.js";
+import { MAP_DESCRIPTORS } from "./code-map-cli.js";
 import { FLOWS_DESCRIPTORS } from "./flows-cli.js";
 /**
  * The declared command guide (arc 5): the agent-facing surface as data,
@@ -135,6 +136,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   // Letting a flow run on its own raises authority: the owner's own password ceremony, never an agent's act.
   ...FLOWS_DESCRIPTORS.map(spec => ({ invocation: `flows ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags,
     ...("positionals" in spec ? { positionals: spec.positionals.map(name => ({ name, required: true, meaning: name === "flow" ? "a flow id from flows list" : name === "card" ? "a card id from flows show" : name === "on|off" ? "on signs the grant, off revokes it" : "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -" })) } : {}) })),
+  ...MAP_DESCRIPTORS.map(spec => ({ invocation: spec.action === "" ? "map" : `map ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience as "operator" : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags, ...(spec.positional === null ? {} : { positionals: [{ name: "target", required: true, meaning: spec.positional }] }) })),
   ...MODELS_DESCRIPTORS.map(spec => ({ invocation: `models ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "target", required: true, meaning: "positional" in spec ? spec.positional : "the CLI to update, or on/off" }] } : {}) })),
 
   // ---- the queue (agent surface) ----
@@ -527,6 +529,7 @@ const REMOTE_YES: readonly string[] = [
   "config show", "verify show", "intake show", "intake run", "intake preview", "intake pr-comments", "template list", "template show",
   "webhook status", "review show", "chat-approval show", "chat-approval off",
   "knowledge search", "knowledge impact", "knowledge refresh",
+  "map", "map area", "map file", "map search", "map refresh",
   "memory search", "memory decisions", "memory show", "memory review", "memory status",
   "flows list", "flows show", "flows export", "flows create", "flows edit", "flows trigger add", "flows trigger pause", "flows trigger resume",
   "flows trigger remove", "flows card add", "flows archive",
@@ -549,7 +552,7 @@ export const REMOTE_POLICY_COUNT: number = REMOTE_NO.length + REMOTE_STEP_UP.len
  */
 const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   // Reads.
-  pulls: "read", graph: "read", repos: "read", status: "read", ready: "read", gaps: "read", contract: "read", "skills list": "read", "skills get": "read",
+  pulls: "read", graph: "read", repos: "read", map: "read", "map area": "read", "map file": "read", "map search": "read", status: "read", ready: "read", gaps: "read", contract: "read", "skills list": "read", "skills get": "read",
   "task list": "read", "task show": "read", "task state": "read", "task wait": "read", "check-progress": "read", "review show": "read", welcome: "read",
   // Acts (plan C1's list).
   "task add": "file-task",

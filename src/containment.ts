@@ -326,6 +326,8 @@ export type Container = {
   waitEmpty(timeoutMs: number): Promise<boolean>;
   /** Remove the OS object (only an empty one can go) and dismiss the janitor. */
   release(): void;
+  /** Hard limits on the whole object, set before `launch`; false when this object can't enforce them. */
+  limit?(limits: { memoryBytes: number; pids: number }): boolean;
 };
 
 export type ContainerFactory = (effective: EffectiveContainment, label: string) => Container;
@@ -420,6 +422,14 @@ export function cgroup2Container(capability: ContainmentCapability, label: strin
     backend: "cgroup2",
     id: dir,
     identity,
+    limit({ memoryBytes, pids }) {
+      // The controllers exist here only if the delegated parent enabled them for its children.
+      try {
+        writeFileSync(join(dir, "memory.max"), String(memoryBytes));
+        writeFileSync(join(dir, "pids.max"), String(pids));
+        return true;
+      } catch { return false; }
+    },
     launch(file, args) {
       return {
         file: "/bin/sh",
@@ -492,6 +502,7 @@ export function jobObjectContainer(capability: ContainmentCapability, label: str
   let authorized = false;
   let cancelled = false;
   let helperChild: ChildProcess | null = null;
+  let memoryLimit = 0;
   const fail = (detail: string): void => { failure ??= detail; if (state !== "empty") state = "lost"; connection?.destroy(); };
   const authorize = (): void => {
     if (authorized && state === "ready") connection?.write(cancelled ? "kill\n" : "go\n");
@@ -539,10 +550,11 @@ export function jobObjectContainer(capability: ContainmentCapability, label: str
   };
   return {
     backend: "job-object", id, identity,
+    limit({ memoryBytes }) { memoryLimit = memoryBytes; return true; },
     launch(file, args) {
       return {
         file: capability.powershell!,
-        args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", capability.helper!, "-Pipe", pipe, "-Encoded", Buffer.from(JSON.stringify([file, ...args]), "utf8").toString("base64"), "-JobName", id],
+        args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", capability.helper!, "-Pipe", pipe, "-Encoded", Buffer.from(JSON.stringify([file, ...args]), "utf8").toString("base64"), "-JobName", id, ...(memoryLimit > 0 ? ["-MemoryLimit", String(memoryLimit)] : [])],
         extraStdio: [],
         async attach(child) {
           // Called only after the durable onSpawn callback succeeded.
