@@ -28,7 +28,17 @@ async function act(card: BrowserActionCard, verb: "confirm" | "dismiss", csrf: s
   }
 }
 
+/** A Toolroll card: data to read and its fixed links. It confirms nothing, so it has no state to show. */
+function DataCard({ card }: { card: BrowserActionCard }) {
+  return <section data-view="chat-card" data-action-card={card.id} data-card-kind="data" className="so-chat-card mt-3 overflow-hidden bg-card text-card-foreground">
+    <header className="px-4 pt-3 pb-1 font-semibold">{card.label}</header>
+    <div className="px-4 py-2"><GuardedHtml html={card.body} immutable className="so-card-body" /></div>
+    {card.links.length > 0 && <footer className="flex flex-wrap gap-2 px-4 pb-3.5 pt-1">{card.links.map(link => <KLinkButton key={link.href} variant="ghost" sm href={link.href} label={link.label} />)}</footer>}
+  </section>;
+}
+
 function ActionCard({ card, csrf, onChanged }: { card: BrowserActionCard; csrf: string; onChanged: () => void }) {
+  if (card.data === true) return <DataCard card={card} />;
   const [busy, setBusy] = useState<"confirm" | "dismiss" | null>(null);
   const [armed, setArmed] = useState(false);
   const armId = useId();
@@ -102,6 +112,11 @@ export function cardChip(card: Pick<BrowserActionCard, "state" | "primary" | "di
  * link when it only points somewhere; a proposal that waits on the person opens under its row with what it would do and
  * its acts. The same doors, checks and fields as the card look; outcomes show in place, never as a toast. */
 function ActionRow({ card, csrf, onChanged }: { card: BrowserActionCard; csrf: string; onChanged: () => void }) {
+  if (card.data === true) return <li data-view="chat-card" data-action-card={card.id} data-card-kind="data" className="lc-card lc-data">
+    <p className="lc-data-title">{card.label}</p>
+    <GuardedHtml html={card.body} immutable className="lc-card-body" />
+    {card.links.length > 0 && <div className="lc-card-acts">{card.links.map(link => <KLinkButton key={link.href} variant="ghost" sm href={link.href} label={link.label} />)}</div>}
+  </li>;
   const [busy, setBusy] = useState<"confirm" | "dismiss" | null>(null);
   const [armed, setArmed] = useState(false);
   const [said, setSaid] = useState<{ ok: boolean; words: string } | null>(null);

@@ -130,6 +130,8 @@ export type BrowserActionCard = {
   primary: { kind: 'confirm'; label: string; irreversible: boolean; native: boolean } | { kind: 'link'; label: string; href: string } | null;
   dismissable: boolean;
   note: string | null;
+  /** A Toolroll card: `body` is its data, and it confirms nothing. */
+  data?: true;
 };
 export type BrowserConversation = {
   sessionId: number; user: string; version: string; messages: BrowserMessage[];

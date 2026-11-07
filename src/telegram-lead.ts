@@ -1,3 +1,5 @@
+import { telegramCardMessage } from "./card-render.js";
+import { cardOfProposal, cardPlainOf, cardsFirst, cardWithin, isCardProposal } from "./chat-card.js";
 import { CHAT_ACTIONS, sharedActionAllowsChallenge, sharedActionPayload } from "./chat-actions.js";
 import { taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, NO_PHONE_LINK, NO_TASK_LINK, phoneProposalLink, confirmedLink, phoneProposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
 export { channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, CHAT_ACTION_PARITY as TELEGRAM_ACTION_PARITY, parityGaps, type PhoneLink, type ResolvedLead, type ParitySupport } from "./chat-channel.js";
@@ -593,17 +595,26 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
         const origin = proposal === null ? null : options.phoneOrigin?.() ?? null;
         const wanted = proposal === null ? null : phoneProposalLink(store, proposal, repos);
         const keyboard = keyboardWith(part.keyboard, phoneLinkButton(origin, wanted));
+        // A Toolroll card: read again now, shown only where every project behind it is still reachable. An unreadable
+        // one goes out as its saved plain words.
+        const isCard = proposal !== null && isCardProposal(proposal);
+        const rich = isCard ? cardOfProposal(proposal) : null;
+        const shown = rich !== null && cardWithin(rich, repos) ? telegramCardMessage(rich) : null;
+        const links = rich === null ? [] : rich.buttons.flatMap(one => phoneLinkButton(origin, one) ?? []).map(one => [one]);
         // The lead's own words carry their bold anchors and labelled links as entities, never as Markdown characters.
         const voiced = part.kind === "reply" ? telegramReply(part.text) : null;
-        const text = proposal !== null && part.keyboard === null ? handoffCardText(part.text, linkNote(origin, wanted)) : voiced?.text ?? part.text;
+        const text = isCard ? shown?.text ?? (rich === null ? part.text : "This card's projects changed, so it wasn't sent.")
+          : proposal !== null && part.keyboard === null ? handoffCardText(part.text, linkNote(origin, wanted)) : voiced?.text ?? part.text;
+        const entities = isCard ? shown?.entities ?? [] : voiced?.entities ?? [];
+        const buttons = isCard ? (shown === null || links.length === 0 ? undefined : links) : keyboard;
         method = "sendMessage";
         send = () => transport("sendMessage", {
           chat_id: chatId,
           text,
-          ...(voiced === null || voiced.entities.length === 0 ? {} : { entities: voiced.entities }),
+          ...(entities.length === 0 ? {} : { entities }),
           link_preview_options: { is_disabled: true },
           ...(part.replyTo === null ? {} : { reply_parameters: { message_id: Number(part.replyTo) } }),
-          ...(keyboard === undefined ? {} : { reply_markup: { inline_keyboard: keyboard } }),
+          ...(buttons === undefined ? {} : { reply_markup: { inline_keyboard: buttons } }),
         });
       }
       // The first time the answer itself fails to go out, the person hears so once,
@@ -662,7 +673,9 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
         // Only a turn that answered may have its selection sent: a failed or revoked turn's rows were deleted with its drafts, and the state is read again here.
         const selected = store.getLeadTurn(turn)?.state === "answered" ? store.listLeadTurnEvidence(turn) : [];
         for (const image of selected) parts.push({ kind: "image", text: image.caption, taskId: image.taskId, run: image.run, artifact: image.artifact, sha256: image.sha256 });
-        for (const proposal of proposals) {
+        // Cards first, so what a card leads to sits right under it. A card mints no tokens: it confirms nothing.
+        for (const proposal of cardsFirst(proposals)) {
+          if (isCardProposal(proposal)) { parts.push({ kind: "card", text: cardPlainOf(proposal), proposal: proposal.id, keyboard: null }); continue; }
           const preview = phoneProposalPreview(store, proposal, repos);
           const keyboard = preview.buttons ? mintCardTokens(store, binding, proposal.id, now).keyboard : null;
           parts.push({ kind: "card", text: preview.text, proposal: proposal.id, keyboard });

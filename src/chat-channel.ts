@@ -14,6 +14,7 @@ import { isDirectChatProvider, subscriptionCredentialKey } from "./converse.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import type { DoorOutcome } from "./lead-doors.js";
 import { LEAD_TOOL_SCHEMAS } from "./lead-tools.js";
+import { cardPlainOf, isCardProposal } from "./chat-card.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { canonicalProject } from "./project.js";
 import type {
@@ -663,6 +664,7 @@ export function proposalPreview(
         "Cancelling is armed on the task itself, never from a card.",
       ]);
     case "control": {
+      if (isCardProposal(proposal)) return handoff(cardPlainOf(proposal));
       const control = payload["control"];
       const label = isChatControl(control)
         ? CHAT_CONTROLS[control].label
@@ -836,6 +838,11 @@ export const CHAT_ACTION_PARITY: Record<
     support: "direct",
     how: "Pushes the plan's or flow card's own decision card to the owner's paired chat: Approve arms Yes and Cancel, and only the owner's Yes decides, through sealScopeApproval (as a chat-origin approval) or decideFlowCard. Outside the owner's chat-approval setting or a decision's rules it answers why, and the lead opens the console control.",
     gap: "A flow card's Send back, Edit and a Person chooses step act from the pushed card; a plan's Send back stays in the console. Fixture proof only, no physical-phone rendering.",
+  },
+  show_card: {
+    support: "direct",
+    how: "A card of Toolroll's own records. Telegram shows it as one message: key facts as lines, tables and charts as monospaced text, its links as url buttons.",
+    gap: "A chart is bars of text on Telegram, with every number written out.",
   },
   show_control: {
     support: "handoff",

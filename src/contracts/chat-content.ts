@@ -10,6 +10,7 @@
 
 import { z } from "zod";
 import { parseContract, readVersioned, versioned, type ContractResult } from "./contract.js";
+import { chatCardSchema } from "./chat-card.js";
 
 const id = z.int().min(1);
 const link = z.strictObject({ label: z.string(), path: z.string() });
@@ -62,6 +63,9 @@ export const chatContentShape = {
   /** A result's, plan's, failure's or pull request's own buttons (chat-decide.ts), minted with the part: each an act's
    * one-time token or a link. They ride the message once it is sent. */
   decide: z.strictObject({ rows: z.array(z.array(z.union([z.strictObject({ label: z.string(), token: z.string().regex(CHAT_BUTTON_TOKEN) }), z.strictObject({ label: z.string(), link })]))) }).optional(),
+  /** A Toolroll card (docs/plans/toolroll-cards.md): `text` stays its plain version, and `link`/`also` its buttons, so
+   * an app that can't show it, or refuses it, still has the whole message. */
+  rich: chatCardSchema.optional(),
   /** The "What should change?" this part asks (chat-decide.ts): a reply to its message is the feedback. */
   prompt: id.optional(),
 };

@@ -12,7 +12,9 @@
 import { z } from "zod";
 import { CHAT_ACTIONS } from "../chat-actions.js";
 import { RESULT_IMAGES_PER_TURN_CAP } from "../chat-evidence.js";
+import { CARD_CATALOG, CARD_SOURCES, CARD_TASK_STATES } from "../card-catalog.js";
 import { CHAT_CONTROLS } from "../chat-controls.js";
+import { CARD_CHART_TYPES, CARD_LIMITS } from "./chat-card.js";
 import { CHAT_TASK_ACTIONS } from "../chat-task-actions.js";
 import { LIMITS } from "../decision.js";
 import { CHECK_RESULTS, RUN_OUTCOMES, TASK_STATES } from "../lead-commitments.js";
@@ -57,6 +59,14 @@ export const LISTED_TASK_STATES = ["queued", "running", "done", "failed", "cance
 /** The shared actions the lead proposes with propose_action; flows and subagents have their own tools. */
 const ACTION_OPERATIONS = Object.keys(CHAT_ACTIONS).filter(one => !one.startsWith("flow_") && !one.startsWith("subagent_"));
 
+/** A card's spec as the lead sees it: one flat props object. Each element's own props are read strictly by card-catalog.ts. */
+const cardProps = z.strictObject({
+  source: z.enum(CARD_SOURCES).optional(), chart: z.enum(CARD_CHART_TYPES).optional(), columns: z.array(z.string().max(40)).max(CARD_LIMITS.columns).optional(), facts: z.array(z.string().max(40)).max(CARD_LIMITS.facts).optional(),
+  repo: repoId.optional(), state: z.enum(CARD_TASK_STATES).optional(), limit: z.int().min(1).max(CARD_LIMITS.rows).optional(), flow: id.optional(), days: z.int().min(1).max(90).optional(),
+  text: z.string().max(CARD_LIMITS.text).optional(), control: enumOf(Object.keys(CHAT_CONTROLS)).optional(), task: taskRef.optional(), run: id.optional(), proposal: id.optional(),
+});
+const cardSpec = z.strictObject({ root: z.string().max(40), elements: z.object({}).catchall(z.strictObject({ type: enumOf(Object.keys(CARD_CATALOG.data.components)), props: cardProps, children: z.array(z.string().max(40)).max(16) })) });
+
 export const LEAD_TOOL_INPUTS = {
   get_brief: z.strictObject({ repo: repoId.optional() }),
   get_project_activity: z.strictObject({ repo: repoId, offset: offset.optional() }),
@@ -75,6 +85,7 @@ export const LEAD_TOOL_INPUTS = {
   propose_task_action: z.strictObject({ task: taskRef, operation: enumOf(Object.keys(CHAT_TASK_ACTIONS)), dependency: taskRef.optional(), run: id.optional() }),
   get_controls: z.strictObject({}),
   show_control: z.strictObject({ control: enumOf(Object.keys(CHAT_CONTROLS)), task: taskRef.optional(), repo: repoId.optional(), run: id.optional() }),
+  show_card: z.strictObject({ spec: cardSpec }),
   offer_approval: z.strictObject({ task: taskRef.optional(), card: id.optional() }),
   get_result: z.strictObject({ task: taskRef, run: id.optional(), feedback_offset: offset.optional() }),
   get_diff: z.strictObject({ task: taskRef, run: id.optional(), file: text("diffPath").min(1).optional(), offset: offset.optional() }),
@@ -232,6 +243,7 @@ export const LEAD_TOOL_OUTPUTS = {
   propose_task_action: z.looseObject({ proposal: int, action: str, awaiting: str }),
   get_controls: z.looseObject({ confirmedInChat: z.array(str), existingControls: rows({ id: str, label: str, needsTask: z.boolean(), needsProject: z.boolean() }), rule: str }),
   show_control: z.looseObject({ card: int, label: str, action: str }),
+  show_card: z.looseObject({ card: int, title: str, shows: z.array(str) }),
   offer_approval: z.looseObject({ offered: z.boolean() }),
   get_result: z.looseObject({
     task: str, root: str, currentExecution: str, run: int, title: str, feedback: list, feedbackTotal: int, nextFeedbackOffset: nullable(int),

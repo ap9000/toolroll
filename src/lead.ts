@@ -679,7 +679,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       progress({ kind: "tool-result", turn: turnId, step: steps, id: progressId, outcome: displayOutcome });
       // A call refused because this request did not advertise it read nothing.
       if (READ_TOOLS.has(call.name) && advertisedNames.has(call.name)) reads++;
-      if (call.name === "show_control" && outcome.ok) shownControl = true;
+      if ((call.name === "show_control" || call.name === "show_card") && outcome.ok) shownControl = true;
       // Opt-in, local diagnostics for end-to-end runs: what the lead asked of each tool and what came back (its start), keys
       // blanked. Each line stays whole JSON so a run can assert on what a tool returned rather than on the model's words.
       if (envValue(process.env, "LEAD_TRACE") === "1" || envValue(process.env, "MATE_TRACE") === "1") { // MATE_TRACE: the name before D5

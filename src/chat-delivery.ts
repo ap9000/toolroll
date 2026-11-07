@@ -34,6 +34,8 @@ import {
 } from "./chat-delivery-state.js";
 import { readChatActionBody, readChatMessageBody, readChatPairBody, readChatPart } from "./contracts/chat-content.js";
 import { readProposalActionRow } from "./contracts/chat-callback-rows.js";
+import { cardPart } from "./chat-card-part.js";
+import { cardsFirst, isCardProposal } from "./chat-card.js";
 import { answerChatFlowPrompt, answerChoiceMessage, applyChatFlowTap, flowDecisionParts, flowSendParts } from "./chat-flow.js";
 import { connectChannel, FLOW_WORDS, takeChannelMessage, watchedChannel } from "./chat-inbox.js";
 import { triggerConfigOf } from "./flow-triggers.js";
@@ -620,10 +622,9 @@ export async function processChatEvent(
         task: image.taskId,
         run: image.run,
       });
-    for (const proposal of store
-      .listLeadProposals(turn.thread, ["pending"])
-      .filter((p) => p.turn === turn.id))
-      parts.push({ text: "", proposal: proposal.id });
+    // Cards first, so what a card leads to sits right under it. A card is an ordinary part: it confirms nothing.
+    for (const proposal of cardsFirst(store.listLeadProposals(turn.thread, ["pending"]).filter((p) => p.turn === turn.id)))
+      parts.push(isCardProposal(proposal) ? cardPart(proposal) : { text: "", proposal: proposal.id });
     state.plan(event.id, parts, nowOf(options));
     return true;
   } catch (error) {

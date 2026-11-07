@@ -1,6 +1,9 @@
 /** Discord messages and buttons transport the shared assistant's saved actions. */
 import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
+import { discordCardEmbed } from "./card-render.js";
+import { withoutCard } from "./chat-card-part.js";
+import { cardWithin } from "./chat-card.js";
 import { chatFlowButtons } from "./chat-flow.js";
 import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-shots.js";
 import { admitChatEvent } from "./chat-admission.js";
@@ -275,6 +278,10 @@ export async function deliverDiscordPart(
       !repos.includes(store.lookupRef(content.task)?.repo ?? "")
     )
       throw new DiscordError("Connected projects changed");
+    if (content.rich && !cardWithin(content.rich, repos)) {
+      state.dropPart(row.id, "Connected projects changed");
+      return true;
+    }
     let text = content.text,
       buttons: Record<string, unknown>[] = [],
       file: { bytes: Uint8Array; name: string } | undefined;
@@ -474,6 +481,7 @@ export async function deliverDiscordPart(
       file.bytes = fresh.bytes;
     }
     const args = discordCard(text, buttons, content.voice === true && !content.proposal && !content.image);
+    if (content.rich) args.embeds = [discordCardEmbed(content.rich, discordPlain)];
     if (file)
       args.attachments = [
         { id: 0, filename: file.name, description: text.slice(0, 1024) },
@@ -524,6 +532,11 @@ export async function deliverDiscordPart(
     }
     // No permission to attach files here: one plain line instead of the result's screenshots.
     const saved = readChatPart(row.payload), content = saved.ok ? saved.value : null;
+    // Discord refused the card's embed: the part's own plain text goes instead, so the message is never lost.
+    if (content?.rich && error instanceof DiscordError && error.code === "Discord could not complete the request" && error.retryMs === 60_000) {
+      state.repaint(row.id, withoutCard(content));
+      return true;
+    }
     if (content !== null && content.image && content.shot && error instanceof DiscordError && error.code === DISCORD_REFUSED) {
       refuseResultShots(state, store, row, content, "Discord", options.clock?.() ?? new Date());
       return true;

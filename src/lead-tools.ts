@@ -28,7 +28,7 @@ import type { ProviderId } from "./provider.js";
 import { feedbackImageProblem } from "./result-actions.js";
 import { readChatResult, reviewInputProblem, type ReviewSnapshot } from "./chat-review.js";
 import { RESULT_IMAGES_PER_TURN_CAP, selectResultImages, type ResultImagePick } from "./chat-evidence.js";
-import { CHAT_CONTROLS, isChatControl } from "./chat-controls.js";
+import { CHAT_CONTROLS, chatControlHref, isChatControl, type ChatControl } from "./chat-controls.js";
 import { LIMITS } from "./decision.js";
 import { CHAT_TASK_ACTIONS, chatTaskRun, chatTaskStamp, isChatTaskAction } from "./chat-task-actions.js";
 /**
@@ -69,6 +69,10 @@ import { planInChat } from "./chat-decide.js";
 import { flowDecisionAt } from "./telegram-flow.js";
 import { flowPersonOf } from "./flow-send.js";
 import { flowInsights } from "./flow-insights.js";
+import { CARD_SOURCES, cardCatalogWords, readCardSpec } from "./card-catalog.js";
+import { cardPlainText } from "./card-render.js";
+import type { CardReader } from "./card-sources.js";
+import { buildChatCard, CARD_CONTROL, type CardButtons } from "./chat-card.js";
 import { describeTrigger, triggerConfigOf } from "./flow-triggers.js";
 import type { ChatAction } from "./chat-actions.js";
 
@@ -481,6 +485,7 @@ export const LEAD_CORE_TOOLS: ReadonlySet<string> = new Set([
 
 /** Words a deferred tool is found by, beyond its name and description. */
 const LEAD_TOOL_KEYWORDS: Partial<Record<LeadToolName, readonly string[]>> = {
+  show_card: ["card", "table", "chart", "graph", "report", "summary", "numbers", "data", "spend", "projects", "workers", "integrations", "show", "dashboard"],
   propose_flow: ["flow", "automation", "workflow", "schedule", "trigger", "every", "when", "email", "inbox", "sort", "follow-up", "nudge"],
   get_flows: ["flow", "automation", "workflow", "running", "card"],
   get_flow_insights: ["flow", "insights", "stats", "how flows"],
@@ -533,6 +538,51 @@ export function findLeadTools(query: string): { name: string; summary: string }[
 function summaryLine(description: string): string {
   const first = /^(.+?[.!?])(\s|$)/.exec(description)?.[1] ?? description;
   return first.length <= 160 ? first : `${first.slice(0, 157).trimEnd()}…`;
+}
+
+/** A fixed destination this person may open, checked once for show_control and for a card's Button. */
+function controlTarget(ctx: LeadToolContext, args: Record<string, unknown>): { ok: true; control: ChatControl; task: string | null; project: string | null; run: unknown } | { ok: false; message: string } {
+  const control = args["control"];
+  if (!isChatControl(control)) return { ok: false, message: "Choose an available control." };
+  const entry = CHAT_CONTROLS[control];
+  const perProject = control === "skills" || control === "tools";
+  const project = perProject ? repoPathOf(ctx.who,args["repo"]) : null;
+  if (perProject && !project) return {ok:false,message:`Choose the project from list_repos before opening ${control === "tools" ? "Tools" : "Skills"}.`};
+  if (args["repo"] !== undefined && !perProject) return {ok:false,message:"A project argument is only supported by Skills and Tools."};
+  const task = taskIdOf(args);
+  if (task !== null && admittedRef(ctx, task) === null) return notFound() as { ok: false; message: string };
+  if ("target" in entry && (task === null || admittedRef(ctx, task) === null)) return notFound() as { ok: false; message: string };
+  const run = args["run"];
+  if (control === "acceptance" && run === undefined) return { ok: false, message: "Read get_acceptance_evidence and specify its exact run before opening acceptance." };
+  if (run !== undefined) {
+    const result = Number.isSafeInteger(run) && Number(run) > 0 ? ctx.store.getRun(Number(run)) : null;
+    if (task === null || result === null || result.taskRef !== ctx.store.lookupRef(task)?.id || result.finishedAt === null || !["builder", "repair", "scout"].includes(result.role) || (control !== "result" && control !== "acceptance")) return { ok: false, message: "Choose a finished result belonging to that task." };
+  }
+  return { ok: true, control, task, project, run };
+}
+
+/** A card's Button: a control by show_control's own checks, or a proposal drafted earlier in this very reply. */
+function cardButtonOf(ctx: LeadToolContext, props: Record<string, unknown>): ReturnType<CardButtons> {
+  if (props["proposal"] !== undefined) {
+    const proposal = ctx.store.getLeadProposal(Number(props["proposal"]));
+    if (proposal === null || ctx.turn === undefined || proposal.turn !== ctx.turn || proposal.state !== "drafting" || (proposal.kind !== "action" && proposal.kind !== "task_action"))
+      return { ok: false, message: "A Button's proposal is one you made earlier in this reply with propose_action or propose_task_action." };
+    const action = proposal.kind === "action" ? sharedActionPayload(proposal.payload) : null;
+    const operation = proposal.payload["operation"];
+    const label = action !== null ? CHAT_ACTIONS[action.operation].label : isChatTaskAction(operation) ? CHAT_TASK_ACTIONS[operation].label : null;
+    return label === null ? { ok: false, message: "That proposal can't go on a card." } : { ok: true, action: { proposal: proposal.id, label } };
+  }
+  const target = controlTarget(ctx, props);
+  if (!target.ok) return target;
+  return { ok: true, button: { label: CHAT_CONTROLS[target.control].label, path: chatControlHref(target.control, target.task ?? "", target.run, target.project ?? undefined) } };
+}
+
+/** What a card reads, as this person, through the reads the lead's own tools use. */
+function cardReaderOf(ctx: LeadToolContext): CardReader {
+  const capabilities = (repos: readonly string[]) => capabilitiesOf(ctx.store, { repos, admitted: ctx.who.repos, actor: ctx.who.name, integrations: ctx.integrations?.() ?? integrationsNow(integrationIoOf(ctx)), ...(ctx.authMode === undefined ? {} : { authMode: ctx.authMode }), now: ctx.now });
+  return { store: ctx.store, now: ctx.now, who: ctx.who, integrations: () => ctx.integrations?.() ?? integrationsNow(integrationIoOf(ctx)),
+    providers: repos => capabilities(repos).projects.flatMap(one => one.agents.map(agent => ({ project: one.repo, provider: agent.provider, model: agent.model, roles: agent.roles, state: agent.state }))),
+    workers: repos => capabilities(repos).workers.map(one => ({ name: one.name, state: one.state, capacity: one.capacity, running: one.running.length })) };
 }
 
 const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
@@ -660,24 +710,23 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
   show_control: {
     description: "Show a control button. The operator acts there; never request secrets in chat.",
     handle: (ctx, args) => {
-      const control = args["control"];
-      if (!isChatControl(control)) return { ok: false, message: "Choose an available control." };
-      const entry = CHAT_CONTROLS[control];
-      const perProject = control === "skills" || control === "tools";
-      const project = perProject ? repoPathOf(ctx.who,args["repo"]) : null;
-      if (perProject && !project) return {ok:false,message:`Choose the project from list_repos before opening ${control === "tools" ? "Tools" : "Skills"}.`};
-      if (args["repo"] !== undefined && !perProject) return {ok:false,message:"A project argument is only supported by Skills and Tools."};
-      const task = taskIdOf(args);
-      if (task !== null && admittedRef(ctx, task) === null) return notFound();
-      if ("target" in entry && (task === null || admittedRef(ctx, task) === null)) return notFound();
-      const run = args["run"];
-      if (control === "acceptance" && run === undefined) return { ok: false, message: "Read get_acceptance_evidence and specify its exact run before opening acceptance." };
-      if (run !== undefined) {
-        const result = Number.isSafeInteger(run) && Number(run) > 0 ? ctx.store.getRun(Number(run)) : null;
-        if (task === null || result === null || result.taskRef !== ctx.store.lookupRef(task)?.id || result.finishedAt === null || !["builder", "repair", "scout"].includes(result.role) || (control !== "result" && control !== "acceptance")) return { ok: false, message: "Choose a finished result belonging to that task." };
-      }
+      const target = controlTarget(ctx, args);
+      if (!target.ok) return target;
+      const { control, task, project, run } = target;
       const id = ctx.draft("control", { control, task: task ?? "", taskTitle: task === null ? "" : ctx.store.getTask(task)?.title ?? task, ...(project === null ? {} : { project }), ...(run === undefined ? {} : { run }) });
-      return id === null ? tooMany() : { ok: true, body: { card: id, label: entry.label, action: "open existing control; nothing changed" } };
+      return id === null ? tooMany() : { ok: true, body: { card: id, label: CHAT_CONTROLS[control].label, action: "open existing control; nothing changed" } };
+    },
+  },
+  show_card: {
+    description: `Show Toolroll's own data as a card in this chat: tables, charts and key facts, in every chat app. Prefer it to listing figures in words. Give a json-render spec: root names a Card; elements maps ids to { type, props, children }. ${cardCatalogWords()} Sources: ${CARD_SOURCES.join(", ")}. Toolroll fills every value from its records, so you choose what to show and never type a figure. To offer an act, propose it first, then point a Button's proposal at it in a later step. Passwords never go on a card. Keep your reply to one line about what the card shows; don't repeat its figures.`,
+    handle: (ctx, args) => {
+      const read = readCardSpec(args["spec"]);
+      if (!read.ok) return { ok: false, message: read.issues.join("\n") };
+      const built = buildChatCard(cardReaderOf(ctx), read.plan, id => repoPathOf(ctx.who, id), props => cardButtonOf(ctx, props));
+      if (!built.ok) return built;
+      const { card } = built;
+      const id = ctx.draft("control", { control: CARD_CONTROL, card, plain: cardPlainText(card) });
+      return id === null ? tooMany() : { ok: true, body: { card: id, title: card.title, shows: card.blocks.map(one => one.kind), action: "shown; nothing changed" } };
     },
   },
   offer_approval: {
