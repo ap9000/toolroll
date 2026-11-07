@@ -538,6 +538,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
   let step: ReleaseStep | "preflight" = "preflight";
   let freshApproval = false;
   let supersededTask: string | null = null;
+  /** The commit whose check stopped the release being set aside. The stop tells a person to approve it again with --new. */
+  let stoppedCheck: string | null = null;
 
   const save = () => { journal!.updatedAt = adapters.now().toISOString(); writeJournal(file, journal!); };
   /** Tell the progress record about a step (v146). Never throws and never waits: the release goes on whatever it says. */
@@ -591,6 +593,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       say(`Kept the earlier release journal at ${aside}.`);
       freshApproval = journal.needsApproval === true;
       supersededTask = journal.task.id;
+      if (journal.stopped?.reason === "check-failed") stoppedCheck = journal.candidate.sha;
       journal = null;
     }
     if (journal?.step === "done") {
@@ -605,8 +608,10 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       journal = await begin(options, adapters, adapters.now());
       // The earlier attempt needs a person's fresh approval (a CI failure after its deploy): this one files a task of its
       // own for the same commit, so the old approval can't carry it.
+      // A check that stopped this same commit is the same: its task keeps that failure, so reusing it would only stop again
+      // (a passing run on it, run 3333, can't erase it). A new task reruns the check and asks a person, never the plane.
       // Only an id that has never existed, numbered after the superseded one: never a task whose approval still stands.
-      if (freshApproval) {
+      if (freshApproval || journal.candidate.sha === stoppedCheck) {
         const base = journal.task.id;
         const suffix = supersededTask === null ? null : supersededTask === base ? 1 : supersededTask.startsWith(`${base}-`) ? Number(supersededTask.slice(base.length + 1)) : null;
         let picked: string | null = null;
