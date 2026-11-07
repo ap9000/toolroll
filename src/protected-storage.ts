@@ -203,11 +203,11 @@ export function protectedStorageDenies(home: string = homedir(), env: Readonly<R
   const cache = held.length + plain.length === 0 ? null : linkCacheFile(base, env);
   const kept = cache === null ? null : readLinkCacheRoots(cache, base);
   // A root that wasn't looked inside: its outward links are known only from a recent complete walk of it, unchanged since.
-  const fresh = (root: string): boolean => { const one = kept?.get(root); return one !== undefined && now() - Date.parse(one.at) <= LINK_CACHE_FRESH_MS && one.stamp === rootStamp(root); };
+  const provenByRecord = (root: string): boolean => { const one = kept?.get(root); return one !== undefined && now() - Date.parse(one.at) <= LINK_CACHE_FRESH_MS && one.stamp === rootStamp(root); };
   const unwalked = [...(listable ? [] : held), ...plain.filter(root => !answering.has(root))];
   // Neither a missing nor a stale record is proof. One longer look tells a slow Mac from one waiting on the person (only a
   // child waits); a root still waiting after it refuses the launch, which would otherwise leave its moved data readable.
-  const unverified = unwalked.filter(root => !fresh(root));
+  const unverified = unwalked.filter(root => !provenByRecord(root));
   const answeredLate = unverified.length === 0 ? new Set<string>() : late(unverified);
   const blocked = unverified.filter(root => !answeredLate.has(root));
   if (blocked.length > 0) throw new Error(storageBlockedWords(blocked, base));
