@@ -63,6 +63,8 @@ import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
 import { githubIdentityOf,homePage,startBuilderHtml } from "./render-pages.js";
 import { retiredRedirect } from "./retired-routes.js";
+import { FLAKY_WINDOW_DAYS, flakyList, flakyShow } from "../flaky.js";
+import { flakyPage, flakyRowPage } from "./render-flaky.js";
 import { browsePage,githubReposPage,projectHref,projectPage,projectsPage,unknownProject,type ProblemAt,type ProjectPageTask } from "./render-projects.js";
 import { notFound as kitNotFound } from "./kit.js";
 import { type ProjectPeek } from "./render-pages.js";
@@ -913,10 +915,11 @@ export function createPagesHandlers(runtime: ServerRuntime) {
    * switches the session's project; its Open project button posts to /projects/select, which proves it again. The
    * name is found among the projects this person may open (projectsSelect's rule: visible here and inside the
    * ceiling); a name it can't see answers exactly like one that doesn't exist. */
-  async function projectPageHandler(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, now } = ctx;
+  async function projectFound(ctx: HandlerContext, page: string): Promise<{ name: string; path: string; openedAt: string | null; ambiguous: boolean } | null> {
+    const { url, who, response } = ctx;
     let name = "";
-    try { name = decodeURIComponent(url.pathname.slice("/projects/".length)); } catch { name = ""; }
+    const tail = page === "" ? "" : `/${page}`;
+    try { name = decodeURIComponent(url.pathname.slice("/projects/".length, url.pathname.length - tail.length)); } catch { name = ""; }
     const { recent, candidates } = visibleProjects();
     const known = [...recent.map(one => ({ path: one.path, name: one.name, openedAt: one.lastOpenedAt as string | null })), ...candidates.map(path => ({ path, name: projectName(path), openedAt: null as string | null }))];
     const named = known.filter(one => one.name === name);
@@ -925,8 +928,34 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const open = who.via === "cookie" ? who.session.project : null;
     if (found === null || !(await authorizedProject(liveCeiling(), found.path))) {
       const words = unknownProject(name === "" ? "by that name" : name);
-      return sendScreen(response, 404, screen("Not found", kitNotFound(url.pathname, words), { chrome: chromeFor(open, "projects") }));
+      await sendScreen(response, 404, screen("Not found", kitNotFound(url.pathname, words), { chrome: chromeFor(open, "projects") }));
+      return null;
     }
+    return { ...found, ambiguous: named.length > 1 };
+  }
+  /** A project's flaky tests list and one row's history. Reads only; found exactly as the project's page is. */
+  async function projectFlakyHandler(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now } = ctx;
+    const found = await projectFound(ctx, "flaky");
+    if (found === null) return;
+    const open = who.via === "cookie" ? who.session.project : null;
+    const chrome = chromeFor(open, "projects");
+    const back = projectHref(found.name, found.path, found.ambiguous);
+    const selfHref = projectHref(found.name, found.path, found.ambiguous, "flaky");
+    const key = url.searchParams.get("row");
+    if (key !== null) {
+      const shown = flakyShow(store, found.path, key, now);
+      if (shown === null) return sendScreen(response, 404, screen("Not found", kitNotFound(url.pathname, { title: "Nothing is recorded for that test in this project." }), { chrome }));
+      return sendScreen(response, 200, flakyRowPage(chrome, { name: found.name, repo: found.path, back: selfHref, row: shown.row, history: shown.history, now }));
+    }
+    const days = Number(url.searchParams.get("days") ?? FLAKY_WINDOW_DAYS);
+    return sendScreen(response, 200, flakyPage(chrome, { name: found.name, repo: found.path, back, selfHref, list: flakyList(store, found.path, now, days), now }));
+  }
+  async function projectPageHandler(ctx: HandlerContext): Promise<void> {
+    const { who, response, now } = ctx;
+    const found = await projectFound(ctx, "");
+    if (found === null) return;
+    const open = who.via === "cookie" ? who.session.project : null;
     const path = found.path;
     // The tasks that wait on this person or run, from the board's own classification, scoped to this one project.
     const snapshot = store.boardScoped(path, now, 200, null);
@@ -942,11 +971,12 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       catch { activity = { report: null }; }
     }
     return sendScreen(response, 200, projectPage(chromeFor(open, "projects"), {
-      name: found.name, path, selfHref: projectHref(found.name, path, named.length > 1), open: open === path, openedAt: found.openedAt,
+      name: found.name, path, selfHref: projectHref(found.name, path, found.ambiguous), open: open === path, openedAt: found.openedAt,
       peek: peekOf(path, now), tasks, moreTasks: Math.max(0, cards.length - tasks.length),
       checks: cookie ? { href: `/settings/checks?repo=${encodeURIComponent(path)}`, level: CHECK_LEVEL_WORDS[projectCheckLevel(store, path).level] } : null,
       pullRequests: cookie ? { href: `/settings/pull-requests?repo=${encodeURIComponent(path)}`, on: publishingOf(store, path).on } : null,
       knowledgeHref: `/settings/knowledge?repo=${encodeURIComponent(path)}`,
+      flakyHref: projectHref(found.name, path, found.ambiguous, "flaky"),
       settingsHref: restricted() ? null : `/settings/project?repo=${encodeURIComponent(path)}`,
       activity, now,
     }));
@@ -1081,6 +1111,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "projects.github-list": projectsGithubList,
     "projects.page": projectsIndex,
     "projects.project": projectPageHandler,
+    "projects.flaky": projectFlakyHandler,
     "home": homeRedirect,
     "search": searchPage,
     "morning": morningAlias,

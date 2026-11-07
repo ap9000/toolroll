@@ -408,7 +408,7 @@ async function listRuns(store: Store, repo: string, slug: string, get: Get, now:
 }
 
 /** Read one run by id, strictly. */
-async function readRun(get: Get, slug: string, id: number): Promise<GhRun | null> {
+export async function readRun(get: Get, slug: string, id: number): Promise<GhRun | null> {
   const got = await get(`repos/${slug}/actions/runs/${id}`);
   if (!got.ok) return null;
   const run = runOf(got.body);

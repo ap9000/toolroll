@@ -82,6 +82,7 @@ export const REMOTE_SCOPES: ReadonlyMap<string, RemoteScope> = new Map<string, R
   ["audit", self],
   ["knowledge search", repo], ["knowledge impact", repo], ["knowledge refresh", repo],
   ...["search", "decisions", "show", "review", "status"].map(action => [`memory ${action}`, self] as [string, RemoteScope]),
+  ["flaky list", self], ["flaky show", self],
   ...["list", "show", "export", "create", "edit", "trigger add", "trigger pause", "trigger resume", "trigger remove", "card add", "archive"]
     .map(action => [`flows ${action}`, self] as [string, RemoteScope]),
   ["models status", global], ["models list", global],

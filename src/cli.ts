@@ -187,6 +187,7 @@ export const OPERATE_COMMANDS = new Set([
   "assignment",
   "knowledge",
   "memory",
+  "flaky",
   "models",
   "claim",
   "heartbeat",

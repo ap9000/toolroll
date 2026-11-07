@@ -79,6 +79,8 @@ import { followTeams } from "./teams.js";
 import { followSlack } from "./slack.js";
 import { validateScopeText } from "./task-text.js";
 import { runMemoryCommand } from "./memory-cli.js";
+import { runFlakyCommand } from "./flaky-cli.js";
+import { CI_READ_EVERY_MS, ciRepositoriesOf, observeCiAttempts } from "./flaky-ci.js";
 import { runKnowledgeApply, runKnowledgeCommand } from "./knowledge-cli.js";
 import { FLOWS_VALUE_FLAGS, runFlowsCommand } from "./flows-cli.js";
 import type { FetchLike } from "./flow-share.js";
@@ -1590,6 +1592,8 @@ async function dispatch(
       const who = verified !== null && verified.ok ? verified.who : null;
       return runMemoryCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: who?.name ?? null, repos: who?.repos ?? [], configDir: dirname(context.databaseFile), ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }) });
     }
+    case "flaky":
+      return flakyCommand(positional, flags, context);
     case "claim":
       return claimCommand(positional, flags, context);
     case "heartbeat":
@@ -6995,6 +6999,8 @@ async function runWatchLoop(args: {
       // GitHub's nightly as release debt (nightly-github.ts): each opted-in project at most every 30 minutes, 60 s in
       // all. A test's injected agent runner means a test: no real gh.
       if (context.agentRunner === undefined) await refreshGithubNightlies(store, context.clock);
+      // The flaky tests list's GitHub rows (flaky-ci.ts): read-only, each project at most every 30 minutes.
+      if (context.agentRunner === undefined) await refreshLearning(store, context.clock);
       // A finished check may send a build's card down its failure path: now, not on the next beat.
       if (ran + batched > 0) moveCards(store, repo, context.clock(), context.evidenceRoot);
     },
@@ -14008,4 +14014,25 @@ function uncommittedLines(plan: CheckoutPlan): string[] {
   if (changed.length === 0) return [];
   return [`${changed.length === 1 ? "This folder has" : "These folders have"} uncommitted changes and stay${changed.length === 1 ? "s" : ""} until you decide (toolroll storage discard <path> --yes throws one away):`,
     ...changed.map(one => `  ${bytesWords(one.bytes).padStart(8)}  ${one.path}${one.taskId === null ? "" : `  (${one.taskId})`}`)];
+}
+
+/** `toolroll flaky list|show`: reads only, for the remembered local login (or --as/--token) and its projects. */
+async function flakyCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : verifyApproverByPassword(context.store, acting.name, acting.token, context.store.knownRepos().filter(repo => context.store.accountCanAccess(acting.name, repo)));
+  const who = verified !== null && verified.ok ? verified.who : null;
+  return runFlakyCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: who?.name ?? null, repos: who?.repos ?? [] });
+}
+
+/** The watch loop's background learning pass (docs/plans/learning-loops.md): advisory reads, each project at most every
+ * 30 minutes through the plane's own gh. A failure here never reaches the loop: it is tried on the next pass. */
+export async function refreshLearning(store: Store, now: () => Date, reads?: GhRead): Promise<void> {
+  for (const repo of store.knownRepos()) {
+    try {
+      const key = `flaky-ci:${repo}`, at = now();
+      if (at.getTime() - store.serviceCursor(key) < CI_READ_EVERY_MS || ciRepositoriesOf(store, repo).length === 0) continue;
+      store.setServiceCursor(key, at.getTime(), at);
+      await observeCiAttempts(store, repo, reads ?? githubReads(releaseExec, releaseTools().gh, { retry: true }), at);
+    } catch { /* advisory: the next pass tries again */ }
+  }
 }

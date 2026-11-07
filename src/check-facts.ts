@@ -25,6 +25,7 @@ import { createHash } from "node:crypto";
 import { failingTestsOf } from "./gate-failure.js";
 import { checkContextOf, projectGitDir, treeFactsOf } from "./check-report.js";
 import { readVerifiedArtifact } from "./evidence.js";
+import { recordObservations } from "./flaky.js";
 import { CHECK_REPORT_PREFIX, isExactCase, learnLineSchema, learnRequest, LEARN_MAX_BYTES, LEARN_PREFIX, type CheckReport } from "./contracts/release-check.js";
 import { nightlyTaskRef, releaseTaskRef, type Store, type VerifyCommand } from "./store.js";
 
@@ -39,6 +40,8 @@ export const UNEXPLAINED = "unexplained";
 export const MAX_RESULTS_PER_CHECK = 20_000;
 /** How old a tracked observation may be and still be asked about (docs/plans/learning-loops.md, 90-day window). */
 export const OBSERVATION_WATCH_MS = 90 * 24 * 60 * 60 * 1000;
+/** How long per-identity results are kept (docs/plans/learning-loops.md, "Per table"). */
+const RESULT_RETAIN_MS = 180 * 24 * 60 * 60 * 1000;
 
 /** What a check ran under, captured when its command started. `tree` null: its commit couldn't be read from verified
  * objects, and nothing about the check is comparable. */
@@ -218,7 +221,15 @@ export function recordCheckFacts(store: Store, root: string, input: CheckFactsIn
     if (Number(inserted.changes) !== 1) return;
     const insert = store.handle.prepare("INSERT INTO check_result (run, identity, state, source, recorded_at) VALUES (?, ?, ?, ?, ?)");
     for (const row of [...kept.values()].slice(0, MAX_RESULTS_PER_CHECK)) insert.run(input.runId, row.identity, row.state, row.source, at);
+    // In the same transaction: what this check adds to the flaky-test list, advisory like everything here.
+    recordObservations(store, input.runId, input.now);
   });
+}
+
+/** The storage sweep's own step: results older than the retention window go; their fact rows stay. */
+export function pruneCheckResults(store: Store, now: Date): number {
+  const cut = new Date(now.getTime() - RESULT_RETAIN_MS).toISOString();
+  return Number(store.handle.prepare("DELETE FROM check_result WHERE recorded_at < ?").run(cut).changes);
 }
 
 /** A check's recorded facts, or null. */

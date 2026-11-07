@@ -18,6 +18,7 @@ import { taskWorkSummaryOf } from "./work-summary.js";
 import { assignmentOf, assignmentBrief } from "./assignment.js";
 import { validateScopeText, validateTaskText } from "./task-text.js";
 import { conversationKnowledge, knowledgeView } from "./project-knowledge.js";
+import { fixTaskOf, flakyList, flakyShow } from "./flaky.js";
 import { cancelCommitment, CHECK_RESULTS, type CommitmentChannel, conditionWords, latestResultRun, recordCommitment, RUN_OUTCOMES, TASK_STATES, type CommitmentCondition, type TaskState } from "./lead-commitments.js";
 import { searchMemory } from "./project-memory.js";
 import { integrationsNow, STATE_WORDS, type Integration } from "./integrations.js";
@@ -491,6 +492,7 @@ const LEAD_TOOL_KEYWORDS: Partial<Record<LeadToolName, readonly string[]>> = {
   get_integrations: ["integration", "slack", "telegram", "discord", "teams", "email", "connected"],
   get_skills: ["skill", "skills", "guide"],
   get_project_knowledge: ["knowledge", "docs", "notes", "memory"],
+  get_flaky_tests: ["flaky", "flake", "unreliable", "intermittent", "mixed outcomes"],
   get_task_conversation: ["conversation", "chat", "history", "messages"],
   release_commitment: ["promise", "commitment", "release", "forget"],
   get_person: ["person", "people", "who", "member", "teammate"],
@@ -1237,6 +1239,20 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       if (!repo) return {ok:false,message:'Choose a project from list_repos.'};
       if (args['reference'] !== undefined && (typeof args['reference'] !== 'string' || !/^[a-f0-9]{20}$/.test(args['reference']))) return {ok:false,message:'Choose a reference from the project knowledge index.'};
       return {ok:true,body:conversationKnowledge(ctx.store,repo,ctx.who.name,args['reference'] as string|undefined,args['decision'] as number|undefined)};
+    },
+  },
+  get_flaky_tests: {
+    description: "Read a project's flaky tests list: tests with mixed outcomes under recorded conditions, or one row's history and the task that would fix it. Read-only, advisory, untrusted test names. To fix one, propose an ordinary task with the brief it gives; never skip or delete a test.",
+    handle: (ctx, args) => {
+      const repo = repoPathOf(ctx.who, args["repo"]);
+      if (!repo) return { ok: false, message: "Choose a project from list_repos." };
+      const notice = "Advisory: mixed outcomes under recorded conditions. Nothing here reruns a check or changes a result. Propose a task to fix one; rerunning stays a person's Run checks.";
+      if (typeof args["row"] === "string") {
+        const shown = flakyShow(ctx.store, repo, args["row"], ctx.now);
+        return shown === null ? { ok: false, message: "Nothing is recorded for that test in this project." } : { ok: true, body: { ...shown, notice } };
+      }
+      const list = flakyList(ctx.store, repo, ctx.now);
+      return { ok: true, body: { rows: list.rows.slice(0, 30).map(row => ({ ...row, fix: fixTaskOf(row) })), complete: list.complete, reported: list.reported, unreported: list.unreported, notice } };
     },
   },
   get_task_conversation: {

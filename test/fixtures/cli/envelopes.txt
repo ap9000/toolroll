@@ -1201,6 +1201,73 @@ $ contract --commands --json → 0
       "remote": "yes"
     },
     {
+      "invocation": "flaky list",
+      "synopsis": "tests with mixed outcomes under recorded conditions (read only)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "days",
+          "takesValue": true,
+          "meaning": "how far back to look (default 90)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "remote": "yes"
+    },
+    {
+      "invocation": "flaky show",
+      "synopsis": "one row's history, and the task that would fix it: flaky show <identity> (read only)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "days",
+          "takesValue": true,
+          "meaning": "how far back to look (default 90)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "identity",
+          "required": true,
+          "meaning": "a row's key from flaky list"
+        }
+      ],
+      "remote": "yes"
+    },
+    {
       "invocation": "flows list",
       "synopsis": "list flows: id, name, project, zones, triggers and cards waiting",
       "audience": "agent",

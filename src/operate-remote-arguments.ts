@@ -69,6 +69,9 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ['knowledge refresh', args('', 'base')],
   // Decision reads are already project-bound in project-memory.ts. Memory writes (decide, retire, apply) are a person's
   // step-up, never a token's act, so none is listed here.
+  // Project-bound by flaky-cli.ts like memory reads; a row's key is compared inside the reader's own project.
+  ['flaky list', args('', 'days')],
+  ['flaky show', args('identity*', 'days')],
   ...['search', 'decisions', 'show', 'review', 'status'].map(action => [`memory ${action}`,
     args(action === 'search' ? 'query*' : action === 'show' ? 'query' : '', 'why reason supersedes source all decision sessions no-local')] as const),
   ['flows list', args()],

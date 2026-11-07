@@ -15,6 +15,8 @@
  * The everyday work stays where it happens: suites remove their own temp roots and processes, a run's processes stop
  * when it ends and a finished checkout goes on the worker's next pass. This is the net for what slipped through.
  *
+ * The last part is rows, not disk: test results and flaky-test observations past their 180 days (check history).
+ *
  * What each sweep did is saved (the latest few) and in the ledger: `toolroll storage` and Settings → Storage show it.
  * A clean-up by hand (`storage clean --yes`) is saved the same way. A part that failed, or had more than one pass
  * takes, brings the next sweep forward to an hour later; it still waits for nothing to be running.
@@ -23,7 +25,10 @@
  */
 import { realpathSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
+import { pruneCheckResults } from "./check-facts.js";
 import { cleanCheckouts } from "./checkout-cleanup.js";
+import { pruneCiObservations } from "./flaky-ci.js";
+import { pruneObservations } from "./flaky.js";
 import { durationWords, locateProcesses, sweepOrphans, ownerRunning, type Located } from "./orphan-sweep.js";
 import { processCensus, type ProcessRow } from "./run-closeout.js";
 import { linkedKey, pruneUnusedShared, sharedDepsRoot, sharedUse, SHARED_UNUSED_MS } from "./shared-deps.js";
@@ -46,7 +51,7 @@ const TEMP_MAX = 20_000;
 /** Paths saved per part, for the disclosure. */
 const ITEMS_MAX = 20;
 
-export type SweepKind = "test temp" | "orphans" | "checkouts" | "runtimes" | "dependencies";
+export type SweepKind = "test temp" | "orphans" | "checkouts" | "runtimes" | "dependencies" | "check history";
 export type SweepPart = { kind: SweepKind; count: number; bytes: number; failed: number; more?: boolean; problem?: string; items: string[] };
 export type SweepRecord = { at: string; source: "automatic" | "manual"; actor: string; parts: SweepPart[] };
 
@@ -185,7 +190,7 @@ export async function sweepStorage(store: Store, deps: SweepDeps, now: () => Dat
 }
 
 export function sweepKinds(withPool: boolean): SweepKind[] {
-  return ["test temp", "orphans", ...(withPool ? ["checkouts" as const] : []), "runtimes", "dependencies"];
+  return ["test temp", "orphans", ...(withPool ? ["checkouts" as const] : []), "runtimes", "dependencies", "check history"];
 }
 
 /** Child side (also a focused unit-test seam): every scan and removal, without saving the parent's result. */
@@ -249,6 +254,13 @@ export async function executeSweep(store: Store, deps: SweepDeps, now: () => Dat
     return { count: done.removed.length, bytes: done.removed.reduce((sum, one) => sum + (sizes.get(one.dir) ?? 0), 0), failed: done.failed.length, items: capped(done.removed.map(one => one.dir)) };
   });
 
+  // Learning rows past their retention (docs/plans/learning-loops.md): the only DELETE on them. A lesson note's tallies
+  // are written with each check and never pruned, so what they say doesn't change here.
+  await part("check history", async () => {
+    const count = store.transact(() => pruneCheckResults(store, now()) + pruneObservations(store, now()) + pruneCiObservations(store, now()));
+    return { count, bytes: 0, failed: 0, items: [] };
+  });
+
   return { at: now().toISOString(), source: "automatic", actor, parts };
 }
 
@@ -293,10 +305,11 @@ const NOUNS: Record<SweepKind, [string, string]> = {
   checkouts: ["task folder", "task folders"],
   runtimes: ["staged runtime", "staged runtimes"],
   dependencies: ["unused dependency install", "unused dependency installs"],
+  "check history": ["old test result", "old test results"],
 };
 
 /** What a part looks at, for "Couldn't check …". */
-const CHECKED: Record<SweepKind, string> = { "test temp": "test temp folders", orphans: "processes", checkouts: "task folders", runtimes: "staged runtimes", dependencies: "dependency installs" };
+const CHECKED: Record<SweepKind, string> = { "test temp": "test temp folders", orphans: "processes", checkouts: "task folders", runtimes: "staged runtimes", dependencies: "dependency installs", "check history": "old test results" };
 
 export function partWords(one: Pick<SweepPart, "kind" | "count">): string {
   return `${one.count.toLocaleString("en-US")} ${NOUNS[one.kind][one.count === 1 ? 0 : 1]}`;

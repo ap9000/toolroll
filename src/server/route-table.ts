@@ -341,6 +341,9 @@ get("pages", "projects.page", "/projects", { limited: "unscoped", ...free });
 // project this account can see and never switches the session's project; its Open project button posts to
 // /projects/select. The handler resolves the name among the account's visible projects; anything else is not found.
 get("pages", "projects.project", "^\\/projects\\/[^/]+$", { limited: "unscoped", ...free, sample: "/projects/payments-api" });
+// A project's flaky tests list (docs/plans/learning-loops.md): reads only, found as the project's page finds its project.
+// Its one action, "Make a task to fix it", posts the ordinary /tasks/add form.
+get("pages", "projects.flaky", "^\\/projects\\/[^/]+\\/flaky$", { limited: "unscoped", ...free, sample: "/projects/payments-api/flaky" });
 get("pages", "home", "/", { limited: "collection", ...free });
 get("pages", "search", "/search", { limited: "collection", ...free });
 // Retired pages (docs/plans/plain-toolroll.md P1.4): permanent redirects to Home and Tasks, admitted as their target is.
