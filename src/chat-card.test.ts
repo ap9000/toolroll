@@ -14,6 +14,11 @@ import { cardPart, withoutCard } from "./chat-card-part.js";
 import { readChatCard, type ChatCard } from "./contracts/chat-card.js";
 import { readChatPart, savedChatPart } from "./contracts/chat-content.js";
 import { htmlString } from "./html.js";
+import { addCardToFlow, flowCardHref } from "./flow-engine.js";
+import { flowDoneCard, flowResultCard } from "./flow-result-card.js";
+import { flowSendContent, readFlowSend } from "./flow-send.js";
+import { flowSendForStore } from "./contracts/flow-send.js";
+import { flowFromSteps } from "./flows.js";
 import { confirmLeadProposal } from "./lead-doors.js";
 import { executeLeadTool } from "./lead-tools.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
@@ -200,5 +205,36 @@ describe("the lead shows a card", () => {
     expect(lead("show_card", { spec: withButton({ control: "task", task: "not-a-task" }) })).toMatchObject({ ok: false });
     // An earlier reply's card, or any proposal that isn't this reply's, is refused.
     expect(lead("show_card", { spec: withButton({ proposal: shown.id }) })).toMatchObject({ ok: false });
+  });
+});
+
+describe("a flow's result", () => {
+  let root: string, store: Store;
+  const repo = "/projects/shop";
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), "flow-card-")));
+    store = openStore(join(root, "orders.db"));
+    if (!addApprover(store, "operator", now).ok) throw Error("account");
+  });
+  afterEach(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+
+  test("is built from what the flow recorded, with an agent's report marked as a report", () => {
+    const definition = flowFromSteps([{ title: "Requests", kind: "inbox" }, { title: "Tell me", kind: "send" }], null);
+    const row = store.getFlow(store.createFlow({ repo, name: "Requests", by: "operator", definitionJson: JSON.stringify(definition) }, now))!;
+    expect(addCardToFlow(store, row, { title: "Ask /Users/someone", description: null, stage: null }, "operator", now)).toMatchObject({ ok: true });
+    const card = store.flowCards(row.id, true)[0]!;
+    const result = flowResultCard(store, row, definition, card, new Date(now.getTime() + 120_000), { items: [{ title: "$9 a month", source: "Example" }] })!;
+    expect(result.repos).toEqual([repo]);
+    expect(JSON.stringify(result)).not.toContain("/Users/someone");
+    expect(result.blocks.find(one => one.kind === "table" && one.origin === "records")).toMatchObject({ columns: [{ label: "Step" }, { label: "Result" }, { label: "Took" }] });
+    expect(result.blocks.find(one => one.kind === "table" && one.origin === "report")).toMatchObject({ heading: "Found" });
+    expect(cardPlainText(result)).toContain("Reported by the agent, not Toolroll's records");
+    expect(result.buttons[0]).toEqual({ label: "Open card", path: flowCardHref(row.id, card.id) });
+    // What a "Send to me" keeps reads back with its card, so every app shows the same one.
+    const stage = definition.stages.find(one => one.kind === "send")!;
+    const content = flowSendContent(store, row, definition, stage, card, now);
+    expect(readFlowSend(flowSendForStore(content))?.card?.title).toBe(content.card?.title);
+    expect(flowDoneCard(store, { dedupeKey: `flow-card:${card.id}:done:1:operator` }, now)?.repos).toEqual([repo]);
+    expect(flowDoneCard(store, { dedupeKey: `flow-card:${card.id}:comment:1:operator` }, now)).toBeNull();
   });
 });

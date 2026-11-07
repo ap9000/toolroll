@@ -25,6 +25,7 @@
  * made through chooseFlowCard, by that person alone, for exactly that visit,
  * and spend that visit's buttons in every chat app.
  */
+import { cardContent } from "./chat-card-part.js";
 import type { ChatProvider } from "./contracts/chat-tables.js";
 import { LIMITS } from "./decision.js";
 import { keptDraft } from "./flow-draft.js";
@@ -103,10 +104,11 @@ export function flowSendParts(store: Store, notification: { dedupeKey: string; s
   const kept = visit === null ? null : store.flowSend(Number(visit[1]), Number(visit[2]));
   const content = kept === null ? null : readFlowSend(kept.contentJson);
   if (content === null) return null;
+  const card = content.card === undefined ? [] : [cardContent(content.card)];
   const voiced = itemsText(content, notification.subject, app);
-  if (voiced !== null) return voiced.map((text, index): ChatContent => index < voiced.length - 1 ? { text, voice: true } : { text, voice: true, ...sendLinks(flowSendPaths(content)) });
+  if (voiced !== null) return [...voiced.map((text, index): ChatContent => index < voiced.length - 1 ? { text, voice: true } : { text, voice: true, ...sendLinks(flowSendPaths(content)) }), ...card];
   const all = pieces(chatFlowText(`${notification.subject}\n\n${notification.body}`));
-  return all.map((piece, index): ChatContent => index < all.length - 1 ? { text: piece } : { text: piece, ...sendLinks(flowSendPaths(content)) });
+  return [...all.map((piece, index): ChatContent => index < all.length - 1 ? { text: piece } : { text: piece, ...sendLinks(flowSendPaths(content)) }), ...card];
 }
 
 /**

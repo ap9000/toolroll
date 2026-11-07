@@ -13,6 +13,7 @@
 
 import { z } from "zod";
 import { parseContract, readVersioned, versioned, type ContractResult } from "./contract.js";
+import { chatCardSchema } from "./chat-card.js";
 import { isRecord } from "../is-record.js";
 
 /** A link the message carries: a page of Toolroll's (a button) or the one outside page, a pull request. */
@@ -50,6 +51,8 @@ const sendShape = {
   shots: z.strictObject({ taskId: z.string(), run: z.int() }).nullable(),
   /** After research: the report's items, numbered in this order in every message and screenshot caption. */
   items: z.array(flowSendItemSchema).min(1).optional(),
+  /** A "Send to me" visit's result as a card (flow-result-card.ts), from what the flow recorded. */
+  card: chatCardSchema.optional(),
 };
 
 export const flowChoiceOptionSchema = z.strictObject({ choice: z.int().min(0), label: z.string() });

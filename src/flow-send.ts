@@ -21,6 +21,7 @@ import { itemPlug, itemSource } from "./flow-items.js";
 import { withStageHandoff } from "./contracts/stage-output.js";
 import { flowSendForStore, readFlowChoiceAnswer, readFlowSendPayload, type FlowChoiceAnswer, type FlowSendContent, type FlowSendItem, type FlowSendLink } from "./contracts/flow-send.js";
 import { notifyPeople } from "./flow-people.js";
+import { flowResultCard } from "./flow-result-card.js";
 import { readVerifiedReport } from "./evidence.js";
 import { FLOW_END, replyTarget, type FlowDefinition, type FlowStage } from "./flows.js";
 import { FLOW_SHOTS_KIND, type FlowCardRow, type FlowRow, type Store } from "./store.js";
@@ -97,11 +98,11 @@ export function flowSendContent(store: Store, flow: FlowRow, definition: FlowDef
   const handed = card.task !== null && before !== null && (before.kind === "task" || before.kind === "report") ? card.task : null;
   const report = handed !== null && before?.kind === "report" ? handed : null;
   const build = before?.kind === "task" && handed !== null ? handed : card.primaryTask;
-  const result = build === null ? null : resultOf(store, build, now, evidenceRoot);
+  const built = build === null ? null : resultOf(store, build, now, evidenceRoot);
   const lines: string[] = [];
   if (before?.kind === "report" && output !== undefined) lines.push(cut(output, SUMMARY_CHARS));
-  else if (result?.report != null && result.report.trim() !== "") {
-    lines.push(cut(result.report.trim(), SUMMARY_CHARS));
+  else if (built?.report != null && built.report.trim() !== "") {
+    lines.push(cut(built.report.trim(), SUMMARY_CHARS));
     if (output !== undefined && before?.kind !== "task") lines.push(`${before!.title}: ${cut(output, STEP_CHARS)}`);
   } else if (output !== undefined) lines.push(cut(output, SUMMARY_CHARS));
   else {
@@ -110,17 +111,19 @@ export function flowSendContent(store: Store, flow: FlowRow, definition: FlowDef
     lines.push(latest !== undefined ? `${latest.title}: ${cut(card.outputs[latest.id]!.trim(), SUMMARY_CHARS)}` : card.description === null ? "Nothing was written down for this step." : cut(card.description, SUMMARY_CHARS));
   }
   const links: FlowSendLink[] = [];
-  if (result !== null) links.push({ label: "Result", path: `/t/${encodeURIComponent(result.taskId)}` });
-  if (result?.pullRequest != null) links.push({ label: "Pull request", url: result.pullRequest });
+  if (built !== null) links.push({ label: "Result", path: `/t/${encodeURIComponent(built.taskId)}` });
+  if (built?.pullRequest != null) links.push({ label: "Pull request", url: built.pullRequest });
   if (report !== null) links.push({ label: "Report", path: `/t/${encodeURIComponent(report)}` });
   links.push({ label: "Card", path: flowCardHref(flow.id, card.id) });
   const options = stage.kind === "choose" ? (stage.options ?? []).map((one, choice) => ({ choice, label: one.label })) : undefined;
   // After research, its own screenshots are what that step produced; otherwise the build's.
-  const shots = (report === null ? null : reportShotsOf(store, report)) ?? result?.shots ?? null;
+  const shots = (report === null ? null : reportShotsOf(store, report)) ?? built?.shots ?? null;
   const items = report === null ? [] : reportItemsOf(store, report, shots?.taskId === report ? shots : null, evidenceRoot);
+  // A "Send to me" is what a flow hands over: the steps it took, as a card under the words.
+  const result = stage.kind === "send" ? flowResultCard(store, flow, definition, card, now, { links: links.flatMap(one => "path" in one ? [one] : []), items }) : null;
   return {
     title: cut(plain(before === null ? card.title : `${card.title} · ${before.title}`), 200), ...(before === null ? {} : { from: before.title }),
-    summary: plain(lines.join("\n\n")), links, shots, ...(items.length === 0 ? {} : { items }),
+    summary: plain(lines.join("\n\n")), links, shots, ...(items.length === 0 ? {} : { items }), ...(result === null ? {} : { card: result }),
     ...(options === undefined ? {} : { options, reply: replyTarget(stage) !== null }),
   };
 }

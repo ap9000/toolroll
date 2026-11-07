@@ -7,6 +7,7 @@
  * it now stands, and every open page hears the moment it changes (v88),
  * with the faces of whoever else has it open. */
 import { SteerControls, SteerNote } from "./steer-composer.js";
+import { GuardedHtml } from "../guarded-html.js";
 import { roomName, useLiveRoom } from "../live.js";
 import { NEEDS } from "../../needs-you.js";
 import { Background, BackgroundVariant, BaseEdge, EdgeLabelRenderer, Handle, MarkerType, NodeResizer, Position, ReactFlow, ReactFlowProvider, applyNodeChanges, getSmoothStepPath, useReactFlow, useViewport, type Connection, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
@@ -398,6 +399,7 @@ function SentBox({ sent }: { sent: NonNullable<BrowserFlowCard["sent"]> }) {
       <p className="text-caption text-muted-foreground font-normal">{sent.title}</p>
       <p className="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[12.5px]">{sent.summary}</p>
       {sent.items !== undefined && <SentItems items={sent.items} />}
+      {sent.cardHtml !== undefined && <GuardedHtml html={sent.cardHtml} immutable />}
       {sent.links.length > 0 && <SentLinks links={sent.links} />}
     </div>
   </details>;
@@ -462,6 +464,7 @@ function CardPanel({ card, view, csrf, apply, onAllowBrowser }: { card: BrowserF
     {card.question != null && <SubagentQuestion question={card.question} csrf={csrf} apply={apply} />}
     {card.choose != null && <ChooseBox choose={card.choose} base={`${view.flow.href}/cards/${card.id}`} csrf={csrf} apply={apply} />}
     {card.sent != null && <SentBox sent={card.sent} />}
+    {card.resultHtml !== undefined && <details className="rounded-md border px-3 py-2"><summary className="cursor-pointer text-body font-medium">What happened</summary><GuardedHtml html={card.resultHtml} immutable /></details>}
     {card.question != null && card.deadline != null && <p className="text-caption text-muted-foreground font-normal">{deadlineWords(card.deadline)}</p>}
     <CardPeople card={card} view={view} csrf={csrf} apply={apply} />
     {card.task !== null && <a className="text-body text-primary underline-offset-4 hover:underline font-medium" href={card.task.href}>Open its task</a>}

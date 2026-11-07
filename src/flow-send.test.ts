@@ -118,6 +118,7 @@ describe("c1: Send to me", () => {
     expect(readFlowSend(sent.contentJson)).toEqual({
       title: "Checkout rounding · Build", from: "Build", summary: "Totals now round half-up, with a regression test.",
       links: [{ label: "Result", path: "/t/fix-1" }, { label: "Card", path: `/flows/${flow}?card=${card}` }], shots: { taskId: "fix-1", run: 1 },
+      card: expect.objectContaining({ repos: [ALPHA] }),
     });
     const rows = store.listNotifications("all").filter(one => one.dedupeKey.startsWith("flow-"));
     expect(rows.map(one => [one.dedupeKey, one.kind, one.recipient, one.link])).toEqual([

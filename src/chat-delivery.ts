@@ -34,7 +34,8 @@ import {
 } from "./chat-delivery-state.js";
 import { readChatActionBody, readChatMessageBody, readChatPairBody, readChatPart } from "./contracts/chat-content.js";
 import { readProposalActionRow } from "./contracts/chat-callback-rows.js";
-import { cardPart } from "./chat-card-part.js";
+import { cardContent, cardPart } from "./chat-card-part.js";
+import { flowDoneCard } from "./flow-result-card.js";
 import { cardsFirst, isCardProposal } from "./chat-card.js";
 import { answerChatFlowPrompt, answerChoiceMessage, applyChatFlowTap, flowDecisionParts, flowSendParts } from "./chat-flow.js";
 import { connectChannel, FLOW_WORDS, takeChannelMessage, watchedChannel } from "./chat-inbox.js";
@@ -1225,6 +1226,11 @@ function offerNotice(options: ChatDeliveryOptions, notification: Notification, b
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
             ts: "", thread: "", payload: {}, created: now.toISOString() });
           state.plan(id, flowSendParts(store, notification, state.provider)!, now);
+        } else if (personal && flowDoneCard(store, notification, now) !== null) {
+          // A card that reached Done: what it went through, as a card with its links.
+          state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
+            ts: "", thread: "", payload: {}, created: now.toISOString() });
+          state.plan(id, [cardContent(flowDoneCard(store, notification, now)!)], now);
         } else if (notification.kind === "flow-card" && questionParts(store, notification, binding) !== null) {
           // A subagent's question (v93): its options and "Answer in words" on the notice, for the person it asks.
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,

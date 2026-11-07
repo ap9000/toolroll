@@ -28,7 +28,9 @@ import { flowCardTaskLine } from "./flow-card-task.js";
 import { unattendedViewOf } from "./flow-unattended.js";
 import { browserViewOf } from "./flow-browser.js";
 import { readFlowSecrets } from "./flow-secrets.js";
-import { html, joinHtml, postForm, type Html, type HtmlValue } from "./html.js";
+import { html, htmlString, joinHtml, postForm, type Html, type HtmlValue } from "./html.js";
+import { webCardHtml } from "./card-render.js";
+import { flowResultCard } from "./flow-result-card.js";
 import { acts, btn, chip, count, disclose, doc, docHeader, dock, empty, field, group, infoLine, input as input_, note, notice, overlay, overlayTrigger, pageHeader, phoneHeader, row, segLinks, select, status } from "./server/kit.js";
 import { agoWords } from "./lead-voice.js";
 const projectName = (repo: string) => repo.split(/[\\/]/).filter(Boolean).pop() ?? repo;
@@ -332,7 +334,12 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       handoff,
       choose: choosing === null || sentContent === null || latest?.entry !== card.entry ? null : { entry: card.entry, ...sentView(sentContent), person: choosing.person, mine: choosing.person === viewer.name,
         options: (sentContent.options ?? []).filter(one => choosing.stage.options?.[one.choice]?.label === one.label), reply: sentContent.reply === true },
-      sent: sentContent === null || (choosing !== null && latest?.entry === card.entry) ? null : { ...sentView(sentContent), person: latest!.person, at: latest!.createdAt },
+      sent: sentContent === null || (choosing !== null && latest?.entry === card.entry) ? null : { ...sentView(sentContent), person: latest!.person, at: latest!.createdAt, ...(sentContent.card === undefined ? {} : { cardHtml: htmlString(webCardHtml(sentContent.card)) }) },
+      ...(() => {
+        if (card.state === "active" || sentContent?.card !== undefined || definition === null) return {};
+        const result = flowResultCard(store, flow, definition, card, now);
+        return result === null ? {} : { resultHtml: htmlString(webCardHtml(result)) };
+      })(),
       question: asked === null || asked.state !== "open" || asker === null ? null
         : { id: asked.id, from: labelOf(asker), question: asked.question, options: asked.options, askedOf: asked.askedOf, mine: asked.askedOf === viewer.name,
           call: pending === null ? null : { why: pending.why, rule: pending.result ?? "" } },
