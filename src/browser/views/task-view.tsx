@@ -323,7 +323,7 @@ function StatusBox({ view, card, csrf, approved }: { view: BrowserTaskView; card
     : approved != null ? approvedWords(approved) : "";
   const why = statusWhyLines(card.status, [...card.reasons, ...card.diagnostics.map(one => `${one.label} · ${one.detail}`), ...(card.notices?.lines ?? [])]);
   return <div className="k-sec" data-task-status data-work-status={card.token} data-headline={card.status.headline} aria-label="Task status">
-    <KSlots wait={waits} status={<><KHeadlineChip headline={card.status.headline} /><h2>{headingOf(card)}</h2></>}
+    <KSlots wait={waits} status={<>{headingOf(card) !== card.status.headline && <KHeadlineChip headline={card.status.headline} />}<h2>{headingOf(card)}</h2></>}
       text={<>
         <span {...(failed ? { "data-failure-reason": "" } : {})} {...(view.progress != null ? { "data-build-progress": "" } : {})} {...(stuck !== null ? { "data-build-stuck": stuck.step } : {})}>
           {pausedLine !== null ? <span role="status" data-live-pause={pause!.state}>{pausedLine}</span> : card.status.sentence}

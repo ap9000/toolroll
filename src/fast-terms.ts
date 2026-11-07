@@ -13,7 +13,7 @@ export function fastTermsLines(store: Store, scope: Scope, repo: string): { labe
     const named = /^ {2}(\S+(?: \S+)?) {2,}(.*)$/.exec(line);
     if (named !== null && (named[1] === "version" || named[1] === "approved")) continue;
     if (named !== null) lines.push({ label: LABELS[named[1]!] ?? `${named[1]![0]!.toUpperCase()}${named[1]!.slice(1)}`, words: named[2]! });
-    else if (lines.length > 0) lines[lines.length - 1]!.words += ` ${line.trim()}`;
+    else if (lines.length > 0) lines[lines.length - 1]!.words += `\n${line.trim()}`;
     else lines.push({ label: "Plan", words: line.trim() });
   }
   const tools = store.projectTools(repo).map(one => one.name);

@@ -289,7 +289,8 @@ await journey("pages", SCRIPTED, "Every main page opens without an error, in the
   }
   // An old link on the phone (a bookmark, an old push) lands on its place.
   await phone.goto(`${base}/next`);
-  if (new URL(phone.url()).pathname !== "/") broken.push(`an old /next link landed on ${phone.url()}`);
+  // Home, or Chat while a first run has filed nothing yet (pages.ts homeRedirect).
+  if (!["/", "/chat"].includes(new URL(phone.url()).pathname)) broken.push(`an old /next link landed on ${phone.url()}`);
   // A page that doesn't exist is still a page in the workspace, not bare text.
   const missing = await page.goto(`${base}/no-such-page`);
   await page.locator("[data-workspace-shell]").waitFor({ state: "attached", timeout: 5_000 }).catch(() => undefined);
@@ -797,7 +798,7 @@ async function pressKey(key) {
   return posts;
 }
 
-await journey("task", SCRIPTED, "Keyboard only: n opens New task, a presses Approve (its password still asked), and a presses Accept", ["File a task in the console; the planner (Claude) drafts its scope; approve it with your password"], async () => {
+await journey("task", SCRIPTED, "Keyboard only: n opens New task, a sleeps on the password page, and a presses Accept", ["File a task in the console; the planner (Claude) drafts its scope; approve it with your password"], async () => {
   script({ role: "builder", when: [/greet/], answer: { files: {
     "src/greet.js": "export const greet = name => `Hello, ${name}`;\n",
     "test/greet.test.js": ["import test from 'node:test';", "import assert from 'node:assert/strict';", "import { greet } from '../src/greet.js';", "", "test('greets', () => assert.equal(greet('Ada'), 'Hello, Ada'));", ""].join("\n"),
@@ -820,24 +821,11 @@ await journey("task", SCRIPTED, "Keyboard only: n opens New task, a presses Appr
   await plannerDrafted(id, "the planner's plan", ref => ref?.plan === "drafted" && rows(`SELECT 1 FROM task_scope WHERE task_id = '${id}'`).length > 0);
   await page.goto(`${base}/t/${id}`);
   await page.locator("form[data-task-approval]").waitFor({ timeout: 15_000 });
-  // a: presses Approve itself. Where the rules ask for the password, its box opens and nothing is sent until it's typed;
-  // Enter on the empty field sends nothing either.
-  const navigated = page.waitForNavigation({ timeout: 30_000 });
+  // A page asking for a password carries no shortcuts (the sensitivity contract): a presses nothing here, and the
+  // password is typed at the Approve control. Keys work on every page without one.
   const first = await pressKey("a");
-  const pop = page.getByRole("dialog", { name: "Confirm with your password" });
-  let asked = false;
-  if (await pop.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false)) {
-    asked = true;
-    if (first.length > 0) throw new Error(`a posted before the password: ${first.join(", ")}`);
-    await pop.locator('input[name="token"]').focus();
-    await page.keyboard.press("Enter");
-    await page.waitForTimeout(400);
-    if (rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0]?.approved_by) throw new Error("an empty password field approved");
-    await pop.locator('input[name="token"]').fill(w.passwords.alex);
-    await page.keyboard.press("Enter");
-  }
-  await navigated;
-  if (rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0]?.approved_by !== "alex") throw new Error(`${id} wasn't approved by its keys`);
+  if (first.length > 0) throw new Error(`a posted on a password page: ${first.join(", ")}`);
+  await approveOnPage(id);
   await builtAndChecked(id);
   await page.goto(`${base}/t/${encodeURIComponent(id)}?tab=result`);
   await page.locator("[data-result-decision]").first().waitFor({ timeout: 20_000 });
@@ -848,7 +836,7 @@ await journey("task", SCRIPTED, "Keyboard only: n opens New task, a presses Appr
   await accepted;
   if (posts.length !== 1 || posts[0] !== `/t/${id}/complete`) throw new Error(`a on the result posted: ${posts.join(", ") || "nothing"}`);
   await until("the task to read complete", async () => (await page.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500 });
-  return { task: id, passwordAsked: asked };
+  return { task: id };
 });
 
 await journey("builds", REAL_MODEL, "A build stops to ask a question the plan leaves open; you answer on the decision page and it carries on", [], async () => {
@@ -2983,6 +2971,9 @@ async function fileLocally(on, base, words) {
   await waitFor(on.locator('form[action="/tasks/add"] textarea[name="title"]'), "New task", { timeoutMs: 15_000, seen: () => saysNow(on) });
   await on.fill('form[action="/tasks/add"] textarea[name="title"]', words);
   await Promise.all([on.waitForNavigation(), on.click('form[action="/tasks/add"] button.k-send')]);
+  // Small work shows its exact terms first; these journeys take the plan road.
+  const plan = on.locator('form[action="/tasks/add"] button', { hasText: "Plan it first" });
+  if (await plan.count() > 0) await Promise.all([on.waitForNavigation(), plan.click()]);
   const id = /\/t\/([^/?#]+)/.exec(on.url())?.[1];
   if (!id) throw new Error(`filing didn't open the task: ${on.url()} — ${await saysNow(on)}`);
   return decodeURIComponent(id);
@@ -3058,13 +3049,15 @@ await journey("easy-start", SCRIPTED, "A new laptop install opens signed in with
   const drafted = await on.inputValue('form[action="/tasks/add"] textarea[name="title"]');
   if (!/whole cents/.test(drafted)) throw new Error(`the starter drafted: ${drafted}`);
   await Promise.all([on.waitForNavigation(), on.click('form[action="/tasks/add"] button.k-send')]);
+  // A small task: its exact terms, and Build is the yes, with no password on this computer.
+  const buildForm = on.locator("form#fast-build");
+  await waitFor(buildForm, "the exact terms and Build", { timeoutMs: 15_000, seen: () => saysNow(on) });
+  await bothSizes(on, "2b-fast-terms", "easy-start");
+  await Promise.all([on.waitForNavigation(), buildForm.locator("button").click()]);
   const id = decodeURIComponent(/\/t\/([^/?#]+)/.exec(on.url())?.[1] ?? "");
-  if (id === "") throw new Error(`filing didn't open the task: ${on.url()}`);
+  if (id === "") throw new Error(`Build didn't open the task: ${on.url()} — ${await saysNow(on)}`);
   install.task = id;
-  const filed = laptopRows(`SELECT detail FROM action_ledger WHERE task_id = '${id}' AND action = 'task filed'`)[0];
-  if (!/^filed via local-owner · local 1 browser$/.test(filed?.detail ?? "")) throw new Error(`the filing's ledger line: ${JSON.stringify(filed)}`);
-  // Approve, with no password.
-  await approveLocally(on, install.base, id);
+  await until(`${id} to be approved`, async () => laptopTask(id)?.approved_by != null, { timeoutMs: 15_000, everyMs: 300, seen: () => saysNow(on) });
   await bothSizes(on, "3-approved", "easy-start");
   const proof = laptopRows(`SELECT detail FROM action_ledger WHERE task_id = '${id}' AND action LIKE '%approv%' ORDER BY rowid DESC LIMIT 1`)[0];
   // Ready, then Complete.
@@ -3077,10 +3070,12 @@ await journey("easy-start", SCRIPTED, "A new laptop install opens signed in with
   const approvedLine = (await on.locator("[data-task-status]").first().innerText()).replace(/\s+/g, " ");
   if (!/on this computer, no password/.test(approvedLine)) throw new Error(`the approval reads: ${approvedLine.slice(0, 300)}`);
   await bothSizes(on, "4-ready", "easy-start");
-  // The sample came with its own check (its one test): the result says the checks passed, and accepting asks for no reason.
-  if (!/Checks passed/.test(approvedLine)) throw new Error(`the sample's checks didn't read passed: ${approvedLine.slice(0, 300)}`);
+  // The sample came with its own check (its one test): the result says the checks passed. A fast start's one requirement
+  // is yours to check, and the scripted builder reports none, so accepting takes a reason here.
+  if (!/Project checks Passed/.test(approvedLine)) throw new Error(`the sample's checks didn't read passed: ${approvedLine.slice(0, 300)}`);
   for (const looks of await on.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
-  if (await on.locator('[data-result-decision] form[action$="/complete"] input[name="note"]').count() > 0) throw new Error(`accepting asks for a reason: ${await saysNow(on)}`);
+  const reason = on.locator('[data-result-decision] form[action$="/complete"] input[name="note"]');
+  if (await reason.count() > 0) await reason.fill("I read the diff and the test passes.");
   await Promise.all([on.waitForNavigation(), accept.click()]);
   await until("the task to read complete", async () => (await on.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500, seen: () => saysNow(on) });
   await bothSizes(on, "5-complete", "easy-start");
@@ -3157,8 +3152,8 @@ await journey("easy-start", SCRIPTED, "A revision with long words, then a build 
   const status = (await on.locator("[data-task-status]").first().innerText()).replace(/\s+/g, " ");
   // The worker tries a failed build again after a pause: the status says when, once, in words (never a raw stamp).
   if (!/fail|stopped|couldn.t|didn.t|tries again/i.test(status)) throw new Error(`the failed task's status says: ${status.slice(0, 300)}`);
-  if (/tries again/.test(status) && !/Retry scheduled/.test(status)) throw new Error(`a retry's heading doesn't say so: ${status.slice(0, 300)}`);
-  if (/Queued\s+Queued/.test(status) || /\d{4}-\d\d-\d\dT\d\d:/.test(status)) throw new Error(`the failed task's status repeats itself or shows a raw time: ${status.slice(0, 300)}`);
+  if (/tries again/.test(status) && !/^Waiting/.test(status)) throw new Error(`a retry's heading doesn't say so: ${status.slice(0, 300)}`);
+  if (/Waiting\s+Waiting/.test(status) || /\d{4}-\d\d-\d\dT\d\d:/.test(status)) throw new Error(`the failed task's status repeats itself or shows a raw time: ${status.slice(0, 300)}`);
   // Its long title is filed whole: every word the person typed.
   const titled = laptopRows(`SELECT title FROM task WHERE id = '${failing}'`)[0]?.title ?? "";
   if (titled !== longTitle) throw new Error(`the long title reads: ${titled}`);

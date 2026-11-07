@@ -132,7 +132,7 @@ export function fastStartPage(chrome: Chrome, input: { title: string; repo: stri
   const header = docHeader({ title: "Build this?", back: ["/tasks/new", "New task"], meta: "Build approves exactly these terms.", same: true });
   const build = postForm("/tasks/fast", btn("Build", { variant: "primary", type: "submit" }), { attrs: { class: "k-form", id: "fast-build" }, hidden: { preview: input.preview, digest: input.digest } });
   const plan = postForm("/tasks/add", btn("Plan it first", { type: "submit" }), { attrs: { class: "k-form" }, hidden: { plain: "1", title: input.title, repo: input.repo, "planning-policy": "choice", "plan-first": "1" } });
-  return screen("Build this?", html`${head}${doc(header, facts(input.terms), html`<div class="k-acts">${build}${plan}</div>`)}`, { chrome });
+  return screen("Build this?", html`${head}${doc(header, facts(input.terms.map(([label, words]) => [label, joinHtml(words.split("\n").map(line => html`<div>${line}</div>`))] as const)), html`<div class="k-acts">${build}${plan}</div>`)}`, { chrome });
 }
 
 /** An issue or pull request, read and quoted before anything is filed. Add task files it for the ordinary approval. */

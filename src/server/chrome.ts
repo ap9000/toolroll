@@ -423,8 +423,9 @@ export function chromeScript(): string {
     `navGroups.forEach(function(g){g.addEventListener("toggle",function(){` +
     `if(g.open){navGroups.forEach(function(o){if(o!==g)o.removeAttribute("open");});}});});` +
     // the palette
-    `var raw=document.getElementById("palette-index");if(!raw)return;` +
-    `var index;try{index=JSON.parse(raw.textContent||"[]");}catch(e){return;}` +
+    // No index on a workspace page: search is the workspace's own there (keymap.ts search), and the keys still work.
+    `var raw=document.getElementById("palette-index");var index=[];` +
+    `if(raw){try{index=JSON.parse(raw.textContent||"[]");}catch(e){return;}}` +
     `var open=false,box=null,list=null,input=null,items=[],paletteBack=null;` +
     `function close(){if(!open)return;open=false;box.remove();box=null;if(paletteBack&&paletteBack.isConnected)paletteBack.focus();paletteBack=null;}` +
     `function go(href){location.href=href;}` +

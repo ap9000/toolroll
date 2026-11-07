@@ -159,7 +159,7 @@ export function firstTaskJourney(read: { stage: "queued" | "planning" | "needs-y
     : read.stage === "checking" || read.stage === "reviewing" ? { index: 3, stuck: false }
     : read.stage === "building" ? { index: 2, stuck: false }
     // Waiting on nothing a person does: the build finished and is settling.
-    : read.stage === "waiting" ? { index: built ? 3 : 2, stuck: false }
+    : read.stage === "waiting" ? { index: built ? 3 : approved ? 2 : 0, stuck: false }
     : read.stage === "needs-you" && read.need === "approval" ? { index: 1, stuck: false }
     : read.stage === "planning" ? { index: 0, stuck: false }
     : read.stage === "queued" ? { index: approved ? 2 : 0, stuck: false }

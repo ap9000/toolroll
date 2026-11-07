@@ -1684,8 +1684,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // A page with its own view keeps its script; the chat page runs the result script.
       const functional = conversation === null || extras.view ? (s.functional?.script ?? '') : RESULT_REVIEW_SCRIPT;
       const document = shell(s.title, s.body, { chrome: s.chrome, sensitive });
+      // The keys and their list (keymap.ts) work here as on every chromed page; the list sits beside the app React owns.
+      // A sensitive page keeps to its own script.
       return page(response, status, browserWorkspaceDocument(document, workspace, nonce,
-        functional + MOBILE_VIEWPORT_SCRIPT + keyFill), nonce, true);
+        functional + MOBILE_VIEWPORT_SCRIPT + keyFill + (sensitive ? '' : chromeScript()), sensitive ? html`` : KBD_HELP), nonce, true);
     }
     // A one-time secret on screen (a token, an invite link, a pairing code): the
     // page carries no script of any kind, so it leaves the workspace for a
