@@ -135,6 +135,8 @@ import {
   type MilestoneState,
 } from "./plan.js";
 import { maybeSettleRepairChain } from "./dispose.js";
+import { settleCheckRepairs } from "./check-repair.js";
+import { followThroughBrief } from "./follow-through-brief.js";
 import { detachShared, linkInto, linkedKey, promoteInstall, readyCopy, sharedDepsRoot, sharingFor } from "./shared-deps.js";
 
 /** Where this store keeps shared dependencies; null for an in-memory store, which shares nothing. */
@@ -1585,7 +1587,8 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     scope === null ? [] : flowGoalCuts(store, scope.taskId, scope.goal),
     steerBox === null ? null : { folder: steerFolder, key: steerBox.key, live: liveSession !== null },
   ) + `\nCanonical signed rubric: ${rubric}. Its statement fields are exact; evidence requirements are separate fields. Do not edit this input. The lead or user reads these criteria directly; no restatement is needed.\n` + sharedDepsBrief(store, worktree)
-    + (statusPath === null || statusName === null ? "" : statusBrief(statusName, steerBox === null ? null : steerFolder));
+    + (statusPath === null || statusName === null ? "" : statusBrief(statusName, steerBox === null ? null : steerFolder))
+    + ((scope?.candidate ?? null) !== null ? "" : followThroughBrief(store, root, { taskId: request.taskId, taskRef, runId: request.runId, fresh: resumeSession === null, steer: steerBox === null ? null : { folder: steerFolder, key: steerBox.key }, now: clock() }));
 
   // THE PREPARED-CANDIDATE ROAD (v69): the scope names a commit, proved
   // above before anything moved. The machine brings the worktree to its exact
@@ -3090,6 +3093,7 @@ async function settleProof(
   // right here — a review can only ever lower this verdict, never raise
   // it, so this structural save is the one place "resolved" can fire.
   maybeSettleRepairChain(store, request.taskId, verdict, now());
+  settleCheckRepairs(store, request.taskId, verdict, now());
 }
 
 /** A stable, filesystem-safe tag for a claimed screenshot's stored evidence

@@ -26,6 +26,7 @@ import { bodyHashOf, publicationBody } from "./publish.js";
 import { modeTermsFromJson } from "./modes.js";
 import { evidenceRoot, readVerifiedArtifact, writeEvidenceFile } from "./evidence.js";
 import { queueBuildReview } from "./build-review.js";
+import { followBuiltRun } from "./check-repair.js";
 import { homedir } from "node:os";
 import type { BuildResult } from "./builder.js";
 import type { Store } from "./store.js";
@@ -279,6 +280,7 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
       store.resetStrikes(taskRef);
       store.clearQuota(runner, provider, model ?? "");
       maybeRequestAutoReview(store, repo, runId, result.committed, result.noChange === true, clock(), context.evidenceRoot);
+      followBuiltRun(store, repo, context.evidenceRoot ?? evidenceRoot(homedir()), runId, worktreePath, clock());
       return { kind: "built", committed: result.committed, noChange: result.noChange === true };
     }
     store.transact(() => {
@@ -634,6 +636,8 @@ export function regateTask(
 export type RepairTrigger =
   | { kind: "drafted"; draftTaskId: string; attempt: number; approved: boolean }
   | { kind: "stopped"; reason: RepairStopReason }
+  /** The check runs once more on the same commit, with no agent: the failure looked unrelated to the change. */
+  | { kind: "rerun" }
   | { kind: "none" };
 
 /**
@@ -652,9 +656,9 @@ export type RepairTrigger =
  */
 export function maybeTriggerRepair(store: Store, repo: string, evidenceRoot: string, sourceRunId: number, verdict: ProofVerdict, now: Date, cause: "review" | "verification" = "review", automatic = false): RepairTrigger {
   if (verdict !== "short" && verdict !== "refuted") return { kind: "none" };
-  // Findings go to the lead. Explicit repair/revision actions remain available.
-  // Historical mode signatures remain intact; no automatic follow-up spends.
-  if (automatic) return { kind: "none" };
+  // A review's findings go to the lead, and a person asks for their repair. A failed check is the one automatic road
+  // (check-repair.ts), and only under a mode a person signed for it, checked below.
+  if (automatic && cause !== "verification") return { kind: "none" };
   // One attempt per source run, ever (source_run UNIQUE) — checked first so
   // a re-fired trigger is a silent no-op, never a duplicate.
   if (store.repairChainFor(sourceRunId) !== null) return { kind: "none" };
@@ -705,9 +709,9 @@ export function maybeTriggerRepair(store: Store, repo: string, evidenceRoot: str
   const terms = mode === null ? null : modeTermsFromJson(mode.termsJson);
   let verification: { sourceRun: number; digest: string } | undefined;
   if (cause === "verification") {
-    // A signed repair mode is required for this automatic producer. The
-    // existing review/manual road continues to offer unapproved drafts.
-    if (terms?.repairAuto !== true || run.finishedAt === null || !run.headRevision ||
+    // A signed repair mode is required for this automatic producer. A person
+    // asking (check-repair.ts startCheckRepair) gets an unapproved draft instead.
+    if ((automatic && terms?.repairAuto !== true) || run.finishedAt === null || !run.headRevision ||
       (run.outcome !== "built" && run.outcome !== "no-change")) return { kind: "none" };
     const owner = store.refForId(run.taskRef);
     if (owner === null || owner.repo !== repo || store.applicableStopFor(sourceRunId) !== null ||
@@ -737,7 +741,7 @@ export function maybeTriggerRepair(store: Store, repo: string, evidenceRoot: str
             subject: unrelated.kind === "gate-timed-out" ? "The project check ran out of time; running it once more" : "A slow test outside this change failed the check; running it once more",
             body: `${gateFailureSummary(unrelated)} The check runs again once on the same commit ${run.headRevision.slice(0, 7)}, with no agent. If it fails again, a person decides.`,
             link: `/t/${encodeURIComponent(taskId)}` }, now);
-          return { kind: "none" };
+          return { kind: "rerun" };
         }
       }
       store.enqueueNotification({ source: { run: sourceRunId }, dedupeKey: `repair-unrelated:${sourceRunId}`, kind: "repair-evidence", pushClass: "attention",

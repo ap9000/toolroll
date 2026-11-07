@@ -63,7 +63,7 @@ const TYPED = { passwordless: "refused", sso: "refused" } as const;
 const NONE = { passwordless: "n/a", sso: "n/a" } as const;
 
 /** /mode/sign re-derives the digest from the posted terms, so every one rides back. */
-const MODE_TERMS = ["nonce", "digest", "expiry", "name", "days", "publication", "auto-approve", "plan-auto", "chat-approve"] as const;
+const MODE_TERMS = ["nonce", "digest", "expiry", "name", "days", "publication", "auto-approve", "plan-auto", "chat-approve", "repair-auto"] as const;
 
 const CHAT_APPS = [["slack", "Slack", "slack", ["app-token", "bot-token"]], ["teams", "Teams", "teams", ["secret"]], ["discord", "Discord", "discord", ["bot-token"]]] as const;
 
@@ -118,6 +118,7 @@ export const PROOF_INVENTORY: readonly ProofRow[] = [
   { id: "local-mode-off", action: "Turn off local mode", routes: ["/settings/local-mode/off"], form: "localModeOff", field: "password", proof: "step-up", ...ACCEPT, role: "operator", handlerRole: "a full session (never the local owner)", secrets: [], terms: [] },
   { id: "mode-sign", action: "Sign an operating mode", routes: ["/mode/sign"], form: "mode", field: "token", proof: "step-up", ...ACCEPT, role: "any", handlerRole: "an approver of the project", secrets: [], terms: MODE_TERMS },
   { id: "mode-sign-chat-approve", action: "Sign an operating mode that lets your chat app approve", routes: ["/mode/sign"], select: { field: "chat-approve", value: "1" }, form: "mode", field: "token", proof: "credential", ...CREDENTIAL, role: "any", handlerRole: "an approver of the project", secrets: [], terms: MODE_TERMS },
+  { id: "mode-sign-repair", action: "Sign an operating mode that repairs failed checks by itself", routes: ["/mode/sign"], select: { field: "repair-auto", value: "1" }, form: "mode", field: "token", proof: "credential", ...CREDENTIAL, role: "any", handlerRole: "an approver of the project", secrets: [], terms: MODE_TERMS },
 
   // Credential acts: a password typed now or a one-use re-check; never Passwordless.
   { id: "passwordless-on", action: "Turn Passwordless on", routes: ["/settings/passwordless"], form: "passwordless", field: "password", proof: "credential", when: "only to turn it on (off needs nothing)", ...CREDENTIAL, role: "operator", secrets: [], terms: [] },

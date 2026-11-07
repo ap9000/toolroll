@@ -12,6 +12,7 @@ import { reclaimDatabase } from "./database-reclaim.js";
 import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
 import { codeMapRemoteChanged, codeMapShapeProblem, forgetCodeMap, V152_ADDED_COLUMNS, V152_SCHEMA } from "./code-map-store.js";
 import { readStamps, stampDigest, stampRefusal, V154_SCHEMA, type CheckStamp, type StampReading } from "./check-stamp.js";
+import { V155_SCHEMA, V155_STEPS } from "./fleet-schema.js";
 import { refArchived, taskArchived } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -1196,7 +1197,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // V153_SCHEMA, V153_ADDED_COLUMNS.
 // v154 adds, and changes no saved row (docs/plans/trusted-release-reports.md, H2): each check launch's execution stamp
 // (check_stamp, a new table; check-stamp.ts). A run from before reads no stamp: how its checks ran is unknown.
-export const SCHEMA_VERSION = 154;
+// v155 adds, and changes no saved row (docs/plans/fleet-follow-through.md): findings and their answers, check repairs,
+// before-and-after evidence and provider captures (V155_SCHEMA, new tables only; fleet-schema.ts).
+export const SCHEMA_VERSION = 155;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1334,7 +1337,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1598,7 +1601,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V155_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2003,6 +2006,7 @@ export const V153_SCHEMA = VANISHED_SCHEMA + CHECK_ONLY_SCHEMA + BUILDER_SERVICE
 export const V153_STEPS = Object.freeze(["plain-tables", "plain-columns"] as const);
 /** The v154 migration's steps after v153's, in order (OpenOptions.migrationStep may stop after each). */
 export const V154_STEPS = Object.freeze(["check-stamps"] as const);
+export { V155_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6358,6 +6362,9 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   // v154: each check launch's execution stamp (a new table). Idempotent, as v153's steps are.
   db.exec(V154_SCHEMA);
   step("check-stamps");
+  // v155: what happens to a result after its agent finishes (new tables only). Idempotent, as v154's step is.
+  db.exec(V155_SCHEMA);
+  step("follow-through-tables");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");

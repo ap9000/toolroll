@@ -28,6 +28,7 @@ import { invokeAgent } from "./invoke.js";
 import { readVerifiedArtifact } from "./evidence.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import { runCheckLevel } from "./check-levels.js";
+import { recordReviewFindings } from "./findings.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
 import { parseBuildFindings, REVIEW_PATCH_NAME } from "./reviewer.js";
@@ -301,6 +302,7 @@ export async function buildReviewPass(store: Store, options: {
       const sent = high.length > 0 && mayResend(store, request.taskId) ? sendBack(store, options.root, request.run, request.taskId, repo, high, clock()) : null;
       const problem = sent !== null && !sent.ok ? `it could not be sent back (${sent.problem})` : null;
       settle(store, request.run, "reviewed", { findings, sentBackAs: sent?.ok ? sent.id : null, ...(problem === null ? {} : { reason: problem }) }, clock());
+      recordReviewFindings(store, { run: request.run, taskId: request.taskId, sentBackAs: sent?.ok ? sent.id : null, high }, clock());
       return { sentBackAs: sent?.ok ? sent.id : null, problem };
     });
     const counted = `${findings.length} finding${findings.length === 1 ? "" : "s"}, ${high.length} high`;

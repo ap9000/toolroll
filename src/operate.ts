@@ -5422,7 +5422,7 @@ async function modeCommand(
   const acting = await askCredentials(flags, context);
   if (acting === null) return fail(write, json, "mode", "usage", "signing or revoking a mode takes `--as <you> --token <t>`", EXIT.usage);
   // Signing a mode that lets a chat app approve is a credential act; any other mode signing or revoking is ordinary.
-  const authed = (flag(flags, "chat-approve") ? credentialApprover(store, acting.name, acting.token) : authenticateApprover(store, acting.name, acting.token));
+  const authed = (flag(flags, "chat-approve") || flag(flags, "repair-auto") ? credentialApprover(store, acting.name, acting.token) : authenticateApprover(store, acting.name, acting.token));
   if (!authed.ok) return fail(write, json, "mode", authed.reason, "that is not an active approver, or the token does not match", EXIT.refused);
 
   if (action === "revoke") {
@@ -5444,7 +5444,15 @@ async function modeCommand(
   if (text(flags, "publication") === "notify") terms.publication = "notify";
   if (flag(flags, "auto-approve")) terms.autoApproveFiling = true;
   if (flag(flags, "plan-auto")) terms.planAuto = true;
-  if (["review-auto", "review-retry-auto", "repair-auto", "repair-max-attempts"].some(name => flags.has(name))) return fail(write, json, "mode set", "invalid", "Separate model review and automatic correction loops have been removed; finished work goes to the lead or user.", EXIT.refused);
+  if (["review-auto", "review-retry-auto"].some(name => flags.has(name))) return fail(write, json, "mode set", "invalid", "Separate model review has been removed; finished work goes to the lead or user.", EXIT.refused);
+  // Repairing failed checks by themselves: never a preset default, only these flags, with a limit you sign.
+  if (flags.has("repair-max-attempts") && !flag(flags, "repair-auto")) return fail(write, json, "mode set", "invalid", "--repair-max-attempts needs --repair-auto", EXIT.refused);
+  if (flag(flags, "repair-auto")) {
+    const limit = Number(text(flags, "repair-max-attempts") ?? 2);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 3) return fail(write, json, "mode set", "invalid", "--repair-max-attempts is 1, 2 or 3", EXIT.refused);
+    terms.repairAuto = true;
+    terms.repairMaxAttempts = limit;
+  }
   if (terms.planAuto && !terms.autoApproveFiling) return fail(write, json, "mode set", "invalid", "--plan-auto requires automatic filing approval", EXIT.refused);
   // Approving plans and merges from the signer's paired chat: never a preset default, only this flag.
   // The signature names every chat app it covers: a grant signed before that named Telegram alone, and stays so.

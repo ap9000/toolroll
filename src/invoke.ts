@@ -23,6 +23,7 @@ import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV, typ
 import { ACP_AGENTS, isAcpProvider, isKeyedProvider, type AcpProviderId } from "./acp-agents.js";
 import { launchFromJson, verifyLaunch } from "./acp-attest.js";
 import { classifyTerminal } from "./exhaustion.js";
+import { captureProviderFailure } from "./provider-capture.js";
 import { liftAuthPause } from "./provider-auth.js";
 import { attestProvider, type VersionProbe } from "./attest.js";
 import { run as runCommand, runOwnerTag, streamsInput } from "./exec.js";
@@ -894,6 +895,11 @@ export async function invokeAgent(
     earlyExit: quietEarlyExit ? `${result.stderr.slice(-4096)}\n${plainLines(result.stdout).slice(-4096)}` : null,
   });
   store.stampTerminalClass(runId, authMode, terminalClass);
+  // What the provider said on its way out, saved for a person (provider-capture.ts). Nothing routes on it.
+  if (terminalClass !== "auth-expired" && !result.timedOut && !result.notFound && (result.code !== 0 || envelope.structuralTerminal?.failed === true)) {
+    captureProviderFailure(store, { run: runId, provider: spec.provider, model: spec.model ?? null, authMode, exitCode: result.code, code: envelope.structuralTerminal?.code ?? null,
+      texts: [envelope.structuralTerminal?.text, envelope.finalMessage?.slice(-1_000), result.stderr.slice(-2_000), plainLines(result.stdout).slice(-1_000)] }, new Date());
+  }
 
   // Contradictory structural identity is a provider protocol failure, not
   // a session selection problem. Usage above remains recorded because the

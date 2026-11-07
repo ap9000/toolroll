@@ -93,7 +93,7 @@ import type { RuleDoor } from "../route-store.js";
 import { ALL_SLOTS,applyModelChoices,browserWords,checkScope,DEFAULT_PRESET,defaultAgentOf,fillDefaultRouting,isPresetName,newerModels,PRESETS,presetChange,presetInUse,previewModelChange,recentRuns,rowAt,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
 import { HEADROOM_FIVE_HOUR_LIMIT,HEADROOM_WEEKLY_LIMIT,exactModelId } from "../phase-routing.js";
 import { RISKY_MEANS,SIZE_MEANS,SIZING_CLAUDE_MODEL } from "../task-sizing.js";
-import { CHAT_APPROVE_ALL,MODE_MAX_DAYS,modeDigestOf,modeTermsJson,modeWords,presetTerms,type ModeName,type ModeTerms } from "../modes.js";
+import { CHAT_APPROVE_ALL,CHECK_REPAIR_LIMIT,MODE_MAX_DAYS,modeDigestOf,modeTermsJson,modeWords,presetTerms,type ModeName,type ModeTerms } from "../modes.js";
 import { monitoringChange,readMonitoring,saveMonitoring } from "../monitoring-settings.js";
 import { monitoringHtml,signingSecretHtml } from "../monitoring-ui.js";
 import { openRouterPickerScript } from "../openrouter-models.js";
@@ -2094,19 +2094,17 @@ ${postForm("/settings/chat-approval/save", html`\
       planAuto: body.get("plan-auto") === "1",
       reviewAuto: false,
       reviewRetryAuto: false,
-      // The repair-auto grant is the SAME rule (v40): unchecked stays
-      // false on every preset — only the explicit box grants it, and the
-      // attempt cap it carries is meaningless without it.
-      repairAuto: false,
-      repairMaxAttempts: 0,
+      // Repairing failed checks: only the explicit choice grants it, with the limit it signs (check-repair.ts).
+      repairAuto: body.get("repair-auto") === "1",
+      repairMaxAttempts: body.get("repair-auto") === "1" ? CHECK_REPAIR_LIMIT : 0,
       // Approving from the paired chat: only the explicit choice grants it, naming every chat app it covers (a grant
       // signed before it named them stays Telegram only).
       chatApprove: body.get("chat-approve") === "1",
       ...(body.get("chat-approve") === "1" ? { chatApproveChats: CHAT_APPROVE_ALL } : {}),
       publication: body.get("publication") === "automerge" ? "automerge" : "notify",
     };
-    if ((["review-auto", "review-retry-auto", "repair-auto"] as const).some(field => body.get(field) === "1")) {
-      return refuse(response, who, 400, "Review scheduling and automatic revisions are no longer available. Reload the mode form.", "/mode");
+    if ((["review-auto", "review-retry-auto"] as const).some(field => body.get(field) === "1")) {
+      return refuse(response, who, 400, "Review scheduling is no longer available. Reload the mode form.", "/mode");
     }
     if (terms.planAuto && !terms.autoApproveFiling) {
       return refuse(response, who, 400, "Automatic planner approval requires automatic filing approval.", "/mode");
@@ -2120,9 +2118,9 @@ ${postForm("/settings/chat-approval/save", html`\
       // THE CEREMONY (M1): every resolved term in words, and the password
       // signs exactly this digest — a drifted form refuses at /mode/sign.
       const nonce = mintApprovalNonce(who.name, "mode-sign", `${project}:${digest}`);
-      const signed = Object.fromEntries((["name", "days", "publication", "auto-approve", "plan-auto", "chat-approve"] as const)
+      const signed = Object.fromEntries((["name", "days", "publication", "auto-approve", "plan-auto", "chat-approve", "repair-auto"] as const)
         .map(field => [field, body.get(field) ?? ""]));
-      const bodyHtml = modeCeremonyHtml({ name, project: projectName(project), words: modeWords(terms), chatApprove: signed["chat-approve"] === "1", hidden: { nonce, digest, ...signed, expiry } });
+      const bodyHtml = modeCeremonyHtml({ name, project: projectName(project), words: modeWords(terms), chatApprove: signed["chat-approve"] === "1", repairAuto: signed["repair-auto"] === "1", hidden: { nonce, digest, ...signed, expiry } });
       return sendScreen(response, 200, screen("Sign the mode", bodyHtml, { chrome: chromeFor(project, "mode") }));
     }
 
@@ -2139,8 +2137,8 @@ ${postForm("/settings/chat-approval/save", html`\
       return refuse(response, who, 409, "the terms moved while you were reading — read them again", "/mode");
     }
     const token = body.get("token") ?? "";
-    // A mode that lets a chat app approve opens a way to act: a credential act. Any other mode is an ordinary one.
-    if (!(body.get("chat-approve") === "1" ? authenticateCredential(who, token) : authenticateApprover(who, token)).ok) {
+    // A mode that lets a chat app approve, or repairs start by themselves, opens a way to act: a credential act. Any other mode is an ordinary one.
+    if (!(body.get("chat-approve") === "1" || body.get("repair-auto") === "1" ? authenticateCredential(who, token) : authenticateApprover(who, token)).ok) {
       return refuse(response, who, 403, "signing a mode takes your password, typed again", "/mode");
     }
     store.signMode(
