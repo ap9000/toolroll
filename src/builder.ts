@@ -2731,7 +2731,7 @@ async function settleProof(
         checkAttempt = prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access, authority: decision.authority, limitMs: loadWatch?.limitMs,
           ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, release,
           // Advisory only (docs/plans/learning-loops.md): the project's tracked identities, a separate handshake field.
-          learn: learnRequestFor(store, repo, now()).learn }, now());
+          learn: learnRequestFor(store, repo, now(), runId).learn }, now());
       } catch (error) {
         // A recorded last release that can't be verified (eval-harness review 2, finding 4): nothing runs.
         if (!(error instanceof CheckBaselineUnverifiable)) throw error;

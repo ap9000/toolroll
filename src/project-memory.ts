@@ -14,6 +14,7 @@ import { activeRemote } from './remote-run.js';
 import type { Store } from './store.js';
 import { scanForSecrets } from './evidence.js';
 import { learningIdentity } from './project-learning.js';
+import { endNoteWatch } from './lesson-notes.js';
 import { TEXT_LIMITS } from './text-limits.js';
 import { contractError } from './contracts/contract.js';
 import { DECISION_CHANGE_VERSION, decisionChangeSchema, decisionRecordSchema, decisionSchema, type Decision, type DecisionChange, type DecisionDraft, type DecisionLine, type DecisionRecord } from './contracts/project-memory.js';
@@ -164,6 +165,7 @@ function changeStatus(store: Store, repo: string, actor: string, id: number, sta
   const next: DecisionRecord = { ...was, revision: existing.revision + 1, status };
   store.handle.prepare('UPDATE project_decision SET revision=?,status=?,sha=? WHERE id=?').run(next.revision, status, digestOf(next), id);
   store.handle.prepare('INSERT INTO decision_change(decision,revision,actor,at,action,payload,sha) VALUES (?,?,?,?,?,?,?)').run(id, next.revision, actor, now.toISOString(), status, history({ reason }), digestOf(next));
+  endNoteWatch(store, existing.sourceRef, now);
   return { id, ...next };
 }
 /** Retire a decision that no longer holds; history keeps it. */

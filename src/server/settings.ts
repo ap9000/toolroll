@@ -8,6 +8,7 @@ import { kitInstalled,kitOf } from "../kits.js";
 import { CONNECT_CALLBACK,connectionsOf,finishConnect,localConnectOf,oneClickOf } from "../mcp-connect.js";
 import { learningView } from "../project-learning.js";
 import { memoryUseOf } from "../memory-use.js";
+import { afterwardsWords, lessonNoteOf, noteAfterwards } from "../lesson-notes.js";
 import { skillTestResult } from "../project-skills.js";
 import { discoverTools,projectToolsOf } from "../project-tools.js";
 import { lookProjectMcp } from "../folder-look.js";
@@ -573,9 +574,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
         const memoryQuery = (url.searchParams.get('memory') ?? '').slice(0, 300);
         const hits = memoryQuery.trim() ? searchMemory(store, { actor: who.name, repos: [chosen], query: memoryQuery, limit: 20 }) : null;
         let proposals: Html = html``;
-        try { proposals = (proposalsHtml(chosen, listProposals(store, chosen), memoryStatus(store, chosen, who.name), csrf, who.role === 'approver')); } catch { proposals = html``; }
+        try { proposals = (proposalsHtml(chosen, listProposals(store, chosen), memoryStatus(store, chosen, who.name), csrf, who.role === 'approver', who.name)); } catch { proposals = html``; }
         const use = memoryUseOf(store, chosen);
-        content = html`<p class="meta">${MEMORY_INTRO}</p>${memorySearchHtml(chosen, memoryQuery, hits)}${proposals}${(decisionsHtml(chosen, listDecisions(store, chosen, who.name, { limit: 50 }), csrf, who.role === 'approver', undefined, undefined, use))}\
+        content = html`<p class="meta">${MEMORY_INTRO}</p>${memorySearchHtml(chosen, memoryQuery, hits)}${proposals}${(decisionsHtml(chosen, listDecisions(store, chosen, who.name, { limit: 50 }), csrf, who.role === 'approver', undefined, undefined, use, d => { const after = noteAfterwards(store, d); return after === null ? null : afterwardsWords(after); }))}\
 ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : '')}${knowledgeHtml(view,csrf,who.role==='approver',undefined,undefined,use)}\
 <details class="knowledge frame"><summary class="frame-head">Learned lessons</summary><div class="frame-panel">${(learningHtml(learningView(store,evidenceRoot,chosen,who.name),csrf,who.role==='approver'))}</div></details>`;
       } catch { content = html`<p class="problem" role="alert">Project knowledge is unavailable. Reload to retry.</p>`; }
@@ -1526,6 +1527,20 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     catch (error) { return sendScreen(response, 409, screen('Knowledge', settingsSubPage("agents", "Knowledge", html`<p role="alert">${error instanceof Error ? error.message : 'That proposal could not be decided.'}</p><p><a href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Back to knowledge</a></p>`), { chrome: chromeFor(repo, 'settings') })); }
     return redirect(response, `/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
   }
+  /** A lesson note: a person's own words, accepted as a decision through the one proposal writer, or rejected. */
+  async function knowledgeNote(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.knowledgeNote);
+    const repo = body.get('repo') ?? '', decision = body.get('decision') ?? '';
+    if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
+    if (!['accept', 'reject'].includes(decision) || !/^[0-9]{1,12}$/.test(body.get('proposal') ?? '')) return refuse(response, who, 400, 'Choose accept or reject for one note.', '/settings/knowledge');
+    const id = Number(body.get('proposal'));
+    try {
+      if (lessonNoteOf(store, id) === null) throw Error('That note is unavailable.');
+      decideProposal(store, { repo, actor: who.name, id, decision: decision as 'accept' | 'reject', claim: body.get('claim') ?? '' }, now);
+    } catch (error) { return sendScreen(response, 409, screen('Knowledge', settingsSubPage("agents", "Knowledge", html`<p role="alert">${error instanceof Error ? error.message : 'That note could not be decided.'}</p><p><a class="k-link" href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Back to Knowledge</a></p>`), { chrome: chromeFor(repo, 'settings') })); }
+    return redirect(response, `/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
+  }
   async function knowledgeDecision(ctx: HandlerContext): Promise<void> {
     const { response, now, posted } = ctx;
     const who = browserCaller(ctx.who);
@@ -2404,6 +2419,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.models-stop": modelsRuleAct("stop"),
     "settings.knowledge-refresh": knowledgeRefresh,
     "settings.knowledge-proposal": knowledgeProposal,
+    "settings.knowledge-note": knowledgeNote,
     "settings.knowledge-decision": knowledgeDecision,
     "settings.knowledge-change": knowledgeChange,
     "settings.learning-change": learningChange,

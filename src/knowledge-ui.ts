@@ -65,7 +65,7 @@ export function knowledgeContextHtml(snapshot:KnowledgeSelection|null):Html|'' {
 // ---- project memory: decisions and search (2026-09-21) ----------------------------
 import type { Decision, MemoryHit } from './project-memory.js';
 export const MEMORY_INTRO = 'What the lead and crew read before they work. Every change keeps its history. Last included is counted in runs.';
-export function decisionsHtml(repo: string, decisions: Decision[], csrf: string, canManage: boolean, draft?: { claim?: string; why?: string }, error?: string, use: ReadonlyMap<string, MemoryUse> = new Map()): Html {
+export function decisionsHtml(repo: string, decisions: Decision[], csrf: string, canManage: boolean, draft?: { claim?: string; why?: string }, error?: string, use: ReadonlyMap<string, MemoryUse> = new Map(), afterwards: (decision: Decision) => string | null = () => null): Html {
   const manage = canManage && !!csrf;
   const base = { repo };
   const form = (action: string, body: Html, extra: Record<string, unknown> = {}) => postForm('/settings/knowledge/decision', body, { hidden: fields({ ...base, action, ...extra }) });
@@ -73,6 +73,7 @@ export function decisionsHtml(repo: string, decisions: Decision[], csrf: string,
     title: d.claim, sub: d.why, when: html`<span class="k-num">#${d.id}</span> · ${d.decidedBy} · ${d.decidedAt.slice(0, 10)}`, attrs: { id: `decision-${d.id}` },
     more: joinHtml([
       note(lastIncludedWords(use.get(`decision:${d.id}`))),
+      afterwards(d) === null ? '' : note(afterwards(d)!),
       note(`${d.sourceKind}${d.sourceRef ? ` · ${d.sourceRef}` : ''}${d.supersedes === null ? '' : ` · replaces #${d.supersedes}`}`),
       manage ? disclose('Retire', form('retire', joinHtml([
         formRow('Why it no longer holds', null, input({ id: `decision-${d.id}-reason`, name: 'reason', attrs: { maxlength: 500, required: true, 'aria-label': 'Why it no longer holds' } }), 'wide'),
@@ -96,14 +97,30 @@ export function memorySearchHtml(repo: string, query: string, hits: MemoryHit[] 
   ]) });
 }
 import type { MemoryProposal } from './memory-pass.js';
-export function proposalsHtml(repo: string, proposals: MemoryProposal[], status: { surface: string; instructionBytes: number; budgetBytes: number; sessions: { total: number; analyzed: number; failed: number }; openGaps: number; pending: number } | null, csrf: string, canManage: boolean): Html {
+import { NOTE_SURFACE } from './lesson-notes.js';
+export function proposalsHtml(repo: string, proposals: MemoryProposal[], status: { surface: string; instructionBytes: number; budgetBytes: number; sessions: { total: number; analyzed: number; failed: number }; openGaps: number; pending: number } | null, csrf: string, canManage: boolean, who = ''): Html {
   const manage = canManage && !!csrf;
   const line = status === null ? '' : joinHtml([
     note(`${status.sessions.analyzed}/${status.sessions.total} sessions read${status.sessions.failed ? ` · ${status.sessions.failed} failed` : ''} · ${status.openGaps} open gap${status.openGaps === 1 ? '' : 's'} · Instructions ${status.instructionBytes}/${status.budgetBytes} bytes`),
     disclose('Read new sessions', joinHtml([note('Run this on this computer:'), codeLine(`toolroll memory propose --repo ${repo}`)])),
   ]);
   const decide = (p: MemoryProposal, decision: 'accept' | 'reject', label: string) => postForm('/settings/knowledge/proposal', btn(label, { sm: true, variant: decision === 'accept' ? 'outline' : 'ghost', type: 'submit' }), { hidden: fields({ repo, proposal: p.id, decision }) });
-  const cards = proposals.map(p => settingsRecord({
+  // A lesson note: the facts, the failure line as output, and the person's own words in an edit box that starts as a draft.
+  const lessonNote = (p: MemoryProposal): Html => settingsRecord({
+    title: p.title, sub: html`<span class="k-num">#${p.id}</span> · Lesson note`,
+    more: joinHtml([
+      note(p.rationale),
+      ...p.evidence.map(ev => html`<pre class="k-scode">${ev.quote}</pre>`),
+      manage ? joinHtml([
+        postForm('/settings/knowledge/note', joinHtml([
+          formRow('Note', 'Say it in your own words before accepting.', textarea({ id: `note-${p.id}`, name: 'claim', rows: 3, value: p.afterText, attrs: { maxlength: 240, required: true, 'aria-label': 'Note' } }), 'top'),
+          acts(btn(`Accept as ${who}`, { sm: true, type: 'submit' })),
+        ]), { hidden: fields({ repo, proposal: p.id, decision: 'accept' }) }),
+        postForm('/settings/knowledge/note', btn('Reject', { sm: true, variant: 'ghost', type: 'submit' }), { hidden: fields({ repo, proposal: p.id, decision: 'reject' }) }),
+      ]) : '',
+    ]),
+  });
+  const cards = proposals.map(p => p.surface === NOTE_SURFACE ? lessonNote(p) : settingsRecord({
     title: p.title, sub: html`<span class="k-num">#${p.id}</span> · ${p.kind} · ${p.sessions} sessions`,
     action: manage ? html`${decide(p, 'accept', 'Accept')}${decide(p, 'reject', 'Reject')}` : '',
     more: joinHtml([
@@ -113,5 +130,5 @@ export function proposalsHtml(repo: string, proposals: MemoryProposal[], status:
       html`<ul class="k-note">${p.evidence.map(ev => html`<li>“${ev.quote.slice(0, 200)}” · ${ev.session.split(':')[0] ?? ''}</li>`)}</ul>`,
     ]),
   }));
-  return settingsSection({ id: 'proposals', title: 'Proposed from sessions', body: joinHtml([line, cards.length ? joinHtml(cards) : note('Nothing to review. Suggestions appear when the same mistake shows up in two sessions.')]) });
+  return settingsSection({ id: 'proposals', title: 'Proposed changes', body: joinHtml([line, cards.length ? joinHtml(cards) : note('Nothing to review. Suggestions appear when the same mistake shows up in two sessions.')]) });
 }

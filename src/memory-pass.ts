@@ -24,6 +24,8 @@ import { performSubscriptionLeadRequest } from './subscription-chat.js';
 import type { DirectChatProviderId, SubscriptionChatProviderId } from './store.js';
 import { TEXT_LIMITS } from './text-limits.js';
 import { lastIncludedWords, memoryUseOf } from './memory-use.js';
+import { lessonNoteOf, lessonNoteSourceRef, NOTE_SURFACE, watchNote } from './lesson-notes.js';
+import { currentLocalOwner } from './local-owner.js';
 import { contractError, parseContract } from './contracts/contract.js';
 import { MEMORY_VERDICT_MODEL_SCHEMA, MEMORY_VERDICT_VERSION, memoryEvidenceSchema, memoryProposalSchema, memoryVerdictReadSchema, readSavedVerdict, savedVerdictSchema, type MemoryProposal, type Verdict } from './contracts/memory-pass.js';
 
@@ -305,7 +307,8 @@ export function synthesizeProposals(store: Store, repo: string, actor: string, s
   const budgetLeft = INSTRUCTION_BUDGET_BYTES - Buffer.byteLength(view.knowledge.instructions);
   let made = 0;
   store.transact(() => {
-    store.handle.prepare("UPDATE memory_proposal SET status='stale' WHERE repo=? AND status='pending' AND surface<>?").run(repo, surface.version);
+    // A lesson note is bound to its own recorded facts, not to the surface.
+    store.handle.prepare("UPDATE memory_proposal SET status='stale' WHERE repo=? AND status='pending' AND surface<>? AND surface<>?").run(repo, surface.version, NOTE_SURFACE);
     const pendingFingerprints = new Set(store.handle.prepare("SELECT fingerprint FROM memory_proposal WHERE repo=? AND status='pending'").all(repo).map(row => String(row['fingerprint'])));
     const rejected = new Map(store.handle.prepare('SELECT fingerprint, sessions FROM memory_rejection WHERE repo=?').all(repo).map(row => [String(row['fingerprint']), Number(row['sessions'])]));
     const consider = (kind: MemoryProposal['kind'], fingerprint: string, title: string, rationale: string, beforeText: string | null, afterText: string, evidence: { session: string; quote: string }[]): void => {
@@ -350,20 +353,31 @@ export function listProposals(store: Store, repo: string, status: 'pending' | 'a
 }
 
 /** The one writer: accept applies the edit through the knowledge or decision store as the person; reject remembers the fingerprint and its corroboration. */
-export function decideProposal(store: Store, args: { repo: string; actor: string; id: number; decision: 'accept' | 'reject' }, now = new Date()): MemoryProposal {
+export function decideProposal(store: Store, args: { repo: string; actor: string; id: number; decision: 'accept' | 'reject'; claim?: string }, now = new Date()): MemoryProposal {
   refuseLeadMemoryWrite();
   return store.transact(() => {
+    refuseLeadMemoryWrite();
     // A person who may change this project's memory, read inside the write (a revoked account or lost access refuses).
     if (!store.accountCanAccess(args.actor, args.repo) || store.accountOf(args.actor)?.role !== 'approver') throw Error('Project memory is outside your access.');
     const row = store.handle.prepare('SELECT * FROM memory_proposal WHERE id=? AND repo=?').get(args.id, args.repo) as Record<string, unknown> | undefined;
     if (!row) throw Error('That proposal is unavailable.');
     const proposal = proposalOf(row);
     if (proposal.status !== 'pending') throw Error('That proposal was already decided.');
+    const note = lessonNoteOf(store, proposal.id);
+    // The laptop's local owner may decide lesson notes and clean-ups, nothing else here (D3): the act says which.
+    const local = currentLocalOwner();
+    if (local !== null && (note === null || local.act !== 'memory-review')) throw Error('Sign in with your password to do this.');
     const surface = memorySurface(store, args.repo, args.actor);
-    if (surface.version !== proposal.surface) { store.handle.prepare("UPDATE memory_proposal SET status='stale' WHERE id=?").run(proposal.id); throw Error('Project memory changed since this was proposed. Run the pass again.'); }
+    if (note === null && surface.version !== proposal.surface) { store.handle.prepare("UPDATE memory_proposal SET status='stale' WHERE id=?").run(proposal.id); throw Error('Project memory changed since this was proposed. Run the pass again.'); }
     if (args.decision === 'reject') {
       store.handle.prepare('INSERT INTO memory_rejection(repo,fingerprint,rejected_at,rejected_by,sessions) VALUES (?,?,?,?,?) ON CONFLICT(repo,fingerprint) DO UPDATE SET rejected_at=excluded.rejected_at, rejected_by=excluded.rejected_by, sessions=excluded.sessions')
         .run(args.repo, proposal.fingerprint, now.toISOString(), args.actor, proposal.sessions);
+    } else if (note !== null) {
+      // A person's words, not the draft: "failed then passed" is what Toolroll recorded; what it means is theirs to say.
+      const claim = (args.claim ?? '').trim();
+      if (claim === '' || claim === proposal.afterText.trim()) throw Error('Write the note in your own words before accepting it.');
+      recordDecision(store, { repo: args.repo, actor: args.actor, draft: { claim, why: clip(proposal.rationale, 1500), sourceKind: 'result', sourceRef: lessonNoteSourceRef(proposal.id) } }, now);
+      watchNote(store, { repo: args.repo, proposal: proposal.id, identities: note.identities, now });
     } else {
       const view = knowledgeView(store, args.repo, args.actor);
       if (proposal.kind === 'instruction-add') changeKnowledge(store, { repo: args.repo, actor: args.actor, identity: view.identity, revision: view.revision, action: 'instructions', draft: { instructions: `${view.knowledge.instructions.trimEnd()}\n${proposal.afterText}`.trim() } }, now);

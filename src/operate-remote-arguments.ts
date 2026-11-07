@@ -73,7 +73,7 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ['flaky list', args('', 'days')],
   ['flaky show', args('identity*', 'days')],
   ...['search', 'decisions', 'show', 'review', 'status'].map(action => [`memory ${action}`,
-    args(action === 'search' ? 'query*' : action === 'show' ? 'query' : '', 'why reason supersedes source all decision sessions no-local')] as const),
+    args(action === 'search' ? 'query*' : action === 'show' ? 'query' : '', 'why reason supersedes source all decision claim choice revision sessions no-local')] as const),
   ['flows list', args()],
   ['flows show', args('flow:flow')], ['flows export', args('flow:flow')],
   ['flows create', args('', 'yes name template', { steps: 'steps' })],

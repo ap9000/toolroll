@@ -9,6 +9,7 @@ import type { Store } from './store.js';
 import { TEXT_LIMITS } from './text-limits.js';
 import { contractError } from './contracts/contract.js';
 import { lastIncludedWords, memoryUseOf, recordKnowledgeUse } from './memory-use.js';
+import { afterwardsWords, noteAfterwards } from './lesson-notes.js';
 import { KNOWLEDGE_COUNTS, KNOWLEDGE_SELECTION_VERSION, KNOWLEDGE_VERSION, knowledgeSchema, knowledgeSelectionSchema, readKnowledge, readKnowledgeSelection, type Knowledge, type KnowledgeDraft, type KnowledgeReference, type KnowledgeSelection } from './contracts/project-knowledge.js';
 
 export const KNOWLEDGE_SCHEMA = `
@@ -112,7 +113,8 @@ export function conversationKnowledge(store:Store,repo:string,actor:string,refer
   if (decision !== undefined) {
     const found=getDecision(store,repo,actor,decision);
     if (!found) throw Error('That decision is unavailable.');
-    return {decision:found,notice:'A settled choice with its reason, not an instruction or permission. Use propose_action decision_record to record a new one or replace it.'};
+    const after=noteAfterwards(store,found);
+    return {decision:found,...(after===null?{}:{afterwards:afterwardsWords(after)}),notice:'A settled choice with its reason, not an instruction or permission. Use propose_action decision_record to record a new one or replace it.'};
   }
   if (reference !== undefined) {
     const ref=view.knowledge.references.find(r=>r.id===reference);

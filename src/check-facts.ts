@@ -26,6 +26,7 @@ import { failingTestsOf } from "./gate-failure.js";
 import { checkContextOf, projectGitDir, treeFactsOf } from "./check-report.js";
 import { readVerifiedArtifact } from "./evidence.js";
 import { recordObservations } from "./flaky.js";
+import { considerLessonNote, markTalliesPartial, revisedFailures, tallyCheck } from "./lesson-notes.js";
 import { CHECK_REPORT_PREFIX, isExactCase, learnLineSchema, learnRequest, LEARN_MAX_BYTES, LEARN_PREFIX, type CheckReport } from "./contracts/release-check.js";
 import { nightlyTaskRef, releaseTaskRef, type Store, type VerifyCommand } from "./store.js";
 
@@ -212,7 +213,8 @@ export function recordCheckFacts(store: Store, root: string, input: CheckFactsIn
     if (before === undefined || RANK[row.state] > RANK[before.state]) kept.set(key, row);
   }
   const at = input.now.toISOString();
-  store.transact(() => {
+  let recorded = false;
+  try { store.transact(() => {
     const inserted = store.handle.prepare(`INSERT INTO check_fact (run, repo, task_ref, head, tree, command_digest, access, harness_digest, lockfile, conditions_digest,
         conditions_class, purpose, learn_state, learn_why, recorded_at) SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM run WHERE id = ?
       ON CONFLICT (run) DO NOTHING`).run(input.repo, input.taskRef, conditions?.head ?? null, comparable ? conditions.tree : null, conditions?.commandDigest ?? null,
@@ -221,9 +223,18 @@ export function recordCheckFacts(store: Store, root: string, input: CheckFactsIn
     if (Number(inserted.changes) !== 1) return;
     const insert = store.handle.prepare("INSERT INTO check_result (run, identity, state, source, recorded_at) VALUES (?, ?, ?, ?, ?)");
     for (const row of [...kept.values()].slice(0, MAX_RESULTS_PER_CHECK)) insert.run(input.runId, row.identity, row.state, row.source, at);
-    // In the same transaction: what this check adds to the flaky-test list, advisory like everything here.
-    recordObservations(store, input.runId, input.now);
-  });
+    // In the same transaction: what this check adds to the flaky-test list and to accepted notes' tallies, advisory like
+    // everything here.
+    const observations = recordObservations(store, input.runId, input.now);
+    if (input.repo !== null) tallyCheck(store, input.runId, input.repo, observations, input.now);
+    recorded = true;
+  }); } catch (error) {
+    // Not every check was counted this month: its tallies say so.
+    if (input.repo !== null) { try { markTalliesPartial(store, input.repo, input.now); } catch { /* the note reads as it was */ } }
+    throw error;
+  }
+  // A person's lesson note, when this check is what passed a revision. Advisory: nothing here reaches the check.
+  if (recorded) { try { considerLessonNote(store, root, input.runId, input.now); } catch { /* no note */ } }
 }
 
 /** The storage sweep's own step: results older than the retention window go; their fact rows stay. */
@@ -257,13 +268,17 @@ export function checkResultsOf(store: Store, runId: number): { identity: string;
  * accepted note's until it ends, an observation's for 90 days — exact cases only, the most recently tracked first, at
  * most 200. Those left out are counted (`leftOut`): a coverage gap, said, never hidden.
  */
-export function learnRequestFor(store: Store, repo: string, now: Date): { learn: string[]; leftOut: number } {
+export function learnRequestFor(store: Store, repo: string, now: Date, runId?: number): { learn: string[]; leftOut: number } {
   const since = new Date(now.getTime() - OBSERVATION_WATCH_MS).toISOString();
   let tracked: string[];
   // Advisory: a read that fails asks about nothing, and the check runs as it would have.
   try { tracked = store.handle.prepare(`SELECT identity, MAX(since) AS latest FROM learning_watch
       WHERE repo = ? AND ((reason = 'note' AND until IS NULL) OR (reason = 'observation' AND since >= ?))
       GROUP BY identity ORDER BY latest DESC, identity`).all(repo, since).map(row => String(row["identity"])).filter(isExactCase); } catch { return { learn: [], leftOut: 0 }; }
-  const learn = learnRequest(tracked);
-  return { learn, leftOut: tracked.length - learn.length };
+  // First, the failed cases of the check this run revises (lesson-notes.ts rule 4).
+  let revised: string[] = [];
+  if (runId !== undefined) { try { revised = revisedFailures(store, runId); } catch { revised = []; } }
+  const all = [...new Set([...revised, ...tracked])];
+  const learn = learnRequest(all);
+  return { learn, leftOut: all.length - learn.length };
 }

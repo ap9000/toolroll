@@ -633,6 +633,11 @@ $ contract --commands --json → 0
           "meaning": "accept or reject, for memory apply"
         },
         {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note, for memory apply"
+        },
+        {
           "name": "sessions",
           "takesValue": true,
           "meaning": "at most this many newest sessions for one pass (default 100)"
@@ -705,6 +710,11 @@ $ contract --commands --json → 0
           "meaning": "accept or reject, for memory apply"
         },
         {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note, for memory apply"
+        },
+        {
           "name": "sessions",
           "takesValue": true,
           "meaning": "at most this many newest sessions for one pass (default 100)"
@@ -768,6 +778,11 @@ $ contract --commands --json → 0
           "name": "decision",
           "takesValue": true,
           "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note, for memory apply"
         },
         {
           "name": "sessions",
@@ -842,6 +857,11 @@ $ contract --commands --json → 0
           "meaning": "accept or reject, for memory apply"
         },
         {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note, for memory apply"
+        },
+        {
           "name": "sessions",
           "takesValue": true,
           "meaning": "at most this many newest sessions for one pass (default 100)"
@@ -912,6 +932,11 @@ $ contract --commands --json → 0
           "name": "decision",
           "takesValue": true,
           "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note, for memory apply"
         },
         {
           "name": "sessions",
@@ -986,6 +1011,11 @@ $ contract --commands --json → 0
           "meaning": "accept or reject, for memory apply"
         },
         {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note, for memory apply"
+        },
+        {
           "name": "sessions",
           "takesValue": true,
           "meaning": "at most this many newest sessions for one pass (default 100)"
@@ -1051,6 +1081,11 @@ $ contract --commands --json → 0
           "meaning": "accept or reject, for memory apply"
         },
         {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note, for memory apply"
+        },
+        {
           "name": "sessions",
           "takesValue": true,
           "meaning": "at most this many newest sessions for one pass (default 100)"
@@ -1065,7 +1100,7 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "memory apply",
-      "synopsis": "decide one proposal: memory apply <id> --decision accept|reject — the only writer",
+      "synopsis": "decide one proposal: memory apply <id> --decision accept|reject [--claim \"<your words>\"] — the only writer",
       "audience": "operator",
       "agentMayInvoke": false,
       "mutation": "unkeyed",
@@ -1114,6 +1149,11 @@ $ contract --commands --json → 0
           "name": "decision",
           "takesValue": true,
           "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note, for memory apply"
         },
         {
           "name": "sessions",
@@ -1186,6 +1226,11 @@ $ contract --commands --json → 0
           "name": "decision",
           "takesValue": true,
           "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note, for memory apply"
         },
         {
           "name": "sessions",

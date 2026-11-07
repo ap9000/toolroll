@@ -553,7 +553,9 @@ export const REMOTE_POLICY_COUNT: number = REMOTE_NO.length + REMOTE_STEP_UP.len
 const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   // Reads.
   pulls: "read", graph: "read", repos: "read", status: "read", ready: "read", gaps: "read", contract: "read", "skills list": "read", "skills get": "read",
-  "flaky list": "read", "flaky show": "read",
+  "flaky list": "read", "flaky show": "read", "memory review": "read", "memory status": "read", "memory decisions": "read", "memory show": "read",
+  // Learning loops (D3): a lesson note or a clean-up, decided by a person at the laptop (the writers check the act).
+  "memory apply": "memory-review",
   "task list": "read", "task show": "read", "task state": "read", "task wait": "read", "check-progress": "read", "review show": "read", welcome: "read",
   // Acts (plan C1's list).
   "task add": "file-task",

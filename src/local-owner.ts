@@ -46,6 +46,9 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   "dismiss-suggestion",
   // Slice 3: stopping a trial of a cheaper model only lowers (proveRuleDoor checks this exact act).
   "trial-stop",
+  // Learning loops (D3): deciding a lesson note or a clean-up of project memory. The writers (memory-pass.ts decideProposal,
+  // memory-tidy.ts) check this exact act; instruction proposals stay with full authority.
+  "memory-review",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);

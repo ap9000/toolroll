@@ -5,6 +5,7 @@ import { envelopeJson } from './envelope.js';
 import { decisionHistory, getDecision, listDecisions, recordDecision, retireDecision, searchMemory, type Decision } from './project-memory.js';
 import { decideProposal, defaultAnalyzer, listProposals, memoryStatus, runMemoryPass, type MemoryAnalyzer, type MemoryProposal } from './memory-pass.js';
 import type { Store } from './store.js';
+import { afterwardsWords, noteAfterwards, NOTE_SURFACE } from './lesson-notes.js';
 
 const flags = [
   { name: 'repo', takesValue: true, meaning: 'admitted project checkout root' },
@@ -16,6 +17,7 @@ const flags = [
   { name: 'json', takesValue: false, meaning: 'versioned structured response' },
   { name: 'db', takesValue: true, meaning: 'local Toolroll database' },
   { name: 'decision', takesValue: true, meaning: 'accept or reject, for memory apply' },
+  { name: 'claim', takesValue: true, meaning: 'your own words for a lesson note, for memory apply' },
   { name: 'sessions', takesValue: true, meaning: 'at most this many newest sessions for one pass (default 100)' },
   { name: 'no-local', takesValue: false, meaning: 'read only the plane\'s own transcripts, not local Claude Code or Codex session files' },
 ] as const;
@@ -27,7 +29,7 @@ export const MEMORY_DESCRIPTORS = [
   { action: 'retire', synopsis: 'retire a decision that no longer holds: memory retire <id> --reason "<why>"', mutation: 'unkeyed', takesQuery: true, flags, audience: 'operator' },
   { action: 'propose', synopsis: 'the backward pass: read recent sessions, keep a ledger of evidenced gaps, propose a few edits (writes nothing to memory)', mutation: 'unkeyed', takesQuery: false, flags },
   { action: 'review', synopsis: 'list pending memory proposals with their evidence', mutation: 'none', takesQuery: false, flags },
-  { action: 'apply', synopsis: 'decide one proposal: memory apply <id> --decision accept|reject — the only writer', mutation: 'unkeyed', takesQuery: true, flags, audience: 'operator' },
+  { action: 'apply', synopsis: 'decide one proposal: memory apply <id> --decision accept|reject [--claim "<your words>"] — the only writer', mutation: 'unkeyed', takesQuery: true, flags, audience: 'operator' },
   { action: 'status', synopsis: 'surface version, instruction budget, sessions analysed, open gaps and pending proposals', mutation: 'none', takesQuery: false, flags },
 ] as const;
 export type MemoryCliContext = { store: Store; write: (line: string) => void; json: boolean; now: Date; actor: string | null; repos: readonly string[]; evidenceRoot?: string; configDir?: string; analyzer?: MemoryAnalyzer; home?: string };
@@ -62,7 +64,8 @@ export async function runMemoryCommand(positional: readonly string[], options: M
       const decision = getDecision(context.store, repo, context.actor, id);
       if (decision === null) return fail('not-found', 'No such decision in this project.');
       const history = decisionHistory(context.store, repo, context.actor, id);
-      return ok({ decision, history }, [line(decision), `Why: ${decision.why}`, `Source: ${decision.sourceKind}${decision.sourceRef ? ` · ${decision.sourceRef}` : ''}`, ...history.map(h => `  v${h.revision} ${h.action} by ${h.actor} at ${h.at.slice(0, 16).replace('T', ' ')}`)]);
+      const after = noteAfterwards(context.store, decision);
+      return ok({ decision, history, ...(after === null ? {} : { afterwards: after }) }, [line(decision), `Why: ${decision.why}`, `Source: ${decision.sourceKind}${decision.sourceRef ? ` · ${decision.sourceRef}` : ''}`, ...history.map(h => `  v${h.revision} ${h.action} by ${h.actor} at ${h.at.slice(0, 16).replace('T', ' ')}`), ...(after === null ? [] : [afterwardsWords(after)])]);
     }
     if (action === 'decide') {
       const claim = positional.slice(1).join(' ').trim(), why = text('why') ?? '';
@@ -75,7 +78,7 @@ export async function runMemoryCommand(positional: readonly string[], options: M
       const status = memoryStatus(context.store, repo, context.actor);
       return ok({ status }, [`Surface ${status.surface} · instructions ${status.instructionBytes}/${status.budgetBytes} bytes`, `Sessions: ${status.sessions.total} seen, ${status.sessions.analyzed} analysed, ${status.sessions.failed} failed`, `Open gaps: ${status.openGaps} · pending proposals: ${status.pending}`, ...status.included.map(one => `${one.kind} ${one.title}: ${one.words}`), ...(status.included.length === 0 ? [] : ['Last included is counted in runs; lead chats aren\'t counted.'])]);
     }
-    const proposalLine = (p: MemoryProposal) => `#${p.id} ${p.kind} · ${p.title} (${p.sessions} sessions${p.status === 'pending' ? '' : `, ${p.status}`})\n  ${p.rationale}${p.afterText ? `\n  → ${p.afterText}` : ''}${p.beforeText ? `\n  ← ${p.beforeText}` : ''}${p.evidence.map(e => `\n  "${e.quote.slice(0, 160)}" — ${e.session.split(':')[0]}`).join('')}`;
+    const proposalLine = (p: MemoryProposal) => p.surface === NOTE_SURFACE ? `#${p.id} ${p.title}${p.status === 'pending' ? '' : ` (${p.status})`}\n  ${p.rationale}\n  Draft: ${p.afterText}\n  Accept with your own words: memory apply ${p.id} --decision accept --claim "…"` : `#${p.id} ${p.kind} · ${p.title} (${p.sessions} sessions${p.status === 'pending' ? '' : `, ${p.status}`})\n  ${p.rationale}${p.afterText ? `\n  → ${p.afterText}` : ''}${p.beforeText ? `\n  ← ${p.beforeText}` : ''}${p.evidence.map(e => `\n  "${e.quote.slice(0, 160)}" — ${e.session.split(':')[0]}`).join('')}`;
     if (action === 'review') {
       const proposals = listProposals(context.store, repo, options.has('all') ? 'all' : 'pending');
       return ok({ proposals }, proposals.length === 0 ? ['No proposals waiting. Run memory propose after more sessions.'] : proposals.map(proposalLine));
@@ -91,7 +94,8 @@ export async function runMemoryCommand(positional: readonly string[], options: M
     if (action === 'apply') {
       const id = Number(positional[1]), decision = text('decision');
       if (!Number.isSafeInteger(id) || id < 1 || (decision !== 'accept' && decision !== 'reject')) return fail('usage', 'memory apply <proposal id> --decision accept|reject');
-      const proposal = decideProposal(context.store, { repo, actor: context.actor, id, decision }, context.now);
+      const claim = text('claim');
+      const proposal = decideProposal(context.store, { repo, actor: context.actor, id, decision, ...(claim === null ? {} : { claim }) }, context.now);
       return ok({ proposal }, [`${decision === 'accept' ? 'Applied' : 'Rejected'} ${proposalLine(proposal)}`]);
     }
     const id = Number(positional[1]), reason = text('reason') ?? '';

@@ -190,6 +190,8 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "settings.models-not-now": "dismiss-suggestion",
   "settings.models-suggest-off": "dismiss-suggestion",
   "settings.models-stop": "trial-stop",
+  // Learning loops (D3): a person at the laptop decides lesson notes and clean-ups of project memory.
+  "settings.knowledge-note": "memory-review",
   "agents.seen": "mark-seen",
   "agents.watch": "watch-agent",
 });
@@ -596,6 +598,7 @@ for (const one of ["turn-off", "not-now", "suggest-off", "stop"]) post("settings
 post("settings", "settings.models-act", "^\\/settings\\/models\\/.*$", { sample: "/settings/models/unknown", ...MODELS });
 post("settings", "settings.knowledge-refresh", "/settings/knowledge/refresh", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to refresh project context.", "/settings/knowledge") });
 post("settings", "settings.knowledge-proposal", "/settings/knowledge/proposal", { project: "form", ...approver("Sign in as an approver to decide memory proposals.", "/settings/knowledge") });
+post("settings", "settings.knowledge-note", "/settings/knowledge/note", { project: "form", ...approver("Sign in as an approver to decide lesson notes.", "/settings/knowledge") });
 post("settings", "settings.knowledge-decision", "/settings/knowledge/decision", { project: "form", ...approver("Sign in as an approver to change project decisions.", "/settings/knowledge") });
 post("settings", "settings.knowledge-change", "/settings/knowledge/change", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to change project knowledge.", "/settings/knowledge") });
 post("settings", "settings.learning-change", "/settings/learning/change", { project: "form", limited: "unscoped" });
