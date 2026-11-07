@@ -24,7 +24,7 @@ import { ACP_AGENTS, isAcpProvider, isKeyedProvider, type AcpProviderId } from "
 import { launchFromJson, verifyLaunch } from "./acp-attest.js";
 import { classifyTerminal, terminalMatchesLimit } from "./exhaustion.js";
 import { chainCustodyProblem, closeWalkSignedOut, pinnedEntryOf } from "./fallback.js";
-import { codexLoginBilling } from "./codex-login.js";
+import { codexLoginBilling, livePlanLogin, PLAN_LOGIN_PROVABLE } from "./plan-login.js";
 import { liftAuthPause } from "./provider-auth.js";
 import { attestProvider, reportedVersion, type VersionProbe } from "./attest.js";
 import { run as runCommand, runOwnerTag, streamsInput } from "./exec.js";
@@ -405,6 +405,20 @@ export async function invokeAgent(
   if (pinned !== null && authMode === "api-key" && managedKey === null) {
     return { kind: "refused", reason: "auth-mode", providerVersion: attested === null ? null : attested.version, diagnostic: `this fallback agent is approved on an API key, and ${spec.provider} has none here` };
   }
+  // A fallback agent approved on its plan runs only on a login its CLI proves, live, is that plan: read with the run's
+  // own environment, before anything is started for it (no proxy, tools or homes to leave behind). A provider with no
+  // live proof never gets here (filing refuses it); if one does, it's refused too. A key is never read as paid.
+  if (pinned !== null && pinned.index > 0 && authMode === "subscription") {
+    const live = PLAN_LOGIN_PROVABLE.has(spec.provider)
+      ? await livePlanLogin(spec.provider, attested !== null ? attested.executable : adapter.binary,
+        [...(runOptions.omitEnv ?? []), ...adapter.extraOmitEnv, ...ownKeyEnv, ...ALL_CREDENTIAL_ENV], { ...process.env, ...(runOptions.env ?? {}) })
+      : null;
+    if (live !== "subscription") {
+      closeWalkSignedOut(store, runId, clock());
+      return { kind: "refused", reason: "auth-mode", providerVersion: attested === null ? null : attested.version,
+        diagnostic: `this fallback agent is approved on its plan, and ${spec.provider} isn't signed in to one here${live === "api-key" ? " (it's signed in another way)" : ""}` };
+    }
+  }
   // Resume XOR mint, enforced at the GATEWAY (Codex gemini verify round 2,
   // finding 3): a resume and a minted start id are mutually exclusive —
   // geminiArgv silently prefers --resume, so a minted id that rides
@@ -590,19 +604,6 @@ export async function invokeAgent(
   const codexLogin = spec.provider === "codex" && authMode === "subscription" && runner === undefined
     ? await codexLoginBilling(attested !== null ? attested.executable : adapter.binary, [...(runOptions.omitEnv ?? []), ...adapter.extraOmitEnv, ...ownKeyEnv])
     : null;
-  // A fallback agent approved on its plan runs only on a login proved to be that plan, read live where its CLI can say
-  // (Codex), else from how this machine last saw it bill. A saved API key never turns it into a paid agent.
-  if (pinned !== null && pinned.index > 0 && authMode === "subscription") {
-    const live = spec.provider === "codex"
-      ? codexLogin ?? await codexLoginBilling(attested !== null ? attested.executable : adapter.binary, [...(runOptions.omitEnv ?? []), ...adapter.extraOmitEnv, ...ownKeyEnv])
-      : seenBilling(store.handle, spec.provider);
-    if (live !== "subscription") {
-      tools?.cleanup(); codexHome?.cleanup(); removeAgentDatabase(isolatedDb.dir);
-      closeWalkSignedOut(store, runId, clock());
-      return { kind: "refused", reason: "auth-mode", providerVersion: attested === null ? null : attested.version,
-        diagnostic: `this fallback agent is approved on its plan, and ${spec.provider} isn't signed in to one here${live === "api-key" ? " (it's signed in with an API key)" : ""}` };
-    }
-  }
   const childEnv = {
     ...(runOptions.env ?? {}),
     ...(adapter.env?.(buildInvocation) ?? {}),
@@ -931,7 +932,13 @@ export async function invokeAgent(
     // own command output (codex aggregated_output), never its sign-in.
     earlyExit: quietEarlyExit ? `${result.stderr.slice(-4096)}\n${plainLines(result.stdout).slice(-4096)}` : null,
   });
-  store.stampTerminalClass(runId, authMode, terminalClass);
+  // A plan limit counts only from a run whose protocol and identity hold (fallback.ts moves work on it): a terminal from a
+  // conflicting session, a minted id it didn't echo, or a failure on exit 0 is refused below and is never exhaustion.
+  const protocolClean = envelope.protocolError === null
+    && !(startSessionId !== undefined && envelope.initObserved === true && envelope.sessionId !== startSessionId)
+    && sessionIdentityProblem === null
+    && !(result.code === 0 && envelope.structuralTerminal?.failed === true);
+  store.stampTerminalClass(runId, authMode, terminalClass === "usage-exhausted" && !protocolClean ? "not-exhausted" : terminalClass);
 
   // Contradictory structural identity is a provider protocol failure, not
   // a session selection problem. Usage above remains recorded because the

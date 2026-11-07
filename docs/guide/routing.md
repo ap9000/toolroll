@@ -112,6 +112,11 @@ chain on their approval, and the approval covers it. A paid agent (an API key)
 also needs `--allow-paid`, read again each time it would spend, and a person's
 own yes on the approval. Its changes so far are kept on the task's branch.
 
+A fallback agent on a plan runs only when its CLI proves, right then, that
+it is signed in to that plan (Claude and Codex can). Otherwise nothing runs
+and the task waits for you to sign it in and retry. Gemini can't prove its
+plan, so it can only be a fallback on an API key.
+
 Toolroll only moves work when it recognises the provider's own words, taken
 from a real run. Today that is Claude on a plan. Other agents can take over,
 but when they run out the chain stops there. A throttle or a spend cap never

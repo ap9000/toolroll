@@ -74,6 +74,11 @@ admission re-proves the seal, walk, cursor, entry digest and live grant and cons
 the entry's profile; the gateway re-proves custody and the grant at the spawn, and spends under the pinned auth mode, or
 refuses.
 
+**A plan entry's login.** A fallback agent pinned to a plan runs only when its CLI says, live and machine-readably,
+that the credential the run will use is that plan: `codex login status`, `claude auth status --json` (a first-party
+claude.ai login with a named subscription). Gemini has no such proof, so a Gemini plan entry is refused when set and
+when filed. If the proof fails at launch, nothing starts, no strike, and the task waits for a person's retry.
+
 **Kept work.** An exhausted run's changes are saved as a work-in-progress commit on the task's branch, the road
 `keepUnhandedWork` already has, so the next agent starts from them. One function, `fallbackBriefFor`, says so in the
 brief: the place the handover note plugs in once it merges.

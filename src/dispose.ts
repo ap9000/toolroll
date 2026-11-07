@@ -1,4 +1,5 @@
 // Assignment tracking grants no repair authority or attempts.
+import { blockAfterSignedOut } from "./fallback.js";
 import { authorizeCheckOnly } from "./check-only.js";
 import { proposeNewRoute } from "./route-change.js";
 import { originalTaskBase, focusedTestCommandSupported } from "./observations.js";
@@ -422,6 +423,8 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
   // invariants the dispatcher was supposed to uphold.
   if (leaseId !== undefined) release(store, leaseId, clock());
   store.finishRun(runId, { outcome: "refused", reason: result.reason, now: clock() });
+  // A fallback agent not signed in to its plan: the task waits for a person's retry, never loops (fallback.ts).
+  if (result.reason === "auth-mode" && blockAfterSignedOut(store, runId, clock())) return { kind: "skipped", reason: "fallback-signed-out" as never };
   if (result.reason === "stale-approval") {
     // A deterministic refusal (setup review): the approval no longer
     // matches the routing, and nothing about the next pass changes that.

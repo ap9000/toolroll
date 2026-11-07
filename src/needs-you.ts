@@ -252,6 +252,7 @@ export const RUN_REASON_WORDS: Readonly<Record<string, string>> = {
   "agent-reported": "the agent reported it could not finish",
   "no-op": "nothing changed when something should have",
   "usage-exhausted": "the agent ran out of its plan, so its work moved to the next approved agent",
+  "fallback-signed-out": "the next approved agent isn't signed in to its plan here, so it didn't run; sign it in, then retry",
   "no-handoff": "the agent stopped before handing off; its work was kept and it is being resumed",
   "moved-head": "the branch moved underneath the build",
   "moved-branch": "the branch moved underneath the build",

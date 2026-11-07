@@ -9,8 +9,15 @@ import { readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const login = vi.hoisted(() => ({ codex: "subscription" as "subscription" | "api-key" | null }));
-vi.mock("./codex-login.js", () => ({ codexLoginBilling: async () => login.codex }));
+const login = vi.hoisted(() => ({ codex: "subscription" as "subscription" | "api-key" | null, claude: "subscription" as "subscription" | "api-key" | null, proxies: 0 }));
+vi.mock("./plan-login.js", async original => {
+  const real = await original<typeof import("./plan-login.js")>();
+  return { ...real, codexLoginBilling: async () => login.codex, livePlanLogin: async (provider: string) => provider === "codex" ? login.codex : provider === "claude" ? login.claude : null };
+});
+vi.mock("./egress.js", async original => {
+  const real = await original<typeof import("./egress.js")>();
+  return { ...real, startEgressProxy: (async (...args: Parameters<typeof real.startEgressProxy>) => { login.proxies++; return real.startEgressProxy(...args); }) as typeof real.startEgressProxy };
+});
 vi.mock("./attest.js", async original => ({ ...await original<typeof import("./attest.js")>(), reportedVersion: async () => "2.1.319 (Claude Code)" }));
 
 import { runOperate } from "./operate.js";
@@ -22,6 +29,7 @@ import { bindRunToWalk, chainCustodyProblem, clearFallbackChain, setFallbackChai
 import { canonicalChainJson, chainFromJson, chainTermsLines, describeScope, liveChainFromJson, scopeAuthorityOf } from "./scope.js";
 import { scopeTermsText, shownTermsDigest } from "./chat-terms.js";
 import { planCardText } from "./chat-decide.js";
+import { diagnoseTaskDispatch } from "./dispatch.js";
 import { approvalSheetHtml, approveKitOf } from "./server/render-tasks.js";
 import { htmlString } from "./html.js";
 import { withFormToken } from "./server/request-context.js";
@@ -73,8 +81,6 @@ describe("a chain, against real git", () => {
     await say(["task", "add", "seed", "--id", "seed", "--repo", repo]);
     await say(["project", "fallback", "--repo", repo, "--agents", agents, ...(paid ? ["--allow-paid"] : []), "--as", "alex", "--token", approver, "--json"]);
     expect(payload().ok, lines.join("\n")).toBe(true);
-    // This machine has seen Claude bill on its plan (a plan entry with no live probe needs that evidence).
-    withStore(store => store.recordProviderBilling("claude", "subscription", T0));
   };
   const file = async (id: string) => {
     await say(["task", "add", "the work", "--id", id, "--repo", repo]);
@@ -89,7 +95,7 @@ describe("a chain, against real git", () => {
   const walks = () => withStore(store => store.handle.prepare("SELECT cursor, state, closed_reason FROM fallback_walk ORDER BY id").all());
 
   beforeEach(async () => {
-    login.codex = "subscription";
+    login.codex = "subscription"; login.claude = "subscription"; login.proxies = 0;
     base = realpathSync(await mkdtemp(join(tmpdir(), "toolroll-fallback-")));
     repo = join(base, "repo"); db = join(base, "queue.db"); pool = join(base, "pool"); runs = [];
     await mkdir(repo, { recursive: true });
@@ -169,33 +175,108 @@ describe("a chain, against real git", () => {
     expect(withStore(store => store.handle.prepare("SELECT chain_index FROM run WHERE chain_cycle IS NOT NULL ORDER BY id").all())).toEqual([{ chain_index: 0 }, { chain_index: 1 }, { chain_index: 1 }]);
   });
 
-  test("a plan entry whose saved login is an API key never runs, never reads as paid, takes no strike, and doesn't loop", async () => {
+  test("a plan entry whose live login isn't that plan never runs, starts nothing, takes no strike, and waits for a person's retry", async () => {
     await setUp("codex:gpt-5.5:plan");
     await file("t-1"); await approve("t-1");
     login.codex = "api-key";
     const codexRan: string[] = [];
     const either: Runner = async (file, args, options) => { if (/codex/.test(file)) { codexRan.push(file); return { ...OK, code: 1 }; } return exhausted(false)(file, args, options); };
     await tick(either, T0);
+    const proxiesBefore = login.proxies;
+    // The base's own run started one, so a refusal that leaked would show.
+    expect(proxiesBefore).toBeGreaterThan(0);
     await tick(either, later(1));
     expect(codexRan).toEqual([]);
-    expect(withStore(store => store.handle.prepare("SELECT provider, outcome, reason, provider_started_at FROM run WHERE provider = 'codex'").all())).toMatchObject([{ outcome: "refused", reason: "auth-mode", provider_started_at: null }]);
+    // Refused before anything was started for it: no egress proxy, no spend stamp.
+    expect(login.proxies).toBe(proxiesBefore);
+    expect(withStore(store => store.handle.prepare("SELECT outcome, reason, provider_started_at FROM run WHERE provider = 'codex'").all())).toEqual([{ outcome: "refused", reason: "fallback-signed-out", provider_started_at: null }]);
     expect(walks()).toMatchObject([{ cursor: 1, state: "closed", closed_reason: "entry-signed-out" }]);
-    expect(withStore(store => store.lookupRef("t-1")!.strikes)).toBe(0);
-    // The base runs out again within the window: the ordinary road, a strike, and no second move to the same agent.
-    await tick(either, later(2));
-    expect(walks()).toMatchObject([{ closed_reason: "entry-signed-out" }, { cursor: 0, state: "closed", closed_reason: "entry-signed-out" }]);
-    expect(withStore(store => store.lookupRef("t-1")!.strikes)).toBe(1);
-    expect(codexRan).toEqual([]);
+    expect(withStore(store => ({ strikes: store.lookupRef("t-1")!.strikes, state: store.getTask("t-1")!.state }))).toEqual({ strikes: 0, state: "failed" });
+    // Blocked with no time limit: hours later nothing runs, no base, no loop.
+    const before = runs.length;
+    await tick(either, later(24 * 60));
+    expect(runs.length).toBe(before);
+    expect(withStore(store => diagnoseTaskDispatch(store, "t-1", later(24 * 60)))).toMatchObject({ action: "retry-task" });
+    // A person signs Codex in and retries: the base runs, runs out, and Codex takes over.
+    login.codex = "subscription";
+    await say(["task", "requeue", "t-1", "--as", "alex", "--token", approver, "--json"], undefined, later(24 * 60 + 1));
+    expect(payload().ok, lines.join("\n")).toBe(true);
+    const codex: Runner = async (_file, _args, options) => {
+      const cwd = options?.cwd ?? "";
+      codexRan.push("ran");
+      const stdin = String((options as { stdin?: string } | undefined)?.stdin ?? "");
+      const name = /STANDING-ORDERS-DONE-[0-9a-f]{16}\.json/.exec(`${_args.join(" ")}\n${stdin}`)?.[0];
+      await writeFile(join(cwd, "guard.ts"), "export const guarded = true;\n");
+      if (name !== undefined) await writeFile(join(cwd, name), JSON.stringify({ version: 1, status: "completed", conclusion: "Finished." }));
+      return { ...OK, stdout: [{ type: "thread.started", thread_id: "019a0000-0000-7000-8000-000000000000" }, { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }].map(one => JSON.stringify(one)).join("\n") };
+    };
+    const after: Runner = (file, args, options) => (/codex/.test(file) ? codex : exhausted(false))(file, args, options);
+    await tick(after, later(24 * 60 + 2));
+    await tick(after, later(24 * 60 + 3));
+    expect(codexRan).toEqual(["ran"]);
+    expect(outcomeOf("t-1").outcome, lines.join("\n")).toBe("built");
   });
 
-  test("a Claude plan entry runs only where Claude was seen billing on its plan", async () => {
+  test("a Claude plan entry runs only when Claude's live sign-in says it's that plan", async () => {
     await setUp("claude:opus:plan");
     await file("t-1"); await approve("t-1");
+    login.claude = "api-key";
     await tick(byModel({ sonnet: exhausted(false), opus: finishes }), T0);
-    withStore(store => store.recordProviderBilling("claude", "api-key", later(1)));
     await tick(byModel({ sonnet: exhausted(false), opus: finishes }), later(1));
     expect(runs.map(one => one.model)).toEqual(["sonnet"]);
     expect(walks()).toMatchObject([{ cursor: 1, closed_reason: "entry-signed-out" }]);
+    expect(withStore(store => store.getTask("t-1")!.state)).toBe("failed");
+  });
+
+  test("a provider with no live plan proof can't be a plan fallback: refused when set, and when filed", async () => {
+    token = registerRunner(db, "builder-1", repo);
+    await say(["approver", "add", "alex", "--json"]);
+    approver = payload().token as string;
+    for (const phase of ["build", "plan", "review"]) await say(["config", "set", phase, "--provider", "claude", "--model", "sonnet", "--as", "alex", "--token", approver, "--json"]);
+    await say(["task", "add", "seed", "--id", "seed", "--repo", repo]);
+    await say(["project", "fallback", "--repo", repo, "--agents", "gemini:gemini-2.5-pro:plan", "--as", "alex", "--token", approver, "--json"]);
+    expect(payload()).toMatchObject({ ok: false, message: "Toolroll can't check that Gemini is signed in to a plan, so it can't be a plan fallback. Pin it to an API key with paid fallback allowed instead." });
+    // A setting written before this rule (or by hand) files the scope unresolved, in the same words.
+    withStore(store => store.handle.prepare("INSERT INTO fallback_setting (repo, entries_json, updated_by, updated_at) VALUES (?, ?, 'alex', ?)")
+      .run(repo, JSON.stringify([{ provider: "gemini", model: "gemini-2.5-pro", authMode: "subscription" }]), T0.toISOString()));
+    await file("t-1");
+    expect(withStore(store => store.getScope("t-1")!)).toMatchObject({ profileState: "unresolved", unresolvedReason: expect.stringContaining("can't check that Gemini is signed in to a plan") });
+  });
+
+  test("a limit terminal from a session that doesn't match is a protocol refusal, never exhaustion: the base doesn't move", async () => {
+    await setUp("claude:opus:plan");
+    await file("t-1"); await approve("t-1");
+    const forked: Runner = async (_file, args, options) => {
+      await seen(args, options?.cwd ?? "");
+      const result = { type: "result", subtype: "success", is_error: true, result: FIXTURE.terminal.text, session_id: "session-B" };
+      return { ...OK, code: 1, stdout: [JSON.stringify({ type: "system", subtype: "init", session_id: "session-A" }), JSON.stringify(result)].join("\n") };
+    };
+    await tick(byModel({ sonnet: forked, opus: finishes }), T0);
+    expect(withStore(store => store.handle.prepare("SELECT terminal_class FROM run WHERE model = 'sonnet'").get())).toEqual({ terminal_class: "not-exhausted" });
+    expect(walks()).toMatchObject([{ cursor: 0 }]);
+    expect(withStore(store => store.handle.prepare("SELECT COUNT(*) AS n FROM fallback_move").get()!["n"])).toBe(0);
+  });
+
+  test("a repair turn whose limit terminal comes from another session never moves its attempt", async () => {
+    await setUp("claude:opus:plan");
+    await file("t-1"); await approve("t-1");
+    let calls = 0;
+    const forkedRepair: Runner = async (_file, args, options) => {
+      const cwd = options?.cwd ?? "";
+      await seen(args, cwd);
+      calls++;
+      const session = args[args.indexOf("--session-id") + 1] ?? args[args.indexOf("--resume") + 1] ?? "s-1";
+      if (calls === 1) {
+        await writeFile(join(cwd, "half-done.ts"), "export const half = true;\n");
+        return { ...OK, stdout: [JSON.stringify({ type: "system", subtype: "init", session_id: session }), JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "stopped", session_id: session })].join("\n") };
+      }
+      const result = { type: "result", subtype: "success", is_error: true, result: FIXTURE.terminal.text, session_id: "session-B" };
+      return { ...OK, code: 1, stdout: [JSON.stringify({ type: "system", subtype: "init", session_id: session }), JSON.stringify(result)].join("\n") };
+    };
+    await tick(byModel({ sonnet: forkedRepair, opus: finishes }), T0);
+    expect(withStore(store => store.handle.prepare("SELECT COUNT(*) AS n FROM fallback_move").get()!["n"])).toBe(0);
+    expect(withStore(store => store.handle.prepare("SELECT terminal_class FROM run WHERE role = 'repair'").all()).every(one => one["terminal_class"] !== "usage-exhausted")).toBe(true);
+    expect(runs.some(one => one.model === "opus")).toBe(false);
   });
 
   test("an agent that commits for itself and then runs out keeps nothing and moves nowhere: the HEAD law holds", async () => {

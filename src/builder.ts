@@ -3209,7 +3209,7 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
       now: clock(),
     });
     // Out of plan mid-turn on an approved chain: no more turns; the attempt ends and its walk moves on.
-    if (!handedOff && ranOutOnChain(store, admitted.runId)) {
+    if (!handedOff && spoken.kind === "ran" && ranOutOnChain(store, admitted.runId)) {
       const kept = await keepForNextAgent(captured);
       return kept ?? { ok: false, reason: "agent", message: "The agent ran out of its plan while finishing its handoff." };
     }

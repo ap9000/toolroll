@@ -20,6 +20,7 @@ import { SUBSCRIPTION_CAPABLE } from "./keys.js";
 import { routeDigestOf } from "./phase-routing.js";
 import { isProviderId, validateSpec } from "./provider.js";
 import { providerName } from "./provider-auth.js";
+import { PLAN_LOGIN_PROVABLE } from "./plan-login.js";
 import { canonicalChainJson, chainDigestOf, LIVE_CHAIN_VERSION, liveChainFromJson, machineActing, profileDigestOf, type ChainEntry, type ExecutionProfile, type Scope, type UnattendedPermissionMode } from "./scope.js";
 import type { Store } from "./store.js";
 
@@ -30,7 +31,7 @@ export type FallbackEntry = { provider: string; model: string; authMode: "subscr
 export type FallbackSetting = { repo: string; entries: FallbackEntry[]; paidGrant: { by: string; at: string } | null; updatedBy: string; updatedAt: string };
 
 type WalkRow = { id: number; taskRef: number; scopeDigest: string; chainDigest: string; cursor: number; tailRun: number; state: "open" | "closed"; closedReason: string | null };
-type RunBinding = { id: number; taskRef: number; role: string; provider: string; model: string | null; outcome: string | null; parentRun: number | null;
+type RunBinding = { id: number; taskRef: number; role: string; provider: string; model: string | null; outcome: string | null; reason: string | null; parentRun: number | null;
   chainCycle: number | null; chainIndex: number | null; entryDigest: string | null; authMode: string | null; terminalClass: string | null; providerStartedAt: string | null; finishedAt: string | null };
 
 const tablesSeen = new WeakSet<object>();
@@ -89,6 +90,7 @@ export function entriesProblem(entries: readonly FallbackEntry[]): string | null
     if (!isProviderId(entry.provider) || isAcpProvider(entry.provider)) return `${entry.provider} can't be a fallback agent.`;
     const valid = validateSpec({ provider: entry.provider, model: entry.model });
     if (!valid.ok) return valid.problem;
+    if (entry.authMode === "subscription" && !PLAN_LOGIN_PROVABLE.has(entry.provider)) return `Toolroll can't check that ${providerName(entry.provider)} is signed in to a plan, so it can't be a plan fallback. Pin it to an API key with paid fallback allowed instead.`;
     if (entry.authMode === "subscription" && !planCapable(entry.provider)) return `${providerName(entry.provider)} has no plan to sign in with; use an API key.`;
     const key = `${entry.provider}\n${entry.model}\n${entry.authMode}`;
     if (seen.has(key)) return `${entryWords(entry)} is listed twice.`;
@@ -227,11 +229,11 @@ function walkOf(row: Record<string, unknown> | undefined): WalkRow | null {
 const openWalk = (store: Store, taskRef: number): WalkRow | null => walkOf(store.handle.prepare("SELECT * FROM fallback_walk WHERE task_ref = ? AND state = 'open'").get(taskRef));
 
 function bindingOf(store: Store, runId: number): RunBinding | null {
-  const row = store.handle.prepare("SELECT id, task_ref, role, provider, model, outcome, parent_run, chain_cycle, chain_index, entry_digest, auth_mode, terminal_class, provider_started_at, finished_at FROM run WHERE id = ?").get(runId);
+  const row = store.handle.prepare("SELECT id, task_ref, role, provider, model, outcome, reason, parent_run, chain_cycle, chain_index, entry_digest, auth_mode, terminal_class, provider_started_at, finished_at FROM run WHERE id = ?").get(runId);
   if (row === undefined) return null;
   const opt = (key: string): string | null => row[key] == null ? null : String(row[key]);
   const num = (key: string): number | null => row[key] == null ? null : Number(row[key]);
-  return { id: Number(row["id"]), taskRef: Number(row["task_ref"]), role: String(row["role"]), provider: String(row["provider"]), model: opt("model"), outcome: opt("outcome"), parentRun: num("parent_run"),
+  return { id: Number(row["id"]), taskRef: Number(row["task_ref"]), role: String(row["role"]), provider: String(row["provider"]), model: opt("model"), outcome: opt("outcome"), reason: opt("reason"), parentRun: num("parent_run"),
     chainCycle: num("chain_cycle"), chainIndex: num("chain_index"), entryDigest: opt("entry_digest"), authMode: opt("auth_mode"), terminalClass: opt("terminal_class"), providerStartedAt: opt("provider_started_at"), finishedAt: opt("finished_at") };
 }
 
@@ -412,7 +414,9 @@ export function chainCustodyProblem(store: Store, runId: number): string | null 
 function exhaustedRepairOf(store: Store, run: RunBinding): RunBinding | null {
   const row = store.handle.prepare("SELECT id FROM run WHERE parent_run = ? AND role = 'repair' ORDER BY id DESC LIMIT 1").get(run.id);
   const child = row === undefined ? null : bindingOf(store, Number(row["id"]));
-  if (child === null || child.terminalClass !== "usage-exhausted" || child.providerStartedAt === null || child.outcome === null) return null;
+  // Only the agent's own failed exit: a turn the gateway refused (a session that didn't match, any protocol problem) is
+  // never evidence, whatever its stamp says.
+  if (child === null || child.terminalClass !== "usage-exhausted" || child.providerStartedAt === null || child.outcome !== "failed" || child.reason !== "agent") return null;
   if (child.taskRef !== run.taskRef || child.chainCycle !== run.chainCycle || child.chainIndex !== run.chainIndex || child.entryDigest !== run.entryDigest) return null;
   return child;
 }
@@ -421,12 +425,8 @@ function exhaustedRepairOf(store: Store, run: RunBinding): RunBinding | null {
 export function ranOutOnChain(store: Store, runId: number): boolean {
   if (!hasTables(store)) return false;
   const run = bindingOf(store, runId);
-  return run !== null && run.chainCycle !== null && run.terminalClass === "usage-exhausted";
+  return run !== null && run.chainCycle !== null && run.terminalClass === "usage-exhausted" && (run.outcome === null || (run.outcome === "failed" && run.reason === "agent"));
 }
-
-/** How long after a fallback agent was refused for not being signed in to its plan the task stops moving to it: its
- * retries then take the ordinary road, with strikes, instead of looping through the base agent. */
-export const SIGNED_OUT_WINDOW_MS = 30 * 60_000;
 
 /** The gateway refused this bound run: its plan login isn't proved. The walk closes, a person is told, no strike. */
 export function closeWalkSignedOut(store: Store, runId: number, now: Date): void {
@@ -440,14 +440,28 @@ export function closeWalkSignedOut(store: Store, runId: number, now: Date): void
     store.enqueueNotification({
       source: { run: run.id }, dedupeKey: `fallback:signed-out:${run.id}`, kind: "fallback", pushClass: "attention", link: `/r/${run.id}`,
       subject: `${ref?.externalId ?? "A task"}: ${providerName(run.provider)} isn't signed in to its plan`,
-      body: `The next approved agent runs on its plan, but ${providerName(run.provider)} here isn't signed in to one. Nothing ran and nothing was spent. Sign it in to its plan, then requeue.`,
+      body: `The next approved agent runs on its plan, but ${providerName(run.provider)} here isn't signed in to one. Nothing ran and nothing was spent. Sign it in to its plan, then retry the task.`,
     }, now);
   });
 }
 
-function signedOutRecently(store: Store, taskRef: number, now: Date): boolean {
-  const since = new Date(now.getTime() - SIGNED_OUT_WINDOW_MS).toISOString();
-  return store.handle.prepare("SELECT 1 AS hit FROM fallback_walk WHERE task_ref = ? AND closed_reason = 'entry-signed-out' AND closed_at >= ?").get(taskRef, since) !== undefined;
+/**
+ * After the dispatch road finished a refused run: when it was a fallback agent refused for not being signed in to its
+ * plan, the task stops and waits for a person (task state failed, the run's reason saying why), until they retry it.
+ * Nothing expires it. True when it did.
+ */
+export function blockAfterSignedOut(store: Store, runId: number, now: Date): boolean {
+  if (!hasTables(store)) return false;
+  return store.transact(() => {
+    const run = bindingOf(store, runId);
+    if (run === null || run.chainCycle === null) return false;
+    const walk = walkOf(store.handle.prepare("SELECT * FROM fallback_walk WHERE id = ?").get(run.chainCycle));
+    if (walk === null || walk.closedReason !== "entry-signed-out") return false;
+    store.handle.prepare("UPDATE run SET reason = 'fallback-signed-out' WHERE id = ? AND outcome = 'refused'").run(runId);
+    const ref = store.refForId(run.taskRef);
+    if (ref !== null) store.handle.prepare("UPDATE task SET state = 'failed', updated_at = ? WHERE id = ? AND state IN ('queued','running')").run(now.toISOString(), ref.externalId);
+    return true;
+  });
 }
 
 export type MoveResult = { moved: true; to: FallbackEntry; paid: boolean } | null;
@@ -478,8 +492,6 @@ export function moveOnIfExhausted(store: Store, runId: number, taskId: string, n
   }
   const next = sealed.chain[run.chainIndex + 1];
   if (next === undefined) { closeWalk(store, walk.id, "chain-ended", now); tell(store, run, taskId, "chain-ended", null, now); return null; }
-  // Its next agent was just refused for not being signed in to its plan: no loop through the base, the ordinary road.
-  if (signedOutRecently(store, run.taskRef, now)) { closeWalk(store, walk.id, "entry-signed-out", now); return null; }
   const to: FallbackEntry = { provider: next.profile.provider, model: next.profile.model, authMode: next.authMode };
   const paid = entryPaid(store, to);
   if (paid && !paidGrantLive(store, store.refForId(run.taskRef)?.repo ?? null)) {
