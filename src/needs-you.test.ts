@@ -6,6 +6,8 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
+import { lingeringRun, settleLeftoverRecords } from "./desktop-update.js";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -306,6 +308,22 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     expect(htmlString(leadBriefHtml(assignmentCatchUp(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 50 }, root)))).not.toContain(`/t/${id}#recheck-stopped`);
     expect(store.settleUnspawnedWitnesses(NOW, run)).toBe(1);
     expect(assignment(id).state).toBe("ready-to-check");
+  });
+
+  test("an update settles leftover records on a database still before v150, with no machine id column", () => {
+    const id = "before-machine-id", run = built(id, "Settle on the older database");
+    witness(run, spawnSync("true").pid);
+    witness(run, null);
+    const older = join(dir, "before-v150.db");
+    store.raw().exec(`VACUUM INTO '${older}'`);
+    const db = new DatabaseSync(older);
+    try {
+      db.exec("DROP TABLE machine_host_alias; ALTER TABLE run_process DROP COLUMN machine_id");
+      db.prepare("UPDATE run_process SET exited_at = ? WHERE run <> ?").run(NOW.toISOString(), run);
+      expect(settleLeftoverRecords(db, NOW)).toBe(1);
+      expect(db.prepare("SELECT count(*) AS open FROM run_process WHERE run = ? AND exited_at IS NULL").get(run)?.["open"]).toBe(0);
+      expect(lingeringRun(db)).toBeNull();
+    } finally { db.close(); }
   });
 
   test("Waiting rows are not counted as Needs you, and settled custody leaves it", () => {

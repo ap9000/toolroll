@@ -34,7 +34,7 @@ import { processCensus, type ProcessRow } from "./run-closeout.js";
 import { linkedKey, pruneUnusedShared, sharedDepsRoot, sharedUse, SHARED_UNUSED_MS } from "./shared-deps.js";
 import { pruneStagedRuntimes, runtimesInUse, runtimeScriptPaths, stagePlan } from "./staged-runtimes.js";
 import { bytesWords, diskBytes } from "./storage.js";
-import { localWitnessSql, storeMachine, type Store } from "./store.js";
+import { localWitnessSql, type Store } from "./store.js";
 import { processesInStrict } from "./stop-proof.js";
 import { removeStaleTestTemp } from "./test-temp.js";
 import { worktreeProcessOccupancy, type WorktreePool } from "./worktree.js";
@@ -108,7 +108,7 @@ export function liveWork(store: Store, depsRoot: string, now: Date, where: (pids
     if (held.held && held.by > 1) pids.add(held.by);
   }
   if (tasks.size === 0 && paths.length === 0) return { live: false, paths: [], blind: false };
-  const local = localWitnessSql(storeMachine(db), "p");
+  const local = localWitnessSql(db, "p");
   const witnessed = db.prepare(`SELECT p.pid AS pid FROM run_process p JOIN run r ON r.id = p.run
     WHERE r.finished_at IS NULL AND p.exited_at IS NULL AND p.pid IS NOT NULL AND ${local.sql}`).all(...local.params);
   for (const row of witnessed) pids.add(Number(row["pid"]));

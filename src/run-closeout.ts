@@ -17,7 +17,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, sep } from "node:path";
 import { ownedProcessCount, runOwnerTag } from "./exec.js";
-import { localWitnessSql, storeMachine, type Store, type WorktreeRow } from "./store.js";
+import { localWitnessSql, type Store, type WorktreeRow } from "./store.js";
 import { sleep as defaultSleep } from "./sleep.js";
 
 /** How long a process has after SIGTERM before SIGKILL. */
@@ -138,7 +138,7 @@ export type CloseoutOptions = StopOptions & { repo?: string; actor?: string };
 export async function closeOutRuns(store: Store, clock: () => Date, options: CloseoutOptions = {}): Promise<{ runId: number; done: Stopped }[]> {
   if (process.platform === "win32") return [];
   const db = store.handle;
-  const local = localWitnessSql(storeMachine(db), "p"), mine = localWitnessSql(storeMachine(db));
+  const local = localWitnessSql(db, "p"), mine = localWitnessSql(db);
   const runs = db.prepare(`SELECT DISTINCT p.run AS run FROM run_process p JOIN run r ON r.id = p.run JOIN task_ref t ON t.id = r.task_ref
     WHERE p.exited_at IS NULL AND p.pid IS NOT NULL AND p.containment IS NULL AND p.container IS NULL AND ${local.sql}
       AND r.outcome IS NOT NULL${options.repo === undefined ? "" : " AND t.repo = ?"} ORDER BY p.run`)
@@ -230,7 +230,7 @@ export function checkoutTargets(census: readonly ProcessRow[], inside: ReadonlyS
 function finishedRunProcesses(store: Store, census: readonly ProcessRow[]): Set<number> {
   const byPid = new Map(census.map(row => [row.pid, row]));
   const roots = new Set<number>();
-  const local = localWitnessSql(storeMachine(store.handle), "p");
+  const local = localWitnessSql(store.handle, "p");
   const rows = store.handle.prepare(`SELECT p.pid AS pid, p.observed_at AS observed_at FROM run_process p JOIN run r ON r.id = p.run
     WHERE p.exited_at IS NULL AND p.pid IS NOT NULL AND ${local.sql} AND r.outcome IS NOT NULL`).all(...local.params);
   for (const row of rows) {
