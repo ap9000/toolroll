@@ -33,7 +33,8 @@ import { checkResponse, CONSOLE_FORMS, readForm } from "../contracts/console-api
 import { hasForbiddenControls,validateNote } from "../decision.js";
 import { builderReadyFor,diagnoseTaskDispatch,firstRunBuilderRepo } from "../dispatch.js";
 import { firstTaskSuggestions,withBuilderStep } from "../first-run.js";
-import { fastStartPage, fastTermsRows, newTaskPage,type TaskComposerPrefill } from "./render-new-task.js";
+import { fastStartPage, fastTermsRows, importPage, newTaskPage,type TaskComposerPrefill } from "./render-new-task.js";
+import { fileGithubItem, readGithubItem } from "../github-import.js";
 import { allowAutoPublish, autoPublishHeld } from "../release-auto.js";
 import { fastStartBuild, keepGrownChange, prepareFastStart, type PasswordFacts } from "../fast-start.js";
 import { evidencePack } from "../evidence-pack.js";
@@ -868,6 +869,19 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
     // One filing door for every surface (Codex adoption review, finding 7).
     const after = (body.get("after") ?? "").trim();
+    // From an issue or pull request (github-import.ts): read and quoted first; filing is the second press, on what was read.
+    const fromLink = (body.get("from") ?? "").trim();
+    if (fromLink !== "") {
+      if (who.via !== "cookie" || repo === "") return newTaskScreen(ctx, 400, "Choose the project this issue belongs to.", draft);
+      if (body.get("from-read") !== "1") {
+        const read = await readGithubItem(store, { url: fromLink, repo });
+        if (!read.ok) return newTaskScreen(ctx, 400, read.message, draft);
+        return sendScreen(response, 200, importPage(chromeFor(project ?? null, "tasks"), { repo, url: read.item.url, title: read.item.title, body: read.item.body, kind: read.item.kind, number: read.item.number, head: read.item.head }));
+      }
+      const filed = await fileGithubItem(store, { url: fromLink, repo, actor: who.name, shownHead: body.get("from-head") ?? null }, now);
+      if (!filed.ok) return newTaskScreen(ctx, filed.reason === "head-moved" ? 409 : 400, filed.message, draft);
+      return redirect(response, taskHref(filed.taskId));
+    }
     // Small work a person starts themselves: their words become the exact terms, and Build is their yes (fast-start.ts).
     // Anything else, or any doubt, is the ordinary filing below. `plain` is "Plan it first" from that form.
     if (who.via === "cookie" && body.get("plain") !== "1" && repo !== "" && goal === "" && notThis === "" && touchesGiven.length === 0 && !scout && id === "" && after === ""
@@ -2950,7 +2964,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const startsOn = draft?.values?.get("repo") ?? project ?? chrome.projects?.[0]?.path ?? null;
     const found = startsOn === null ? null : runtime.firstTasks.get(startsOn)?.found ?? null;
     const ideas = found ?? (runtime.firstRunStepsNow(ctx.now) !== null && !store.hasAnyWork() ? firstTaskSuggestions({ issues: [], todos: [] }) : []);
-    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft, text, ideas));
+    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft, text, ideas, ctx.url.searchParams.get("from")?.slice(0, 300) ?? null));
   }
   /** What the password rule reads for this request (approval-password.ts), the same facts the approve forms read. */
   function fastPasswordFacts(who: Who): PasswordFacts {

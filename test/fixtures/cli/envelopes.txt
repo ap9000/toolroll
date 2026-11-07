@@ -2843,6 +2843,11 @@ $ contract --commands --json → 0
           "meaning": "their password"
         },
         {
+          "name": "from",
+          "takesValue": true,
+          "meaning": "a github.com issue or pull request of this project: quoted, then filed for your approval"
+        },
+        {
           "name": "preview",
           "takesValue": false,
           "meaning": "the terminal UI's own: the exact terms, nothing started"

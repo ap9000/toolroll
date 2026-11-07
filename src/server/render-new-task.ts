@@ -50,6 +50,8 @@ export function newTaskPage(
   draft: string | null = null,
   /** Ideas for the chosen project: one tap drafts the words into the box. */
   suggestions: ReadonlyArray<{ label: string; draft: string }> = [],
+  /** A link the lead or a person put in the address (GET ?from=). */
+  fromLink: string | null = null,
 ): Screen {
   const head = html`${phoneHeader("New task", { back: "/tasks" })}`;
   const header = docHeader({ title: "New task", back: ["/tasks", "Tasks"], meta: "Nothing is built until you approve its plan.", same: true });
@@ -64,7 +66,7 @@ export function newTaskPage(
   const permission = values?.get("permission-mode") === "bypassPermissions" ? "bypassPermissions" : values?.get("permission-mode") === "auto" ? "auto" : permissionDefault;
   const text = prefill?.title ?? draft ?? "";
   // More options opens on a template, or when a refused filing had used any of them.
-  const optionsUsed = prefill !== null && (values === undefined || ["goal", "acceptance", "not", "touches", "id", "after"].some(name => (values.get(name) ?? "") !== "") || values.get("scout") === "1");
+  const optionsUsed = fromLink !== null || prefill !== null && (values === undefined || ["from", "goal", "acceptance", "not", "touches", "id", "after"].some(name => (values.get(name) ?? "") !== "") || values.get("scout") === "1");
 
   const folder = !typed ? "" : field({ id: "nt-repo", label: "Project folder", hint: "No projects yet: name the folder of a git repository.",
     control: input({ id: "nt-repo", name: "repo", value: chosen, hint: true, attrs: { required: true, placeholder: "/path/to/repository", autocapitalize: "none", spellcheck: "false" } }) });
@@ -83,6 +85,7 @@ export function newTaskPage(
     textAttrs: { maxlength: TASK_TEXT_LIMITS.title, autofocus: true },
   });
   const options = html`<div class="k-form">\
+${field({ id: "nt-from", label: "From an issue or PR (optional)", hint: "A github.com link in this project. Its text becomes the plan, and you approve it.", control: input({ id: "nt-from", name: "from", value: values?.get("from") ?? fromLink ?? "", attrs: { placeholder: "https://github.com/…", autocapitalize: "none", spellcheck: "false", inputmode: "url" } }) })}\
 ${field({ id: "nt-quality", label: "Checks", control: select({ id: "nt-quality", name: "quality-mode", items: [["default", "Default checks"], ["strict", "Strict (release)"]], current: quality, wide: true }) })}\
 ${candidates.length === 0 ? "" : field({ id: "nt-after", label: "Starts", control: select({ id: "nt-after", name: "after", wide: true, current: after,
     items: [["", "Right away"], ...candidates.map(one => [one.id, `After ${one.id}: ${one.title}`] as const)] }) })}\
@@ -130,4 +133,13 @@ export function fastStartPage(chrome: Chrome, input: { title: string; repo: stri
   const build = postForm("/tasks/fast", btn("Build", { variant: "primary", type: "submit" }), { attrs: { class: "k-form", id: "fast-build" }, hidden: { preview: input.preview, digest: input.digest } });
   const plan = postForm("/tasks/add", btn("Plan it first", { type: "submit" }), { attrs: { class: "k-form" }, hidden: { plain: "1", title: input.title, repo: input.repo, "planning-policy": "choice", "plan-first": "1" } });
   return screen("Build this?", html`${head}${doc(header, facts(input.terms), html`<div class="k-acts">${build}${plan}</div>`)}`, { chrome });
+}
+
+/** An issue or pull request, read and quoted before anything is filed. Add task files it for the ordinary approval. */
+export function importPage(chrome: Chrome, input: { repo: string; url: string; title: string; body: string; kind: "issue" | "pull"; number: number; head: string | null }): Screen {
+  const name = input.kind === "pull" ? `Pull request #${input.number}` : `Issue #${input.number}`;
+  const head = html`${phoneHeader(name, { back: "/tasks/new" })}`;
+  const header = docHeader({ title: name, back: ["/tasks/new", "New task"], meta: "Written outside Toolroll. You'll approve its plan before anything builds.", same: true });
+  const file = postForm("/tasks/add", btn("Add task", { variant: "primary", type: "submit" }), { attrs: { class: "k-form" }, hidden: { from: input.url, repo: input.repo, title: input.title, ...(input.head === null ? {} : { "from-head": input.head }), "from-read": "1" } });
+  return screen(name, html`${head}${doc(header, html`<blockquote class="k-quote"><p><strong>${input.title}</strong></p><p class="k-pre">${input.body === "" ? "No description." : input.body}</p></blockquote>`, file)}`, { chrome });
 }

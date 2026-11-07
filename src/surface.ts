@@ -175,6 +175,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "repo", takesValue: true, meaning: "the project" },
       { name: "as", takesValue: true, meaning: "the approver" },
       { name: "token", takesValue: true, meaning: "their password" },
+      { name: "from", takesValue: true, meaning: "a github.com issue or pull request of this project: quoted, then filed for your approval" },
       { name: "preview", takesValue: false, meaning: "the terminal UI's own: the exact terms, nothing started" },
       { name: "build", takesValue: true, meaning: "the terminal UI's own: Build on those terms" },
       { name: "digest", takesValue: true, meaning: "the terms the person read" }],

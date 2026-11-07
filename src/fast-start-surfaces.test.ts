@@ -9,6 +9,7 @@ import { installFilingSizer } from "./task-sizing.js";
 import { openLocalWorld, type LocalWorld } from "../test/local-owner-world.js";
 import { runOperate, EXIT } from "./operate.js";
 import { fastStarted } from "./fast-start.js";
+import { fileGithubItem } from "./github-import.js";
 import { approvalOf } from "./scope.js";
 
 let world: LocalWorld;
@@ -53,6 +54,28 @@ describe("New task", () => {
     const pressed = await world.post("/tasks/fast", session.cookie, { csrf: session.csrf, preview: "0".repeat(32), digest: "0".repeat(64) });
     expect(pressed.status).toBe(403);
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]).toBe(before);
+  });
+});
+
+describe("From an issue or PR", () => {
+  test("a repository the project isn't refuses in the form, with nothing filed", async () => {
+    const session = await world.localSession();
+    const before = world.store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"];
+    const sent = await world.post("/tasks/add", session.cookie, { csrf: session.csrf, from: "https://github.com/acme/other/issues/3", title: "", repo: world.repo });
+    expect(sent.status).toBe(400);
+    expect(sent.body).toContain("no GitHub repository on record");
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]).toBe(before);
+  });
+
+  test("an imported task's page reads, and shows its outside text as a quotation", async () => {
+    world.store.upsertProject(world.repo, "shop", new Date(), { remoteUrl: "https://github.com/acme/shop.git" });
+    const filed = await fileGithubItem(world.store, { url: "https://github.com/acme/shop/issues/7", repo: world.repo, actor: "alex" }, new Date(), { gh: "/usr/bin/gh",
+      exec: async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ number: 7, title: "Footer typo", body: "It says teh.", html_url: "https://github.com/acme/shop/issues/7", user: { login: "a" } }) }) });
+    if (!filed.ok) throw new Error(filed.message);
+    const session = await world.localSession();
+    const page = await world.send(`/t/${filed.taskId}`, "GET", { cookie: session.cookie });
+    expect(page.status).toBe(200);
+    expect(page.body).toContain("It says teh.");
   });
 });
 

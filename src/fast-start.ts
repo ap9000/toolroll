@@ -26,6 +26,7 @@ import { COMPLETION_ACTION, COMPLETION_BY_PERSON } from "./result-completion.js"
 import { deployGateScope, machineActing, propose, releaseCheckScope, type ApproveResult, type Scope } from "./scope.js";
 import { BUILT_IN, type Store } from "./store.js";
 import { classifyTask, filingSizer, heuristicSizing } from "./task-sizing.js";
+import { issueImported } from "./task-source.js";
 import { titleWithin } from "./task-text.js";
 import { viewedGitSync } from "./teardown-git.js";
 
@@ -102,6 +103,7 @@ export function fastStartEligible(store: Store, input: FastInput & { taskId: str
   if (input.sizing.size !== "small" || input.sizing.risky) return no("size");
   const scope = store.getScope(input.taskId);
   if (scope === null) return no("plan");
+  if (issueImported(store, input.taskId)) return no("plan");
   if (scope.profileState === "unresolved" || scope.profile == null) return no("agents");
   const route = routeFromJson(scope.proposedRouteJson ?? null);
   if (route === null) return no("agents");

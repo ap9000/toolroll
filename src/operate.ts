@@ -318,6 +318,7 @@ import { recordBuilderWish } from "./builder-restart.js";
 import { expireFastStarts, fastRefusalWords, fastStartBuild, keepGrownChange, prepareFastStart, type FastBuild, type PasswordFacts } from "./fast-start.js";
 import { fastTermsLines } from "./fast-terms.js";
 import { resumeAllowedReleases } from "./release-next.js";
+import { fileGithubItem, readGithubItem } from "./github-import.js";
 import { runRelease } from "./release.js";
 import { releaseAdapters } from "./release-adapters.js";
 import { routeChangeOf, routeLegacyPlans } from "./route-change.js";
@@ -885,7 +886,7 @@ export const KEYS_ACTIONS = ["status", "set", "clear", "verify", "auth"] as cons
 export const SECRET_VALUE_FLAGS: ReadonlySet<string> = new Set(["token", "password"]);
 
 export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
-  "key", "db", "runner", "ttl", "state", "on", "reason", "until", "id", "backend", "build",
+  "key", "db", "runner", "ttl", "state", "on", "reason", "until", "id", "backend", "build", "from",
   "allow", "selector", "paths", "credentials", "repo", "token", "capacity",
   "goal", "not", "touches", "acceptance", "candidate", "by", "digest", "as", "branch", "pool", "base", "model", "turns",
   "max", "cap", "probe", "kind", "expires", "cmd", "since", "repair-model",
@@ -13819,6 +13820,7 @@ export type EasyCommandSeams = {
   ask?: (question: string) => Promise<string>;
   askHidden?: (question: string) => Promise<string>;
   confirm?: (question: string) => Promise<boolean>;
+  github?: import("./github-import.js").ImportDeps;
 };
 
 /** A person at this terminal: stdin and stdout a TTY, not --json, not under a coding agent (a UX guard, plan F1). */
@@ -14074,6 +14076,8 @@ async function newTaskCommand(positional: readonly string[], flags: Map<string, 
     if (local === null) return fail(write, json, command, "person-only", "--build is the terminal UI's own.", EXIT.refused);
     return answerBuild(buildNow(pressed, text(flags, "digest") ?? ""));
   }
+  const fromLink = text(flags, "from");
+  if (fromLink !== undefined) return importTaskCommand(fromLink, flags, context, name);
   const words = positional.join(" ").trim();
   const repo = text(flags, "repo");
   if (words === "" || repo === undefined) return fail(write, json, command, "usage", "`toolroll task new \"<what should change>\" --repo <project>`", EXIT.usage);
@@ -14121,4 +14125,24 @@ async function resumeHeldReleases(store: Store, stateDir: string, now: Date): Pr
   try {
     await resumeAllowedReleases(store, stateDir, journal => runRelease({ branch: journal.branch, checkout: journal.checkout, stateDir, limits: {} }, releaseAdapters({ checkout: journal.checkout, say: () => {} })), now);
   } catch { /* the release's own journal says where it stopped; the next person act tries again */ } finally { resumingReleases = false; }
+}
+
+/** `task new --from <url>`: read and quote an issue or pull request, then, on a person's yes, file it for the ordinary approval. */
+async function importTaskCommand(url: string, flags: Map<string, string | true>, context: Context, actor: string | undefined): Promise<number> {
+  const { store, write, json } = context;
+  const clock = context.clock ?? (() => new Date());
+  const command = "task new";
+  const repo = text(flags, "repo");
+  if (repo === undefined) return fail(write, json, command, "usage", "`toolroll task new --from <url> --repo <project>`", EXIT.usage);
+  const placed = canonicalProject(repo) ?? resolve(repo);
+  const read = await readGithubItem(store, { url, repo: placed }, context.easySeams?.github ?? {});
+  if (!read.ok) return fail(write, json, command, read.reason, read.message, EXIT.refused);
+  write(`${read.item.kind === "pull" ? "Pull request" : "Issue"} #${read.item.number}, written outside Toolroll:`);
+  write(`  > ${read.item.title}`);
+  for (const line of read.item.body.split(/\r?\n/)) write(`  > ${line}`);
+  write("");
+  if (!(await (context.easySeams?.confirm ?? confirm)("Add this task? You approve its plan before anything builds."))) { write("Nothing filed."); return EXIT.refused; }
+  const filed = await fileGithubItem(store, { url, repo: placed, actor: actor ?? "cli", shownHead: read.item.head }, clock(), context.easySeams?.github ?? {});
+  if (!filed.ok) return fail(write, json, command, filed.reason, filed.message, EXIT.refused);
+  return succeed(write, json, command, { task: filed.taskId }, () => [`Filed ${filed.taskId}. Its plan is ready for you to approve.`]);
 }

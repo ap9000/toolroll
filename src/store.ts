@@ -109,6 +109,7 @@ import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-
 
 import { authorityStandsSql } from "./approval-authority.js";
 import { clearRetryEpisode, settleVanished } from "./vanished-retry.js";
+import { issueImported } from "./task-source.js";
 import { BUILDER_SERVICE_SCHEMA, CHECK_ONLY_SCHEMA, FAST_PREVIEW_SCHEMA, ROUTE_CHANGE_SCHEMA, V153_ADDED_COLUMNS, VANISHED_SCHEMA } from "./plain-schema.js";
 export { V153_ADDED_COLUMNS } from "./plain-schema.js";
 import { releasePolicyDigest, serializeReleaseCheckPurpose, storedReleaseCheckPurpose, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseCheckPurpose, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
@@ -9455,6 +9456,10 @@ export class Store {
           // chat tap, only with the digest of every word the card showed (`terms`, chat-terms.ts), recomputed below
           // from the live scope: a card that cut a word, or terms that changed since, seal nothing.
           if (basis.kind !== "chat" && this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA) return false;
+          // THE IMPORT QUARANTINE (github-import.ts): a task filed from a GitHub issue or pull request, or a revision of
+          // one, is outside text too. Its provenance is immutable and copied through revisions, so no automatic basis
+          // ever seals it, here, whatever road it came by.
+          if (basis.kind !== "chat" && issueImported(this, taskId)) return false;
           // CHECK ACCESS (v132, check-access.ts): a scope whose checks reach beyond the fence (sign-ins, or no sandbox at
           // all) seals only on a person's password ceremony — never a mode, a grant, a chat confirmation or a carry.
           const profileText = this.db.prepare("SELECT profile_json FROM task_scope WHERE task_id = ?").get(taskId)?.["profile_json"];
@@ -9518,7 +9523,7 @@ export class Store {
         if (purpose.purpose !== null && basis !== undefined && basis.kind !== "chat") return false;
         if (deployGate && basis?.kind === "chat" && !(basis.card === "release" && typeof basis.cardDigest === "string" && /^[0-9a-f]{64}$/.test(basis.cardDigest))) return false;
         // The outside-request quarantine's chat road (above): the card showed every word of these live terms.
-        if (basis?.kind === "chat" && this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA
+        if (basis?.kind === "chat" && (this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA || issueImported(this, taskId))
           && !(basis.card === "terms" && typeof basis.cardDigest === "string" && basis.cardDigest === shownTermsDigest(readScope(working)))) return false;
         // AUTOMATIC RELEASE SEALS (auto-approve-green.md): only on a release task (a candidate and release terms signed
         // in), only naming the evidence row the plane wrote for exactly this task, kind, digest and candidate.
