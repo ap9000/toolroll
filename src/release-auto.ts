@@ -19,7 +19,7 @@ import { sealedRun } from "./release-recheck.js";
 import { runCheckLevel } from "./check-levels.js";
 import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff, verifiedTreeEntries } from "./commit-extract.js";
 import { EVAL_HOOK_FILES, evalHookProblem, LEARNING_HOOK_FILES, learningHookProblem, storeRewriteProblem } from "./eval-hooks.js";
-import { mightName, testInfrastructure, type TestInfrastructure, testImportProblem } from "./test-infra.js";
+import { isTestPath, mightName, testImportProblem, testInfrastructure, type TestInfrastructure } from "./test-infra.js";
 import { chatControlHref } from "./chat-controls.js";
 import { INFRA_RERUNS_PER_CANDIDATE, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, prChecksVerdict, type CheckFailure } from "./release.js";
 import { releaseCheckStanding } from "./check-failure.js";
@@ -342,7 +342,8 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
     // a top-level hook reaches every case): a test file that was there stays exactly as it was (H4).
     if (change.before !== null && TEST_FILE.test(rulePath(change.path))) return `${change.path} changes existing test code (new tests go in a new file; rewriting tests needs a person)`;
     // A new test may not reach into another: it would run that file's code, and its mocks, here. From the verified tree.
-    if (change.kind === "added" && TEST_FILE.test(rulePath(change.path))) {
+    // Any test extension: `src/` passes autoPathProblem whatever the file is called, so `.test.ts` alone would miss `.test.tsx`.
+    if (change.kind === "added" && isTestPath(rulePath(change.path))) {
       const read = verifiedBlobs(gitDir, after.value.tree, [change.path]);
       const bytes = read.ok ? read.value.get(change.path)?.bytes : undefined;
       const why = bytes === undefined ? `${change.path}'s test code couldn't be read` : testImportProblem(change.path, bytes.toString("utf8"));

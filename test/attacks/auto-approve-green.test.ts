@@ -769,6 +769,12 @@ describe("coordinator: test files under test/ ship like src's tests", () => {
     expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("a person decides") });
   });
 
+  test.each(["src/new.test.tsx", "src/new.test.js", "src/new.test.mjs"])("%s importing another test needs a person, as a .test.ts would", path => {
+    const f = open({ candidate: { [path]: "import './index.test.js';\n" } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("imports another test file") });
+  });
+
   test("an added attack test, with product code, is approved", () => {
     const f = open({ candidate: { "test/attacks/new-guard.test.ts": "test('guard', () => {});\n", "src/index.js": "export const answer = 45;\n" } });
     authorize(f);

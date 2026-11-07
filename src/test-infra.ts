@@ -273,6 +273,9 @@ export function mightName(open: Unresolved, path: string, found: TestInfrastruct
   return path === prefix || stem === prefix.replace(/\.(?:[cm]?js|jsx)$/, "") || path.startsWith(`${prefix}/`) || (open.specifier !== null && open.specifier.endsWith("/") === false && path.startsWith(prefix));
 }
 
+/** Whether a path is a test file by any extension a test runner could be pointed at, not only those run today. */
+export const isTestPath = (path: string): boolean => TEST.test(path);
+
 /** A specifier that names a test file, whatever it is spelled as: `./a.test.js`, `../b.test`, `@/c.test.ts`. */
 const NAMES_TEST = /\.test(?:\.[cm]?[jt]sx?)?(?:[?#].*)?$/;
 

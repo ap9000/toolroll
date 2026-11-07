@@ -281,7 +281,8 @@ export function preflightCarry(store: Store, input: { authority: number; to: str
     if (why !== null) return refuse("rules", `Since the approval: ${why}.`, change.path);
   }
   // No new test may reach into another (H4). Read from the verified tree, never from a checkout.
-  const newTests = whole.value.filter(one => one.kind === "added" && /\.test\.ts$/.test(rulePath(one.path))).map(one => one.path);
+  // By the rules' own classifier, so everything that carries as a test is read (a new journey script too).
+  const newTests = whole.value.filter(one => one.kind === "added" && carriedTest(rulePath(one.path))).map(one => one.path);
   const added = newTests.length === 0 ? null : verifiedBlobs(gitDir, chain[0]!.tree, newTests);
   if (added !== null && !added.ok) return refuse("shape", `The new tests couldn't be read: ${added.message}`);
   for (const path of newTests) {

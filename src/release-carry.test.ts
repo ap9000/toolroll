@@ -58,6 +58,15 @@ describe("existing tests stay as they are (H4)", () => {
     const f = open();
     expect(preflight(f, f.commit(change))).toMatchObject({ ok: false, reason: "rules", message: expect.stringContaining("changes an existing test") });
   });
+  test("a new journey script is read like a new test: the classifier is the carry rules' own", () => {
+    const f = open();
+    const to = f.commit({ "scripts/flows-e2e.mjs": "import '../src/index.test.js';\n" });
+    expect(preflight(f, to)).toMatchObject({ ok: false, reason: "rules", path: "scripts/flows-e2e.mjs", message: expect.stringContaining("imports another test file") });
+  });
+  test.each(["src/new.test.js", "src/new.test.mjs", "src/new.test.tsx"])("%s never carries, whatever it imports", path => {
+    const f = open();
+    expect(preflight(f, f.commit({ [path]: "import './index.test.js';\n" }))).toMatchObject({ ok: false, reason: "rules", path, message: expect.stringContaining("isn't a test, a doc or the changelog") });
+  });
   test("a test new since the approval may be fixed by a later carried commit", () => {
     const f = open();
     f.commit({ "src/new.test.ts": "test('new', () => {});\n" });
