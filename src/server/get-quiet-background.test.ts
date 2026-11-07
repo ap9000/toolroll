@@ -25,7 +25,7 @@ test("the background pass asks this computer, lifts the sign-in pause, turns the
   expect(world.notifications()).toBeGreaterThan(notified);
   // The pages show what the pass found.
   expect(JSON.parse((await world.send("/lead/status", "GET", { cookie })).body)).toMatchObject({ lead: "on", agent: true, checkedAt: expect.any(String) });
-  await vi.waitFor(async () => expect((await world!.send("/settings/storage", "GET", { cookie })).body).toContain("Checkouts use"), { timeout: 10_000 });
+  await vi.waitFor(async () => expect((await world!.send("/settings/storage", "GET", { cookie })).body).toContain("Task folders use"), { timeout: 10_000 });
 });
 
 test("the lead's follow pass settles a turn past its deadline, which no page visit does", async () => {
@@ -50,7 +50,7 @@ test("Check now posts: models, the newest release, storage, the GitHub list and 
   expect(asked).toBe(1);
   expect((await world.send("/settings/updates", "GET", { cookie })).body).toContain("99.0.0");
   expect((await world.post("/settings/storage/check", cookie, { csrf })).headers["location"]).toBe("/settings/storage");
-  expect((await world.send("/settings/storage", "GET", { cookie })).body).toContain("Checkouts use");
+  expect((await world.send("/settings/storage", "GET", { cookie })).body).toContain("Task folders use");
   seen.length = 0;
   expect((await world.post("/projects/github", cookie, { csrf })).headers["location"]).toBe("/projects/github");
   expect(seen).toContain("gh list");

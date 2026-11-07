@@ -69,7 +69,8 @@ function landedHtml(landed: LandedSummary): Html {
 
 /** One task folder: the task it was for, its size, where it is (the home folder as ~), why it stays, and Discard when it has changes. */
 function item(one: CheckoutItem): Html {
-  const why = one.why === null ? "" : `${whyWords(one)[0]!.toUpperCase()}${whyWords(one).slice(1)}`;
+  // Under "Uncommitted changes" the heading already says why it stays.
+  const why = one.why === null || one.why === "has changes" ? "" : `${whyWords(one)[0]!.toUpperCase()}${whyWords(one).slice(1)}`;
   const discard = one.why === "has changes"
     ? disclose("Discard", kitSectionForm({ proof: "storage-discard", action: "/settings/storage/discard", id: `discard-${previewId(one.path)}`, hidden: { path: one.path },
         save: { label: "Discard changes", variant: "danger" }, body: note("Throws away this folder and its uncommitted changes. Its branch stays.") }))
