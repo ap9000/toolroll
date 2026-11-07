@@ -26,7 +26,7 @@ import { hostname } from "node:os";
 import { sep } from "node:path";
 import { ownedProcessCount, runOwnerTag } from "./exec.js";
 import { closeoutTargets, processCensus, protectedProcesses, stopProcesses, stoppedWords, type ProcessRow, type StopOptions, type Witness } from "./run-closeout.js";
-import { recordStopProofBlocked, settleRunStopByObservation, type Store, type StopProofCause } from "./store.js";
+import { localWitnessSql, recordStopProofBlocked, settleRunStopByObservation, storeMachine, type Store, type StopProofCause } from "./store.js";
 import { worktreeProcessOccupancy } from "./worktree.js";
 
 /** How long after a run finished its processes have to go on their own before Toolroll looks. */
@@ -216,7 +216,8 @@ export async function proveRunStopped(store: Store, runId: number, clock: () => 
     if (!Number.isFinite(finished) || now.getTime() < finished + (options.afterFinishMs ?? STOP_PROOF_GRACE_MS)) return { run: subject, outcome: "waiting", words: "finishing" };
     if (ownedProcessCount(runOwnerTag(store, subject)) > 0) return { run: subject, outcome: "waiting", words: "a process of it is still tracked here" };
     if (process.platform === "win32") return block(store, subject, "can't be checked on this computer: Windows processes can't be listed by folder", "no folder listing on Windows", now);
-    const foreign = store.handle.prepare("SELECT host FROM run_process WHERE run = ? AND exited_at IS NULL AND host <> ? LIMIT 1").get(subject, hostname());
+    const local = localWitnessSql(storeMachine(store.handle));
+    const foreign = store.handle.prepare(`SELECT host FROM run_process WHERE run = ? AND exited_at IS NULL AND NOT ${local.sql} LIMIT 1`).get(subject, ...local.params);
     if (foreign !== undefined) return block(store, subject, `ran on another computer (${String(foreign["host"])}); only that computer can check it stopped`, `an open witness belongs to ${String(foreign["host"])}`, now);
     if (run.worktree !== null) {
       try {
@@ -262,10 +263,11 @@ function block(store: Store, runId: number, words: string, detail: string, now: 
 export async function proveFinishedRunsStopped(store: Store, clock: () => Date, options: StopProofOptions & { batch?: number } = {}): Promise<StopProofResult[]> {
   const grace = options.afterFinishMs ?? STOP_PROOF_GRACE_MS;
   const before = new Date(clock().getTime() - grace).toISOString();
+  const local = localWitnessSql(storeMachine(store.handle), "p");
   const runs = store.handle.prepare(`SELECT id FROM run r WHERE r.outcome IS NOT NULL AND r.finished_at IS NOT NULL AND r.finished_at <= ? AND (
-      EXISTS (SELECT 1 FROM run_process p WHERE p.run = r.id AND p.exited_at IS NULL AND p.pid IS NULL AND p.containment IS NULL AND p.container IS NULL AND p.host = ?)
+      EXISTS (SELECT 1 FROM run_process p WHERE p.run = r.id AND p.exited_at IS NULL AND p.pid IS NULL AND p.containment IS NULL AND p.container IS NULL AND ${local.sql})
       OR (r.provider_started_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM run_process p WHERE p.run = r.id) AND NOT EXISTS (SELECT 1 FROM run_process_summary s WHERE s.run = r.id)))
-    ORDER BY r.id LIMIT ?`).all(before, hostname(), options.batch ?? 50).map(row => Number(row["id"]));
+    ORDER BY r.id LIMIT ?`).all(before, ...local.params, options.batch ?? 50).map(row => Number(row["id"]));
   const out: StopProofResult[] = [];
   const shared = sharedLook(options);
   for (const runId of runs) {

@@ -2,8 +2,8 @@ import { checkoutGit } from './teardown-git.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { hostname } from 'node:os';
-import { provenDeadByBootChange } from './boot-identity.js';
+import { currentBootId, provenDeadByBootChange } from './boot-identity.js';
+import { isThisMachine } from './machine-identity.js';
 import { containerEmptiness } from './container-state.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { sqliteRuntime } from './sqlite-runtime.js';
@@ -460,8 +460,8 @@ export class CodingWorkspace {
     if (!row) return false;
     try {
       const c = readCodingCustodyWitness<CodingCustody>(String(row['payload']));
-      if (c === null || c.host !== hostname()) return false;
-      if (provenDeadByBootChange(c)) return true;
+      if (c === null || typeof c.host !== 'string' || !isThisMachine(c)) return false;
+      if (provenDeadByBootChange(c, { host: c.host, bootId: currentBootId() })) return true;
       if (c.container) return containerEmptiness(c.container.backend, c.container.id, process.platform, c.container.identity) === 'empty';
       if (c.observationUnknown || !Number.isSafeInteger(c.pid) || Number(c.pid) <= 0) return false;
       return !processMayBeAlive(Number(c.pid), c.group) && c.descendants.every(p => !processMayBeAlive(p.pid, p.group));

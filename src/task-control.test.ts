@@ -21,6 +21,7 @@ import { taskReadinessBlocker } from "./dispatch.js";
 import { workIndexPage } from "./work-index.js";
 import { repairStaleStatuses } from "./lead-status.js";
 import { fakePid } from "../test/fake-pid.js";
+import { processMayBeAlive } from "./process-liveness.js";
 
 const T0 = new Date("2026-09-12T08:00:00.000Z");
 vi.mock("node:child_process", { spy: true });
@@ -156,6 +157,64 @@ describe("safe task stop and resume (v52)", () => {
     } finally { kill.mockRestore(); ps.mockReset(); Object.defineProperty(process, "platform", platform); }
   });
 
+  // Run 3313: a pid-less witness settles only when no group of its run is alive, and macOS had handed three of the
+  // run's recorded group numbers to unrelated processes. T0 + 1 s the group's exit, T0 + 11 min the run's end.
+  const member = (pgid: number, lstart: string) => `${fakePid(9)} ${pgid} ${lstart}\n`;
+  test.each([
+    ["all born after the run ended", (pgid: number) => member(pgid, "Sat Sep 12 08:20:00 2026"), 3_600_000, 1],
+    ["born during the run, after the group's recorded exit", (pgid: number) => member(pgid, "Sat Sep 12 08:05:00 2026"), 3_600_000, 1],
+    ["several members, among other groups", (pgid: number) => `${member(pgid + 1, "Sat Sep 12 07:00:00 2026")}${member(pgid, "Sat Sep 12 08:20:00 2026")}${member(pgid, "Sat Sep 12 08:30:00 2026")}`, 3_600_000, 1],
+    ["one member older than the exit", (pgid: number) => `${member(pgid, "Sat Sep 12 08:20:00 2026")}${member(pgid, "Sat Sep 12 08:00:00 2026")}`, 3_600_000, 0],
+    ["a member born in the same second as the exit", (pgid: number) => member(pgid, "Sat Sep 12 08:00:01 2026"), 3_600_000, 0],
+    ["the run only just over", (pgid: number) => member(pgid, "Sat Sep 12 08:12:00 2026"), 11 * 60_000 + 1_000, 0],
+    ["a member with no readable start", (pgid: number) => member(pgid, "yesterday"), 3_600_000, 0],
+    ["a line that can't be read", (pgid: number) => `${member(pgid, "Sat Sep 12 08:20:00 2026")}not a process\n`, 3_600_000, 0],
+    ["no member listed at all", (pgid: number) => member(pgid + 1, "Sat Sep 12 08:20:00 2026"), 3_600_000, 0],
+  ])("a pid-less witness and a recorded group's reused number: %s", (name, table, age, settled) => {
+    const a = runningAttempt(store, `t-reused-group-${name.replaceAll(/\W+/g, "-")}`), pid = fakePid(2);
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
+    const ps = vi.mocked(childProcess.execFileSync).mockClear().mockImplementation(((_: string, args: readonly string[]) => args[0] === "-p" ? "" : table(pid)) as typeof childProcess.execFileSync);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(T0.getTime() + age);
+    try {
+      store.recordRunProcess(a.runId, pid, T0, true);
+      expect(store.recordRunProcessExits(a.runId, later(1_000))).toBe(1);
+      store.finishRun(a.runId, { outcome: "built", now: later(11 * 60_000) });
+      const stranded = store.reserveRunProcess(a.runId, later(2_000));
+      kill.mockReset().mockReturnValue(true);
+      expect(store.settleUnspawnedWitnesses(new Date(T0.getTime() + age))).toBe(settled);
+      expect(store.raw().prepare("SELECT exited_at FROM run_process WHERE id=?").get(stranded)?.["exited_at"] !== null).toBe(settled === 1);
+      expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+    } finally { kill.mockRestore(); ps.mockReset(); clock.mockRestore(); Object.defineProperty(process, "platform", platform); }
+  });
+
+  test("a group with no recorded exit keeps its OS probe, whenever its members were born", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+    const ps = vi.mocked(childProcess.execFileSync).mockClear().mockImplementation(((_: string, args: readonly string[]) => args[0] === "-p" ? "" : member(fakePid(2), "Sat Sep 12 08:20:00 2026")) as typeof childProcess.execFileSync);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(T0.getTime() + 3_600_000);
+    try {
+      expect(processMayBeAlive(fakePid(2), true, { observedAt: T0.toISOString(), finishedAt: later(60_000).toISOString() })).toBe(true);
+      expect(processMayBeAlive(fakePid(2), true, { observedAt: T0.toISOString(), finishedAt: later(60_000).toISOString(), exitedAt: null })).toBe(true);
+      expect(processMayBeAlive(fakePid(2), true, { observedAt: T0.toISOString(), finishedAt: later(60_000).toISOString(), exitedAt: "not a time" })).toBe(true);
+      expect(processMayBeAlive(fakePid(2), true, { observedAt: T0.toISOString(), finishedAt: later(60_000).toISOString(), exitedAt: later(1_000).toISOString() })).toBe(false);
+    } finally { kill.mockRestore(); ps.mockReset(); clock.mockRestore(); Object.defineProperty(process, "platform", platform); }
+  });
+
+  test.skipIf(process.platform !== "darwin")("the real process table proves a group newer than a recorded exit, and refuses one born before it", async () => {
+    // Its own group, started here; stopped by this exact handle below.
+    const held = childProcess.spawn("/bin/sleep", ["30"], { detached: true, stdio: "ignore" });
+    await new Promise(resolve => held.once("spawn", resolve));
+    try {
+      const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+      const witness = (exitedAt: string) => ({ observedAt: ago(3 * 3_600_000), finishedAt: ago(3_600_000), exitedAt });
+      expect(processMayBeAlive(held.pid!, true, witness(ago(2 * 3_600_000)))).toBe(false);
+      expect(processMayBeAlive(held.pid!, true, { ...witness(ago(0)), observedAt: ago(-60_000) })).toBe(true);
+    } finally { held.kill("SIGKILL"); }
+  });
+
   test.each(["live", "orphan-group", "EPERM", "EIO"])("exit recording retains %s custody", state => {
     // These are POSIX group semantics even when this fixture runs on Windows.
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -234,7 +293,7 @@ describe("safe task stop and resume (v52)", () => {
   });
 
   test("a fresh file is born at the current schema with the run_stop table and a hold that admits the stop owner", () => {
-    expect(SCHEMA_VERSION).toBe(149);
+    expect(SCHEMA_VERSION).toBe(150);
     expect(Number(store.raw().prepare("SELECT version FROM schema_version").get()?.["version"])).toBe(SCHEMA_VERSION);
     expect(store.raw().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'run_stop'").get()).toBeDefined();
     const ddl = String(store.raw().prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hold'").get()?.["sql"]);

@@ -660,8 +660,8 @@ describe("the pool, against real git", () => {
     expect(() => pool.recordProviderOccupancy(leased.worktree.path, "builder-1", provider, "old-epoch")).toThrow("custody could not be recorded");
     expect(pool.markProviderOccupancy(leased.worktree.path, "builder-1", provider)).toBe(true);
     const marker = await import("node:fs/promises").then(fs => fs.readFile(join(leased.worktree.path, ".standing-orders-lease"), "utf8"));
-    // The note also carries this host's boot identity (v53) when it is known.
-    expect(marker).toMatch(new RegExp(`^${provider} builder-1 group ([0-9a-f-]{36}|unknown) \\S+\\n$`));
+    // The note also carries this host's boot identity (v53) and its machine id (v150) when they are known.
+    expect(marker).toMatch(new RegExp(`^${provider} builder-1 group ([0-9a-f-]{36}|unknown) \\S+ ([0-9a-f]{32}|unknown)\\n$`));
     expect(pool.markProviderOccupancy(leased.worktree.path, "builder-1", 0)).toBe(false);
   });
 

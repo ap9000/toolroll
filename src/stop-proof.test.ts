@@ -16,6 +16,7 @@ import { acquire } from "./claim.js";
 import { NEEDS, processNeedOf } from "./needs-you.js";
 import { namesPath, proveFinishedRunsStopped, proveRunStopped, type StopProofOptions } from "./stop-proof.js";
 import type { ProcessRow } from "./run-closeout.js";
+import { injectMachineIdentity } from "./machine-identity.js";
 import { writeStoreSeed } from "../test/store-seed.js";
 import { fakePid } from "../test/fake-pid.js";
 
@@ -36,6 +37,7 @@ afterEach(() => {
   for (const store of stores.splice(0)) store.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   vi.restoreAllMocks();
+  injectMachineIdentity(null);
 });
 
 const MIN = 60_000;
@@ -249,6 +251,54 @@ describe("attacks on the automatic stop proof", () => {
     f.store.reserveRunProcess(f.id, new Date(f.start.getTime() + 2 * MIN));
     expect(await proveFinishedRunsStopped(f.store, () => new Date(), look.options)).toEqual([expect.objectContaining({ outcome: "skipped" })]);
     expect(f.store.stopQuiescenceFact(f.id)?.kind).toBe("elsewhere");
+  });
+
+  // Release check 3313: with no HostName set, macOS's hostname followed the network ("Studio-A.local", then
+  // "studio-a.localdomain"), and this computer's own witnesses read as another computer's forever. Each row is
+  // one witness of a finished run: [what it is, its host, its machine id, what this computer's id is, the answer].
+  const ME = "a".repeat(32), OTHER = "b".repeat(32), OLD = "Studio-A.local";
+  test.each([
+    ["a witness from before v150 under this computer's configured name (LocalHostName.local)", OLD, null, ME, "settled"],
+    ["a witness with this computer's id under a name it no longer has (the hostname moved mid-run)", "moved-with-network.example", ME, ME, "settled"],
+    ["a witness from before v150 under a name recorded beside this computer's own id", "seen-here.lan", null, ME, "settled"],
+    ["another computer's witness under this computer's very name", "@here", OTHER, ME, "elsewhere"],
+    ["another computer's witness under this computer's configured name", OLD, OTHER, ME, "elsewhere"],
+    ["a witness from before v150 under a name recorded only beside another computer's id", "seen-there.lan", null, ME, "elsewhere"],
+    ["a witness with an id while this computer's id is unknown", "@here", ME, null, "elsewhere"],
+    ["a witness from before v150 under a name this computer never had", "other-mac", null, ME, "elsewhere"],
+  ] as const)("%s", async (_what, host, machineId, me, answer) => {
+    injectMachineIdentity(me === null ? { ok: false, reason: "unreadable", detail: "test" } : { ok: true, id: me, source: "injected" }, [OLD]);
+    const f = fixture();
+    const at = new Date(f.start.getTime() + MIN).toISOString();
+    f.store.handle.prepare("INSERT INTO machine_host_alias (machine_id, host, first_seen_at) VALUES (?, 'seen-here.lan', ?), (?, 'seen-there.lan', ?)").run(ME, at, OTHER, at);
+    // A spawn whose process number was never recorded: only this computer can prove it gone (stop-proof.ts).
+    f.store.handle.prepare("INSERT INTO run_process (run,host,process_group,observed_at,machine_id) VALUES (?,?,1,?,?)").run(f.id, host === "@here" ? hostname() : host, at, machineId);
+    f.finish();
+    const look = computer([service]);
+    if (answer === "elsewhere") {
+      expect(f.store.stopQuiescenceFact(f.id)?.kind).toBe("elsewhere");
+      expect((await proveRunStopped(f.store, f.id, () => new Date(), look.options)).outcome).toBe("skipped");
+      expect(f.store.stopQuiescenceFact(f.id)?.kind).toBe("elsewhere");
+    } else {
+      expect(f.store.stopQuiescenceFact(f.id)).toMatchObject({ kind: "unprovable", cause: "incomplete-spawn" });
+      expect(await proveFinishedRunsStopped(f.store, () => new Date(), look.options)).toEqual([expect.objectContaining({ run: f.id, outcome: "settled" })]);
+      expect(f.store.stopQuiescenceFact(f.id)).toBeNull();
+    }
+    expect(look.signals).toEqual([]);
+  });
+
+  test("a new witness carries this computer's id and records the names it is known by beside that id, never another's", () => {
+    injectMachineIdentity({ ok: true, id: ME, source: "injected" }, [OLD]);
+    const f = fixture();
+    f.store.reserveRunProcess(f.id, new Date(f.start.getTime() + MIN));
+    expect(f.store.handle.prepare("SELECT host, machine_id FROM run_process WHERE run = ?").all(f.id).map(row => ({ ...row }))).toEqual([{ host: hostname(), machine_id: ME }]);
+    expect(f.store.handle.prepare("SELECT machine_id, host FROM machine_host_alias ORDER BY host").all().map(row => ({ ...row })))
+      .toEqual([{ machine_id: ME, host: OLD }, { machine_id: ME, host: hostname() }].sort((a, b) => a.host < b.host ? -1 : 1));
+    // An unknown id stamps none and records nothing: such a witness is matched by this computer's live names alone.
+    injectMachineIdentity({ ok: false, reason: "unreadable", detail: "test" }, []);
+    f.store.reserveRunProcess(f.id, new Date(f.start.getTime() + 2 * MIN));
+    expect(f.store.handle.prepare("SELECT machine_id FROM run_process WHERE run = ? ORDER BY id").all(f.id).map(row => row["machine_id"])).toEqual([ME, null]);
+    expect(f.store.handle.prepare("SELECT COUNT(*) AS n FROM machine_host_alias").get()?.["n"]).toBe(2);
   });
 
   test("a run with no folder: an orphan born while it ran in one of its process groups holds it, untouched; none, and it settles", async () => {
