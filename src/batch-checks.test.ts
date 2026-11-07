@@ -262,7 +262,7 @@ describe("c2: a failing batch is split; conflicts fall back to one by one; nothi
     expect(latest(ok2.run, at(41))).toMatchObject({ state: "passed", tested: pair.tested });
     expect(latest(ok3.run, at(41))).toMatchObject({ state: "passed", tested: ok3.head, batch: { mode: "split", members: [{ task: ok3.task }] } });
     expect(latest(bad.run, at(41))).toMatchObject({ state: "failed", exitCode: 1, tested: bad.head, batch: { mode: "split" } });
-    expect(statusOf(bad.task, at(41))).toMatchObject({ headline: "Failed", sentence: `Checks failed on ${bad.head.slice(0, 7)}. See what broke, then retry or ask for changes.` });
+    expect(statusOf(bad.task, at(41))).toMatchObject({ headline: "Failed", sentence: `Checks failed on ${bad.head.slice(0, 7)}. See what broke, then retry or send it back.` });
     const row = statusOf(bad.task, at(41)).details.find(one => one.key === "checks")!;
     expect(row).toMatchObject({ text: "Failed on its own (exit 1)", why: "Its batch check failed, so it was checked on its own." });
     expect(statusOf(ok3.task, at(41)).details.find(one => one.key === "checks")!.text).toBe(`Passed on its own on ${ok3.head.slice(0, 7)}`);

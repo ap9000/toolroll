@@ -17,6 +17,8 @@ import { REVIEW_TOKENS, resultStatusOf, reviewFactsOf } from "./workspace-ui.js"
 import { replacedWords } from "./task-status.js";
 import { failedAttemptSentence, latestFinishedAttempt } from "./needs-you.js";
 import { buildReviewOf } from "./review-switch.js";
+import { vanishedStopOf, vanishedStopSentence } from "./vanished-retry.js";
+import { routeChangeOf } from "./route-change.js";
 import { BUILT_IN, refArchived, parseCapabilityKey, type ChatSnapshot, type ReviewRequestOrigin, type ReviewRetryState, type Store, type TaskState } from "./store.js";
 import { shortWhen } from "./when-html.js";
 
@@ -195,7 +197,7 @@ export function scopeApprovedForDispatch(store: Store, taskRef: number, now: Dat
        WHERE task_scope.approved_digest = task_scope.digest AND task_scope.approved_at IS NOT NULL
          AND ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`,
     )
-    .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString());
+    .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString(), now.toISOString());
   return row !== undefined;
 }
 
@@ -347,8 +349,8 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
       const code = status.token as "reviewing" | "review-pending" | "review-failed" | "review-exhausted";
       return answer(code, code === "reviewing" ? "running" : "waiting", status.label, status.detail, { action: retry.state === "retryable" ? "retry-review" : "open-result", review });
     }
-    if (!accepted && proof?.verdict === "refuted") return answer("proof-refuted", "waiting", status.label, `${status.detail} Review the evidence to correct it, or record an explicit acceptance.`, { action: "open-result", review });
-    if (!accepted && proof?.verdict === "short") return answer("needs-verification", "waiting", status.label, `${status.detail} Open the result for the exact criteria still needing verification.`, { action: "open-result", review });
+    if (!accepted && proof?.verdict === "refuted") return answer("proof-refuted", "waiting", status.label, `${status.detail} Open the result to send it back, or accept it with a reason.`, { action: "open-result", review });
+    if (!accepted && proof?.verdict === "short") return answer("needs-verification", "waiting", status.label, `${status.detail} Open the result to see which requirements still need checking.`, { action: "open-result", review });
     if (!accepted && proof === null && noChangeRecord !== true) return answer("needs-verification", "waiting", status.label, status.detail, { action: "open-result", review });
     return answer(
       "complete",
@@ -370,10 +372,11 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
     // The family's latest finished attempt's own recorded reason, or that none was recorded: never "review its incident".
     const family = store.taskFamilyOf(taskId, ref.repo === null ? [] : [ref.repo], ref.repo === null);
     const runs = family === null || family.problem !== null ? store.runsFor(ref.id) : family.versions.flatMap(version => store.runsFor(version.refId));
-    return answer("failed", "terminal", "Needs a retry", failedAttemptSentence(latestFinishedAttempt(runs)?.reason), { action: "retry-task" });
+    const stopped = vanishedStopOf(store, ref.id);
+    return answer("failed", "terminal", "Needs a retry", stopped === null ? failedAttemptSentence(latestFinishedAttempt(runs)?.reason) : vanishedStopSentence(stopped), { action: "retry-task" });
   }
-  if (store.hasLiveClaim(ref.id, now)) return answer("running", "running", "Running now", "A worker owns the current live claim.");
-  if (task.state === "running") return answer("vanished-run", "waiting", "Build vanished", "The task says running, but no current claim owns it; reconcile it before retrying.", { action: "retry-task" });
+  if (store.hasLiveClaim(ref.id, now)) return answer("running", "running", "Running now", "A builder is working on it now.");
+  if (task.state === "running") return answer("vanished-run", "waiting", "Build vanished", "The build stopped unexpectedly. Retry it.", { action: "retry-task" });
   if (updateAdmissionPaused(store.raw())) return answer("updating", "waiting", "Waiting for app update", UPDATE_PAUSED);
 
   const local = taskReadinessBlocker(store, ref.id, now);
@@ -387,7 +390,7 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
       return answer("retry-scheduled", "retrying", "Retry scheduled", local.until === null ? "The failed attempt is backing off before retrying." : `It tries again ${retryWhenWords(local.until, now)}.`, { nextAt: local.until });
     }
     if (local.ownerKind === "decision") return answer("waiting-decision", "waiting", "Waiting on your answer", "An agent parked a question; answering it resumes the task.", { action: "answer-decision" });
-    if (local.ownerKind === "incident") return answer("waiting-incident", "waiting", "Needs a retry", "An unresolved incident holds the next attempt.", { action: "retry-task" });
+    if (local.ownerKind === "incident") return answer("waiting-incident", "waiting", "Needs a retry", "The last attempts failed the same way. Retry, or change the plan.", { action: "retry-task" });
     if (local.ownerKind === "stop") return answer("stopped", "waiting", "Paused", `${local.message.replace(/^held:\s*/, "")}. The attempt's work is preserved; resuming that exact attempt lifts this pause.`, { action: "resume-run" });
     return answer("held", "waiting", "On hold", local.message.replace(/^held:\s*/, ""), { action: local.ownerKind === "operator" ? "unhold" : "inspect-hold" });
   }
@@ -404,12 +407,12 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
 
   const role = dispatchRoleFor(store, ref.id, now);
   const scope = store.getScope(taskId);
-  if (ref.repo === null) return answer("needs-project", "waiting", "Needs a project", "Place this task in a repository before a worker can claim it.", { action: "place-task", role });
+  if (ref.repo === null) return answer("needs-project", "waiting", "Needs a project", "Choose a project for this task so a builder can start it.", { action: "place-task", role });
   if (role !== "planner") {
-    if (scope === null) return answer("needs-scope", "waiting", "Needs a scope", "Write the success contract or ask the planner to draft it.", { action: "write-scope", role });
+    if (scope === null) return answer("needs-scope", "waiting", "Needs a plan", "Write the plan, or ask the planner to draft it.", { action: "write-scope", role });
     if (scope.profileState === "unresolved") return answer("needs-agent-profile", "waiting", "Needs an agent profile", scope.unresolvedReason ?? "Choose an available provider and model.", { action: "select-agent", role });
     if (!scopeApprovedForDispatch(store, ref.id, now) || !approvalOf(scope).approved) {
-      return answer("needs-approval", "waiting", "Needs your approval", "Review and sign the current scope before a worker can claim it.", { action: "approve-scope", role });
+      return answer("needs-approval", "waiting", "Needs your approval", routeChangeOf(store, taskId) ?? "Review the plan and approve it so a builder can start.", { action: "approve-scope", role });
     }
   }
 
@@ -435,7 +438,7 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
     );
   }
   const available = alive.filter(one => store.liveClaimCount(one.name, now) < one.capacity);
-  if (available.length === 0) return answer("worker-at-capacity", "retrying", "Waiting for worker capacity", "Every eligible worker is busy; this task starts when a slot is released.", { role });
+  if (available.length === 0) return answer("worker-at-capacity", "retrying", "Waiting its turn", "Builders are busy; it starts when one is free.", { role });
 
   const profile = approvedProfile(scope);
   if (profile !== null) {
@@ -443,7 +446,7 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
     if (exhausted.length === available.length) {
       const resets = exhausted.map(one => one?.resetAt ?? null).filter((one): one is string => one !== null).sort();
       const nextAt = resets[0] ?? null;
-      return answer("provider-quota", "retrying", "Provider quota exhausted", nextAt === null ? "The provider has not supplied a reset time; this needs operator attention." : `The next recorded reset is ${nextAt}.`, { action: nextAt === null ? "select-agent" : null, nextAt, role });
+      return answer("provider-quota", "retrying", "Provider quota exhausted", nextAt === null ? "The provider gave no reset time. Choose another agent, or wait for the limit to reset." : `The next recorded reset is ${nextAt}.`, { action: nextAt === null ? "select-agent" : null, nextAt, role });
     }
   }
 
@@ -465,10 +468,10 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
     // this is where the task page says so.
     const sourceProblem = plannerSourceProblemOf(store, taskId);
     if (sourceProblem !== null) return answer("planner-source", "waiting", sourceProblem.title, sourceProblem.detail, { action: "write-scope", role });
-    return answer("planning-ready", "retrying", "Planner ready", "An eligible worker can draft the scope on the next pass.", { role });
+    return answer("planning-ready", "retrying", "Waiting to plan", "A builder can draft the plan next.", { role });
   }
-  if (role === "scout") return answer("scouting-ready", "retrying", "Scout ready", "An eligible worker can produce the report on the next pass.", { role });
-  return answer("ready", "retrying", "Ready to run", "An eligible worker has capacity and every dispatch gate currently passes.", { role });
+  if (role === "scout") return answer("scouting-ready", "retrying", "Waiting to research", "A builder can write the report next.", { role });
+  return answer("ready", "retrying", "Ready to run", "A builder is free and nothing is in the way.", { role });
 }
 
 export function diagnosisIsDispatchable(diagnosis: DispatchDiagnosis | null): boolean {

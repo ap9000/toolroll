@@ -68,6 +68,18 @@ function classOfRun(run: Run, kept: string | null): ExecClass {
 
 const FAILED_OUTCOMES = new Set(["failed", "interrupted"]);
 
+/** Whether the first built run among `runs` passed its own check; null when none is recorded. The code map's report reads
+ * this too, so the two never disagree on what a first check is. */
+export function firstCheckPassedOf(store: Store, runs: readonly Pick<Run, "id" | "outcome">[]): boolean | null {
+  const first = runs.find(run => run.outcome === "built");
+  const status = first === undefined ? null : store.runCheckFor(first.id)?.status ?? null;
+  return status === "passed" ? true : status === "failed" ? false : null;
+}
+/** How many of these task versions are a person's revision. */
+export function personRevisionsOf(store: Store, refs: readonly number[]): number {
+  return Number(store.handle.prepare("SELECT COUNT(*) AS n FROM task_ref WHERE id IN (SELECT value FROM json_each(?)) AND revision_origin = 'person'").get(JSON.stringify(refs))?.["n"] ?? 0);
+}
+
 /**
  * A task family's record, evaluated now from its rows (null: no code-writing run, or a family whose lineage can't be
  * proved). The order is the plan's: what can't be attributed to one model and one cohort first, then a live attempt
@@ -107,10 +119,8 @@ export function evaluateFamily(store: Store, rootTaskId: string, evidenceRoot: s
     if (run.providerStartedAt === null) continue;
     if (run.agentTurns == null) turnsUnknownRuns++; else agentTurns += run.agentTurns;
   }
-  const firstBuilt = runs.find(run => run.outcome === "built");
-  const firstCheck = firstBuilt === undefined ? null : store.runCheckFor(firstBuilt.id)?.status ?? null;
-  const personRevisions = store.handle.prepare("SELECT COUNT(*) AS n FROM task_ref WHERE id IN (SELECT value FROM json_each(?)) AND revision_origin = 'person'")
-    .get(JSON.stringify(family.versions.filter(one => one.id !== family.root.id).map(one => one.refId)))?.["n"];
+  const firstCheck = firstCheckPassedOf(store, runs);
+  const personRevisions = personRevisionsOf(store, family.versions.filter(one => one.id !== family.root.id).map(one => one.refId));
   const quiet = family.versions.every(one => one.state === "done" || one.state === "cancelled" || one.state === "failed") && runs.every(run => run.outcome !== null);
   let modelFailures = 0, infraFailures = 0;
   for (const run of runs) {
@@ -127,7 +137,7 @@ export function evaluateFamily(store: Store, rootTaskId: string, evidenceRoot: s
     firstStartedAt: first?.startedAt ?? runs[0]!.startedAt, acceptedAt: null, decidedAt: null, modelFailures, infraFailures,
     apiMicrousd, subscriptionRuns, subscriptionTokens, unknownRuns, remediationRuns,
     selections: attributed.map(one => one.selection).filter((one): one is Selection => one !== null), settled: false,
-    personRevisions: Number(personRevisions ?? 0), firstCheckPassed: firstCheck === "passed" ? true : firstCheck === "failed" ? false : null,
+    personRevisions, firstCheckPassed: firstCheck,
     agentTurns, turnsUnknownRuns,
     accumulationEnded: quiet || now.getTime() >= Date.parse(first?.startedAt ?? runs[0]!.startedAt) + ACCUMULATE_FOR_MS,
   };

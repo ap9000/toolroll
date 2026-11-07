@@ -3,7 +3,7 @@
 Status: plan, revision 3, 2026-11-05. Branch `learning-loops` (worktree `so-learning`) from main `3da1dcfa` (0.9.91).
 Scope: issue #228 (loop 4 of roadmap #231) plus its "keep project memory small and current" comment. Lands **after**
 the results-routing arc (`docs/plans/results-routing.md`, schema v148) and builds on it; this arc's schema is **v149**.
-Docs only. Codex round 1 (NO-GO, 14 findings), Alex's decisions and Codex round 2 (GO-WITH-CHANGES, 1 partial + 7
+Slices 1-5 built (slice 1 in #315). Product copy follows `plain-words.ts`: "build #N", "Clean up", "test result". Codex round 1 (NO-GO, 14 findings), Alex's decisions and Codex round 2 (GO-WITH-CHANGES, 1 partial + 7
 items) are folded in; see the review sections at the end.
 
 ## What this arc ships

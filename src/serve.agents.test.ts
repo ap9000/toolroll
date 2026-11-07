@@ -121,7 +121,7 @@ describe("the Agents board", () => {
     ask(run, "keep-oauth", "Keep the old OAuth button?");
     ask(run, "label", "Which label for the new button?");
 
-    const tasks = (await page("/work?view=needs-you", cookie)).view as BrowserTasksView;
+    const tasks = (await page("/tasks?view=needs-you", cookie)).view as BrowserTasksView;
     expect(tasks.rows.find(row => row.id === "t-ask")).toMatchObject({ action: { label: "Reply", href: `/agents?run=${run}` } });
 
     const opened = await fetch(url(`/agents?run=${run}`), { headers: { cookie } });

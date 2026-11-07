@@ -299,7 +299,7 @@ describe("sign-in pauses", () => {
     expect(store.setPlanPins(ref, "codex", null, at(2_000)).ok).toBe(true);
     expect(authWaitOf(store, ref)).toBeNull();
     expect(diagnoseTaskDispatch(store, "t-plan", at(2_000))?.code).not.toBe("signed-out");
-    expect(status()).toMatchObject({ label: "Queued", detail: "A connected worker can draft the plan." });
+    expect(status()).toMatchObject({ label: "Waiting", detail: "Waiting to plan." });
   });
 
   test("a run that started before the pause opened does not lift it", () => {

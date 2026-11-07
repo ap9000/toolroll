@@ -110,7 +110,7 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     expect(stranger).not.toContain('<b id="x">');
   });
 
-  test("sensitivity is judged per response: /next with a step-up is sensitive, all-clear is not", async () => {
+  test("sensitivity is judged per response: a task page with a step-up is sensitive, all-clear is not", async () => {
     store.createTask({ id: "t-a", title: "needs a yes" }, T0);
     store.saveScope({
       taskId: "t-a", goal: "do the thing", outOfScope: null, touches: [], acceptance: [],
@@ -120,20 +120,21 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     const cookie = await login();
     // Without a remembered password the approval asks for it (a remembered one is one click: password-freshness.serve.test.ts).
     const formCsrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/tasks/new"), { headers: { cookie } })).text())![1]!;
-    expect((await fetch(url("/session/forget-password"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf: formCsrf, return: "/next" }), redirect: "manual" })).status).toBe(303);
-    const pending = await (await fetch(url("/next"), { headers: { cookie } })).text();
-    expect(pending).toContain("Approve and start");
+    expect((await fetch(url("/session/forget-password"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf: formCsrf, return: "/" }), redirect: "manual" })).status).toBe(303);
+    // The old /next is Home now (docs/plans/plain-toolroll.md P1.4); the approval lives on the task's own page.
+    const pending = await (await fetch(url("/t/t-a"), { headers: { cookie } })).text();
+    expect(pending).toContain("Approve");
     expect(workspaceOf(pending).sensitive).toBe(true);
     expect(pending).not.toContain('id="palette-index"');
 
     const granted = approve(store, "t-a", "alex", T0, store.getScope("t-a")?.digest as string, approverToken);
     expect(granted.ok).toBe(true);
-    const clear = await (await fetch(url("/next"), { headers: { cookie } })).text();
-    expect(clear).not.toContain("Approve and start");
+    const clear = await (await fetch(url("/t/t-a"), { headers: { cookie } })).text();
+    expect(clear).not.toContain('type="password"');
     expect(workspaceOf(clear).sensitive).toBe(false);
   });
 
-  test("the signed rubric restates above the seal on the ceremony, the read-only card, and /next — never a second amber form (v39)", async () => {
+  test("the signed rubric restates above the seal on the ceremony, the read-only card, and a second task's page — never a second amber form (v39)", async () => {
     store.createTask({ id: "t-rubric", title: "needs a yes with a rubric" }, T0);
     store.saveScope({
       taskId: "t-rubric", goal: "guard the payout path", outOfScope: null, touches: ["src/payout.ts"],
@@ -176,11 +177,11 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     expect(granted.ok).toBe(true);
     const after = await (await fetch(url("/t/t-rubric"), { headers: { cookie } })).text();
     const cardAcceptance = after.indexOf(">Acceptance<");
-    const cardSeal = after.indexOf("approval binds to this exact wording");
+    const cardSeal = after.indexOf("Approved by alex");
     expect(cardAcceptance).toBeGreaterThan(-1);
     expect(cardAcceptance).toBeLessThan(cardSeal);
 
-    // /next restates it identically for a second, unapproved task.
+    // A second, unapproved task's page restates it the same way (the old /next is Home now, P1.4).
     store.createTask({ id: "t-rubric-2", title: "another" }, T0);
     store.saveScope({
       taskId: "t-rubric-2", goal: "g", outOfScope: null, touches: [],
@@ -188,9 +189,8 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
       proposedAt: T0.toISOString(), digest: "f".repeat(32),
       approvedAt: null, approvedBy: null, approvedDigest: null,
     });
-    const next = await (await fetch(url("/next"), { headers: { cookie } })).text();
+    const next = await (await fetch(url("/t/t-rubric-2"), { headers: { cookie } })).text();
     expect(next).toContain("<code>c1</code> It works.");
-    expect(next).toContain("[requires: manual-review]");
   });
 
   test("the classifier reads every password serialization and no near-miss", () => {
@@ -260,6 +260,8 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
     let evidenceRoot: string;
     let approverToken: string;
     let runId: number;
+    let poolRoot: string;
+    let worktree: string;
 
     const url = (path: string) => `${base}${path}`;
     const login = async (): Promise<string> => {
@@ -290,6 +292,10 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
       store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
       store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
       evidenceRoot = mkdtempSync(join(tmpdir(), "standing-orders-arc6-ev-"));
+      // A real folder: a link to a build folder the idle sweep already removed opens nothing, so none renders.
+      poolRoot = realpathSync(mkdtempSync(join(tmpdir(), "standing-orders-arc6-pool-")));
+      worktree = join(poolRoot, "t review");
+      mkdirSync(worktree);
       const added = addApprover(store, "alex", T0);
       if (!added.ok) throw new Error("bootstrap failed");
       approverToken = added.token;
@@ -297,7 +303,7 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
       const taskRef = store.refFor("built-in", "t-review").id;
       runId = store.startRun({
         taskRef, leaseId: "l-review", runner: "builder-1",
-        branch: "so/t-review", worktree: "/pool/t review", now: T0,
+        branch: "so/t-review", worktree, now: T0,
         ...presented(store, taskRef, "builder"),
       });
       const patch = [
@@ -323,7 +329,7 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
 
       server = createDecisionServer({
         store, evidenceRoot, clock: () => new Date(), repo: "/repo/main",
-        localRunner: "builder-1", poolRoot: "/pool",
+        localRunner: "builder-1", poolRoot,
         editorLinks: "vscode",
       });
       await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -336,6 +342,7 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
       await new Promise<void>(resolve => server.close(() => resolve()));
       store.close();
       rmSync(evidenceRoot, { recursive: true, force: true });
+      rmSync(poolRoot, { recursive: true, force: true });
     });
 
     test("links render only after the SESSION says yes; hostile paths never link; the toggle flips both ways", async () => {
@@ -347,13 +354,17 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
       // session yes: tame paths link (worktree space encoded), traversal never does
       await activate(cookie);
       const after = await (await fetch(url(`/r/${runId}`), { headers: { cookie } })).text();
-      expect(after).toContain('href="vscode://file/pool/t%20review/src/a.ts"');
+      expect(after).toContain(`href="vscode://file${poolRoot.split("/").map(encodeURIComponent).join("/")}/t%20review/src/a.ts"`);
       expect(after.match(/vscode:[^"]*evil/) ?? []).toEqual([]);
       expect(after).toContain("on THIS device");
       // and off again
       await activate(cookie, false);
       const off = await (await fetch(url(`/r/${runId}`), { headers: { cookie } })).text();
       expect(off).not.toContain("vscode://");
+      // A session's yes never links to a build folder that is gone.
+      await activate(cookie);
+      rmSync(worktree, { recursive: true, force: true });
+      expect(await (await fetch(url(`/r/${runId}`), { headers: { cookie } })).text()).not.toContain("vscode://");
     });
 
     test("a run owned by ANOTHER runner never links and never offers", async () => {
@@ -610,6 +621,21 @@ describe("the project switcher (board pass): one tap from any screen, forms with
     const approved = await fetch(url("/t/t-edit/approve"), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf: csrfOf(edited), nonce, digest, token: approverToken }), redirect: "manual" });
     expect(approved.status).toBe(303);
     expect(store.getScope("t-edit")).toMatchObject({ approvedDigest: after.digest, approvedBy: "alex" });
+    // "How we'll know" (#19): a chosen kind replaces a line's evidence, "keep" leaves it, and the new line takes its own;
+    // the saved plan is a new version, waiting for approval like any edit.
+    expect(edited).toContain('aria-label="How we&#39;ll know requirement 1 is met"');
+    const hidden2 = hidden.map(([name, value]) => [name, name === "sawDigest" ? after.digest : value] as [string, string]);
+    const repicked = await fetch(url("/t/t-edit/scope"), { method: "POST", headers: { cookie }, body: new URLSearchParams([...hidden2, ["goal", "guard the payout path and log refusals"], ["touches", "src/payout.ts\nsrc/log.ts"], ["not", "billing and sign-in"],
+      ["requirement", "Negative and zero payouts are refused."], ["requirement-how", "check"], ["requirement", "Refusals are logged."], ["requirement-how", "keep"],
+      ["requirement", "The refusal reads plainly"], ["requirement-how", "bogus"], ["requirement-new", "The log names the payout"], ["requirement-new-how", "screenshot"]]), redirect: "manual" });
+    expect(repicked.status).toBe(303);
+    expect(store.getScope("t-edit")!.acceptance).toEqual([
+      { id: "c1", statement: "Negative and zero payouts are refused.", how: null, evidence: ["check"] },
+      { id: "c3", statement: "Refusals are logged.", how: "read the log", evidence: ["check"] },
+      { id: "c4", statement: "The refusal reads plainly", how: null, evidence: ["manual-review"] },
+      { id: "c2", statement: "The log names the payout", how: null, evidence: ["screenshot"] },
+    ]);
+    expect(store.getScope("t-edit")!.approvedDigest).not.toBe(store.getScope("t-edit")!.digest);
   });
 
   test("Edit plan in place keeps what it doesn't show: a stale draft stays stale, permissions never change, the cap round-trips exactly", async () => {
@@ -734,13 +760,13 @@ describe("the reduction pass (Laws of UX): five always-visible rows and two acco
     rmSync(evidenceRoot, { recursive: true, force: true });
   });
 
-  test("every retired destination still answers: the queue redirects to the board's order view; done, review, and activity are views of builds", async () => {
+  test("every retired destination still answers: the queue redirects for good to Tasks' order view; done, review, and activity still land on a page", async () => {
     const cookie = await login();
     const queue = await fetch(url("/queue"), { headers: { cookie }, redirect: "manual" });
-    expect(queue.status).toBe(303);
-    expect(queue.headers.get("location")).toBe("/board?view=order");
-    // The fragment the order view polls is still served.
-    expect((await fetch(url("/queue?fragment=1"), { headers: { cookie } })).status).toBe(200);
+    expect(queue.status).toBe(301);
+    expect(queue.headers.get("location")).toBe("/tasks?view=order");
+    // The fragment the order view polls is served from its new address.
+    expect((await fetch(url("/tasks?view=order&fragment=1"), { headers: { cookie } })).status).toBe(200);
     for (const path of ["/done", "/review", "/activity", "/runs", "/workbench", "/tasks", "/fleet", "/projects", "/menu", "/board?view=order"]) {
       expect((await fetch(url(path), { headers: { cookie } })).status).toBe(200);
     }

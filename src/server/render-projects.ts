@@ -24,8 +24,8 @@ export function shortPathOf(path: string): string {
 }
 
 /** A project's page address. Names are folder names, so two projects can share one: then the path picks. */
-export function projectHref(name: string, path: string, ambiguous: boolean): string {
-  return `/projects/${encodeURIComponent(name)}${ambiguous ? `?path=${encodeURIComponent(path)}` : ""}`;
+export function projectHref(name: string, path: string, ambiguous: boolean, page = ""): string {
+  return `/projects/${encodeURIComponent(name)}${page === "" ? "" : `/${page}`}${ambiguous ? `?path=${encodeURIComponent(path)}` : ""}`;
 }
 
 /** What a project's counts say on one line ("2 need you · 1 running"); null when it wasn't scanned. */
@@ -188,6 +188,7 @@ export function projectPage(chrome: Chrome, data: {
   checks: { href: string; level: string } | null;
   pullRequests: { href: string; on: boolean } | null;
   knowledgeHref: string;
+  flakyHref: string;
   settingsHref: string | null;
   activity: { report: ProjectOutcomes | null } | null;
   now: Date;
@@ -205,22 +206,24 @@ export function projectPage(chrome: Chrome, data: {
   const counts = peek === null
     ? note("Not scanned yet.")
     : html`<p>${joinHtml([
-      countWords(peek.waiting, peek.waiting === 1 ? "needs you" : "need you", "/work"),
-      countWords(peek.running, "running", "/work"),
-      countWords(peek.queued, "queued", "/board?view=order"),
-      countWords(peek.doneRecently, "built today", "/done"),
+      countWords(peek.waiting, peek.waiting === 1 ? "needs you" : "need you", "/tasks"),
+      countWords(peek.running, "running", "/tasks"),
+      countWords(peek.queued, "queued", "/tasks?view=order"),
+      countWords(peek.doneRecently, "built today", "/tasks?view=done"),
     ], " · ")}</p>`;
   const tasks = data.tasks.length === 0
     ? note(`Nothing needs you or is running in ${data.name}.`)
     : html`${data.tasks.map(task => row({
       href: task.href, chip: task.needs ? status("needs") : status("running"), title: task.title, desc: task.reason, wait: task.needs,
       meta: task.since === null ? "" : html`<span class="k-num">${relativeAge(task.since, data.now)}</span>`,
-    }))}${data.moreTasks > 0 ? note(data.open ? html`<a class="k-link" href="/work">${data.moreTasks} more in Tasks</a>` : `${data.moreTasks} more`) : ""}`;
+    }))}${data.moreTasks > 0 ? note(data.open ? html`<a class="k-link" href="/tasks">${data.moreTasks} more in Tasks</a>` : `${data.moreTasks} more`) : ""}`;
   const setup = facts([
     ["Folder", mono(data.path)],
     ...(data.checks === null ? [] : [["Checks", html`<a class="k-link" href="${data.checks.href}">${data.checks.level}</a>`] as const]),
     ...(data.pullRequests === null ? [] : [["Pull requests", html`<a class="k-link" href="${data.pullRequests.href}">${data.pullRequests.on ? "On" : "Off"}</a>`] as const]),
     ["Knowledge", html`<a class="k-link" href="${data.knowledgeHref}">Open knowledge</a>`],
+    ["Code map", html`<a class="k-link" href="${`/projects/${encodeURIComponent(data.name)}/map${data.selfHref.includes("?") ? data.selfHref.slice(data.selfHref.indexOf("?")) : ""}`}">Open code map</a>`],
+    ["Flaky tests", html`<a class="k-link" href="${data.flakyHref}">Open flaky tests</a>`],
   ]);
   const body = joinHtml([
     phoneHeader(data.name, { back: "/projects" }),

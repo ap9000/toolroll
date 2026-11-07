@@ -68,7 +68,7 @@ const references: RemoteScope = { kind: "references" }, listing: RemoteScope = {
 export const REMOTE_SCOPES: ReadonlyMap<string, RemoteScope> = new Map<string, RemoteScope>([
   ["status", listing], ["integrations", installation], ["ready", listing], ["grants", installation], ["sync", installation],
   ["gaps", repo], ["task add", repo],
-  ...["ask", "checks", "ship", "add-tests", "show", "wait", "complete", "revise", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign", "scope", "plan", "hold",
+  ...["ask", "checks", "ship", "ready", "add-tests", "show", "wait", "complete", "revise", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign", "scope", "plan", "hold",
     "unhold", "require", "requeue", "review", "repair", "route", "reopen", "stop", "resume"].map(action => [`task ${action}`, references] as [string, RemoteScope]),
   ["check-progress", references],
   ["task list", listing],
@@ -81,7 +81,9 @@ export const REMOTE_SCOPES: ReadonlyMap<string, RemoteScope> = new Map<string, R
   // The person's own remote actions, or everyone's within their projects for an approver (remote-audit.ts).
   ["audit", self],
   ["knowledge search", repo], ["knowledge impact", repo], ["knowledge refresh", repo],
+  ["map", repo], ["map area", repo], ["map file", repo], ["map search", repo], ["map refresh", repo],
   ...["search", "decisions", "show", "review", "status"].map(action => [`memory ${action}`, self] as [string, RemoteScope]),
+  ["flaky list", self], ["flaky show", self],
   ...["list", "show", "export", "create", "edit", "trigger add", "trigger pause", "trigger resume", "trigger remove", "card add", "archive"]
     .map(action => [`flows ${action}`, self] as [string, RemoteScope]),
   ["models status", global], ["models list", global],

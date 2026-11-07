@@ -13,6 +13,7 @@
  * The record is the plane's own state (the folder that holds the database). It grants nothing by itself: it can
  * only let a name whose every recorded holder has exited be taken over early.
  */
+import { sameMachineHost } from "./machine-identity.js";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, fsyncSync, constants } from "node:fs";
@@ -172,7 +173,7 @@ export function holderProvedGone(record: RunnerProcessRecord | null, holder: { r
   const expected = sealRunnerProcessRecord(record, holder.credentialHash).signature!;
   if (typeof record.signature !== "string" || !/^[a-f0-9]{64}$/.test(record.signature)
     || !timingSafeEqual(Buffer.from(record.signature, "hex"), Buffer.from(expected, "hex"))) return { gone: false, why: "its process record is not authenticated" };
-  if (record.runner !== holder.runner.name || record.host !== holder.runner.host || record.host !== host) return { gone: false, why: "its record is for another worker or machine" };
+  if (record.runner !== holder.runner.name || record.host !== holder.runner.host || !sameMachineHost(record.host, host)) return { gone: false, why: "its record is for another worker or machine" };
   if (record.registeredAt !== holder.runner.registeredAt || record.credential !== credentialDigest(holder.credentialHash)) return { gone: false, why: "its record is from an earlier start" };
   if (!record.processes.some(one => one.role === "up")) return { gone: false, why: "its record names no `up` process" };
   const left = record.processes.filter(one => !processGone(one, probe));
@@ -201,7 +202,7 @@ export function recordStandsFor(record: RunnerProcessRecord | null, holder: { ru
   const expected = sealRunnerProcessRecord(record, holder.credentialHash).signature!;
   if (typeof record.signature !== "string" || !/^[a-f0-9]{64}$/.test(record.signature)
     || !timingSafeEqual(Buffer.from(record.signature, "hex"), Buffer.from(expected, "hex"))) return "its process record is not authenticated";
-  if (record.runner !== holder.runner.name || record.host !== holder.runner.host || record.host !== host) return "its record is for another worker or machine";
+  if (record.runner !== holder.runner.name || record.host !== holder.runner.host || !sameMachineHost(record.host, host)) return "its record is for another worker or machine";
   if (record.registeredAt !== holder.runner.registeredAt || record.credential !== credentialDigest(holder.credentialHash)) return "its record is from an earlier start";
   return null;
 }

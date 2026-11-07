@@ -67,9 +67,29 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
 
+  # The root lanes run in a workflow run of their own (native-lanes.yml, docs/plans/trusted-release-reports.md H1), and
+  # ci.yml's jobs of those names wait for this commit's verdict there.
+  native-lanes:
+    name: main · native lanes started
+    needs: proof
+    if: ${{ always() && !(needs.proof.result == 'success' && needs.proof.outputs.proven == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run native-lanes.yml --repo "$GITHUB_REPOSITORY" --ref main
+
   full:
     name: main · full CI
     needs: proof
     # Runs unless the proof job succeeded and said proven: a failed or missing proof runs everything.
     if: ${{ always() && !(needs.proof.result == 'success' && needs.proof.outputs.proven == 'true') }}
     uses: ./.github/workflows/ci.yml
+    # Its waiting jobs read Actions runs; a called job can't have more than this.
+    permissions:
+      contents: read
+      actions: read

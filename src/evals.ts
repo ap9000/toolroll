@@ -27,6 +27,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { homedir, hostname } from "node:os";
+import { sameMachineHost } from "./machine-identity.js";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { readVerifiedCommit, verifiedBlobs } from "./commit-extract.js";
@@ -757,7 +758,7 @@ export function recoverEvalCampaigns(store: Store, now: Date, options: { host?: 
   const out: { id: string; recovered: boolean; why: string }[] = [];
   for (const campaign of store.handle.prepare("SELECT id, runner_host, runner_pid, runner_started FROM eval_campaign WHERE state = 'running' ORDER BY admitted_at").all()) {
     const id = String(campaign["id"]);
-    if (String(campaign["runner_host"]) !== host) { out.push({ id, recovered: false, why: `its runner is on ${String(campaign["runner_host"])}` }); continue; }
+    if (!sameMachineHost(String(campaign["runner_host"]), host)) { out.push({ id, recovered: false, why: `its runner is on ${String(campaign["runner_host"])}` }); continue; }
     if (alive(Number(campaign["runner_pid"]), typeof campaign["runner_started"] === "string" ? campaign["runner_started"] : null)) {
       out.push({ id, recovered: false, why: "its runner is still running" }); continue;
     }

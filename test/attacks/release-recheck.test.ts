@@ -81,9 +81,9 @@ describe("attack 16: every outcome at A has a disposition", () => {
 
 describe("a targeted check, through the real road", () => {
   test("B runs only what A failed, the tests changed since A and the sanity pass, and composes with A", async () => {
-    const { f, a, to, task } = await failedThenCarried({ "src/browser/app.test.ts": "test('app', () => {});\ntest('more', () => {});\n" });
+    const { f, a, to, task } = await failedThenCarried({ "src/browser/more.test.ts": "test('more', () => {});\n" });
     const b = sealedCheck(f, task, to, plan => passingPlan(plan));
-    expect(b.decision).toMatchObject({ mode: "targeted", plan: { base: a.runId, units: ["src/browser/app.test.ts", "src/index.test.ts"], required: ["unit:src/index.test.ts::answer"] } });
+    expect(b.decision).toMatchObject({ mode: "targeted", plan: { base: a.runId, units: ["src/browser/more.test.ts", "src/index.test.ts"], required: ["unit:src/index.test.ts::answer"] } });
     expect(b.coverage).toBe("composed");
     const gate = verificationEvidence(f.store, EVIDENCE(f), b.runId);
     expect(gate.ok, gate.ok ? "" : gate.problem).toBe(true);
@@ -95,11 +95,11 @@ describe("a targeted check, through the real road", () => {
     const { f, to, task } = await failedThenCarried();
     const b = sealedCheck(f, task, to, plan => passingPlan(plan));
     expect(b.coverage).toBe("composed");
-    const c = f.commit({ "src/browser/app.test.ts": "test('app', () => {});\ntest('again', () => {});\n" });
+    const c = f.commit({ "src/browser/again.test.ts": "test('again', () => {});\n" });
     const carried = await proveCarry(f.store, { authority: f.authority().id, to: c, now: LATER });
     if (!carried.ok) throw new Error(carried.message);
     const third = sealedCheck(f, carried.taskId, c, plan => passingPlan(plan));
-    expect(third.decision).toMatchObject({ mode: "targeted", plan: { units: expect.arrayContaining(["src/index.test.ts", "src/browser/app.test.ts"]), required: expect.arrayContaining(["unit:src/index.test.ts::answer"]) } });
+    expect(third.decision).toMatchObject({ mode: "targeted", plan: { units: expect.arrayContaining(["src/index.test.ts", "src/browser/again.test.ts"]), required: expect.arrayContaining(["unit:src/index.test.ts::answer"]) } });
     // B's own revalidation reads its sealed plan and snapshot, never the newer rows.
     expect(verificationEvidence(f.store, EVIDENCE(f), b.runId).ok).toBe(true);
   }, 120_000);

@@ -15,10 +15,9 @@
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
-import { hostname } from "node:os";
 import { basename, sep } from "node:path";
 import { ownedProcessCount, runOwnerTag } from "./exec.js";
-import type { Store, WorktreeRow } from "./store.js";
+import { localWitnessSql, storeMachine, type Store, type WorktreeRow } from "./store.js";
 import { sleep as defaultSleep } from "./sleep.js";
 
 /** How long a process has after SIGTERM before SIGKILL. */
@@ -139,10 +138,11 @@ export type CloseoutOptions = StopOptions & { repo?: string; actor?: string };
 export async function closeOutRuns(store: Store, clock: () => Date, options: CloseoutOptions = {}): Promise<{ runId: number; done: Stopped }[]> {
   if (process.platform === "win32") return [];
   const db = store.handle;
+  const local = localWitnessSql(storeMachine(db), "p"), mine = localWitnessSql(storeMachine(db));
   const runs = db.prepare(`SELECT DISTINCT p.run AS run FROM run_process p JOIN run r ON r.id = p.run JOIN task_ref t ON t.id = r.task_ref
-    WHERE p.exited_at IS NULL AND p.pid IS NOT NULL AND p.containment IS NULL AND p.container IS NULL AND p.host = ?
+    WHERE p.exited_at IS NULL AND p.pid IS NOT NULL AND p.containment IS NULL AND p.container IS NULL AND ${local.sql}
       AND r.outcome IS NOT NULL${options.repo === undefined ? "" : " AND t.repo = ?"} ORDER BY p.run`)
-    .all(...[hostname(), ...(options.repo === undefined ? [] : [options.repo])]).map(row => Number(row["run"]));
+    .all(...[...local.params, ...(options.repo === undefined ? [] : [options.repo])]).map(row => Number(row["run"]));
   const out: { runId: number; done: Stopped }[] = [];
   if (runs.length === 0) return out;
   let census: ProcessRow[] | null = null;
@@ -150,7 +150,7 @@ export async function closeOutRuns(store: Store, clock: () => Date, options: Clo
     store.recordRunProcessExits(runId, clock());
     if (ownedProcessCount(runOwnerTag(store, runId)) > 0) continue;
     const witnesses: Witness[] = db.prepare(`SELECT pid, process_group, observed_at FROM run_process
-      WHERE run = ? AND exited_at IS NULL AND pid IS NOT NULL AND containment IS NULL AND container IS NULL AND host = ?`).all(runId, hostname())
+      WHERE run = ? AND exited_at IS NULL AND pid IS NOT NULL AND containment IS NULL AND container IS NULL AND ${mine.sql}`).all(runId, ...mine.params)
       .map(row => ({ pid: Number(row["pid"]), group: Number(row["process_group"]) === 1, observedAt: Date.parse(String(row["observed_at"])) }))
       .filter(one => Number.isFinite(one.observedAt));
     if (witnesses.length === 0) continue;
@@ -230,8 +230,9 @@ export function checkoutTargets(census: readonly ProcessRow[], inside: ReadonlyS
 function finishedRunProcesses(store: Store, census: readonly ProcessRow[]): Set<number> {
   const byPid = new Map(census.map(row => [row.pid, row]));
   const roots = new Set<number>();
+  const local = localWitnessSql(storeMachine(store.handle), "p");
   const rows = store.handle.prepare(`SELECT p.pid AS pid, p.observed_at AS observed_at FROM run_process p JOIN run r ON r.id = p.run
-    WHERE p.exited_at IS NULL AND p.pid IS NOT NULL AND p.host = ? AND r.outcome IS NOT NULL`).all(hostname());
+    WHERE p.exited_at IS NULL AND p.pid IS NOT NULL AND ${local.sql} AND r.outcome IS NOT NULL`).all(...local.params);
   for (const row of rows) {
     const now = byPid.get(Number(row["pid"]));
     const observedAt = Date.parse(String(row["observed_at"]));

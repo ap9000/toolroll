@@ -33,6 +33,8 @@ export type HomeFacts = {
   chat: boolean;
   /** This person can answer an agent's question (an approver in a browser session). */
   canAnswer: boolean;
+  /** Why this task's plan can't take a yes right now (render-tasks.ts consentDoorOf), or null when it can. */
+  closedDoor: (taskId: string) => { title: string; why: string; road: "scope" | "agents" } | null;
 };
 
 /** "7 need you across 2 projects." — the sentence and the figures read the same totals. */
@@ -45,7 +47,7 @@ export function homeSentence(needs: number, perProject: readonly { name: string;
   return waiting.length === 1 ? `${needs} ${verb} you in ${waiting[0]!.name}.` : `${needs} ${verb} you across ${waiting.length} projects.`;
 }
 
-function rowOf(store: Store, item: WorkIndexItem, now: Date, multi: boolean, canAnswer: boolean): BrowserHomeRow {
+function rowOf(store: Store, item: WorkIndexItem, now: Date, multi: boolean, canAnswer: boolean, closedDoor: HomeFacts["closedDoor"]): BrowserHomeRow {
   const action = item.primaryAction;
   const href = action?.code === "open-result" && action.target.runId != null
     ? `/review?result=${encodeURIComponent(action.target.taskId)}&run=${action.target.runId}` : browserWorkActionHref(item);
@@ -64,11 +66,14 @@ function rowOf(store: Store, item: WorkIndexItem, now: Date, multi: boolean, can
   const line = waits
     ? (open ? decision.question : item.status.detail !== item.status.label ? item.status.detail : null)
     : (item as { progress?: string }).progress ?? (item.status.detail !== item.status.label ? item.status.detail : null);
+  // A plan that can't take a yes never offers one: the reason, and the one act that opens it, as the task page says.
+  const door = action?.code === "approve-scope" ? closedDoor(action.target.taskId) : null;
   return {
     id: item.rootId, title: item.title, href: taskHref(item.rootId),
     project: multi || item.repo === null ? (item.repo === null ? "Unplaced" : projectName(item.repo)) : null,
-    age: relativeAge(item.updatedAt, now), chip: { word, tone }, line,
-    action: href === null || action === null ? null : { label: action.label, href }, question,
+    age: relativeAge(item.updatedAt, now), chip: { word, tone }, line: door === null ? line : door.title,
+    action: door !== null ? { label: door.road === "agents" ? "Change the agents" : "Edit the plan", href: `${taskHref(action!.target.taskId)}#${door.road === "agents" ? "agents" : "scope"}` }
+      : href === null || action === null ? null : { label: action.label, href }, question,
   };
 }
 
@@ -79,34 +84,38 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
     workIndexPage(store, now, access, { view, limit, project, ...(facts.evidenceRoot === undefined ? {} : { root: facts.evidenceRoot }) });
   const needs = read("needs-you", HOME_NEEDS_SHOWN);
   const running = read("running", HOME_RUNNING_SHOWN);
+  // Waiting (docs/plans/plain-toolroll.md P1.4): what Toolroll or another task moves on, with no person asked.
+  const waiting = workIndexPage(store, now, access, { view: "queued", limit: HOME_RUNNING_SHOWN, project, ...(facts.evidenceRoot === undefined ? {} : { root: facts.evidenceRoot }) });
   const totals = needs.totals;
   // Queued: the Tasks list's own Queued count (the same predicate its view=queued filter lists).
   const queued = totals.queued;
-  // Every project is said by name (all=1): /work alone would narrow to the session's open project.
-  const scopeQuery = project === null ? "all=1&" : `project=${encodeURIComponent(project)}&`;
+  // Every project is said by name (scope=all): /tasks alone would narrow to the session's open project.
+  const scopeQuery = project === null ? "scope=all&" : `project=${encodeURIComponent(project)}&`;
   const counts: BrowserHomeView["counts"] = [
-    { key: "needs", label: "Needs you", value: totals["needs-you"], href: `/work?${scopeQuery}view=needs-you` },
-    { key: "running", label: "Running", value: totals.running, href: `/work?${scopeQuery}view=running` },
-    { key: "queued", label: "Queued", value: queued, href: `/work?${scopeQuery}view=queued` },
-    { key: "finished", label: "Finished", value: totals.completed, href: `/work?${scopeQuery}view=completed` },
+    { key: "needs", label: "Needs you", value: totals["needs-you"], href: `/tasks?${scopeQuery}view=needs-you` },
+    { key: "running", label: "Running", value: totals.running, href: `/tasks?${scopeQuery}view=running` },
+    { key: "queued", label: "Queued", value: queued, href: `/tasks?${scopeQuery}view=queued` },
+    { key: "finished", label: "Finished", value: totals.completed, href: `/tasks?${scopeQuery}view=completed` },
   ];
   const multi = project === null && new Set([...needs.items, ...running.items].map(one => one.repo ?? "")).size > 1;
   const groups: BrowserHomeView["groups"] = [];
   for (const ask of ASKS) {
-    const rows = needs.items.filter(one => one.ask === ask).map(one => rowOf(store, one, now, multi, facts.canAnswer));
+    const rows = needs.items.filter(one => one.ask === ask).map(one => rowOf(store, one, now, multi, facts.canAnswer, facts.closedDoor));
     if (rows.length > 0) groups.push({ key: ask, label: ASK_LABEL[ask], rows });
   }
   // A waiting row whose ask the index couldn't name still waits on this person: it goes under Decide, never lost.
-  const unnamed = needs.items.filter(one => one.ask === null).map(one => rowOf(store, one, now, multi, facts.canAnswer));
+  const unnamed = needs.items.filter(one => one.ask === null).map(one => rowOf(store, one, now, multi, facts.canAnswer, facts.closedDoor));
   if (unnamed.length > 0) {
     const decide = groups.find(one => one.key === "decide");
     if (decide) decide.rows.push(...unnamed); else groups.unshift({ key: "decide", label: ASK_LABEL.decide, rows: unnamed });
   }
-  const live = running.items.filter(one => !one.status.views.includes("needs-you")).map(one => rowOf(store, one, now, multi, facts.canAnswer));
+  const live = running.items.filter(one => !one.status.views.includes("needs-you")).map(one => rowOf(store, one, now, multi, facts.canAnswer, facts.closedDoor));
   if (live.length > 0) groups.push({ key: "running", label: "Running", rows: live });
+  const waits = waiting.items.filter(one => one.status.label === "Waiting" && !one.status.views.includes("needs-you")).map(one => rowOf(store, one, now, multi, facts.canAnswer, facts.closedDoor));
+  if (waits.length > 0) groups.push({ key: "waiting", label: "Waiting", rows: waits });
   const perProject = needs.projects.map(one => ({ name: one.repo === null ? "Unplaced" : projectName(one.repo), needs: one.totals["needs-you"] }));
   const any = totals.all > 0 || totals.completed > 0 || (totals.archived ?? 0) > 0;
-  const shown = groups.filter(one => one.key !== "running").reduce((sum, one) => sum + one.rows.length, 0);
+  const shown = groups.filter(one => one.key !== "running" && one.key !== "waiting").reduce((sum, one) => sum + one.rows.length, 0);
   return {
     kind: "home",
     say: homeSentence(totals["needs-you"], perProject, project === null ? null : projectName(project), any),

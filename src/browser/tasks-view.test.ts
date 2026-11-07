@@ -12,10 +12,10 @@ const row = (id: string, ask: BrowserTaskRow["ask"], group: BrowserTaskRow["grou
   word, ask, chip: null, group, rank, action: ask === null ? null : { label: "Open", href: `/t/${id}` }, detail: null, problem: null, notes: [],
 });
 const view = (over: Partial<BrowserTasksView> = {}): BrowserTasksView => ({
-  kind: "tasks", layout: "list", layouts: { list: "/work", board: "/work?layout=board" }, scope: "in payments-api",
-  tabs: [{ key: "all", label: "All", href: "/work", count: 6, active: true }, { key: "needs-you", label: "Needs you", href: "/work?view=needs-you", count: 3, active: false },
-    { key: "running", label: "Running", href: "/work?view=running", count: 1, active: false }, { key: "queued", label: "Queued", href: "/work?view=queued", count: 1, active: false },
-    { key: "completed", label: "Finished", href: "/work?view=completed", count: 1, active: false }],
+  kind: "tasks", layout: "list", layouts: { list: "/tasks", board: "/tasks?view=board" }, scope: "in payments-api",
+  tabs: [{ key: "all", label: "All", href: "/tasks", count: 6, active: true }, { key: "needs-you", label: "Needs you", href: "/tasks?view=needs-you", count: 3, active: false },
+    { key: "running", label: "Running", href: "/tasks?view=running", count: 1, active: false }, { key: "queued", label: "Queued", href: "/tasks?view=queued", count: 1, active: false },
+    { key: "completed", label: "Finished", href: "/tasks?view=completed", count: 1, active: false }],
   needsYou: 3,
   groups: [{ key: "decide", label: "Decide", count: 1 }, { key: "review", label: "Review", count: 1 }, { key: "unblock", label: "Unblock", count: 1 }, { key: "building", label: "Building", count: 1 }, { key: "rest", label: "Recent", count: 2 }],
   rows: [row("old", null, "rest", 3, { word: "Complete", tone: "done" }), row("plan", "decide", "decide", 0, { word: "Plan", tone: "ask" }),
@@ -39,8 +39,8 @@ describe("the Tasks list", () => {
 
   test("the Board view shows the same rows as columns, Needs you's column marked", () => {
     const board = html(view({ layout: "board", board: [
-      { key: "needs", label: "Needs you", count: 1, href: "/work?view=needs-you", empty: "Nothing needs you.", rows: [row("plan", "decide", "decide", 0, { word: "Plan", tone: "ask" })] },
-      { key: "queued", label: "Queued", count: 0, href: "/work?view=queued", empty: "Nothing queued.", rows: [] },
+      { key: "needs", label: "Needs you", count: 1, href: "/tasks?view=needs-you", empty: "Nothing needs you.", rows: [row("plan", "decide", "decide", 0, { word: "Plan", tone: "ask" })] },
+      { key: "queued", label: "Queued", count: 0, href: "/tasks?view=queued", empty: "Nothing queued.", rows: [] },
     ] }));
     expect(board).toContain('class="k-col-h needs"');
     expect(board).toContain("Nothing queued.");
@@ -49,8 +49,8 @@ describe("the Tasks list", () => {
 
   test("a column with more than it shows says so and opens the rest; a filter over a part says it is a part", () => {
     const one = row("plan", "decide", "decide", 0, { word: "Plan", tone: "ask" });
-    const board = html(view({ layout: "board", board: [{ key: "needs", label: "Needs you", count: 57, href: "/work?view=needs-you", empty: "Nothing needs you.", rows: [one] }] }));
-    expect(board).toMatch(/data-column-more="needs"><a class="k-link" href="\/work\?view=needs-you">View all 57<\/a>/);
+    const board = html(view({ layout: "board", board: [{ key: "needs", label: "Needs you", count: 57, href: "/tasks?view=needs-you", empty: "Nothing needs you.", rows: [one] }] }));
+    expect(board).toMatch(/data-column-more="needs"><a class="k-link" href="\/tasks\?view=needs-you">View all 57<\/a>/);
   });
 
   test("on a phone the list keeps New task (the dock's primary), the text filter and the task tools", () => {

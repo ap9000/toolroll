@@ -633,7 +633,7 @@ describe("adjudicate", () => {
       `criterion "c1" is marked met, but caveat 1 admits an exception to it: ${noScopeCaveat}`,
       `criterion "c4" is marked met, but caveat 2 admits an exception to it: ${routinePageCaveat}`,
     ]);
-    expect(verdictWords(result.verdict, result.reasons).word).toBe("conflicting evidence");
+    expect(verdictWords(result.verdict, result.reasons).word).toBe("the report doesn't match the changes");
   });
 
   test("run 1497 pinned: the same caveats against not-met criteria are honest — short, never refuted", () => {
@@ -671,7 +671,7 @@ describe("adjudicate", () => {
         const result = adjudicate({ ...base, proofParse: stored([...caveats], verdict), diffStat: { captured: true, truncated: false, paths: new Set(["src/x.ts"]) } });
         expect(result.verdict).toBe("refuted");
         expect(result.reasons).toEqual(caveats.map((caveat, index) => `caveat ${index + 1} names no criterion — every caveat is an exception to exactly one signed criterion, named by its exact id (an unrelated idea belongs in the handoff's follow-ups): ${caveat}`));
-        expect(verdictWords(result.verdict, result.reasons).word).toBe("conflicting evidence");
+        expect(verdictWords(result.verdict, result.reasons).word).toBe("the report doesn't match the changes");
       }
     });
   }

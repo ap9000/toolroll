@@ -243,12 +243,12 @@ try {
         );
       } else await page.locator("[name=confirm]").check();
       await page
-        .getByRole("button", { name: "Accept and finish", exact: true })
+        .getByRole("button", { name: "Accept", exact: true })
         .scrollIntoViewIfNeeded();
       await shot(page, name + "-confirm");
       await click(
         page,
-        page.getByRole("button", { name: "Accept and finish", exact: true }),
+        page.getByRole("button", { name: "Accept", exact: true }),
       );
       await page
         .getByText(

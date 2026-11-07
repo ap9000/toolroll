@@ -247,11 +247,11 @@ describe("c2: Off reads Ready for review and says no check ran; a Quick pass rea
   test("the shared status function", () => {
     const off = taskStatusOf({ stage: "finished", checks: { status: "not-run", exitCode: null, head: HEAD, level: "off" }, links: { runChecks: "/r/1?tab=checks#follow-ups" } });
     expect(off.headline).toBe("Ready for review");
-    expect(off.sentence).toBe("Checked at release. Review the change, then mark it complete.");
+    expect(off.sentence).toBe("Checked at release. Review the change, then accept it.");
     expect(off.details[0]).toMatchObject({ key: "checks", text: "Checked at release", mark: "none", action: { label: "Run checks" } });
     const quick = taskStatusOf({ stage: "finished", checks: { status: "passed", exitCode: 0, head: HEAD, level: "quick" } });
     expect(quick.headline).toBe("Ready for review");
-    expect(quick.sentence).toBe(`Quick checks passed on ${HEAD.slice(0, 7)}. Review the change, then mark it complete.`);
+    expect(quick.sentence).toBe(`Quick checks passed on ${HEAD.slice(0, 7)}. Review the change, then accept it.`);
     expect(quick.details[0]).toMatchObject({ text: `Quick checks passed on ${HEAD.slice(0, 7)}`, mark: "ok" });
     // A full pass keeps its words; a failed quick check is Failed, in red.
     expect(taskStatusOf({ stage: "finished", checks: { status: "passed", exitCode: 0, head: HEAD, level: "full" } }).details[0]!.text).toBe(`Passed on ${HEAD.slice(0, 7)}`);
@@ -280,7 +280,7 @@ describe("c3: Run checks and Add tests work on any result", () => {
     expect(statusOf("checks-off")).toMatchObject({ headline: "Ready for review" });
     expect(statusOf("checks-off").details.find(one => one.key === "checks")!.text).toBe(`Passed on ${HEAD.slice(0, 7)}`);
     expect((await taskView("checks-off")).status!.status.headline).toBe("Ready for review");
-    const rows = (workspaceOf(await page("/work")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>).rows;
+    const rows = (workspaceOf(await page("/tasks")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>).rows;
     expect(rows.find(row => row.id === "checks-off")!.status.label).toBe("Ready for review");
   });
 
@@ -464,7 +464,7 @@ describe("checks Off are checked at release", () => {
     const status = () => assignmentTaskStatusOf(read("off-before-release"));
     expect(before.readiness).toEqual({ verdict: "short", checksOff: true, blockers: [] });
     expect(requirementWordOf(before.receipt!.proof!.matrix[0]!, null, "pending")).toBe("Checked at release");
-    expect(status()).toMatchObject({ headline: "Ready for review", sentence: "Checked at release. Review the change, then mark it complete." });
+    expect(status()).toMatchObject({ headline: "Ready for review", sentence: "Checked at release. Review the change, then accept it." });
     expect(status().details.find(one => one.key === "requirements")).toMatchObject({ text: "0 of 1 met · 1 at release" });
 
     // Not covered: a release check on an older commit, a failed one, and a quick one.
@@ -483,14 +483,14 @@ describe("checks Off are checked at release", () => {
     expect(releaseCoverageOf(store, undefined, REPO, offHead)).toBeNull();
     const after = read("off-before-release");
     expect(after.receipt!.checks.release).toEqual({ run: runs["release-full"], head: later });
-    expect(status()).toMatchObject({ headline: "Ready for review", sentence: `Checked at release on ${later.slice(0, 7)}. Review the change, then mark it complete.` });
+    expect(status()).toMatchObject({ headline: "Ready for review", sentence: `Checked at release on ${later.slice(0, 7)}. Review the change, then accept it.` });
     expect(status().details.find(one => one.key === "checks")).toMatchObject({ text: `Passed at release on ${later.slice(0, 7)}`, mark: "ok" });
     expect(status().details.find(one => one.key === "requirements")).toMatchObject({ text: "1 of 1 met", mark: "ok" });
     // Derived at read time: the sealed receipt digest and the stored proof are unchanged.
     expect(after.receipt!.digest).toBe(before.receipt!.digest);
     expect(store.proofVerdictFor(runs["off-before-release"]!)).toEqual(proofBefore);
     // The Tasks list says the same.
-    const rows = (workspaceOf(await page("/work")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>).rows;
+    const rows = (workspaceOf(await page("/tasks")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>).rows;
     expect(rows.find(row => row.id === "off-before-release")!.status).toMatchObject({ label: "Ready for review" });
     const listed = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { root }).items.find(one => one.rootId === "off-before-release")!;
     expect(listed.status).toMatchObject({ label: "Ready for review", detail: status().sentence });
@@ -498,7 +498,7 @@ describe("checks Off are checked at release", () => {
     // task complete says nothing about checks that were deliberately Off.
     const lines: string[] = [];
     expect(await runOperate("task", ["complete", "off-before-release", "--as", "sam", "--token", password], line => lines.push(line), { databaseFile, now: NOW })).toBe(EXIT.ok);
-    expect(lines.join("\n")).toMatch(/^off-before-release · Complete\nResult: off-before-release · run \d+ · [a-f0-9]{40}$/);
+    expect(lines.join("\n")).toMatch(/^off-before-release · Accepted\nResult: off-before-release · build #\d+ · [a-f0-9]{7}$/);
     expect(lines.join("\n")).not.toMatch(/check/i);
   });
 
@@ -509,28 +509,28 @@ describe("checks Off are checked at release", () => {
       return { code, said: lines.join("\n"), state: read(id).state };
     };
     built("refuse-failed", "Round totals", ago(14), "full", 1);
-    expect(await complete("refuse-failed")).toEqual({ code: EXIT.refused, said: "Checks failed (exit 1). Fix them and run checks again, or ask for changes.", state: "ready-to-check" });
+    expect(await complete("refuse-failed")).toEqual({ code: EXIT.refused, said: "Checks failed (exit 1). Fix them and run checks again, or send it back.", state: "ready-to-check" });
 
     built("refuse-missing", "Trim the footer", ago(13), "full");
     store.handle.prepare("DELETE FROM artifact WHERE run = ? AND kind IN ('check-log', 'verification-receipt')").run(runs["refuse-missing"]!);
     expect(read("refuse-missing").receipt!.checks.status).not.toBe("passed");
     expect(await complete("refuse-missing")).toMatchObject({ code: EXIT.refused, state: "ready-to-check" });
-    expect((await complete("refuse-missing")).said).toContain("Run checks on it, then mark it complete.");
+    expect((await complete("refuse-missing")).said).toContain("Run checks on it, then accept it.");
 
     built("refuse-criteria", "Show stock levels", ago(12), "full");
     const run = runs["refuse-criteria"]!;
     const proof = store.proofVerdictFor(run)!;
     store.handle.prepare("DELETE FROM proof_verdict WHERE run = ?").run(run);
     store.saveProofVerdict(run, "short", ["criterion \"c1\" is not met"], ago(12), [{ ...proof.matrix[0]!, state: "failed", detail: ["not met"] }], "short");
-    expect(await complete("refuse-criteria")).toMatchObject({ code: EXIT.refused, said: "This requirement isn't met: Show stock levels. Ask for changes, or accept the result with a reason.", state: "ready-to-check" });
+    expect(await complete("refuse-criteria")).toMatchObject({ code: EXIT.refused, said: "This requirement isn't met: Show stock levels. Send it back, or accept the result with a reason.", state: "ready-to-check" });
 
     built("refuse-high", "Cache prices", ago(11), "full");
     store.handle.prepare(`INSERT INTO build_review (run, task_id, repo, state, findings_json, queued_at, finished_at) VALUES (?, 'refuse-high', ?, 'reviewed', ?, ?, ?)`)
       .run(runs["refuse-high"]!, REPO, JSON.stringify({ version: 1, findings: [{ severity: "HIGH", file: "src/prices.ts", line: 4, scenario: "A stale price is charged after a change." }] }), ago(11).toISOString(), ago(11).toISOString());
     const high = read("refuse-high");
     expect(high.readiness).toMatchObject({ verdict: "refuted", blockers: [{ key: "high" }] });
-    expect(assignmentTaskStatusOf(high)).toMatchObject({ headline: "Needs you", sentence: "The automatic review found a high-severity problem. Ask for changes before marking it complete." });
-    expect(await complete("refuse-high")).toMatchObject({ code: EXIT.refused, said: "The automatic review found a high-severity problem. Ask for changes before marking it complete.", state: "ready-to-check" });
+    expect(assignmentTaskStatusOf(high)).toMatchObject({ headline: "Needs you", sentence: "The automatic review found a high-severity problem. Send it back before accepting it." });
+    expect(await complete("refuse-high")).toMatchObject({ code: EXIT.refused, said: "The automatic review found a high-severity problem. Send it back before accepting it.", state: "ready-to-check" });
     // A pending review is never verified.
     store.handle.prepare("UPDATE build_review SET state = 'pending', findings_json = NULL WHERE run = ?").run(runs["refuse-high"]!);
     expect(read("refuse-high").readiness?.verdict).toBe("short");

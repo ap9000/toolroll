@@ -27,6 +27,8 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   "file-task",
   "lead-send",
   "approve-plan",
+  // A fast start: file and approve in one step (fast-start.ts). Everything else this act could reach is refused.
+  "build-now",
   "answer-question",
   "stop-run",
   "pause-run",
@@ -46,6 +48,12 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   "dismiss-suggestion",
   // Slice 3: stopping a trial of a cheaper model only lowers (proveRuleDoor checks this exact act).
   "trial-stop",
+  // The code map (docs/plans/code-map.md §5): on or off for one project only, the same kind of setting as the default
+  // agent. Never a refresh, and never the end of a holdout (code-map-acts.ts refuses those by name).
+  "code-map-switch",
+  // Learning loops (D3): deciding a lesson note or a clean-up of project memory. The writers (memory-pass.ts decideProposal,
+  // memory-tidy.ts) check this exact act; instruction proposals stay with full authority.
+  "memory-review",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);
@@ -203,6 +211,9 @@ export const CHAT_ACTION_LOCAL_ACTS: Readonly<Record<ChatAction, LocalOwnerAct |
   suggestion_not_now: "dismiss-suggestion",
   // Stopping a trial only lowers (the rule door checks this exact act).
   trial_stop: "trial-stop",
+  // On or off for one project; never the end of a holdout.
+  code_map_switch: "code-map-switch",
+  code_map_holdout_end: null,
   scope_approve: "approve-plan",
   result_accept: "complete-task",
   task_cancel: "stop-run",

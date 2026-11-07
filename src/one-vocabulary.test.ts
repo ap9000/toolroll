@@ -114,7 +114,7 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const tasksView = async () => workspaceOf(await page("/work"));
+const tasksView = async () => workspaceOf(await page("/tasks"));
 const taskHeadline = async (id: string) => {
   const view = workspaceOf(await page(`/t/${id}`)).view as TaskView;
   return view.status!.status.headline;
@@ -181,9 +181,9 @@ describe("honest review reasons (c3)", () => {
     expect(Object.fromEntries(review.map(row => [row.id, row.detail]))).toEqual({
       "gift-card-hold": "On hold: Waiting on legal sign-off. Release the hold to accept it.",
       "coupon-plan-changed": "The plan changed after this was built. Build it again to the current plan.",
-      "order-export-refuted": "2 requirements couldn't be verified (c1, c2). Ask for changes, or accept the result with a reason.",
+      "order-export-refuted": "2 requirements couldn't be verified (c1, c2). Send it back, or accept the result with a reason.",
     });
-    const html = await page("/work");
+    const html = await page("/tasks");
     expect(html).not.toContain(BOILERPLATE);
     for (const id of ["gift-card-hold", "coupon-plan-changed"]) expect(await page(`/t/${id}`), id).not.toContain(BOILERPLATE);
     expect(resultHoldUpSentence({ unfinished: true })).not.toBe(resultHoldUpSentence({ noCommit: true }));

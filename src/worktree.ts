@@ -29,6 +29,7 @@ import { hostname } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
+import { currentMachineId, isThisMachine } from "./machine-identity.js";
 import type { Run, Store, WorktreeRow } from "./store.js";
 import { HANDOFF_PREFIX, MAILBOX_SUFFIX, looksLikeProtocolFile, readMailbox } from "./evidence.js";
 import { parseHandoff } from "./decision.js";
@@ -107,7 +108,7 @@ export type LeaseResult =
 export type LeaseFailure = "held" | "dirty" | "git" | "unverified" | "unknown-runner" | "in-use";
 
 /** Why storage retention left a checkout in place. */
-export type KeptWhy = "has changes" | "has commits" | "unreadable" | "git refused";
+export type KeptWhy = "has changes" | "has commits" | "not on its branch" | "unreadable" | "git refused";
 
 /**
  * The note a lease leaves in the checkout, naming the process holding it.
@@ -131,18 +132,20 @@ const busy = new Map<string, "leasing" | "removing">();
 
 // Outside the checkout so removal cannot erase the reservation before git and the row update finish.
 const reservationPath = (path: string) => `${path}.occupancy`;
-type Reservation = { pid: number; host: string; bootId: string | null; token: string };
+// machineId (v150): this machine's stable id, so a hostname that moved with the network still reads as this machine.
+type Reservation = { pid: number; host: string; bootId: string | null; token: string; machineId?: string | null };
 function reservation(path: string): Reservation | null {
   try {
     const note = JSON.parse(readFileSync(reservationPath(path), "utf8")) as Reservation;
-    if (Number.isSafeInteger(note.pid) && note.pid > 0 && typeof note.host === "string" && typeof note.token === "string") return note;
+    if (Number.isSafeInteger(note.pid) && note.pid > 0 && typeof note.host === "string" && typeof note.token === "string"
+      && (note.machineId === undefined || note.machineId === null || typeof note.machineId === "string")) return note;
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; }
   // An unreadable reservation is occupied, never a reason to delete someone's checkout.
   return { pid: 0, host: "unknown", bootId: null, token: "unknown" };
 }
 function reservationAlive(note: Reservation): boolean {
-  if (note.pid === 0 || note.host !== hostname()) return true;
-  if (note.bootId !== null && provenDeadByBootChange(note)) return false;
+  if (note.pid === 0 || !isThisMachine(note)) return true;
+  if (note.bootId !== null && provenDeadByBootChange(note, { host: note.host, bootId: currentBootId() })) return false;
   try { process.kill(note.pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
@@ -150,7 +153,7 @@ function reservationAlive(note: Reservation): boolean {
 /** A short store transaction arbitrates marker creation/recovery, never git, a scan or deletion.
  * Atomic rename publishes a complete owner; a crash cannot leave a half-written reservation. */
 function reserveCheckout(store: Store, path: string): (() => void) | null {
-  const note: Reservation = { pid: process.pid, host: hostname(), bootId: currentBootId(), token: randomBytes(12).toString("hex") };
+  const note: Reservation = { pid: process.pid, host: hostname(), bootId: currentBootId(), token: randomBytes(12).toString("hex"), machineId: currentMachineId() };
   const file = reservationPath(path), temp = `${file}.${note.token}`;
   const held = store.transact(() => {
     const prior = reservation(path);
@@ -216,6 +219,15 @@ function safePoolPath(root: string, target: string): boolean {
   return true;
 }
 
+/** The checkout itself, strictly inside the pool as real paths, reached by real folders only: never a link out of it. */
+function insidePool(root: string, path: string): boolean {
+  if (!safePoolPath(root, path)) return false;
+  try {
+    const real = realpathSync(path), base = realpathSync(root);
+    return real !== base && real.startsWith(base + sep) && lstatSync(path).isDirectory();
+  } catch { return false; }
+}
+
 function normalisePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "");
 }
@@ -242,13 +254,13 @@ export function recordWorktreeProcess(store: Store, path: string, runner: string
   // verified boot change nothing of it survives, and the checkout is free
   // without a PID probe that a reused pid could answer wrongly.
   const bootId = currentBootId();
-  writeFileSync(join(path, MARKER), `${pid} ${runner} group ${bootId ?? "unknown"} ${hostname()}\n`, "utf8");
+  writeFileSync(join(path, MARKER), `${pid} ${runner} group ${bootId ?? "unknown"} ${hostname()} ${currentMachineId() ?? "unknown"}\n`, "utf8");
 }
 
 /** Read-only occupancy witness shared with stop settlement. */
 export function worktreeProcessOccupancy(path: string): { held: true; by: number } | { held: false } {
   const reserved = reservation(path);
-  if (reserved !== null && (reserved.pid !== process.pid || reserved.host !== hostname()) && reservationAlive(reserved)) return { held: true, by: reserved.pid };
+  if (reserved !== null && (reserved.pid !== process.pid || !isThisMachine(reserved)) && reservationAlive(reserved)) return { held: true, by: reserved.pid };
   const note = join(path, MARKER);
   if (!existsSync(note)) return { held: false };
 
@@ -256,13 +268,15 @@ export function worktreeProcessOccupancy(path: string): { held: true; by: number
   const pid = Number(parts[0]);
   if (!Number.isInteger(pid) || pid <= 0) return { held: false };
   const noteHost = parts[4];
-  if (noteHost !== undefined && noteHost !== hostname()) return { held: true, by: pid };
+  // The sixth word (v150) is the writer's machine id; "unknown", or a note from before it, is matched by name.
+  const noteMachine = parts[5] === undefined || parts[5] === "unknown" ? null : parts[5];
+  if (noteHost !== undefined && !isThisMachine({ host: noteHost, machineId: noteMachine })) return { held: true, by: pid };
   if (pid === process.pid && parts[2] !== "group") return { held: false };
   // A note from a previous, VERIFIED boot of this host names a process
   // that cannot exist any more; a note without a boot id (legacy) or a
   // boot this host cannot verify keeps the probe below.
   const noteBoot = parts[3];
-  if (noteBoot !== undefined && noteHost !== undefined && provenDeadByBootChange({ host: noteHost, bootId: noteBoot })) return { held: false };
+  if (noteBoot !== undefined && noteHost !== undefined && provenDeadByBootChange({ host: noteHost, bootId: noteBoot }, { host: noteHost, bootId: currentBootId() })) return { held: false };
 
   // A shell/provider can exit before its descendants. A recorded POSIX
   // process group remains an owner until that whole group has gone.
@@ -678,7 +692,7 @@ export class WorktreePool {
   /** Leave a note naming the process holding this checkout. */
   private mark(path: string, runner: string, pid = process.pid): boolean {
     try {
-      writeFileSync(join(path, MARKER), `${pid} ${runner} process ${currentBootId() ?? "unknown"} ${hostname()}\n`, "utf8");
+      writeFileSync(join(path, MARKER), `${pid} ${runner} process ${currentBootId() ?? "unknown"} ${hostname()} ${currentMachineId() ?? "unknown"}\n`, "utf8");
       return true;
     } catch {
       return false;
@@ -883,14 +897,41 @@ export class WorktreePool {
   }
 
   /**
+   * Whether a checkout a task may still come back to can go, beyond `inspect`: a later lease of its branch must make the
+   * same checkout, and every commit its task recorded must outlive it (git's garbage collection counts a worktree's HEAD
+   * and reflog; once they go only a branch holds a commit). So: the folder is the pool's own, the checkout belongs to its
+   * project by the plane's record (`boundDirs`, not its `.git` file), its HEAD is its recorded branch, every recorded
+   * `heads` commit is on a branch, and no ref lives only in this worktree. Reads only; anything unreadable keeps it.
+   */
+  async proveRecreatable(row: WorktreeRow, heads: readonly string[]): Promise<"clean" | KeptWhy> {
+    if (row.branch === "unknown" || !insidePool(this.options.root, row.path) || heads.some(one => !/^[0-9a-f]{40,64}$/.test(one))) return "unreadable";
+    const git = teardownGit(this.runner, { repo: row.repo });
+    const head = await git(row.path, [...READ_ONLY, "symbolic-ref", "-q", "HEAD"]);
+    if (head.code === 1) return "not on its branch";
+    if (head.code !== 0) return "unreadable";
+    if (head.stdout.trim() !== `refs/heads/${row.branch}`) return "not on its branch";
+    const branch = await git(row.repo, [...READ_ONLY, "rev-parse", "--verify", "--quiet", `refs/heads/${row.branch}^{commit}`]);
+    if (branch.code !== 0) return "unreadable";
+    if (heads.length > 0) {
+      const unheld = await git(row.repo, [...READ_ONLY, "rev-list", "-1", ...heads, "--not", "--branches"]);
+      if (unheld.code !== 0) return "unreadable";
+      if (unheld.stdout.trim() !== "") return "has commits";
+    }
+    const own = await git(row.path, [...READ_ONLY, "for-each-ref", "--count=1", "refs/worktree", "refs/bisect", "refs/rewritten"]);
+    if (own.code !== 0) return "unreadable";
+    return own.stdout.trim() === "" ? "clean" : "has commits";
+  }
+
+  /**
    * Keep storage in check: remove the working copies nobody needs any more. Of `rows`, a checkout goes when it is
    * let go, nothing holds it, `wanted` says it may go (asked again right before it goes, so a task coming back or a
    * lease since keeps it) and `inspect` finds it clean, then clean still right before it goes (git refuses an edit
    * made after that). Only the working copy goes: its branch, and so every commit,
    * stays, and a later lease of the same branch makes a new one. At most `max` go per pass. Every git command goes
-   * through `git` when given: landed cleanup passes its hardened teardown git (teardown-git.ts).
+   * through `git` when given: landed cleanup passes its hardened teardown git (teardown-git.ts). `proof` is asked last,
+   * inside the reservation, for what `inspect` doesn't cover (idle cleanup: `proveRecreatable`).
    */
-  async prune(rows: readonly WorktreeRow[], wanted: (row: WorktreeRow, fresh: boolean) => boolean | Promise<boolean>, max = Infinity, git: Git = this.teardown): Promise<{ removed: WorktreeRow[]; kept: { path: string; why: KeptWhy }[] }> {
+  async prune(rows: readonly WorktreeRow[], wanted: (row: WorktreeRow, fresh: boolean) => boolean | Promise<boolean>, max = Infinity, git: Git = this.teardown, proof?: (row: WorktreeRow) => Promise<"clean" | KeptWhy>): Promise<{ removed: WorktreeRow[]; kept: { path: string; why: KeptWhy }[] }> {
     const removed: WorktreeRow[] = [];
     const kept: { path: string; why: KeptWhy }[] = [];
     const idle = (row: WorktreeRow | null, releasedAt: string) =>
@@ -914,6 +955,8 @@ export class WorktreePool {
         // Landed cleanup rechecks Git here; existing synchronous guards keep their synchronous path.
         const allowed = wanted(now as WorktreeRow, true);
         if (!(typeof allowed === "boolean" ? allowed : await allowed)) continue;
+        const proven = proof === undefined ? "clean" : await proof(now as WorktreeRow);
+        if (proven !== "clean") { kept.push({ path: row.path, why: proven }); continue; }
         const gone = await this.removeCleanCopy(row, git);
         if (gone !== "removed") { kept.push({ path: row.path, why: gone }); continue; }
         removed.push(row);
@@ -945,7 +988,7 @@ export class WorktreePool {
       const now = this.store.getWorktree(row.path);
       if (!idle(now) || !wanted(now!)) return { ok: false, message: `${row.path} is in use` };
       // Held while it slims: another process's lease sees this process in it.
-      try { writeFileSync(note, `${process.pid} storage-retention slimming ${currentBootId() ?? "unknown"} ${hostname()}\n`, "utf8"); held = true; } catch { return { ok: false, message: `${row.path} couldn't be held` }; }
+      try { writeFileSync(note, `${process.pid} storage-retention slimming ${currentBootId() ?? "unknown"} ${hostname()} ${currentMachineId() ?? "unknown"}\n`, "utf8"); held = true; } catch { return { ok: false, message: `${row.path} couldn't be held` }; }
       const sizes = diskBytes(drop.map(one => join(row.path, one)));
       this.store.forgetWorktreeSetup(row.path);
       for (const one of drop) rmSync(join(row.path, one), { recursive: true, force: true, maxRetries: 3 });
@@ -986,7 +1029,7 @@ export class WorktreePool {
   private async removeWorkingCopy(row: WorktreeRow): Promise<boolean> {
     // Held while it goes: another process's lease sees this process in it (the busy map is this process's only).
     const note = join(row.path, MARKER);
-    try { writeFileSync(note, `${process.pid} storage-retention removing ${currentBootId() ?? "unknown"} ${hostname()}\n`, "utf8"); } catch { return false; }
+    try { writeFileSync(note, `${process.pid} storage-retention removing ${currentBootId() ?? "unknown"} ${hostname()} ${currentMachineId() ?? "unknown"}\n`, "utf8"); } catch { return false; }
     const gone = await this.teardown(row.repo, ["worktree", "remove", "--force", row.path]);
     if (gone.code !== 0) { rmSync(note, { force: true }); return false; }
     this.forgetRemoved(row);

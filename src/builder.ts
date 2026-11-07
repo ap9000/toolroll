@@ -112,6 +112,7 @@ import {
   validateScreenshotBytes,
   imageDimensions,
   SCREENSHOT_BYTE_CAP, boundStreamHeadTail } from "./evidence.js";
+import { deliverCodeMap } from "./code-map-admission.js";
 import { attemptKeyOf, closeRunQuestions, noteOpenTool, recordAgentTurn } from "./agent-board.js";
 import { openStatusFile, pulseAgentBoard, removeStatusFile, statusBrief, type AgentPulseState } from "./agent-pulse.js";
 import { withAgentTurns } from "./agent-turns.js";
@@ -1560,7 +1561,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   const retryBase = pinnedBase !== null && pinnedBase !== baseRevision ? pinnedBase : null;
   const contextBase = codingHandoff !== null ? baseRevision : undefined;
   const lessonContext = learningContext(store, root, request.runId, "build", clock(), contextBase);
-  const briefText = projectSkillContext + knowledgeContext(store, request.runId, join(root, '..', 'repository-context'), contextBase) + lessonContext + brief(
+  const briefText = projectSkillContext + knowledgeContext(store, request.runId, join(root, '..', 'repository-context'), contextBase, clock()) + deliverCodeMap(store, request.runId, clock()) + lessonContext + brief(
     scope as Scope,
     branch,
     mailbox,
@@ -2731,7 +2732,7 @@ async function settleProof(
         checkAttempt = prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access, authority: decision.authority, limitMs: loadWatch?.limitMs,
           ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, release,
           // Advisory only (docs/plans/learning-loops.md): the project's tracked identities, a separate handshake field.
-          learn: learnRequestFor(store, repo, now()).learn }, now());
+          learn: learnRequestFor(store, repo, now(), runId).learn }, now());
       } catch (error) {
         // A recorded last release that can't be verified (eval-harness review 2, finding 4): nothing runs.
         if (!(error instanceof CheckBaselineUnverifiable)) throw error;

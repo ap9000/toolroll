@@ -523,6 +523,13 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
  * section under the status card; the secondary terms fold stays flat. */
 .so-task-approval details.task-secondary-approval { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
 .so-task-approval section.task-plan-review { margin: 0; }
+/* "Can I merge?" (P1.6): one row per fact, its mark, and the blocker's act on the right; it wraps under on a phone. */
+.so-merge-rows { list-style: none; margin: var(--so-space-sm) 0 0; padding: 0; display: grid; gap: var(--so-space-xs); }
+.so-merge-rows > li { display: grid; grid-template-columns: 1.25em minmax(0, 1fr) auto; gap: var(--so-space-sm); align-items: start; padding: var(--so-space-xs) 0; border-top: 1px solid var(--so-line); }
+.so-merge-rows > li > :nth-child(n+3) { grid-column: 2 / -1; }
+.so-merge-rows > li > form.inline { grid-column: 3; }
+.so-merge-mark { color: var(--so-muted); text-align: center; }
+.so-merge-rows > li[data-mark="yes"] .so-merge-mark { color: var(--so-ink); }
 /* A fold holding a single server card shows its content, not a second card. */
 .so-task-fold > div > .card:only-child { border: 0; padding: 0; background: none; box-shadow: none; }
 .so-task-fold > div > .card:only-child::before, .so-task-fold > div > .card:only-child::after { content: none; }

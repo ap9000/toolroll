@@ -109,7 +109,7 @@ export function quietCardView(store: Store, taskRefs: readonly number[], now: Da
   const heading = `${lines.length} tasks`;
   const projects = [...new Set(lines.map(one => projectLabel(one.project)))];
   const text = [heading, ...lines.map(one => `${one.icon} ${phoneText(one.title, 60)} · ${one.status}`), "", projects.join(", ")].join("\n");
-  return { text, entities: [{ type: "bold", offset: 0, length: heading.length }], link: { label: "Open tasks", path: "/work" } };
+  return { text, entities: [{ type: "bold", offset: 0, length: heading.length }], link: { label: "Open tasks", path: "/tasks" } };
 }
 
 /** Facts that carry their own controls or must stand alone (a security alert, a decision, a flow card, a
@@ -181,7 +181,7 @@ export function finishedView(store: Store, batch: Pick<ChatBatch, "items">, now:
   const lines = batch.items.map(one => lineOf(store, one, now, root, viewer)).filter((one): one is BatchLine => one !== null);
   if (lines.length === 0) return null;
   const text = batchLine(lines.map(one => one.fact));
-  if (lines.length > 1) return { text, entities: [], link: { label: "Open", path: "/work" } };
+  if (lines.length > 1) return { text, entities: [], link: { label: "Open", path: "/tasks" } };
   const target = lines[0]!.target ?? null;
   return { text, entities: [], link: lines[0]!.link, ...(lines[0]!.also.length === 0 ? {} : { also: lines[0]!.also }), ...(target === null ? {} : { target }) };
 }
@@ -240,7 +240,7 @@ export function enqueueEveningDigests(store: Store, now: Date, root?: string): n
       const body = eveningDigestText(store, person.account, now, root);
       if (body === null) return;
       if (store.enqueueNotification({ dedupeKey: `digest:evening:${person.account}:${day}`, kind: "evening-digest", subject: "Evening digest", body,
-        link: "/work", source: { installation: true }, recipient: person.account }, now)) queued++;
+        link: "/tasks", source: { installation: true }, recipient: person.account }, now)) queued++;
     });
   }
   return queued;

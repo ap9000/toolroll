@@ -3,7 +3,7 @@ name: CI
 # Every pull request (docs/plans/test-matrix.md, docs/plans/ci-speed.md): the full unit suite on Ubuntu with Node 24 in
 # six timing-balanced shards, and the macOS lane of it (every file that can behave differently on a Mac, plus a smoke
 # set; scripts/ci-shards.mjs LANES) on macOS in three, each joined by one required job per OS, plus the area lanes: Linux cgroup containment, the Linux fence,
-# Windows Job Object containment and the git lanes. Node 22 (the engines floor) runs before each release instead, in
+# Windows Job Object containment (each run by native-lanes.yml, and waited for here) and the git lanes. Node 22 (the engines floor) runs before each release instead, in
 # release-candidate.yml; nightly.yml runs everything on main every night; main-push.yml runs this whole workflow on a
 # push to main whose merge commit it can't prove tested (it calls it, so its runs never stand in for these).
 #
@@ -65,11 +65,19 @@ jobs:
           ref: ${{ env.TESTED_SHA }}
           # Migration tests build old releases from git history (git archive <old commit>).
           fetch-depth: 0
+          # The candidate's copy of this checkout must hold no token.
+          persist-credentials: false
       - name: Tested commit
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The harness comes from the base revision: nothing the candidate wrote decides how it is run.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
@@ -79,22 +87,30 @@ jobs:
       - timeout-minutes: 8
         run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run build
-      # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
-      # TOOLROLL_REQUIRE_NATIVE: a Linux fence attack that can't run here fails instead of skipping (a skip is not
-      # evidence); the join's verifier runs with the same --native policy.
-      - run: npm run test:all -- --shard=${{ matrix.shard }}/6 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
-        env:
-          CI: "true"
-          TOOLROLL_REQUIRE_NATIVE: linux
+      # docs/plans/trusted-release-reports.md, H1: every phase that loads the candidate's code (install, typecheck, the
+      # build's Tailwind plugins, the tests) runs as a user of its own, with no sudo, in a copy of the checkout.
+      - name: The candidate's user and its copy of the checkout
+        shell: bash
+        run: |
+          harness=.trusted-base/scripts
+          if [ ! -f "$harness/ci-candidate.mjs" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts; fi
+          mkdir -p "$RUNNER_TEMP/harness"
+          cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$RUNNER_TEMP/harness/"
+          sudo -n "$(command -v node)" "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --npm-cache "$(npm config get cache)" --tool-cache "$RUNNER_TOOL_CACHE"
+      - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
+      # Inside this job, not beside it: what it proves is this job's own isolation.
+      - run: '"$RUNNER_TEMP/candidate" canary'
+      - run: '"$RUNNER_TEMP/candidate" run -- npm run typecheck'
+      - run: '"$RUNNER_TEMP/candidate" run -- npm run build'
+      # Vitest's own JSON report, back on fd 3 and converted on the trusted side: no candidate script summarizes it.
+      # TOOLROLL_REQUIRE_NATIVE: a native attack that can't run here fails instead of skipping (a skip is not evidence);
+      # the join's verifier runs with the same --native policy.
+      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=linux --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/6'
       - uses: actions/upload-artifact@v4
         with:
-          name: shard-${{ matrix.node }}-${{ matrix.shard }}
+          name: shard-${{ matrix.node }}-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: ${{ runner.temp }}/shard-report.json
           if-no-files-found: error
-          overwrite: true
           retention-days: 7
 
   # The required Linux check, under the name `toolroll release` and main's protection wait for. It
@@ -142,7 +158,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: shard-${{ matrix.node }}-*
-          path: ${{ runner.temp }}/shards
+          path: ${{ runner.temp }}/downloads
+      # Attempt-named artifacts (a rerun can't overwrite one): each shard's newest attempt, under the verifier's names.
+      - name: The shards' newest reports
+        shell: bash
+        run: |
+          harness=.trusted-base/scripts/ci-candidate.mjs
+          if [ ! -f "$harness" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts/ci-candidate.mjs; fi
+          node "$harness" join --from "$RUNNER_TEMP/downloads" --to "$RUNNER_TEMP/shards"
       - name: Every shard ran the whole suite
         shell: bash
         run: |
@@ -172,33 +195,49 @@ jobs:
           ref: ${{ env.TESTED_SHA }}
           # Migration tests build old releases from git history (git archive <old commit>).
           fetch-depth: 0
+          # The candidate's copy of this checkout must hold no token.
+          persist-credentials: false
       - name: Tested commit
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The harness comes from the base revision: nothing the candidate wrote decides how it is run.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run build
-      # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
-      # TOOLROLL_REQUIRE_NATIVE: a Seatbelt attack that can't run on the hosted Mac fails instead of skipping; the join's
-      # verifier runs with the same --native policy.
-      # TOOLROLL_TEST_LANE: vitest.config.ts runs exactly the lane's files (scripts/ci-shards.mjs laneFiles).
-      - run: npm run test:all -- --shard=${{ matrix.shard }}/3 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
+      # docs/plans/trusted-release-reports.md, H1: every phase that loads the candidate's code (install, typecheck, the
+      # build's Tailwind plugins, the tests) runs as a user of its own, with no sudo, in a copy of the checkout.
+      - name: The candidate's user and its copy of the checkout
+        shell: bash
+        run: |
+          harness=.trusted-base/scripts
+          if [ ! -f "$harness/ci-candidate.mjs" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts; fi
+          mkdir -p "$RUNNER_TEMP/harness"
+          cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$RUNNER_TEMP/harness/"
+          sudo -n "$(command -v node)" "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --npm-cache "$(npm config get cache)" --tool-cache "$RUNNER_TOOL_CACHE"
+      - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
+      # Inside this job, not beside it: what it proves is this job's own isolation.
+      - run: '"$RUNNER_TEMP/candidate" canary'
+      - run: '"$RUNNER_TEMP/candidate" run -- npm run typecheck'
+      - run: '"$RUNNER_TEMP/candidate" run -- npm run build'
+      # Vitest's own JSON report, back on fd 3 and converted on the trusted side: no candidate script summarizes it.
+      # TOOLROLL_REQUIRE_NATIVE: a native attack that can't run here fails instead of skipping (a skip is not evidence);
+      # the join's verifier runs with the same --native policy.
+      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=darwin --env TOOLROLL_TEST_LANE="$LANE" --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/3'
         env:
-          CI: "true"
-          TOOLROLL_REQUIRE_NATIVE: darwin
-          TOOLROLL_TEST_LANE: ${{ inputs.macos_lane || 'macos' }}
+          LANE: ${{ inputs.macos_lane || 'macos' }}
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-shard-${{ matrix.node }}-${{ matrix.shard }}
+          name: macos-shard-${{ matrix.node }}-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: ${{ runner.temp }}/shard-report.json
           if-no-files-found: error
-          overwrite: true
           retention-days: 7
 
   # The required macOS check, joined exactly as the Linux one: it always runs, and fails unless every
@@ -247,16 +286,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: shard-${{ matrix.node }}-*
-          path: ${{ runner.temp }}/linux-shards
-      # The verifier reads shard-<node>-<i> folders; macOS artifacts carry a prefix so their names differ from Linux's.
+          path: ${{ runner.temp }}/linux-downloads
+      # The verifier reads shard-<node>-<i> folders; macOS artifacts carry a prefix so their names differ from Linux's, and
+      # both carry their attempt, so a rerun never overwrites one: each shard's newest attempt stands.
       - name: The macOS shards' reports, under the verifier's names
         shell: bash
         run: |
-          mkdir "$RUNNER_TEMP/shards"
-          for folder in "$RUNNER_TEMP"/macos-downloads/*; do
-            name="$(basename "$folder")"
-            case "$name" in macos-shard-*) mv "$folder" "$RUNNER_TEMP/shards/${name#macos-}" ;; *) echo "unexpected $name among the macOS shards' reports" >&2; exit 1 ;; esac
-          done
+          harness=.trusted-base/scripts/ci-candidate.mjs
+          if [ ! -f "$harness" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts/ci-candidate.mjs; fi
+          node "$harness" join --from "$RUNNER_TEMP/macos-downloads" --to "$RUNNER_TEMP/shards"
+          node "$harness" join --from "$RUNNER_TEMP/linux-downloads" --to "$RUNNER_TEMP/linux-shards"
           # The shards ran on macOS runners, whose checkout is /Users/runner/work/<repo>/<repo>; this join runs on Linux.
           # Their reports name files under the macOS checkout: map exactly that prefix onto this checkout, so the
           # (trusted) verifier judges the same relative paths. Nothing else in the reports changes.
@@ -321,124 +360,143 @@ jobs:
           fi
           node "$classifier" decide --event "$EVENT" --head-ref "$HEAD_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --root "$GITHUB_WORKSPACE" | tee -a "$GITHUB_OUTPUT"
 
-  # The native containment backend, EXECUTED: a cgroup v2 leaf is delegated
-  # to the runner user (chown, as the kernel's delegation model prescribes)
-  # and the test process is moved into it, so the real-process tests —
-  # setsid escape, natural root exit, exact-run stop, worker death, held
-  # supervisor — run against the kernel, and SO_EXPECT_NATIVE_CONTAINMENT
-  # turns "facility unavailable" into a failure instead of a skip.
+  # The root lanes (docs/plans/trusted-release-reports.md, H1): Linux cgroup containment, the Linux fence and Windows Job
+  # Object containment need root, so a candidate's code has root there. They run in native-lanes.yml, a workflow run of
+  # their own: one that shares no token and no artifact store with the jobs above. These three jobs keep the required
+  # names in this file, because `toolroll release` (the deployed one, which judges each release), main's protection and
+  # the release proof bind each name to ci.yml; each runs nothing of the candidate's and passes only when its lane's job
+  # passed there (scripts/ci-native-wait.mjs). A call from main-push.yml or nightly.yml has those start the lanes first.
   linux-native-containment:
     name: linux native containment · delegated cgroup v2
     needs: scope
     # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
     if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+    runs-on: ubuntu-24.04
+    # Past its lane's own limit, so a verdict arrives first.
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      actions: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
+          persist-credentials: false
       - name: Tested commit
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - name: Delegate a cgroup v2 leaf and run the native tests inside it
-        run: |
-          set -euo pipefail
-          test -f /sys/fs/cgroup/cgroup.controllers
-          sudo mkdir -p /sys/fs/cgroup/so-ci
-          sudo chown -R "$(id -u):$(id -g)" /sys/fs/cgroup/so-ci
-          echo $$ | sudo tee /sys/fs/cgroup/so-ci/cgroup.procs >/dev/null
-          echo "test shell cgroup: $(cat /proc/self/cgroup)"
-          npx vitest run src/containment-native.test.ts src/containment.test.ts src/container-state.test.ts src/boot-identity.test.ts
+          node-version: "24"
+      - name: Its lane passed in its own workflow run
+        shell: bash
         env:
-          CI: "true"
-          SO_EXPECT_NATIVE_CONTAINMENT: "1"
+          EVENT: ${{ github.event_name }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECK: linux native containment · delegated cgroup v2
+        run: |
+          waiter=.trusted-base/scripts/ci-native-wait.mjs
+          if [ ! -f "$waiter" ]; then echo "::warning::the base revision has no waiter yet; using this change's own (a person approves it)"; waiter=scripts/ci-native-wait.mjs; fi
+          node "$waiter" wait --check "$CHECK" --repo "$GITHUB_REPOSITORY" --sha "$TESTED_SHA" --event "$EVENT" --since "$(date -u -d '-20 minutes' +%Y-%m-%dT%H:%M:%SZ)"
 
-  # The windows-baseline matrix (node 22/24 over the service, scheduler,
-  # builder and recipe suites) is parked: shared Windows hosts kept timing
-  # out untouched tests. Bring it back with per-suite timeouts once the
-  # runners are quiet. The Job Object containment test below still runs.
-
-  # The Linux agent fence, EXECUTED (docs/plans/sandbox-parity.md): Anthropic's sandbox-runtime over bubblewrap with
-  # unprivileged user namespaces (which ubuntu-24.04's AppArmor default refuses, so the runner allows them), socat for
-  # its network relays and ripgrep for its protected-name scan; its seccomp helper ships in the package.
-  # TOOLROLL_REQUIRE_NATIVE turns a Linux attack that can't run here into a failure: a skip is not evidence.
   linux-fence:
     name: linux fence · sandbox-runtime
     needs: scope
     # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
     if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # Past its lane's own limit, so a verdict arrives first.
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      actions: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
+          persist-credentials: false
       - name: Tested commit
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
-          cache: npm
-      - timeout-minutes: 8
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
-      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - run: npm ci
-      - run: npm run build
-      - run: npm run test:attacks
+          node-version: "24"
+      - name: Its lane passed in its own workflow run
+        shell: bash
         env:
-          CI: "true"
-          TOOLROLL_REQUIRE_NATIVE: linux
+          EVENT: ${{ github.event_name }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECK: linux fence · sandbox-runtime
+        run: |
+          waiter=.trusted-base/scripts/ci-native-wait.mjs
+          if [ ! -f "$waiter" ]; then echo "::warning::the base revision has no waiter yet; using this change's own (a person approves it)"; waiter=scripts/ci-native-wait.mjs; fi
+          node "$waiter" wait --check "$CHECK" --repo "$GITHUB_REPOSITORY" --sha "$TESTED_SHA" --event "$EVENT" --since "$(date -u -d '-20 minutes' +%Y-%m-%dT%H:%M:%SZ)"
 
   native-windows:
     name: Windows Job Object containment
     needs: scope
     # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
     if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
-    runs-on: windows-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    # Past its lane's own limit, so a verdict arrives first.
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      actions: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
+          persist-credentials: false
       - name: Tested commit
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npx vitest run src/containment-windows.test.ts
+          node-version: "24"
+      - name: Its lane passed in its own workflow run
+        shell: bash
         env:
-          CI: "true"
-          SO_EXPECT_NATIVE_CONTAINMENT: "1"
+          EVENT: ${{ github.event_name }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECK: Windows Job Object containment
+        run: |
+          waiter=.trusted-base/scripts/ci-native-wait.mjs
+          if [ ! -f "$waiter" ]; then echo "::warning::the base revision has no waiter yet; using this change's own (a person approves it)"; waiter=scripts/ci-native-wait.mjs; fi
+          node "$waiter" wait --check "$CHECK" --repo "$GITHUB_REPOSITORY" --sha "$TESTED_SHA" --event "$EVENT" --since "$(date -u -d '-20 minutes' +%Y-%m-%dT%H:%M:%SZ)"
 
   # Git's own behaviour, on the declared floor and on the last release before 2.48 (README, Requirements): the git attack
   # tests and the worktree/teardown tests, nothing else. 2.47 is Debian trixie's git and still has the pre-2.48
   # `worktree add` behaviour teardown-git.ts relinkAdded works around; 2.41 is the floor (the global `git --attr-source`,
   # src/git-floor.ts), its oldest release exactly (2.41.0, which also ignores GIT_NO_LAZY_FETCH), built from kernel.org's
-  # tarball by scripts/ci-git.sh. Below 2.45 git has no `--no-lazy-fetch`, so
+  # tarball by the base revision's scripts/ci-git.sh. Below 2.45 git has no `--no-lazy-fetch`, so
   # the floor lane also proves a partial clone is refused for protected reads. The tests run as the image's unprivileged user (root passes
   # permission checks an operator's git can't), and a skipped test fails the job: a skip is not evidence. The only
   # skips allowed are the "native …" OS-fence attacks, which need bubblewrap/Seatbelt and run in the linux fence job.
@@ -462,25 +520,36 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
-      - run: chown -R node:node "$GITHUB_WORKSPACE"
+          persist-credentials: false
       - name: Tested commit
         run: |
-          head="$(runuser -u node -- git rev-parse HEAD)"
-          test "$head" = "$TESTED_SHA" || { echo "checked out $head, expected $TESTED_SHA" >&2; exit 1; }
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
-      - run: scripts/ci-git.sh 2.41
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
+      - run: .trusted-base/scripts/ci-git.sh 2.41
       - name: The tests' git is git 2.41
         run: runuser -u node -- git --version | tee /dev/stderr | grep -qF "git version 2.41."
-      - run: runuser -u node -- npm ci
-      - run: runuser -u node -- npm run test:git -- --reporter=default --reporter=json --outputFile.json=git-lane.json
-        env:
-          CI: "true"
+      # H1: the image's unprivileged user gets a copy of the checkout it owns (docs/plans/trusted-release-reports.md).
+      # That copy is the one ownership exception; the workspace itself, and the base revision's scripts, stay root's.
+      - name: The candidate's copy of the checkout
+        run: |
+          harness=.trusted-base/scripts
+          if [ ! -f "$harness/ci-candidate.mjs" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts; fi
+          mkdir -p "$RUNNER_TEMP/harness"
+          cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$harness/ci-no-skips.mjs" "$RUNNER_TEMP/harness/"
+          node "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --user node
+      - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
+      - run: '"$RUNNER_TEMP/candidate" canary'
+      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/git-lane.json" -- npm run test:git --'
       - name: Every git test ran
-        run: runuser -u node -- node scripts/ci-no-skips.mjs git-lane.json
+        run: node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/git-lane.json"
       - name: Partial clones are refused on the floor's git
-        run: runuser -u node -- npx vitest run test/attacks/checkout-git-partial-clone.test.ts --reporter=default --reporter=json --outputFile.json=partial-clone.json && runuser -u node -- node scripts/ci-no-skips.mjs partial-clone.json
-        env:
-          CI: "true"
+        run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/partial-clone.json" -- npx vitest run test/attacks/checkout-git-partial-clone.test.ts && node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/partial-clone.json"'
 
   git-247:
     name: git 2.47 · debian trixie
@@ -499,18 +568,31 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
-      - run: chown -R node:node "$GITHUB_WORKSPACE"
+          persist-credentials: false
       - name: Tested commit
         run: |
-          head="$(runuser -u node -- git rev-parse HEAD)"
-          test "$head" = "$TESTED_SHA" || { echo "checked out $head, expected $TESTED_SHA" >&2; exit 1; }
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
-      - run: scripts/ci-git.sh 2.47
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
+      - run: .trusted-base/scripts/ci-git.sh 2.47
       - name: The tests' git is git 2.47
         run: runuser -u node -- git --version | tee /dev/stderr | grep -qF "git version 2.47."
-      - run: runuser -u node -- npm ci
-      - run: runuser -u node -- npm run test:git -- --reporter=default --reporter=json --outputFile.json=git-lane.json
-        env:
-          CI: "true"
+      # H1: the image's unprivileged user gets a copy of the checkout it owns (docs/plans/trusted-release-reports.md).
+      # That copy is the one ownership exception; the workspace itself, and the base revision's scripts, stay root's.
+      - name: The candidate's copy of the checkout
+        run: |
+          harness=.trusted-base/scripts
+          if [ ! -f "$harness/ci-candidate.mjs" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts; fi
+          mkdir -p "$RUNNER_TEMP/harness"
+          cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$harness/ci-no-skips.mjs" "$RUNNER_TEMP/harness/"
+          node "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --user node
+      - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
+      - run: '"$RUNNER_TEMP/candidate" canary'
+      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/git-lane.json" -- npm run test:git --'
       - name: Every git test ran
-        run: runuser -u node -- node scripts/ci-no-skips.mjs git-lane.json
+        run: node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/git-lane.json"

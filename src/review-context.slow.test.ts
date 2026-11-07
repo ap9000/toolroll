@@ -376,7 +376,7 @@ describe("inherited review context (v51)", () => {
       const login = await fetch(base + "/login", { method: "POST", redirect: "manual", body: new URLSearchParams({ name: "alex", token: f.approverToken }) });
       const cookie = login.headers.getSetCookie().map(c => c.split(";")[0]).join("; ");
       const page = async (path: string) => { const response = await fetch(base + path, { headers: { cookie } }); return { status: response.status, html: await response.text() }; };
-      const pages = { result: await page(`/r/${f.sourceRun}`), task: await page("/t/feat"), chat: await page(`/chat?task=feat&result=${f.sourceRun}`), cockpit: await page("/review?result=feat"), work: await page("/work") };
+      const pages = { result: await page(`/r/${f.sourceRun}`), task: await page("/t/feat"), chat: await page(`/chat?task=feat&result=${f.sourceRun}`), cockpit: await page("/review?result=feat"), work: await page("/tasks") };
       for (const [name, one] of Object.entries(pages)) {
         expect(one.status, name).toBe(200);
         expect(one.html, name).not.toMatch(NO_REFRESH);

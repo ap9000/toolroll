@@ -104,8 +104,9 @@ const VERB = String.raw`(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?
 const writes = (tables: readonly string[]): RegExp => new RegExp(String.raw`\b${VERB}\s+(?:main\s*\.\s*)?["\`\[]?(?:${tables.join("|")})["\`\]]?(?![\w])`, "i");
 const ROUTING_WRITE = writes([...ROUTING_TABLES, "route_rule_one_winner"]);
 const MODELS_WRITE = writes(MODELS_TABLES);
-/** The two columns only route-store.ts writes: any write statement that names one. */
-const COLUMN_WRITE = /\b(?:INSERT|REPLACE|UPDATE)\b[^]*\b(?:exec_class|revision_origin)\b/i;
+/** The two columns only route-store.ts writes: any write statement that names one. A lesson note keeps its own copy of
+ * how a revision was asked for: that one INSERT into its own table is not this column, and only it is left out. */
+const COLUMN_WRITE = /\b(?:INSERT(?!\s+INTO\s+lesson_note\b)|REPLACE|UPDATE)\b[^]*\b(?:exec_class|revision_origin)\b/i;
 
 /** Each string or template text in the file that writes a protected row, with the function it's in ("" at the top
  * level): `Class#method`, or the top-level function. */

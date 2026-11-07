@@ -1387,7 +1387,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const complete = card("action", { ...payload });
       const preview = proposalPreview(store, store.getLeadProposal(complete.id)!, [repo], "telegram");
       expect(preview.buttons).toBe(true);
-      expect(preview.text).toContain("Accept and finish: Keep the guard readable");
+      expect(preview.text).toContain("Accept: Keep the guard readable");
       expect(preview.text).toContain("Confirm asks once more before anything is recorded.");
       // Other channels keep the secure handoff for the same card.
       expect(complete.preview.buttons).toBe(false);
@@ -1398,7 +1398,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const armed = script.calls.filter(call => call.method === "editMessageText").at(-1)!;
       expect(String(armed.params["text"])).toContain("This records that you handled this exact result. Confirm?");
       const keyboard = (armed.params["reply_markup"] as { inline_keyboard: { text: string; callback_data: string }[][] }).inline_keyboard.flat();
-      const yes = keyboard.find(one => one.text === "✓ Yes, accept and finish")!.callback_data;
+      const yes = keyboard.find(one => one.text === "✓ Yes, accept")!.callback_data;
       const cancel = keyboard.find(one => one.text === "Cancel")!.callback_data;
       // Cancel restores the card; the stale yes changes nothing.
       expect(await tapPass(cancel, complete.messageId)).toMatchObject({ ok: true, report: { ignored: 0 } });
@@ -1408,7 +1408,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const again = (restored.params["reply_markup"] as { inline_keyboard: { text: string; callback_data: string }[][] }).inline_keyboard.flat();
       expect(await tapPass(again.find(one => one.text === "Confirm")!.callback_data, complete.messageId)).toMatchObject({ ok: true });
       const rearmed = script.calls.filter(call => call.method === "editMessageText").at(-1)!;
-      const yes2 = (rearmed.params["reply_markup"] as { inline_keyboard: { text: string; callback_data: string }[][] }).inline_keyboard.flat().find(one => one.text === "✓ Yes, accept and finish")!.callback_data;
+      const yes2 = (rearmed.params["reply_markup"] as { inline_keyboard: { text: string; callback_data: string }[][] }).inline_keyboard.flat().find(one => one.text === "✓ Yes, accept")!.callback_data;
       expect(await tapPass(yes2, complete.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
       expect(assignment()).toMatchObject({ state: "complete", completion: { actor: "operator:alex" } });
       expect(store.proofAcceptance(run)).toBeNull();

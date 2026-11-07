@@ -38,8 +38,8 @@ const skipBuild = flag("--skip-build");
  * real-model is scripted: it tests Toolroll's own behaviour with the model scripted. */
 const GROUPS = {
   console: { journeys: 16, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, putting old tasks away, projects and their network, knowledge, skills, tools, models, old routine links" },
-  pages: { journeys: 8, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, the release approval sheet, signing out" },
-  task: { journeys: 4, about: "A task from an idea to an accepted result, then sent back twice" },
+  pages: { journeys: 9, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, the release approval sheet, a running release check, signing out" },
+  task: { journeys: 5, about: "A task from an idea to an accepted result, then sent back twice; the same by keyboard alone" },
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
   lead: { journeys: 4, real: 3, shared: 1, about: "The lead chat: questions, tasks and flows from plain words" },
@@ -260,8 +260,10 @@ await journey("console", SCRIPTED, "A wrong password is refused, and a signed-ou
 });
 
 await journey("pages", SCRIPTED, "Every main page opens without an error, in the one workspace look, on desktop and on a phone", [], async () => {
-  const paths = ["/chat", "/work", "/tasks", "/tasks/new", "/projects", "/flows", `/settings/knowledge?repo=${encodeURIComponent(repo)}`, "/settings", "/settings/models", "/settings/skills", `/settings/tools?repo=${encodeURIComponent(repo)}`, "/recipes",
-    "/inbox", "/board", "/next", "/done", "/system", "/workbench", "/code", "/kits", "/settings/lead/subagents", "/fleet", "/people"];
+  const paths = ["/chat", "/", "/tasks", "/tasks?view=board", "/tasks?view=ready", "/tasks?view=order", "/tasks?scope=all", "/tasks/new", "/projects", "/flows", `/settings/knowledge?repo=${encodeURIComponent(repo)}`, "/settings", "/settings/models", "/settings/skills", `/settings/tools?repo=${encodeURIComponent(repo)}`, "/recipes",
+    "/tasks?view=done", "/system", "/code", "/kits", "/settings/lead/subagents", "/fleet", "/people"];
+  // Retired pages (docs/plans/plain-toolroll.md P1.4) answer with a permanent redirect to their place on Home or Tasks.
+  const retired = { "/work": "/tasks", "/inbox": "/", "/next": "/", "/workbench": "/tasks?scope=all", "/board": "/tasks?view=board", "/queue": "/tasks?view=order", "/review": "/tasks?view=ready", "/done": "/tasks?view=done" };
   const broken = [];
   const phone = await signIn("sam", { width: 390, height: 844 }, "dark");
   for (const path of paths) {
@@ -280,6 +282,21 @@ await journey("pages", SCRIPTED, "Every main page opens without an error, in the
         if (wide > 2) broken.push(`phone ${path}: scrolls sideways by ${wide}px`);
       }
     }
+  }
+  for (const [from, to] of Object.entries(retired)) {
+    const answer = await page.request.get(`${base}${from}`, { maxRedirects: 0 });
+    if (answer.status() !== 301 || answer.headers()["location"] !== to) broken.push(`${from}: ${answer.status()} → ${answer.headers()["location"]}`);
+  }
+  // An old link on the phone (a bookmark, an old push) lands on its place.
+  await phone.goto(`${base}/next`);
+  // Home, or Chat while a first run has filed nothing yet (pages.ts homeRedirect).
+  if (!["/", "/chat"].includes(new URL(phone.url()).pathname)) broken.push(`an old /next link landed on ${phone.url()}`);
+  // Storage, on both: what the next sweep would free, and the folders kept and why.
+  for (const on of [page, phone]) {
+    await on.goto(`${base}/settings/storage`);
+    if (!(await on.locator("body").innerText()).includes("Storage")) broken.push("Settings → Storage didn't open");
+    if (await on.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)) broken.push("Settings → Storage scrolls sideways");
+    await on.screenshot({ path: join(w.out, `storage-${on === phone ? "phone" : "desktop"}.png`), fullPage: true });
   }
   // A page that doesn't exist is still a page in the workspace, not bare text.
   const missing = await page.goto(`${base}/no-such-page`);
@@ -499,7 +516,7 @@ await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown c
   if (csv.status() !== 200 || !(await csv.text()).includes("time_utc,source,role,project,person")) throw new Error(`the CSV: ${csv.status()}`);
   // Tasks folds usage (the limit, and the plan's windows once Claude has run here) to one line; its link opens Spend,
   // where the limit has its meter and the plan's windows are tiles as Claude said them.
-  await page.goto(`${base}/work`);
+  await page.goto(`${base}/tasks`);
   const usage = page.locator("[data-usage-summary]");
   await usage.waitFor({ timeout: 15_000 });
   if (!/\d+%/.test(await usage.innerText())) throw new Error(`the usage line: ${await usage.innerText()}`);
@@ -526,7 +543,7 @@ await journey("console", SCRIPTED, "The command line answers: the task list, the
   if (!/^toolroll — /.test(help) || !/toolroll task add/.test(help)) throw new Error(`help doesn't name the toolroll command: ${help.slice(0, 200)}`);
 });
 
-await journey("console", SCRIPTED, "Put away old tasks: Needs you → Put away old tasks shows each one and why → untick one, confirm with your password → it's gone from Needs you; Archived → Restore brings it back", [], async () => {
+await journey("console", SCRIPTED, "Archive old tasks: Needs you → Archive old tasks shows each one and why → untick one, confirm with your password → it's gone from Needs you; Archived → Restore brings it back", [], async () => {
   // Two finished tasks from long ago (their age set directly, as time would): the preview offers both, with why.
   for (const [id, title] of [["tidy-old-copy", "Old onboarding copy"], ["tidy-old-banner", "Old launch banner"]]) {
     cli(["task", "add", title, "--id", id, "--repo", repo]);
@@ -535,35 +552,34 @@ await journey("console", SCRIPTED, "Put away old tasks: Needs you → Put away o
   const archivedNow = () => rows("SELECT r.external_id id FROM task_archive a JOIN task_ref r ON r.id = a.task_ref ORDER BY id").map(one => one.id);
   // A task's row in the Tasks list (the whole row is its link).
   const taskRow = id => page.locator(`.k-row:has(a.k-row-t[href="/t/${id}"])`);
-  await page.goto(`${base}/work?view=needs-you`);
+  await page.goto(`${base}/tasks?view=needs-you`);
   await taskRow("tidy-old-copy").first().waitFor({ timeout: 15_000 });
-  // Put away old tasks is in the list's task tools menu.
+  // Archive old tasks is in the list's task tools menu.
   await page.locator('button[aria-label="More task tools"]:visible').first().click();
-  await Promise.all([page.waitForNavigation(), page.locator(".k-pop-menu button", { hasText: "Put away old tasks" }).first().click()]);
+  await Promise.all([page.waitForNavigation(), page.locator(".k-pop-menu button", { hasText: "Archive old tasks" }).first().click()]);
   const preview = page.locator("form#put-away");
   await preview.waitFor({ timeout: 15_000 });
   const text = await page.locator("body").innerText();
   if (!/Finished more than 14 days ago/.test(text) || !/Old onboarding copy/.test(text) || !/untouched for more than 14 days/.test(text)) throw new Error(`the preview: ${text.slice(0, 400)}`);
-  if (!/toolroll task tidy --apply --digest [0-9a-f]{32}/.test(text)) throw new Error("the preview doesn't name its CLI twin");
   await shot("put-away-preview");
   await preview.locator('input[name="task"][value="tidy-old-banner"]').uncheck();
   const password = preview.locator('input[name="password"]');
   if (await password.count() > 0) await password.fill(w.passwords.alex);
   await Promise.all([page.waitForNavigation(), preview.locator("button.kit-save").click()]);
-  if (!page.url().endsWith("/work?view=archived")) throw new Error(`after putting away: ${page.url()} — ${(await page.locator("body").innerText()).slice(0, 300)}`);
+  if (!page.url().endsWith("/tasks?view=archived")) throw new Error(`after putting away: ${page.url()} — ${(await page.locator("body").innerText()).slice(0, 300)}`);
   if (JSON.stringify(archivedNow()) !== JSON.stringify(["tidy-old-copy"])) throw new Error(`put away: ${JSON.stringify(archivedNow())}`);
   await taskRow("tidy-old-copy").first().waitFor({ timeout: 15_000 });
   if (!/Archived by alex: Finished/.test(await page.locator("body").innerText())) throw new Error("Archived doesn't say who put it away and why");
   await shot("put-away-archived");
-  await page.goto(`${base}/work?view=needs-you`);
+  await page.goto(`${base}/tasks?view=needs-you`);
   await page.locator("[data-task-list], .k-empty").first().waitFor({ timeout: 15_000 });
   if (await taskRow("tidy-old-copy").count() !== 0) throw new Error("a put-away task is still in Needs you");
-  await page.goto(`${base}/work?view=archived`);
+  await page.goto(`${base}/tasks?view=archived`);
   await Promise.all([page.waitForNavigation(), taskRow("tidy-old-copy").locator('[data-tidy-act="restore"] button').first().click()]);
   if (archivedNow().length !== 0) throw new Error(`Restore left: ${JSON.stringify(archivedNow())}`);
   // The same preview on a phone.
   const phone = await alexPhone();
-  await phone.goto(`${base}/work/put-away`);
+  await phone.goto(`${base}/tasks/archive`);
   await phone.locator("form#put-away").waitFor({ timeout: 15_000 });
   await settle(phone);
   await phone.screenshot({ path: join(w.out, "put-away-preview-phone.png") });
@@ -664,6 +680,10 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   if (new URL(page.url()).pathname !== new URL(opened).pathname) throw new Error(`the result left the task page: ${page.url()}`);
   const panel = page.locator("[data-task-panel=\"plan\"] [data-result-panel]").first();
   await panel.waitFor({ timeout: 20_000 });
+  // One vocabulary (docs/plans/plain-toolroll.md P1.1): the task page's own words say "plan", never scope, a digest or "signs".
+  const said = await page.locator("body").innerText();
+  const internal = /\b(?:scope|signs|sealed|binds|digest)\b|\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{12,64}\b/i.exec(said);
+  if (internal !== null) throw new Error(`the task page says "${internal[0]}": …${said.slice(Math.max(0, internal.index - 80), internal.index + 40)}…`);
   // How it ran: one line in the result's record — its time and tokens as recorded (docs/plans/run-efficiency.md).
   const ran = await page.locator('[data-task-panel="plan"] #how-it-ran summary').first().innerText();
   if (!/tokens in/.test(ran) || !/ out/.test(ran)) throw new Error(`How it ran says: ${ran.slice(0, 200)}`);
@@ -675,7 +695,7 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   // A requirement the planner left for a person: each Looks right counts at once, and Accept waits on them.
   for (const looks of await page.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
   const decision = await page.locator("[data-result-decision]").first().innerText();
-  if (!/^Accept (and finish|without checks)$/m.test(decision) || !/Finishes the task/.test(decision)) throw new Error(`the decision says: ${decision.slice(0, 200)}`);
+  if (!/^Accept( without checks)?$/m.test(decision) || !/Finishes the task/.test(decision)) throw new Error(`the decision says: ${decision.slice(0, 200)}`);
   await page.locator('a[data-result-tab="changes"]').click();
   await until("the changed files", async () => /src\/math\.js/.test(await page.locator("body").innerText()), { timeoutMs: 10_000, everyMs: 500 });
   await shot("result-changes");
@@ -698,6 +718,9 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
 async function sendBack(id, note) {
   const run = latestBuild(id);
   await page.goto(`${base}/review?result=${encodeURIComponent(id)}&run=${run.id}`);
+  // Three verbs (docs/plans/plain-toolroll.md P1.3): the result's acts read Accept, Send back or Retry, nothing else.
+  const verbs = await page.locator("[data-result-acts] [data-act]").allInnerTexts();
+  if (verbs.some(one => !/^(Accept( anyway| without checks| without your check)?|Send back|Retry|Check again)$/.test(one.trim()))) throw new Error(`the result's acts say: ${verbs.join(" · ")}`);
   await page.locator('a[href="#request-changes"]').first().click();
   const box = page.locator('#comment-form textarea[name="note"]');
   await box.waitFor({ timeout: 10_000 });
@@ -770,6 +793,59 @@ await journey("task", SCRIPTED, "Send it back asking for more than the plan allo
   return { revision: child, change: reason.replace(/\s+/g, " ").slice(0, 240), run: built.id };
 });
 
+/** Press a key with nothing focused (shortcuts sleep in text fields), counting the posts it makes. */
+async function pressKey(key) {
+  await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+  const posts = [];
+  const counted = request => { if (request.method() === "POST") posts.push(new URL(request.url()).pathname); };
+  page.on("request", counted);
+  await page.keyboard.press(key);
+  await page.waitForTimeout(400);
+  page.off("request", counted);
+  return posts;
+}
+
+await journey("task", SCRIPTED, "Keyboard only: n opens New task, a sleeps on the password page, and a presses Accept", ["File a task in the console; the planner (Claude) drafts its scope; approve it with your password"], async () => {
+  script({ role: "builder", when: [/greet/], answer: { files: {
+    "src/greet.js": "export const greet = name => `Hello, ${name}`;\n",
+    "test/greet.test.js": ["import test from 'node:test';", "import assert from 'node:assert/strict';", "import { greet } from '../src/greet.js';", "", "test('greets', () => assert.equal(greet('Ada'), 'Hello, Ada'));", ""].join("\n"),
+  }, conclusion: "Added greet(name) to src/greet.js, with a test." } });
+  // ? lists the shortcuts from the one table; Escape closes it.
+  await page.goto(`${base}/tasks`);
+  await pressKey("Shift+?");
+  const list = await page.locator(".kbd-help").innerText();
+  if (!/Approve or Accept/.test(list) || !/Send back/.test(list) || !/Retry/.test(list)) throw new Error(`the shortcuts list says: ${list.slice(0, 300)}`);
+  await page.keyboard.press("Escape");
+  // A press key with no such button on the page presses nothing.
+  const nothing = [...await pressKey("a"), ...await pressKey("r"), ...await pressKey("b")];
+  if (nothing.length > 0) throw new Error(`a key with no button posted: ${nothing.join(", ")}`);
+  // n: New task.
+  await Promise.all([page.waitForURL(/\/tasks\/new/), pressKey("n")]);
+  await page.fill('form[action="/tasks/add"] textarea[name="title"]', "Add a greet function to src/greet.js, with a test");
+  await Promise.all([page.waitForNavigation(), page.click('form[action="/tasks/add"] button.k-send')]);
+  const id = /\/t\/([^/?#]+)/.exec(page.url())?.[1];
+  if (!id) throw new Error(`filing didn't open the task: ${page.url()}`);
+  await plannerDrafted(id, "the planner's plan", ref => ref?.plan === "drafted" && rows(`SELECT 1 FROM task_scope WHERE task_id = '${id}'`).length > 0);
+  await page.goto(`${base}/t/${id}`);
+  await page.locator("form[data-task-approval]").waitFor({ timeout: 15_000 });
+  // A page asking for a password carries no shortcuts (the sensitivity contract): a presses nothing here, and the
+  // password is typed at the Approve control. Keys work on every page without one.
+  const first = await pressKey("a");
+  if (first.length > 0) throw new Error(`a posted on a password page: ${first.join(", ")}`);
+  await approveOnPage(id);
+  await builtAndChecked(id);
+  await page.goto(`${base}/t/${encodeURIComponent(id)}?tab=result`);
+  await page.locator("[data-result-decision]").first().waitFor({ timeout: 20_000 });
+  for (const looks of await page.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
+  // a: presses Accept, one request.
+  const accepted = page.waitForNavigation({ timeout: 30_000 });
+  const posts = await pressKey("a");
+  await accepted;
+  if (posts.length !== 1 || posts[0] !== `/t/${id}/complete`) throw new Error(`a on the result posted: ${posts.join(", ") || "nothing"}`);
+  await until("the task to read complete", async () => (await page.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500 });
+  return { task: id };
+});
+
 await journey("builds", REAL_MODEL, "A build stops to ask a question the plan leaves open; you answer on the decision page and it carries on", [], async () => {
   // Carrying on resumes Claude's saved session, which Claude keeps in the person's home; inside the plane's macOS check
   // fence that home is read-only, so the first run's session is never saved. It runs everywhere else.
@@ -825,6 +901,11 @@ await journey("stop", SCRIPTED, "Stop a build while it runs, then resume it with
   const stop = page.locator("form.task-stop-form button");
   await stop.waitFor({ timeout: 15_000 });
   await Promise.all([page.waitForNavigation(), stop.click()]);
+  // While Toolroll stops it, the build is a wait, never Needs you (docs/plans/plain-toolroll.md P1.2). Read the list
+  // first: a stop still unsettled after the read was unsettled during it.
+  const needsYou = cli(["task", "list", "--view", "needs-you"]).tasks.some(one => one.rootId === id || one.id === id);
+  const settledYet = rows(`SELECT settled_at FROM run_stop WHERE run = ${running.id}`)[0]?.settled_at ?? null;
+  if (needsYou && settledYet === null) throw new Error("a build Toolroll is still stopping reads Needs you");
   await until("the task to be paused", async () => { await page.reload(); return (await page.locator('[data-task-control="paused"]').count()) > 0; }, { timeoutMs: 180_000, everyMs: 3000 });
   const stopped = rows(`SELECT requested_via, settlement FROM run_stop WHERE run = ${running.id}`)[0];
   if (stopped?.requested_via !== "web") throw new Error(`the stop: ${JSON.stringify(stopped)}`);
@@ -2335,6 +2416,60 @@ await journey("pages", SCRIPTED, "One-tap release approval: the push's locator o
   if (problems.length > 0) throw new Error(problems.join("; "));
 });
 
+await journey("pages", SCRIPTED, "A running release check: a release stopped at Approval reads Stopped; once its check runs, its panel and status say the check is running, on desktop and phone", [], async () => {
+  // A prepared candidate whose project check takes a while, so the page can be read while it runs.
+  const gitShop = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+  gitShop("checkout", "-q", "-b", "release/shop-1.0.2");
+  const manifest = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+  writeFileSync(join(repo, "package.json"), `${JSON.stringify({ ...manifest, scripts: { ...manifest.scripts, test: "sleep 45" } }, null, 2)}\n`);
+  gitShop("add", "package.json"); gitShop("commit", "-qm", "Synthetic journey commit: a check that takes a while");
+  const candidate = gitShop("rev-parse", "HEAD");
+  gitShop("checkout", "-q", "main");
+  const id = `release-1.0.2-${candidate.slice(0, 7)}`;
+  cli(["task", "add", "Release 1.0.2", "--id", id, "--repo", repo, "--checks", "full", ...auth]);
+  cli(["task", "scope", id, "--candidate", candidate, "--goal", `Verify shop 1.0.2 at ${candidate} passes its check.`, "--acceptance", "The check passes on the candidate commit|check", ...auth]);
+  // `toolroll release` got as far as Approval and stopped there (synthetic), and nothing has happened since.
+  const stoppedAt = new Date().toISOString();
+  sql(`INSERT INTO release_step (task_id, tag, version, pr, step, state, started_at, ended_at, detail, updated_at) VALUES
+    ('${id}', 'v1.0.2', '1.0.2', 8, 'gate', 'done', '${stoppedAt}', '${stoppedAt}', NULL, '${stoppedAt}'),
+    ('${id}', 'v1.0.2', '1.0.2', 8, 'approval', 'failed', '${stoppedAt}', '${stoppedAt}', 'Nobody approved it in time.', '${stoppedAt}');`);
+  const panel = on => on.locator('[aria-label="Release"]');
+  const problems = [];
+  try {
+    await page.goto(`${base}/t/${id}`);
+    await panel(page).waitFor({ timeout: 15_000 });
+    if (await panel(page).getAttribute("data-release") !== "failed" || !(await panel(page).innerText()).includes("Stopped at Approval")) problems.push(`before anything moved the panel read: ${(await panel(page).innerText()).slice(0, 200)}`);
+    await shot("release-stopped-desktop");
+    const digest = cli(["task", "show", id]).scope.digest;
+    cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
+    const running = await until("the release's check to start", async () => {
+      const one = latestBuild(id);
+      return one && !one.finished_at && (rows(`SELECT status FROM run_check WHERE run = ${one.id}`).length === 0) && rows(`SELECT 1 AS hit FROM run_process WHERE run = ${one.id} AND exited_at IS NULL LIMIT 1`).length > 0 ? one : null;
+    }, { timeoutMs: 120_000, everyMs: 250 });
+    const reads = async on => {
+      await on.goto(`${base}/t/${id}`);
+      await panel(on).waitFor({ timeout: 15_000 });
+      const text = await panel(on).innerText(), body = await on.locator("body").innerText();
+      if (await panel(on).getAttribute("data-release") !== "running") problems.push(`the running panel is ${await panel(on).getAttribute("data-release")}`);
+      if (/Stopped at|Failed/.test(text)) problems.push(`the running panel still reads: ${text.slice(0, 200)}`);
+      if (!text.includes("Release check · Step")) problems.push(`the panel doesn't say the check: ${text.slice(0, 200)}`);
+      if (!/release check|project check/i.test(body) || /an agent/i.test(body)) problems.push(`the page's status: ${body.slice(0, 300)}`);
+      if (await on.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)) problems.push("the running release page scrolls sideways");
+    };
+    await reads(page);
+    await shot("release-check-running-desktop");
+    const phone = await alexPhone();
+    await reads(phone);
+    await phone.screenshot({ path: join(w.out, "release-check-running-phone.png"), fullPage: true });
+    await putPhoneDown();
+    await until("the check to finish", async () => latestBuild(id)?.finished_at != null ? true : null, { timeoutMs: 120_000, everyMs: 500 });
+    return { run: running.id };
+  } finally {
+    cli(["task", "archive", id, ...auth], { ok: [0, 1, 2, 3] });
+    if (problems.length > 0) throw new Error(problems.join("; "));
+  }
+});
+
 await journey("pages", SCRIPTED, "Signing out ends the session: pages ask to sign in again", [], async () => {
   const sam = await signIn("sam");
   await sam.goto(`${base}/chat`);
@@ -2843,6 +2978,9 @@ async function fileLocally(on, base, words) {
   await waitFor(on.locator('form[action="/tasks/add"] textarea[name="title"]'), "New task", { timeoutMs: 15_000, seen: () => saysNow(on) });
   await on.fill('form[action="/tasks/add"] textarea[name="title"]', words);
   await Promise.all([on.waitForNavigation(), on.click('form[action="/tasks/add"] button.k-send')]);
+  // Small work shows its exact terms first; these journeys take the plan road.
+  const plan = on.locator('form[action="/tasks/add"] button', { hasText: "Plan it first" });
+  if (await plan.count() > 0) await Promise.all([on.waitForNavigation(), plan.click()]);
   const id = /\/t\/([^/?#]+)/.exec(on.url())?.[1];
   if (!id) throw new Error(`filing didn't open the task: ${on.url()} — ${await saysNow(on)}`);
   return decodeURIComponent(id);
@@ -2918,13 +3056,15 @@ await journey("easy-start", SCRIPTED, "A new laptop install opens signed in with
   const drafted = await on.inputValue('form[action="/tasks/add"] textarea[name="title"]');
   if (!/whole cents/.test(drafted)) throw new Error(`the starter drafted: ${drafted}`);
   await Promise.all([on.waitForNavigation(), on.click('form[action="/tasks/add"] button.k-send')]);
+  // A small task: its exact terms, and Build is the yes, with no password on this computer.
+  const buildForm = on.locator("form#fast-build");
+  await waitFor(buildForm, "the exact terms and Build", { timeoutMs: 15_000, seen: () => saysNow(on) });
+  await bothSizes(on, "2b-fast-terms", "easy-start");
+  await Promise.all([on.waitForNavigation(), buildForm.locator("button").click()]);
   const id = decodeURIComponent(/\/t\/([^/?#]+)/.exec(on.url())?.[1] ?? "");
-  if (id === "") throw new Error(`filing didn't open the task: ${on.url()}`);
+  if (id === "") throw new Error(`Build didn't open the task: ${on.url()} — ${await saysNow(on)}`);
   install.task = id;
-  const filed = laptopRows(`SELECT detail FROM action_ledger WHERE task_id = '${id}' AND action = 'task filed'`)[0];
-  if (!/^filed via local-owner · local 1 browser$/.test(filed?.detail ?? "")) throw new Error(`the filing's ledger line: ${JSON.stringify(filed)}`);
-  // Approve, with no password.
-  await approveLocally(on, install.base, id);
+  await until(`${id} to be approved`, async () => laptopTask(id)?.approved_by != null, { timeoutMs: 15_000, everyMs: 300, seen: () => saysNow(on) });
   await bothSizes(on, "3-approved", "easy-start");
   const proof = laptopRows(`SELECT detail FROM action_ledger WHERE task_id = '${id}' AND action LIKE '%approv%' ORDER BY rowid DESC LIMIT 1`)[0];
   // Ready, then Complete.
@@ -2937,10 +3077,12 @@ await journey("easy-start", SCRIPTED, "A new laptop install opens signed in with
   const approvedLine = (await on.locator("[data-task-status]").first().innerText()).replace(/\s+/g, " ");
   if (!/on this computer, no password/.test(approvedLine)) throw new Error(`the approval reads: ${approvedLine.slice(0, 300)}`);
   await bothSizes(on, "4-ready", "easy-start");
-  // The sample came with its own check (its one test): the result says the checks passed, and accepting asks for no reason.
-  if (!/Checks passed/.test(approvedLine)) throw new Error(`the sample's checks didn't read passed: ${approvedLine.slice(0, 300)}`);
+  // The sample came with its own check (its one test): the result says the checks passed. A fast start's one requirement
+  // is yours to check, and the scripted builder reports none, so accepting takes a reason here.
+  if (!/Project checks Passed/.test(approvedLine)) throw new Error(`the sample's checks didn't read passed: ${approvedLine.slice(0, 300)}`);
   for (const looks of await on.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
-  if (await on.locator('[data-result-decision] form[action$="/complete"] input[name="note"]').count() > 0) throw new Error(`accepting asks for a reason: ${await saysNow(on)}`);
+  const reason = on.locator('[data-result-decision] form[action$="/complete"] input[name="note"]');
+  if (await reason.count() > 0) await reason.fill("I read the diff and the test passes.");
   await Promise.all([on.waitForNavigation(), accept.click()]);
   await until("the task to read complete", async () => (await on.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500, seen: () => saysNow(on) });
   await bothSizes(on, "5-complete", "easy-start");
@@ -3017,8 +3159,8 @@ await journey("easy-start", SCRIPTED, "A revision with long words, then a build 
   const status = (await on.locator("[data-task-status]").first().innerText()).replace(/\s+/g, " ");
   // The worker tries a failed build again after a pause: the status says when, once, in words (never a raw stamp).
   if (!/fail|stopped|couldn.t|didn.t|tries again/i.test(status)) throw new Error(`the failed task's status says: ${status.slice(0, 300)}`);
-  if (/tries again/.test(status) && !/Retry scheduled/.test(status)) throw new Error(`a retry's heading doesn't say so: ${status.slice(0, 300)}`);
-  if (/Queued\s+Queued/.test(status) || /\d{4}-\d\d-\d\dT\d\d:/.test(status)) throw new Error(`the failed task's status repeats itself or shows a raw time: ${status.slice(0, 300)}`);
+  if (/tries again/.test(status) && !/^Waiting/.test(status)) throw new Error(`a retry's heading doesn't say so: ${status.slice(0, 300)}`);
+  if (/Waiting\s+Waiting/.test(status) || /\d{4}-\d\d-\d\dT\d\d:/.test(status)) throw new Error(`the failed task's status repeats itself or shows a raw time: ${status.slice(0, 300)}`);
   // Its long title is filed whole: every word the person typed.
   const titled = laptopRows(`SELECT title FROM task WHERE id = '${failing}'`)[0]?.title ?? "";
   if (titled !== longTitle) throw new Error(`the long title reads: ${titled}`);

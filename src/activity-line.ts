@@ -3,9 +3,10 @@
  * 40 s ago". Pure and shared: the server sends the facts, and each page words
  * them against its own clock, so the age keeps counting between reads.
  *
- * After five minutes with no word the line turns amber and says so; a worker
- * whose heartbeat stopped says that instead, because a quiet agent and a
- * machine that went away need different help.
+ * After five minutes with no word the line says when it last heard, in the
+ * same quiet secondary text (a quiet agent isn't something a person must do;
+ * amber is for what needs you). A worker whose heartbeat stopped says that
+ * instead, and that one is marked: the builder going away needs a person.
  */
 
 /** The facts behind the line: our own words for the last thing done (never a tool's arguments), when, and whether
@@ -40,11 +41,12 @@ export function agoWords(ms: number): string {
   return `${Math.floor(minutes / 60)} h ago`;
 }
 
-/** The line itself, and whether it is quiet (amber): silent five minutes or more, or the worker is offline. */
-export function activityLine(activity: RunActivity, now: number): { text: string; quiet: boolean } {
+/** The line itself. `quiet` (marked): the worker is offline, which needs a person. `stale`: silent five minutes or
+ * more, said in the same neutral words as any other update. */
+export function activityLine(activity: RunActivity, now: number): { text: string; quiet: boolean; stale: boolean } {
   const at = Date.parse(activity.at);
   const since = Number.isNaN(at) ? 0 : Math.max(0, now - at);
-  if (activity.worker === "offline") return { text: `Worker offline · last word ${agoWords(since)}`, quiet: true };
-  if (since >= QUIET_AFTER_MS) return { text: `No word for ${Math.floor(since / 60_000)} min`, quiet: true };
-  return { text: `${activity.what} · ${agoWords(since)}`, quiet: false };
+  if (activity.worker === "offline") return { text: `Worker offline · last word ${agoWords(since)}`, quiet: true, stale: false };
+  if (since >= QUIET_AFTER_MS) return { text: `Last update ${agoWords(since)}`, quiet: false, stale: true };
+  return { text: `${activity.what} · ${agoWords(since)}`, quiet: false, stale: false };
 }

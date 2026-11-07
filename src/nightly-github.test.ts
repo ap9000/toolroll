@@ -395,7 +395,7 @@ describe("Codex round 1", () => {
     w.gh.job(w.gh.run(1, { at: ago(1) }), 1, LANE_UBUNTU, "failure");
     await read(w);
     expect(w.store.handle.prepare("SELECT provenance_scope, project, link, push_class FROM notification WHERE kind = 'github-nightly-failed'").get())
-      .toEqual({ provenance_scope: "project", project: w.repo, link: "/board", push_class: "attention" });
+      .toEqual({ provenance_scope: "project", project: w.repo, link: "/tasks?view=board", push_class: "attention" });
   });
 });
 

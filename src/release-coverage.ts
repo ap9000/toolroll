@@ -31,7 +31,7 @@ export const gitIsAncestor: IsAncestor = (repo, ancestor, descendant) => {
   let answer: boolean | null;
   try {
     // Every git version through a frozen read view, bounded (eval-harness review 1, finding 7).
-    const status = viewedGitSync(repo, ["merge-base", "--is-ancestor", ancestor, descendant], { timeoutMs: 5_000 }).status;
+    const status = viewedGitSync(repo, ["merge-base", "--is-ancestor", ancestor, descendant], { timeoutMs: 5_000, binding: { repo } }).status;
     if (status !== 0) throw Object.assign(new Error("git merge-base"), { status });
     answer = true;
   } catch (error) {

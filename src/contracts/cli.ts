@@ -207,6 +207,10 @@ export const COMMAND_OUTPUTS = {
   // `status` is the observation's own answer (the one merges read); the rows are each check's timing.
   "task ship": answers("task ship", { task: str, pullRequest: int, githubRepo: str, head: str, observedAt: str, status: z.enum(["passing", "failing", "running", "none"]),
     checks: rows({ name: str, workflow: nullable(str), state: z.enum(["queued", "running", "passed", "failed", "skipped", "cancelled", "neutral"]), startedAt: nullable(str), completedAt: nullable(str), url: nullable(str), kind: z.enum(["run", "status"]), seconds: nullable(int) }) }),
+  // "Can I merge?" (merge-checklist.ts): the answer, its sentence, and one row per fact, each blocker with its act.
+  "task ready": answers("task ready", { taskId: str, activeTaskId: str, run: nullable(int), head: nullable(str), answer: z.enum(["yes", "no", "not-yet", "merged"]), sentence: str,
+    rows: rows({ key: z.enum(["plan", "build", "checks", "requirements", "pull-request", "pr-ci", "up-to-date", "conflicts", "comments", "release"]), label: str,
+      mark: z.enum(["yes", "no", "waiting", "unknown", "skip"]), say: str, act: nullable(z.looseObject({ kind: z.enum(["run-checks", "retry", "fix"]) })) }) }),
   "task hold": answers("task hold", { id: str, reason: str, until: nullable(str) }),
   "task unhold": answers("task unhold", { id: str }),
   "task wait": answers("task wait", { task: str, outcome: str }),

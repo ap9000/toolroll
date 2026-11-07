@@ -280,7 +280,7 @@ splitting those parts across machines (see [Running unattended](unattended.md)).
    would touch what you signed waits for your accept or reject.
 5. **Answer when asked.** An agent that hits a judgement call parks a typed
    decision: question, options, consequences, which are reversible. It
-   arrives in the inbox, on `/next`, and on your phone if Telegram is
+   arrives on Home (`/`) and on your phone if Telegram is
    paired; one tap answers it and the build resumes.
 6. **Collect the result.** A build becomes Ready with its saved diff, checks,
    available screenshots and limitations. Open the result to mark Complete or

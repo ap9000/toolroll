@@ -162,11 +162,11 @@ const EXPECTED: Record<string, string> = {
 
 describe("one headline on every surface", () => {
   test("the Tasks list and Crew", async () => {
-    const workspace = workspaceOf(await page("/work"));
+    const workspace = workspaceOf(await page("/tasks"));
     const view = workspace.view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>;
     expect(Object.fromEntries(view.rows.map(row => [row.id, row.status.label]))).toEqual(EXPECTED);
     for (const row of view.rows) expect(row.status.tone === "problem", row.id).toBe(row.status.label === "Failed");
-    expect(view.tabs.map(tab => tab.label)).toEqual(["All", "Needs you", "Running", "Queued", "Finished"]);
+    expect(view.tabs.map(tab => tab.label)).toEqual(["All", "Needs you", "Ready", "Running", "Queued", "Finished"]);
     for (const item of workspace.crew) {
       expect(HEADLINES, item.id).toContain(item.label);
       expect(item.label).toBe(EXPECTED[item.id]);
@@ -214,7 +214,7 @@ describe("one headline on every surface", () => {
 
   test("the chat card (Telegram, Slack, Discord, Teams)", () => {
     const card = telegramProgressCard(store, store.getRun(runs["fix-checkout-tax"]!)!, "fix-checkout-tax", REPO, NOW, root);
-    expect(card.text.split("\n").slice(1, 3)).toEqual(["✅ Complete", "Marked complete by sam."]);
+    expect(card.text.split("\n").slice(1, 3)).toEqual(["✅ Complete", "Accepted by sam."]);
     expect(card.text).toContain("✓ Project checks · Passed on");
     expect(card.text).toContain("⚠ Pull request · Couldn't open — Open it on GitHub");
     expect(card.text).not.toMatch(/Publication failed|✕/);
@@ -241,7 +241,7 @@ describe("one headline on every surface", () => {
     const home = workspaceOf(await page("/chat")).home!;
     expect(home.counts.find(one => one.key === "ready")!.value).toBe(1);
     expect(home.catchUp.filter(one => one.id.startsWith("review-once")).map(one => [one.tab, one.label])).toEqual([["finished", "Complete"]]);
-    const tasks = workspaceOf(await page("/work")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>;
+    const tasks = workspaceOf(await page("/tasks")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>;
     expect(tasks.rows.filter(row => row.status.label === "Ready for review").map(row => row.id)).toEqual(["search-typo-tolerance"]);
     // Chat: the status reply, the task picker and the result card.
     const reply = phoneStatus(store, [REPO], NOW);

@@ -17,6 +17,7 @@
  * claimed without one.
  */
 
+import { lastIncludedWords } from './memory-use.js';
 import type { DispatchAction, DispatchDiagnosis } from "./dispatch.js";
 import { ACCEPT_NEEDS_REASON, FAILED_CHECK, cantAcceptYetOf, evidenceProblemOf, type AcceptLabel, type EvidenceProblem } from "./result-acts.js";
 export { ACCEPT_NEEDS_REASON, cantAcceptYetOf, evidenceProblemOf, type EvidenceProblem };
@@ -25,23 +26,25 @@ import type { ReviewRetryState, TaskState } from "./store.js";
 import type { TaskControlView } from "./task-control.js";
 import { CHECK_COMMAND_CHANGED, CHECK_UNREADABLE, OPEN_RESULT, approvedCheckOf, approvedCheckStateOf, plainReasonOf, stageOfCode, taskStatusOf, workToneOf, type ChecksFact } from "./task-status.js";
 import { whenUtc } from "./when-html.js";
+import { NEEDS } from "./needs-you.js";
 import { html, postForm, type Html } from "./html.js";
 
 /** The Work destination's views — shortcuts over the same rows, never a
  * persisted state. All is the default. */
-export type WorkView = "all" | "needs-you" | "running" | "queued" | "completed" | "archived";
+export type WorkView = "all" | "needs-you" | "ready" | "running" | "queued" | "completed" | "archived";
 
 export const WORK_VIEWS: readonly { key: WorkView; label: string; hint: string; empty: string }[] = [
   { key: "all", label: "All", hint: "Every task in view, most urgent first.", empty: "Nothing is in progress. Describe work in chat or add a task, and it appears here." },
   { key: "needs-you", label: "Needs you", hint: "Tasks waiting on an answer, approval, or your inspection.", empty: "Nothing needs you right now. Queued and running work continues on its own." },
+  { key: "ready", label: "Ready", hint: "Results waiting for you to accept or send back.", empty: "Nothing is ready for review." },
   { key: "running", label: "Running", hint: "Attempts a builder owns right now.", empty: "Nothing is running right now. Approved tasks start when a builder with capacity is connected." },
   { key: "queued", label: "Queued", hint: "Tasks that start on their own: waiting for a builder, a dependency or a retry.", empty: "Nothing is queued." },
-  { key: "completed", label: "Finished", hint: "Tasks the lead or user has marked complete. Recorded check results remain available.", empty: "Nothing has finished in this view yet." },
-  { key: "archived", label: "Archived", hint: "Tasks put away by you or by tidy. Their history and results are kept.", empty: "Nothing is put away." },
+  { key: "completed", label: "Finished", hint: "Tasks the lead or you accepted. Recorded check results stay available.", empty: "Nothing has finished in this view yet." },
+  { key: "archived", label: "Archived", hint: "Tasks archived by you or automatically. Their history and results are kept.", empty: "Nothing is archived." },
 ];
 
 export function parseWorkView(raw: string | null): WorkView {
-  return raw === "needs-you" || raw === "running" || raw === "queued" || raw === "completed" || raw === "archived" ? raw : "all";
+  return raw === "needs-you" || raw === "ready" || raw === "running" || raw === "queued" || raw === "completed" || raw === "archived" ? raw : "all";
 }
 
 /** The finished result's recorded facts, as `taskViewData`, dispatch, and
@@ -226,8 +229,8 @@ function machineVerdictWords(result: ResultFacts, check: ChecksFact | null | und
     const exit = failedCheckExit(result.reasons);
     return `the approved check failed against it${exit === null ? "" : ` (exit ${exit})`}`;
   }
-  if (problem === "mismatched") return "its evidence did not match the sealed record";
-  return "its required evidence was missing";
+  if (problem === "mismatched") return "its saved files didn't match the record";
+  return "its required files were missing";
 }
 
 /** The approved check passed (task-status.ts approvedCheckStateOf): its own pass, or checks Off covered by a passing
@@ -268,7 +271,7 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
       // Acceptance records a person's decision; it neither proves nor
       // disproves anything about the checks. The machine's own verdict is
       // restated as recorded.
-      detail: withPublication(`An approver accepted this result by hand, and the recorded exception says why. The machine's verdict is unchanged: ${machineVerdictWords(result, check)}.`),
+      detail: withPublication(`An approver accepted this result by hand, and their reason says why. The checks are unchanged: ${machineVerdictWords(result, check)}.`),
       tone: "done",
       action: { label: "Open the recorded exception", kind: "open-review" },
     };
@@ -316,16 +319,16 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
     // at adjudication; only a verdict-less no-change reads its two
     // presence facts here.
     return result.recordComplete === false && result.verdict === null
-      ? { token: "record-incomplete", label: "No-change result, record incomplete", detail: "The build concluded nothing needed to change, but its handoff or sealed diff is missing.", tone: "problem", action: { label: "Open the record", kind: "open-run" } }
-      : { token: "no-change", label: "No changes were needed", detail: withPublication("The build concluded nothing needed to change; its handoff and sealed diff are on record."), tone: "done", action: { label: OPEN_RESULT, kind: "open-result" } };
+      ? { token: "record-incomplete", label: "No-change result, record incomplete", detail: "The build concluded nothing needed to change, but its handoff or saved diff is missing.", tone: "problem", action: { label: "Open the record", kind: "open-run" } }
+      : { token: "no-change", label: "No changes were needed", detail: withPublication("The build concluded nothing needed to change; its handoff and saved diff are on record."), tone: "done", action: { label: OPEN_RESULT, kind: "open-result" } };
   }
   if (result.verdict === null) {
     return {
       token: "verification-needed",
-      label: "Result saved — verification needed",
-      detail: withPublication("No verification result is recorded for this build."),
+      label: "No check result for this build yet",
+      detail: withPublication("No check result for this build yet. Run checks on it."),
       tone: "problem",
-      action: { label: "See what is missing", kind: "open-review" },
+      action: { label: "Run checks", kind: "open-review" },
     };
   }
   // Any verdict short of a pass the check confirms: never "passed" when the check can't be read now.
@@ -338,8 +341,8 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
   if (result.verdict === "attested" && !passedNow(check)) {
     return {
       token: "agent-attested",
-      label: "Result saved — checks reported by the agent",
-      detail: withPublication("No independent project check ran; the checks listed are the agent's own report."),
+      label: "Ready · no project check set up",
+      detail: withPublication("No project check is set up, so the checks listed are the agent's own report."),
       tone: "neutral",
       action: { label: OPEN_RESULT, kind: "open-result" },
     };
@@ -384,6 +387,8 @@ export function receiptPublicationWords(publication: PublicationFacts): string {
  * already reads elsewhere. */
 export type WorkFacts = {
   id: string;
+  /** The machine runs this task's check on a prepared candidate; no agent runs (machine-check.ts). */
+  machine?: boolean;
   title: string;
   repo: string | null;
   state: TaskState;
@@ -441,12 +446,14 @@ const DISPATCH_ACTION_LABELS: Record<DispatchAction, string> = {
   "inspect-hold": "Review hold",
   "repair-dependency": "Review required task",
   "repair-capability": "Review missing requirement",
-  "start-worker": "Check connection",
+  "start-worker": "Start the builder",
   "retry-review": "Review retry options",
   "resume-run": "Review pause",
 };
 
 export function dispatchActionLabel(dispatch: DispatchDiagnosis | null): string {
+  // One label everywhere for the builder (needs-you.ts NEEDS): Connect a builder, or Start the builder.
+  if (dispatch?.action === "start-worker") return dispatch.code === "no-worker-registered" ? NEEDS["connect-builder"].action.label : NEEDS["start-builder"].action.label;
   return dispatch?.action == null ? "View task details" : DISPATCH_ACTION_LABELS[dispatch.action];
 }
 
@@ -504,7 +511,7 @@ export function reportMismatchesOf(reasons: readonly string[],
     const review = CONTRADICTED_BY_REVIEW.exec(reason);
     if (review !== null) return [{ text: plainReasonWords(reason), ...place(review[1]!), note: null, reason }];
     const unsigned = UNSIGNED_NOTE.exec(reason);
-    if (unsigned !== null) return [{ text: `The report's note ${unsigned[1]} is about ${unsigned[2]}, which isn't one of the signed requirements: ${unsigned[3]}`, path: null, lines: null, inChanges: null, note: Number(unsigned[1]), reason }];
+    if (unsigned !== null) return [{ text: `The report's note ${unsigned[1]} is about ${unsigned[2]}, which isn't one of the approved requirements: ${unsigned[3]}`, path: null, lines: null, inChanges: null, note: Number(unsigned[1]), reason }];
     if (FAILED_CHECK.test(reason)) return [];
     return [{ text: sentenceOf(plainReasonWords(reason)), path: null, lines: null, inChanges: null, note: note === null ? null : Number(note), reason }];
   });
@@ -548,7 +555,7 @@ export function lastErrorLineOf(log: string): { line: number; text: string } | n
 }
 
 /** The result page's own sentence when the decision is on it. */
-export const RESULT_DECISION_SENTENCE = "Review the change, then accept it or ask for changes.";
+export const RESULT_DECISION_SENTENCE = "Review the change, then accept it or send it back.";
 
 /** What the result page's Accept says, from facts it already shows: the
  * recorded checks, the requirements not met, whether the saved proof reads,
@@ -583,7 +590,7 @@ export function acceptWordsOf(facts: AcceptFacts): AcceptWords {
     : facts.publishing === "pull-request" ? "Finishes the task. No pull request opens; you can open one from the task after."
     : facts.publishing === "off" ? "Finishes the task. The branch stays; publishing isn't set up."
     : "Finishes the task. Nothing is published.";
-  return { label: ready ? "Accept and finish" : "Accept without checks", ready, why: ready ? null : `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`, effect };
+  return { label: ready ? "Accept" : "Accept without checks", ready, why: ready ? null : `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`, effect };
 }
 
 export function resultHeadlineOf<T extends DisplayStatus>(status: T): T {
@@ -604,8 +611,8 @@ export function workStatusOf(facts: WorkFacts, resultDisplay?: DisplayStatus): W
     : stageOfCode(status.token, { needsPerson: status.views.includes("needs-you"), planning: facts.dispatch?.code === "running" && facts.dispatch.role === "planner", operatorHold: facts.dispatch?.action === "unhold" });
   const stage = done && read.stage !== "needs-you" && read.stage !== "failed" ? "finished" as const : read.stage;
   const level = facts.result?.checkLevel ?? null;
-  const shared = taskStatusOf({ stage, ...(read.need === undefined ? {} : { need: read.need }), reason: plainReasonOf(stage, status.token, status.detail),
-    report: facts.result?.role === "scout", checks: stage !== "finished" ? null : VERIFIED_RESULT.has(status.token) ? { status: "passed", exitCode: null, head: null, level }
+  const shared = taskStatusOf({ stage, ...(read.need === undefined ? {} : { need: read.need }), ...(read.wait === undefined ? {} : { wait: read.wait }), reason: plainReasonOf(stage, status.token, status.detail),
+    report: facts.result?.role === "scout", ...(facts.machine === true ? { machine: true } : {}), checks: stage !== "finished" ? null : VERIFIED_RESULT.has(status.token) ? { status: "passed", exitCode: null, head: null, level }
       : level === "off" ? { status: "not-run", exitCode: null, head: null, level } : null });
   return { ...status, label: shared.headline, tone: workToneOf(shared.headline), detail: stage === "finished" && level !== "off" ? status.detail : shared.sentence };
 }
@@ -635,7 +642,7 @@ function workStatusWordsOf(facts: WorkFacts, resultDisplay?: DisplayStatus): Wor
   // The control projection knows whether a stop has actually settled.
   // A still-live claim alone cannot distinguish Running from Stopping.
   if (facts.control?.kind === "stopping") {
-    return { token: "stopping", label: "Stopping…", detail: facts.control.detail ?? "The attempt is ending. Its work is preserved; resume becomes available after its processes exit.", tone: "attention", action: { label: "View stop details", kind: "open-task" }, views, rank: 0 };
+    return { token: "stopping", label: "Stopping…", detail: facts.control.detail ?? "The attempt is ending. Its work is preserved; resume becomes available after its processes exit.", tone: "attention", action: { label: "View stop details", kind: "open-task" }, views, rank: 1 };
   }
   if (facts.control?.kind === "paused") {
     return { token: "stopped", label: "Paused", detail: "The stopped attempt's work is preserved. Resuming requires confirmation and checks the current approval again.", tone: "attention", action: { label: "Review pause", kind: "open-task" }, views, rank: 0 };
@@ -679,7 +686,7 @@ function workStatusWordsOf(facts: WorkFacts, resultDisplay?: DisplayStatus): Wor
 
 /** The counts each view tab wears — from the same rows the page lists. */
 export function workCounts(rows: readonly { views: readonly WorkView[] }[]): Record<WorkView, number> {
-  const counts: Record<WorkView, number> = { all: 0, "needs-you": 0, running: 0, queued: 0, completed: 0, archived: 0 };
+  const counts: Record<WorkView, number> = { all: 0, "needs-you": 0, ready: 0, running: 0, queued: 0, completed: 0, archived: 0 };
   for (const row of rows) for (const view of row.views) counts[view] += 1;
   return counts;
 }
@@ -708,7 +715,7 @@ export function learningHtml(view: import('./project-learning.js').LearningView,
   const act = (action: string, label: string, lesson?: import('./project-learning.js').Lesson) => canManage && csrf ? postForm('/settings/learning/change', html`<button type="submit">${label}</button>`, { hidden: { ...base, action, ...(lesson ? { lesson: lesson.id, version: lesson.version, sha: lesson.sha } : {}) } }) : '';
   const evidence = (list: import('./project-learning.js').LearningEvidence[], run: number | null) => list.map(one => html`<li><a href="/r/${String(one.runId ?? run)}/evidence/${one.artifactId}">Source #${one.artifactId}</a><blockquote>${one.excerpt}</blockquote><code>${one.sha256}</code></li>`);
   const lessons = view.lessons.filter(l => source === undefined || l.source === source);
-  const cards = lessons.map(l => html`<article class="card" data-lesson="${l.id}"><p><strong>${l.payload.observation}</strong></p><p>${l.payload.action}</p><p class="meta">${l.payload.kind === 'system' ? 'System suggestion · No change applied' : l.status === 'adopted' ? 'Adopted advice' : l.status === 'disabled' ? 'Disabled' : 'Proposed lesson'}</p><details><summary>Source and use</summary><p><a href="/r/${l.source}">Result #${l.source}</a> · <a href="/r/${l.reviewer}">Review #${l.reviewer}</a></p><p>${l.payload.paths.join(', ')} · ${l.payload.phases.join(', ')} · ${({ darwin: "macOS", win32: "Windows", linux: "Linux" } as Record<string,string>)[l.payload.platform] ?? l.payload.platform}</p><ul>${evidence(l.payload.evidence, l.source)}</ul>${l.payload.kind !== 'project' ? '' : html`<p class="meta">${l.status === 'proposed' ? 'Save permits advisory reuse when enabled and applicable. It does not prove a remedy works.' : 'Disabling affects future runs. Active snapshots, code and approvals stay unchanged.'}</p>${l.status === 'proposed' ? act('adopt', 'Save lesson', l) : ''}`}</details>${l.payload.kind === 'project' && l.status === 'adopted' ? act('disable', 'Disable lesson', l) : ''}</article>`);
+  const cards = lessons.map(l => html`<article class="card" data-lesson="${l.id}"><p><strong>${l.payload.observation}</strong></p><p>${l.payload.action}</p><p class="meta">${lastIncludedWords(view.use.get(`lesson:${l.id}`))}</p><p class="meta">${l.payload.kind === 'system' ? 'System suggestion · No change applied' : l.status === 'adopted' ? 'Adopted advice' : l.status === 'disabled' ? 'Disabled' : 'Proposed lesson'}</p><details><summary>Source and use</summary><p><a href="/r/${l.source}">Result #${l.source}</a> · <a href="/r/${l.reviewer}">Review #${l.reviewer}</a></p><p>${l.payload.paths.join(', ')} · ${l.payload.phases.join(', ')} · ${({ darwin: "macOS", win32: "Windows", linux: "Linux" } as Record<string,string>)[l.payload.platform] ?? l.payload.platform}</p><ul>${evidence(l.payload.evidence, l.source)}</ul>${l.payload.kind !== 'project' ? '' : html`<p class="meta">${l.status === 'proposed' ? 'Save permits advisory reuse when enabled and applicable. It does not prove a remedy works.' : 'Disabling affects future runs. Active snapshots, code and approvals stay unchanged.'}</p>${l.status === 'proposed' ? act('adopt', 'Save lesson', l) : ''}`}</details>${l.payload.kind === 'project' && l.status === 'adopted' ? act('disable', 'Disable lesson', l) : ''}</article>`);
   if (source !== undefined) return lessons.length ? html`<details class="learning result-learning"><summary>Learned from this task</summary>${cards}<a href="/settings/learning?repo=${encodeURIComponent(view.repo)}">Learning settings</a></details>` : html``;
   const history = view.events.map(ev => html`<article class="card" data-learning-event="${ev.action}"><p><strong>${({ assessment: ({ propose: 'Learning suggested', none: 'No lesson needed', unassessed: 'Learning not assessed', invalid: 'Learning assessment invalid' } as Record<string,string>)[ev.after] ?? 'Learning not assessed', proposal: 'Suggestion recorded', adopt: 'Lesson adopted', disable: 'Lesson disabled', reset: 'Learning reset', enable: 'Reuse enabled', pause: 'Reuse paused', reuse: 'Run context saved', failure: 'Learning issue', capture: 'Capture finished' } as Record<string,string>)[ev.action] ?? ev.action}</strong>${ev.action === "reuse" ? ` · ${ev.after}` : ""}</p><p class="meta">${whenUtc(ev.at)} · ${ev.actor}${ev.run === null ? '' : html` · <a href="/r/${ev.run}">Run #${ev.run}</a>${ev.outcome === null ? "" : ` · ${ev.outcome}`}`}</p><details><summary>Details</summary><p>${ev.before} → ${ev.after}</p><p>${ev.reason}</p>${ev.lesson === null ? '' : html`<p>Lesson #${ev.lesson}</p>`}<ul>${evidence(ev.evidence, ev.run)}</ul>${ev.snapshot === null ? "" : html`<details><summary>Exact context</summary><pre>${ev.snapshot}</pre></details>`}</details></article>`);
   return html`<section class="learning">${view.damaged ? html`<p class="problem" role="alert">Some lessons no longer verify and are excluded from reuse.</p>` : ''}<p>${view.enabled ? 'Use adopted lessons: on' : 'Use adopted lessons: off'}</p>${act(view.enabled ? 'pause' : 'enable', view.enabled ? 'Pause reuse' : 'Enable reuse')}${cards.length ? cards : html`<p>No lessons yet. Reviews may suggest useful advice here.</p>`}<details><summary>Reset learning</summary><p>Disable all adopted lessons and future reuse. Keep history, code, approvals and active run snapshots.</p>${act('reset', 'Reset learning')}</details><h2>Changes</h2>${history.length ? history : html`<p>No learning changes yet.</p>`}${view.next === null ? '' : html`<a class="button-link" href="/settings/learning?repo=${encodeURIComponent(view.repo)}&before=${view.next}">Older changes</a>`}</section>`;

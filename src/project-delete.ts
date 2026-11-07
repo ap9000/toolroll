@@ -275,6 +275,8 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("review_request", `${IN("run")} OR ${IN("reviewer_run")}`, R, R);
   del("repair_chain", IN("source_run"), R);
   for (const table of ["incident", "proof_acceptance", "proof_verdict", "run_process", "run_route", "run_spend", "run_tool", "run_note", "run_stop", "run_checkpoint", "execution_slot"]) del(table, IN("run"), R);
+  del("code_map_delivery", IN("run"), R);
+  del("code_map_snapshot", IN("run"), R);
   del("knowledge_snapshot", `repo = ? OR ${IN("run")}`, repo, R);
   del("learning_snapshot", `repo = ? OR ${IN("run")}`, repo, R);
   del("learning_capture", `repo = ? OR ${IN("source")} OR ${IN("reviewer")}`, repo, R, R);
@@ -298,9 +300,10 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("external_mirror", IN("local_task_id"), mirrors);
   for (const [table, column] of [["scope_approval_vote", "task_id"], ["scope_author", "task_id"], ["plan_authorization", "task_id"], ["tool_seal", "task"], ["mcp_idempotency", "task_id"], ["coordinator_event", "task_id"], ["workflow_preview", "task_id"], ["task_source", "task_id"]] as const) del(table, IN(column), K);
   del("workflow_preview", "repo = ?", repo);
+  del("fast_preview", "repo = ?", repo);
   del("coding_handoff_scope", `id IN (SELECT id FROM coding_handoff WHERE json_extract(payload, '$.repo') = ?)`, repo);
   del("coding_handoff", "json_extract(payload, '$.repo') = ?", repo);
-  for (const table of ["task_act", "task_replacement", "task_archive"]) del(table, IN("task_ref"), T);
+  for (const table of ["task_act", "task_replacement", "task_archive", "vanished_charge", "retry_episode", "check_authorization", "route_change"]) del(table, IN("task_ref"), T);
   del("task_ref", IN("id"), T);
   del("task_scope", IN("task_id"), K);
   del("task_edge", `${IN("blocked")} OR ${IN("blocker")}`, K, K);
@@ -327,6 +330,9 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   // Its learning-loops rows (v149), by repo; a check's results, a note's tallies and a merge of its decisions go with
   // the rows they hang off (the deleted runs, notes and decisions), below.
   for (const table of V149_REPO_TABLES) del(table, "repo = ?", repo);
+  // Its code map: the pointer before the versions it names.
+  del("code_map_current", "repo = ?", repo);
+  for (const table of ["code_map_version", "code_map_refresh", "code_map_family"]) del(table, "repo = ?", repo);
   del("memory_sighting", "gap IN (SELECT id FROM memory_gap WHERE repo = ?) OR session IN (SELECT id FROM memory_session WHERE repo = ?)", repo, repo);
   for (const [table, column] of SETTINGS) del(table, `${column} = ?`, repo);
   // Its Models rows and results-routing rows: through the Models counter, so whatever depended on them pauses.

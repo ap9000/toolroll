@@ -148,14 +148,14 @@ describe("the service worker", () => {
     await waited;
     return target;
   }
-  test("this release's worker opens the locator; an older installed worker falls back to /next", async () => {
+  test("this release's worker opens the locator; an older allowlist falls back to Home", async () => {
     const worker = await (await fetch(`${base}/sw.js`)).text();
     expect(await opened(worker, "/approve/12")).toBe("https://console.example/approve/12");
-    expect(await opened(worker, "/approve/12/../t/x")).toBe("https://console.example/next");
-    // The worker every phone had before this release (its allowlist, exactly): the locator is unknown to it.
-    const older = worker.replace(/const SHAPES = \[[^\n]*\];/, "const SHAPES = [/^\\/next$/, /^\\/review$/, /^\\/system$/, /^\\/routines$/, /^\\/routines\\/[0-9]+$/, /^\\/d\\/[0-9]+$/, /^\\/r\\/[0-9]+$/];");
+    expect(await opened(worker, "/approve/12/../t/x")).toBe("https://console.example/");
+    // The allowlist every phone had before the locator: unknown to it. (An installed old worker opens /next, which is 301 to Home.)
+    const older = worker.replace(/const SHAPES = \[[^]*?\];/, "const SHAPES = [/^\\/next$/, /^\\/review$/, /^\\/system$/, /^\\/routines$/, /^\\/routines\\/[0-9]+$/, /^\\/d\\/[0-9]+$/, /^\\/r\\/[0-9]+$/];");
     expect(older).not.toBe(worker);
-    expect(await opened(older, "/approve/12")).toBe("https://console.example/next");
+    expect(await opened(older, "/approve/12")).toBe("https://console.example/");
   });
 });
 

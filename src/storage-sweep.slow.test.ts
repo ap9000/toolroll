@@ -205,7 +205,7 @@ test("a one-shot reconcile neither claims nor loses the sweep; the service's own
   expect(shown.out).toContain(`  ${stale[0]}`);
   const json = JSON.parse((await cli("storage", ["--json"])).out) as { sweep: { last: { source: string; parts: SweepPart[] }; schedule: SweepSchedule } };
   expect(json.sweep.last.source).toBe("automatic");
-  expect(json.sweep.last.parts.map(one => one.kind)).toEqual(["test temp", "orphans", "checkouts", "runtimes", "dependencies"]);
+  expect(json.sweep.last.parts.map(one => one.kind)).toEqual(["test temp", "orphans", "checkouts", "runtimes", "dependencies", "check history"]);
   expect(json.sweep.schedule).toMatchObject({ state: "no-service", busy: null });
   expect(Date.parse(json.sweep.schedule.nextAt!)).toBeGreaterThan(Date.now());
   // A later one-shot pass doesn't sweep again either.
@@ -289,7 +289,7 @@ test("a production child sweep while a build runs leaves everything the build us
   };
 
   const during = await sweep();
-  expect(counts(during)).toEqual({ "test temp": 0, orphans: 0, checkouts: 0, runtimes: 0, dependencies: 0 });
+  expect(counts(during)).toEqual({ "test temp": 0, orphans: 0, checkouts: 0, runtimes: 0, dependencies: 0, "check history": 0 });
   expect(during.parts.filter(one => one.failed > 0 || one.problem !== undefined)).toEqual([]);
   expect([work, depsDir, extraStage, checkout].map(existsSync)).toEqual([true, true, true, true]);
   expect([alive(build), alive(server)]).toEqual([true, true]);
@@ -303,7 +303,7 @@ test("a production child sweep while a build runs leaves everything the build us
   store.setTaskState("live", "done", new Date());
   store.recordAction({ at: new Date().toISOString(), actor: "operator:alex", repo, taskId: "live", runId, action: COMPLETION_ACTION, outcome: "a".repeat(64), source: "work" });
   const leaseOnly = await sweep();
-  expect(counts(leaseOnly)).toEqual({ "test temp": 1, orphans: 0, checkouts: 0, runtimes: 1, dependencies: 1 });
+  expect(counts(leaseOnly)).toEqual({ "test temp": 1, orphans: 0, checkouts: 0, runtimes: 1, dependencies: 1, "check history": 0 });
   expect([work, depsDir, extraStage, checkout].map(existsSync)).toEqual([false, false, false, true]);
   expect(alive(server)).toBe(true);
 
@@ -361,7 +361,7 @@ test("the runtime the CLI links point to stays, on PATH or not; another extra ru
   expect(readdirSync(staged).sort()).toEqual(["browser-a", "browser-b", "browser-c", "browser-cli"]);
 });
 
-const plan = (more: Partial<CheckoutPlan> = {}): CheckoutPlan => ({ at: new Date().toISOString(), cleanup: "finished", manual: true, go: [], stay: [], count: 0, totalBytes: 0, freeBytes: 0, waitingReview: 0, withChanges: 0, ...more });
+const plan = (more: Partial<CheckoutPlan> = {}): CheckoutPlan => ({ at: new Date().toISOString(), cleanup: "finished", idle: "14d", idleCount: 0, idleBytes: 0, manual: true, go: [], stay: [], count: 0, totalBytes: 0, freeBytes: 0, waitingReview: 0, withChanges: 0, ...more });
 const part = (kind: SweepPart["kind"], count: number, more: Partial<SweepPart> = {}): SweepPart => ({ kind, count, bytes: 0, failed: 0, items: [], ...more });
 
 test("Settings → Storage renders its sweep state hook, the swept paths, and honest failure text", () => {

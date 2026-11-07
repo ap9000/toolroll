@@ -31,7 +31,7 @@ let fixture: ReleaseFixture | null = null;
 afterEach(() => { fixture?.close(); fixture = null; });
 const open = (options: Parameters<typeof releaseFixture>[0] = {}) => (fixture = releaseFixture(options));
 const LATER = new Date(RELEASE_NOW.getTime() + 60_000);
-const testOnly = { "src/index.test.ts": "test('answer', () => {});\ntest('more', () => {});\n" };
+const testOnly = { "src/more.test.ts": "test('answer', () => {});\ntest('more', () => {});\n" };
 /** The deploy gates' answer for a task's build: the release rule, or a later step (which means the release passed). */
 const gates = (f: ReleaseFixture, taskId: string, head: string) => {
   const run = builtRun(f.store, taskId, head);
@@ -140,7 +140,7 @@ spawn(process.execPath, ["-e", "/*${marker}*/ setTimeout(() => require('fs').wri
 describe("attack 3: a browser test that adds a Tailwind class", () => {
   test("changes the production artifact, so it asks again", async () => {
     const f = open();
-    const to = f.commit({ "src/browser/app.test.ts": "test('app', () => { const tpl = '<b class=\"bg-red-500\"></b>'; });\n" });
+    const to = f.commit({ "src/browser/new.test.ts": "test('app', () => { const tpl = '<b class=\"bg-red-500\"></b>'; });\n" });
     expect(await proveCarry(f.store, { authority: f.authority().id, to, now: LATER })).toMatchObject({ ok: false, reason: "artifact" });
     // Beside it: a test-only change with an identical artifact carries.
   }, 120_000);
@@ -593,7 +593,7 @@ describe("option A: carry release approvals when checks aren't sandboxed", () =>
     // Turned off later: the carried commit stops standing, and nothing more carries.
     setUnsandboxedCarry(f.store, f.repo, false, "cli", LATER);
     expect(liveReleaseOf(f.store, result.taskId, "deploy", LATER)).toMatchObject({ ok: false, why: expect.stringContaining("aren't sandboxed is off") });
-    expect(preflightCarry(f.store, { authority: f.authority().id, to: f.commit({ "src/index.test.ts": "test('answer', () => {});\ntest('third', () => {});\n" }), now: LATER })).toMatchObject({ ok: false });
+    expect(preflightCarry(f.store, { authority: f.authority().id, to: f.commit({ "src/third.test.ts": "test('answer', () => {});\ntest('third', () => {});\n" }), now: LATER })).toMatchObject({ ok: false });
   }, 120_000);
 
   test("the setting turned on after the approval doesn't carry for that generation", () => {

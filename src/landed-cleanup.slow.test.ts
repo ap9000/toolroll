@@ -333,7 +333,7 @@ describe("c1: a merged result is completed automatically and torn down", () => {
     expect(after.receipt!.digest).toBe(before.receipt!.digest);
     const status = assignmentTaskStatusOf(after);
     expect(status.headline).toBe("Complete");
-    expect(status.sentence).toBe("Marked complete automatically: pull request #12 merged.");
+    expect(status.sentence).toBe("Accepted automatically: pull request #12 merged.");
     const indexed = workIndexTask(store, "cart", NOW, access, root)!;
     expect(indexed.completion).toMatchObject({ actor: LANDED_ACTOR, landed: "pull request #12 merged" });
     const card = telegramProgressCard(store, store.getRun(work.runId)!, "cart", repo, NOW, root);

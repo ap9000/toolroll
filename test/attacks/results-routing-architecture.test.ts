@@ -47,6 +47,13 @@ describe("this tree", () => {
     expect(PROJECT_SETTINGS.filter(([table]) => models.has(table))).toEqual([]);
   });
 
+  test("a lesson note's own column is its own; the same column on any other write stays protected", () => {
+    const scan = (sql: string) => sqlWriteProblem(["src/x.ts"], () => Buffer.from(`export const q = \`${sql}\`;`), () => null);
+    expect(scan("INSERT INTO lesson_note (proposal, revision_origin) VALUES (?, ?)")).toBeNull();
+    for (const sql of ["UPDATE task_ref SET revision_origin = ?", "UPDATE lesson_note SET revision_origin = ?", "INSERT INTO task_ref (revision_origin) VALUES (?)",
+      "INSERT INTO lesson_note (proposal) VALUES (?); UPDATE task_ref SET revision_origin = ?", "INSERT INTO lesson_notes (revision_origin) VALUES (?)"]) expect(scan(sql), sql).not.toBeNull();
+  });
+
   test("the writer refuses what its contract doesn't name, whoever calls it", () => {
     const store = openStore(":memory:");
     try {

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { resultRecordWordsOf } from "../route-results.js";
 import { selectionEvidenceWords } from "../route-rules.js";
 import { feedbackImageProblem } from "../result-actions.js";
@@ -8,8 +9,10 @@ import { releaseProgressFor, shipChecksForTask, type CiCheckRow, type ShipChecks
 import type { TimingRow } from "../design/kit.js";
 import { releaseCiRunningOf } from "../release-ci-hold.js";
 import { releaseObligationsOf } from "../release-recheck.js";
-import { approvalProofOf, freshlyApprovable, freshnessFor, localApprovalEligible, withFreshness } from "../scope.js";
-import { localOwnerRefusal } from "../local-owner.js";
+import { approvalProofOf, freshnessFor, withFreshness } from "../scope.js";
+import { approvalPasswordField } from "../approval-password.js";
+import { fastChangeProblem, fastStarted } from "../fast-start.js";
+import { routeChangeOf } from "../route-change.js";
 import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
 import { recentGitReads, taskBaseOf } from "../task-base.js";
@@ -63,8 +66,10 @@ import { chatResultHref,reviewHref,taskChatHref,taskHref,type ServeOptions } fro
 import { decisionsFor,type TaskChatFocus } from "./render-chat.js";
 import { type ProjectPeek,type WorkRow } from "./render-pages.js";
 import { completionReceiptView,diffFileAnchor,evidenceLinksFor,followUpsFor,orderChangedFiles,parseReviewDiff,proofBundleView,receiptStatusOf,withinSignedTouches,type CompletionReceiptView,type ResultDetail,type TaskPullRequest } from "./render-results.js";
-import { approvalFormDigest,consentDoorOf,nonceHashOf,publicationFactsOf,resumeCeremonyPage,resumeDigestOf,taskBody,taskPage,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView } from "./render-tasks.js";
+import { approvalFormDigest,consentDoorOf,nonceHashOf,publicationFactsOf,resumeCeremonyPage,resumeDigestOf,taskBody,taskPage,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView,type LocalApprovalView } from "./render-tasks.js";
 import { type Who } from "./session.js";
+import { mergeReadyViewOf } from "./merge-ready-view.js";
+import { machineChecked, machineCheckWords } from "../machine-check.js";
 import type { TaskPageExtras } from "./runtime.js";
 import type { BrowserTaskView } from "../browser-workspace.js";
 import { RESULT_REVIEW_SCRIPT } from "../result-review.js";
@@ -204,6 +209,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
               },
       publication: latest === null ? null : publicationFactsOf(runtime.store.publicationForRun(latest.id)),
       liveRunId: live === null ? null : live.id,
+      ...(machineChecked(runtime.store, task.id) ? { machine: true } : {}),
       openDecision: ref === null ? null : openWorkDecisionOf(runtime.store, ref.id, now),
       unfinishedRunId: runs.find(one => one.outcome === null && one.role !== "reviewer")?.id ?? null,
       control: ref === null ? { kind: "none" } : taskControlOf(runtime.store, ref.id, now),
@@ -559,19 +565,23 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         })(),
         // Cockpit B2: whether this person's remembered password may approve these exact terms (the same rule approve()
         // applies), and since when.
-        approvalFresh: (() => {
+        // The one password rule every approve form reads (approval-password.ts): remembered since when, or a local
+        // owner's no-password approval (eligible, or why not and where to go).
+        ...((): { approvalFresh: string | null; approvalLocal: LocalApprovalView | null } => {
           const scope = ref === null ? null : runtime.store.getScope(ref.externalId);
-          if (scope === null || who?.via !== "cookie") return null;
+          if (scope === null || ref === null || who?.via !== "cookie") return { approvalFresh: null, approvalLocal: null };
           const fresh = withFreshness("approve-standard", () => freshnessFor(who.name, Date.now(), true));
-          if (fresh === null) return null;
-          const gate = runtime.store.approvalGate(ref!.externalId, who.name, "person");
-          return freshlyApprovable(runtime.store, ref!.externalId, scope, gate.verdict === "seal" && !gate.protectedWork) ? new Date(fresh.at).toISOString() : null;
+          const field = approvalPasswordField(runtime.store, { name: who.name, taskId: ref.externalId, scope, passwordless: false,
+            localOwner: who.authority === "local-owner", freshAt: fresh?.at ?? null, returnTo: taskHref(ref.externalId) });
+          return { approvalFresh: field.field === "remembered" ? field.since : null,
+            approvalLocal: field.field === "none" && field.why === "local-owner" ? { eligible: true as const }
+              : field.field === "local-refused" ? { eligible: false as const, message: field.message, href: field.href, action: field.action } : null };
         })(),
-        // Easy-start C5: a laptop's local owner approves eligible work with no password (the seal applies the same rule).
-        approvalLocal: (() => {
-          if (ref === null || who?.via !== "cookie" || who.authority !== "local-owner") return null;
-          if (localApprovalEligible(runtime.store, who.name, ref.externalId).ok) return { eligible: true as const };
-          return { eligible: false as const, ...localOwnerRefusal(runtime.store.accountOf(who.name)?.passwordSet === true, taskHref(ref.externalId)) };
+        routeChange: ref === null ? null : routeChangeOf(runtime.store, ref.externalId),
+        fastGrown: (() => {
+          if (ref === null || runtime.store.getTask(ref.externalId)?.state !== "done" || !fastStarted(runtime.store, ref.externalId)) return null;
+          const last = runtime.store.lastBuilderRun(ref.id);
+          return last === null ? null : fastChangeProblem(runtime.store, ref.externalId, last.id);
         })(),
         steerRecent: ref === null ? [] : runtime.store.runsFor(ref.id).filter(one => one.outcome !== null).map(one => one.id).sort((a, b) => b - a).slice(0, 5),
         // The running attempt's composer, for an approver on a browser session (steer-controls.ts).
@@ -843,7 +853,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     if (admittedFamily?.problem != null) return runtime.sendScreen(response, status, screen(admittedFamily.root.title,
       html`<h1>${admittedFamily.root.title}</h1><p>${admittedFamily.current.state}</p><p class="problem" data-history-problem>${admittedFamily.problem}</p>`, { chrome: runtime.chromeFor(admittedFamily.root.repo, "tasks") }));
     const data = taskViewData(taskId, who, problem);
-    if (data === null) return refuse(response, who, 404, "no such task", "/work");
+    if (data === null) return refuse(response, who, 404, "no such task", "/tasks");
     const family = runtime.familyOf(taskId);
     const presentedData = { ...data, rootId: family?.root.id ?? taskId, rootTitle: family?.root.title ?? data.task.title,
       ...(family === null || data.assignment != null ? {} : { history: familyHistory(family) }),
@@ -890,7 +900,19 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     // Ship (its pull request's checks, each on one time axis) and a release's own steps, read from the store now.
     const rootId = family?.root.id ?? taskId;
     const oneTaskView = onePage?.kind === "task" ? { ...onePage, ship: shipViewOf(shipChecksForTask(runtime.store, rootId), runtime.clock()),
-      release: releaseStepsViewOf(releaseProgressFor(runtime.store, rootId), runtime.clock()) } : onePage;
+      release: releaseStepsViewOf(releaseProgressFor(runtime.store, rootId), runtime.clock()),
+      // "Can I merge?" (P1.6): the checklist from the same assignment this page read, each blocker with its own form.
+      mergeReady: mergeReadyViewOf(runtime.store, taskId, data.assignment, who, presentedData.runChecks ?? null, taskHref(taskId)) } : onePage;
+    // A check the machine runs (a prepared candidate: a release's check) is said as the check it is, with no agent's
+    // activity, no notes to read, and for a release its own steps instead of the generic Plan → Build stepper.
+    if (oneTaskView?.kind === "task" && machineChecked(runtime.store, taskId)) {
+      const words = machineCheckWords(runtime.store, taskId, data.liveRunId ?? null, oneTaskView.release ?? null, runtime.clock());
+      const card = oneTaskView.status;
+      if (words !== null && card !== null && card.status.headline === "Building") oneTaskView.status = { ...card, status: { ...card.status, sentence: words } };
+      oneTaskView.activity = null;
+      oneTaskView.steering = null;
+      if (oneTaskView.release != null) oneTaskView.journey = null;
+    }
     // The Result tab's no-script page, under the task's own (the same HTML its result page serves), and its script.
     if (extras.result != null) {
       page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result">${extras.result.html}</section>`;
@@ -920,12 +942,12 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const runId = Number(named);
     const stop = runtime.store.stopOf(runId);
     const run = runtime.store.getRun(runId);
-    if (stop === null || run === null || stop.taskRef !== ref.id) return taskScreen(response, who, taskId, `run #${runId} is not a stopped attempt of this task`, 409);
-    if (run.role === "reviewer") return taskScreen(response, who, taskId, `run #${runId} is a historical review run — nothing reruns it; open the saved result instead`, 409);
-    if (stop.resumedAt !== null) return taskScreen(response, who, taskId, `run #${runId} was already resumed by ${stop.resumedBy ?? "?"}`, 409);
+    if (stop === null || run === null || stop.taskRef !== ref.id) return taskScreen(response, who, taskId, `build #${runId} is not a stopped attempt of this task`, 409);
+    if (run.role === "reviewer") return taskScreen(response, who, taskId, `build #${runId} was an old review. Nothing reruns it; open the saved result instead`, 409);
+    if (stop.resumedAt !== null) return taskScreen(response, who, taskId, `build #${runId} was already resumed by ${stop.resumedBy ?? "?"}`, 409);
     const control = taskControlOf(runtime.store, ref.id, now);
     if (control.kind !== "paused" || control.run !== runId) {
-      return taskScreen(response, who, taskId, control.kind === "stopping" ? `run #${runId} is still stopping — its processes are not yet established gone` : `run #${runId} is no longer the attempt a resume can name — reload and decide against the current state`, 409);
+      return taskScreen(response, who, taskId, control.kind === "stopping" ? `build #${runId} is still stopping. Toolroll is making sure it has ended` : `build #${runId} is no longer the one to resume. Reload and decide again`, 409);
     }
     const digest = resumeDigestOf(taskId, runId, stop.settledAt ?? "", runtime.store.getScope(taskId));
     const nonceValue = randomBytes(18).toString("base64url");
@@ -1174,7 +1196,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       // runner owning the run, the session's own device-side yes, and a
       // checkout to open — or nothing renders.
       editor:
-        runtime.options.editorLinks !== undefined && runtime.options.localRunner !== undefined && run.runner === runtime.options.localRunner && who.via === "cookie" && who.session.editorLinks === true && run.worktree !== null
+        runtime.options.editorLinks !== undefined && runtime.options.localRunner !== undefined && run.runner === runtime.options.localRunner && who.via === "cookie" && who.session.editorLinks === true && run.worktree !== null && existsSync(run.worktree)
           ? { worktree: run.worktree }
           : null,
       signedCriteria: scope?.acceptance.length ?? 0,
@@ -1238,17 +1260,26 @@ export function releaseStepsViewOf(progress: ReturnType<typeof releaseProgressFo
   const all = RELEASE_STEPS.filter(step => step !== "done");
   // A release that started part way (one carried under an earlier approval, or resumed from an older journal) shows
   // the steps from where its own record starts; a step missing between two recorded ones is a write that was lost.
-  const firstAt = all.findIndex(step => recorded.has(step));
+  // A build running since the stop is the release's check, wherever the release last stopped; what follows it is to come.
+  const building = progress.building, checkAt = all.indexOf("check");
+  const firstAt = building === null ? all.findIndex(step => recorded.has(step)) : Math.min(all.findIndex(step => recorded.has(step)), checkAt);
   const lastAt = all.reduce((at, step, index) => recorded.has(step) ? index : at, -1);
   const steps = firstAt <= 0 ? all : all.slice(firstAt);
   const rows: TimingRow[] = steps.map(step => {
     const one = recorded.get(step);
+    if (building !== null && step === "check") {
+      const start = Date.parse(building.startedAt);
+      return { name: RELEASE_STEP_WORDS[step] ?? step, st: "run" as const, start: Number.isFinite(start) && Number.isFinite(origin) ? Math.max(0, (start - origin) / 1000) : 0, dur: Number.isFinite(start) ? Math.max(0, (now.getTime() - start) / 1000) : 0 };
+    }
+    if (building !== null && all.indexOf(step) > checkAt) return { name: RELEASE_STEP_WORDS[step] ?? step, st: "q" as const, start: 0, dur: 0 };
     // A step with no record is never painted as done: between recorded ones it says so, after them it is queued.
     if (one === undefined) return all.indexOf(step) < lastAt ? { name: RELEASE_STEP_WORDS[step] ?? step, sub: "not recorded", st: "q" as const, start: 0, dur: 0 }
       : { name: RELEASE_STEP_WORDS[step] ?? step, st: "q" as const, start: 0, dur: 0 };
     const start = Date.parse(one.startedAt), end = one.endedAt === null ? now.getTime() : Date.parse(one.endedAt);
-    const st: TimingRow["st"] = one.state === "done" ? "ok" : one.state === "failed" ? "bad" : one.state === "waiting" ? "wait" : "run";
-    return { name: RELEASE_STEP_WORDS[step] ?? step, ...(one.detail === null || one.state === "done" ? {} : { sub: one.detail.slice(0, 160) }), st,
+    // A failure the release has gone on from (resumed past it, or a build since) is history, not where it stands.
+    const passed = one.state === "failed" && progress.stopped === null;
+    const st: TimingRow["st"] = one.state === "done" || passed ? "ok" : one.state === "failed" ? "bad" : one.state === "waiting" ? "wait" : "run";
+    return { name: RELEASE_STEP_WORDS[step] ?? step, ...(passed ? { sub: "Stopped here, then went on" } : one.detail === null || one.state === "done" ? {} : { sub: one.detail.slice(0, 160) }), st,
       start: Number.isFinite(start) && Number.isFinite(origin) ? Math.max(0, (start - origin) / 1000) : 0, dur: Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, (end - start) / 1000) : 0 };
   });
   const current = rows.findIndex(row => row.st === "run" || row.st === "wait" || row.st === "bad");
@@ -1260,7 +1291,10 @@ export function releaseStepsViewOf(progress: ReturnType<typeof releaseProgressFo
   return {
     tag: progress.tag, version: progress.version, pr: progress.pr,
     rows,
-    state: progress.stopped !== null ? "failed" : done ? "done" : at?.st === "wait" ? "waiting" : "running",
+    // Waiting is a person's act only at Approval; a step waiting on a machine (its check, GitHub's checks, quiet) is the
+    // release running, never "Needs you".
+    state: progress.stopped !== null ? "failed" : done ? "done" : at?.st === "wait" && steps[current] === "approval" ? "waiting" : "running",
+    at: current === -1 ? null : { step: steps[current]!, name: at!.name, index: current + 1, of: rows.length },
     headline: done ? `Released ${progress.version}` : progress.stopped !== null ? `Stopped at ${RELEASE_STEP_WORDS[progress.stopped.step] ?? progress.stopped.step}`
       : at !== null ? `${at.name} · Step ${current + 1} of ${rows.length}` : last === null ? "Starting" : `${last} done · the next step starts on its own`,
     stopped: progress.stopped === null ? null : { step: RELEASE_STEP_WORDS[progress.stopped.step] ?? progress.stopped.step, message: progress.stopped.message, at: progress.stopped.at },

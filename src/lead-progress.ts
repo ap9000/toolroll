@@ -21,6 +21,8 @@ export type LeadLiveStep = { tools: string[]; toolCalls: LeadLiveTool[]; text: s
 const TOOL_LABELS: Record<string, string> = {
   get_brief: "Catching up on your work",
   get_project_context: "Reading the project",
+  get_code_map: "Reading the code map",
+  refresh_code_map: "Asking for a check of main",
   get_action_status: "Checking an action",
   get_actions: "Checking available actions",
   get_controls: "Checking the controls",
@@ -36,6 +38,7 @@ const TOOL_LABELS: Record<string, string> = {
   get_flows: "Reading the flows",
   get_flow_insights: "Looking at how the flows are doing",
   get_project_knowledge: "Reading project knowledge",
+  get_flaky_tests: "Reading the flaky tests list",
   search_project_memory: "Searching project memory",
   get_integrations: "Checking integrations",
   get_capabilities: "Checking what can run",

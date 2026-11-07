@@ -158,6 +158,8 @@ import { planTargetedRecheck, settleCoverage } from "../src/release-recheck.js";
 import { effectiveCheckFacts, sealVerificationReceipt, verificationEvidence } from "../src/verification-evidence.js";
 import { retriedInside } from "../src/check-failure.js";
 import { recordRunCheckLevel } from "../src/check-levels.js";
+import { CHECK_STAMP_VERSION } from "../src/check-stamp.js";
+import { recordCheckStamp } from "../src/store.js";
 import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE } from "../src/check-report.js";
 import type { CheckReport } from "../src/contracts/release-check.js";
 export const EVIDENCE = (f: ReleaseFixture) => join(f.dir, "evidence");
@@ -223,6 +225,8 @@ export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, rep
   const effective = effectiveCheckFacts(options.plane ?? { configured: true, ran: true, exitCode: exitCode ?? 1, ...(options.setupReplayed === true ? { setupReplayed: true as const, firstAttempt: { class: "launch" as const, program: "tsc", exitCode: 127 } } : {}) }, { coverage: settled.coverage, check: { attempt: prepared.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE), retried: retriedInside(sealedReport) }, composed: settled.composed });
   sealVerificationReceipt(store, root, runId, head, command, effective.result, RELEASE_NOW, undefined, effective.facts ?? undefined);
   const passed = effective.result.configured && effective.result.ran && effective.result.exitCode === 0;
+  // As the launch does (invoke.ts): how the check's commands ran, at the level it was sealed for.
+  recordCheckStamp(store, runId, { version: CHECK_STAMP_VERSION, level: "sandboxed", policyDigest: "a".repeat(32), writable: [f.dir], readable: [], network: { mode: "machine" } }, RELEASE_NOW);
   store.recordRunCheck(runId, { status: passed ? "passed" : "failed", exitCode: effective.result.configured && effective.result.ran ? effective.result.exitCode : null, suites: [] }, RELEASE_NOW);
   return { runId, prepared, decision, coverage: settled.coverage, composed: settled.composed, stdout, report: sealedReport, status: passed ? "passed" as const : "failed" as const, command };
 }

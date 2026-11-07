@@ -736,6 +736,16 @@ export const CHAT_ACTION_PARITY: Record<
     how: "Reads bounded source excerpts or advisory import impact in an accessible enrolled project through the shared engine, with source-search fallback when its index is unavailable.",
     gap: "Index refresh uses the local CLI. Dedicated Telegram and Slack journeys for this tool and live channel rendering remain unverified.",
   },
+  get_code_map: {
+    support: "direct",
+    how: "Reads the project's generated code map through the shared reader, one labelled answer at most 6 KB, paging one pinned version.",
+    gap: null,
+  },
+  refresh_code_map: {
+    support: "direct",
+    how: "Queues a check of the project's main, as Check now does on the page.",
+    gap: null,
+  },
   get_action_status: {
     support: "direct",
     how: "Reads the exact saved shared action and its outcome, including completion through secure review.",
@@ -776,6 +786,7 @@ export const CHAT_ACTION_PARITY: Record<
     how: "Read during a turn.",
     gap: null,
   },
+  get_flaky_tests: { support: "direct", how: "Read during a turn: a project's tests with mixed outcomes, each with the task that would fix it. Fixing one is an ordinary task card.", gap: null },
   get_models: { support: "direct", how: "Read during a turn: default agents with the exact model each runs, CLI versions and new models. Changes use the labelled Settings → Models page.", gap: null },
   get_diff: { support: "direct", how: "Read during a turn: the exact result's changed files, then one file's diff, so a requested change names the right file and line.", gap: null },
   get_check_log: { support: "direct", how: "Read during a turn: the end of the exact result's check log, a page of it, or the lines matching a search.", gap: null },

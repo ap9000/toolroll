@@ -9,7 +9,11 @@ import { z } from "zod";
 
 export const checkoutCleanupSchema = z.enum(["finished", "2d", "7d", "never"]);
 
+/** How long a task stays idle before its clean folder goes (v151, checkout-cleanup.ts). A saved row's NULL is the default. */
+export const checkoutIdleSchema = z.enum(["7d", "14d", "30d", "never"]);
+
 /** A saved `checkout_cleanup_setting` row (at most one; none means the default), unknown columns ignored. */
-export const checkoutCleanupRowSchema = z.object({ cleanup: checkoutCleanupSchema });
+export const checkoutCleanupRowSchema = z.object({ cleanup: checkoutCleanupSchema, idle: checkoutIdleSchema.nullable().optional() });
 
 export type CheckoutCleanup = z.infer<typeof checkoutCleanupSchema>;
+export type CheckoutIdle = z.infer<typeof checkoutIdleSchema>;

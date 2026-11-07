@@ -14,10 +14,27 @@ permissions:
   contents: read
 
 jobs:
+  # The root lanes run in a workflow run of their own (native-lanes.yml, docs/plans/trusted-release-reports.md H1), and
+  # ci.yml's jobs of those names wait for this commit's verdict there.
+  native-lanes:
+    name: nightly · native lanes started
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run native-lanes.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
   # Pull requests run only the macOS lane on macOS (docs/plans/ci-speed.md, item 3); the nightly runs every file there.
   ci:
     name: nightly
     uses: ./.github/workflows/ci.yml
+    # Its waiting jobs read Actions runs; a called job can't have more than this.
+    permissions:
+      contents: read
+      actions: read
     with:
       macos_lane: all
   release-candidate:

@@ -2,6 +2,7 @@
  * not verify artifacts or authorize task operations; a build Toolroll can't
  * yet confirm stopped is read through the store's own read-only probe. */
 import { authorityStandsSql } from "./approval-authority.js";
+import { vanishedStopSentence, type RetryStop } from "./vanished-retry.js";
 import { leadNameOf } from './lead-identity.js';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -21,7 +22,8 @@ import { isCheckLevel, requiredCheckCommandFor } from './check-levels.js';
 import { MARKER } from './worktree.js';
 import { withFollowUps } from './result-follow-ups.js';
 import { LANDED_ACTOR, landedReasonOf } from './result-completion.js';
-import { ASKS, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedKey, type WaitKey } from './needs-you.js';
+import { ASKS, CODE_READING, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, isWaitCode, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedContext, type NeedKey, type WaitKey } from './needs-you.js';
+import { retryWhenWords } from './dispatch.js';
 import { LEAD_CLAIM_SQL, LEAD_IDLE_MS } from './lead-voice.js';
 
 export type WorkIndexCounts = Record<WorkView, number>;
@@ -69,10 +71,10 @@ export type WorkProjectCounts = { repo: string | null; totals: WorkIndexCounts; 
 export const WORK_INDEX_PAGE_LIMIT = 40;
 export const WORK_INDEX_MAX_LIMIT = 100;
 
-const EMPTY: WorkIndexCounts = { all: 0, 'needs-you': 0, running: 0, queued: 0, completed: 0, archived: 0 };
+const EMPTY: WorkIndexCounts = { all: 0, 'needs-you': 0, ready: 0, running: 0, queued: 0, completed: 0, archived: 0 };
 const NO_GROUPS: WorkIndexGroupCounts = { decide: 0, review: 0, unblock: 0, building: 0, rest: 0 };
 const FAMILY_PROBLEM = 'Task history is unavailable or incomplete. This task is shown separately.';
-const VIEWS: readonly WorkView[] = ['all', 'needs-you', 'running', 'queued', 'completed', 'archived'];
+const VIEWS: readonly WorkView[] = ['all', 'needs-you', 'ready', 'running', 'queued', 'completed', 'archived'];
 /** The family's current version is put away (v145): it waits on nobody and only the Archived view lists it. */
 const ARCHIVED = `EXISTS(SELECT 1 FROM task_archive ta WHERE ta.task_ref=c.ref_id)`;
 type Row = Record<string, unknown>;
@@ -90,14 +92,22 @@ const AGENT_ASK = `(SELECT q.id FROM agent_question q JOIN run qr ON qr.id=q.run
 const GATE_PAUSE_ON_TASK = pauseOnTaskProviders('p', 'c.ref_id');
 
 type StopFact = NonNullable<ReturnType<Store['stopQuiescenceFact']>>;
-/** Index codes that wait on a person, as their need (needs-you.ts); dispatch codes come from task-status's own table. */
-const INDEX_NEED: Readonly<Record<string, NeedKey>> = {
-  'earlier-active': 'earlier-version', 'process-needs-attention': 'stop-unproven', 'invalid-scope': 'define-task', 'decision-queue': 'questions',
-};
-/** Every index code that can wait on a person. */
+/** Index codes that wait on a person, as their need, where the index reads one the dispatch codes don't. */
+const INDEX_NEED: Readonly<Record<string, NeedKey>> = Object.fromEntries(['earlier-active', 'process-needs-attention', 'invalid-scope', 'decision-queue', 'history-problem']
+  .map(code => [code, CODE_READING[code]!.need!] as const));
+/** Every index code that can wait on a person. A wait (stopping, waiting its turn, a retry later) is never one. */
 const PERSON_CODES = ['history-problem', 'earlier-active', 'ready-to-check', 'waiting-decision', 'decision-queue', 'result-needs-attention',
-  'process-needs-attention', 'failed', 'vanished-run', 'stopping', 'stopped', 'held', 'waiting-incident', 'terminal-dependency', 'needs-project',
+  'process-needs-attention', 'failed', 'vanished-run', 'stopped', 'held', 'waiting-incident', 'terminal-dependency', 'needs-project',
   'needs-scope', 'invalid-scope', 'needs-agent-profile', 'needs-approval', 'missing-requirement', 'no-worker-registered', 'no-worker-online', 'signed-out'];
+/** The index codes that wait on nobody: finished or running work, and every wait (needs-you.ts CODE_READING). */
+export const WAITING_CODES: readonly string[] = ['cancelled', 'complete', 'running', 'queued',
+  ...['stopping', 'updating', 'retry-scheduled', 'waiting-dependency', 'worker-at-capacity', 'planning-ready', 'scouting-ready'].filter(code => isWaitCode(code))];
+const WAITING_SQL = WAITING_CODES.map(code => `'${code}'`).join(',');
+/** The words on a state's own act (a need's act wears its need's label). */
+const STATE_ACT_LABEL: Readonly<Record<string, string>> = {
+  'ready-to-check': 'Open result', complete: 'Open result', cancelled: 'View task details', failed: 'Review and retry', 'waiting-incident': 'Review and retry',
+  stopped: 'Review pause', held: 'Review hold', 'result-needs-attention': 'Open the build', 'process-needs-attention': 'Open the build',
+};
 /** A code's ask: a saved result is Review (unless its build may still run), otherwise its need's ask. */
 export function askOfCode(code: string, custody = false): Ask {
   if (custody) return 'unblock';
@@ -178,6 +188,8 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     (SELECT id FROM run WHERE task_ref=c.ref_id AND lease_id=c.live_lease AND outcome IS NULL ORDER BY id DESC LIMIT 1) live_run,
     h.owner_kind hold_kind,h.reason hold_reason,h.until hold_until,
     sc.task_id scope_id,sc.digest,sc.approved_at,sc.proposed_at,sc.profile_state,
+    -- A prepared candidate: the machine checks out that commit and runs its check; no agent runs (machine-check.ts).
+    (typeof(sc.candidate)='text' AND sc.candidate<>'') machine_check,
     -- The pause the dispatch gate itself left this task waiting on (the provider it resolved, pins,
     -- configuration and planners included) first; the approved terms answer before any gate has looked.
     EXISTS(SELECT 1 FROM provider_auth_pause p WHERE p.id=c.auth_wait_pause AND p.lifted_at IS NULL AND ${GATE_PAUSE_ON_TASK}) gate_signed_out,
@@ -288,11 +300,11 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
   SELECT c.*,CASE WHEN code IN ('cancelled','complete') THEN 0 ELSE ${LEAD_CLAIM_SQL} END lead_claim FROM classified c
 ), ranked AS MATERIALIZED (
   -- A task the person's lead is on (lead-voice.ts) waits on nobody: it leaves Needs you until the claim ends or lapses.
-  SELECT c.*,code NOT IN ('cancelled','complete','running','updating','retry-scheduled','waiting-dependency','worker-at-capacity','planning-ready','scouting-ready','queued') AND NOT ${CUSTODY_WAITS} AND lead_claim<>1 AND NOT ${ARCHIVED} needs,
-    code NOT IN ('cancelled','complete','running','updating','retry-scheduled','waiting-dependency','worker-at-capacity','planning-ready','scouting-ready','queued') AND NOT ${CUSTODY_WAITS} AND NOT ${ARCHIVED} person_need,
+  SELECT c.*,code NOT IN (${WAITING_SQL}) AND NOT ${CUSTODY_WAITS} AND lead_claim<>1 AND NOT ${ARCHIVED} needs,
+    code NOT IN (${WAITING_SQL}) AND NOT ${CUSTODY_WAITS} AND NOT ${ARCHIVED} person_need,
     ${ARCHIVED} archived,
     CASE WHEN code='complete' THEN 3 WHEN code='cancelled' THEN 4 WHEN code='running' THEN 1
-      WHEN ${CUSTODY_WAITS} OR code IN ('updating','retry-scheduled','waiting-dependency','worker-at-capacity','planning-ready','scouting-ready','queued') THEN 2 ELSE 0 END rank,
+      WHEN ${CUSTODY_WAITS} OR code IN (${WAITING_SQL.replace(/'(?:cancelled|complete|running)',/g, '')}) THEN 2 ELSE 0 END rank,
     ${ASK_RANK} ask_rank,
     CASE WHEN code='complete' THEN completed.at ELSE family_updated END sort_at,
     completed.actor checked_actor,completed.at checked_at,completed.outcome checked_digest,completed.detail checked_detail
@@ -373,12 +385,14 @@ function parameters(now: Date, access: WorkSummaryAccess, options: WorkIndexOpti
     $leadOf: access.principal === 'operator' && access.viewer != null && access.viewer !== '' ? `lead for ${access.viewer}` : null };
 }
 function counts(row: Row): WorkIndexCounts {
-  return { all: n(row, 'all_count'), 'needs-you': n(row, 'needs_count'), running: n(row, 'running_count'), queued: n(row, 'queued_count'), completed: n(row, 'completed_count'), archived: n(row, 'archived_count') };
+  return { all: n(row, 'all_count'), 'needs-you': n(row, 'needs_count'), ready: n(row, 'ready_count'), running: n(row, 'running_count'), queued: n(row, 'queued_count'), completed: n(row, 'completed_count'), archived: n(row, 'archived_count') };
 }
 // Put-away families (v145) count only as archived.
 // Queued: waits on someone or something else (rank 2), not a person and not a build of its own family.
 const QUEUED = `rank=2 AND family_running=0 AND archived=0`;
-const TOTALS = `COALESCE(SUM(archived=0),0) all_count,COALESCE(SUM(needs),0) needs_count,COALESCE(SUM(family_running AND archived=0),0) running_count,`
+// Ready (P1.4): what waits on a person to accept or send back, the Needs you rows under Review.
+const READY = `needs AND rank=0 AND ask_rank=1 AND archived=0`;
+const TOTALS = `COALESCE(SUM(archived=0),0) all_count,COALESCE(SUM(needs),0) needs_count,COALESCE(SUM(${READY}),0) ready_count,COALESCE(SUM(family_running AND archived=0),0) running_count,`
   + `COALESCE(SUM(${QUEUED}),0) queued_count,COALESCE(SUM(code='complete' AND archived=0),0) completed_count,COALESCE(SUM(archived),0) archived_count`;
 const GROUP_TOTALS = `COALESCE(SUM(rank=0 AND ask_rank=0 AND archived=0),0) decide_count,COALESCE(SUM(rank=0 AND ask_rank=1 AND archived=0),0) review_count,COALESCE(SUM(rank=0 AND ask_rank=2 AND archived=0),0) unblock_count,`
   + `COALESCE(SUM(rank=1 AND archived=0),0) building_count,COALESCE(SUM(rank>1 AND archived=0),0) rest_count`;
@@ -432,7 +446,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   const view = VIEWS.includes(options.view ?? 'all') ? options.view ?? 'all' : 'all';
   const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(WORK_INDEX_MAX_LIMIT, Math.floor(options.limit!))) : WORK_INDEX_PAGE_LIMIT;
   const scope = cursorScope(access, options, view), cursor = readCursor(options.cursor, scope);
-  const filter = view === 'archived' ? 'archived=1' : view === 'needs-you' ? 'needs=1' : view === 'running' ? 'family_running=1 AND archived=0' : view === 'queued' ? QUEUED : view === 'completed' ? "code='complete' AND archived=0" : 'archived=0';
+  const filter = view === 'archived' ? 'archived=1' : view === 'needs-you' ? 'needs=1' : view === 'ready' ? READY : view === 'running' ? 'family_running=1 AND archived=0' : view === 'queued' ? QUEUED : view === 'completed' ? "code='complete' AND archived=0" : 'archived=0';
   const rows = prepared(store, `${projection}, selected_page AS MATERIALIZED (
     SELECT * FROM ranked WHERE ($taskId IS NOT NULL OR ${filter}) AND ($taskId IS NULL OR root_ref IN (SELECT root_ref FROM members WHERE id=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
       ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot))))
@@ -441,13 +455,13 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     SELECT repo,${TOTALS},SUM(state='queued' AND family_running=0 AND archived=0) queued,
       SUM(state='done' AND family_running=0 AND archived=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo
   )
-  SELECT 0 record_kind,totals.*,(SELECT json_group_array(json_object('repo',repo,'all_count',all_count,'needs_count',needs_count,
+  SELECT 0 record_kind,totals.*,(SELECT json_group_array(json_object('repo',repo,'all_count',all_count,'needs_count',needs_count,'ready_count',ready_count,
     'running_count',running_count,'queued_count',queued_count,'completed_count',completed_count,'archived_count',archived_count,'queued',queued,'done_recently',done_recently)) FROM project_totals) row_json FROM totals
-  UNION ALL SELECT 1,0,0,0,0,0,0,0,0,0,0,0,json_object('archived',archived,'archived_by',(SELECT by FROM task_archive WHERE task_ref=page.ref_id),
+  UNION ALL SELECT 1,0,0,0,0,0,0,0,0,0,0,0,0,json_object('archived',archived,'archived_by',(SELECT by FROM task_archive WHERE task_ref=page.ref_id),
     'archived_kind',(SELECT by_kind FROM task_archive WHERE task_ref=page.ref_id),'archived_reason',(SELECT reason FROM task_archive WHERE task_ref=page.ref_id),
     'archived_at',(SELECT at FROM task_archive WHERE task_ref=page.ref_id),'root_ref',root_ref,'root_id',root_id,'id',id,'root_title',root_title,'repo',repo,
     'state',state,'created_at',created_at,'family_updated',family_updated,'version_count',version_count,'earlier_active',earlier_active,
-    'earlier_id',earlier_id,'broken',broken,'live_run',live_run,'result_id',page_result_id,'result_outcome',(SELECT outcome FROM run WHERE id=page_result_id),'attempt_reason',(SELECT substr(reason,1,1000) FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),
+    'earlier_id',earlier_id,'route_change',(SELECT rc.words FROM route_change rc JOIN task_scope rs ON rs.task_id=page.id AND rs.digest=rc.scope_digest AND rs.approved_digest IS NOT rs.digest WHERE rc.task_ref=page.ref_id),'retry_stopped',(SELECT stopped FROM retry_episode WHERE task_ref=page.ref_id),'retry_stopped_run',(SELECT stopped_run FROM retry_episode WHERE task_ref=page.ref_id),'broken',broken,'live_run',live_run,'result_id',page_result_id,'result_outcome',(SELECT outcome FROM run WHERE id=page_result_id),'attempt_reason',(SELECT substr(reason,1,1000) FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),
     'publication_url',(SELECT pr_url FROM publication WHERE run=page_result_id),
     'result_role',(SELECT role FROM run WHERE id=page_result_id),'result_head',(SELECT head_revision FROM run WHERE id=page_result_id),'live_role',(SELECT role FROM run WHERE id=page.live_run),
     'check_status',(SELECT status FROM run_check WHERE run=page_result_id),
@@ -457,11 +471,11 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'proof_verdict',(SELECT COALESCE(machine_verdict,verdict) FROM proof_verdict WHERE run=page_result_id),
     'proof_failed_check',(SELECT verdict='refuted' AND reasons_json LIKE '%approved verification command exited%' FROM proof_verdict WHERE run=page_result_id),'code',code,'needs',needs,'person_need',person_need,'lead_claim',lead_claim,'family_running',family_running,'rank',rank,'ask_rank',ask_rank,'list_order',${ORDER},'sort_at',sort_at,
     'checked_actor',checked_actor,'checked_at',checked_at,'checked_digest',checked_digest,'checked_detail',checked_detail,'question_id',question_id,
-    'dependency_id',dependency_id,'dependency_state',dependency_state,'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,300),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
+    'dependency_id',dependency_id,'dependency_state',dependency_state,'hold_until',hold_until,'attempt_run',(SELECT id FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,300),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
     'plan_changed',scope_digest IS NOT NULL AND digest IS NOT scope_digest,'head_ok',length(head_revision)=40 AND head_revision NOT GLOB '*[^a-f0-9]*','stop_run',stop_run,'unfinished',unfinished,'signed_out',signed_out,
     'question_run',(SELECT run FROM decision WHERE id=page.question_id),'agent_ask',page.agent_ask,
     'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
-    'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),
+    'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),'machine_check',COALESCE(machine_check,0),
     'question_task',(SELECT r.external_id FROM decision d JOIN run ON run.id=d.run JOIN task_ref r ON r.id=run.task_ref WHERE d.id=page.question_id)) FROM page`)
     .all({ ...parameters(now, access, options, custody), $taskId: taskId, $roots: options.roots === undefined ? null : JSON.stringify(options.roots), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $recent: new Date(now.getTime()-86_400_000).toISOString() });
   const selected = rows.slice(1).map(row => JSON.parse(String(row['row_json'])) as Row);
@@ -480,7 +494,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   // automatic review and, with checks Off, the release check that covers it.
   const memo: ReleaseMemo = new Map();
   const readiness = (row: Row, checks: ChecksFact | null) => resultReadinessFacts(store, now, options.root, row, checks, memo);
-  return { items: page.map(row => itemOf(row, access.principal, probe, leadName, readiness, options.root !== undefined)), projects, totals: rows[0] === undefined ? { ...EMPTY } : counts(rows[0]),
+  return { items: page.map(row => itemOf(row, access.principal, probe, leadName, readiness, options.root !== undefined, now)), projects, totals: rows[0] === undefined ? { ...EMPTY } : counts(rows[0]),
     groups: rows[0] === undefined ? { ...NO_GROUPS } : groupCounts(rows[0]), nextCursor, limit, view };
 }
 
@@ -629,7 +643,7 @@ function resultReadinessFacts(store: Store, now: Date, root: string | undefined,
 }
 
 function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (taskId: string) => StopFact | null, leadName?: string,
-  readiness?: (row: Row, checks: ChecksFact | null) => ReadinessFacts, readable = false): WorkIndexItem {
+  readiness?: (row: Row, checks: ChecksFact | null) => ReadinessFacts, readable = false, now: Date = new Date()): WorkIndexItem {
   const code = String(row['code']), id = String(row['id']);
   const custody = code === 'process-needs-attention' || (code === 'result-needs-attention' && n(row, 'custody_unresolved') === 1);
   const process = custody && probe !== undefined ? processNeedOf(probe(id)) : null;
@@ -640,55 +654,41 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   const personNeed = (n(row, 'person_need') === 1 || need) && !waiting;
   const assignmentState: AssignmentSnapshot['state'] = code === 'complete' ? 'complete' : code === 'ready-to-check' ? 'ready-to-check'
     : code === 'cancelled' ? 'cancelled' : need ? 'needs-decision' : 'working';
-  const words: Record<string, [string, string, WorkAction['code'] | null, string]> = {
-    'history-problem': ['Needs your decision', FAMILY_PROBLEM, 'inspect-task', 'Review task history'],
-    'earlier-active': ['Needs your decision', 'Earlier work is still active. Resolve it before completing this assignment.', 'inspect-task', 'Review active work'],
-    'ready-to-check': ['Ready', 'The saved result is ready to review.', 'open-result', 'Open result'],
-    complete: ['Complete', 'Completion is recorded for this result. Open it to inspect the saved evidence.', 'open-result', 'Open result'],
-    cancelled: ['Cancelled', 'This assignment was cancelled.', 'inspect-task', 'View assignment'],
-    running: ['Running now', '', null, ''],
-    'waiting-decision': ['Needs your decision', 'An unanswered question is waiting.', n(row, 'question_id') ? 'answer-decision' : n(row, 'agent_ask') ? 'answer-agent' : 'inspect-decisions', 'Answer question'],
-    'decision-queue': ['Needs your decision', 'The decision queue is full.', 'inspect-decisions', 'Review open questions'],
-    // Its own reason replaces this below (resultHoldUpSentence).
-    'result-needs-attention': ['Needs your decision', '', 'inspect-run', 'Inspect run'],
-    'process-needs-attention': ['Needs your decision', 'A process exit is not recorded. Open the attempt to check whether its work has stopped.', 'inspect-run', 'Inspect run'],
-    failed: ['Needs your decision', 'The last attempt stopped.', 'retry-task', 'Review and retry'],
-    'vanished-run': ['Needs your decision', 'An unfinished attempt has no current live claim.', 'reconcile-run', 'Check the unfinished attempt'],
-    stopping: ['Needs your decision', 'Stopping. The work so far is kept.', 'inspect-stop', 'View stop details'],
-    stopped: ['Needs your decision', 'Paused by a person. The work so far is kept.', 'resume-run', 'Review pause'],
-    held: ['Needs your decision', s(row, 'hold_reason') ?? 'This task is on hold.', s(row, 'hold_kind') === 'operator' ? 'unhold' : 'inspect-hold', 'Review hold'],
-    'waiting-incident': ['Needs your decision', 'An unresolved incident holds the next attempt.', 'retry-task', 'Review and retry'],
-    'terminal-dependency': ['Needs your decision', 'A required task did not finish.', 'repair-dependency', 'Review required task'],
-    'waiting-dependency': ['Waiting for another task', 'A required task must finish before this task can start.', null, ''],
-    'needs-project': ['Needs your decision', 'Choose a project for this task.', 'place-task', 'Choose a project'],
-    'needs-scope': ['Needs your decision', 'Define the task before a worker can start.', 'write-scope', 'Define the task'],
-    'invalid-scope': ['Needs your decision', 'The saved task scope cannot be read safely.', 'write-scope', 'Review scope'],
-    'needs-agent-profile': ['Needs your decision', 'Choose an available agent for this task.', 'select-agent', 'Choose an agent'],
-    'needs-approval': ['Needs your decision', 'Review the current plan before a worker can start.', 'approve-scope', 'Approve plan'],
-    'missing-requirement': ['Needs your decision', 'A required capability is missing or expired.', 'repair-capability', 'Review missing requirement'],
-    'no-worker-registered': ['Needs your decision', 'No connected builder includes this project.', 'start-worker', 'Check connection'],
-    'no-worker-online': ['Needs your decision', 'The builder has stopped checking in.', 'start-worker', 'Check connection'],
-    'worker-at-capacity': ['Waiting for worker capacity', 'This task starts when an eligible worker has capacity.', null, ''],
-    'signed-out': ['Waiting for a sign-in', 'Its agent needs you to sign in again; it starts on its own once that works.', null, ''],
-    'retry-scheduled': ['Retry scheduled', 'The attempt is backing off before retrying.', null, ''],
-    updating: ['Waiting for app update', 'New work resumes after the update.', null, ''],
-    'planning-ready': ['Planner ready', 'A connected worker can draft the plan.', null, ''],
-    'scouting-ready': ['Scout ready', 'A connected worker can produce the report.', null, ''],
-    queued: ['Queued', '', null, ''],
-  };
-  let [label, detail, actionCode, actionLabel] = words[code]!;
+  // What the code means (needs-you.ts CODE_READING, the one table): its act is the one it has always had; a need's
+  // words and label come from NEEDS, a wait's from WAITS. Only facts the row itself holds are added here.
+  const meaning = CODE_READING[code];
+  let label = '';
+  let detail = '';
+  let actionCode: WorkAction['code'] | null = (meaning?.act ?? null) as WorkAction['code'] | null;
+  let actionLabel = actionCode === null ? '' : STATE_ACT_LABEL[code] ?? (meaning?.need === undefined ? '' : NEEDS[meaning.need].action.label);
+  if (code === 'waiting-decision') actionCode = n(row, 'question_id') ? 'answer-decision' : n(row, 'agent_ask') ? 'answer-agent' : 'inspect-decisions';
+  if (code === 'held') { actionCode = s(row, 'hold_kind') === 'operator' ? 'unhold' : 'inspect-hold'; detail = s(row, 'hold_reason') ?? 'This task is on hold.'; }
+  if (code === 'stopping') { actionCode = 'inspect-stop'; actionLabel = 'View stop details'; }
+  if (code === 'stopped') detail = 'Paused by a person. The work so far is kept.';
+  if (code === 'cancelled') detail = 'This task was cancelled.';
+  // The same failure again and again: what failed, and the two ways on.
+  if (code === 'waiting-incident') detail = `The last attempts failed the same way (${failedAttemptSentence(s(row, 'attempt_reason')).replace(/[.\s]+$/, '').replace(/^./, first => first.toLowerCase())}). Retry, or change the plan.`;
+  /** The build, the task or the time a sentence names. */
+  const context: NeedContext = code === 'stopping' ? { build: n(row, 'stop_run') || null }
+    : code === 'retry-scheduled' ? { build: n(row, 'attempt_run') || null, retry: s(row, 'hold_until') === null ? null : retryWhenWords(s(row, 'hold_until')!, now) }
+    : code === 'vanished-run' ? { build: n(row, 'unfinished') || null }
+    : code === 'earlier-active' ? { task: s(row, 'earlier_id') }
+    : code === 'waiting-dependency' ? { task: s(row, 'dependency_id') } : {};
   if (code === 'signed-out') {
     const [provider = '', authMode = 'subscription'] = (s(row, 'signed_out') ?? '').split(':');
     label = signInReason({ provider: provider as ProviderId, authMode: authMode === 'api-key' ? 'api-key' : 'subscription' });
     detail = `${label}. It starts again on its own once ${providerName(provider)} works.`;
   }
-  if (code === 'running' && n(row, 'version_count') > 1) label = 'Revising';
+  if (code === 'running' && n(row, 'version_count') > 1) label = 'Building again';
   // Replaced, never "Cancelled": the successor is one tap away.
   const successor = code === 'cancelled' ? s(row, 'replaced_by') : null;
   if (successor !== null) { detail = `${replacedWords(successor)}.`; actionLabel = `Open ${successor}`; }
   if (code === 'terminal-dependency' && s(row, 'dependency_id') !== null) detail = `${s(row, 'dependency_id')} ${s(row, 'dependency_state') === 'cancelled' ? 'was cancelled' : 'failed'} before it finished.`;
   // A failed task says the latest finished attempt across its whole family, whatever its outcome: its recorded reason, or that none was recorded.
-  if (code === 'failed') detail = failedAttemptSentence(s(row, 'attempt_reason'));
+  if (code === 'failed') detail = s(row, 'retry_stopped') === null ? failedAttemptSentence(s(row, 'attempt_reason'))
+    : vanishedStopSentence({ why: s(row, 'retry_stopped') as RetryStop, run: n(row, 'retry_stopped_run') || null });
+  // A new route waiting for its one Approve says what changed (route-change.ts).
+  if (code === 'needs-approval' && s(row, 'route_change') !== null) detail = s(row, 'route_change')!;
   // A saved result that can't be accepted yet says its own reason, never one line for every such row.
   const planChanged = code === 'result-needs-attention' && n(row, 'plan_changed') === 1;
   if (code === 'result-needs-attention') detail = resultHoldUpSentence({ hold: s(row, 'hold_id') === null ? null : s(row, 'hold_reason') ?? '', planChanged,
@@ -728,8 +728,9 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   // Toolroll marked it complete because its work landed: the reason, said once.
   const landed = code === 'complete' ? landedReasonOf(s(row, 'checked_actor'), s(row, 'checked_detail')) : null;
   const shared = taskStatusOf({ stage: reading.stage, ...(reading.need === undefined ? {} : { need: reading.need }), ...(reading.wait === undefined ? {} : { wait: reading.wait }),
-    ...(process === null ? {} : { needContext: { build: process.build } }),
+    ...(process === null ? (Object.keys(context).length === 0 ? {} : { needContext: context }) : { needContext: { build: process.build } }),
     reason: finished ? null : plainReasonOf(reading.stage, code, detail || null), report: s(row, 'result_role') === 'scout',
+    ...(n(row, 'machine_check') === 1 ? { machine: true } : {}),
     checks: ready !== null ? ready.checks : listedChecks,
     ...(ready === null ? {} : { requirements: ready.requirements ?? null, ...(ready.accepted ? { accepted: true } : {}), ...(ready.blockers === undefined ? {} : { blockers: ready.blockers }) }),
     completedBy: code !== 'complete' || landed !== null ? null : n(row, 'completed_by_lead') === 1 ? 'the lead' : String(row['checked_actor']).replace(/^(?:operator|coordinator|lead):/, ''),
@@ -749,6 +750,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     reason: String(row['archived_reason'] ?? ''), at: String(row['archived_at'] ?? '') } : null;
   const views: WorkView[] = archived !== null ? ['archived'] : ['all'];
   if (archived === null && need) views.push('needs-you');
+  if (archived === null && need && n(row, 'rank') === 0 && n(row, 'ask_rank') === 1) views.push('ready');
   if (archived === null && running) views.push('running');
   if (archived === null && !need && !running && n(row, 'rank') === 2) views.push('queued');
   if (archived === null && code === 'complete') views.push('completed');

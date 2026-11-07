@@ -20,7 +20,7 @@ import { autoSealSql } from "./release-authority.js";
 const PERSON_PROOFS = "('password-now', 'sso-now', 'fresh-password', 'fresh-sso', 'session', 'cli-login', 'chat', 'passkey', 'local-owner')";
 
 /** SQL over a `task_scope` alias and a repo expression: whether that row's approval authority stands at `now` (an SQL
- * expression, used exactly three times: the mode and grant clauses, and the release's expiry). It never asks whether the row is approved.
+ * expression, used exactly four times: the mode and grant clauses, the release's expiry and a fast start's window). It never asks whether the row is approved.
  * COALESCE: a NULL basis would make the OR chain NULL, and NOT NULL reads as "not dead"; NULL stands on nothing. */
 export function authorityStandsSql(scope: string, repo: string, now: string): string {
   return `COALESCE((((COALESCE(${scope}.approval_basis, '') IN ('password', 'chat') AND NOT ${machineSealSql(scope)}
@@ -33,8 +33,18 @@ export function authorityStandsSql(scope: string, repo: string, now: string): st
     OR (${scope}.approval_basis = 'grant' AND ${grantStandsSql(`${scope}.mode_digest`, now, repo)})
     OR (${scope}.approval_basis = 'schedule' AND ${approverStandsSql(scope, repo)})
     OR (${scope}.approval_basis IN ('auto-check', 'auto-green') AND ${autoSealSql(scope, repo)} AND ${approverStandsSql(scope, repo)}))
-    AND ${releaseStandsSql(scope, now)} AND ${localSealStandsSql(scope, repo)}
+    AND ${releaseStandsSql(scope, now)} AND ${localSealStandsSql(scope, repo)} AND ${fastStartStandsSql(scope, now)}
     AND (instr(COALESCE(${scope}.approved_route_json, ''), '"trial"') = 0 OR ${trialSealStandsSql(scope)})), 0)`;
+}
+
+/**
+ * SQL, conjunctive with every alternative above (plain-toolroll.md P2.4): narrow only. A fast start's seal dispatches only
+ * inside its start window, and only as what it claims to be: a person's own ceremony yes to these exact bytes, proved at
+ * the seal's instant. Losing the marker leaves an ordinary person approval; nothing here grants anything.
+ */
+export function fastStartStandsSql(scope: string, now: string): string {
+  return `NOT EXISTS (SELECT 1 FROM task_ref fsr WHERE fsr.backend = 'built-in' AND fsr.external_id = ${scope}.task_id AND fsr.fast_start_until IS NOT NULL
+      AND (fsr.fast_start_until <= ${now} OR COALESCE(${scope}.approval_basis, '') <> 'password' OR ${machineSealSql(scope)} OR NOT ${personSealSql(scope)}))`;
 }
 
 /**

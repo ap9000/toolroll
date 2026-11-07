@@ -62,7 +62,7 @@ function Question({ row }: { row: BrowserHomeRow }) {
 
 /** The selected item, open beside the list. */
 function OpenPane({ row, waits }: { row: BrowserHomeRow | null; waits: boolean }) {
-  if (row === null) return <div className="k-empty"><p className="k-empty-t">Nothing needs you.</p><KLinkButton sm label="Open Tasks" href="/work" /></div>;
+  if (row === null) return <div className="k-empty"><p className="k-empty-t">Nothing needs you.</p><KLinkButton sm label="Open Tasks" href="/tasks" /></div>;
   const kicker = <div className="so-open-k"><span>{[row.project, row.age].filter(Boolean).join(" · ")}</span><span className="k-grow" /><KLinkButton variant="ghost" sm label="Open task" href={row.href} /></div>;
   if (row.question) return <>{kicker}<p className="so-open-of">{row.title}</p><Question key={row.question.id} row={row} /></>;
   return <>{kicker}
@@ -99,13 +99,13 @@ function AskLead({ ask }: { ask: NonNullable<BrowserHomeView["ask"]> }) {
 
 export function HomeView({ view }: { view: BrowserHomeView }) {
   const rows = rowsOf(view);
-  const firstWait = view.groups.find(group => group.key !== "running")?.rows[0] ?? rows[0] ?? null;
+  const firstWait = view.groups.find(group => group.key !== "running" && group.key !== "waiting")?.rows[0] ?? rows[0] ?? null;
   const [selected, setSelected] = useState<string | null>(firstWait?.id ?? null);
   const list = useRef<HTMLDivElement>(null);
   // A re-read that removed the selected row selects the first that waits.
   useEffect(() => { if (selected === null || !rows.some(one => one.id === selected)) setSelected(firstWait?.id ?? null); }, [view]);
   const open = rows.find(one => one.id === selected) ?? null;
-  const openWaits = open !== null && view.groups.some(group => group.key !== "running" && group.rows.includes(open));
+  const openWaits = open !== null && view.groups.some(group => group.key !== "running" && group.key !== "waiting" && group.rows.includes(open));
   const move = (step: number) => {
     const at = rows.findIndex(one => one.id === selected);
     const next = rows[Math.max(0, Math.min(rows.length - 1, at + step))];
@@ -132,10 +132,10 @@ export function HomeView({ view }: { view: BrowserHomeView }) {
           </a>)}</div>
       </section>
       <div className="so-triage">
-        <div className="so-tri-list" ref={list} role="listbox" aria-label="Needs you and running" onKeyDown={event => {
+        <div className="so-tri-list" ref={list} role="listbox" aria-label="Needs you, running and waiting" onKeyDown={event => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); move(event.key === "ArrowDown" ? 1 : -1); }
         }}>
-          {view.groups.length === 0 && <p className="so-tri-none">Nothing needs you or is running.</p>}
+          {view.groups.length === 0 && <p className="so-tri-none">Nothing needs you, runs or waits.</p>}
           {view.groups.map(group => <div key={group.key} role="group" aria-label={group.label}>
             <p className="so-tri-g" aria-hidden="true">{group.label}</p>
             {group.rows.map(row => <a key={row.id} className="so-ti" href={row.href} role="option" aria-selected={row.id === selected} data-row={row.id}
@@ -144,7 +144,7 @@ export function HomeView({ view }: { view: BrowserHomeView }) {
               onFocus={() => { if (!isPhone()) setSelected(row.id); }}>
               <span className="so-ti-t">{row.title}</span>
               <span className="so-ti-m"><KChip word={row.chip.word} tone={row.chip.tone} />{row.project && <span>{row.project}</span>}<span className="k-num">{row.age}</span></span>
-              {group.key === "running" && row.line && <span className="so-ti-d">{row.line}</span>}
+              {(group.key === "running" || group.key === "waiting") && row.line && <span className="so-ti-d">{row.line}</span>}
             </a>)}
           </div>)}
           {view.more && <p className="so-tri-more"><a className="k-link" href={view.more.href}>{view.more.count} more in Tasks</a></p>}

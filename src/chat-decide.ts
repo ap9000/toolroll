@@ -13,6 +13,7 @@
  * The same in every chat app: Telegram's bridge and the shared engine Slack, Discord and Teams run on (chat-delivery.ts)
  * offer, mint and answer these through the same tokens (the `channel` column). Every act runs through the door the
  * console uses. */
+import { routeChangeOf } from "./route-change.js";
 import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, releaseTaskRef } from "./store.js";
 import { isAcpProfile } from "./acp-agents.js";
 import { DECIDE_ACTS, readDecideActionRow, type DecideActionRow } from "./contracts/chat-callback-rows.js";
@@ -62,13 +63,18 @@ export type DecideButton = { label: string; token: string } | { label: string; l
 
 /** The words, said once. */
 export const DECIDE_LABELS = {
-  accept: "Accept and finish",
-  changes: "Request changes",
+  accept: "Accept",
+  changes: "Send back",
   retry: "Retry",
   approve: "Approve & start",
   "not-now": "Not now",
   merge: "Merge",
   look: "Look first",
+  /** A result's one link (docs/plans/plain-toolroll.md P1.5). */
+  open: "Open result",
+  /** A plan card's one button: it shows the full terms, and the Approve sits under them. Never an approval itself. */
+  review: "Review plan",
+  details: "Details",
   edit: "Edit",
   yes: "Yes",
   cancel: "Cancel",
@@ -371,9 +377,11 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
   const goal = scope.goal.split("\n").filter(one => one.trim() !== "").slice(0, 2).map(one => phoneText(one, 160));
   const allowing = [permissionPlainWords(scope.profile), scope.budgetMicrousd === null ? "no attempt limit" : `up to ${money(scope.budgetMicrousd)} per attempt`]
     .filter((one): one is string => one !== null);
+  const changed = routeChangeOf(store, taskId);
   if (channel === "telegram") {
     return [
       `Plan ready: ${title(store, taskId)}`,
+      ...(changed === null ? [] : [changed]),
       `Starting allows: ${allowing.join(" · ")}`,
       "",
       ...goal,
@@ -386,6 +394,7 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
   }
   return [
     `Plan ready: ${title(store, taskId)}`,
+    ...(changed === null ? [] : [changed]),
     "",
     ...goal,
     "",
@@ -413,7 +422,7 @@ export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApp
       if (root === undefined) return null;
       const fresh = resultFresh(store, target.taskId, target.run, who, now, root);
       if (!fresh.ok) return null;
-      const look = { label: DECIDE_LABELS.look, path: chatResultHref(target.taskId, target.run, "changes") };
+      const look = { label: DECIDE_LABELS.open, path: chatResultHref(target.taskId, target.run, "changes") };
       // A result accepted only with a reason ("Accept anyway") keeps its link: the reason is typed on the result.
       if (fresh.exception) return null;
       return { text: null, rows: [[{ act: "accept", run: target.run, digest: fresh.receipt }, { act: "changes", run: target.run, digest: fresh.source }], [look]] };
@@ -445,14 +454,16 @@ export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApp
           rows: [[{ act: "approve", run: null, digest: releaseDigest(card), label: "Continue" }], [{ label: DECIDE_LABELS.edit, path: chatControlHref("approval", target.taskId) }, { act: "not-now", run: null, digest: releaseDigest(card) }]],
           ...(channel === "telegram" ? { file: { name: card.fileName, text: card.full } } : {}) };
       }
-      return { text: planCardText(store, target.taskId, plan.scope, root, channel),
-        rows: [[{ act: "approve", run: null, digest: plan.digest }], [{ label: DECIDE_LABELS.edit, path: chatControlHref("approval", target.taskId) }, { act: "not-now", run: null, digest: plan.digest }]] };
+      // One line, one button and Details (docs/plans/plain-toolroll.md P1.5): Review plan shows the full terms in the
+      // card, and only there does Approve appear, bound to the same digest.
+      return { text: planLineOf(store, target.taskId, ref.id),
+        rows: [[{ act: "approve", run: null, digest: plan.digest, label: DECIDE_LABELS.review }], [{ label: DECIDE_LABELS.details, path: chatControlHref("approval", target.taskId) }]] };
     }
     case "requests": return requestsOffer(store, target.taskId, who, now, channel, root);
     case "merge": {
       const merge = mergeInChat(store, target.taskId, target.run, who.name, now, channel);
       if (!merge.ok) return null;
-      return { text: null, rows: [[{ act: "merge", run: target.run, digest: merge.head }], [{ label: DECIDE_LABELS.look, path: chatResultHref(target.taskId, target.run, "changes") }]] };
+      return { text: null, rows: [[{ act: "merge", run: target.run, digest: merge.head }], [{ label: DECIDE_LABELS.open, path: chatResultHref(target.taskId, target.run, "changes") }]] };
     }
   }
 }
@@ -622,7 +633,7 @@ export function releaseInChat(store: Store, taskId: string, approver: string, no
 }
 
 const QUESTIONS: Record<"accept" | "retry" | "approve" | "merge", (name: string) => string> = {
-  accept: name => `Accept and finish "${name}"?`,
+  accept: name => `Accept "${name}"?`,
   retry: name => `Retry "${name}"? It queues another attempt.`,
   approve: name => `Approve and start "${name}"?`,
   merge: name => `Merge "${name}"?`,
@@ -701,7 +712,7 @@ function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | 
 /** The links a card keeps once its acts are spent or stale: where to look, never a token. */
 export function linksFor(target: DecideTarget): DecideButton[][] {
   switch (target.kind) {
-    case "result": return [[{ label: DECIDE_LABELS.look, link: { label: DECIDE_LABELS.look, path: chatResultHref(target.taskId, target.run, "changes") } }]];
+    case "result": return [[{ label: DECIDE_LABELS.open, link: { label: DECIDE_LABELS.open, path: chatResultHref(target.taskId, target.run, "changes") } }]];
     case "merge": return [[{ label: "Open task", link: { label: "Open task", path: chatControlHref("task", target.taskId) } }]];
     case "plan": return [[{ label: "Review & start", link: { label: "Review & start", path: chatControlHref("approval", target.taskId) } }]];
     case "failed": return [[{ label: "Open task", link: { label: "Open task", path: chatControlHref("task", target.taskId) } }]];
@@ -729,7 +740,7 @@ export function planWhereNow(store: Store, taskId: string, who: VerifiedApprover
   return { said: `"${name}" is under way.`, rows: [] };
 }
 
-const QUESTION_STARTS = ["Accept and finish \"", "Retry \"", "Approve and start \"", "Merge \"", "Approve release "];
+const QUESTION_STARTS = ["Accept \"", "Accept and finish \"", "Retry \"", "Approve and start \"", "Merge \"", "Approve release "];
 /** The card's words without a question this module appended. */
 function cardBody(shown: string): string {
   const at = shown.lastIndexOf("\n\n");
@@ -831,6 +842,18 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
         ...read.skipped.map(one => `"${one.name}" isn't included: ${one.why}`)].join("\n");
       return { ack: "Confirm below.", edit: { text: `${body}\n\n${asked}`,
         rows: [[{ label: DECIDE_LABELS.yes, token: yes }, { label: DECIDE_LABELS.cancel, token: cancel }]], tokens: [yes, cancel] } };
+    }
+    // A plan card's Review plan: the full terms in the card, and under them the Approve (the yes, bound to the same
+    // digest the card was minted with, checked again at the tap). Approve is reachable only from here.
+    if (row.act === "approve") {
+      const plan = planInChat(store, row.taskId, who.name, now, seat.channel, input.root);
+      if (!plan.ok) return stale(plan.why);
+      spend();
+      const spec: ActSpec = { act: "approve", run: null, digest: row.digest };
+      const yes = mint(store, seat, input.message, spec, row.taskId, "yes", now);
+      const later = mint(store, seat, input.message, { act: "not-now", run: null, digest: row.digest }, row.taskId, "offer", now);
+      return { ack: "Read the plan, then approve.", edit: { text: `${planCardText(store, row.taskId, plan.scope, input.root, seat.channel)}\n\n${QUESTIONS.approve(name)} This approves exactly this plan.`,
+        rows: [[{ label: DECIDE_LABELS.approve, token: yes }], [{ label: DECIDE_LABELS.edit, link: { label: DECIDE_LABELS.edit, path: chatControlHref("approval", row.taskId) } }, { label: DECIDE_LABELS["not-now"], token: later }]], tokens: [yes, later] } };
     }
     // The first tap asks; only the yes acts, bound to exactly what this button was.
     spend();
@@ -985,4 +1008,9 @@ export function decideTargetOf(row: { kind: string; taskId: string | null; run: 
   if (row.kind === "pull-request-ready" && row.run !== null) return { kind: "merge", taskId: row.taskId, run: row.run };
   if (/fail|exhausted|stalled|fenced/.test(row.kind)) return { kind: "failed", taskId: row.taskId };
   return null;
+}
+
+/** A plan card's one line: the task's number, "plan ready", and its title (docs/plans/plain-toolroll.md P1.5). */
+function planLineOf(store: Store, taskId: string, number: number): string {
+  return `#${number}: plan ready · ${title(store, taskId)}`;
 }

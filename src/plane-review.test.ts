@@ -232,7 +232,7 @@ describe("waits on a person are not code problems", () => {
     expect(store.flowCards(flow, true)[0]!.description).toContain(`(run ${failure})`);
     expect(store.getFlowTrigger(trigger)!.lastOutcome).toBe("Added 1 card. 1 result and 1 task have waited over 3 days for you.");
     const shown = flowView(store, store.getFlow(flow)!, { name: "alex", approver: true }, null).triggers[0]!;
-    expect(shown.statusLink).toEqual({ label: "Needs you", href: "/work?view=needs-you" });
+    expect(shown.statusLink).toEqual({ label: "Needs you", href: "/tasks?view=needs-you" });
 
     // A plan alone, the next morning: a clean day that still mentions it.
     store.handle.prepare("UPDATE task SET state = 'cancelled' WHERE id = 'old-result'").run();

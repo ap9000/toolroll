@@ -112,7 +112,7 @@ test("a production child failure is recorded without raw errors and retries afte
   dailyStorageSweep(store, { databaseFile, pool: null, tempRoots: [] }, () => at, flight.supervisor);
   await flight.completed;
   const record = lastSweep(store)!;
-  expect(record.parts).toHaveLength(4);
+  expect(record.parts).toHaveLength(5);
   expect(record.parts.every(one => one.problem?.includes("some cleanup may have completed"))).toBe(true);
   expect(JSON.stringify(record)).not.toContain("private-input-in-path");
   expect(store.actionLedger({ repos: null }).find(one => one.action === "storage sweep")).toMatchObject({ outcome: "partial" });
@@ -131,7 +131,7 @@ test("the child protocol rejects malformed, incomplete and mismatched results", 
   expect(sweepRequest(request)).toBe(true);
   expect(sweepRequest({ ...request, databaseFile: ":memory:" })).toBe(false);
   expect(sweepRequest({ ...request, tempRoots: [123] })).toBe(false);
-  const record: SweepRecord = { at: request.at, actor: request.actor, source: "automatic", parts: ["test temp", "orphans", "runtimes", "dependencies"].map(kind => ({ kind: kind as SweepRecord["parts"][number]["kind"], count: 0, bytes: 0, failed: 0, items: [] })) };
+  const record: SweepRecord = { at: request.at, actor: request.actor, source: "automatic", parts: ["test temp", "orphans", "runtimes", "dependencies", "check history"].map(kind => ({ kind: kind as SweepRecord["parts"][number]["kind"], count: 0, bytes: 0, failed: 0, items: [] })) };
   expect(sweepResponse({ version: 1, record }, request)).toBe(true);
   for (const wrong of [null, {}, { version: 2, record }, { version: 1, record: { ...record, actor: "someone else" } },
     { version: 1, record: { ...record, parts: record.parts.slice(1) } },
@@ -141,7 +141,7 @@ test("the child protocol rejects malformed, incomplete and mismatched results", 
 
 const request = (databaseFile: string): SweepRequest => ({ version: 1, databaseFile, poolRoot: null, tempRoots: [], actor: "worker", at: new Date().toISOString() });
 const valid = (req: SweepRequest) => ({ version: 1, record: { at: req.at, source: "automatic", actor: req.actor,
-  parts: ["test temp", "orphans", "runtimes", "dependencies"].map(kind => ({ kind, count: 0, bytes: 0, failed: 0, items: [] })) } });
+  parts: ["test temp", "orphans", "runtimes", "dependencies", "check history"].map(kind => ({ kind, count: 0, bytes: 0, failed: 0, items: [] })) } });
 
 test("a hung child cannot overlap, times out through TERM/KILL, and saves once after the caller closes its store", async () => {
   vi.useFakeTimers();

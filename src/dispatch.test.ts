@@ -124,7 +124,7 @@ describe("Never Stuck dispatch diagnosis", () => {
     expect(accepted).toMatchObject({ condition: "terminal", code: "complete", summary: "Accepted with an exception" });
     // …and it never claims the checks failed or passed on its own: the
     // machine's recorded verdict is restated as it stands.
-    expect(accepted?.detail).toContain("The machine's verdict is unchanged: the approved check failed against it (exit 1).");
+    expect(accepted?.detail).toContain("The checks are unchanged: the approved check failed against it (exit 1).");
     expect(accepted?.detail).not.toMatch(/not passed by the machine|checks passed/i);
   });
 

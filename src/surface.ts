@@ -1,6 +1,8 @@
 import { KNOWLEDGE_DESCRIPTORS } from "./knowledge-cli.js";
 import { MEMORY_DESCRIPTORS } from "./memory-cli.js";
+import { FLAKY_DESCRIPTORS } from "./flaky-cli.js";
 import { MODELS_DESCRIPTORS } from "./models-cli.js";
+import { MAP_DESCRIPTORS } from "./code-map-cli.js";
 import { FLOWS_DESCRIPTORS } from "./flows-cli.js";
 /**
  * The declared command guide (arc 5): the agent-facing surface as data,
@@ -131,10 +133,12 @@ const GUIDE_ROWS: readonly GuideRow[] = [
 
   ...KNOWLEDGE_DESCRIPTORS.map(spec => ({ invocation: `knowledge ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text or source file for impact" }] } : {}) })),
   ...MEMORY_DESCRIPTORS.map(spec => ({ invocation: `memory ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text, a decision id, or the decision sentence" }] } : {}) })),
+  ...FLAKY_DESCRIPTORS.map(spec => ({ invocation: `flaky ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "identity", required: true, meaning: "a row's key from flaky list" }] } : {}) })),
   // Flow writes carry an approver's credential: an agent runs them only as the person asked, after showing the preview.
   // Letting a flow run on its own raises authority: the owner's own password ceremony, never an agent's act.
   ...FLOWS_DESCRIPTORS.map(spec => ({ invocation: `flows ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags,
     ...("positionals" in spec ? { positionals: spec.positionals.map(name => ({ name, required: true, meaning: name === "flow" ? "a flow id from flows list" : name === "card" ? "a card id from flows show" : name === "on|off" ? "on signs the grant, off revokes it" : "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -" })) } : {}) })),
+  ...MAP_DESCRIPTORS.map(spec => ({ invocation: spec.action === "" ? "map" : `map ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience as "operator" : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags, ...(spec.positional === null ? {} : { positionals: [{ name: "target", required: true, meaning: spec.positional }] }) })),
   ...MODELS_DESCRIPTORS.map(spec => ({ invocation: `models ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "target", required: true, meaning: "positional" in spec ? spec.positional : "the CLI to update, or on/off" }] } : {}) })),
 
   // ---- the queue (agent surface) ----
@@ -169,6 +173,21 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "token", takesValue: true, meaning: "a lead token: filed as the lead, so it pings nobody" },
       { name: "checks", takesValue: true, meaning: "quick|full|off: this task's checks, overriding the project's level (\"skip the tests\" is off)" }],
     notableReasons: ["duplicate", "usage", "unknown-task", "unauthenticated"] },
+  { invocation: "task new", synopsis: "start a small task at a terminal: shows the exact terms, then Build now? is your approval", audience: "operator", agentMayInvoke: false, mutation: "unkeyed",
+    positionals: [{ name: "words", required: false, meaning: "what should change" }],
+    flags: [dbFlag,
+      { name: "repo", takesValue: true, meaning: "the project" },
+      { name: "as", takesValue: true, meaning: "the approver" },
+      { name: "token", takesValue: true, meaning: "their password" },
+      { name: "from", takesValue: true, meaning: "a github.com issue or pull request of this project: quoted, then filed for your approval" },
+      { name: "preview", takesValue: false, meaning: "the terminal UI's own: the exact terms, nothing started" },
+      { name: "build", takesValue: true, meaning: "the terminal UI's own: Build on those terms" },
+      { name: "digest", takesValue: true, meaning: "the terms the person read" }],
+    notableReasons: ["person-only", "usage"] },
+  { invocation: "task keep", synopsis: "a fast start that grew: propose a plan for its exact commit, for you to approve", audience: "operator", agentMayInvoke: false, mutation: "unkeyed",
+    positionals: [{ name: "id", required: true, meaning: "the task" }],
+    flags: [jsonFlag, dbFlag, { name: "as", takesValue: true, meaning: "the approver" }, { name: "token", takesValue: true, meaning: "their password" }],
+    notableReasons: ["usage", "refused"] },
   { invocation: "task ask", synopsis: "hand a task to a person: one message saying why, and the task is theirs", audience: "agent", agentMayInvoke: true, mutation: "unkeyed",
     positionals: [{ name: "id", required: true, meaning: "the task" }],
     flags: [jsonFlag, dbFlag,
@@ -185,6 +204,10 @@ const GUIDE_ROWS: readonly GuideRow[] = [
     audience: "agent", agentMayInvoke: true, mutation: "none",
     positionals: [{ name: "task", required: true, meaning: "any version of the task" }], flags: [jsonFlag, dbFlag],
     notableReasons: ["unknown-task", "no-pull-request"] },
+  { invocation: "task ready", synopsis: "Can I merge? The task's checklist from Toolroll's records, each blocker with the act that clears it (Run checks, Retry, Ask the agent to fix)",
+    audience: "agent", agentMayInvoke: true, mutation: "none",
+    positionals: [{ name: "task", required: true, meaning: "any version of the task" }], flags: [jsonFlag, dbFlag],
+    notableReasons: ["unknown-task"] },
   { invocation: "task add-tests", synopsis: "file a small task to write tests for the task's latest change; it waits for approval like any task",
     audience: "agent", agentMayInvoke: true, mutation: "identity-idempotent",
     positionals: [{ name: "task", required: true, meaning: "any version of the task" }], flags: [jsonFlag, dbFlag],
@@ -314,7 +337,12 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "all", takesValue: false, meaning: "include LOW findings within the compact packet's limit; extra findings are counted" },
       { name: "token", takesValue: true, meaning: "the lead token (or TOOLROLL_LEAD_TOKEN)" }],
     notableReasons: ["usage", "unauthenticated", "not-found"] },
-  operator("task accept", "record an explicit acceptance with limitations; does not change checks or prove deployment"),
+  { ...operator("task accept", "accept a result: --finish (or --digest <receipt>) is exactly task complete's completion of the exact receipt; --despite \"<reason>\" records an acceptance with limitations and never completes; a bare call refuses"),
+    positionals: [{ name: "id", required: true, meaning: "the task" }],
+    flags: [jsonFlag, dbFlag, { name: "finish", takesValue: false, meaning: "accept the result and finish the task: task complete's exact-receipt completion; --json and scoped agents pass --digest" },
+      { name: "digest", takesValue: true, meaning: "the exact receipt from assignment show; accepts and finishes exactly that result" },
+      { name: "despite", takesValue: true, meaning: "accept with this reason, without finishing; never combines with --finish or --digest (--note is its alias)" }],
+    notableReasons: ["usage", "unknown-task", "no-run", "not-ready"] },
   operator("task repair", "inspect or approve an existing historical repair draft; use task revise for new feedback"),
   operator("task route", "which configured agents plan, build and repair this task; phase and size changes require renewed approval"),
   operator("task reopen", "resume external work its tracker closed and has been SEEN open again"),
@@ -468,6 +496,8 @@ const GUIDE_ROWS: readonly GuideRow[] = [
  * project access. A row missing here fails the contract test, and runs nowhere remotely meanwhile.
  */
 const REMOTE_NO: readonly string[] = [
+  // A fast start is a person at this computer (fast-start.ts).
+  "task new", "task keep",
   // Answered by the local CLI, or a client of a central server itself.
   "", "pulls", "graph", "repos", "repos add", "repos remove", "repos add-from-github", "contract", "skills list", "skills get", "skills install",
   "link", "unlink", "update", "release", "demo", "chat",
@@ -485,6 +515,9 @@ const REMOTE_NO: readonly string[] = [
   // Earned rules (results routing): the project's own results, and its rules' doors, with this machine's sign-in; a
   // remote token never changes which models run (the rule door refuses it in the write too).
   "models suggestions", "models accept", "models dismiss", "models turn-off", "models keep", "models try", "models stop",
+  // The code map's switch, holdout and report: this machine's sign-in, never a token's (code-map-acts.ts refuses one in
+  // the write too).
+  "map on", "map off", "map holdout end", "map report",
   // Publication and release.
   "publish", "publish status", "publish merge", "publish refire", "publish unblock", "publish rearm", "publish grant", "publish revoke",
   // A repository's authority grants on this machine.
@@ -501,7 +534,7 @@ const REMOTE_STEP_UP: readonly string[] = [
   // Putting tasks away and restoring them: a person's act, in the console or on the server's machine.
   "task archive", "task restore", "task tidy", "knowledge apply",
   // Changing project memory: a person's own password, never a token (the lead only proposes it in chat).
-  "memory decide", "memory retire", "memory apply",
+  "memory decide", "memory retire", "memory apply", "memory tidy", "memory restore", "memory unmerge",
   "flows card approve", "flows card send-back", "flows script approve", "flows unattended",
   "approver list", "approver add", "people list", "people invite", "people projects", "people revoke",
   // A person's own API tokens: a password step-up on the server's machine, or the console. Never with a token.
@@ -511,14 +544,16 @@ const REMOTE_STEP_UP: readonly string[] = [
 ];
 const REMOTE_YES: readonly string[] = [
   "status", "integrations", "ready", "gaps", "grants", "sync", "audit",
-  "task add", "task ask", "task checks", "task ship", "task add-tests", "task list", "task show", "check-progress", "task wait", "task complete", "task revise",
+  "task add", "task ask", "task checks", "task ship", "task ready", "task add-tests", "task list", "task show", "check-progress", "task wait", "task complete", "task revise",
   "task state", "task block", "task unblock", "task next", "task steer", "task pause", "task continue", "task assign", "task scope", "task plan", "task hold", "task unhold", "task require",
   "task requeue", "task review", "task repair", "task route", "task reopen", "task stop", "task resume",
   "runner list", "coordinator list", "cap list", "cap add", "outbox list", "incident list", "incident resolve",
   "config show", "verify show", "intake show", "intake run", "intake preview", "intake pr-comments", "template list", "template show",
   "webhook status", "review show", "chat-approval show", "chat-approval off",
   "knowledge search", "knowledge impact", "knowledge refresh",
+  "map", "map area", "map file", "map search", "map refresh",
   "memory search", "memory decisions", "memory show", "memory review", "memory status",
+  "flaky list", "flaky show",
   "flows list", "flows show", "flows export", "flows create", "flows edit", "flows trigger add", "flows trigger pause", "flows trigger resume",
   "flows trigger remove", "flows card add", "flows archive",
   "models status", "models list",
@@ -540,10 +575,14 @@ export const REMOTE_POLICY_COUNT: number = REMOTE_NO.length + REMOTE_STEP_UP.len
  */
 const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   // Reads.
-  pulls: "read", graph: "read", repos: "read", status: "read", ready: "read", gaps: "read", contract: "read", "skills list": "read", "skills get": "read",
+  pulls: "read", graph: "read", repos: "read", map: "read", "map area": "read", "map file": "read", "map search": "read", status: "read", ready: "read", gaps: "read", contract: "read", "skills list": "read", "skills get": "read",
+  "flaky list": "read", "flaky show": "read", "memory review": "read", "memory status": "read", "memory decisions": "read", "memory show": "read",
+  // Learning loops (D3): a lesson note or a clean-up, decided by a person at the laptop (the writers check the act).
+  "memory apply": "memory-review", "memory tidy": "memory-review", "memory restore": "memory-review", "memory unmerge": "memory-review",
   "task list": "read", "task show": "read", "task state": "read", "task wait": "read", "check-progress": "read", "review show": "read", welcome: "read",
   // Acts (plan C1's list).
   "task add": "file-task",
+  "task new": "build-now",
   chat: "lead-send",
   "task steer": "lead-send",
   "task approve": "approve-plan",
@@ -564,6 +603,8 @@ const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   "models turn-off": "routing-turn-off",
   "models dismiss": "dismiss-suggestion",
   "models stop": "trial-stop",
+  "map on": "code-map-switch",
+  "map off": "code-map-switch",
 };
 /** Every guide row's local-owner mark, by invocation: `allow` with its act, else `deny`. Exported for the inventory test. */
 export const LOCAL_POLICY: ReadonlyMap<string, { local: "allow"; act: LocalOwnerAct } | { local: "deny" }> = new Map(GUIDE_ROWS.map(row => [row.invocation,

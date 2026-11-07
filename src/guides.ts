@@ -317,20 +317,20 @@ ${AUTHORITY_LINE}
 
 ## The console's screens (what each one is for)
 
-- **inbox** (\`/\`): everything waiting on a person — questions to answer,
-  scopes to approve, stalled tasks to retry, gaps to fill. \`/next\` walks
-  the same queue one card at a time.
-- **board** (\`/board\`): five lanes — needs you · queued · waiting ·
-  building · done recently. Its *order* view (\`/board?view=order\`) is
-  the dispatch order per worker (drag to reorder, drag onto a worker to
-  reserve); \`/queue\` redirects there.
+- **Home** (\`/\`): what needs a person (questions to answer, plans to
+  approve, results to accept), what is running, and what waits on its own.
+- **Tasks** (\`/tasks\`): every task, with List, Board
+  (\`/tasks?view=board\`), Ready (\`/tasks?view=ready\`), Archived and every
+  project (\`/tasks?scope=all\`). Its *order* view (\`/tasks?view=order\`) is
+  the dispatch order per builder (drag to reorder, drag onto a builder to
+  keep a task for it). The old pages (\`/inbox\`, \`/next\`, \`/board\`,
+  \`/queue\`, \`/workbench\`, \`/done\`, \`/work\`) redirect here for good.
 - **task page** (\`/t/<id>\`): the approval ceremony when a scope waits,
   the acts bar (plan first, hold, retry, build next, cancel), scope,
   attempts, decisions, and — for a scout task — the report with one-tap
   follow-ups.
-- **builds** (\`/runs\`): every attempt, newest first, with three views
-  beside it — done (\`/done\`), review (\`/review\`, published work
-  waiting on a person), activity (\`/activity\`, the ledger). **build
+- **builds** (\`/runs\`): every attempt, newest first; a result's own page
+  is \`/review?result=<task>\`, and activity (\`/activity\`) is the ledger. **build
   page** (\`/r/<run>\`): one attempt: stage, live transcript, evidence,
   the diff, comments. **peek** (\`/peek\`): every live run at once,
   transcripts following.
@@ -411,6 +411,11 @@ and crew agent reads from it before working:
   history); \`memory show <id>\` prints one with its reason and history.
 - In chat, the lead searches with the same index before asking you again.
   Cite the kind and id of what you rely on: "decision #12", "reference".
+- \`memory status --repo PATH\` says when each entry was last included in a
+  run. Lead chats aren't counted.
+- \`toolroll flaky list --repo PATH\` lists tests with mixed outcomes under
+  recorded conditions, and \`flaky show <identity>\` one test's history and the
+  task that would fix it. It reads only and reruns nothing.
 
 ## Change it
 

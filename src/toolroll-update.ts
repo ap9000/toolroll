@@ -41,7 +41,10 @@ import { LAPTOP_LABEL_DARWIN, LAPTOP_LABEL_LINUX, unitFlag } from "./laptop-serv
 import { processGone, readRunnerProcessRecord, realProcessProbe, recordStandsFor, RUNNER_PROCESS_DIR, type ProcessProbe, type RunnerProcess } from "./runner-process.js";
 import type { Runner } from "./runner.js";
 import { NAME } from "./names.js";
-import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS } from "./store.js";
+import { V151_ADDED_COLUMNS } from "./storage.js";
+import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS, V150_ADDED_COLUMNS } from "./store.js";
+import { V152_ADDED_COLUMNS } from "./code-map-store.js";
+import { V153_ADDED_COLUMNS } from "./plain-schema.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
@@ -396,12 +399,16 @@ function addedColumns(...versions: Readonly<Record<string, Readonly<Record<strin
   return rules;
 }
 /** Rules on tables that later gained declared columns (addedColumns merges into these instead of replacing them). */
-const EARLIER_RULES: Record<string, HistoryRule> = { flow_trigger: { fromRoutines: "trigger" } };
+const EARLIER_RULES: Record<string, HistoryRule> = { flow_trigger: { fromRoutines: "trigger" },
+  // v114: a finished run whose process witnesses have all exited keeps one summary row in place of them (v150 adds
+  // their machine id).
+  run_process: { compacted: { into: "run_process_summary", sum: "witnesses" } } };
 const HISTORY_RULES: Record<string, HistoryRule> = {
   ...Object.fromEntries(Object.entries(CHAT_MOVES).map(([table, moved]) => [table, { moved }])),
   action_ledger: { appendOnly: true }, ledger_seal: { appendOnly: true }, ledger_checkpoint: { appendOnly: true },
-  // v114: a finished run whose process witnesses have all exited keeps one summary row in place of them.
-  run_process: { compacted: { into: "run_process_summary", sum: "witnesses" } }, run_process_summary: { summarizes: "run_process" },
+  // v114: a finished run whose process witnesses have all exited keeps one summary row in place of them (the
+  // run_process rule is in EARLIER_RULES, under its v150 column).
+  run_process: EARLIER_RULES["run_process"]!, run_process_summary: { summarizes: "run_process" },
   // v114: single-destination delivery columns may be dropped only once their values are legacy receipts.
   notification: { dropped: ["attempts", "last_attempt_at", "last_error", "delivered_at", "receipt", "claim_owner", "claim_expires_at"], carried: { into: "notification_delivery", destination: LEGACY_DESTINATION } },
   notification_delivery: { receives: LEGACY_DESTINATION },
@@ -432,7 +439,12 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // console record reads no key epoch.
   // v148: a run's execution class and a revision's origin read none (NULL), and a project's suggestion switch reads on.
   // v149 adds tables only (the learning-loops records): no saved row changes, so no rule is needed for it.
-  ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS))
+  // v150: a saved process witness reads no machine id (NULL), and is matched by host name as before.
+  // v151: a saved cleanup setting's idle limit reads none (NULL): the default.
+  // v152: a saved project's code map reads on, with no enrollment yet; the code map's tables are new.
+  // v153: a saved task reads no fast start and a saved project no fast-start setting (NULL); its tables are new.
+  // v154 adds a table only (check_stamp): no saved row changes, so no rule is needed for it.
+  ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS, V150_ADDED_COLUMNS, V151_ADDED_COLUMNS, V152_ADDED_COLUMNS, V153_ADDED_COLUMNS))
     .map(([table, rule]) => [table, { ...EARLIER_RULES[table], ...rule }])),
 };
 /** The tables a migration may remove whole (v115's removed features). */

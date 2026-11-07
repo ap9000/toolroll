@@ -61,7 +61,7 @@ export function runPage(
     ? note(html`The live transcript is off. Start serve with <span class="k-mono">--runner &lt;name&gt;</span> naming this machine's worker, and it appears here.`)
     : run.provider !== "claude"
       ? note(`The live transcript needs the claude harness for now; this build runs on ${run.provider}.`)
-      : html`${note("Display only: this is not evidence, and the machine running the agent could alter it.")}<pre id="live-transcript" class="k-mono h-pre h-live"></pre><p class="k-note" id="live-transcript-state"></p>`);
+      : html`<pre id="live-transcript" class="k-mono h-pre h-live"></pre><p class="k-note" id="live-transcript-state"></p>`);
   // The live peek region (A2): the poller fills it only on a serve that asserted its runner; otherwise the section
   // says why it is empty, so the click never lands on silence.
   const peek = !running ? "" : sec("What is changing right now", peekable

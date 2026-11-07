@@ -61,14 +61,21 @@ import { refuse, regionScript, relativeAge as relativeAgeOf, screen, settingsRow
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
 import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
-import { githubIdentityOf,homePage,portfolioOverview,startBuilderHtml,workbenchRail } from "./render-pages.js";
+import { githubIdentityOf,homePage,startBuilderHtml } from "./render-pages.js";
+import { retiredRedirect } from "./retired-routes.js";
+import { codeMapStatus, openMap } from "../code-map-read.js";
+import { requestRefresh } from "../code-map-store.js";
+import { codeMapReport } from "../code-map-report.js";
+import { codeMapPage, codeMapReportBlock } from "./render-code-map.js";
+import { FLAKY_WINDOW_DAYS, flakyList, flakyShow } from "../flaky.js";
+import { flakyPage, flakyRowPage } from "./render-flaky.js";
 import { browsePage,githubReposPage,projectHref,projectPage,projectsPage,unknownProject,type ProblemAt,type ProjectPageTask } from "./render-projects.js";
 import { notFound as kitNotFound } from "./kit.js";
 import { type ProjectPeek } from "./render-pages.js";
 import { type ProjectOutcomes } from "../project-outcomes.js";
 import { CHECK_LEVEL_WORDS } from "../check-levels.js";
 import { capsPage } from "./render-settings.js";
-import { decisionAnswerScript,taskBody } from "./render-tasks.js";
+import { consentDoorOf,decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { rereadBrowser } from "./live.js";
 import { homeView } from "./home.js";
@@ -199,15 +206,20 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   // A token or a restricted session keeps landing on Tasks; a first run with nothing filed yet keeps its checklist in the chat.
   async function homeRedirect(ctx: HandlerContext): Promise<void> {
     const { who, response, now, project } = ctx;
-    if (who.via !== "cookie" || restricted()) return redirect(response, "/work");
+    if (who.via !== "cookie" || restricted()) return redirect(response, "/tasks");
     if (firstRunStepsNow(now) !== null && !store.hasAnyWork()) return redirect(response, "/chat");
     // One scope for the page and the chrome around it: the project its address names (proved by the router), else all.
     const chrome = chromeFor(project, "none");
     const projects = chrome.projects ?? [];
-    const view = { ...homeView({ store, now, access: workAccess(), evidenceRoot, project, projects, chat: chrome.chat === true, canAnswer: who.role === "approver" }),
+    const closedDoor = (taskId: string) => {
+      const scope = store.getScope(taskId);
+      const door = consentDoorOf(scope, runtime.routeViewOf(taskId, store.lookupRef(taskId), scope, now, who));
+      return door.open ? null : door;
+    };
+    const view = { ...homeView({ store, now, access: workAccess(), evidenceRoot, project, projects, chat: chrome.chat === true, canAnswer: who.role === "approver", closedDoor }),
       // Until the first result: the welcome's three steps stay one link away.
       setup: firstRunStepsNow(now) !== null ? "/welcome" : null };
-    return sendScreen(response, 200, screen("Home", html`<div data-kit-page><h1>Home</h1><p>${view.say}</p><p><a href="/work">Tasks</a></p></div>`, { chrome, workspace: { view } }));
+    return sendScreen(response, 200, screen("Home", html`<div data-kit-page><h1>Home</h1><p>${view.say}</p><p><a href="/tasks">Tasks</a></p></div>`, { chrome, workspace: { view } }));
   }
 
   // Search (UI revamp wave B): the ⌘K menu's "See all results". The places come from the page; the tasks here are the
@@ -243,88 +255,6 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return;
   }
 
-  async function workbench(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, now, project } = ctx;
-    // The fleet under one gaze (attended A1): the rail rolls up the whole
-    // ceiling regardless of the open project — watching is cross-project
-    // by nature; acting happens on task screens that re-prove everything.
-    const admission = admissionList();
-    const snapshot = store.boardScoped(null, now, 200, admission);
-    const rows = snapshot.tasks.filter(facts => facts.repo === null || visible(facts.repo));
-    const cards = rows.map(facts =>
-      classify(facts.blockerRepo !== null && !visible(facts.blockerRepo) ? { ...facts, blockerState: null } : facts, now),
-    );
-    const attention = cards.filter(card => card.lane === "attention").slice(0, 100);
-    const building = cards.filter(card => card.lane === "building");
-    const waiting = cards.filter(card => card.lane === "waiting");
-    const queued = cards.filter(card => card.lane === "queued");
-    const done = snapshot.done
-      .filter(one => one.repo === null || visible(one.repo))
-      .slice(0, 5)
-      .map(one => ({ taskId: one.taskId, title: one.title, outcome: one.outcome, repo: one.repo }));
-    const selected = url.searchParams.get("t");
-    const rail = workbenchRail({ attention, building, waiting, queued, done, selected, saturated: snapshot.saturated });
-    if (url.searchParams.get("fragment") === "rail") {
-      // The rail alone: same auth, same ceiling, no shell, no scripts.
-      return respond(response, 200, "text/html; charset=utf-8", rail);
-    }
-    // The portfolio overview (arc slice 1a). All-scope hygiene throughout:
-    // admission binds inside every bounded SQL read, and every unlimited
-    // feed's rows pass visible() BEFORE they render or tally — a hidden
-    // project must not leak into a row, a count, or a dollar.
-    const sinceIso = new Date(now.getTime() - 24 * 3_600_000).toISOString();
-    const decisions = store
-      .listDecisionsScoped(null)
-      .filter(one => visible(one.repo ?? null))
-      .slice(0, 10);
-    const approvals = store.scopesAwaitingApproval(null, 10, admission).filter(one => visible(one.repo ?? null));
-    const requeueables = store.listRequeueablesScoped(null, now, 10, admission).filter(one => visible(one.repo ?? null));
-    const cancelledBlockers = store
-      .listCancelledBlockersScoped(null, 10, admission)
-      .filter(one => visible(one.repo ?? null) && visible(one.blockerRepo ?? null));
-    const runs24 = store.runsSinceScoped(sinceIso, null).filter(run => visible(taskRepoOf(run.taskRef)));
-    const live = store.liveClaims(null, now).filter(one => visible(one.repo));
-    const ledger = store
-      .portfolioLedgerScoped(null, sinceIso, 30, admission)
-      .filter(row => visible(row.repo));
-    // Gaps stay project-relative (the roll-up inbox's rule): computed for
-    // the OPEN project only — there is no scope-safe road to another
-    // project's /caps.
-    const gaps = project === null ? [] : computeGaps(store, project, now).filter(gap => gap.unblocks.length > 0).slice(0, 10);
-    const csrf = who.via === "cookie" ? who.session.csrf : "";
-    let detail = html`${portfolioOverview({
-      attention, building, waiting, queued, done, saturated: snapshot.saturated,
-      decisions, approvals, requeueables, cancelledBlockers, gaps,
-      gapsProject: project, runs24, live, ledger, csrf, now,
-    })}<div class="workbench-mobile-rail">${rail}</div>`;
-    if (selected !== null) {
-      const view = taskViewData(selected, who, null);
-      detail = view === null
-        ? html`<p class="workbench-mobile-back"><a href="/workbench">← all work</a></p><div class="card"><p class="meta">No such task — it may have been outside this console's view</p></div>`
-        : html`<p class="workbench-mobile-back"><a href="/workbench">← all work</a></p>${taskBody({ ...view, degraded: "pane" })}`;
-    }
-    return sendScreen(
-      response,
-      200,
-      screen("portfolio", detail, {
-        chrome: chromeFor(
-          project,
-          "workbench",
-          html`<div id="wb-rail">${rail}</div><p class="meta" id="wb-rail-stamp"></p>`,
-          "all",
-        ),
-        functional: {
-          // The decision enhancement rides ONLY the overview: a selected
-          // task's pane may carry a password ceremony, and sensitive
-          // pages gain no new scripts (commit-1 review, finding 1).
-          script:
-            regionScript("wb-rail", "rail") +
-            (selected === null && decisions.length > 0 ? decisionAnswerScript() : ""),
-          fetches: true,
-        },
-      }),
-    );
-  }
 
   async function ledgerPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, now } = ctx;
@@ -994,10 +924,11 @@ export function createPagesHandlers(runtime: ServerRuntime) {
    * switches the session's project; its Open project button posts to /projects/select, which proves it again. The
    * name is found among the projects this person may open (projectsSelect's rule: visible here and inside the
    * ceiling); a name it can't see answers exactly like one that doesn't exist. */
-  async function projectPageHandler(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, now } = ctx;
+  async function projectFound(ctx: HandlerContext, page: string): Promise<{ name: string; path: string; openedAt: string | null; ambiguous: boolean } | null> {
+    const { url, who, response } = ctx;
     let name = "";
-    try { name = decodeURIComponent(url.pathname.slice("/projects/".length)); } catch { name = ""; }
+    const tail = page === "" ? "" : `/${page}`;
+    try { name = decodeURIComponent(url.pathname.slice("/projects/".length, url.pathname.length - tail.length)); } catch { name = ""; }
     const { recent, candidates } = visibleProjects();
     const known = [...recent.map(one => ({ path: one.path, name: one.name, openedAt: one.lastOpenedAt as string | null })), ...candidates.map(path => ({ path, name: projectName(path), openedAt: null as string | null }))];
     const named = known.filter(one => one.name === name);
@@ -1006,8 +937,34 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const open = who.via === "cookie" ? who.session.project : null;
     if (found === null || !(await authorizedProject(liveCeiling(), found.path))) {
       const words = unknownProject(name === "" ? "by that name" : name);
-      return sendScreen(response, 404, screen("Not found", kitNotFound(url.pathname, words), { chrome: chromeFor(open, "projects") }));
+      await sendScreen(response, 404, screen("Not found", kitNotFound(url.pathname, words), { chrome: chromeFor(open, "projects") }));
+      return null;
     }
+    return { ...found, ambiguous: named.length > 1 };
+  }
+  /** A project's flaky tests list and one row's history. Reads only; found exactly as the project's page is. */
+  async function projectFlakyHandler(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now } = ctx;
+    const found = await projectFound(ctx, "flaky");
+    if (found === null) return;
+    const open = who.via === "cookie" ? who.session.project : null;
+    const chrome = chromeFor(open, "projects");
+    const back = projectHref(found.name, found.path, found.ambiguous);
+    const selfHref = projectHref(found.name, found.path, found.ambiguous, "flaky");
+    const key = url.searchParams.get("row");
+    if (key !== null) {
+      const shown = flakyShow(store, found.path, key, now);
+      if (shown === null) return sendScreen(response, 404, screen("Not found", kitNotFound(url.pathname, { title: "Nothing is recorded for that test in this project." }), { chrome }));
+      return sendScreen(response, 200, flakyRowPage(chrome, { name: found.name, repo: found.path, back: selfHref, row: shown.row, history: shown.history, now }));
+    }
+    const days = Number(url.searchParams.get("days") ?? FLAKY_WINDOW_DAYS);
+    return sendScreen(response, 200, flakyPage(chrome, { name: found.name, repo: found.path, back, selfHref, list: flakyList(store, found.path, now, days), now }));
+  }
+  async function projectPageHandler(ctx: HandlerContext): Promise<void> {
+    const { who, response, now } = ctx;
+    const found = await projectFound(ctx, "");
+    if (found === null) return;
+    const open = who.via === "cookie" ? who.session.project : null;
     const path = found.path;
     // The tasks that wait on this person or run, from the board's own classification, scoped to this one project.
     const snapshot = store.boardScoped(path, now, 200, null);
@@ -1023,14 +980,52 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       catch { activity = { report: null }; }
     }
     return sendScreen(response, 200, projectPage(chromeFor(open, "projects"), {
-      name: found.name, path, selfHref: projectHref(found.name, path, named.length > 1), open: open === path, openedAt: found.openedAt,
+      name: found.name, path, selfHref: projectHref(found.name, path, found.ambiguous), open: open === path, openedAt: found.openedAt,
       peek: peekOf(path, now), tasks, moreTasks: Math.max(0, cards.length - tasks.length),
       checks: cookie ? { href: `/settings/checks?repo=${encodeURIComponent(path)}`, level: CHECK_LEVEL_WORDS[projectCheckLevel(store, path).level] } : null,
       pullRequests: cookie ? { href: `/settings/pull-requests?repo=${encodeURIComponent(path)}`, on: publishingOf(store, path).on } : null,
       knowledgeHref: `/settings/knowledge?repo=${encodeURIComponent(path)}`,
+      flakyHref: projectHref(found.name, path, found.ambiguous, "flaky"),
       settingsHref: restricted() ? null : `/settings/project?repo=${encodeURIComponent(path)}`,
       activity, now,
     }));
+  }
+  /** The named project's code map address, for this account; null when it isn't one they can see. */
+  async function mapProject(ctx: HandlerContext, suffix: string): Promise<{ name: string; path: string; base: string; selfHref: string } | null> {
+    let name = "";
+    try { name = decodeURIComponent(ctx.url.pathname.slice("/projects/".length, -suffix.length)); } catch { return null; }
+    const { recent, candidates } = visibleProjects();
+    const named = [...recent.map(one => ({ path: one.path, name: one.name })), ...candidates.map(path => ({ path, name: projectName(path) }))].filter(one => one.name === name);
+    const asked = ctx.url.searchParams.get("path") ?? ctx.posted.get("repo");
+    const found = asked !== null ? named.find(one => one.path === asked) ?? null : named.length === 1 ? named[0]! : null;
+    if (found === null || !(await authorizedProject(liveCeiling(), found.path))) return null;
+    return { name: found.name, path: found.path, base: `/projects/${encodeURIComponent(found.name)}/map`, selfHref: projectHref(found.name, found.path, named.length > 1) };
+  }
+  async function codeMapHandler(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now } = ctx;
+    const open = who.via === "cookie" ? who.session.project : null;
+    const found = await mapProject(ctx, "/map");
+    if (found === null) return sendScreen(response, 404, screen("Not found", kitNotFound(url.pathname, unknownProject("by that name")), { chrome: chromeFor(open, "projects") }));
+    const asked = url.searchParams.get("v");
+    const pinned = asked !== null && /^[1-9][0-9]{0,14}$/.test(asked) ? Number(asked) : undefined;
+    const status = codeMapStatus(store, found.path, now, iso => new Date(iso).toISOString().slice(11, 16));
+    const opened = status.state === "off" || status.state === "not-available" ? null : openMap(store, found.path, pinned);
+    const held = opened !== null && opened.ok ? opened : null;
+    const repoed = opened !== null && !opened.ok && pinned !== undefined ? openMap(store, found.path) : null;
+    const map = held ?? (repoed !== null && repoed.ok ? repoed : null);
+    const canRefresh = who.via === "cookie" && who.authority !== "local-owner" && store.accountOf(who.name)?.role === "approver" && store.accountCanAccess(who.name, found.path);
+    return sendScreen(response, 200, codeMapPage(chromeFor(open, "projects"), {
+      name: found.name, repo: found.path, base: found.base, selfHref: found.selfHref, status, map: map?.map ?? null, versionId: map?.version.id ?? null, remoteUrl: store.projectRemote(found.path),
+      q: url.searchParams.get("q"), area: url.searchParams.get("area"), file: url.searchParams.get("file"), canRefresh, now, report: codeMapReportBlock(codeMapReport(store, found.path, now)),
+      said: url.searchParams.get("said"), problem: repoed !== null ? "The map changed. Showing the current one." : url.searchParams.get("problem"),
+    }));
+  }
+  async function codeMapRefreshHandler(ctx: HandlerContext): Promise<void> {
+    const { response, who, now } = ctx;
+    const found = await mapProject(ctx, "/map/refresh");
+    if (found === null || !store.accountCanAccess(who.name, found.path)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
+    const said = requestRefresh(store, found.path, who.name, now);
+    return redirect(response, `${found.base}?said=${encodeURIComponent(said === "queued" ? "Queued. Main is checked on the next pass." : "Already queued.")}`);
   }
   async function instanceEdge(ctx: EdgeContext): Promise<void> {
     const { request, response, url } = ctx;
@@ -1148,7 +1143,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // session's selection is left alone. Unknown, unplaced or not visible to this person: 404, the same answer.
     const taskId = url.searchParams.get("task");
     const ref = taskId === null ? null : store.lookupRef(taskId.slice(0, 200));
-    if (taskId !== null && (ref === null || ref.repo === null || !visible(ref.repo))) return refuse(response, who, 404, "That task is not available.", "/work");
+    if (taskId !== null && (ref === null || ref.repo === null || !visible(ref.repo))) return refuse(response, who, 404, "That task is not available.", "/tasks");
     const shown = ref !== null ? ref.repo : project !== null && visible(project) ? project : null;
     const connected = shown === null ? null : buildersFor(store, shown, now, ref?.assignedRunner ?? null).alive.length > 0;
     return sendScreen(response, 200, screen("Start a builder", startBuilderHtml({
@@ -1162,10 +1157,13 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "projects.github-list": projectsGithubList,
     "projects.page": projectsIndex,
     "projects.project": projectPageHandler,
+    "projects.map": codeMapHandler,
+    "projects.map-refresh": codeMapRefreshHandler,
+    "projects.flaky": projectFlakyHandler,
     "home": homeRedirect,
     "search": searchPage,
     "morning": morningAlias,
-    "workbench": workbench,
+    "workbench": async ctx => retiredRedirect("workbench", ctx.url, ctx.response),
     "ledger": ledgerPage,
     "activity": activityPage,
     "system": systemScreen,

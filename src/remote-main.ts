@@ -13,9 +13,11 @@
  * Every doubt fails closed: no recorded remote, a URL that isn't allowed, a failed fetch or a remote without main all
  * read as "not proven", and the task stays for a person.
  */
-import { mkdirSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { run, type ExecResult } from "./exec.js";
+import type { BoundedOptions, BoundedResult, BoundedRunner } from "./bounded-spawn.js";
+import type { Pin } from "./remote-destination.js";
 import type { Store } from "./store.js";
 import type { Runner } from "./worktree.js";
 
@@ -40,7 +42,9 @@ export const CREDENTIAL_HELPER = process.platform === "darwin" ? "osxkeychain" :
 function hardened(helper: string, file: "never" | "always" = "never"): string[] {
   return ["-c", "core.hooksPath=/dev/null", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
     "-c", `protocol.file.allow=${file}`, "-c", "protocol.ext.allow=never", "-c", "credential.helper=", ...(helper === "" ? [] : ["-c", `credential.helper=${helper}`]),
-    "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "fetch.recurseSubmodules=false", "-c", "core.fsmonitor=false"];
+    "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "fetch.recurseSubmodules=false", "-c", "core.fsmonitor=false",
+    // Never to an address the recorded URL doesn't name: a moved repository is a person's choice to record (MOVED).
+    "-c", "http.followRedirects=false"];
 }
 
 // ---- which URLs ------------------------------------------------------------
@@ -110,7 +114,16 @@ export type RemoteMain = {
   /** Bring this exact commit (with its history) from the project by fetch, for a content comparison. */
   bring: (repo: string, head: string) => Promise<boolean>;
 };
-export type RemoteMainRead = { ok: true; remote: RemoteMain } | { ok: false; why: string };
+export type RemoteMainRead = { ok: true; remote: RemoteMain } | { ok: false; why: string; reason?: "moved" };
+
+/** What every reader of a remote main shows when its address redirects. The target is remote-supplied text: it is never
+ * shown, stored or followed, and the new remote is never adopted automatically. */
+export const REMOTE_MOVED = "The repository moved: its address now redirects. Update the project's remote in Toolroll (Settings → Projects), then try again.";
+/** git's words for a refused redirect (http.followRedirects=false), read for the status code alone. */
+export function redirected(stderr: string): boolean {
+  return /returned error: 30[12378]\b/.test(stderr);
+}
+const UNREAD = "Toolroll couldn't read the project's remote main";
 
 /**
  * One pass's reads of recorded remotes. Every `read` fetches again (the pre-teardown re-check is never older than
@@ -152,12 +165,13 @@ export class RemoteMains {
     const problem = remoteUrlProblem(url);
     if (problem !== null) return { ok: false, why: problem };
     const dir = await this.dirFor(repo);
-    if (dir === null) return { ok: false, why: "Toolroll couldn't read the project's remote main" };
+    if (dir === null) return { ok: false, why: UNREAD };
     const fetched = await this.exec(dir, ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--", url, `+refs/heads/main:${REMOTE_MAIN}`]);
-    if (fetched.code !== 0 || !this.clean(dir)) return { ok: false, why: "Toolroll couldn't read the project's remote main" };
+    if (fetched.code !== 0 && redirected(fetched.stderr)) return { ok: false, why: REMOTE_MOVED, reason: "moved" };
+    if (fetched.code !== 0 || !this.clean(dir)) return { ok: false, why: UNREAD };
     const resolved = await this.exec(dir, ["rev-parse", "--verify", "--quiet", `${REMOTE_MAIN}^{commit}`]);
     const main = resolved.stdout.trim();
-    if (resolved.code !== 0 || !SHA.test(main)) return { ok: false, why: "Toolroll couldn't read the project's remote main" };
+    if (resolved.code !== 0 || !SHA.test(main)) return { ok: false, why: UNREAD };
     const git: RemoteGit = args => this.exec(dir, args);
     const bring = async (from: string, head: string): Promise<boolean> => {
       if (!SHA.test(head)) return false;
@@ -174,4 +188,68 @@ export class RemoteMains {
     for (const dir of this.dirs.values()) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* the next pass makes its own */ } }
     this.dirs.clear();
   }
+}
+
+// ---- the code map's own read: pinned, depth 1, bounded (docs/plans/code-map.md §1) ---------------------------------
+
+const MAP_MAIN = "refs/toolroll/map-main";
+/** What keeps git's own memory down. index-pack still materializes delta bases, so these reduce; they don't bound. */
+const LOW_MEMORY = ["-c", "pack.threads=1", "-c", "core.deltaBaseCacheLimit=32m", "-c", "core.bigFileThreshold=1m"];
+export const MAP_FETCH_LIMITS = { timeoutMs: 120_000, memoryBytes: 1024 ** 3, diskBytes: 1024 ** 3, fileBytes: 512 * 1024 ** 2, maxStderr: 64 * 1024 } as const;
+
+export type MapGitOptions = { helper?: string; extra?: readonly string[] };
+/** Git in a private directory under the map's rules: the same hardening as `RemoteMains`, plus the pin. */
+export function mapGitArgs(dir: string, pin: Pin, args: readonly string[], options: MapGitOptions = {}): string[] {
+  return ["--git-dir", dir, ...hardened(options.helper ?? CREDENTIAL_HELPER), ...pin.gitArgs, ...(options.extra ?? []), ...args];
+}
+/** The environment for it: exactly the allowed names, the fixed settings, and the pin's. */
+export function mapGitEnv(pin: Pin, from: Readonly<Record<string, string | undefined>> = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of ENV_ALLOWLIST) { const value = from[name]; if (value !== undefined) env[name] = value; }
+  return { ...env, ...ENV, ...pin.env };
+}
+export function initPrivateDir(dir: string, bounded: BoundedRunner): Promise<BoundedResult> {
+  return bounded("git", ["init", "--quiet", "--bare", "--template=", dir], { cwd: dir, env: mapGitEnv({ gitArgs: [], env: {}, proxy: null }), timeoutMs: 30_000, maxStdout: 4096, maxStderr: 4096, label: "code-map-init" });
+}
+
+export type MapPeek = { ok: true; commit: string | null } | { ok: false; why: string; reason?: "moved" };
+/** The commit the recorded remote's main is at, without fetching: null when the remote has no `main`. */
+export async function peekMain(url: string, dir: string, pin: Pin, bounded: BoundedRunner, helper?: string): Promise<MapPeek> {
+  const ran = await bounded("git", mapGitArgs(dir, pin, ["ls-remote", "--", url, "refs/heads/main"], helper === undefined ? {} : { helper }),
+    { cwd: dir, env: mapGitEnv(pin), timeoutMs: 30_000, maxStdout: 64 * 1024, maxStderr: MAP_FETCH_LIMITS.maxStderr, label: "code-map-peek" });
+  if (ran.code !== 0 && redirected(ran.stderr)) return { ok: false, why: REMOTE_MOVED, reason: "moved" };
+  if (ran.code !== 0 || ran.killed !== null) return { ok: false, why: UNREAD };
+  const line = ran.stdout.toString("utf8").split("\n").find(one => one.endsWith("\trefs/heads/main"));
+  if (line === undefined) return ran.stdout.length === 0 ? { ok: true, commit: null } : { ok: false, why: UNREAD };
+  const commit = line.slice(0, line.indexOf("\t"));
+  return SHA.test(commit) ? { ok: true, commit } : { ok: false, why: UNREAD };
+}
+
+/** A depth-1 private folder is clean when it holds only what the fetch made: a `shallow` file naming exactly the fetched
+ * commit, and no grafts or alternates. */
+export function shallowClean(dir: string, commit: string): boolean {
+  if ([join("info", "grafts"), join("objects", "info", "alternates"), join("objects", "info", "http-alternates")].some(name => existsSync(join(dir, name)))) return false;
+  try {
+    const held = lstatSync(join(dir, "shallow"));
+    if (!held.isFile() || held.size > 128) return false;
+    return readFileSync(join(dir, "shallow"), "utf8").trim() === commit;
+  } catch (error) {
+    // A history of one commit needs no shallow boundary, and git writes none.
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+export type MapFetch = { ok: true; commit: string; enforced: "system" | "checked" } | { ok: false; why: string; reason?: "moved" };
+/** Fetch main at depth 1 into `dir`, under the map's limits. `onStart` records the spawn for crash cleanup. */
+export async function readShallowMain(url: string, dir: string, pin: Pin, bounded: BoundedRunner, onStart?: BoundedOptions["onStart"], helper?: string): Promise<MapFetch> {
+  const fetched = await bounded("git", mapGitArgs(dir, pin, ["fetch", "--quiet", "--depth=1", "--no-tags", "--no-write-fetch-head", "--", url, `+refs/heads/main:${MAP_MAIN}`], { extra: LOW_MEMORY, ...(helper === undefined ? {} : { helper }) }),
+    { cwd: dir, env: mapGitEnv(pin), timeoutMs: MAP_FETCH_LIMITS.timeoutMs, maxStdout: 4096, maxStderr: MAP_FETCH_LIMITS.maxStderr, memoryBytes: MAP_FETCH_LIMITS.memoryBytes,
+      diskBytes: MAP_FETCH_LIMITS.diskBytes, fileBytes: MAP_FETCH_LIMITS.fileBytes, folder: dir, label: "code-map-fetch", ...(onStart === undefined ? {} : { onStart }) });
+  if (fetched.code !== 0 && redirected(fetched.stderr)) return { ok: false, why: REMOTE_MOVED, reason: "moved" };
+  if (fetched.killed !== null) return { ok: false, why: `the fetch went past its ${fetched.killed} limit` };
+  if (fetched.code !== 0) return { ok: false, why: UNREAD };
+  const resolved = await bounded("git", mapGitArgs(dir, pin, ["rev-parse", "--verify", "--quiet", `${MAP_MAIN}^{commit}`]), { cwd: dir, env: mapGitEnv(pin), timeoutMs: 30_000, maxStdout: 4096, maxStderr: 4096, label: "code-map-rev" });
+  const commit = resolved.stdout.toString("utf8").trim();
+  if (resolved.code !== 0 || !SHA.test(commit) || !shallowClean(dir, commit)) return { ok: false, why: UNREAD };
+  return { ok: true, commit, enforced: fetched.enforced };
 }

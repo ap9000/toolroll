@@ -1021,7 +1021,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     const lead = store.liveLeadThreadFor('alex');
     expect(lead === null ? [] : store.listLeadMessages(lead.id, 10)).toEqual([]);
     // The project's Tasks page docks it, and the chat list names it.
-    const projectRead = await (await fetch(url(`/work?project=${encodeURIComponent(repoDir)}&format=workspace`), { headers: { cookie } })).json() as Workspace;
+    const projectRead = await (await fetch(url(`/tasks?project=${encodeURIComponent(repoDir)}&format=workspace`), { headers: { cookie } })).json() as Workspace;
     expect(projectRead.view?.kind).toBe('tasks');
     expect(projectRead.conversation).toMatchObject({ project: repoDir, taskId: null });
     expect(projectRead.conversation!.messages.map(one => one.text)).toEqual(['What is queued?', 'Two tasks are queued here.']);
@@ -1049,7 +1049,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(task.status).toMatchObject({ label: 'Needs you', tone: 'attention', action: null });
     expect(task.approval).toContain('id="approve"');
     expect(task.approval).toContain('type="password"');
-    expect(task.facts.find(fact => fact.label === 'Scope')?.parts).toEqual(['not approved']);
+    expect(task.facts.find(fact => fact.label === 'Plan')?.parts).toEqual(['not approved']);
     expect(task.sections.map(one => one.id)).toContain('scope');
     expect(task.manage.map(one => one.id)).toContain('task-diagnostics');
     expect(task.cancel).toMatchObject({ open: false });
@@ -1061,22 +1061,23 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
 
   test('React project links narrow reads without changing the selected project', async () => {
     const cookie = await login();
-    const target = `/work?project=${encodeURIComponent(repoDir)}&format=workspace`;
+    const target = `/tasks?project=${encodeURIComponent(repoDir)}&format=workspace`;
     const response = await fetch(url(target), { headers: { cookie } });
     expect(response.status).toBe(200);
     const data = await response.json() as import('./browser-workspace.js').BrowserWorkspace;
     expect(data.crew.map(one => one.id).sort()).toEqual(['a', 'b']);
-    expect(data.path).toBe(`/work?project=${encodeURIComponent(repoDir)}`);
+    expect(data.path).toBe(`/tasks?project=${encodeURIComponent(repoDir)}`);
     // The rebuilt Tasks view carries the same facts as the HTML fallback:
     // tabs keep the project filter, rows keep their ids and task links.
     expect(data.view?.kind).toBe('tasks');
     const tasksView = data.view as import('./browser-workspace.js').BrowserTasksView;
-    expect(tasksView.tabs.map(tab => new URL(tab.href, base).searchParams.get('project'))).toEqual([repoDir, repoDir, repoDir, repoDir, repoDir]);
+    expect(tasksView.tabs.map(tab => new URL(tab.href, base).searchParams.get('project'))).toEqual(tasksView.tabs.map(() => repoDir));
+    expect(tasksView.tabs.map(tab => tab.label)).toEqual(['All', 'Needs you', 'Ready', 'Running', 'Queued', 'Finished']);
     expect(tasksView.tabs.find(tab => tab.active)?.label).toBe('All');
     expect(tasksView.rows.map(row => row.id).sort()).toEqual(['a', 'b']);
     expect(tasksView.rows.every(row => row.href.startsWith('/t/'))).toBe(true);
-    expect((await fetch(url('/work?project=%2Fforeign&format=workspace'), { headers: { cookie } })).status).toBe(404);
-    expect((await fetch(url(`/work?project=${encodeURIComponent(repoDir)}&project=%2Fforeign&format=workspace`), { headers: { cookie } })).status).toBe(404);
+    expect((await fetch(url('/tasks?project=%2Fforeign&format=workspace'), { headers: { cookie } })).status).toBe(404);
+    expect((await fetch(url(`/tasks?project=${encodeURIComponent(repoDir)}&project=%2Fforeign&format=workspace`), { headers: { cookie } })).status).toBe(404);
   });
 
   test("the mint card is the one password ceremony; the thread then takes messages without one", async () => {
@@ -1156,8 +1157,8 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     let html = await (await fetch(url("/chat?task=a"), { headers: { cookie } })).text();
     expect(html).toContain('<div class="approval-row"><dt>Goal</dt><dd><p class="approval-goal">do a</p></dd></div>');
     expect(html).toContain('<div class="approval-row"><dt>Done when</dt>');
-    expect(html).toContain("Your password signs this approval.");
-    expect(html.match(/<button type="submit" data-primary-action>Approve & start<\/button>/g)).toHaveLength(1);
+    expect(html).toContain("Type your password to approve.");
+    expect(html.match(/<button type="submit" data-primary-action>Approve<\/button>/g)).toHaveLength(1);
     expect(html).toContain('action="/t/a/approve"');
     expect(html).toContain('name="return" value="/chat?task=a"');
     expect(html).toContain('data-poll="0"');
@@ -1571,7 +1572,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     const counts = () => store.raw().prepare(`SELECT (SELECT COUNT(*) FROM lead_session) AS sessions, (SELECT COUNT(*) FROM lead_thread) AS threads,
       (SELECT COUNT(*) FROM lead_message) AS messages, (SELECT COUNT(*) FROM mate_turn) AS turns`).get();
     const project = encodeURIComponent(repoDir);
-    const pages = ["/chat", "/chat?task=a", `/chat?project=${project}`, "/t/a", `/work?project=${project}`, "/chat/mate/status?task=a", "/lead/status", "/chat/task-status?task=a"];
+    const pages = ["/chat", "/chat?task=a", `/chat?project=${project}`, "/t/a", `/tasks?project=${project}`, "/chat/mate/status?task=a", "/lead/status", "/chat/task-status?task=a"];
     const visitAll = async () => {
       for (const path of pages) {
         for (const shown of [path, path + (path.includes("?") ? "&" : "?") + "format=workspace"]) {
@@ -2064,14 +2065,22 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
       expect((await fetch(`${twoBase}/chat/task-status?task=z`, { headers: { cookie }, redirect: "manual" })).status).toBe(404);
       expect(await (await poll("?task=nope&version=x")).json()).toMatchObject({ task: "nope", unavailable: true });
       // The route's own guards are untouched: no cookie, a bearer, and a
-      // viewer-only standing are refused; other collections still bounce
-      // to the opener from All projects.
+      // viewer-only standing are refused; a page that needs one project
+      // still bounces to the opener from All projects.
       expect((await fetch(`${twoBase}/chat/mate/status`, { redirect: "manual" })).status).toBe(303);
       expect((await fetch(`${twoBase}/chat/task-status?task=a`, { redirect: "manual" })).status).toBe(303);
       expect((await fetch(`${twoBase}/chat/mate/status`, { headers: { authorization: `Bearer alex:${approverToken}` }, redirect: "manual" })).status).toBe(403);
-      const bounced = await fetch(`${twoBase}/board`, { headers: { cookie }, redirect: "manual" });
+      const bounced = await fetch(`${twoBase}/mode`, { headers: { cookie }, redirect: "manual" });
       expect(bounced.status).toBe(303);
-      expect(bounced.headers.get("location")).toBe("/projects?return=%2Fboard");
+      expect(bounced.headers.get("location")).toBe("/projects?return=%2Fmode");
+      // The board is a Tasks view now: it reads across the admitted projects, and the ceiling still holds there.
+      const retired = await fetch(`${twoBase}/board`, { headers: { cookie }, redirect: "manual" });
+      expect(retired.status).toBe(301);
+      expect(retired.headers.get("location")).toBe("/tasks?view=board");
+      const board = await fetch(`${twoBase}/tasks?view=board`, { headers: { cookie }, redirect: "manual" });
+      expect(board.status).toBe(200);
+      const boardView = workspaceOf(await board.text()).view as import("./browser-workspace.js").BrowserTasksView;
+      expect(boardView.rows.map(row => row.id).sort()).toEqual(["a", "b", "c"]);
       // Choosing a project afterwards keeps polling (the earlier behaviour).
       const chosen = await fetch(`${twoBase}/projects/select`, { method: "POST", headers: { cookie, origin: twoBase }, body: new URLSearchParams({ csrf, path: repoTwo, return: "/chat" }), redirect: "manual" });
       expect(chosen.status).toBe(303);
@@ -2222,15 +2231,18 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
     expect(store.listTasksScoped(null, undefined, 100, null).filter(one => one.title === "Await the cookie")).toHaveLength(1);
   });
 
-  test("the /next ceremony says the yes buys a report, not a branch (v4 review, finding 9)", async () => {
+  test("the approval ceremony says the yes buys a report, not a branch (v4 review, finding 9)", async () => {
     const cookie = await login();
     const form = await (await fetch(`${base}/tasks/new`, { headers: { cookie } })).text();
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(form)?.[1] ?? "";
     const revision = /name="projectRevision" value="(\d+)"/.exec(form)?.[1] ?? "0";
-    await fetch(`${base}/tasks/add`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ acceptance: "c1: ok | manual-review", csrf, projectRevision: revision, title: "scout me", goal: "find out", repo: "/repo/main", scout: "1" }), redirect: "manual" });
-    const next = await (await fetch(`${base}/next`, { headers: { cookie } })).text();
-    expect(next).toContain("Approve exactly this");
-    expect(next).toContain("a read-only session investigates this goal and delivers a report");
+    const filed = await fetch(`${base}/tasks/add`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ acceptance: "c1: ok | manual-review", csrf, projectRevision: revision, title: "scout me", goal: "find out", repo: "/repo/main", scout: "1" }), redirect: "manual" });
+    const taskPath = /^\/t\/[^/?#]+/.exec(filed.headers.get("location") ?? "")?.[0] ?? "";
+    expect(taskPath).not.toBe("");
+    const ceremony = new RegExp(`<form method="post" action="${taskPath}/approve"(.*?)</form>`, "s").exec(await (await fetch(`${base}${taskPath}`, { headers: { cookie } })).text())?.[1] ?? "";
+    expect(ceremony).toContain('name="token"');
+    expect(ceremony).toContain("Read-only: it reports back and changes nothing in the repository.");
+    expect(ceremony.indexOf("Read-only: it reports back")).toBeLessThan(ceremony.indexOf('name="token"'));
   });
 
   test("Settings → Notifications saves each person's own choice: Only when I'm needed, Every step, an evening digest", async () => {

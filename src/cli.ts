@@ -55,7 +55,8 @@ import type { BackendGrant } from "./grant.js";
 import type { OperateOptions } from "./operate.js";
 import { renderReport, renderPulls, renderGraph, type PullGroup, type RemoteMap } from "./render.js";
 import { DEFAULT_MAX_DEPTH } from "./scan.js";
-import { HELP } from "./cli-help.js";
+import { HELP, INTERNALS_HELP } from "./cli-help.js";
+import { withTaskAlias } from "./task-aliases.js";
 import { quickAnswer } from "./cli-fast.js";
 import {
   BIN_NAME,
@@ -185,7 +186,9 @@ export const OPERATE_COMMANDS = new Set([
   "review",
   "assignment",
   "knowledge",
+  "map",
   "memory",
+  "flaky",
   "models",
   "claim",
   "heartbeat",
@@ -387,6 +390,8 @@ async function dispatch(
   write: Write,
   mainOptions: MainOptions,
 ): Promise<number> {
+  // People's names for task commands (task send-back, retry, recheck) are the commands they name, before anything else.
+  argv = withTaskAlias(argv);
   // v115: routines became scheduled flows. Every old `routine …` invocation answers with one line pointing there —
   // hidden from help and the contract, before anything remote or local opens, changing nothing.
   if (argv[0] === "routine") return routinesMoved(argv, write);
@@ -401,6 +406,8 @@ async function dispatch(
   // A saved API token sends commands marked remote to the central server, before anything local opens.
   // Command families below load when their command runs, so one command never pays for the others.
   if (argv[0] === 'health') return (await import("./health-cli.js")).runHealthCommand(argv.slice(1), write, mainOptions.connect ?? mainOptions.remote);
+  // The machine and agent commands, listed apart so top-level help stays about the work (each still runs by name).
+  if (argv[0] === 'internals' && argv.slice(1).every(arg => arg === '--help' || arg === '-h')) { write(INTERNALS_HELP); return 0; }
   // This computer's own service, read here and never on a central server.
   if (argv[0] === 'doctor') return (await import("./doctor.js")).runDoctorCommand(argv.slice(1), write);
   const central = await maybeRunRemoteCommand(argv, mainOptions.remote ?? mainOptions.connect);

@@ -15,7 +15,7 @@ import { projectName } from "../project.js";
 import { coverageStateWords,coverageWords,type CriterionEvidenceRef,type CriterionMatrixRow,dispatchStatusToken,GOAL_ASSESSMENT_PENDING,manualReviewCriterionOf,manualReviewOnly,passFraction,personCheckWords,plainReasonWords,type ProofVerdict,reviewConflict,semanticCoverage } from "../proof.js";
 import { type PullRequestView } from "../pull-request-flow.js";
 import { qualityModeTitle } from "../quality.js";
-import { acceptWithChecksOf,type ResultActFacts,resultActsOf } from "../result-acts.js";
+import { acceptWithChecksOf,type ResultActFacts,resultActsOf,SEND_BACK_PUBLISHED,SEND_BACK_UNPUBLISHED } from "../result-acts.js";
 import { SCREENSHOT_CAPTURE,structuredHandoffView,type StructuredHandoffView,terminalDiffView,type TerminalDiffView } from "../result-evidence-readers.js";
 import { ADD_TESTS_ACTION,type FollowUpCheck,followUpChecksOf } from "../result-follow-ups.js";
 import type { RunEfficiency } from "../run-efficiency.js";
@@ -92,7 +92,7 @@ export function repairChainHtml(chain: RepairChainRow | null): Html {
           ? `Stopped after ${chain.attempt} attempt${chain.attempt === 1 ? "" : "s"}`
           : chain.outcome === "no-progress"
             ? "Stopped because two attempts made no progress"
-            : "Stopped because the evidence may conflict with the approved work";
+            : "Stopped because what the build reported may not match the approved work";
   const link = chain.draftTask === null ? "" : html` <a href="${taskHref(chain.draftTask)}">${chain.draftTask}</a>`;
   const details = chain.unresolved.length === 0
     ? ""
@@ -216,9 +216,9 @@ export function criterionMatrixHtml(
       html`<p class="requirement-statement">${row.statement}</p>`,
       review?.judgement === "upholds" && !confirmed ? html`<p class="requirement-review" data-review-judgement="upholds">Reviewer confirmed</p>` : "",
       warnings,
-      html`<details class="requirement-evidence"><summary>View evidence</summary><div class="requirement-evidence-body">`,
-      html`<p class="meta">Required: ${row.requiredEvidence.map(kind => kinds[kind]).join(", ") || "No evidence types specified"}</p>`,
-      answered.length === 0 ? html`<p class="meta">No evidence was submitted for this requirement.</p>` : groups,
+      html`<details class="requirement-evidence"><summary>How it was shown</summary><div class="requirement-evidence-body">`,
+      html`<p class="meta">Required: ${row.requiredEvidence.map(kind => kinds[kind]).join(", ") || "Nothing named"}</p>`,
+      answered.length === 0 ? html`<p class="meta">Nothing was saved to show this requirement.</p>` : groups,
       state !== "pass" || detail.length === 0 ? "" : html`<div class="requirement-evidence-group"><strong>Verification notes</strong><ul>${detail.map(line => html`<li>${line}</li>`)}</ul></div>`,
       reviewDetails,
       coverage === undefined ? "" : html`<p class="meta"${coverage.state === "gap" ? "" : html` data-context-coverage="${coverage.state}"`}>Review context: ${coverageStateWords(coverage)}</p>`,
@@ -302,14 +302,14 @@ export function reviewPriorityOf(row: ReviewQueueFacts): ReviewPriority {
   const manual = ids(one => one.state === "manual-review");
   const humanReview = manualReviewOnly({ verdict: row.proofVerdict ?? "", reasons: row.proofReasons ?? [], matrix: row.proofMatrix });
   if (row.proofVerdict === "refuted") {
-    raise(row.proofAccepted ? 1 : 0, row.proofAccepted ? "conflicting evidence — accepted with exception" : "conflicting evidence");
+    raise(row.proofAccepted ? 1 : 0, row.proofAccepted ? "the report doesn't match the changes — accepted with a reason" : "the report doesn't match the changes");
   } else if (humanReview) {
     raise(1, row.proofAccepted ? "accepted after human review" : "human review needed");
   } else if (row.proofVerdict === "short") {
-    raise(row.proofAccepted ? 1 : 0, row.proofAccepted ? "missing evidence — accepted with exception" : "missing evidence");
+    raise(row.proofAccepted ? 1 : 0, row.proofAccepted ? "not all requirements shown — accepted with a reason" : "not all requirements shown");
   }
   if (contradicted !== "") raise(row.proofAccepted ? 1 : 0, `reviewer raised a concern with ${contradicted}`);
-  if (broken !== "") raise(row.proofAccepted ? 1 : 0, `missing or failed evidence for ${broken}`);
+  if (broken !== "") raise(row.proofAccepted ? 1 : 0, `not shown, or shown failing, for ${broken}`);
   if (row.ciFailing) raise(0, "CI failing on its pull request — observed, not inferred");
   if (row.publicationState === "failed") raise(1, "publication failed — the branch never reached its remote");
   if (manual !== "" && !row.proofAccepted && !humanReview) raise(1, `manual review needed for ${manual}`);
@@ -451,6 +451,8 @@ export type ReviewCockpitView = {
   timing?: import("../latency-timeline.js").TimingView | null;
   /** How far its checks reached (check-access.ts): shown only when wider than sandboxed. */
   checkAccess?: CheckAccess;
+  /** How the checks ran, from their execution stamp (check-stamp.ts ranWords); null: nothing to say. */
+  checkRan?: string | null;
   taskId: string;
   title: string;
   repo: string | null;
@@ -569,7 +571,7 @@ export function verificationExplanation(verdict: ProofVerdict | null, reasons: r
       return "Automatic recovery ran the approved setup, but Toolroll still couldn't start the project check.";
     }
     if (reason === "automatic recovery stopped because this worker no longer owned the build") {
-      return "Automatic recovery stopped because this worker no longer owned the build. A current worker can retry safely.";
+      return "Automatic recovery stopped because this builder no longer had the build. Another builder can retry it safely.";
     }
     if (reason === "the approved verification command could not be run") {
       return "Toolroll couldn't run the project check.";
@@ -595,9 +597,9 @@ export function verificationExplanation(verdict: ProofVerdict | null, reasons: r
   }).filter(Boolean);
   if (plain.length > 0) return [...new Set(plain)].join(" ");
   if (verdict === "verified") return "Toolroll independently verified this result.";
-  if (verdict === "attested") return "The agent supplied evidence, but no independent project check was available.";
-  if (verdict === "short") return "Some approved requirements still need evidence.";
-  if (verdict === "refuted") return "Recorded evidence conflicts with this result.";
+  if (verdict === "attested") return "The agent reported its own checks, but no project check could run to confirm them.";
+  if (verdict === "short") return "Some approved requirements aren't shown yet.";
+  if (verdict === "refuted") return "What the build reported doesn't match its changes.";
   return "No verification result is available for this build.";
 }
 
@@ -741,30 +743,30 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const intent = view.intent;
   let intentView: { approval: string; approvedAt: string | null; html: string } | null = null;
   if (intent === null) {
-    parts.push(html`<section class="card cockpit-section" data-cockpit-section="intent"><h3>Approved scope</h3><p class="meta">No scope was filed for this task, so there is no approved goal or boundary to review.</p></section>`);
+    parts.push(html`<section class="card cockpit-section" data-cockpit-section="intent"><h3>Approved plan</h3><p class="meta">No plan was filed for this task, so there is no approved goal or boundary to review.</p></section>`);
   } else {
     // The time itself goes to the page as a stamp: the one formatter words it in the viewer's zone.
     const approvalWords = intent.approval.approved
-      ? `Approved by ${intent.approvedBy ?? "an operator"}`
+      ? `Approved by ${intent.approvedBy ?? "an approver"}`
       : intent.approval.reason === "changed"
-        ? "The scope changed after approval. The words below are the current text, not the signed one."
-        : "Never approved. The result was built without a signed scope.";
+        ? "Edited after approval. The words below are the current plan, not the approved one."
+        : "Never approved. The result was built without an approved plan.";
     const approval = intent.approval.approved
-      ? html`Approved by ${intent.approvedBy ?? "an operator"} · ${whenTime(intent.approval.at)}`
+      ? html`Approved by ${intent.approvedBy ?? "an approver"} · ${whenTime(intent.approval.at)}`
       : approvalWords;
     const body = joinHtml([
       html`<p class="recap" style="margin-top:.25rem"><strong>Goal</strong> ${intent.goal}</p>`,
       intent.outOfScope === null ? html`<p class="meta">No boundary was stated</p>` : html`<p class="recap"><strong>Not this</strong> ${intent.outOfScope}</p>`,
       intent.touches.length === 0
-        ? html`<p class="meta">No expected paths were signed — every changed file reads as in bounds</p>`
+        ? html`<p class="meta">No files were named in the plan, so every changed file is in bounds</p>`
         : html`<p class="row"><span class="meta">Expected to touch</span> ${joinHtml(intent.touches.map(one => html`<span class="mono">${one}</span>`), " ")}</p>`,
       view.plan === null
         ? ""
-        : html`<p class="meta">Plan revision ${view.plan.revision} · <span class="mono" title="${view.plan.sha256}">${view.plan.sha256.slice(0, 12)}…</span>${view.plan.approach === null ? "" : ` — ${view.plan.approach}`}</p>`,
+        : html`<p class="meta">Plan revision ${view.plan.revision} · <span class="mono">${view.plan.sha256.slice(0, 7)}</span>${view.plan.approach === null ? "" : ` — ${view.plan.approach}`}</p>`,
     ]);
     intentView = { approval: approvalWords, approvedAt: intent.approval.approved ? intent.approval.at ?? null : null, html: htmlString(body) };
     parts.push(
-      html`<details class="card cockpit-section cockpit-disclosure" data-cockpit-section="intent"><summary><h3>Approved scope<small>What this build was asked to do · ${approval}</small></h3><span class="cockpit-disclosure-action">View</span></summary><div class="cockpit-disclosure-body">${body}</div></details>`,
+      html`<details class="card cockpit-section cockpit-disclosure" data-cockpit-section="intent"><summary><h3>Approved plan<small>What this build was asked to do · ${approval}</small></h3><span class="cockpit-disclosure-action">View</span></summary><div class="cockpit-disclosure-body">${body}</div></details>`,
     );
   }
 
@@ -782,8 +784,8 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     // The raw run record lives under Details now (2026-10-02): /r/<id> for this result redirects here.
     record: run === null ? null : { build: run.id, href: `/r/${run.id}?record=1`, facts: [
       { label: "Agent", value: [run.provider, run.model].filter(Boolean).join(" · ") },
-      { label: "Worker", value: run.runner },
-      ...(view.checkAccess === undefined || view.checkAccess === "sandboxed" ? [] : [{ label: "Checks", value: view.checkAccess === "unsandboxed" ? "Checks ran without a sandbox" : "Checks ran with model and GitHub sign-ins" }]),
+      { label: "Builder", value: run.runner },
+      ...(view.checkRan === undefined || view.checkRan === null ? [] : [{ label: "Checks", value: view.checkRan }]),
       ...(run.branch === null ? [] : [{ label: "Branch", value: run.branch }]),
       ...(run.finishedAt === null ? [] : [{ label: "Finished", value: when(run.finishedAt) }]),
       ...(run.ranMinutes === null ? [] : [{ label: "Ran", value: `${run.ranMinutes} min` }]),
@@ -813,7 +815,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const checks = saved === undefined || assignment?.receipt == null ? undefined
     : { ...saved, ...(receiptChecksOf(assignment.receipt) ?? {}), detail: saved.detail };
   if (checks !== undefined) parts.push(html`<p class="${checks.status === "failed" || checks.status === "unavailable" ? "problem" : "meta"}" data-actual-checks="${checks.status}">${checks.status === "unavailable" && saved!.cause === "command-changed" ? CHECK_COMMAND_CHANGED : html`${checks.status === "unavailable" && saved!.status !== "unavailable" ? `${CHECK_UNREADABLE} ` : ""}${checks.detail}`}${checks.logArtifactId === null ? "" : html` <a href="/r/${run.id}/evidence/${checks.logArtifactId}">Open check output</a>`}</p>`);
-  if (assignment?.completion != null) parts.push(html`<p class="meta" data-result-completed>Marked complete by ${assignment.completion.actor.replace(/^operator:/, "")}.</p>`);
+  if (assignment?.completion != null) parts.push(html`<p class="meta" data-result-completed>Accepted by ${assignment.completion.actor.replace(/^operator:/, "")}.</p>`);
   const panel = resultPanelParts(view.detail, {
     place: "review",
     tab,
@@ -858,7 +860,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     proof: proof !== null && proof.proof !== null && proof.proofProblem === null,
   });
   // Refuted: plain Accept and finish stays as allowed, in outline, and the one line before the acts (acts.line) says why.
-  const settled = base === null || blocked === null ? base : { ...base, label: "Accept and finish" as const, ready: false };
+  const settled = base === null || blocked === null ? base : { ...base, label: "Accept" as const, ready: false };
   const decision = settled === null ? null : { sentence: RESULT_DECISION_SENTENCE, ...settled, ...acceptWithChecksOf(settled, { unanswered, notRight: [] }),
     base: { label: settled.label, ready: settled.ready, why: settled.why } };
   // Run checks: no check ran on this result (or its saved one can't be read), the project has one, and an approver may run it.
@@ -970,9 +972,9 @@ export function completionForm(taskId: string, runId: number, digest: string, pu
   const options = { attrs: { class: "card result-complete" }, hidden: { receipt: digest, run: runId, accept: accept === null ? null : "1" } };
   if (pullRequestTo !== null) {
     // With pull requests set up: the PR is the primary road, a bare finish the quiet one beside it.
-    return postForm(`${taskHref(taskId)}/complete`, html`${reason}<p class="meta">Finishes the task. A pull request opens on ${pullRequestTo} from this exact commit when you ask for one.</p><div class="result-complete-actions"><button type="submit" name="publish" value="1" style="min-height:44px">Complete and open a pull request</button><button type="submit" class="secondary" style="min-height:44px">Accept and finish</button></div>`, options);
+    return postForm(`${taskHref(taskId)}/complete`, html`${reason}<p class="meta">Finishes the task. A pull request opens on ${pullRequestTo} from this exact commit when you ask for one.</p><div class="result-complete-actions"><button type="submit" name="publish" value="1" style="min-height:44px">Accept and open a pull request</button><button type="submit" class="secondary" style="min-height:44px">Accept</button></div>`, options);
   }
-  return postForm(`${taskHref(taskId)}/complete`, html`${reason}<p class="meta">Finishes the task. Checks stay unchanged; nothing is published or deployed.</p><button type="submit" style="min-height:44px">Accept and finish</button>`, options);
+  return postForm(`${taskHref(taskId)}/complete`, html`${reason}<p class="meta">Finishes the task. Checks stay unchanged; nothing is published or deployed.</p><button type="submit" style="min-height:44px">Accept</button>`, options);
 }
 
 /** What the task page shows about a result's pull request: the view, or the offer to open one. */
@@ -1024,13 +1026,13 @@ function reviewNextActionParts(view: ReviewCockpitView, csrf: string, back?: str
   const detail = view.detail;
   const card = (kind: string, title: string, detailWords: string, control: Html) => ({ kind, title, detail: detailWords, control });
   if (run === null || detail === null) {
-    return card("inspect-task", "No build to review", "This task was marked complete without a build record.", html`<a class="button-link" href="${taskHref(view.taskId)}">Open the task</a>`);
+    return card("inspect-task", "No build to review", "This task was accepted without a build record.", html`<a class="button-link" href="${taskHref(view.taskId)}">Open the task</a>`);
   }
   if (detail.ciFailing && csrf !== "") {
-    return card("draft-repair", "CI is failing on its pull request", "Toolroll confirmed the failure. Draft one repair task, then approve it before it runs.", postForm(`/r/${run.id}/draft-repair`, html`<button type="submit">Draft a repair task</button>`));
+    return card("draft-repair", "CI is failing on its pull request", `Toolroll confirmed the failure. ${SEND_BACK_PUBLISHED}`, postForm(`/r/${run.id}/draft-repair`, html`<button type="submit">Send back</button>`));
   }
   if (detail.comments.length > 0 && csrf !== "") {
-    return card("revise", `${detail.comments.length} note${detail.comments.length === 1 ? "" : "s"} ready`, "Create one revision from these notes. You approve it before it runs.", postForm(`/r/${run.id}/revise`, html`${revisionSealFields(detail.comments, detail.sourceDigest)}<button type="submit">Revise</button>`, { returnTo: back ?? reviewHref(view.taskId) }));
+    return card("revise", `${detail.comments.length} note${detail.comments.length === 1 ? "" : "s"} ready`, SEND_BACK_UNPUBLISHED, postForm(`/r/${run.id}/revise`, html`${revisionSealFields(detail.comments, detail.sourceDigest)}<button type="submit">Send back</button>`, { returnTo: back ?? reviewHref(view.taskId) }));
   }
   return null;
 }
@@ -1043,8 +1045,8 @@ function reviewNextActionParts(view: ReviewCockpitView, csrf: string, back?: str
 export const PHASE_WORDS: Record<string, string> = {
   "agent-running": "agent working",
   "validating-handoff": "checking the handoff",
-  "correcting-proof": "correcting evidence",
-  "capturing-evidence": "capturing evidence",
+  "correcting-proof": "correcting its report",
+  "capturing-evidence": "saving its files",
   committing: "committing",
 };
 
@@ -1053,8 +1055,8 @@ export function homePhaseWords(run: Pick<Run, "role" | "phase">): string {
   if (run.role === "planner") return "Planning";
   if (run.role === "reviewer") return "Reviewing";
   if (run.role === "scout") return "Investigating";
-  const words: Record<string, string> = { "agent-running": "Writing the change", "validating-handoff": "Checking its handoff", "capturing-evidence": "Saving its evidence",
-    committing: "Committing", "verifying-proof": "Running the checks", "correcting-proof": "Correcting its evidence" };
+  const words: Record<string, string> = { "agent-running": "Writing the change", "validating-handoff": "Checking its handoff", "capturing-evidence": "Saving its files",
+    committing: "Committing", "verifying-proof": "Running the checks", "correcting-proof": "Correcting its report" };
   return run.phase === null ? "Starting" : words[run.phase] ?? "Working";
 }
 
@@ -1073,7 +1075,7 @@ export const INCIDENT_WORDS: Record<string, string> = {
   "commit-failure": "the commit failed",
   "malformed-plan": "the plan was malformed",
   "plan-attempts-exhausted": "planning failed too many times",
-  "malformed-report": "the scout's report was malformed",
+  "malformed-report": "the research report was malformed",
 };
 
 export function incidentWords(kind: string): string {
@@ -1091,11 +1093,11 @@ export const EVIDENCE_WORDS: Record<string, string> = {
   handoff: "Agent handoff",
   "revision-brief": "Revision brief",
   report: "Report",
-  proof: "Agent proof",
+  proof: "Agent report",
   "check-log": "Check log",
   screenshot: "Screenshot",
   "structured-output": "Agent response",
-  "plan-contract": "Plan contract",
+  "plan-contract": "Your request",
   "review-context": "Review context",
 };
 
@@ -1293,7 +1295,7 @@ export function sharedResultFactsOf(
     runId: run.id,
     base: statOk ? stat.base : run.baseRevision,
     head: statOk ? stat.head : run.headRevision,
-    headSource: statOk ? "sealed diff" : run.headRevision === null ? null : "run record",
+    headSource: statOk ? "saved diff" : run.headRevision === null ? null : "build record",
     checks: passed === null ? null : { passed: passed.passed, total: passed.total },
     caveats: proof?.proof?.caveats ?? [],
     evidenceProblems: evidenceProblems.map(one => one.words),
@@ -1582,8 +1584,8 @@ export function reviewDiffHtml(
       ? html`<div class="diff-review-bar"><span class="meta">${parsed.files.length} changed file${parsed.files.length === 1 ? "" : "s"}</span><div class="diff-modes" role="group" aria-label="diff mode"><button type="button" data-diff-mode="view" aria-pressed="true">View</button><button type="button" data-diff-mode="annotate" aria-pressed="false">Annotate</button></div></div><p class="diff-review-help">Select a line, then describe what should change. Nothing is revised until you create the revision below.</p>`
       : ""}${files}${
     patch.truncated
-      ? html`<p class="diff-cut">The sealed diff was shortened at storage: the rest of the change was never captured, here or in the download.</p>`
-      : parsed.linesTruncated ? html`<p class="diff-cut">This visual diff is shortened. Review the sealed patch before approving.</p>` : ""
+      ? html`<p class="diff-cut">The saved diff was shortened when it was stored: the rest of the change was never captured, here or in the download.</p>`
+      : parsed.linesTruncated ? html`<p class="diff-cut">This visual diff is shortened. Review the saved patch before approving.</p>` : ""
   }</div>${storedDownloadLink(runId, patch.artifactId, "diff", patch.truncated)}`;
 }
 
@@ -1681,7 +1683,7 @@ export function terminalDiffCard(
 export function evidenceBundleCard(view: ProofBundleView | null, run: Pick<Run, "id" | "role" | "outcome">, publication: PublicationFacts = null, review: ReviewFacts | null = null): Html {
   if (view === null) return html``;
   const runId = run.id;
-  const parts: Html[] = [html`<h2>Verification and evidence</h2>`];
+  const parts: Html[] = [html`<h2>Checks and saved files</h2>`];
 
   if (view.verdict !== null) {
     // The same status line every other surface renders for this run
@@ -1699,7 +1701,7 @@ export function evidenceBundleCard(view: ProofBundleView | null, run: Pick<Run, 
   parts.push(criterionMatrixHtml(view.matrix, { runId, links: view.matrixLinks, verdict: view.verdict }));
   parts.push(semanticCoverageHtml(view.matrix, view.qualityMode));
   if (reviewConflict(view.matrix, view.machineVerdict, view.verdict)) {
-    parts.push(html`<p class="meta">An independent review found conflicting evidence.</p>`);
+    parts.push(html`<p class="meta">An independent review found the report doesn't match the changes.</p>`);
   }
   parts.push(repairChainHtml(view.repairChain));
 
@@ -1722,7 +1724,7 @@ export function evidenceBundleCard(view: ProofBundleView | null, run: Pick<Run, 
       );
     }
     if (view.proof.caveats.length > 0) {
-      parts.push(html`<div class="result-section"><strong>Caveats</strong><ul>${view.proof.caveats.map(one => html`<li>${one}</li>`)}</ul></div>`);
+      parts.push(html`<div class="result-section"><strong>Limitations the agent noted</strong><ul>${view.proof.caveats.map(one => html`<li>${one}</li>`)}</ul></div>`);
     }
   }
 
@@ -1758,7 +1760,7 @@ export function followUpsFor(store: Store, evidenceRoot: string, run: Run, now: 
     quick: repo !== null && liveQuickCommand(store, repo) !== null, full: repo !== null && store.liveVerifyCommand(repo) !== null };
 }
 
-export const FOLLOW_UP_WORDS: Record<FollowUpCheck["state"], string> = { waiting: "waiting for a worker", running: "running", passed: "passed", failed: "failed", "not-run": "didn't run" };
+export const FOLLOW_UP_WORDS: Record<FollowUpCheck["state"], string> = { waiting: "waiting for a builder", running: "running", passed: "passed", failed: "failed", "not-run": "didn't run" };
 /** Run checks and Add tests, under the result's Checks: what ran since, then the two acts. */
 export function followUpsHtml(followUps: NonNullable<ResultDetail["followUps"]>, runId: number, o: ResultPanelOptions): Html {
   // A batch check names every result it ran with and the exact commit it tested (batch-checks.ts).
@@ -1877,9 +1879,9 @@ export function completionReceiptCard(view: CompletionReceiptView, taskId: strin
     inReview ? html`<details class="receipt-history"><summary>Review history</summary><p class="receipt-review meta" data-receipt-review="${status.token}">${status.detail}</p></details>` : "",
     // The matrix count is the proof's own citation; it reads as verified
     // only when the machine verified the result (workspace package 1).
-    html`<div class="receipt-facts"><span><strong>${criteria}</strong><small>${stored.tone === "problem" ? html`the agent's own claim — not checked` : stored.token === "agent-attested" ? html`the agent's own claim, no project check` : "against the approved scope"}</small></span>`,
-    html`<span><strong>${diff}</strong><small>${facts.head === null ? "no commit recorded" : `head ${facts.head.slice(0, 12)} · ${facts.headSource ?? ""}`}</small></span>`,
-    html`<span><strong>${view.screenshots.length} screenshot${view.screenshots.length === 1 ? "" : "s"}</strong><small>${view.screenshots.length === 0 ? "none required or captured" : unavailable === 0 ? "validated visual proof" : `${unavailable} unavailable — not validated`}</small></span></div>`,
+    html`<div class="receipt-facts"><span><strong>${criteria}</strong><small>${stored.tone === "problem" ? html`the agent's own word — not checked` : stored.token === "agent-attested" ? html`the agent's own word, no project check` : "against the approved plan"}</small></span>`,
+    html`<span><strong>${diff}</strong><small>${facts.head === null ? "no commit recorded" : `head ${facts.head.slice(0, 7)} · ${facts.headSource ?? ""}`}</small></span>`,
+    html`<span><strong>${view.screenshots.length} screenshot${view.screenshots.length === 1 ? "" : "s"}</strong><small>${view.screenshots.length === 0 ? "none required or captured" : unavailable === 0 ? "checked screenshots" : `${unavailable} unavailable — not validated`}</small></span></div>`,
     html`<div class="receipt-actions">`,
     place === "task"
       ? html`<a href="${taskChatHref(taskId)}">Discuss in chat →</a>`
@@ -2124,7 +2126,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
       html`<p class="result-files-lead">${detail.files.length === 0 ? "" : html`${joinHtml(detail.files.slice(0, 6).map(one => html`<span class="mono">${one.path}</span>`), ", ")}${detail.files.length > 6 ? ` and ${detail.files.length - 6} more` : ""} — `}<a href="${tabHref("changes")}" data-result-goto="changes">see the diff</a></p>`,
     );
   }
-  if (lead === "summary" && run.outcome === "no-change") summaryParts.push(html`<p class="meta">The agent found that no repository change was needed${statOk && stat.fileCount === 0 ? "; the sealed diff is empty" : ""}.</p>`);
+  if (lead === "summary" && run.outcome === "no-change") summaryParts.push(html`<p class="meta">The agent found that no repository change was needed${statOk && stat.fileCount === 0 ? "; the saved diff is empty" : ""}.</p>`);
   // The agent's own account — its full conclusion (when the outcome line
   // shortened it), what it says it changed, and how it checked — on demand.
   const agentAccount: Html[] = [
@@ -2143,8 +2145,8 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   }
   const evidenceSources = [
     ...(report !== null ? [report.ok ? `verified report${report.truncated ? " (shortened)" : ""}` : "report (unverifiable)"] : []),
-    ...(patch !== null ? [patchOk ? `sealed diff${patch.truncated ? " (shortened)" : ""}` : "diff (unverifiable)"] : []),
-    ...(proof === null ? [] : proof.proofProblem !== null ? ["proof (unreadable)"] : proof.proof !== null ? ["agent proof"] : []),
+    ...(patch !== null ? [patchOk ? `saved diff${patch.truncated ? " (shortened)" : ""}` : "diff (can't be checked)"] : []),
+    ...(proof === null ? [] : proof.proofProblem !== null ? ["agent report (unreadable)"] : proof.proof !== null ? ["agent report"] : []),
     ...(proof?.checkLog !== null && proof?.checkLog !== undefined ? [proof.checkLog.problem !== null ? "check log (unverifiable)" : `check log${proof.checkLog.truncated ? " (shortened)" : ""}`] : []),
     ...(shots.length > 0 ? [`${shown.length} validated screenshot${shown.length === 1 ? "" : "s"}${unavailableShots.length > 0 ? `, ${unavailableShots.length} unavailable` : ""}`] : []),
   ];
@@ -2171,10 +2173,10 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     agent === null ? "" : html`<div><dt>Agent</dt><dd>${agent}</dd></div>`,
     html`<div><dt>Commits</dt><dd>${
       facts.head === null
-        ? facts.base === null ? "no commit recorded" : html`<span class="mono">${facts.base.slice(0, 12)}</span> <span class="meta">base · no head recorded</span>`
-        : html`<span class="mono">${facts.base === null ? "" : `${facts.base.slice(0, 12)} → `}${facts.head.slice(0, 12)}</span> <span class="meta">from the ${facts.headSource ?? "record"}</span>`
+        ? facts.base === null ? "no commit recorded" : html`<span class="mono">${facts.base.slice(0, 7)}</span> <span class="meta">base · no head recorded</span>`
+        : html`<span class="mono">${facts.base === null ? "" : `${facts.base.slice(0, 7)} → `}${facts.head.slice(0, 7)}</span> <span class="meta">from the ${facts.headSource ?? "record"}</span>`
     }</dd></div>`,
-    html`<div><dt>Evidence</dt><dd>${evidenceSources.length === 0 ? "nothing was captured" : evidenceSources.join(" · ")}</dd></div>`,
+    html`<div><dt>Saved files</dt><dd>${evidenceSources.length === 0 ? "nothing was captured" : evidenceSources.join(" · ")}</dd></div>`,
     html`<div><dt>Publication</dt><dd>${publicationHtml}</dd></div>`,
     html`</dl>`,
     html`<p class="result-links meta">${links}</p>`,
@@ -2190,7 +2192,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     else if (!statOk) changeParts.push(html`<p class="problem">Change summary unavailable: ${stat.problem}.</p>`);
     else {
       changeParts.push(
-        html`<p class="row result-stat"><span class="mono">${stat.base.slice(0, 12)} → ${stat.head.slice(0, 12)}</span> — ${
+        html`<p class="row result-stat"><span class="mono">${stat.base.slice(0, 7)} → ${stat.head.slice(0, 7)}</span> — ${
           stat.fileCount === 0
             ? "no changes, verified"
             : `${stat.fileCount} file${stat.fileCount === 1 ? "" : "s"} · +${stat.additions} −${stat.deletions}${stat.binaryCount > 0 ? ` · ${stat.binaryCount} binary` : ""}${stat.filesTruncated ? " · file list cut, counts complete" : ""}`}</p>`,
@@ -2227,9 +2229,9 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   const checkParts: Html[] = [];
   const reviewerNotes = detail.reviewerFindings.map(one => html`<li><span class="badge${one.severity === "problem" ? " badge-failed" : ""}">${one.severity ?? "note"}</span> ${one.path === null ? "" : html`<span class="mono">${one.path}${one.line === null ? "" : `:${one.line}`}</span> `}${one.note} <span class="meta">— ${one.author}</span>${!isRevisionFeedback(one) && detail.canAnnotate && o.csrf !== "" ? html` <button type="button" class="pick-file" data-path="${one.path ?? ""}" data-line="${one.line ?? ""}" data-review-note="${one.note}">Request change</button>` : ""}</li>`);
   if (proof === null && reviewerNotes.length > 0) checkParts.push(html`<div class="result-section" data-cockpit-source="reviewer"><strong>Previous assessment</strong><ul>${reviewerNotes}</ul></div>`);
-  if (run.outcome === "no-change" && !directAssessment) checkParts.push(html`<p class="meta">The build concluded that no repository change was needed. A no-change conclusion owes no proof — its handoff and machine-captured diff are the record.</p>`);
+  if (run.outcome === "no-change" && !directAssessment) checkParts.push(html`<p class="meta">The build concluded that no repository change was needed. With no change, its handoff and the saved diff are the record.</p>`);
   if (proof === null) {
-    if (run.outcome !== "no-change") checkParts.push(html`<p class="meta" data-proof-verdict="none">This build has no verification result or captured evidence. Review its recorded changes yourself.</p>`);
+    if (run.outcome !== "no-change") checkParts.push(html`<p class="meta" data-proof-verdict="none">This build has no check result or saved files. Review its changes yourself.</p>`);
   } else {
     if (proof.verdict !== null && !directAssessment) {
       // The same status line the panel leads with (one status per surface,
@@ -2245,13 +2247,13 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     }
     if (proof.accepted !== null) checkParts.push(html`<p class="meta">${humanReview ? "Accepted after human review" : "Accepted with an exception"} by <span class="mono">${proof.accepted.by}</span> · ${whenTime(proof.accepted.at)}${proof.accepted.note === null ? "" : ` — ${proof.accepted.note}`}</p>`);
     if (proof.matrix.length === 0) {
-      checkParts.push(detail.signedCriteria > 0 ? html`<p class="meta">The approved scope has ${detail.signedCriteria} requirement${detail.signedCriteria === 1 ? "" : "s"}, but this build has no requirement-by-requirement verification.</p>` : html`<p class="meta">This scope signed no acceptance checks.</p>`);
+      checkParts.push(detail.signedCriteria > 0 ? html`<p class="meta">The approved plan has ${detail.signedCriteria} requirement${detail.signedCriteria === 1 ? "" : "s"}, but this build wasn't checked requirement by requirement.</p>` : html`<p class="meta">This plan names no requirements to check.</p>`);
     } else {
       checkParts.push(criterionMatrixHtml(proof.matrix, { runId, links: proof.matrixLinks, fileAnchors: detail.fileAnchors, verdict: proof.verdict,
         release: current?.receipt == null ? undefined : checkBackingOf(current.receipt.checks) }));
     }
     checkParts.push(semanticCoverageHtml(proof.matrix, proof.qualityMode));
-    if (reviewConflict(proof.matrix, proof.machineVerdict, proof.verdict)) checkParts.push(html`<p class="meta">An independent review found conflicting evidence.</p>`);
+    if (reviewConflict(proof.matrix, proof.machineVerdict, proof.verdict)) checkParts.push(html`<p class="meta">An independent review found the report doesn't match the changes.</p>`);
     checkParts.push(repairChainHtml(proof.repairChain));
     if (detail.reviewerFindings.length > 0) {
       checkParts.push(
@@ -2279,8 +2281,8 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     );
     checkParts.push(
       receipt.caveats.length === 0
-        ? directAssessment ? html`` : html`<p class="meta" data-cockpit-source="caveats">No caveats were reported.</p>`
-        : html`<details class="cockpit-proof-group" data-cockpit-source="caveats"><summary>Agent caveats · ${receipt.caveats.length}</summary><ul>${receipt.caveats.map(one => html`<li>${one}</li>`)}</ul></details>`,
+        ? directAssessment ? html`` : html`<p class="meta" data-cockpit-source="caveats">The agent noted no limitations.</p>`
+        : html`<details class="cockpit-proof-group" data-cockpit-source="caveats"><summary>Limitations the agent noted · ${receipt.caveats.length}</summary><ul>${receipt.caveats.map(one => html`<li>${one}</li>`)}</ul></details>`,
     );
   }
   if (followUps !== null && run.role === "builder") checkParts.push(followUpsHtml(followUps, runId, o));
@@ -2314,7 +2316,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     );
     if (o.csrf !== "" && !detail.canAnnotate) {
       requestParts.push(
-        postForm(`/r/${runId}/revise`, html`${revisionSealFields(detail.comments, detail.sourceDigest)}<div><strong>${detail.comments.length} note${detail.comments.length === 1 ? "" : "s"} ready</strong></div><button type="submit">Request changes</button>`,
+        postForm(`/r/${runId}/revise`, html`${revisionSealFields(detail.comments, detail.sourceDigest)}<div><strong>${detail.comments.length} note${detail.comments.length === 1 ? "" : "s"} ready</strong></div><button type="submit">Send back</button>`,
           { attrs: { class: "card revision-from-comments" }, returnTo: o.returnTo }),
       );
     }
@@ -2328,9 +2330,9 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     requestParts.push(html`<p class="result-revision" data-result-revision="${revision.id}" data-result-revision-approved="${revision.approved ? "1" : "0"}" data-tone="${revision.tone}"><strong>Revision</strong> <a href="${taskHref(revision.id)}">${revision.title}</a> <span class="meta">· ${revision.standing}</span></p>`);
   }
   if (o.csrf === "") {
-    requestParts.push(html`<p class="meta">Sign in with a browser session to request changes.</p>`);
+    requestParts.push(html`<p class="meta">Sign in with a browser session to send it back.</p>`);
   } else if (!detail.canAnnotate) {
-    requestParts.push(html`<p class="meta" data-result-feedback="unavailable">${terminal === null ? "This result has no sealed diff to attach notes to." : "The sealed diff no longer verifies, so notes cannot attach to it."} <a href="${taskChatHref(detail.rootId ?? detail.taskId)}">Discuss in chat →</a></p>`);
+    requestParts.push(html`<p class="meta" data-result-feedback="unavailable">${terminal === null ? "This result has no saved diff to attach notes to." : "The saved diff no longer checks out, so notes can't attach to it."} <a href="${taskChatHref(detail.rootId ?? detail.taskId)}">Discuss in chat →</a></p>`);
   } else {
     requestParts.push(
       html`<details class="result-request-open result-request-form"${detail.comments.length > 0 ? " open" : ""}><summary>What should change?</summary>${
@@ -2343,7 +2345,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
         html`<details class="result-pin"><summary>Attach to a file or line</summary>`,
         html`<div class="diff-comment-target"><label>File<input type="text" name="path" placeholder="src/…" aria-label="file" class="mono"></label>`,
         html`<label>Line<input type="text" name="line" placeholder="—" aria-label="line" inputmode="numeric"></label></div></details>`,
-        html`<div class="result-feedback-actions"><button type="submit" name="intent" value="revise" data-request-changes>Request changes</button><button type="submit" name="intent" value="note" class="quiet" data-save-feedback>Save for later</button></div>`,
+        html`<div class="result-feedback-actions"><button type="submit" name="intent" value="revise" data-request-changes>Send back</button><button type="submit" name="intent" value="note" class="quiet" data-save-feedback>Save for later</button></div>`,
       ]), { attrs: { class: "diff-comment-form", id: "comment-form" }, returnTo: o.returnTo, hidden: { tab: o.tab, request: o.requestToken } })
       }</details>`,
     );
@@ -2485,7 +2487,7 @@ export function resultNeedAction(need: BrowserNeedAction, o: ResultPanelOptions,
     ? postForm(need.confirm.action, html`<button type="submit" data-primary-action style="min-height:44px">${need.label}</button>`,
       { attrs: { id: "recheck-stopped", class: "recheck-stopped" }, returnTo: need.confirm.returnTo, hidden: { run: need.confirm.run } })
     : html`<a class="button-link" href="${need.href ?? "#"}" data-primary-action>${need.label}</a>`;
-  return html`<div class="result-action" data-result-action="need">${control}${canRequest && o.csrf !== "" ? html`<a class="result-feedback-link" href="#request-changes">Request changes</a>` : ""}</div>`;
+  return html`<div class="result-action" data-result-action="need">${control}${canRequest && o.csrf !== "" ? html`<a class="result-feedback-link" href="#request-changes">Send back</a>` : ""}</div>`;
 }
 
 /** The outcome in one bounded sentence (repair 2026-09-14): the handoff's
@@ -2506,13 +2508,13 @@ export function conciseOutcomeOf(conclusion: string): string {
 export function resultPrimaryAction(detail: ResultDetail, o: ResultPanelOptions, prUrl: string | null): Html {
   const wrap = (kind: string, control: Html): Html => html`<div class="result-action" data-result-action="${kind}">${control}</div>`;
   if (detail.ciFailing && o.csrf !== "") {
-    return wrap("draft-repair", postForm(`/r/${detail.run.id}/draft-repair`, html`<button type="submit">Draft a repair task</button>`));
+    return wrap("draft-repair", postForm(`/r/${detail.run.id}/draft-repair`, html`<p class="meta">${SEND_BACK_PUBLISHED}</p><button type="submit">Send back</button>`));
   }
   if (detail.comments.length > 0 && o.csrf !== "") return wrap("revise", html`<a class="result-feedback-link" href="#request-changes">Review saved notes</a>`);
   if (detail.publication !== null && detail.publication.prNumber !== null && prUrl !== null) return wrap("open-pr", html`<a class="button-link" href="${prUrl}">Open PR #${detail.publication.prNumber}</a>`);
   if (detail.assignment == null && detail.proof?.matrix.some(row => row.assessment !== undefined) && detail.proof.reasons.includes(GOAL_ASSESSMENT_PENDING)) return wrap("open-result", html`<a class="button-link" href="${reviewHref(detail.taskId)}">Open result</a>`);
-  if (detail.assignment == null && detail.proof?.matrix.some(row => row.assessment !== undefined && row.review?.judgement === "cannot-tell")) return wrap("review-evidence", html`<a class="button-link" href="${o.hrefFor("checks")}">Review evidence</a>`);
-  if (detail.canAnnotate && o.csrf !== "") return wrap("request-changes", html`<a class="result-feedback-link" href="#request-changes">Request changes</a>`);
+  if (detail.assignment == null && detail.proof?.matrix.some(row => row.assessment !== undefined && row.review?.judgement === "cannot-tell")) return wrap("review-evidence", html`<a class="button-link" href="${o.hrefFor("checks")}">Review the checks</a>`);
+  if (detail.canAnnotate && o.csrf !== "") return wrap("request-changes", html`<a class="result-feedback-link" href="#request-changes">Send back</a>`);
   return html``;
 }
 

@@ -100,6 +100,9 @@ export interface RouteDeclaration {
    */
   readonly local: "allow" | "deny";
   readonly localAct: LocalOwnerAct | null;
+  /** A retired page (docs/plans/plain-toolroll.md P1.4): a permanent GET redirect to where it lives now
+   * (retired-routes.ts), admitted exactly as that target is, and no page handler of its own. */
+  readonly retired?: true;
 }
 
 type Options = Partial<Omit<RouteDeclaration, "id" | "domain" | "method" | "pattern" | "stage" | "local" | "localAct">>;
@@ -133,6 +136,7 @@ function row(stage: Stage, domain: Domain, id: string, method: RouteMethod, patt
     ...(options.roleRefusal === undefined ? {} : { roleRefusal: options.roleRefusal }),
     ...(options.bodyCap === undefined ? {} : { bodyCap: options.bodyCap }),
     freshness: options.freshness ?? "never",
+    ...(options.retired === true ? { retired: true as const } : {}),
     ...localMarkOf(stage, method, id),
   });
 }
@@ -144,6 +148,7 @@ function row(stage: Stage, domain: Domain, id: string, method: RouteMethod, patt
 /** The console POST rows a local owner may use, and the act each is. Everything else is refused. */
 const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "tasks.add": "file-task",
+  "tasks.fast": "build-now",
   "chat.file": "file-task",
   "chat.send": "lead-send",
   "chat.queued-remove": "lead-send",
@@ -156,6 +161,7 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "chat.proposal.dismiss": "lead-send",
   "task.act.steer": "lead-send",
   "task.act.approve": "approve-plan",
+  "task.act.keep-grown": "approve-plan",
   "decision.answer": "answer-question",
   "task.act.reply": "answer-question",
   "task.act.stop": "stop-run",
@@ -181,11 +187,16 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "settings.lead-on": "choose-default-agent",
   // Choosing which open project the pages show: a view filter, never authorization.
   "projects.select": "read",
+  // On or off for one project: it moves no money, permission or approval (code-map-acts.ts re-checks this exact act).
+  "settings.code-map": "code-map-switch",
   // Results routing: lowering only.
   "settings.models-turn-off": "routing-turn-off",
   "settings.models-not-now": "dismiss-suggestion",
   "settings.models-suggest-off": "dismiss-suggestion",
   "settings.models-stop": "trial-stop",
+  // Learning loops (D3): a person at the laptop decides lesson notes and clean-ups of project memory.
+  "settings.knowledge-note": "memory-review",
+  "settings.knowledge-tidy": "memory-review",
   "agents.seen": "mark-seen",
   "agents.watch": "watch-agent",
 });
@@ -337,30 +348,43 @@ get("pages", "projects.page", "/projects", { limited: "unscoped", ...free });
 // project this account can see and never switches the session's project; its Open project button posts to
 // /projects/select. The handler resolves the name among the account's visible projects; anything else is not found.
 get("pages", "projects.project", "^\\/projects\\/[^/]+$", { limited: "unscoped", ...free, sample: "/projects/payments-api" });
+// One project's code map (docs/plans/code-map.md §6): reads only. The handler resolves the name among the account's
+// visible projects, and looks areas and files up exactly in the stored version.
+get("pages", "projects.map", "^\\/projects\\/[^/]+\\/map$", { limited: "unscoped", ...free, sample: "/projects/payments-api/map" });
+// A project's flaky tests list (docs/plans/learning-loops.md): reads only, found as the project's page finds its project.
+// Its one action, "Make a task to fix it", posts the ordinary /tasks/add form.
+get("pages", "projects.flaky", "^\\/projects\\/[^/]+\\/flaky$", { limited: "unscoped", ...free, sample: "/projects/payments-api/flaky" });
 get("pages", "home", "/", { limited: "collection", ...free });
 get("pages", "search", "/search", { limited: "collection", ...free });
-get("tasks", "inbox", "/inbox", { limited: "collection", ...free });
-get("tasks", "work", "/work", { limited: "collection", ...free });
-// Put away old tasks (task-tidy.md): the preview reads only; putting away is an approver's step-up in a browser session.
-get("tasks", "work.put-away", "/work/put-away", { limited: "collection", ...free, callers: ["cookie"], ...approver("Only an approver can put tasks away.", "/work") });
-post("tasks", "work.put-away.apply", "/work/put-away", { scope: "step-up", limited: "collection", ...approver("Only an approver can put tasks away.", "/work") });
-get("tasks", "next", "/next", { limited: "collection" });
+// Retired pages (docs/plans/plain-toolroll.md P1.4): permanent redirects to Home and Tasks, admitted as their target is.
+const RETIRED = { limited: "collection", ...free, retired: true } as const;
+get("tasks", "inbox", "/inbox", RETIRED);
+get("tasks", "work", "/work", RETIRED);
+// Archive old tasks (task-tidy.md): the preview reads only, at /tasks/archive; archiving is an approver's step-up in a
+// browser session, and keeps its POST /work/put-away exactly.
+get("tasks", "work.put-away", "/work/put-away", { ...RETIRED, callers: ["cookie"], ...approver("Only an approver can archive tasks.", "/tasks") });
+get("tasks", "tasks.archive", "/tasks/archive", { limited: "collection", ...free, callers: ["cookie"], ...approver("Only an approver can archive tasks.", "/tasks") });
+post("tasks", "work.put-away.apply", "/work/put-away", { scope: "step-up", limited: "collection", ...approver("Only an approver can archive tasks.", "/tasks") });
+get("tasks", "next", "/next", RETIRED);
 get("pages", "morning", "/morning", { limited: "collection", ...free }); // a redirect to / now
-get("pages", "workbench", "/workbench", free);
-get("tasks", "board", "/board", { limited: "collection" });
-get("tasks", "review", "/review", { limited: "collection" });
+get("pages", "workbench", "/workbench", RETIRED);
+get("tasks", "board", "/board", RETIRED);
+// A result keeps its own page here (/review?result=…); the bare list is retired to Tasks' Ready view.
+get("tasks", "review", "/review", { limited: "collection", ...free });
+// A push's task link (P1.4): /n/<the task's stored number>, resolved to its page under the viewer's own access.
+get("tasks", "n.task", "^\\/n\\/[1-9][0-9]{0,14}$", { limited: "unscoped", ...free, project: "none", sample: "/n/1" });
 get("settings", "spend", "/spend", { ...free, ...anyOperator("An instance operator sees spend.", "/") });
 get("settings", "settings.spend", "/settings/spend", { ...free, ...anyOperator("An instance operator sets spending limits.", "/settings") });
 get("pages", "ledger", "/ledger", { limited: "unscoped", ...free });
 get("pages", "activity", "/activity", { limited: "collection", ...free }); // a redirect to / now (Home has the summary)
-get("tasks", "done", "/done", { limited: "collection", ...free }); // a redirect to the Tasks list's Finished view now
+get("tasks", "done", "/done", RETIRED);
 get("settings", "mode", "/mode");
 get("people", "people.page", "/people", { limited: "unscoped", ...free });
 get("pages", "system", "/system", free);
 // Where every "Connect a builder" leads: read-only, open to a project-limited person (the handler shows only a visible project).
 get("pages", "start-builder", "/start-builder", { limited: "unscoped", ...free });
-get("tasks", "tasks", "/tasks", { limited: "collection", ...free }); // a redirect to /work now: never sent to the project opener first
-get("tasks", "queue", "/queue");
+get("tasks", "tasks", "/tasks", { limited: "collection", ...free });
+get("tasks", "queue", "/queue", RETIRED);
 get("pages", "peek", "/peek", free);
 get("pages", "agents", "/agents", { limited: "unscoped", ...free });
 // The Agents view's Live grid (docs/plans/agents-view.md §3): read-only, every request filtered to what the viewer may see.
@@ -579,9 +603,13 @@ for (const one of ["agent", "apply"]) post("settings", `settings.models-${one}`,
 for (const one of ["accept", "keep", "suggest-on", "try"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, { scope: "step-up", ...operator("An instance operator changes which models run.", "/settings/models") });
 for (const one of ["turn-off", "not-now", "suggest-off", "stop"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, operator("An instance operator changes which models run.", "/settings/models"));
 // Any other models action answers the models area's own refusal.
+post("settings", "settings.code-map", "/settings/project/code-map", { project: "form", ...approver("An approver turns the code map on or off.", "/settings/project") });
+post("settings", "settings.code-map-holdout", "/settings/project/code-map/holdout", { project: "form", ...approver("A person ends the holdout.", "/settings/project") });
 post("settings", "settings.models-act", "^\\/settings\\/models\\/.*$", { sample: "/settings/models/unknown", ...MODELS });
 post("settings", "settings.knowledge-refresh", "/settings/knowledge/refresh", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to refresh project context.", "/settings/knowledge") });
 post("settings", "settings.knowledge-proposal", "/settings/knowledge/proposal", { project: "form", ...approver("Sign in as an approver to decide memory proposals.", "/settings/knowledge") });
+post("settings", "settings.knowledge-note", "/settings/knowledge/note", { project: "form", ...approver("Sign in as an approver to decide lesson notes.", "/settings/knowledge") });
+post("settings", "settings.knowledge-tidy", "/settings/knowledge/tidy", { project: "form", ...approver("Sign in as an approver to clean up project memory.", "/settings/knowledge") });
 post("settings", "settings.knowledge-decision", "/settings/knowledge/decision", { project: "form", ...approver("Sign in as an approver to change project decisions.", "/settings/knowledge") });
 post("settings", "settings.knowledge-change", "/settings/knowledge/change", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to change project knowledge.", "/settings/knowledge") });
 post("settings", "settings.learning-change", "/settings/learning/change", { project: "form", limited: "unscoped" });
@@ -601,9 +629,12 @@ for (const one of ["messaging", "permission-default", "quality-default", "notifi
 }
 post("pages", "projects.github-list", "/projects/github", { callers: ["cookie"], ...anyApprover("your login can watch — adding projects is an approver's act") });
 post("pages", "projects.select", "/projects/select", { project: "form-path", limited: "unscoped", viewer: true });
+post("pages", "projects.map-refresh", "^\\/projects\\/[^/]+\\/map\\/refresh$", { project: "form", sample: "/projects/payments-api/map/refresh", ...approver("An approver asks for a check of main.", "/projects") });
 post("pages", "projects.remove", "/projects/remove", { project: "form", ...operator("An instance operator removes projects.", "/settings/project") });
 post("pages", "projects.open", "/projects/open", { project: "form-path" });
 post("tasks", "tasks.add", "/tasks/add", { project: "form", limited: "collection", bodyCap: LARGE_FORM });
+// Build (fast-start.ts): a person's own browser session only. No token, chat, agent or webhook reaches it.
+post("tasks", "tasks.fast", "/tasks/fast", { callers: ["cookie"], project: "none", limited: "collection", ...approver("An approver starts builds.", "/tasks/new") });
 post("tasks", "queue.move", "/queue/move");
 post("tasks", "queue.note", "/queue/note");
 post("pages", "fleet.register", "/fleet/runner/register", { scope: "step-up" });
@@ -617,6 +648,9 @@ post("people", "people.revoke", "/people/revoke", { scope: "step-up" });
 post("pages", "fleet.retire", "/fleet/runner/retire", { scope: "step-up" });
 // Answering a parked decision needs act access and irreversible-choice confirmation, not password step-up.
 post("tasks", "decision.answer", `^\\/d\\/${ID}\\/answer$`, { project: "decision", limited: "resource", scope: "act", sample: "/d/1/answer" });
+// A held automatic release goes on: a person, with their password typed now (release-auto.ts allowAutoPublish).
+post("tasks", "task.release.go-on", `^\\/t\\/${TASK}\\/release\\/go-on$`, { project: "task", limited: "resource", scope: "step-up", sample: "/t/one/release/go-on", ...approver("An approver lets a release go on.", "/tasks") });
+post("tasks", "task.act.keep-grown", `^\\/t\\/${TASK}\\/keep-grown$`, { project: "task", limited: "resource", sample: "/t/one/keep-grown", callers: ["cookie"], ...approver("An approver keeps a change.", "/tasks") });
 post("tasks", "task.act.hold", `^\\/t\\/${TASK}\\/hold$`, { project: "task", limited: "resource", sample: "/t/one/hold" });
 post("tasks", "task.act.unhold", `^\\/t\\/${TASK}\\/unhold$`, { project: "task", limited: "resource", sample: "/t/one/unhold" });
 post("tasks", "task.act.requeue", `^\\/t\\/${TASK}\\/requeue$`, { project: "task", limited: "resource", sample: "/t/one/requeue" });
@@ -714,6 +748,7 @@ export function assertRouteTable(routes: readonly RouteDeclaration[] = ROUTES): 
     if (route.callers.length === 0) throw new Error(`route table: ${route.id} admits no caller`);
     if ((route.role === "any") !== (route.roleRefusal === undefined)) throw new Error(`route table: ${route.id} role and its refusal go together`);
     if (route.role !== "any" && route.stage !== "console") throw new Error(`route table: ${route.id} edge routes prove roles in their protocol`);
+    if (route.retired === true && (route.method !== "GET" || route.stage !== "console")) throw new Error(`route table: ${route.id} a retired page is a console GET`);
     const test = new RegExp(route.pattern);
     if (!test.test(route.sample)) throw new Error(`route table: ${route.id} does not match its sample ${route.sample}`);
     const method = route.method === "GET,HEAD" ? "GET" : route.method;

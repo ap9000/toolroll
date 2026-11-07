@@ -187,9 +187,9 @@ describe("the kit renders each action's own proof", () => {
 describe("the frame", () => {
   test("which pages wear it, and their breadcrumb", () => {
     for (const path of ["/settings", "/settings/retention", "/setup", "/setup/agent", "/people", "/mode", "/control", "/spend"]) expect(isSettingsFrame(path), path).toBe(true);
-    for (const path of ["/chat", "/work", "/settingsx", "/spend/budget", "/peoplex", "/system"]) expect(isSettingsFrame(path), path).toBe(false);
+    for (const path of ["/chat", "/tasks", "/settingsx", "/spend/budget", "/peoplex", "/system"]) expect(isSettingsFrame(path), path).toBe(false);
     expect(settingsCrumbs("/settings", "Settings", "<h1>Settings</h1>")).toBeUndefined();
-    expect(settingsCrumbs("/work", "Tasks", "<h1>Tasks</h1>")).toBeUndefined();
+    expect(settingsCrumbs("/tasks", "Tasks", "<h1>Tasks</h1>")).toBeUndefined();
     expect(settingsCrumbs("/people", "people", '<h1 class="x">People &amp; access</h1>')).toEqual([{ label: "Settings", href: "/settings" }, { label: "People & access", href: null }]);
     expect(settingsCrumbs("/mode", "mode", "<p>no heading</p>")).toEqual([{ label: "Settings", href: "/settings" }, { label: "Mode", href: null }]);
     expect(headingText("<h1><span>Pair</span> Telegram</h1>")).toBe("Pair Telegram");

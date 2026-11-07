@@ -55,10 +55,10 @@ export function projectSummaryOf(store: Store, now: Date, access: WorkSummaryAcc
   };
   const rows: BrowserProjectState[] = projects.map(one => {
     const state = states.get(one.path);
-    return { path: one.path, name: one.name, href: `/work?project=${encodeURIComponent(one.path)}`, state: state?.state ?? "idle", counts: state?.counts ?? { ...NO_COUNTS }, ...railOf(state) };
+    return { path: one.path, name: one.name, href: `/tasks?project=${encodeURIComponent(one.path)}`, state: state?.state ?? "idle", counts: state?.counts ?? { ...NO_COUNTS }, ...railOf(state) };
   });
   const unplaced = states.get(null);
-  if (unplaced !== undefined && unplaced.state !== "idle") rows.push({ path: null, name: "No project", href: "/work", state: unplaced.state, counts: unplaced.counts, ...railOf(unplaced) });
+  if (unplaced !== undefined && unplaced.state !== "idle") rows.push({ path: null, name: "No project", href: "/tasks", state: unplaced.state, counts: unplaced.counts, ...railOf(unplaced) });
   return boundProjectSummary(rows);
 }
 

@@ -77,7 +77,7 @@ export type FinishedFact = {
 };
 
 /** The two buttons under a result ready for a person: the real next step, then a look first. */
-export const READY_ACTIONS = { merge: "Merge", complete: "Accept and finish", look: "Look first" } as const;
+export const READY_ACTIONS = { merge: "Merge", complete: "Accept", look: "Look first" } as const;
 
 /** Whether this line asks for the result's next step, so it carries [Merge] or [Accept and finish] and [Look first]. */
 export function asksToFinish(fact: FinishedFact): boolean {
@@ -94,7 +94,7 @@ export function finishedLine(fact: FinishedFact): string {
   switch (fact.headline) {
     case "Ready for review":
       if (fact.report) return fact.lead === true ? `I wrote up ${lower}. The report is ready to read.` : `${name}: the report is ready to read.`;
-      if (fact.checks === "passed") return `${ready}. Your tests passed. ${fact.pullRequest === true ? "Merge it?" : "Accept and finish it?"}`;
+      if (fact.checks === "passed") return `${ready}. Your tests passed. ${fact.pullRequest === true ? "Merge it?" : "Accept it?"}`;
       if (fact.checks === "off") return `${ready}. Its checks run at release, so look it over first.`;
       return `${ready}, but no tests ran. Look it over first.`;
     case "Failed":

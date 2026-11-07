@@ -291,9 +291,8 @@ export function defaultEasyStartSeams(options: {
       try { recordBackgroundAsked(store, yes ? "yes" : "no", new Date()); } finally { store.close(); }
     },
     findRepo: async dir => {
-      const { run } = await import("./exec.js");
-      const top = await run("git", ["rev-parse", "--show-toplevel"], { cwd: dir, timeoutMs: 10_000 });
-      return top.code === 0 ? top.stdout.trim() : null;
+      const { checkoutTop } = await import("./teardown-git.js");
+      return checkoutTop(dir);
     },
     enrolled: async repo => {
       const { loadRepos } = await import("./repos.js");

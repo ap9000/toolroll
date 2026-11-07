@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { chmodSync, closeSync, fsyncSync, lstatSync, openSync } from 'node:fs';
-import { hostname } from 'node:os';
+import { isThisMachine } from './machine-identity.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { sqliteRuntime } from './sqlite-runtime.js';
 import { processMayBeAlive } from './process-liveness.js';
@@ -111,10 +111,11 @@ export function releaseStaleCodingOwner(orders: Database, stoppedPids: readonly 
       const custody = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='coding_custody'").get()
         ? db.prepare('SELECT payload FROM coding_custody WHERE singleton=1').get() : undefined;
       if (custody) {
-        let c: { pid?: unknown; group?: unknown; descendants?: unknown; observationUnknown?: unknown; container?: unknown; host?: unknown };
+        let c: { pid?: unknown; group?: unknown; descendants?: unknown; observationUnknown?: unknown; container?: unknown; host?: unknown; machineId?: unknown };
         try { c = JSON.parse(String(custody['payload'])); } catch { c = {}; }
         const processes = Array.isArray(c.descendants) ? c.descendants as { pid: unknown; group: unknown }[] : null;
-        if (c.host !== hostname() || c.container || c.observationUnknown !== false || processes === null) refuse("the agent's tool processes could not be accounted for");
+        if (typeof c.host !== 'string' || (c.machineId !== undefined && c.machineId !== null && typeof c.machineId !== 'string')
+          || !isThisMachine({ host: c.host, machineId: (c.machineId ?? null) as string | null }) || c.container || c.observationUnknown !== false || processes === null) refuse("the agent's tool processes could not be accounted for");
         const recorded = [...(c.pid === null ? [] : [{ pid: c.pid, group: c.group }]), ...processes!];
         for (const one of recorded) {
           if (!Number.isSafeInteger(one.pid) || Number(one.pid) <= 0) refuse("the agent's tool processes could not be accounted for");

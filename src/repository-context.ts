@@ -1,12 +1,12 @@
 /** Optional repository context. Callers admit project access; this module grants no authority.
  * The index is disposable. Every read hashes the current bounded tracked source set;
  * a missing/changed/unreadable index falls back to ordinary text search, never a task gate. */
-import { checkoutGitSync } from './teardown-git.js';
+import { checkoutGitSync, viewedGitSync, type GitBinding } from './teardown-git.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { scanForSecrets } from './evidence.js';
-import type ts from 'typescript-parser';
+import { compilerOptionsOf, extractFile, resolveAll } from './code-extract.js';
 
 const VERSION = 1;
 const MAX_FILES = 1200, MAX_FILE_BYTES = 256_000, MAX_SOURCE_BYTES = 12_000_000;
@@ -17,16 +17,18 @@ const sha = (value: string | Buffer) => createHash('sha256').update(value).diges
 // Read-only and bounded, and always the hardened checkout git (a crew worktree is agent-written, and a page read or a
 // lead's refresh reads it alike): no filter, hook, program or network, its config and info frozen in a view of the
 // plane's own before they're inspected (teardown-git.ts checkoutGitSync).
-const git = (repo: string, args: string[]) => checkoutGitSync(repo, args, { timeoutMs: 10_000, maxBuffer: 2_000_000 }).trimEnd();
+// Bound to the project's record, so a pointer or commondir can't turn the read to another repository.
+const git = (repo: string, args: string[], binding: GitBinding) => checkoutGitSync(repo, args, { timeoutMs: 10_000, maxBuffer: 2_000_000, binding }).trimEnd();
 const inside = (root: string, path: string) => { const r = relative(root, path); return r !== '..' && !r.startsWith('..' + sep) && !isAbsolute(r); };
 
 export type RepositoryContextRequest = {
   repo: string; query: string; mode?: 'search' | 'impact'; audience?: 'lead' | 'crew';
-  /** Canonical admitted project when repo is a crew worktree. Must share its Git common directory. */
+  /** The admitted project from Toolroll's records: repo itself, or the project a crew worktree belongs to. Every read is
+   * bound to its git folder. */
   project?: string;
   baseRevision?: string; cacheRoot?: string; refresh?: boolean; maxBytes?: number;
 };
-export type RepositoryCheckout = { repo: string; gitDir: string; head: string; baseRevision: string; sourceHash: string; source: 'working-tree' };
+export type RepositoryCheckout = { repo: string; gitDir: string; head: string; baseRevision: string; sourceHash: string; source: 'working-tree' | 'base-commit' };
 export type RepositoryRelationship = { from: string; to: string; kind: 'imports' | 're-exports' | 'dynamic-import'; file: string; line: number; provenance: 'explicit' };
 export type RepositoryExcerpt = { file: string; line: number; endLine: number; sha256: string; text: string; reason: string; symbol: string | null };
 export type RepositoryContext = {
@@ -42,23 +44,21 @@ type SymbolNode = { file: string; name: string; line: number; endLine: number };
 type Index = { version: 1; checkout: RepositoryCheckout; extractor: string; nodes: SymbolNode[]; relationships: RepositoryRelationship[]; warnings: string[] };
 type Snapshot = { checkout: RepositoryCheckout; sources: Source[]; omitted: number; omittedBytes: number; warnings: string[] };
 
-function capture(request: RepositoryContextRequest): Snapshot {
-  const repo = realpathSync(request.repo);
-  if (repo !== resolve(request.repo)) throw Error('The project location changed.');
-  if (realpathSync(git(repo, ['rev-parse', '--show-toplevel'])) !== repo) throw Error('Choose the project checkout root.');
-  const head = git(repo, ['rev-parse', '--verify', 'HEAD']);
-  const baseRevision = request.baseRevision ?? head;
-  if (!/^[a-f0-9]{40,64}$/.test(baseRevision) || git(repo, ['rev-parse', '--verify', `${baseRevision}^{commit}`]) !== baseRevision) throw Error('The requested context base is unavailable.');
-  if (request.audience === 'crew' && baseRevision !== head) throw Error('Crew context must start at its exact task base.');
-  const gitDir = realpathSync(git(repo, ['rev-parse', '--absolute-git-dir']));
-  if (request.project && realpathSync(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir'])) !== realpathSync(git(request.project, ['rev-parse', '--path-format=absolute', '--git-common-dir']))) throw Error('The worktree belongs to a different project.');
-  const files = git(repo, ['ls-files', '-z', '--cached']).split('\0').filter(Boolean).sort();
-  const sources: Source[] = [], warnings: string[] = [];
+/** Whether a tracked path is one the index reads, by its name alone. */
+const skippedPath = (file: string) => !TEXT.test(file) || /(?:^|\/)(?:node_modules|vendor|dist|build|coverage|\.git)(?:\/|$)/.test(file);
+const unsafePath = (file: string) => file.split('/').some(p => p === '..') || /[\x00-\x1f]/.test(file);
+const unreadableText = (data: Buffer, text: string) => data.length > MAX_FILE_BYTES || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]/u.test(text) || scanForSecrets(text).length > 0;
+type Read = { sources: Source[]; omitted: number; omittedBytes: number };
+
+/** The working tree's tracked files, for a lead or a person looking at the project's own checkout. */
+function workingTreeSources(repo: string, binding: GitBinding): Read {
+  const files = git(repo, ['ls-files', '-z', '--cached'], binding).split('\0').filter(Boolean).sort();
+  const sources: Source[] = [];
   let omitted = 0, omittedBytes = 0, bytes = 0;
   for (const file of [...new Set(files)]) {
-    if (!TEXT.test(file) || /(?:^|\/)(?:node_modules|vendor|dist|build|coverage|\.git)(?:\/|$)/.test(file)) continue;
+    if (skippedPath(file)) continue;
     const path = resolve(repo, file);
-    if (!inside(repo, path) || file.split('/').some(p => p === '..') || /[\x00-\x1f]/.test(file)) { omitted++; continue; }
+    if (!inside(repo, path) || unsafePath(file)) { omitted++; continue; }
     try {
       const stat = lstatSync(path);
       // Never follow even an internal symlink: the index is scoped to tracked ordinary files.
@@ -66,15 +66,74 @@ function capture(request: RepositoryContextRequest): Snapshot {
       if (sources.length >= MAX_FILES || stat.size > MAX_FILE_BYTES || bytes + stat.size > MAX_SOURCE_BYTES) { omitted++; omittedBytes += stat.size; continue; }
       const data = readFileSync(path);
       const text = data.toString('utf8');
-      if (data.length > MAX_FILE_BYTES || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]/u.test(text) || scanForSecrets(text).length) { omitted++; omittedBytes += data.length; continue; }
+      if (unreadableText(data, text)) { omitted++; omittedBytes += data.length; continue; }
       sources.push({ file, text, sha256: sha(data) }); bytes += data.length;
     } catch { omitted++; }
   }
-  if (git(repo, ['rev-parse', '--verify', 'HEAD']) !== head) throw Error('The checkout changed while context was being read.');
+  return { sources, omitted, omittedBytes };
+}
+
+/**
+ * A crew's sources: the task base's tree and raw blobs, never the working tree an agent writes. A dirty tracked file,
+ * a symlink swapped in or a replace ref is not read; no filter runs on a raw blob.
+ */
+function baseCommitSources(repo: string, base: string, binding: GitBinding): Read {
+  const read = (args: string[], maxBuffer: number, input?: Buffer) => {
+    const ran = viewedGitSync(repo, ['--no-replace-objects', ...args], { timeoutMs: 10_000, maxBuffer, binding, buffer: true, ...(input === undefined ? {} : { input }) });
+    if (ran.status !== 0) throw Error('The task base could not be read.');
+    return ran.stdout;
+  };
+  const wanted: { file: string; oid: string }[] = [];
+  let omitted = 0, omittedBytes = 0, bytes = 0;
+  for (const entry of read(['ls-tree', '-r', '-l', '-z', base], 16_000_000).toString('utf8').split('\0')) {
+    const match = /^(\d{6}) (\w+) ([0-9a-f]{40,64}) +(\d+|-)\t(.+)$/s.exec(entry);
+    if (!match) continue;
+    const [, mode, kind, oid, sized, file] = match as unknown as [string, string, string, string, string, string];
+    if (skippedPath(file)) continue;
+    const size = sized === '-' ? 0 : Number(sized);
+    if (unsafePath(file) || kind !== 'blob' || (mode !== '100644' && mode !== '100755')) { omitted++; continue; }
+    if (wanted.length >= MAX_FILES || size > MAX_FILE_BYTES || bytes + size > MAX_SOURCE_BYTES) { omitted++; omittedBytes += size; continue; }
+    wanted.push({ file, oid }); bytes += size;
+  }
+  wanted.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  const sources: Source[] = [];
+  if (wanted.length === 0) return { sources, omitted, omittedBytes };
+  const out = read(['cat-file', '--batch'], MAX_SOURCE_BYTES + wanted.length * 128 + 4096, Buffer.from(wanted.map(w => w.oid).join('\n') + '\n'));
+  let at = 0;
+  for (const { file, oid } of wanted) {
+    const end = out.indexOf(0x0a, at);
+    const header = end < 0 ? null : /^([0-9a-f]{40,64}) blob (\d+)$/.exec(out.subarray(at, end).toString('latin1'));
+    if (end < 0 || header === null || header[1] !== oid) throw Error('The task base could not be read.');
+    const size = Number(header[2]);
+    const data = out.subarray(end + 1, end + 1 + size);
+    at = end + 1 + size + 1;
+    const text = data.toString('utf8');
+    if (unreadableText(data, text)) { omitted++; omittedBytes += data.length; continue; }
+    sources.push({ file, text, sha256: sha(data) });
+  }
+  return { sources, omitted, omittedBytes };
+}
+
+function capture(request: RepositoryContextRequest): Snapshot {
+  const repo = realpathSync(request.repo);
+  if (repo !== resolve(request.repo)) throw Error('The project location changed.');
+  // The project's record, never the checkout's own pointer files: the admitted project, or the one a crew worktree
+  // belongs to. Only a person's local look at an unrecorded folder has none.
+  const binding: GitBinding = { repo: request.project ?? null };
+  if (realpathSync(git(repo, ['rev-parse', '--show-toplevel'], binding)) !== repo) throw Error('Choose the project checkout root.');
+  const head = git(repo, ['rev-parse', '--verify', 'HEAD'], binding);
+  const baseRevision = request.baseRevision ?? head;
+  if (!/^[a-f0-9]{40,64}$/.test(baseRevision) || git(repo, ['rev-parse', '--verify', `${baseRevision}^{commit}`], binding) !== baseRevision) throw Error('The requested context base is unavailable.');
+  if (request.audience === 'crew' && baseRevision !== head) throw Error('Crew context must start at its exact task base.');
+  const gitDir = realpathSync(git(repo, ['rev-parse', '--absolute-git-dir'], binding));
+  const crew = request.audience === 'crew';
+  const { sources, omitted, omittedBytes } = crew ? baseCommitSources(repo, baseRevision, binding) : workingTreeSources(repo, binding);
+  if (git(repo, ['rev-parse', '--verify', 'HEAD'], binding) !== head) throw Error('The checkout changed while context was being read.');
+  const warnings: string[] = [];
   if (omitted) warnings.push(`${omitted} source files were omitted because they were unavailable, excluded, sensitive or beyond the read limits.`);
   warnings.push('Tracked files only. Static imports do not establish every runtime dependency or sufficient test coverage.');
   const sourceHash = sha(JSON.stringify(sources.map(({ file, sha256 }) => [file, sha256])));
-  return { checkout: { repo, gitDir, head, baseRevision, sourceHash, source: 'working-tree' }, sources, omitted, omittedBytes, warnings };
+  return { checkout: { repo, gitDir, head, baseRevision, sourceHash, source: crew ? 'base-commit' : 'working-tree' }, sources, omitted, omittedBytes, warnings };
 }
 
 function cacheFile(root: string, checkout: RepositoryCheckout): string {
@@ -113,50 +172,24 @@ async function buildIndex(snapshot: Snapshot): Promise<Index> {
   const byPath = new Map(snapshot.sources.map(source => [resolve(snapshot.checkout.repo, source.file), source]));
   const directories = new Set<string>([snapshot.checkout.repo]);
   for (const file of byPath.keys()) { let dir = dirname(file); while (inside(snapshot.checkout.repo, dir)) { directories.add(dir); if (dir === snapshot.checkout.repo) break; dir = dirname(dir); } }
-  let options: ts.CompilerOptions = { module: compiler.ModuleKind.NodeNext, moduleResolution: compiler.ModuleResolutionKind.NodeNext, allowJs: true, resolveJsonModule: true };
   const config = byPath.get(join(snapshot.checkout.repo, 'tsconfig.json'));
+  const { options, problem } = compilerOptionsOf(compiler, join(snapshot.checkout.repo, 'tsconfig.json'), config?.text, snapshot.checkout.repo);
   const warnings: string[] = [];
-  if (config) {
-    const parsed = compiler.parseConfigFileTextToJson(join(snapshot.checkout.repo, config.file), config.text);
-    if (!parsed.error && parsed.config?.compilerOptions) {
-      const converted = compiler.convertCompilerOptionsFromJson(parsed.config.compilerOptions, snapshot.checkout.repo);
-      options = { ...options, ...converted.options };
-      if (parsed.config.extends) warnings.push('Inherited tsconfig settings are not indexed; unresolved aliases remain omitted.');
-    } else warnings.push('TypeScript configuration could not be read; relative imports still work.');
-  }
+  if (problem === 'extends') warnings.push('Inherited tsconfig settings are not indexed; unresolved aliases remain omitted.');
+  else if (problem === 'unreadable') warnings.push('TypeScript configuration could not be read; relative imports still work.');
+  const resolveOne = resolveAll(compiler, snapshot.checkout.repo, byPath, directories, options, resolve);
   const nodes: SymbolNode[] = [], relationships: RepositoryRelationship[] = [];
   let unresolved = 0, parseFailures = 0;
-  const host: ts.ModuleResolutionHost = {
-    fileExists: file => byPath.has(resolve(file)),
-    readFile: file => byPath.get(resolve(file))?.text,
-    directoryExists: dir => directories.has(resolve(dir)),
-    getCurrentDirectory: () => snapshot.checkout.repo,
-    realpath: file => resolve(file),
-  };
   for (const source of snapshot.sources.filter(s => CODE.test(s.file))) {
     const fileName = resolve(snapshot.checkout.repo, source.file);
-    const tree = compiler.createSourceFile(fileName, source.text, compiler.ScriptTarget.Latest, true);
-    if ((tree as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics?.length) parseFailures++;
-    const line = (pos: number) => tree.getLineAndCharacterOfPosition(Math.min(pos, source.text.length)).line + 1;
-    const relationship = (specifier: string, kind: RepositoryRelationship['kind'], at: number) => {
-      const resolved = compiler.resolveModuleName(specifier, fileName, options, host).resolvedModule?.resolvedFileName;
-      if (!resolved || !byPath.has(resolve(resolved))) { unresolved++; return; }
-      if (relationships.length < MAX_EDGES) relationships.push({ from: source.file, to: byPath.get(resolve(resolved))!.file, kind, file: source.file, line: line(at), provenance: 'explicit' });
-    };
-    const visit = (node: ts.Node) => {
-      if (nodes.length < MAX_NODES && (compiler.isFunctionDeclaration(node) || compiler.isClassDeclaration(node) || compiler.isInterfaceDeclaration(node) || compiler.isTypeAliasDeclaration(node) || compiler.isEnumDeclaration(node) || compiler.isMethodDeclaration(node) || compiler.isVariableDeclaration(node))) {
-        const name = node.name;
-        if (name && compiler.isIdentifier(name)) nodes.push({ file: source.file, name: name.text, line: line(node.getStart(tree)), endLine: line(node.end) });
-      }
-      if (compiler.isImportDeclaration(node) && compiler.isStringLiteral(node.moduleSpecifier)) relationship(node.moduleSpecifier.text, 'imports', node.getStart(tree));
-      if (compiler.isExportDeclaration(node) && node.moduleSpecifier && compiler.isStringLiteral(node.moduleSpecifier)) relationship(node.moduleSpecifier.text, 're-exports', node.getStart(tree));
-      if (compiler.isCallExpression(node) && node.arguments.length === 1 && compiler.isStringLiteral(node.arguments[0]!)) {
-        if (node.expression.kind === compiler.SyntaxKind.ImportKeyword) relationship((node.arguments[0] as ts.StringLiteral).text, 'dynamic-import', node.getStart(tree));
-        // require may be shadowed; do not present a guessed call as a proven relationship.
-      }
-      compiler.forEachChild(node, visit);
-    };
-    visit(tree);
+    const read = extractFile(compiler, fileName, source.text);
+    if (read.parseFailed) parseFailures++;
+    for (const one of read.declarations) if (nodes.length < MAX_NODES) nodes.push({ file: source.file, name: one.name, line: one.line, endLine: one.endLine });
+    for (const one of read.specifiers) {
+      const resolved = resolveOne(one.specifier, fileName);
+      if (resolved === null) { unresolved++; continue; }
+      if (relationships.length < MAX_EDGES) relationships.push({ from: source.file, to: byPath.get(resolved)!.file, kind: one.kind, file: source.file, line: one.line, provenance: 'explicit' });
+    }
   }
   if (unresolved) warnings.push(`${unresolved} external or unresolved imports were omitted.`);
   if (parseFailures) warnings.push(`${parseFailures} files had syntax errors; extracted relationships may be incomplete.`);

@@ -130,7 +130,7 @@ describe("lifecycle producers: the shared mutations record each fact once, atomi
     expect(store.createConsoleTask({ id: "alpha-1", title: "Guard the payout path", repo: ALPHA, goal: "Guard it", acceptance: RUBRIC }, now)).toMatchObject({ ok: true });
     expect(store.sealScopeApproval("alpha-1", "alex", now)).toBe(true);
     expect(life().map(row => row.kind)).toEqual(["task-filed", "scope-approved"]);
-    expect(life().at(-1)).toMatchObject({ subject: "Scope approved", body: "Approved by alex. A connected worker can take it next.", link: "/chat?task=alpha-1", project: ALPHA });
+    expect(life().at(-1)).toMatchObject({ subject: "Plan approved", body: "Approved by alex. A connected builder can take it next.", link: "/chat?task=alpha-1", project: ALPHA });
     expect(store.sealScopeApproval("alpha-1", "alex", later(1_000))).toBe(true);
     expect(life().map(row => row.kind)).toEqual(["task-filed", "scope-approved"]);
   });
@@ -196,10 +196,10 @@ describe("lifecycle producers: the shared mutations record each fact once, atomi
     placed("alpha-2", ALPHA);
     expect(store.setTaskState("alpha-2", "failed", now)).toEqual({ ok: true });
     expect(store.requeueTask("alpha-2", "alex", now)).toMatchObject({ ok: true });
-    expect(life().at(-1)).toMatchObject({ kind: "task-requeued", subject: "Requeued", body: "Its failure streak is cleared; a worker can take it again." });
+    expect(life().at(-1)).toMatchObject({ kind: "task-requeued", subject: "Queued again", body: "Its repeated failures are cleared; a builder can take it again." });
     expect(store.setTaskState("alpha-2", "running", now)).toEqual({ ok: true });
     expect(store.setTaskState("alpha-2", "queued", now)).toEqual({ ok: true });
-    expect(life().at(-1)).toMatchObject({ kind: "task-queued", subject: "Back in the queue", body: "Its worker released it without finishing; another attempt can start." });
+    expect(life().at(-1)).toMatchObject({ kind: "task-queued", subject: "Back in the queue", body: "Its builder let it go without finishing; another attempt can start." });
     expect(store.setTaskState("alpha-2", "queued", now)).toEqual({ ok: true });
     expect(life().filter(row => row.kind === "task-queued")).toHaveLength(1);
     // Rolled back with its change: nothing survives a failed transaction.
@@ -212,13 +212,13 @@ describe("lifecycle producers: the shared mutations record each fact once, atomi
   test("run admission, phases and endings: one start per attempt, one fact per phase crossed, one ending per open run; a closed run's phase and a restated reason are history", () => {
     const ref = placed("alpha-1", ALPHA);
     const run = store.startRun({ taskRef: ref, leaseId: "l-1", runner: RUNNER, branch: "so/alpha-1", worktree: "/pool/alpha-1", ...bareLegacy("build"), now });
-    expect(life().at(-1)).toMatchObject({ kind: "run-started", run, subject: `Attempt #${run} started`, body: "Building on claude.", link: "/chat?task=alpha-1" });
+    expect(life().at(-1)).toMatchObject({ kind: "run-started", run, subject: `Build #${run} started`, body: "Building on claude.", link: "/chat?task=alpha-1" });
     store.setRunPhase(run, "agent-running", now);
     store.setRunPhase(run, "agent-running", now);
     store.setRunPhase(run, "validating-handoff", now);
-    expect(life().slice(-2).map(row => row.subject)).toEqual([`Attempt #${run}: agent working`, `Attempt #${run}: checking the handoff`]);
+    expect(life().slice(-2).map(row => row.subject)).toEqual([`Build #${run}: agent working`, `Build #${run}: checking the handoff`]);
     store.finishRun(run, { outcome: "built", committed: true, now });
-    expect(life().at(-1)).toMatchObject({ kind: "run-finished", subject: `Attempt #${run} built`, body: "The result is saved locally. It is not yet independently reviewed or published.", link: `/chat?task=alpha-1&result=${run}&tab=changes` });
+    expect(life().at(-1)).toMatchObject({ kind: "run-finished", subject: `Build #${run} built`, body: "The result is saved locally. It is not yet independently reviewed or published.", link: `/chat?task=alpha-1&result=${run}&tab=changes` });
     // A reason restated on the closed run is the same ending; a leftover phase is history.
     store.finishRun(run, { outcome: "built", reason: "report-delivered (task external-closed)", committed: true, now });
     store.setRunPhase(run, "committing", now);
@@ -233,11 +233,11 @@ describe("lifecycle producers: the shared mutations record each fact once, atomi
     const noChange = store.startRun({ taskRef: ref, leaseId: "l-5", runner: RUNNER, branch: "so/alpha-1", worktree: "/pool/alpha-1", ...bareLegacy("build"), now });
     store.finishRun(noChange, { outcome: "no-change", reason: "handoff", now });
     expect(life().slice(5).map(row => [row.kind, row.subject])).toEqual([
-      ["run-started", `Attempt #${failing} started`],
-      ["run-started", `Attempt #${parked} started`],
-      ["run-started", `Planning started (run #${planner})`],
-      ["run-started", `Attempt #${noChange} started`],
-      ["run-finished", `Attempt #${noChange} finished with no changes`],
+      ["run-started", `Build #${failing} started`],
+      ["run-started", `Build #${parked} started`],
+      ["run-started", "Planning started"],
+      ["run-started", `Build #${noChange} started`],
+      ["run-finished", `Build #${noChange} finished with no changes`],
     ]);
     // An unplaced task's runs say nothing: there is no project to tell.
     store.createTask({ id: "nowhere", title: "nowhere" }, now);
@@ -255,14 +255,14 @@ describe("lifecycle producers: the shared mutations record each fact once, atomi
     store.saveProofVerdict(run, "attested", ["no check log"], now, [{ id: "c1", state: "pass", how: "manual", evidence: [] }] as never);
     const asked = store.requestReview(run, "alex", now);
     expect(asked).toMatchObject({ ok: true, attempt: 1 });
-    expect(life().at(-1)).toMatchObject({ kind: "review-requested", run, subject: "Independent review requested", body: `Requested by alex for attempt #${run}'s saved result. A connected reviewer runs it next.`, link: `/chat?task=alpha-1&result=${run}&tab=checks` });
+    expect(life().at(-1)).toMatchObject({ kind: "review-requested", run, subject: "Independent review requested", body: `Requested by alex for build #${run}'s saved result. A connected reviewer runs it next.`, link: `/chat?task=alpha-1&result=${run}&tab=checks` });
     if (!asked.ok) return;
     const reviewer = store.startRun({ taskRef: ref, leaseId: "l-r", runner: RUNNER, role: "reviewer", parentRun: run, request: asked.id, ...bareLegacy("review", "claude", "sonnet"), now });
-    expect(life().at(-1)).toMatchObject({ kind: "run-started", run: reviewer, subject: "Independent review started (attempt 1)", body: `Reviewing the saved result of attempt #${run}. Running on claude · sonnet.` });
+    expect(life().at(-1)).toMatchObject({ kind: "run-started", run: reviewer, subject: "Independent review started (attempt 1)", body: `Reviewing the saved result of build #${run}. Running on claude · sonnet.` });
     // The fold lands the verdict before the root reviewer is concluded (ingestReview's order).
     store.saveProofVerdict(run, "verified", [], now, [{ id: "c1", state: "pass", how: "manual", evidence: [] }] as never, "attested");
     store.finishRun(reviewer, { outcome: "no-change", reason: "reviewed — 0 comment(s), 1 judgement(s)", now });
-    expect(life().at(-1)).toMatchObject({ kind: "review-finished", run: reviewer, subject: "Independent review finished: checks verified", body: "Every acceptance check was verified against the saved result.", link: `/chat?task=alpha-1&result=${run}&tab=checks` });
+    expect(life().at(-1)).toMatchObject({ kind: "review-finished", run: reviewer, subject: "Independent review finished: checks verified", body: "Every requirement was checked against the saved result.", link: `/chat?task=alpha-1&result=${run}&tab=checks` });
     store.finishRun(reviewer, { outcome: "no-change", reason: "reviewed — restated", now });
     expect(life().filter(row => row.kind === "review-finished")).toHaveLength(1);
   });
@@ -274,14 +274,14 @@ describe("lifecycle producers: the shared mutations record each fact once, atomi
     const run = store.startRun({ taskRef: ref, leaseId: "lease-stop", runner: RUNNER, branch: "so/alpha-1", worktree: "/pool/alpha-1", ...bareLegacy("build"), now });
     expect(store.requestRunStop({ runId: run, taskRef: ref, by: "alex", via: "web" }, now)).toMatchObject({ ok: true, repeated: false });
     expect(store.requestRunStop({ runId: run, taskRef: ref, by: "alex", via: "web" }, now)).toMatchObject({ ok: true, repeated: true });
-    expect(life().slice(-1)).toMatchObject([{ kind: "run-stopping", run, subject: `Stopping attempt #${run}`, body: "Its processes are being stopped and its work is preserved. The task stays paused until this attempt is resumed.", link: "/t/alpha-1" }]);
+    expect(life().slice(-1)).toMatchObject([{ kind: "run-stopping", run, subject: `Stopping build #${run}`, body: "Its processes are being stopped and its work is kept. The task stays paused until this build is resumed.", link: "/t/alpha-1" }]);
     store.finishRun(run, { outcome: "failed", reason: "interrupted", now, stopSettlement: "interrupted" });
-    expect(life().at(-1)).toMatchObject({ kind: "run-stopped", subject: `Attempt #${run} stopped`, body: "Its work is preserved. Resume this attempt from the task page when ready." });
+    expect(life().at(-1)).toMatchObject({ kind: "run-stopped", subject: `Build #${run} stopped`, body: "Its work is preserved. Resume this attempt from the task page when ready." });
     // The claim ends with the attempt; the resume then lifts exactly this stop's hold.
     store.handle.prepare("UPDATE claim SET released_at = ?, released_by = 'released' WHERE lease_id = 'lease-stop'").run(now.toISOString());
     expect(store.activeHolds(ref, now).map(one => one.ownerKind)).toEqual(["stop"]);
     expect(store.resumeRunStop({ runId: run, taskRef: ref, by: "alex", via: "web" }, later(1_000))).toMatchObject({ ok: true });
-    expect(life().at(-1)).toMatchObject({ kind: "run-resumed", subject: `Attempt #${run} resumed`, body: "The next pass takes a fresh claim and continues from the preserved work.", link: "/chat?task=alpha-1" });
+    expect(life().at(-1)).toMatchObject({ kind: "run-resumed", subject: `Build #${run} resumed`, body: "The next attempt continues from the saved work.", link: "/chat?task=alpha-1" });
     expect(life().map(row => row.kind)).toEqual(["task-filed", "run-started", "run-stopping", "run-stopped", "run-resumed"]);
     expect(life().every(row => row.pushClass === null && row.scope === "task" && row.project === ALPHA)).toBe(true);
   });
@@ -497,7 +497,7 @@ describe("lifecycle facts through the Telegram transport", () => {
     const card = edits.at(-1)!;
     const text = String(card.params["text"]);
     expect(text).toContain("👋 Needs you");
-    expect(text).toContain("The worker can't read the project folder. Restore its access, then resume.");
+    expect(text).toContain("The builder can't read the project folder. Restore its access, then resume.");
     expect(text).not.toMatch(/retryable-infra|\/Users|Review optional|20\d\d-\d\d-\d\dT/);
     expect(card.params["entities"]).toEqual(telegramProgressCard(store, store.getRun(run)!, "clear-acceptance", ALPHA, now).entities);
     expect(script.buttons(card)[0]?.text).toBe("Open task");
@@ -598,13 +598,13 @@ describe("lifecycle facts through the Telegram transport", () => {
     storeEvidence(store, dir, run, "check-log", "checks.txt", Buffer.from("1 test passed"), "npm test", now, { captureStatus: "ok" });
     sealVerificationReceipt(store, dir, run, "a".repeat(40), store.liveVerifyCommand(ALPHA)!, { configured: true, ran: true, exitCode: 0 }, now);
     const view = () => telegramProgressCard(store, store.getRun(run)!, "ready-1", ALPHA, now, dir);
-    expect(view().text).toContain("✅ Ready for review\nChecks passed on aaaaaaa. Review the change, then mark it complete.\n\n✓ Project checks · Passed on aaaaaaa");
+    expect(view().text).toContain("✅ Ready for review\nChecks passed on aaaaaaa. Review the change, then accept it.\n\n✓ Project checks · Passed on aaaaaaa");
     expect(view().link).toEqual({ label: "Open result", path: `/chat?task=ready-1&result=${run}` });
     const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, [ALPHA]);
     if (!who.ok) throw new Error("approver fixture");
     const receipt = assignmentOf(store, "ready-1", now, { principal: "operator", repos: [ALPHA] }, dir)!.receipt!;
     expect(checkAssignmentAsOperator(store, "ready-1", receipt.digest, who.who, now, dir).ok).toBe(true);
-    expect(view().text).toContain("✅ Complete\nMarked complete by alex.\n\n✓ Project checks · Passed on aaaaaaa");
+    expect(view().text).toContain("✅ Complete\nAccepted by alex.\n\n✓ Project checks · Passed on aaaaaaa");
     expect(view().text).not.toMatch(/Review|reviewer/);
   });
 
@@ -797,7 +797,7 @@ describe("lifecycle facts through the Telegram transport", () => {
     expect(script.texts()).toHaveLength(2);
     expect(script.texts()[0]).toMatch(/^digest — 2 routine fact\(s\)/);
     expect(script.texts()[0]).toContain("• alpha · New task: Guard the payout path\n    Filed and waiting in the queue.");
-    expect(script.texts()[0]).toContain(`• alpha / Guard the payout path · Attempt #${run} started\n    Building on claude.`);
+    expect(script.texts()[0]).toContain(`• alpha / Guard the payout path · Build #${run} started\n    Building on claude.`);
     expect(script.texts()[0]).not.toContain("beta-1");
     expect(script.texts()[1]).toBe("alpha · Guard the payout path stalled after 3 straight failures\n\nfixture");
     expect(script.sends().every(send => send.params["reply_markup"] === undefined)).toBe(true);

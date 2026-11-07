@@ -21,6 +21,8 @@ export const PROJECT_DELETE_CSS = ".k-opt [data-check-access-warning]{display:no
 
 export type ProjectSettingsView = {
   remoteUrl?: string | null;
+  /** The code map's switch and, while it runs, the holdout's end date. */
+  codeMap?: { on: boolean; enrollUntil: string | null; canEndHoldout: boolean; href: string };
   repo: string; name: string; holdings: ProjectHoldings; running: string[]; canDelete: boolean;
   /** How many of its tasks build at once: the saved number, what its worker allows, how many build now. */
   builds?: { setting: number; capacity: number | null; building: number; canChange: boolean };
@@ -219,6 +221,18 @@ function buildsHtml(view: ProjectSettingsView): Html | "" {
 
 /** The project's page: its name and path, what Toolroll holds for it, its build settings, and (for an instance operator)
  * Remove and Delete. */
+function codeMapHtml(view: ProjectSettingsView): Html {
+  const map = view.codeMap;
+  if (map === undefined) return html``;
+  return settingsSection({ id: "code-map", title: "Code map", right: postForm("/settings/project/code-map", btn(map.on ? "Turn off" : "Turn on", { sm: true, type: "submit" }), { hidden: { repo: view.repo, on: map.on ? "0" : "1" } }),
+    lead: map.on ? "Toolroll makes a map of main and gives it to builds." : "Off. No new maps are made, and builds get none.",
+    body: joinHtml([
+      html`<p><a class="k-link" href="${map.href}">Open code map</a></p>`,
+      ...(map.enrollUntil === null ? [] : [formRow("Holdout", `About half of new builds run without the map until ${map.enrollUntil.slice(0, 10)}, to measure whether it helps.`,
+        map.canEndHoldout ? postForm("/settings/project/code-map/holdout", btn("End holdout", { sm: true, type: "submit" }), { hidden: { repo: view.repo } }) : html``, "inline")]),
+    ]) });
+}
+
 export function projectSettingsHtml(view: ProjectSettingsView, said: { said?: string | null; problem?: string | null }): Html {
   const answer = said.problem ? notice(said.problem) : said.said ? infoLine(said.said) : "";
   const project = settingsSection({ id: "project", title: view.name, lead: mono(view.repo),
@@ -227,7 +241,7 @@ export function projectSettingsHtml(view: ProjectSettingsView, said: { said?: st
       formRow("Recorded remote", view.remoteUrl ? null : "None. Landed work waits for your review.", view.remoteUrl ? mono(view.remoteUrl) : html``, view.remoteUrl ? "wide" : "inline"),
       disclose("Change remote", joinHtml([note("An owner or instance operator can run:"), codeLine("toolroll repos add <project> --remote <url>")])),
     ]) });
-  const settings = joinHtml([buildsHtml(view), accessHtml(view), networkHtml(view), writesHtml(view), sandboxHtml(view), checkAccessHtml(view), liveViewHtml(view)]);
+  const settings = joinHtml([buildsHtml(view), accessHtml(view), networkHtml(view), writesHtml(view), sandboxHtml(view), checkAccessHtml(view), liveViewHtml(view), codeMapHtml(view)]);
   if (!view.canDelete) return joinHtml([answer, project, settings, note("An instance operator can remove or delete a project.")]);
   const deleteBody = view.running.length > 0
     ? notice(`Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.`)

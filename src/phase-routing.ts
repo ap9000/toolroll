@@ -936,7 +936,7 @@ export function projectRoute(route: PhaseRoute, readiness: ReadinessLookup): Rou
       ...leg,
       reasons: leg.reasons.map(reason => reason.replace("builder and reviewer", "builder")),
       readiness: state,
-      readinessReason: seen === null ? "no runner has reported this provider yet" : seen.reason,
+      readinessReason: seen === null ? "no builder has reported this provider yet" : seen.reason,
       readinessRunner: seen === null ? null : seen.runner,
       observedAt: seen === null ? null : seen.observedAt,
       words: "",
@@ -967,7 +967,7 @@ export function projectRoute(route: PhaseRoute, readiness: ReadinessLookup): Rou
 export function routeWords(projection: RouteProjection, indent = "  "): string[] {
   const pad = `${indent}             `;
   return [
-    `${indent}route        ${projection.riskTitle.toLowerCase()} · ${projection.postureWords} · ${projection.digest}`,
+    `${indent}route        ${projection.riskTitle.toLowerCase()} · ${projection.postureWords}`,
     ...(projection.sizeWords === null ? [] : [`${indent}size         ${projection.sizeWords} — ${projection.sizeReason}`]),
     `${pad}${projection.summary}`,
     ...projection.legs.flatMap(leg => [`${pad}${leg.words}`, ...leg.reasons.map(reason => `${pad}    ${reason}`)]),

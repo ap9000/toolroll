@@ -2,7 +2,7 @@
  * The storage sweep: the plane cleans up after itself without anyone running a command. About once a day, when nothing
  * is running or waiting (storage-sweep-schedule.ts: one service takes it, the cursor moves in the same transaction),
  * it removes test temp folders nothing touched for a day (test-temp.ts), stops orphans Toolroll left running (orphan-sweep.ts), removes finished checkouts the cleanup
- * setting lets go (checkout-cleanup.ts), keeps the current, previous and newest staged runtimes (staged-runtimes.ts)
+ * setting lets go and idle ones past the idle limit (checkout-cleanup.ts), keeps the current, previous and newest staged runtimes (staged-runtimes.ts)
  * and removes shared dependency installs no checkout has used for a week (shared-deps.ts).
  *
  * Nothing live work uses goes (`liveWork`): while a run is open, a lease current or a checkout in use, each removal
@@ -15,6 +15,8 @@
  * The everyday work stays where it happens: suites remove their own temp roots and processes, a run's processes stop
  * when it ends and a finished checkout goes on the worker's next pass. This is the net for what slipped through.
  *
+ * The last part is rows, not disk: test results and flaky-test observations past their 180 days (check history).
+ *
  * What each sweep did is saved (the latest few) and in the ledger: `toolroll storage` and Settings → Storage show it.
  * A clean-up by hand (`storage clean --yes`) is saved the same way. A part that failed, or had more than one pass
  * takes, brings the next sweep forward to an hour later; it still waits for nothing to be running.
@@ -22,15 +24,18 @@
  * it runs on).
  */
 import { realpathSync } from "node:fs";
-import { hostname } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
+import { pruneCheckResults } from "./check-facts.js";
 import { cleanCheckouts } from "./checkout-cleanup.js";
+import { pruneCiObservations } from "./flaky-ci.js";
+import { pruneObservations } from "./flaky.js";
 import { durationWords, locateProcesses, sweepOrphans, ownerRunning, type Located } from "./orphan-sweep.js";
 import { processCensus, type ProcessRow } from "./run-closeout.js";
 import { linkedKey, pruneUnusedShared, sharedDepsRoot, sharedUse, SHARED_UNUSED_MS } from "./shared-deps.js";
 import { pruneStagedRuntimes, runtimesInUse, runtimeScriptPaths, stagePlan } from "./staged-runtimes.js";
 import { bytesWords, diskBytes } from "./storage.js";
-import type { Store } from "./store.js";
+import { localWitnessSql, storeMachine, type Store } from "./store.js";
+import { processesInStrict } from "./stop-proof.js";
 import { removeStaleTestTemp } from "./test-temp.js";
 import { worktreeProcessOccupancy, type WorktreePool } from "./worktree.js";
 import { runSweepChild, type SweepCompletion, type SweepExecutor } from "./storage-sweep-process.js";
@@ -46,7 +51,7 @@ const TEMP_MAX = 20_000;
 /** Paths saved per part, for the disclosure. */
 const ITEMS_MAX = 20;
 
-export type SweepKind = "test temp" | "orphans" | "checkouts" | "runtimes" | "dependencies";
+export type SweepKind = "test temp" | "orphans" | "checkouts" | "runtimes" | "dependencies" | "check history";
 export type SweepPart = { kind: SweepKind; count: number; bytes: number; failed: number; more?: boolean; problem?: string; items: string[] };
 export type SweepRecord = { at: string; source: "automatic" | "manual"; actor: string; parts: SweepPart[] };
 
@@ -62,6 +67,8 @@ export type SweepDeps = {
   inUse?: () => string[];
   scripts?: (pids: readonly number[]) => string[];
   graceMs?: number;
+  /** Which processes run from inside each path. */
+  cwds?: (paths: readonly string[]) => Map<string, number[]>;
 };
 
 export function storageSweepOff(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -101,8 +108,9 @@ export function liveWork(store: Store, depsRoot: string, now: Date, where: (pids
     if (held.held && held.by > 1) pids.add(held.by);
   }
   if (tasks.size === 0 && paths.length === 0) return { live: false, paths: [], blind: false };
+  const local = localWitnessSql(storeMachine(db), "p");
   const witnessed = db.prepare(`SELECT p.pid AS pid FROM run_process p JOIN run r ON r.id = p.run
-    WHERE r.finished_at IS NULL AND p.exited_at IS NULL AND p.pid IS NOT NULL AND p.host = ?`).all(hostname());
+    WHERE r.finished_at IS NULL AND p.exited_at IS NULL AND p.pid IS NOT NULL AND ${local.sql}`).all(...local.params);
   for (const row of witnessed) pids.add(Number(row["pid"]));
   const from = pids.size === 0 ? [] : where([...pids].sort((a, b) => a - b));
   if (from === null) return { live: true, paths, blind: true };
@@ -182,7 +190,7 @@ export async function sweepStorage(store: Store, deps: SweepDeps, now: () => Dat
 }
 
 export function sweepKinds(withPool: boolean): SweepKind[] {
-  return ["test temp", "orphans", ...(withPool ? ["checkouts" as const] : []), "runtimes", "dependencies"];
+  return ["test temp", "orphans", ...(withPool ? ["checkouts" as const] : []), "runtimes", "dependencies", "check history"];
 }
 
 /** Child side (also a focused unit-test seam): every scan and removal, without saving the parent's result. */
@@ -218,8 +226,10 @@ export async function executeSweep(store: Store, deps: SweepDeps, now: () => Dat
   if (deps.pool !== null) {
     const pool = deps.pool;
     await part("checkouts", async () => {
-      const done = await cleanCheckouts(store, pool, now, { manual: false, actor, spare });
-      return { count: done.removed.length, bytes: done.freed, failed: done.kept.filter(one => one.why === "git refused").length, items: capped(done.removed.map(one => one.path)) };
+      // Idle folders go here only: nothing records a person's shell or editor in one, so the OS is asked. Unreadable keeps it.
+      const occupied = (path: string) => { try { return (deps.cwds ?? processesInStrict)([path]).size > 0; } catch { return true; } };
+      const done = await cleanCheckouts(store, pool, now, { manual: false, actor, spare, idle: { occupied } });
+      return { count: done.removed.length, bytes: done.freed, failed: done.kept.filter(one => one.why === "git refused").length, ...(done.more ? { more: true } : {}), items: capped(done.removed.map(one => one.path)) };
     });
   }
 
@@ -242,6 +252,13 @@ export async function executeSweep(store: Store, deps: SweepDeps, now: () => Dat
     const sizes = diskBytes(candidates.map(one => one.dir));
     const done = await pruneUnusedShared(root, checkouts, now(), SHARED_UNUSED_MS, { spare });
     return { count: done.removed.length, bytes: done.removed.reduce((sum, one) => sum + (sizes.get(one.dir) ?? 0), 0), failed: done.failed.length, items: capped(done.removed.map(one => one.dir)) };
+  });
+
+  // Learning rows past their retention (docs/plans/learning-loops.md): the only DELETE on them. A lesson note's tallies
+  // are written with each check and never pruned, so what they say doesn't change here.
+  await part("check history", async () => {
+    const count = store.transact(() => pruneCheckResults(store, now()) + pruneObservations(store, now()) + pruneCiObservations(store, now()));
+    return { count, bytes: 0, failed: 0, items: [] };
   });
 
   return { at: now().toISOString(), source: "automatic", actor, parts };
@@ -285,13 +302,14 @@ export function nextSweepAt(store: Store): string | null {
 const NOUNS: Record<SweepKind, [string, string]> = {
   "test temp": ["test temp folder", "test temp folders"],
   orphans: ["leftover process", "leftover processes"],
-  checkouts: ["finished checkout", "finished checkouts"],
+  checkouts: ["task folder", "task folders"],
   runtimes: ["staged runtime", "staged runtimes"],
   dependencies: ["unused dependency install", "unused dependency installs"],
+  "check history": ["old test result", "old test results"],
 };
 
 /** What a part looks at, for "Couldn't check …". */
-const CHECKED: Record<SweepKind, string> = { "test temp": "test temp folders", orphans: "processes", checkouts: "checkouts", runtimes: "staged runtimes", dependencies: "dependency installs" };
+const CHECKED: Record<SweepKind, string> = { "test temp": "test temp folders", orphans: "processes", checkouts: "task folders", runtimes: "staged runtimes", dependencies: "dependency installs", "check history": "old test results" };
 
 export function partWords(one: Pick<SweepPart, "kind" | "count">): string {
   return `${one.count.toLocaleString("en-US")} ${NOUNS[one.kind][one.count === 1 ? 0 : 1]}`;
@@ -301,7 +319,7 @@ function list(items: readonly string[]): string {
   return items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 }
 
-/** "Removed 120 test temp folders and 2 finished checkouts, about 1.2 GB. Stopped 1 leftover process. 3 couldn't be removed." */
+/** "Removed 120 test temp folders and 2 task folders, about 1.2 GB. Stopped 1 leftover process. 3 couldn't be removed." */
 export function sweepWords(parts: readonly SweepPart[]): string {
   const removed = parts.filter(one => one.kind !== "orphans" && one.count > 0);
   const stopped = parts.find(one => one.kind === "orphans" && one.count > 0);

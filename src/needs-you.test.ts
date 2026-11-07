@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
-import { BANNED_WORDS, CODE_NEED, NEEDS, WAITS, hasInternalWords, needSentence, processNeedOf, type NeedKey, type WaitKey } from "./needs-you.js";
+import { bannedWordsIn, CODE_NEED, NEEDS, WAITS, hasInternalWords, needSentence, processNeedOf, type NeedKey, type WaitKey } from "./needs-you.js";
 import { stageOfCode, taskStatusOf } from "./task-status.js";
 import { assignmentActionHref } from "./assignment-ui.js";
 import { browserWorkActionHref } from "./browser-crew.js";
@@ -51,7 +51,7 @@ describe("every reason", () => {
         const status = taskStatusOf({ stage: "needs-you", need: key, needContext: context });
         expect(status.headline, key).toBe("Needs you");
         expect(hasInternalWords(status.sentence), `${key}: ${status.sentence}`).toBe(false);
-        for (const word of BANNED_WORDS) expect(status.sentence.toLowerCase(), key).not.toContain(word);
+        expect(bannedWordsIn(status.sentence), key).toEqual([]);
         expect(status.sentence, key).toMatch(/^[A-Z].*[.]$/);
         expect(status.need, key).toEqual({ key, action: NEEDS[key].action });
         expect(status.primaryAction?.label, key).toBe(NEEDS[key].action.label);
@@ -79,7 +79,7 @@ describe("every reason", () => {
       expect(status.need, key).toBeNull();
       expect(hasInternalWords(status.sentence), key).toBe(false);
       expect(status.sentence, key).toMatch(key === "build-finishing" ? /^Finishing up; this clears on its own\.$/
-        : key === "build-checking" ? /^Making sure build #2175 stopped\. This clears on its own\.$/ : /^Waiting /);
+        : key === "build-checking" ? /^Making sure build #2175 stopped\. This clears on its own\.$/ : /^Waiting[ :]/);
     }
   });
 
@@ -338,7 +338,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     expect(read.need).toEqual({ key: "replan", build: run });
     expect(read.primaryAction).toMatchObject({ code: "approve-scope", label: "Approve plan" });
     expect(assignmentPresentationOf(read).taskStatus).toMatchObject({ headline: "Needs you",
-      sentence: `The plan changed after build #${run}. Approve the new plan, then build it again.` });
+      sentence: `The plan changed after build #${run}. Approve the new plan, then retry it.` });
     // The Tasks list says the same, under Decide with the Plan changed chip.
     const row = listed().items.find(one => one.rootId === id)!;
     expect(row.status.detail).toBe("The plan changed after this was built. Approve the new plan, then build it again.");
@@ -347,7 +347,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     const task = workspaceOf(html).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
     expect(task.approval).toContain('aria-label="Approve the plan"');
     expect(task.approval).not.toContain("Updated approval terms");
-    expect(task.approval).toContain("Approve & build again");
+    expect(task.approval).toContain("Approve and retry");
     expect(task.approval).toContain(`name="rebuild" value="${run}"`);
     expect(task.status?.action).toBeNull();
     // The page keys this region by what it is, read from the server's own markup.
@@ -433,17 +433,17 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     // Built to an earlier plan: accepting would leave it stuck. Both pages lead with Build again, in place.
     const stale = assignment("unverified");
     const words = assignmentPresentationOf(stale).taskStatus;
-    expect(words).toMatchObject({ headline: "Needs you", sentence: `Build #${runs["unverified"]} was made to an earlier plan. Build it again to the current plan.` });
-    expect(stale.primaryAction).toMatchObject({ code: "retry-task", label: "Build again" });
+    expect(words).toMatchObject({ headline: "Needs you", sentence: `Build #${runs["unverified"]} was made to an earlier plan. Retry it on the current plan.` });
+    expect(stale.primaryAction).toMatchObject({ code: "retry-task", label: "Retry" });
     // Build again is the task's status card itself, at the top of its page: no anchor into Task options.
     expect(assignmentActionHref(stale)).toBe("/t/unverified?version=unverified");
     const result = (workspaceOf(await page(`/review?result=unverified&run=${runs["unverified"]}`)).view as Extract<BrowserWorkspace["view"], { kind: "result" }>).selected!.panel!;
     expect(result.status?.headline).toBe("Needs you");
-    expect(result.need).toMatchObject({ label: "Build again", href: null, rebuild: { action: "/t/unverified/requeue" } });
+    expect(result.need).toMatchObject({ label: "Retry", href: null, rebuild: { action: "/t/unverified/requeue" } });
     expect(result.canRequest).toBe(true);
     const task = workspaceOf(await page("/t/unverified")).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
     expect(task.rebuild).toEqual({ action: "/t/unverified/requeue" });
-    expect(task.status?.action?.label).toBe("Build again");
+    expect(task.status?.action?.label).toBe("Retry");
     expect(task.status?.action?.href).not.toContain("/review");
 
     // A result to review leads with Accept, the act this page holds; once accepted, no act here at all (never a link back to the task).
@@ -458,7 +458,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     // Accept a check only a person can make, or Build again a result that may run again.
     const other = taskStatusOf({ stage: "needs-you", need: "other" });
     expect(needActionOf(here, other, "csrf", "/back", { ...facts, humanReview: true, accepted: false })).toMatchObject({ label: "Accept result", accept: { note: null } });
-    expect(needActionOf(here, other, "csrf", "/back", { ...facts, accepted: false, rebuildable: true })).toMatchObject({ label: "Build again", href: null, rebuild: { action: "/t/unverified/requeue" } });
+    expect(needActionOf(here, other, "csrf", "/back", { ...facts, accepted: false, rebuildable: true })).toMatchObject({ label: "Retry", href: null, rebuild: { action: "/t/unverified/requeue" } });
     // A report that doesn't match its saved changes (a refuted proof): Accept with a reason stays allowed here, never "Open the task".
     expect(needActionOf(here, other, "csrf", "/back", { ...facts, accepted: false, refuted: true })).toMatchObject({ label: "Accept with exception", href: null, accept: { note: "Why is this safe to accept?" } });
     expect(needActionOf(here, other, "csrf", "/back", { ...facts, accepted: false })).toBeNull();
@@ -472,7 +472,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     const read = assignment("still-alive");
     const presentation = assignmentPresentationOf(read);
     expect(presentation.taskStatus.headline).toBe("Waiting");
-    expect(presentation.taskStatus.sentence).toBe(`Waiting for build #${runs["still-alive"]} to stop. Nothing is needed from you.`);
+    expect(presentation.taskStatus.sentence).toBe(`Waiting: Toolroll is stopping build #${runs["still-alive"]}.`);
     expect(presentation.status.views).not.toContain("needs-you");
     expect(read.state).not.toBe("needs-decision");
     const index = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { view: "all" }).items.find(one => one.rootId === "still-alive")!;
@@ -502,7 +502,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     const brief = htmlString(leadBriefHtml(assignmentCatchUp(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 8 }, root)));
     expect(brief).toContain(`href="/t/half-contained#recheck-stopped" data-catch-up-action>Check again</a>`);
     expect(brief).not.toContain("Confirm it stopped");
-    expect(hasInternalWords(brief)).toBe(false);
+    expect(bannedWordsIn(brief.replace(/<[^>]*>/g, " ")), brief).toEqual([]);
   });
 
   test("the reconcile pass proves an unrecorded spawn stopped with nobody asked, and the result becomes Ready", async () => {

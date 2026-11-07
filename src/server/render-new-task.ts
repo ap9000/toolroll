@@ -9,7 +9,10 @@ import { projectName } from "../project.js";
 import type { QualityMode } from "../quality.js";
 import type { UnattendedPermissionMode } from "../scope.js";
 import { type Chrome, screen, type Screen } from "./chrome.js";
-import { btn, composer, disclose, doc, docHeader, dock, field, ideas, input, note, phoneHeader, radios, select, sendButton, textarea, toggleChip } from "./kit.js";
+import { btn, composer, disclose, doc, docHeader, dock, facts, field, ideas, input, note, phoneHeader, radios, select, sendButton, textarea, toggleChip } from "./kit.js";
+import { fastTermsLines } from "../fast-terms.js";
+import type { Scope } from "../scope.js";
+import type { Store } from "../store.js";
 import { TASK_TEXT_LIMITS } from "../task-text.js";
 
 export type TaskComposerPrefill = { title: string; goal: string; not: string; touches: string; acceptance: string; values?: URLSearchParams };
@@ -47,9 +50,11 @@ export function newTaskPage(
   draft: string | null = null,
   /** Ideas for the chosen project: one tap drafts the words into the box. */
   suggestions: ReadonlyArray<{ label: string; draft: string }> = [],
+  /** A link the lead or a person put in the address (GET ?from=). */
+  fromLink: string | null = null,
 ): Screen {
-  const head = html`${phoneHeader("New task", { back: "/work" })}`;
-  const header = docHeader({ title: "New task", back: ["/work", "Tasks"], meta: "Nothing is built until you approve its plan.", same: true });
+  const head = html`${phoneHeader("New task", { back: "/tasks" })}`;
+  const header = docHeader({ title: "New task", back: ["/tasks", "Tasks"], meta: "Nothing is built until you approve its plan.", same: true });
   const items = projectItems(projects, project);
   const values = prefill?.values;
   // No project to choose from: the task names its folder (the server proves it), and adding a project is one link away.
@@ -61,7 +66,7 @@ export function newTaskPage(
   const permission = values?.get("permission-mode") === "bypassPermissions" ? "bypassPermissions" : values?.get("permission-mode") === "auto" ? "auto" : permissionDefault;
   const text = prefill?.title ?? draft ?? "";
   // More options opens on a template, or when a refused filing had used any of them.
-  const optionsUsed = prefill !== null && (values === undefined || ["goal", "acceptance", "not", "touches", "id", "after"].some(name => (values.get(name) ?? "") !== "") || values.get("scout") === "1");
+  const optionsUsed = fromLink !== null || prefill !== null && (values === undefined || ["from", "goal", "acceptance", "not", "touches", "id", "after"].some(name => (values.get(name) ?? "") !== "") || values.get("scout") === "1");
 
   const folder = !typed ? "" : field({ id: "nt-repo", label: "Project folder", hint: "No projects yet: name the folder of a git repository.",
     control: input({ id: "nt-repo", name: "repo", value: chosen, hint: true, attrs: { required: true, placeholder: "/path/to/repository", autocapitalize: "none", spellcheck: "false" } }) });
@@ -80,6 +85,7 @@ export function newTaskPage(
     textAttrs: { maxlength: TASK_TEXT_LIMITS.title, autofocus: true },
   });
   const options = html`<div class="k-form">\
+${field({ id: "nt-from", label: "From an issue or PR (optional)", hint: "A github.com link in this project. Its text becomes the plan, and you approve it.", control: input({ id: "nt-from", name: "from", value: values?.get("from") ?? fromLink ?? "", attrs: { placeholder: "https://github.com/…", autocapitalize: "none", spellcheck: "false", inputmode: "url" } }) })}\
 ${field({ id: "nt-quality", label: "Checks", control: select({ id: "nt-quality", name: "quality-mode", items: [["default", "Default checks"], ["strict", "Strict (release)"]], current: quality, wide: true }) })}\
 ${candidates.length === 0 ? "" : field({ id: "nt-after", label: "Starts", control: select({ id: "nt-after", name: "after", wide: true, current: after,
     items: [["", "Right away"], ...candidates.map(one => [one.id, `After ${one.id}: ${one.title}`] as const)] }) })}\
@@ -112,4 +118,28 @@ ${field({ id: "nt-id", label: "Task id (optional)", control: input({ id: "nt-id"
   });
   const recipes = note(html`Work you do often? <a class="k-link" href="/recipes">Use a saved recipe</a>.`);
   return screen("New task", html`${head}${doc(header, form, ideaList, recipes)}${dock(btn("File task", { variant: "primary", type: "submit", attrs: { form: FORM_ID } }))}`, { chrome });
+}
+
+/** The terms as label and words: the lines every approval surface reads (fast-terms.ts), with nothing hidden. */
+export function fastTermsRows(store: Store, scope: Scope, repo: string): ReadonlyArray<readonly [string, string]> {
+  return fastTermsLines(store, scope, repo).map(line => [line.label, line.words] as const);
+}
+
+/** Build (docs/plans/plain-toolroll.md P2.4): the exact terms this small task would be approved on, and the one button
+ * that approves them. The fields of "Plan it first" are the person's own words, on the ordinary road. */
+export function fastStartPage(chrome: Chrome, input: { title: string; repo: string; preview: string; digest: string; terms: ReadonlyArray<readonly [string, string]> }): Screen {
+  const head = html`${phoneHeader("Build this?", { back: "/tasks/new" })}`;
+  const header = docHeader({ title: "Build this?", back: ["/tasks/new", "New task"], meta: "Build approves exactly these terms.", same: true });
+  const build = postForm("/tasks/fast", btn("Build", { variant: "primary", type: "submit" }), { attrs: { class: "k-form", id: "fast-build" }, hidden: { preview: input.preview, digest: input.digest } });
+  const plan = postForm("/tasks/add", btn("Plan it first", { type: "submit" }), { attrs: { class: "k-form" }, hidden: { plain: "1", title: input.title, repo: input.repo, "planning-policy": "choice", "plan-first": "1" } });
+  return screen("Build this?", html`${head}${doc(header, facts(input.terms.map(([label, words]) => [label, joinHtml(words.split("\n").map(line => html`<div>${line}</div>`))] as const)), html`<div class="k-acts">${build}${plan}</div>`)}`, { chrome });
+}
+
+/** An issue or pull request, read and quoted before anything is filed. Add task files it for the ordinary approval. */
+export function importPage(chrome: Chrome, input: { repo: string; url: string; title: string; body: string; kind: "issue" | "pull"; number: number; head: string | null }): Screen {
+  const name = input.kind === "pull" ? `Pull request #${input.number}` : `Issue #${input.number}`;
+  const head = html`${phoneHeader(name, { back: "/tasks/new" })}`;
+  const header = docHeader({ title: name, back: ["/tasks/new", "New task"], meta: "Written outside Toolroll. You'll approve its plan before anything builds.", same: true });
+  const file = postForm("/tasks/add", btn("Add task", { variant: "primary", type: "submit" }), { attrs: { class: "k-form" }, hidden: { from: input.url, repo: input.repo, title: input.title, ...(input.head === null ? {} : { "from-head": input.head }), "from-read": "1" } });
+  return screen(name, html`${head}${doc(header, html`<blockquote class="k-quote"><p><strong>${input.title}</strong></p><p class="k-pre">${input.body === "" ? "No description." : input.body}</p></blockquote>`, file)}`, { chrome });
 }

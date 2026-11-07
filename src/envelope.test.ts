@@ -136,6 +136,8 @@ describe("the machine envelope", () => {
       project: ["show", "--json"],
       knowledge: ["--json"],
       memory: ["status", "--json"],
+      map: ["--json"],
+      flaky: ["list", "--json"],
       models: ["status", "--json"],
       decide: ["--json"],
       incident: ["list", "--json"],

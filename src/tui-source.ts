@@ -9,6 +9,7 @@
  */
 import { dirname, join } from "node:path";
 import { assignmentOf } from "./assignment.js";
+import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { runAsLocalOwner } from "./local-owner.js";
 import type { OperateOptions } from "./operate.js";
 import { snapshotLiveRuns } from "./peek-cli.js";
@@ -16,7 +17,10 @@ import type { ConnectionChecker } from "./provider-connection.js";
 import { loadProjectRegistry } from "./repos.js";
 import { describeScope } from "./scope.js";
 import { localModeOf, openStoreReadOnly, type Store } from "./store.js";
-import type { TuiAct, TuiActResult, TuiDecision, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
+import { routeChangeOf } from "./route-change.js";
+import { flakyCount } from "./flaky.js";
+import { memoryWaiting } from "./lesson-notes.js";
+import type { TuiAct, TuiActResult, TuiDecision, TuiFastTerms, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
 import { terminalText } from "./terminal-text.js";
 import { welcomeHere, welcomeLines } from "./welcome-facts.js";
 
@@ -42,13 +46,17 @@ function refusalOf(envelope: Envelope): TuiActResult {
   return { ok: false, message, needsPassword: envelope.reason === "refused" || envelope.reason === "machine-proof" || envelope.reason === "person-required" || /password/i.test(message) };
 }
 
+const routeLines = (store: Store, id: string): string[] => { const words = routeChangeOf(store, id); return words === null ? [] : [words]; };
+
 export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(): void } {
   const file = options.databaseFile;
   const clock = options.clock ?? (() => new Date());
   const evidenceRoot = join(dirname(file), "evidence");
   const tails: NonNullable<Parameters<typeof snapshotLiveRuns>[3]> = new Map();
   let reader: Store | null = null;
+  let closed = false;
   const read = (): Store | null => {
+    if (closed) return null;
     reader ??= openStoreReadOnly(file);
     return reader;
   };
@@ -86,7 +94,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       const store = read();
       const mode = store === null ? null : localModeOf(store);
       const passwordSet = store !== null && mode !== null && store.accountOf(mode.owner)?.passwordSet === true;
-      return { rows, needsYou, projects: "error" in registry ? [] : registry.repos, passwordSet };
+      return { rows, needsYou, projects: "error" in registry ? [] : registry.repos, passwordSet, learning: store === null ? null : learningLine(store, "error" in registry ? [] : registry.repos, clock()) };
     },
 
     async task(id: string): Promise<TuiTask | null> {
@@ -95,14 +103,20 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       const task = record(answer["task"]), work = record(answer["work"]), status = record(work["status"]);
       const store = read();
       const scope = store === null ? null : store.getScope(id);
-      const plan = scope === null || scope.approvedDigest === scope.digest ? null : { digest: scope.digest, lines: describeScope(scope).map(line => terminalText(line)) };
+      const plan = scope === null || scope.approvedDigest === scope.digest ? null : { digest: scope.digest, lines: [...(store === null ? [] : routeLines(store, id)), ...describeScope(scope)].map(line => terminalText(line)) };
       let hasResult = false;
       try { hasResult = store !== null && assignmentOf(store, id, clock(), { principal: "operator", repos: null })?.receipt != null; } catch { hasResult = false; }
       const decisions: TuiDecision[] = store === null ? [] : store.listDecisions("unanswered").filter(one => one.taskId === id)
         .map(one => ({ id: one.id, question: terminalText(one.question), options: one.options.map(option => ({ id: option.id, label: terminalText(option.label) })) }));
+      // "Can I merge?": the same checklist and lines as `toolroll task ready`, read from the same records.
+      let ready: string[] = [];
+      try {
+        const list = !hasResult || store === null ? null : mergeChecklistOf(store, id, clock(), { principal: "operator", repos: null }, evidenceRoot);
+        ready = list === null ? [] : checklistLines(list).map(line => terminalText(line));
+      } catch { ready = []; }
       return {
         id, title: shown(task["title"], id), status: shown(status["label"], words(work["state"])), detail: shown(status["detail"]),
-        plan, liveRunId: typeof work["liveRunId"] === "number" ? work["liveRunId"] : null, hasResult, decisions,
+        plan, liveRunId: typeof work["liveRunId"] === "number" ? work["liveRunId"] : null, hasResult, decisions, ready,
       };
     },
 
@@ -121,37 +135,68 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       let done: string;
       switch (act.kind) {
         case "new": argv = ["task", "add", act.text, ...(act.repo === null ? [] : ["--repo", act.repo])]; done = "Filed. Its plan will be ready for you to approve."; break;
+        case "build": argv = ["task", "new", "--build", act.preview, "--digest", act.digest]; done = "Building. A builder starts it next."; break;
         case "approve": argv = ["task", "approve", act.id, "--yes", "--digest", act.digest]; done = "Approved. An agent starts on it."; break;
         case "stop": argv = ["task", "stop", act.id, "--run", String(act.runId)]; done = "Stopping. Its work so far is kept."; break;
-        case "revise": argv = ["task", "revise", act.id, "--feedback", act.text]; done = "Revision requested."; break;
+        case "revise": argv = ["task", "revise", act.id, "--feedback", act.text]; done = "Sent back with your note."; break;
         case "answer": argv = ["decide", String(act.decision), "--choose", act.option]; done = "Answered."; break;
+        // Retry is today's requeue (the console's Retry), the same command and the same refusals.
+        case "retry": argv = ["task", "retry", act.id]; done = "Queued again. A builder starts it next."; break;
         case "complete": {
           const store = read();
           let digest: string | undefined;
           try { digest = store === null ? undefined : assignmentOf(store, act.id, clock(), { principal: "operator", repos: null })?.receipt?.digest; } catch { digest = undefined; }
-          if (digest === undefined) return { ok: false, message: "This task has no finished result to mark Complete.", needsPassword: false };
-          argv = ["task", "complete", act.id, "--digest", digest]; done = "Marked Complete."; break;
+          if (digest === undefined) return { ok: false, message: "This task has no finished result to accept.", needsPassword: false };
+          argv = ["task", "complete", act.id, "--digest", digest]; done = "Accepted."; break;
         }
       }
       const answer = await command(argv);
       if (answer.ok !== true) return refusalOf(answer);
-      const filed = act.kind === "new" ? words(record(answer["task"])["id"], words(answer["id"])) : "";
+      const filed = act.kind === "new" ? words(record(answer["task"])["id"], words(answer["id"])) : act.kind === "build" ? words(answer["task"]) : "";
       return { ok: true, message: done, ...(filed === "" ? {} : { id: filed }) };
+    },
+
+    async fastTerms(text: string, repo: string | null): Promise<TuiFastTerms | null> {
+      if (repo === null) return null;
+      const answer = await command(["task", "new", text, "--repo", repo, "--preview"]);
+      if (answer.ok !== true || answer["eligible"] !== true) return null;
+      const terms = Array.isArray(answer["terms"]) ? answer["terms"].map(one => ({ label: words(record(one)["label"]), words: words(record(one)["words"]) })) : [];
+      return { preview: words(answer["preview"]), digest: words(answer["digest"]), terms };
     },
 
     async setup(): Promise<TuiSetup | null> {
       if (setupCache !== null && Date.now() - setupCache.at < 30_000) return setupCache.value;
       const store = read();
       if (store === null) return null;
-      const here = await welcomeHere(store, file, clock(), options.check === undefined ? {} : { check: options.check });
+      // The screen can close while this waits on the sign-in checks: the store it holds is gone then, and so is the question.
+      const here = await welcomeHere(store, file, clock(), options.check === undefined ? {} : { check: options.check }).catch((problem: unknown) => {
+        if (closed) return null;
+        throw problem;
+      });
+      if (here === null) return null;
       const value = here.model.left === 0 ? null : { left: here.model.left, lines: welcomeLines(here.model).map(line => terminalText(line)) };
       setupCache = { at: Date.now(), value };
       return value;
     },
 
     close(): void {
+      closed = true;
       reader?.close();
       reader = null;
     },
   };
+}
+
+/** The screen's one line about the learning loops: flaky tests and what waits in project memory, each with its command. */
+function learningLine(store: Store, repos: readonly string[], now: Date): string | null {
+  let flaky = 0, memory = 0;
+  try {
+    for (const repo of repos) {
+      flaky += flakyCount(store, repo, now);
+      const waiting = memoryWaiting(store, repo);
+      memory += waiting.notes + waiting.cleanups;
+    }
+  } catch { return null; }
+  const parts = [flaky === 0 ? "" : `${flaky} flaky test${flaky === 1 ? "" : "s"}: open the project's Flaky tests in the browser`, memory === 0 ? "" : `${memory} project memory suggestion${memory === 1 ? "" : "s"}: open Settings → Knowledge`].filter(Boolean);
+  return parts.length === 0 ? null : parts.join(" · ");
 }

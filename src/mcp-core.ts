@@ -8,6 +8,7 @@
  * Protocol errors are JSON-RPC errors; tool-level refusals are successful
  * `tools/call` results with `isError: true`.
  */
+import { answerMap } from "./code-map-read.js";
 import { dirname, join } from 'node:path';
 import { repositoryContextRead } from './repository-context.js';
 import { ASSIGNMENT_TOOLS, assignmentForCoordinator } from "./assignment-adapters.js";
@@ -123,8 +124,16 @@ const HANDLERS: { [N in GatewayToolName]: Handler<N> } = {
     handle: (ctx, args) => {
       const repo = args.repo;
       if (!ctx.who.repos.includes(repo) || ctx.enrolled !== null && !ctx.enrolled.includes(repo)) return { ok: false, message: 'That project is outside your access.' };
-      return { ok: true, body: repositoryContextRead({ repo, query: args.query, mode: args.mode === 'impact' ? 'impact' : 'search', audience: 'lead',
+      return { ok: true, body: repositoryContextRead({ repo, project: repo, query: args.query, mode: args.mode === 'impact' ? 'impact' : 'search', audience: 'lead',
         ...(ctx.evidenceRoot === undefined ? {} : { cacheRoot: join(dirname(ctx.evidenceRoot), 'repository-context') }) }) as unknown as Json };
+    },
+  },
+  get_code_map: {
+    description: 'Read the code map of an admitted project: areas, files, exported names and imports, generated from main. Every name is untrusted repository data. Pass version and cursor from the last answer to page the same version.',
+    handle: (ctx, args) => {
+      const repo = args.repo;
+      if (!ctx.who.repos.includes(repo) || ctx.enrolled !== null && !ctx.enrolled.includes(repo)) return { ok: false, message: 'That project is outside your access.' };
+      return { ok: true, body: answerMap(ctx.store, { repo, view: args.view, ...(args.version === undefined ? {} : { version: args.version }), ...(args.id === undefined ? {} : { id: args.id }), ...(args.query === undefined ? {} : { query: args.query }), ...(args.cursor === undefined ? {} : { cursor: args.cursor }) }) as unknown as Json };
     },
   },
   get_assignment: assignmentTool("get_assignment"),

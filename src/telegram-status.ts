@@ -1,4 +1,5 @@
 import { publicChatText } from './chat-display.js';
+import { machineChecked } from "./machine-check.js";
 import { manualReviewOnly } from "./proof.js";
 /** Read-only phone views over the same dispatch and proof records as chat.
  * No provider calls, repository access, new workflow state, or inferred success. */
@@ -72,7 +73,8 @@ function headlineFor(store: Store, id: string, d: DispatchDiagnosis, read_: Phon
     if (assignment !== null && assignment.state === "ready-to-check") return taskStatusOf(assignmentStatusFacts(assignment));
   }
   const finished = read.stage === "finished" || read.stage === "complete" || read.stage === "failed";
-  return taskStatusOf({ stage: read.stage, ...(read.need === undefined ? {} : { need: read.need }), reason: finished ? null : plainReasonOf(read.stage, d.code, d.detail),
+  return taskStatusOf({ stage: read.stage, ...(read.need === undefined ? {} : { need: read.need }), ...(read.wait === undefined ? {} : { wait: read.wait }), reason: finished ? null : plainReasonOf(read.stage, d.code, d.detail),
+    ...(machineChecked(store, id) ? { machine: true } : {}),
     checks: read.stage === "failed" && d.code === "proof-refuted" ? { status: "failed", exitCode: null, head: null } : null });
 }
 
@@ -244,7 +246,7 @@ export function phoneTaskView(store: Store, repos: readonly string[], id: string
     const blocker = d.blockerTaskId === null ? null : store.lookupRef(d.blockerTaskId);
     const hiddenDependency = blocker !== null && (blocker.repo === null || !repos.includes(blocker.repo));
     lines.push(hiddenDependency ? "A required task outside this phone view has not finished. Open the dependency in the console." : plain(shared.sentence, 650));
-    if (d.nextAt !== null) lines.push(`Earliest recorded wake: ${plain(d.nextAt, 40)} (a connected worker is still required).`);
+    if (d.nextAt !== null) lines.push(`Earliest recorded wake: ${plain(d.nextAt, 40)} (a connected builder is still required).`);
 
     const runs = store.runsFor(ref.id);
     const result = task.state === "done" ? runs.find(r => (r.role === "builder" || r.role === "scout") && (r.outcome === "built" || r.outcome === "no-change") && r.finishedAt !== null) : undefined;
@@ -268,11 +270,11 @@ export function phoneTaskView(store: Store, repos: readonly string[], id: string
         : approvedCheckStateOf(approvedCheckOf(proof.verdict, proof.reasons, checksFactOf(assignmentChecksForRun(store, root, result.id, now), result.headRevision)));
       const verifiedWords = root === undefined ? "Open the result to see its checks" : checkNow === "passed" ? "Checks passed at completion"
         : checkNow === "failed" ? "Checks failed" : checkNow === "running" ? "Checks running" : "The check result couldn't be read";
-      const proofWords = { verified: verifiedWords, attested: "Checks reported by the agent, not run by Toolroll", short: "Required saved material is missing", refuted: "The saved result conflicts with the approved scope" };
+      const proofWords = { verified: verifiedWords, attested: "Checks reported by the agent, not run by Toolroll", short: "Required saved material is missing", refuted: "The saved result doesn't match the approved plan" };
       lines.push(`Checks: ${proof === null ? "No completion record saved" : manualReviewOnly(proof) ? accepted ? "Accepted by a person; the recorded checks are unchanged" : "A person must inspect this result; no recorded check failed" : proofWords[proof.verdict]}.`);
       if (manualReviewOnly(proof) && !accepted) lines.push('Reply “Send the result summary” for the checks, notes and screenshots.');
       if (proof !== null && proof.matrix.length > 0) lines.push(`Requirements: ${proof.matrix.filter(row => row.state === "pass").length}/${proof.matrix.length} satisfied in the saved record.`);
-      if (accepted && !manualReviewOnly(proof)) lines.push("An operator accepted this result; that does not change its recorded checks.");
+      if (accepted && !manualReviewOnly(proof)) lines.push("An approver accepted this result; that does not change its recorded checks.");
       const publication = store.publicationForRun(result.id);
       const delivery = publication?.remoteState === "MERGED" ? `#${publication.prNumber ?? "?"} merged` : publication?.remoteState === "CLOSED" ? `#${publication.prNumber ?? "?"} closed without merging` : publication?.state === "opened" ? `#${publication.prNumber ?? "?"} open` : publication?.state === "pushed" || publication?.state === "intended" ? "Opening…" : publication?.state === "failed" ? "Couldn't open; the commit is safe locally" : null;
       if (delivery !== null) lines.push(`Pull request: ${delivery}.`);

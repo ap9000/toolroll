@@ -35,6 +35,8 @@ export type TuiTask = {
   /** A finished result that can be marked Complete or sent back with a revision. */
   readonly hasResult: boolean;
   readonly decisions: readonly TuiDecision[];
+  /** "Can I merge?" (merge-checklist.ts, `toolroll task ready`'s lines): the answer, then each check. Empty: no result. */
+  readonly ready?: readonly string[];
 };
 
 /** The welcome's steps, as lines (welcome-facts.ts). */
@@ -48,15 +50,23 @@ export type TuiSnapshot = {
   readonly projects: readonly string[];
   /** Whether the local owner has set a password (decides where a refusal leads). */
   readonly passwordSet: boolean;
+  /** One line about flaky tests and project memory waiting, and the commands that show them; null when there's nothing. */
+  readonly learning?: string | null;
 };
 
 export type TuiAct =
   | { readonly kind: "new"; readonly text: string; readonly repo: string | null }
+  /** Build: the terms the person just read (fast-start.ts). */
+  | { readonly kind: "build"; readonly preview: string; readonly digest: string }
   | { readonly kind: "approve"; readonly id: string; readonly digest: string }
   | { readonly kind: "stop"; readonly id: string; readonly runId: number }
   | { readonly kind: "revise"; readonly id: string; readonly text: string }
   | { readonly kind: "complete"; readonly id: string }
+  | { readonly kind: "retry"; readonly id: string }
   | { readonly kind: "answer"; readonly decision: number; readonly option: string };
+
+/** What Build would approve: the same lines every approval surface reads. */
+export type TuiFastTerms = { readonly preview: string; readonly digest: string; readonly terms: readonly { readonly label: string; readonly words: string }[] };
 
 /** A write's answer: its words. `needsPassword`: refused because the local owner may not do it. */
 export type TuiActResult = { readonly ok: true; readonly message: string; readonly id?: string } | { readonly ok: false; readonly message: string; readonly needsPassword: boolean };
@@ -70,6 +80,8 @@ export interface TuiSource {
   /** A counter that moves when the plane's work changes (the store's wake sequence). */
   changed(): number;
   act(act: TuiAct): Promise<TuiActResult>;
+  /** A small task's exact terms, or null when it takes the ordinary road (New task then files it). */
+  fastTerms(text: string, repo: string | null): Promise<TuiFastTerms | null>;
   /** The welcome's steps, or null once setup is done. */
   setup(): Promise<TuiSetup | null>;
 }

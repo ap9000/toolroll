@@ -1,5 +1,6 @@
 /** The task behind an agent zone, read through the same status as its task page.
  * Only saved milestone progress belongs on the card; tool calls and logs do not. */
+import { machineChecked } from "./machine-check.js";
 import { assignmentOf } from "./assignment.js";
 import { scanForSecrets } from "./evidence.js";
 import { scrubIntegrationText } from "./integrations.js";
@@ -30,6 +31,7 @@ export function storedTaskStatus(store: Store, taskId: string, repo: string, now
   if (work === null) return null;
   const live = work.liveRunId === null ? null : store.getRun(work.liveRunId);
   const facts = assignmentStatusFacts(assignment, { work: work.status, planning: live?.role === "planner" });
+  if (machineChecked(store, assignment.activeTaskId)) facts.machine = true;
   // The canvas reads no evidence files. Keep the machine's recorded check visible
   // when the full receipt has no artifact root from which to read its check.
   const check = assignment.receipt === null ? null : store.runCheckFor(assignment.receipt.runId);

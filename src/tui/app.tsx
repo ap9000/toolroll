@@ -3,14 +3,15 @@
  *
  * Screens: Setup (the welcome's steps, until the first task), Main (tasks | live output | what needs you), New task,
  * Task, the plan before approving it, a revision's words, and Needs password. Keys: j/k move, Enter opens, n new task,
- * a approve (the full plan first), s stop, r revise, c complete, 1–9 answer a question, w open the browser, ? help,
+ * a approve (the full plan first) or accept, c accept, b send back, r retry, s stop, 1–9 answer a question, w browser, ? help,
  * q quit. Every write goes through the TuiSource, which runs it as the local owner; a refusal shows its own words.
  */
+import { keyWords, SHORTCUTS, type TuiShortcut } from "../keymap.js";
 import { Box, Text, useApp, useInput, type Key } from "ink";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { terminalText } from "../terminal-text.js";
-import type { TuiAct, TuiExit, TuiRow, TuiSession, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./data.js";
+import type { TuiAct, TuiExit, TuiFastTerms, TuiRow, TuiSession, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./data.js";
 
 /** Text that came from outside this screen (an agent, a person, a project), as the terminal shows it: escapes and
  * controls never reach it (terminal-text.ts). The source cleans it first; this is the second layer. */
@@ -32,19 +33,23 @@ type Screen =
   | { kind: "task"; task: TuiTask }
   | { kind: "approve"; task: TuiTask }
   | { kind: "compose"; purpose: "new" | "revise"; id: string | null; text: string; project: number }
+  | { kind: "build"; terms: TuiFastTerms; text: string; repo: string | null }
   | { kind: "password"; message: string }
   | { kind: "help" }
   | { kind: "quit" }
   | { kind: "background" };
 
-const HELP_LINES = [
+/** The keys (keymap.ts is the one table the console shares): its keys as this screen does them, then the terminal's own. */
+const TUI_SAYS: Readonly<Record<TuiShortcut, string>> = {
+  new: "new task", ink: "approve the plan (shows it in full first), or accept the result", "send-back": "send the result back",
+  retry: "retry", list: "back to the task list", help: "these keys",
+};
+export const HELP_LINES = [
   "j / k or ↑ / ↓   move",
   "Enter            open the task",
-  "n                new task",
-  "a                approve the plan (shows it in full first)",
+  ...SHORTCUTS.filter(one => typeof one.tui === "string").map(one => `${keyWords(one.keys).padEnd(17)}${TUI_SAYS[one.tui as TuiShortcut]}`),
+  "c                accept the result",
   "s                stop the running attempt",
-  "r                request a revision",
-  "c                mark the result Complete",
   "1–9              answer the task's question",
   "w                open in the browser",
   "Esc              back",
@@ -104,6 +109,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     onExit?.(how);
   };
 
+  const pendingG = useRef(false);
   /** One write, as the local owner: its words, or the way to a password when the local owner may not. */
   const act = async (one: TuiAct): Promise<boolean> => {
     setBusy("Working…");
@@ -130,6 +136,12 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     if (task.plan === null) setMessage("No plan is waiting for your approval on this task.");
     else setScreen({ kind: "approve", task });
   });
+  /** `a`: the task's own ink act — its plan (shown in full first), or else its finished result. */
+  const approveOrAccept = (id: string) => openTask(id, task => {
+    if (task.plan !== null) setScreen({ kind: "approve", task });
+    else if (task.hasResult) void act({ kind: "complete", id });
+    else setMessage("No plan or result is waiting for you on this task.");
+  });
   const stop = (id: string, runId: number | null) => {
     if (runId === null) { setMessage("Nothing is running on this task."); return; }
     void act({ kind: "stop", id, runId });
@@ -144,14 +156,20 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
   const quit = () => { if (session.owned()) setScreen({ kind: "quit" }); else leave("leave"); };
   /** The acts every list and task screen shares. True when the key was one of them. */
   const shared = (input: string, id: string | null, runId: number | null): boolean => {
+    // g then h or t (keymap.ts): Home and Tasks are this list here.
+    if (pendingG.current) { pendingG.current = false; if (input === "h" || input === "t") { setScreen({ kind: "main" }); return true; } }
+    if (input === "g") { pendingG.current = true; return true; }
+    if (input === "/") { const gap = SHORTCUTS.find(one => one.keys === "/")!.tui; setMessage(typeof gap === "string" ? null : gap.none); return true; }
     if (input === "n") { setScreen({ kind: "compose", purpose: "new", id: null, text: "", project: 0 }); return true; }
     if (input === "w") { browser(); return true; }
     if (input === "?") { setScreen({ kind: "help" }); return true; }
     if (input === "q") { quit(); return true; }
     if (id === null) return false;
-    if (input === "a") { void approve(id); return true; }
+    // One keymap (docs/plans/plain-toolroll.md P1.3): a the page's ink act (Approve, or Accept), c Accept, b Send back, r Retry.
+    if (input === "a") { void approveOrAccept(id); return true; }
     if (input === "s") { stop(id, runId); return true; }
-    if (input === "r") { setScreen({ kind: "compose", purpose: "revise", id, text: "", project: 0 }); return true; }
+    if (input === "b") { setScreen({ kind: "compose", purpose: "revise", id, text: "", project: 0 }); return true; }
+    if (input === "r") { void act({ kind: "retry", id }); return true; }
     if (input === "c") { void act({ kind: "complete", id }); return true; }
     return false;
   };
@@ -181,6 +199,12 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
         if (input === "y") { const { task } = screen; void act({ kind: "approve", id: task.id, digest: task.plan!.digest }).then(ok => { if (ok) setScreen({ kind: "main" }); }); }
         return;
       }
+      case "build": {
+        if (key.escape) { setScreen({ kind: "main" }); setMessage("Nothing started."); return; }
+        if (input === "p") { const { text, repo } = screen; setScreen({ kind: "main" }); void act({ kind: "new", text, repo }); return; }
+        if (key.return) { const { preview, digest } = screen.terms; void act({ kind: "build", preview, digest }).then(ok => { if (ok) setScreen({ kind: "main" }); }); }
+        return;
+      }
       case "compose": {
         if (key.escape) { setScreen({ kind: "main" }); return; }
         const projects = snapshot?.projects ?? [];
@@ -191,6 +215,8 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
           if (text === "") return;
           const sent: TuiAct = screen.purpose === "new" ? { kind: "new", text, repo: projects[screen.project] ?? null } : { kind: "revise", id: screen.id!, text };
           setScreen({ kind: "main" });
+          // A small task shows its exact terms and Enter is Build; anything else files as it always has.
+          if (sent.kind === "new") { setBusy("Reading it…"); void source.fastTerms(text, sent.repo).catch(() => null).then(terms => { setBusy(null); if (terms === null) void act(sent); else setScreen({ kind: "build", terms, text, repo: sent.repo }); }); return; }
           void act(sent);
           return;
         }
@@ -226,6 +252,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
       <Box justifyContent="space-between">
         <Text bold>Toolroll</Text>
         {snapshot?.needsYou ? <SafeText color="yellow">{snapshot.needsYou}</SafeText> : <Text dimColor>Nothing needs you</Text>}
+        {snapshot?.learning ? <SafeText dimColor>{snapshot.learning}</SafeText> : null}
       </Box>
       {body()}
       {footer === null ? null : <SafeText>{footer}</SafeText>}
@@ -235,9 +262,10 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
 
   function hints(): string {
     switch (screen.kind) {
-      case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve · s stop · r revise · c complete · w browser · ? help · q quit";
-      case "task": return "a approve · s stop · r revise · c complete · 1–9 answer · w browser · Esc back";
+      case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve/accept · b send back · r retry · s stop · w browser · ? help · q quit";
+      case "task": return "a approve/accept · b send back · r retry · s stop · 1–9 answer · w browser · Esc back";
       case "approve": return "y approve · Esc cancel";
+      case "build": return "Enter Build · p plan it first · Esc cancel";
       case "compose": return screen.purpose === "new" && (snapshot?.projects.length ?? 0) > 1 ? "Enter send · Tab project · Esc cancel" : "Enter send · Esc cancel";
       case "quit": return "s stop · b background · Esc cancel";
       case "background": return "y yes · n no";
@@ -267,6 +295,13 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
         );
       case "background":
         return <Box borderStyle="single" paddingX={1}><Text bold>Keep Toolroll running in the background? (Y/n)</Text></Box>;
+      case "build":
+        return (
+          <Box flexDirection="column" borderStyle="single" paddingX={1}>
+            <Text bold>Build approves exactly this:</Text>
+            {screen.terms.terms.map((line, index) => <SafeText key={index}>{`${line.label}: ${line.words}`}</SafeText>)}
+          </Box>
+        );
       case "compose": {
         const project = snapshot?.projects[screen.project] ?? null;
         return (
@@ -292,6 +327,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
             <SafeText bold>{task.title}</SafeText>
             <SafeText>{`${task.status}${task.detail === "" ? "" : ` · ${task.detail}`}`}</SafeText>
             {task.plan === null ? null : <Text>A plan waits for your approval (a).</Text>}
+            {(task.ready?.length ?? 0) === 0 ? null : <Box flexDirection="column" marginTop={1}>{task.ready!.map((line, index) => <SafeText key={index} {...(index === 0 ? { bold: true } : {})}>{line}</SafeText>)}</Box>}
             {question === undefined ? null : (
               <Box flexDirection="column" marginTop={1}>
                 <SafeText bold>{question.question}</SafeText>

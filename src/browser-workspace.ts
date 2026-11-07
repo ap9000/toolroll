@@ -189,7 +189,7 @@ export type BrowserTaskRow = {
   rank: number;
   action: BrowserLink | null; detail: string | null; problem: string | null; notes: string[];
   /** Put away, or Restore in Archived (task-tidy.md): a POST to the task's own route; null for a viewer or live work. */
-  tidy?: { action: string; label: 'Put away' | 'Restore'; returnTo: string } | null;
+  tidy?: { action: string; label: 'Archive' | 'Restore'; returnTo: string } | null;
 };
 /** One limit: a plan's usage window ("Claude · 5-hour, 48%") or a monthly budget ("shop · Budget, $4.20 of $10"). */
 export type BrowserTaskGroup = WorkIndexGroup;
@@ -306,13 +306,19 @@ export type BrowserTaskView = {
     termsWords?: string } | null;
   /** Ship: the pull request's checks, each on one time axis (task ship's twin). Null: no checks read yet. */
   ship?: { pr: number; head: string; state: "running" | "passed" | "failed" | "none"; rows: import("./design/kit.js").TimingRow[]; summary: string; observedAt: string } | null;
+  /** "Can I merge?" (merge-checklist.ts; `toolroll task ready` is its twin): each row and its blocker's form. Null: no result yet. */
+  mergeReady?: MergeReadyView | null;
   /** A release's own steps (release status's twin). Null: this task is no release, or nothing recorded. */
   release?: { tag: string; version: string; pr: number | null; state: "running" | "waiting" | "failed" | "done"; rows: import("./design/kit.js").TimingRow[];
-    headline: string; stopped: { step: string; message: string; at: string } | null; startedAt: string } | null;
+    headline: string; stopped: { step: string; message: string; at: string } | null; startedAt: string;
+    /** The step it is on now, and where that is in its steps. */
+    at?: { step: string; name: string; index: number; of: number } | null } | null;
   /** How the plan was approved: by whom and how, or the rule that approved it automatically. */
   approved?: { by: string; at: string; automatic: boolean; rule: string | null; how: string; version: string } | null;
   /** ⋯ More actions: the task's secondary acts, the same order on the task and agent pages, destructive last. */
   more?: BrowserTaskMore[];
+  /** The task's full audit record (its link in the header); it moved out of More (docs/plans/plain-toolroll.md P1.3). */
+  audit?: { label: string; href: string } | null;
 };
 export type BrowserTaskTab = "activity" | "result" | "plan" | "attempts";
 /** One ⋯ item: a plain link, a copy of this page's address, a one-click POST (never a ceremony), or a go-to that switches
@@ -818,7 +824,7 @@ export type BrowserHomeView = {
   project: string | null;
   scopes: { key: string; label: string; href: string; active: boolean }[] | null;
   counts: { key: 'needs' | 'running' | 'queued' | 'finished'; label: string; value: number; href: string }[];
-  groups: { key: 'decide' | 'review' | 'unblock' | 'running'; label: string; rows: BrowserHomeRow[] }[];
+  groups: { key: 'decide' | 'review' | 'unblock' | 'running' | 'waiting'; label: string; rows: BrowserHomeRow[] }[];
   /** More waits than the list shows: open them all in Tasks. */
   more: { count: number; href: string } | null;
   newTask: string;
@@ -912,7 +918,7 @@ export function browserProjectsOf(projects: readonly { name: string; path: strin
   return projects.flatMap(project => {
     if (seen.has(project.path)) return [];
     seen.add(project.path);
-    return [{ name: project.name, path: project.path, href: `/work?project=${encodeURIComponent(project.path)}`,
+    return [{ name: project.name, path: project.path, href: `/tasks?project=${encodeURIComponent(project.path)}`,
       knowledgeHref: `/settings/knowledge?repo=${encodeURIComponent(project.path)}` }];
   });
 }
@@ -925,11 +931,22 @@ export function browserNavigationOf(path: string, project: string | null = null,
   return [
     { label: 'Home', href: '/', active: pathname === '/' || pathname === '/chat' || under('/d', '/activity', '/morning'),
       ...(needsYou > 0 ? { count: needsYou, ...(needsYouLabel === undefined ? {} : { countLabel: needsYouLabel }) } : {}) },
-    { label: 'Tasks', href: `/work${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
-      active: under('/work', '/tasks', '/t', '/r', '/done', '/board', '/queue', '/inbox', '/review') },
+    { label: 'Tasks', href: `/tasks${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
+      active: under('/tasks', '/t', '/r', '/review') },
     { label: 'Flows', href: '/flows', active: under('/flows', '/recipes', '/kits', '/routines') },
     { label: 'Agents', href: '/agents', active: under('/agents', '/peek', '/term', '/fleet', '/system', '/runs') },
     { label: 'Projects', href: '/projects', active: under('/projects') },
     { label: 'Settings', href: '/settings', active: under('/settings', '/spend', '/mode', '/people', '/ledger', '/menu') },
   ];
 }
+
+/** One "Can I merge?" act, as the task page's form for it (server/merge-ready-view.ts builds it). */
+export type MergeReadyAct =
+  | { kind: "run-checks"; action: string; level: "quick" | "full"; returnTo: string }
+  | { kind: "retry" }
+  | { kind: "fix"; action: string; note: string; batch: string; source: string; request: string; returnTo: string };
+/** The task page's "Can I merge?" panel. */
+export type MergeReadyView = {
+  answer: "yes" | "no" | "not-yet" | "merged"; sentence: string;
+  rows: { key: string; label: string; mark: "yes" | "no" | "waiting" | "unknown" | "skip"; say: string; act: MergeReadyAct | null }[];
+};

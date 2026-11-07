@@ -7,17 +7,19 @@ import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, renameSync,
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
+import { currentMachineId, isThisMachine } from "./machine-identity.js";
 
 export const QUARANTINE_NOTE = ".toolroll-sweep.json";
 const PREFIX = ".toolroll-trash-";
-type Journal<T> = { version: 1; name: string; data: T; deleting: boolean; pid: number; host: string; bootId: string | null };
+// machineId (v150): the writer's stable machine id; a journal without one is matched by this machine's names.
+type Journal<T> = { version: 1; name: string; data: T; deleting: boolean; pid: number; host: string; bootId: string | null; machineId?: string | null };
 export type Quarantine<T> = { path: string; original: string; journal: Journal<T> };
 const freshPath = (root: string) => join(root, `${PREFIX}${randomBytes(16).toString("hex")}`);
-const owner = () => ({ pid: process.pid, host: hostname(), bootId: currentBootId() });
+const owner = () => ({ pid: process.pid, host: hostname(), bootId: currentBootId(), machineId: currentMachineId() });
 function alive(one: Journal<unknown>): boolean {
   if (one.pid === 0) return false;
-  if (one.host !== hostname()) return true;
-  if (one.bootId !== null && provenDeadByBootChange(one)) return false;
+  if (!isThisMachine(one)) return true;
+  if (one.bootId !== null && provenDeadByBootChange(one, { host: one.host, bootId: currentBootId() })) return false;
   try { process.kill(one.pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
@@ -26,7 +28,8 @@ function read<T>(path: string): Journal<T> | null {
     const j = JSON.parse(readFileSync(join(path, QUARANTINE_NOTE), "utf8")) as Journal<T>;
     return j.version === 1 && typeof j.name === "string" && j.name !== "." && j.name !== ".." &&
       j.name !== "" && !/[\\/\0]/.test(j.name) && Number.isSafeInteger(j.pid) && j.pid >= 0 && typeof j.host === "string" &&
-      (j.bootId === null || typeof j.bootId === "string") && typeof j.deleting === "boolean" ? j : null;
+      (j.bootId === null || typeof j.bootId === "string") && (j.machineId === undefined || j.machineId === null || typeof j.machineId === "string")
+      && typeof j.deleting === "boolean" ? j : null;
   } catch { return null; }
 }
 function write<T>(path: string, journal: Journal<T>, exclusive = false): void {

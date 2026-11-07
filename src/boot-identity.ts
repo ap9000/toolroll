@@ -22,7 +22,7 @@
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { isThisMachine } from "./machine-identity.js";
 
 /** RFC 4122 shape, any case; the kernel tokens are exactly this. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -92,11 +92,11 @@ export function injectBootIdentity(identity: BootIdentity | null): void {
   cached = identity;
 }
 
-export type BootWitness = { host: string; bootId: string | null };
+export type BootWitness = { host: string; bootId: string | null; machineId?: string | null };
 
 /**
  * THE ONE RULE (plan §login/reboot recovery): a witnessed process is
- * proven dead by boot change only when the witness names THIS host, the
+ * proven dead by boot change only when the witness names THIS machine (isThisMachine), the
  * witness carries a well-formed boot id, this host's current boot id is
  * well-formed and known, and the two differ. Same boot, a legacy witness
  * without an id, a foreign host, an unknown or malformed current id — each
@@ -106,8 +106,10 @@ export function provenDeadByBootChange(
   witness: BootWitness,
   current: { host?: string; bootId: string | null } = { bootId: currentBootId() },
 ): boolean {
-  const host = current.host ?? hostname();
-  if (witness.host !== host) return false;
+  // A caller naming the host compares exactly (restart certification, tests); otherwise THIS machine is decided by
+  // its stable id, or for a witness without one by this machine's own names (machine-identity.ts), never by the
+  // network hostname alone: a boot id from another machine always differs from ours.
+  if (current.host !== undefined ? witness.host !== current.host : !isThisMachine(witness)) return false;
   if (witness.bootId === null || current.bootId === null) return false;
   const seen = normalizeBootId(witness.bootId);
   const now = normalizeBootId(current.bootId);

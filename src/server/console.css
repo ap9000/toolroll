@@ -1229,6 +1229,9 @@
   .approval-field-hint { color: var(--muted-foreground); font-size: 12px; line-height: 1.5; }
   .approval-field textarea, .approval-field input[type=text] { width: 100%; max-width: 75ch; margin: 0; font-family: var(--font-sans); font-size: 14px; line-height: 1.55; }
   .approval-requirements { display: grid; gap: 6px; margin: 2px 0 0; padding: 0; list-style: none; }
+  .approval-requirements li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .approval-requirements li input[type=text] { flex: 1 1 22rem; }
+  .approval-how { flex: 0 1 auto; max-width: 100%; min-height: 2.125rem; margin: 0; font-size: 13px; }
   .approval-edit-act { display: flex; flex-wrap: wrap; align-items: center; gap: var(--so-space-sm); }
   .approval-edit-act button { margin: 0; min-height: 2.125rem; white-space: nowrap; }
   .approval-link { display: inline-flex; align-items: center; min-height: 32px; padding: 0 var(--so-space-md); border: 1px solid var(--border); border-radius: var(--so-radius-md); background: var(--card); color: var(--foreground); font-size: 13px; font-weight: 500; text-decoration: none; }
@@ -2793,3 +2796,23 @@ html.so-swap::view-transition-old(*):only-child { animation: so-card-out 160ms e
 @media (max-width: 40rem) { .welcome form > .k-btn[type=submit] { width: auto; } }
 /* On a phone the step's primary lives in the dock: its copy in the step is hidden. */
 @media (max-width: 760px) { .welcome .k-btn.k-docked { display: none; } }
+
+/* Code map: every name is repository data, however long; nothing may push the page wider. */
+.cm-list { list-style: none; margin: 0; padding: 0; }
+.cm-item { display: grid; gap: 2px; min-width: 0; padding: 10px 0; border-bottom: 1px solid var(--so-line); overflow-wrap: anywhere; }
+.cm-title { font-size: 13px; font-weight: 500; color: var(--so-ink); }
+.cm-meta { font-size: 12.5px; color: var(--so-muted); }
+.cm-path { overflow-wrap: anywhere; user-select: all; }
+.cm-search { display: flex; gap: var(--so-space-sm); align-items: center; margin: 0 0 var(--so-space-md); }
+.cm-search .k-input, .cm-search input[type="search"] { flex: 1 1 auto; min-width: 0; }
+.cm-search .k-btn { flex: 0 0 auto; white-space: nowrap; }
+/* A test's name is the row: it wraps whole, its facts sit under it, and the one action stays on one line. */
+.flaky-rows .k-row-a .k-btn { white-space: nowrap; }
+@media (min-width: 761px) {
+  .flaky-rows .k-row { grid-template-columns: 96px minmax(0, 1fr) auto auto; padding-block: 10px; }
+  .flaky-rows .k-row-t { grid-column: 2; grid-row: 1; white-space: normal; overflow-wrap: anywhere; }
+  .flaky-rows .k-row-d { grid-column: 2; grid-row: 2; white-space: normal; }
+  .flaky-rows .k-row-m { grid-column: 3; grid-row: 1 / span 2; }
+  .flaky-rows .k-row-a { grid-column: 4; grid-row: 1 / span 2; }
+  .flaky-rows .k-row-c { grid-row: 1 / span 2; }
+}

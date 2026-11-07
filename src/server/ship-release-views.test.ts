@@ -9,7 +9,7 @@ const at = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000).toISO
 const step = (name: string, from: number, to: number | null, state: ReleaseStepRow["state"] = to === null ? "running" : "done"): ReleaseStepRow =>
   ({ step: name, state, startedAt: at(from), endedAt: to === null ? null : at(to), detail: null });
 const progress = (steps: ReleaseStepRow[], stopped: { step: string; message: string; at: string } | null = null) =>
-  ({ tag: "v0.9.87", version: "0.9.87", pr: 290, startedAt: steps[0]?.startedAt ?? at(30), updatedAt: at(0), steps, stopped });
+  ({ tag: "v0.9.87", version: "0.9.87", pr: 290, startedAt: steps[0]?.startedAt ?? at(30), updatedAt: at(0), steps, stopped, building: null as { run: number; startedAt: string } | null });
 
 describe("Ship", () => {
   test("the overall status is the observation's own: a failing observation never reads passed", () => {
@@ -51,5 +51,19 @@ describe("Release progress", () => {
     expect(releaseStepsViewOf(progress([step("gate", 9, 8), step("approval", 8, 7), step("check", 7, 6, "failed")], { step: "check", message: "1 test failed.", at: at(6) }), NOW)!)
       .toMatchObject({ state: "failed", headline: "Stopped at Release check" });
     expect(releaseStepsViewOf(progress([step("gate", 9, 8), step("approval", 8, 7), step("check", 7, null)]), NOW)!.headline).toBe("Release check · Step 3 of 13");
+  });
+
+  test.each([
+    ["a build running since a stop at Approval", [step("gate", 9, 8), step("approval", 8, 7, "failed")], { run: 3327, startedAt: at(5) }],
+    ["a build running since the check failed", [step("gate", 9, 8), step("approval", 8, 7), step("check", 7, 6, "failed")], { run: 3327, startedAt: at(5) }],
+    ["a build running since a later step failed", [step("check", 9, 8), step("complete", 8, 7), step("deploy", 7, 6, "failed")], { run: 3327, startedAt: at(5) }],
+    ["a release resumed past a stop, with its step left failed", [step("gate", 9, 8), step("approval", 8, 7, "failed"), step("check", 6, null)], null],
+  ])("the panel says where it stands now: %s", (_, steps, building) => {
+    const view = releaseStepsViewOf({ ...progress(steps), building }, NOW)!;
+    expect(view).toMatchObject({ state: "running", stopped: null, at: { step: "check" } });
+    expect(view.headline).toMatch(/^Release check · Step \d+ of \d+$/);
+    expect(view.rows.find(row => row.name === "Release check")?.st).toBe("run");
+    expect(view.rows.filter(row => row.st === "bad")).toEqual([]);
+    expect(view.rows.filter(row => ["Deploy to this Mac", "Homebrew"].includes(row.name)).every(row => row.st === "q")).toBe(true);
   });
 });

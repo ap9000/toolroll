@@ -182,7 +182,7 @@ function notifyOperators(store: Store, key: string, message: { kind: string; sub
       dedupeKey: `${SIGN_IN_KEY_PREFIX}${key}:${recipient}`,
       kind: message.kind,
       pushClass: "attention",
-      link: "/work",
+      link: "/tasks",
       subject: message.subject,
       body: message.body,
       recipient,

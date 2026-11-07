@@ -7,7 +7,7 @@ import { projectIdentities } from "./project-identity.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { createServer as createNetServer } from "node:net";
 import type { FolderLookRunner } from "./folder-look.js";
-import type { BrowserAgentsView } from "./browser-workspace.js";
+import type { BrowserAgentsView, BrowserHomeView, BrowserTasksView } from "./browser-workspace.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -24,6 +24,11 @@ import { resolveAgentAuthority } from "./agentconfig.js";
 import { Window } from "happy-dom";
 import { presented, T0, renderedHtmlOf, workspaceOf, revisionIdOf, plannerKeptTerms, revisionFormOf, sealScopeFixture } from "../test/serve-kit.js";
 import { handoffBytes } from "../test/handoff-fixture.js";
+
+/** Home's rows and a Board column, as the page's own snapshot carries them (Home and the Board render in the browser). */
+const homeRowsOf = (html: string) => (workspaceOf(html).view as BrowserHomeView).groups.flatMap(group => group.rows);
+const homeRowOf = (html: string, id: string) => homeRowsOf(html).find(one => one.id === id) ?? null;
+const boardColumnOf = (html: string, key: string) => (workspaceOf(html).view as BrowserTasksView).board!.find(one => one.key === key)!;
 
 describe("the operations console", () => {
   let store: Store;
@@ -561,14 +566,18 @@ describe("the operations console", () => {
     );
 
     const cookie = await login();
-    const queue = await (await fetch(url("/review"), { headers: { cookie } })).text();
+    // The bare list retired to Tasks; the ranked review list stays beside a result (a result keeps /review?result=…).
+    const bareReview = await fetch(url("/review"), { headers: { cookie }, redirect: "manual" });
+    expect(bareReview.status).toBe(301);
+    expect(bareReview.headers.get("location")).toBe("/tasks?view=ready");
+    const queue = await (await fetch(url("/review?result=t-pr2"), { headers: { cookie } })).text();
     // Review priority puts the OBSERVED failure first — it needs a person —
     // even though the quiet PR finished later; the quiet one is not hidden.
     const list = /<ol class="cockpit-queue-list">(.*?)<\/ol>/s.exec(queue)?.[1] ?? "";
     expect(list.indexOf("PR #102")).toBeLessThan(list.indexOf("PR #101"));
     expect(list.indexOf("PR #102")).toBeGreaterThanOrEqual(0);
     expect(list).toContain("CI is failing");
-    // The failing result is selected by default; its publication card says
+    // The failing result, selected by its link: its publication card says
     // exactly what the watcher saw, and offers the repair draft.
     expect(queue).toContain('data-review-task="t-pr2"');
     expect(queue).toContain("CI failing at the last check");
@@ -589,9 +598,10 @@ describe("the operations console", () => {
 
     // The failing run's page carries the draft button; the quiet one does not.
     const failingRun = await (await fetch(url(`/r/${run2}`), { headers: { cookie } })).text();
-    expect(failingRun).toContain("Draft a repair task");
+    expect(failingRun).toContain("Send back");
+    expect(failingRun).toContain(`action="/r/${run2}/draft-repair"`);
     const quietRun = await (await fetch(url(`/r/${run1}`), { headers: { cookie } })).text();
-    expect(quietRun).not.toMatch(/draft a repair task/i);
+    expect(quietRun).not.toContain("draft-repair");
 
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(failingRun)?.[1] ?? "";
     const drafted = await fetch(url(`/r/${run2}/draft-repair`), {
@@ -646,7 +656,7 @@ describe("the operations console", () => {
     expect(workspaceOf(inbox).refreshSeconds).toBeUndefined();
     expect(inbox).not.toContain('http-equiv="refresh"');
     // Tasks, a task and Home read themselves every 10 s while something builds, without a docked chat.
-    for (const path of ["/work", "/t/t-live", "/chat"]) {
+    for (const path of ["/tasks", "/t/t-live", "/chat"]) {
       const html = await (await fetch(url(path), { headers: { cookie } })).text();
       expect(workspaceOf(html).refreshSeconds, path).toBe(10);
       expect(workspaceOf(html).conversation ?? null, path).toBeNull();
@@ -705,10 +715,10 @@ describe("the operations console", () => {
     const edited = await post("/t/t-s/scope", cookie, { csrf, acceptance: "c1: ok | manual-review", sawDigest: digest, goal: "wider goal", not: "", touches: "" });
     expect(edited.status).toBe(303);
     const after = await (await fetch(url("/t/t-s"), { headers: { cookie } })).text();
-    expect(after).toContain("approved once, then rewritten");
+    expect(after).toContain("Edited after approval");
   });
 
-  test("consent-closed: an unreadable route, a route that cannot run, or a lapsed pre-routing approval mints no nonce and shows no password on the task page, the focused chat, or /next — recovery copy names the road", async () => {
+  test("consent-closed: an unreadable route, a route that cannot run, or a lapsed pre-routing approval mints no nonce and shows no password on the task page or the focused chat, and Home offers no approve act — recovery copy names the road", async () => {
     store.createTask({ id: "t-c", title: "closed door" }, T0);
     store.placeTask(store.refFor("built-in", "t-c").id, "/repo/main");
     const cookie = await login();
@@ -718,12 +728,13 @@ describe("the operations console", () => {
     const surfaces = async () => ({
       task: await (await fetch(url("/t/t-c"), { headers: { cookie } })).text(),
       chat: await (await fetch(url("/chat?task=t-c"), { headers: { cookie } })).text(),
-      next: await (await fetch(url("/next"), { headers: { cookie } })).text(),
     });
-    const inboxRow = async () => {
-      const inbox = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
-      const start = inbox.indexOf('href="/t/t-c"');
-      return start === -1 ? "" : inbox.slice(start, inbox.indexOf("</a>", start));
+    // Home never carries the ceremony, open or closed: its row links to the task page.
+    const homeRow = async () => {
+      const home = await (await fetch(url("/"), { headers: { cookie } })).text();
+      expect(home).not.toMatch(/name="nonce"/);
+      expect(home).not.toContain('type="password"');
+      return JSON.stringify(homeRowOf(home, "t-c"));
     };
     const nonceOf = (html: string) => /name="nonce" value="([0-9a-f]{32})"/.exec(html)?.[1] ?? null;
     const closed = (html: string) => {
@@ -732,15 +743,14 @@ describe("the operations console", () => {
       expect(html).not.toMatch(/approve (&amp; start|this scope)/i);
       expect(html).toContain("consent-closed");
     };
-    // Open first: the door mints on every surface, and the inbox offers the act.
+    // Open first: the door mints on every surface, and Home offers the act.
     let pages = await surfaces();
     expect(nonceOf(pages.task)).not.toBeNull();
     expect(nonceOf(pages.chat)).not.toBeNull();
-    expect(nonceOf(pages.next)).not.toBeNull();
-    expect(await inboxRow()).toContain("review &amp; approve");
+    expect(await homeRow()).toContain("Approve plan");
 
     // Unreadable route bytes: closed everywhere, in words, with the road —
-    // the inbox row names the attention it needs and offers no approve act.
+    // the Home row names the attention it needs and offers no approve act.
     store.raw().prepare("UPDATE task_scope SET proposed_route_json = '{\"version\":1' WHERE task_id = 't-c'").run();
     pages = await surfaces();
     for (const html of Object.values(pages)) {
@@ -749,15 +759,16 @@ describe("the operations console", () => {
       expect(html).toContain("re-file the scope");
     }
     expect(pages.task).toContain('href="/t/t-c#scope"');
-    let row = await inboxRow();
-    expect(row).not.toContain("review &amp; approve");
-    expect(row).toContain("needs attention: the agents on file can’t be read");
+    let row = await homeRow();
+    expect(row).not.toContain("Approve plan");
+    expect(row).toContain("The agents on file can’t be read");
+    expect(row).toContain("Edit the plan");
     // MISSING route bytes on a routed row (no working route at all): the
     // same closed door on every surface.
     store.raw().prepare("UPDATE task_scope SET proposed_route_json = NULL WHERE task_id = 't-c'").run();
     pages = await surfaces();
     for (const html of Object.values(pages)) closed(html);
-    expect(await inboxRow()).toContain("needs attention");
+    expect(await homeRow()).not.toContain("Approve plan");
     // The POST road is closed too: no nonce was rendered, so none is accepted;
     // and the seal itself refuses an unreadable route.
     const forced = await post("/t/t-c/approve", cookie, { csrf, nonce: "", digest, token: approverToken });
@@ -770,11 +781,11 @@ describe("the operations console", () => {
     pages = await surfaces();
     for (const html of Object.values(pages)) {
       closed(html);
-      expect(html).toContain("predates agent routing");
+      expect(html).toContain("made before agents were chosen per task");
     }
-    row = await inboxRow();
-    expect(row).not.toContain("review &amp; approve");
-    expect(row).toContain("needs attention: this scope predates agent routing");
+    row = await homeRow();
+    expect(row).not.toContain("Approve plan");
+    expect(row).toContain("This plan was made before agents were chosen per task");
     expect(store.sealScopeApproval("t-c", "alex", T0)).toBe(false);
 
     // Re-filing routes it again: the door opens, the nonce is back.
@@ -782,8 +793,7 @@ describe("the operations console", () => {
     pages = await surfaces();
     expect(nonceOf(pages.task)).not.toBeNull();
     expect(pages.task).toContain('type="password"');
-    expect(nonceOf(pages.next)).not.toBeNull();
-    expect(await inboxRow()).toContain("review &amp; approve");
+    expect(await homeRow()).toContain("Approve plan");
   });
 
   test("consent-closed (v48 integrity): the ONE strict stored-scope projection gates every surface — an extra key, a timer-unsafe clock, an unsafe integer, a malformed chain auth mode, a route/profile parity break, or a digest mismatch mints no nonce, shows no password, offers no act, and the seal refuses the same row", async () => {
@@ -797,8 +807,8 @@ describe("the operations console", () => {
     const surfaces = async () => ({
       task: await (await fetch(url("/t/t-s"), { headers: { cookie } })).text(),
       chat: await (await fetch(url("/chat?task=t-s"), { headers: { cookie } })).text(),
-      next: await (await fetch(url("/next"), { headers: { cookie } })).text(),
     });
+    const homeOf = async () => await (await fetch(url("/"), { headers: { cookie } })).text();
     const nonceOf = (html: string) => /name="nonce" value="([0-9a-f]{32})"/.exec(html)?.[1] ?? null;
     const raw = store.raw();
     const stored = raw.prepare("SELECT profile_json, proposed_route_json, digest FROM task_scope WHERE task_id = 't-s'").get() as { profile_json: string; proposed_route_json: string; digest: string };
@@ -831,6 +841,11 @@ describe("the operations console", () => {
         expect(html, `${label} (${surface})`).toContain("consent-closed");
         expect(html, `${label} (${surface})`).toContain(words);
       }
+      // Home carries no ceremony and offers no approve act on the same row.
+      const home = await homeOf();
+      expect(nonceOf(home), `${label} (home)`).toBeNull();
+      expect(home, `${label} (home)`).not.toContain('type="password"');
+      expect(JSON.stringify(homeRowOf(home, "t-s")), `${label} (home)`).not.toContain("Approve plan");
       // The seal refuses the same row, and the forced POST lands nowhere.
       expect(store.sealScopeApproval("t-s", "alex", T0), label).toBe(false);
       const current = String((raw.prepare("SELECT digest FROM task_scope WHERE task_id = 't-s'").get() as { digest: string }).digest);
@@ -968,26 +983,26 @@ describe("the operations console", () => {
       .toMatchObject({ detail: "The smaller export task replaces this proposal." });
   });
 
-  test("inbox: approvals link (never forms), retry acts inline and returns to the inbox", async () => {
+  test("Home: approvals link (never forms), and a retry that came from Home returns there", async () => {
     store.createTask({ id: "t-stalled", title: "stalled work" }, T0);
     store.setTaskState("t-stalled", "failed", T0);
     store.createTask({ id: "t-approve", title: "awaiting yes" }, T0);
+    store.placeTask(store.refFor("built-in", "t-approve").id, "/repo/main");
     const cookie = await login();
     const csrf = await csrfFrom(cookie);
     await post("/t/t-approve/scope", cookie, { csrf, acceptance: "c1: ok | manual-review", sawDigest: "", goal: "a goal", not: "", touches: "" });
 
-    const inbox = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
-    // The approval card links to the step-up screen; it never carries a
+    const home = await (await fetch(url("/"), { headers: { cookie } })).text();
+    // The approval row links to the step-up screen; Home never carries a
     // password field or a nonce of its own.
-    expect(inbox).toContain("Approve a scope");
-    expect(inbox).toContain("awaiting yes");
-    expect(inbox).not.toContain('name="nonce"');
-    expect(inbox).not.toContain('type="password"');
+    expect(homeRowOf(home, "t-approve")).toMatchObject({ title: "awaiting yes", action: { label: "Approve plan", href: "/t/t-approve?version=t-approve#approve" } });
+    expect(home).not.toContain('name="nonce"');
+    expect(home).not.toContain('type="password"');
 
-    // Inline retry returns to the inbox, and the stall is gone from it.
+    // A retry that names the old inbox return lands on Home.
     const retried = await post("/t/t-stalled/requeue", cookie, { csrf, return: "inbox" });
     expect(retried.status).toBe(303);
-    expect(retried.headers.get("location")).toBe("/inbox");
+    expect(retried.headers.get("location")).toBe("/");
     expect(store.getTask("t-stalled")?.state).toBe("queued");
   });
 
@@ -1145,8 +1160,9 @@ describe("the operations console", () => {
     );
     const cookie = await login();
 
-    const home = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
-    expect(home).toContain("overdue");
+    const question = await (await fetch(url("/d/1"), { headers: { cookie } })).text();
+    expect(question).toContain("The answer was due");
+    await (await fetch(url("/"), { headers: { cookie } })).text();
     // The page derived it; nothing wrote it.
     expect(store.listDecisions("open")).toHaveLength(1);
   });
@@ -1559,26 +1575,28 @@ describe("the board — the pipeline as lanes, live in place", () => {
       ...presented(store, ref, "builder"),
     });
     store.createTask({ id: "t-ready", title: "all set" }, T0);
+    store.placeTask(store.refFor("built-in", "t-ready").id, "/repo/main");
     store.saveScope({
       taskId: "t-ready", goal: "go", outOfScope: null, touches: [], acceptance: [],
       proposedAt: T0.toISOString(), digest: "d2",
       approvedAt: T0.toISOString(), approvedBy: "alex", approvedDigest: "d2",
     });
     store.createTask({ id: "t-bare", title: "no scope yet" }, T0);
+    store.placeTask(store.refFor("built-in", "t-bare").id, "/repo/main");
 
     const cookie = await login();
-    const board = await (await fetch(url("/board"), { headers: { cookie } })).text();
-    for (const lane of ["Needs you", "Queued", "Waiting", "Building", "Done recently"]) {
-      expect(board).toContain(lane);
-    }
-    expect(board).toContain("being built");
+    const board = await (await fetch(url("/tasks?view=board"), { headers: { cookie } })).text();
+    expect((workspaceOf(board).view as BrowserTasksView).board!.map(one => one.label)).toEqual(["Needs you", "Queued", "Running", "Finished"]);
+    expect(boardColumnOf(board, "running").rows.map(one => one.title)).toEqual(["being built"]);
+    expect(boardColumnOf(board, "running").rows[0]!.word).toMatchObject({ word: "Building" });
     expect(board).toContain("all set");
-    expect(board).toContain("write its scope");
-    // Read-only by construction: an auto-refreshing surface never holds a
-    // form, a nonce, or a password field — the polled region is form-free;
-    // the chrome's project switcher lives outside it and is never swapped.
-    expect(board.slice(board.indexOf('<div id="board-region">'), board.indexOf('id="board-region-stamp"'))).not.toContain("<form");
+    expect(JSON.stringify(boardColumnOf(board, "needs").rows)).toContain("Define the task");
+    // An auto-refreshing surface never holds a nonce or a password field. The
+    // only forms in the Board itself are each row's Archive, which is no
+    // approval; the chrome's project switcher lives outside it.
+    expect(board).not.toContain('name="nonce"');
     expect(board).not.toContain('type="password"');
+    for (const [form] of (workspaceOf(board).pageHtml ?? "").matchAll(/<form\b[^>]*>/g)) expect(form).toMatch(/action="\/t\/[^"]+\/archive"/);
   });
 
   test("the board's CSP admits exactly its own script: fresh nonce per response, never unsafe-inline", async () => {
@@ -1605,17 +1623,21 @@ describe("the board — the pipeline as lanes, live in place", () => {
     expect(inboxCsp).toContain("connect-src 'self'");
   });
 
-  test("the fragment is the region alone, behind the same auth", async () => {
+  test("the order view's fragment is the region alone, behind the same auth", async () => {
     const cookie = await login();
-    const fragment = await fetch(url("/board?fragment=1"), { headers: { cookie } });
+    const fragment = await fetch(url("/tasks?view=order&fragment=1"), { headers: { cookie } });
     const body = await fragment.text();
-    expect(body).toContain('class="board"');
+    expect(body).toContain('class="lanes"');
     expect(body).not.toContain("<html");
     expect(body).not.toContain("<script");
 
-    const anonymous = await fetch(url("/board?fragment=1"), { redirect: "manual" });
+    const anonymous = await fetch(url("/tasks?view=order&fragment=1"), { redirect: "manual" });
     expect(anonymous.status).toBe(303);
     expect(anonymous.headers.get("location")).toBe("/login");
+    // The Board reads itself in the page now: the old fragment address keeps only what its target knows.
+    const retired = await fetch(url("/board?fragment=1"), { headers: { cookie }, redirect: "manual" });
+    expect(retired.status).toBe(301);
+    expect(retired.headers.get("location")).toBe("/tasks?view=board");
   });
 
   test("new implementation tasks recommend and request planning before approval", async () => {
@@ -1677,6 +1699,8 @@ describe("the board — the pipeline as lanes, live in place", () => {
     store.createTask({ id: "t-plan", title: "needs thought" }, T0);
     const ref = store.refFor("built-in", "t-plan").id;
     store.placeTask(ref, "/repo/main");
+    // A connected builder, so what the Board says is the plan's own wait, not "no builder yet".
+    register(store, { name: "builder-1", host: "here", capacity: 2, repos: ["/repo/main"], now: new Date(), newToken: () => "tok-builder-1" });
 
     const cookie = await login();
     const before = await (await fetch(url("/t/t-plan"), { headers: { cookie } })).text();
@@ -1697,8 +1721,8 @@ describe("the board — the pipeline as lanes, live in place", () => {
     expect(screen).not.toContain(">plan first<");
     expect(screen).not.toContain("approval-sheet");
 
-    const board = await (await fetch(url("/board"), { headers: { cookie } })).text();
-    expect(board).toContain("planning next");
+    const board = await (await fetch(url("/tasks?view=board"), { headers: { cookie } })).text();
+    expect(JSON.stringify(boardColumnOf(board, "queued").rows)).toContain("Waiting to plan.");
 
     // The draft arrives: proposed scope + plan state; the board flips to
     // review, and the task screen shows the document with the approve card.
@@ -1738,8 +1762,8 @@ describe("the board — the pipeline as lanes, live in place", () => {
     }, new Date());
     store.finishRun(run, { outcome: "built", reason: "plan-drafted", now: new Date() });
 
-    const review = await (await fetch(url("/board"), { headers: { cookie } })).text();
-    expect(review).toContain("review the plan");
+    const review = await (await fetch(url("/tasks?view=board"), { headers: { cookie } })).text();
+    expect(boardColumnOf(review, "needs").rows.find(one => one.id === "t-plan")?.action?.label).toBe("Approve plan");
     const drafted = await (await fetch(url("/t/t-plan"), { headers: { cookie } })).text();
     expect(drafted).toContain("Do the thing carefully.");
     expect(drafted).toContain('class="approve-form approval-sheet"');
@@ -2057,7 +2081,7 @@ describe("the rolled-up board — every project, one ceiling", () => {
     store.createTask({ id: "t-unplaced", title: "belongs to nobody yet" }, T0);
 
     const cookie = await login();
-    const board = await (await fetch(url("/board?scope=all"), { headers: { cookie } })).text();
+    const board = await (await fetch(url("/tasks?view=board&scope=all"), { headers: { cookie } })).text();
     expect(board).toContain("t-alpha");
     expect(board).toContain("t-beta");
     // Outside the ceiling: not a card, not a name, not a byte.
@@ -2066,16 +2090,24 @@ describe("the rolled-up board — every project, one ceiling", () => {
     // Unplaced work dispatches anywhere, so the roll-up owns it honestly.
     expect(board).toContain("t-unplaced");
 
-    // The fragment carries the same scope and the same ceiling.
-    const fragment = await (await fetch(url("/board?scope=all&fragment=1"), { headers: { cookie } })).text();
-    expect(fragment).toContain("t-alpha");
-    expect(fragment).not.toContain("t-outside");
+    // An old roll-up link carries the same scope and the same ceiling.
+    const old = await fetch(url("/board?scope=all&fragment=1"), { headers: { cookie }, redirect: "manual" });
+    expect(old.status).toBe(301);
+    expect(old.headers.get("location")).toBe("/tasks?scope=all&view=board");
+    const followed = await (await fetch(url("/board?scope=all&fragment=1"), { headers: { cookie } })).text();
+    expect(followed).toContain("t-alpha");
+    expect(followed).not.toContain("t-outside");
 
-    // Without scope=all and without an open project, the board defers to
-    // the opener — the roll-up is the only project-less board.
+    // Without scope=all and without an open project, the Board is still the
+    // roll-up under the same ceiling: a redirect decides nothing, its target admits.
     const bare = await fetch(url("/board"), { headers: { cookie }, redirect: "manual" });
-    expect(bare.status).toBe(303);
-    expect(bare.headers.get("location")).toBe("/projects?return=%2Fboard");
+    expect(bare.status).toBe(301);
+    expect(bare.headers.get("location")).toBe("/tasks?view=board");
+    const rolled = await (await fetch(url("/tasks?view=board"), { headers: { cookie } })).text();
+    expect(rolled).toContain("t-alpha");
+    expect(rolled).toContain("t-beta");
+    expect(rolled).not.toContain("t-outside");
+    expect(rolled).not.toContain("forbidden");
   });
 
   test("a blocker beyond the ceiling keeps its name but never its state", async () => {
@@ -2092,12 +2124,17 @@ describe("the rolled-up board — every project, one ceiling", () => {
     });
 
     const cookie = await login();
-    const board = await (await fetch(url("/board?scope=all"), { headers: { cookie } })).text();
-    // The edge belongs to the visible task; the other project's live
-    // status does not travel through it.
-    expect(board).toContain("waits on t-secret");
-    expect(board).not.toContain("waits on t-secret \u2014");
+    const board = await (await fetch(url("/tasks?view=board&scope=all"), { headers: { cookie } })).text();
+    // The Board says the task waits, and names nothing beyond the ceiling.
+    expect(JSON.stringify(boardColumnOf(board, "queued").rows)).toContain("Waiting for another task to finish first.");
+    expect(board).not.toContain("t-secret");
     expect(board).not.toContain("Building now");
+    // The edge belongs to the visible task, so its own page keeps the name;
+    // the other project's live status does not travel through it.
+    const task = await (await fetch(url("/t/t-waiting"), { headers: { cookie } })).text();
+    expect(task).toContain("t-secret");
+    expect(task).not.toContain("elsewhere");
+    expect(task).not.toContain("Building now");
   });
 });
 
@@ -2198,7 +2235,7 @@ describe("the agents card — configuration, readable at a glance", () => {
   });
 });
 
-describe("/next — clearing the queue one thing at a time", () => {
+describe("Home — what waits on you, answered in place", () => {
   let store: Store;
   let server: Server;
   let base: string;
@@ -2237,11 +2274,16 @@ describe("/next — clearing the queue one thing at a time", () => {
     rmSync(evidenceRoot, { recursive: true, force: true });
   });
 
-  test("question first, act inline, land on the next item; approvals carry the step-up on the card", async () => {
+  test("question first, answered on Home and back to Home; an approval keeps its step-up on the task page", async () => {
     // One open question and one unapproved scope wait.
     store.createTask({ id: "t-q", title: "asked" }, T0);
     const qRef = store.refFor("built-in", "t-q").id;
-    const run = store.startRun({ taskRef: qRef, leaseId: "l1", runner: "b", branch: "br", worktree: "/w", now: T0, ...presented(store, qRef, "builder") });
+    // A live build asks: a run with no live claim reads as stopped, and Home leads with that instead.
+    store.placeTask(qRef, "/repo/main");
+    register(store, { name: "builder-1", host: "here", capacity: 2, repos: ["/repo/main"], now: new Date(), newToken: () => "tok-builder-1" });
+    const taken = acquire(store, qRef, "builder-1", { token: "tok-builder-1", now: new Date(), ttlMs: 60 * 60_000 });
+    if (!taken.ok) throw new Error("claim refused");
+    const run = store.startRun({ taskRef: qRef, leaseId: taken.claim.leaseId, runner: "builder-1", branch: "br", worktree: "/w", now: new Date(), ...presented(store, qRef, "builder") });
     store.saveDecision({
       run, urgency: "blocking", recap: "Two ways to cache.", question: "Per-user or global?",
       options: [
@@ -2251,6 +2293,7 @@ describe("/next — clearing the queue one thing at a time", () => {
       recommendation: "user",
     }, T0);
     store.createTask({ id: "t-a", title: "needs a yes" }, T0);
+    store.placeTask(store.refFor("built-in", "t-a").id, "/repo/main");
     store.saveScope({
       taskId: "t-a", goal: "do the thing", outOfScope: "not the other thing", touches: ["src/x.ts"], acceptance: [],
       proposedAt: T0.toISOString(), digest: "d".repeat(32),
@@ -2258,13 +2301,16 @@ describe("/next — clearing the queue one thing at a time", () => {
     });
 
     const cookie = await login();
-    // The oldest question leads, with its answers ON the card.
-    const first = await (await fetch(url("/next"), { headers: { cookie } })).text();
-    expect(first).toContain("Per-user or global?");
-    expect(first).toContain('name="return" value="next"');
-    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(first)?.[1] as string;
+    // The question sits on Home with its answers ON the row.
+    const first = await (await fetch(url("/"), { headers: { cookie } })).text();
+    const asked = homeRowOf(first, "t-q");
+    expect(asked?.question?.text).toBe("Per-user or global?");
+    expect(asked?.question?.options.map(one => one.id)).toEqual(["user", "global"]);
+    expect(first).not.toContain('name="nonce"');
+    expect(first).not.toContain('type="password"');
+    const csrf = workspaceOf(first).csrf as string;
 
-    // Answering lands on the NEXT item — the approval, step-up included.
+    // Answering lands back on Home, where the approval now leads.
     const answered = await fetch(url("/d/1/answer"), {
       method: "POST",
       headers: { cookie, origin: base },
@@ -2272,12 +2318,16 @@ describe("/next — clearing the queue one thing at a time", () => {
       redirect: "manual",
     });
     expect(answered.status).toBe(303);
-    expect(answered.headers.get("location")).toBe("/next");
+    expect(answered.headers.get("location")).toBe("/");
     // Without a remembered password the approval carries the step-up (a remembered one is one click).
-    expect((await fetch(url("/session/forget-password"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, return: "/next" }), redirect: "manual" })).status).toBe(303);
+    expect((await fetch(url("/session/forget-password"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, return: "/" }), redirect: "manual" })).status).toBe(303);
 
-    const second = await (await fetch(url("/next"), { headers: { cookie } })).text();
-    expect(second).toContain("Approve exactly this");
+    const home = await (await fetch(url("/"), { headers: { cookie } })).text();
+    expect(homeRowOf(home, "t-a")?.action?.label).toBe("Approve plan");
+    expect(home).not.toContain('name="nonce"');
+    expect(home).not.toContain('type="password"');
+
+    const second = await (await fetch(url("/t/t-a"), { headers: { cookie } })).text();
     expect(second).toContain("not the other thing");
     expect(second).toContain('type="password"');
     const nonce = /name="nonce" value="([0-9a-f]{32})"/.exec(second)?.[1] as string;
@@ -2290,10 +2340,10 @@ describe("/next — clearing the queue one thing at a time", () => {
       redirect: "manual",
     });
     expect(approved.status).toBe(303);
-    expect(approved.headers.get("location")).toBe("/next");
+    expect(approved.headers.get("location")).toBe("/");
   });
 
-  test("not-now sets an item aside without touching it, and all-clear remembers the held ones", async () => {
+  test("an old set-aside link lands on Home and touches nothing", async () => {
     store.createTask({ id: "t-1", title: "one" }, T0);
     store.saveScope({
       taskId: "t-1", goal: "g", outOfScope: null, touches: [], acceptance: [],
@@ -2301,16 +2351,16 @@ describe("/next — clearing the queue one thing at a time", () => {
       approvedAt: null, approvedBy: null, approvedDigest: null,
     });
     const cookie = await login();
-    const first = await (await fetch(url("/next"), { headers: { cookie } })).text();
-    const skip = /href="(\/next\?skip=[^"]+)"/.exec(first)?.[1] as string;
-    expect(skip).toBeDefined();
-    await (await fetch(url(skip.replace(/&amp;/g, "&")), { headers: { cookie } })).text();
-    // Nothing was approved by setting it aside.
+    const skip = await fetch(url("/next?skip=t-1"), { headers: { cookie }, redirect: "manual" });
+    expect(skip.status).toBe(301);
+    expect(skip.headers.get("location")).toBe("/");
+    expect(homeRowOf(await (await fetch(url("/next?skip=t-1"), { headers: { cookie } })).text(), "t-1")).not.toBeNull();
+    // Nothing was approved by following it.
     expect(store.getScope("t-1")?.approvedAt).toBeNull();
   });
 });
 
-describe("the roll-up inbox — every project, one ceiling, links only", () => {
+describe("the roll-up Home — every project, one ceiling, links only", () => {
   test("a projectless session sees admitted rows with chips; foreign repos neither render nor count", async () => {
     const store = openStore(":memory:");
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
@@ -2354,10 +2404,11 @@ describe("the roll-up inbox — every project, one ceiling, links only", () => {
       });
       const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0] as string;
 
-      // The secondary inbox retains the admitted roll-up and its action guards.
-      const inbox = await (await fetch(`${base}/inbox`, { headers: { cookie }, redirect: "manual" }));
-      expect(inbox.status).toBe(200);
-      const html = await inbox.text();
+      // The old inbox answers with Home, which keeps the admitted roll-up and its action guards.
+      const inbox = await fetch(`${base}/inbox`, { headers: { cookie }, redirect: "manual" });
+      expect(inbox.status).toBe(301);
+      expect(inbox.headers.get("location")).toBe("/");
+      const html = await (await fetch(`${base}/`, { headers: { cookie }, redirect: "manual" })).text();
       expect(html).toContain("t-main");
       expect(html).toContain("t-side");
       expect(html).not.toContain("t-secret");
@@ -2365,7 +2416,8 @@ describe("the roll-up inbox — every project, one ceiling, links only", () => {
       expect(html).not.toContain("/tasks/add");
       expect(html).not.toMatch(/<form[^>]*requeue/);
       // The badge counted 3 admitted approvals, never the secret one.
-      expect(html).toMatch(/class="count badge badge-open">3/);
+      expect(workspaceOf(html).needsYou?.count).toBe(3);
+      expect(homeRowsOf(html).map(one => one.id).sort()).toEqual(["t-free", "t-main", "t-side"]);
 
       // Tapping a row lands on the task itself — the roll-up hands off to
       // the detail, not to the project picker. The row's own ceiling check
@@ -2378,9 +2430,13 @@ describe("the roll-up inbox — every project, one ceiling, links only", () => {
       expect(detailHtml).not.toContain('t-secret'); // neither fallback nor admitted crew leaks foreign work
       expect((await fetch(`${base}/t/t-secret`, { headers: { cookie } })).status).toBe(404);
 
-      // Everything else still requires opening a project.
+      // The Board rolls up under the same ceiling: its redirect decides nothing.
       const board = await fetch(`${base}/board`, { headers: { cookie }, redirect: "manual" });
-      expect(board.status).toBe(303);
+      expect(board.status).toBe(301);
+      expect(board.headers.get("location")).toBe("/tasks?view=board");
+      const rolled = await (await fetch(`${base}/tasks?view=board`, { headers: { cookie } })).text();
+      expect(rolled).toContain("t-main");
+      expect(rolled).not.toContain("t-secret");
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
       store.close();
@@ -2496,7 +2552,7 @@ describe("the filesystem browser — confined to what opening allows", () => {
     await identities.refresh([repo, root]);
     await boot({ repos: [repo], projectRoots: [root], identities, backgroundChecks: true, backgroundChecksMs: 100 });
     const cookie = await login();
-    for (const path of ["/healthz", "/projects", "/work", "/chat", "/settings/project", "/settings/tools"]) {
+    for (const path of ["/healthz", "/projects", "/tasks", "/chat", "/settings/project", "/settings/tools"]) {
       expect((await fetch(url(path), { headers: { cookie }, redirect: "manual" })).status, path).toBeLessThan(500);
     }
     // A path a request names that no answer vouches for is refused, never resolved on the console's thread.
@@ -2858,25 +2914,25 @@ describe("the workbench (attended A1) and the live substrate", () => {
     rmSync(evidenceRoot, { recursive: true, force: true });
   });
 
-  test("the rail fragment is the rail alone — no shell, no scripts, same auth", async () => {
+  test("the old workbench lands on Tasks across every project, under the same auth", async () => {
     const cookie = await login();
-    const fragment = await (await fetch(url("/workbench?fragment=rail"), { headers: { cookie } })).text();
-    expect(fragment).toContain("Needs a scope written");
-    expect(fragment).not.toContain("<html");
-    expect(fragment).not.toContain("<script");
-    // Unauthenticated: the fragment refuses like any page.
-    const bare = await fetch(url("/workbench?fragment=rail"), { redirect: "manual" });
-    expect([303, 401, 403]).toContain(bare.status);
+    const moved = await fetch(url("/workbench?fragment=rail"), { headers: { cookie }, redirect: "manual" });
+    expect(moved.status).toBe(301);
+    expect(moved.headers.get("location")).toBe("/tasks?scope=all");
+    expect(await (await fetch(url("/tasks?scope=all"), { headers: { cookie } })).text()).toContain("Needs a scope written");
+    // Unauthenticated: the target refuses like any page.
+    const bare = await fetch(url("/tasks?scope=all"), { redirect: "manual" });
+    expect(bare.status).toBe(303);
+    expect(bare.headers.get("location")).toBe("/login?return=%2Ftasks%3Fscope%3Dall");
   });
 
-  test("selection renders the full task detail — forms and all — in the main pane, never polled", async () => {
+  test("a selected task opens as its own full page — forms and all — with no whole-page reload", async () => {
     const cookie = await login();
-    const html = await (await fetch(url("/workbench?t=needs-scope"), { headers: { cookie } })).text();
-    expect(html).toContain("No approved scope yet");
-    expect(html).toContain("Write the scope");
-    // The poll targets the rail region, not the pane.
-    expect(html).toContain('"wb-rail"');
-    expect(html).not.toContain('"wb-detail"');
+    const html = await (await fetch(url("/t/needs-scope"), { headers: { cookie } })).text();
+    expect(html).toContain("No approved plan yet");
+    expect(html).toContain("write it yourself");
+    expect(html).toContain('action="/t/needs-scope/plan"');
+    expect(html).not.toContain('http-equiv="refresh"');
   });
 
   test("an open run's facts fragment answers live; a finished run's says to reload", async () => {
@@ -3053,12 +3109,15 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
 
   test("a building card lands on the build itself; a vanished build stays a repair card on the task", async () => {
     const cookie = await login();
-    const board = await (await fetch(url("/board?fragment=1"), { headers: { cookie } })).text();
+    const board = await (await fetch(url("/tasks?view=board"), { headers: { cookie } })).text();
     expect(board).toContain(`href="/r/${liveRun}"`);
-    // The orphan's dead lease earns no run link anywhere on the board — its
-    // card stays on the task screen, in the attention lane.
-    expect(board).not.toContain(`href="/r/${orphanRun}"`);
-    expect(board).toContain(`href="/t/orphan"`);
+    expect(boardColumnOf(board, "running").rows.map(one => one.id)).toEqual(["alive"]);
+    // The orphan's dead lease never reads as live: it waits on a person, in
+    // Needs you, as a stopped build to open, never as one to watch.
+    expect(boardColumnOf(board, "needs").rows.find(one => one.id === "orphan")).toMatchObject({
+      href: "/t/orphan", word: { word: "Stopped" }, action: { label: "Open the build", href: `/r/${orphanRun}` },
+    });
+    expect(board).not.toContain(`<a class="work-action" data-primary-action href="/r/${orphanRun}">Watch the build`);
   });
 
   test("an unknown task page refuses on the console's own page, not bare text", async () => {
@@ -3106,9 +3165,9 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
     expect((await post("/t/t-api/block", { on: "ghost" })).status).toBe(404);
   });
 
-  test("build this next from the console: the act, the words, and the board's honest badges", async () => {
-    // Approved scopes, so both cards sit in the QUEUED lane — the lane the
-    // rank sorts and badges. Unapproved work is attention, not a queue.
+  test("build this next from the console: the act, and the queue's honest order", async () => {
+    // Approved scopes, so both cards sit in the shared queue — the one the
+    // rank sorts. Unapproved work is attention, not a queue.
     for (const [id, title] of [["q-one", "first filed"], ["q-two", "second filed"]] as const) {
       store.createTask({ id, title }, T0);
       store.refFor("built-in", id, "ours");
@@ -3130,21 +3189,17 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
 
     expect((await post("/t/q-two/next")).status).toBe(303);
 
-    // Only the actual front of the shared queue says "next up".
+    // The order view lists the queue as it dispatches: the last promoted card is at the front.
+    const queueOrder = async () => [...(await (await fetch(url("/tasks?view=order&fragment=1"), { headers: { cookie } })).text()).matchAll(/data-task="(q-[a-z]+)"/g)].map(one => one[1]);
+    expect(await queueOrder()).toEqual(["q-two", "q-one"]);
     expect((await post("/t/q-one/next")).status).toBe(303);
-    const board = await (await fetch(url("/board?fragment=1"), { headers: { cookie } })).text();
-    const front = board.indexOf("first filed");
-    const second = board.indexOf("second filed");
-    expect(front).toBeGreaterThan(-1);
-    expect(front).toBeLessThan(second);
-    expect(board).toContain("next up");
-    expect(board.match(/next up/g)?.length).toBe(1);
+    expect(await queueOrder()).toEqual(["q-one", "q-two"]);
 
-    // Undo puts it behind the still-promoted card; the badge follows rank.
+    // Undo puts it behind the still-promoted card; the order follows rank.
     expect((await post("/t/q-one/next", { undo: "1" })).status).toBe(303);
+    expect(await queueOrder()).toEqual(["q-two", "q-one"]);
     expect((await post("/t/q-two/next", { undo: "1" })).status).toBe(303);
-    const calm = await (await fetch(url("/board?fragment=1"), { headers: { cookie } })).text();
-    expect(calm.match(/next up/g)?.length).toBe(1);
+    expect(await queueOrder()).toEqual(["q-one", "q-two"]);
 
     // The orphaned run's task (state running) cannot move up.
     const refused = await post("/t/orphan/next");

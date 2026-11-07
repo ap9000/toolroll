@@ -29,6 +29,10 @@ import {
 import { acquireDeploymentLock } from "./deploy-lock.js";
 import { autoReleaseApprovalOf, liveReleaseOf } from "./scope.js";
 import { recheckReleaseTask, releaseCheckStanding } from "./check-failure.js";
+import { CHECK_REPORT_CAPTURE, readSealedJson } from "./check-report.js";
+import { readCheckReport } from "./contracts/release-check.js";
+import { macosCases, skipCoverage, skippedCases, uncoveredWords } from "./fenced-check-coverage.js";
+import { runCheckStamp } from "./store.js";
 import { noteCiRunning, releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { autoPublishHeld, holdAutoPublish, liftCiHold, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
 import { proveCarry, type BuildRunner } from "./release-carry.js";
@@ -399,6 +403,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const release = storeReleaseAdapter(() => openStore(database), store => store.close(), options.now ?? (() => new Date()), undefined,
     { observe: sha => observeCi(sha), mergeBase: (base, sha) => readMergeBase(reads, ciGh, releaseRepo().slug, base, sha),
       upToDateRequired: () => readUpToDateRequired(reads, ciGh, releaseRepo().slug), evidenceRoot: join(dirname(database), "evidence"),
+      macosCases: sha => macosCasesOf(run, ciGh, releaseRepo().slug, sha),
       // A successful Actions job authenticates the job, not the candidate-writable JSON it uploads. Until the
       // executor protects that reporting channel, production releases must take the person's approval road.
       reportsProtected: false },
@@ -571,6 +576,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       async complete(repo, sha) { return readSuitesComplete(reads, ciGh, repo, sha); },
       async mainHead(repo) { return readMainHead(reads, ciGh, repo); },
       async contains(repo, sha, ancestor) { return readContains(reads, ciGh, repo, sha, ancestor); },
+      async updateBranch(repo, pr, expectedHead) { return updatePullRequestBranch(reads, ciGh, repo, pr, expectedHead); },
       async upToDateRequired(repo) { return readMainProtection(reads, ciGh, repo); },
       async merge(repo, pr, head, message) {
         // The squash commit's message lists every commit that landed after the approval (release-once.md). Never asked
@@ -869,6 +875,26 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
           return answer.action === "rerun" ? { action: "rerun" as const, why: answer.why } : answer.action === "pending" ? { action: "pending" as const } : { action: "stop" as const, class: answer.class, why: answer.why };
         });
       },
+      async fencedCoverage(_taskId: string, run: number, candidate: string) {
+        // Today's road, read first and answered at once: a check that ran unsandboxed skips nothing for this reason. A run
+        // from before stamps (a release resumed across an update) is judged by the level its dispatch recorded.
+        const asked = withStore(store => {
+          if (store.runCheckAccess(run) === "unsandboxed") return null;
+          const reading = runCheckStamp(store, run);
+          if (reading.state !== "current") return { refused: "how its check ran wasn't recorded, so what it skipped can't be judged" };
+          if (reading.stamp.level === "unsandboxed") return null;
+          const sealed = readSealedJson(store, auto.evidenceRoot, run, CHECK_REPORT_CAPTURE);
+          const report = sealed === null ? null : readCheckReport(sealed.value);
+          return report?.ok === true ? { skipped: skippedCases(report.value) } : { refused: "its report can't be read, so what it skipped can't be judged" };
+        });
+        if (asked === null) return { ok: true as const, covered: 0 };
+        if ("refused" in asked) return { ok: false as const, why: asked.refused };
+        if (asked.skipped.length === 0) return { ok: true as const, covered: 0 };
+        const macos = await auto.macosCases?.(candidate) ?? null;
+        if (macos === null) return { ok: false as const, why: "this commit's macOS CI reports couldn't be read, so what the sandboxed check skipped isn't covered" };
+        const coverage = skipCoverage(asked.skipped, macos);
+        return coverage.uncovered.length > 0 ? { ok: false as const, why: uncoveredWords(coverage.uncovered) } : { ok: true as const, covered: coverage.covered.length };
+      },
       async standing(taskId: string, run: number) {
         return withStore(store => {
           const standing = releaseCheckStanding(store, auto.evidenceRoot, { taskId, run });
@@ -1004,6 +1030,8 @@ export type AutoObservers = {
   /** Whether main's protection holds for the account that merges (readMainProtection); null when unreadable. */
   upToDateRequired: () => Promise<boolean | null>;
   evidenceRoot: string;
+  /** The cases that ran in `sha`'s macOS CI (fenced-check-coverage.ts); null when they can't be read. Absent: never read. */
+  macosCases?: (sha: string) => Promise<ReadonlyMap<string, boolean> | null>;
 };
 
 /** The environment every CI read runs gh with: no caller PATH, host, config folder or proxy override. */
@@ -1139,6 +1167,13 @@ export async function readMainHead(run: Exec, gh: string, repo: string, branch =
   const match = /^commit ([0-9a-f]{40})$/.exec(out);
   if (match === null) throw new Error(`GitHub named no commit for ${branch}`);
   return match[1]!;
+}
+
+/** GitHub's own "Update branch", with its expected head: a push that got there first refuses. */
+export async function updatePullRequestBranch(run: Exec, gh: string, repo: string, pr: number, expectedHead: string): Promise<{ ok: true } | { ok: false; why: string }> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !Number.isSafeInteger(pr) || pr < 1 || !/^[0-9a-f]{40}$/.test(expectedHead)) return { ok: false, why: "not a pull request GitHub can be asked to update" };
+  const ran = await run(gh, ["api", "--hostname", "github.com", "--method", "PUT", `repos/${repo}/pulls/${pr}/update-branch`, "-f", `expected_head_sha=${expectedHead}`], { cwd: "/", env: ciEnv() });
+  return ran.code === 0 ? { ok: true } : { ok: false, why: (ran.stderr.trim().split("\n")[0] ?? "").slice(0, 200) || `gh exited ${ran.code}` };
 }
 
 /** Whether `sha` already holds `ancestor` (GitHub's compare: `sha` is not behind it), as GitHub answers now. */
@@ -1285,4 +1320,29 @@ export function releaseProgressRecorder(open: () => Store, done: (store: Store) 
     try { store = open(); recordReleaseStep(store, entry); } catch { /* best effort: the release goes on */ }
     finally { if (store !== null) { try { done(store); } catch { /* best effort */ } } }
   };
+}
+
+/** The macOS CI's cases on exactly `sha`: the newest pull-request run of ci.yml there, each shard's newest attempt. Null
+ * when they can't all be read. The folder is this function's own, removed before it returns. */
+async function macosCasesOf(run: typeof exec, gh: string, slug: string, sha: string): Promise<ReadonlyMap<string, boolean> | null> {
+  const folder = mkdtempSync(join(tmpdir(), "so-macos-ci-"));
+  try {
+    const listed = await run(gh, ["api", `repos/${slug}/actions/runs?head_sha=${sha}&event=pull_request&per_page=100`], { timeoutMs: 60_000 });
+    if (listed.code !== 0) return null;
+    const runs = (JSON.parse(listed.stdout) as { workflow_runs?: { id?: unknown; path?: unknown; head_sha?: unknown }[] }).workflow_runs ?? [];
+    const newest = runs.filter(one => typeof one.id === "number" && one.head_sha === sha && (one.path === ".github/workflows/ci.yml" || String(one.path).startsWith(".github/workflows/ci.yml@"))).map(one => one.id as number).sort((a, b) => b - a)[0];
+    if (newest === undefined) return null;
+    const got = await run(gh, ["run", "download", String(newest), "--repo", slug, "--pattern", "macos-shard-*", "--dir", folder], { timeoutMs: 180_000 });
+    if (got.code !== 0) return null;
+    const shards = new Map<string, { attempt: number; name: string }>();
+    for (const name of readdirSync(folder)) {
+      const match = /^macos-(shard-\d+-\d+)-a([1-9]\d*)$/.exec(name);
+      if (match === null) return null;
+      const was = shards.get(match[1]!);
+      if (was === undefined || Number(match[2]) > was.attempt) shards.set(match[1]!, { attempt: Number(match[2]), name });
+    }
+    if (shards.size === 0) return null;
+    const reports = [...shards.values()].map(one => JSON.parse(readFileSync(join(folder, one.name, "shard-report.json"), "utf8")) as Parameters<typeof macosCases>[0][number]);
+    return macosCases(reports, `/Users/runner/work/${slug.split("/")[1]}/${slug.split("/")[1]}`);
+  } catch { return null; } finally { rmSync(folder, { recursive: true, force: true }); }
 }

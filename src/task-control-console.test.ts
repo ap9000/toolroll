@@ -259,11 +259,11 @@ describe("the exact-run control on the console (v52)", () => {
     const armed = await post(alex, "/t/payouts/resume-arm", { csrf, run: String(runId) });
     expect(armed.status).toBe(200);
     const ceremony = await armed.text();
-    expect(ceremony).toContain(`Run #${runId}`);
-    expect(ceremony).toContain("Resume task?");
-    expect(ceremony).toContain('<label>Confirm with your password<input type="password" name="token" autocomplete="current-password"></label>');
-    expect(ceremony).toContain("fresh evidence");
-    expect(ceremony).toContain("no new approval");
+    // One card, one button (docs/plans/plain-toolroll.md P1.3), over the same post and nonce.
+    expect(ceremony).toContain(`Resume build #${runId}?`);
+    expect(ceremony).toContain('<label>Your password<input type="password" name="token" autocomplete="current-password"></label>');
+    expect(ceremony).toContain("Resuming approves nothing new.");
+    expect(ceremony.match(/<button type="submit">/g)).toHaveLength(1);
     const nonce = /name="nonce" value="([A-Za-z0-9_-]+)"/.exec(ceremony)?.[1];
     if (nonce === undefined) throw new Error("no nonce on the ceremony");
     // Wrong password: refused, nonce untouched.

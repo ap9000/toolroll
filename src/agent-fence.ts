@@ -391,6 +391,8 @@ export const runRoots = (folders: RunFolders): string[] => [folders.root, ...(fo
  * the others are; `pool` denies the plane's checkout pools around this build's own checkout (CheckoutPool).
  */
 export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist;
+  /** Which `readable` entries are one exact file: read with no listing of its folder, so a sibling stays denied. */
+  exactFiles?: string[];
   /** Policy v1: the home configuration names denied by name, present or not (TaskBoundary.homeNames). */
   homeNames?: string[];
   /** macOS: the project's sealed mach services beyond the runtime's baseline (its `allowMachLookup`). */
@@ -892,7 +894,7 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   const denyRead = new Set<string>(fence.map(real));
   // A readable grant's own folder is read too: bundlers (esbuild) find node_modules by listing it. The runtime can't
   // grant a listing without the folder's files, so the shared copy's folder is read whole (its ready note among them).
-  const allowRead = new Set<string>(grants.readable.flatMap(path => [real(path), real(dirname(path))]));
+  const allowRead = new Set<string>(grants.readable.flatMap(path => grants.exactFiles?.includes(path) === true ? [real(path)] : [real(path), real(dirname(path))]));
   const denyWrite = new Set<string>([...fence, ...grants.readOnly].map(real));
   for (const path of grants.writeDenies ?? []) denyWrite.add(path);
   for (const name of grants.homeNames ?? []) { denyRead.add(name); denyWrite.add(name); }
@@ -1055,6 +1057,8 @@ export type FenceKind = "build" | "command" | "check" | "flow" | "tool-server";
  * with no checkout), so no caller forgets one; every path comes from Toolroll's own records, never from the checkout.
  */
 export type FenceContext = {
+  /** One exact file read back inside the fence (a build's code map), or null. */
+  exactFile?: string | null;
   databaseFile: string | null;
   worktree: string | null;
   boundary: TaskBoundary | null;
@@ -1115,9 +1119,12 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
   // launches: rewriting the code that fences a build would switch the fence off.
   const made = { ...found, readOnly: [...new Set([...found.readOnly, ...toolrollInstall(ctx.worktree, ctx.home ?? homedir(), ctx.binding?.main ?? null)])].sort() };
   const written = ctx.writes ?? null;
+  const exact = ctx.exactFile ?? null;
   const grants: FenceGrants = {
     ...made,
     ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...made.readOnly, ...written.readOnly])].sort() }),
+    // One exact file, granted as the shared dependencies are, and never written (Claude's Edit rules read `readOnly`).
+    ...(exact === null ? {} : { readable: [...made.readable, exact], exactFiles: [exact], readOnly: [...new Set([...made.readOnly, ...(written?.readOnly ?? []), exact])].sort() }),
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
     ...(ctx.machLookup === undefined || ctx.machLookup.length === 0 ? {} : { machLookup: [...ctx.machLookup] }),
     // A project's checks may drive a browser (Playwright's Chromium), and so may a flow's script zone whose browser use

@@ -116,15 +116,8 @@ describe("a stale approval holds the task instead of retrying every pass", () =>
     expect(again.listNotifications("all").filter(one => one.kind === "stale-approval")).toHaveLength(1);
     again.close();
 
-    // A pre-routing row cannot take a NEW yes (v48): an approval now names
-    // exactly which agents run, and this row names none. The road is to
-    // re-file the scope — routing it under today's agents — and approve THAT.
-    const current = openStore(db);
-    const legacyNow = current.getScope("dedupe")?.digest as string;
-    current.close();
-    await run(["task", "approve", "dedupe", "--as", "alex", "--token", approverToken, "--digest", legacyNow, "--yes", "--json"], new Date(T0.getTime() + 170_000));
-    expect(payload()).toMatchObject({ ok: false, reason: "unrouted" });
-    await run(["task", "scope", "dedupe", "--goal", "Dedupe the listings", "--acceptance", "Duplicate listings no longer appear.|manual-review", "--json"], new Date(T0.getTime() + 175_000));
+    // A pre-routing row can't take a new yes as it stood (v48), so Toolroll routed it under today's agents itself
+    // (route-change.ts): the person's one act is Approve, on the digest of that exact route.
     const refiled = openStore(db);
     const currentDigest = refiled.getScope("dedupe")?.digest as string;
     expect(refiled.getScope("dedupe")?.routeEra).not.toBeNull();

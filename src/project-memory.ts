@@ -14,6 +14,7 @@ import { activeRemote } from './remote-run.js';
 import type { Store } from './store.js';
 import { scanForSecrets } from './evidence.js';
 import { learningIdentity } from './project-learning.js';
+import { endNoteWatch } from './lesson-notes.js';
 import { TEXT_LIMITS } from './text-limits.js';
 import { contractError } from './contracts/contract.js';
 import { DECISION_CHANGE_VERSION, decisionChangeSchema, decisionRecordSchema, decisionSchema, type Decision, type DecisionChange, type DecisionDraft, type DecisionLine, type DecisionRecord } from './contracts/project-memory.js';
@@ -156,6 +157,22 @@ export function recordDecision(store: Store, args: { repo: string; actor: string
     return { id, ...record };
   });
 }
+/** A decision no longer active, with its history row. Inside the caller's transaction; memory-tidy.ts merges through it. */
+export function changeDecisionStatus(store: Store, repo: string, actor: string, id: number, status: 'superseded' | 'retired', reason: string, now: Date): Decision {
+  return changeStatus(store, repo, actor, id, status, reason, now);
+}
+/** A retired or superseded decision active again (memory-tidy.ts restore and unmerge), with its history row. Inside the
+ * caller's transaction, which has proved the person. */
+export function reactivateDecision(store: Store, repo: string, actor: string, id: number, action: string, reason: string, now: Date): Decision {
+  const existing = getDecision(store, repo, actor, id);
+  if (existing === null) throw Error('That decision is unavailable.');
+  if (existing.status === 'active') throw Error('That decision is already active.');
+  const { id: _id, ...was } = existing;
+  const next: DecisionRecord = { ...was, revision: existing.revision + 1, status: 'active' };
+  store.handle.prepare('UPDATE project_decision SET revision=?,status=?,sha=? WHERE id=?').run(next.revision, 'active', digestOf(next), id);
+  store.handle.prepare('INSERT INTO decision_change(decision,revision,actor,at,action,payload,sha) VALUES (?,?,?,?,?,?,?)').run(id, next.revision, actor, now.toISOString(), action, history({ reason }), digestOf(next));
+  return { id, ...next };
+}
 function changeStatus(store: Store, repo: string, actor: string, id: number, status: 'superseded' | 'retired', reason: string, now: Date): Decision {
   const existing = getDecision(store, repo, actor, id);
   if (existing === null) throw Error('That decision is unavailable.');
@@ -164,6 +181,7 @@ function changeStatus(store: Store, repo: string, actor: string, id: number, sta
   const next: DecisionRecord = { ...was, revision: existing.revision + 1, status };
   store.handle.prepare('UPDATE project_decision SET revision=?,status=?,sha=? WHERE id=?').run(next.revision, status, digestOf(next), id);
   store.handle.prepare('INSERT INTO decision_change(decision,revision,actor,at,action,payload,sha) VALUES (?,?,?,?,?,?,?)').run(id, next.revision, actor, now.toISOString(), status, history({ reason }), digestOf(next));
+  endNoteWatch(store, existing.sourceRef, now);
   return { id, ...next };
 }
 /** Retire a decision that no longer holds; history keeps it. */
@@ -189,10 +207,10 @@ const tokens = (s: string) => new Set((s.toLowerCase().match(/[\p{L}\p{N}_-]{3,}
  * so a brief never repeats what the store already holds.
  */
 export function decisionLines(store: Store, repo: string, query: string, options: { limit?: number; bytes?: number } = {}): DecisionLine[] {
-  const rows = store.handle.prepare("SELECT id,claim,why,decided_at FROM project_decision WHERE repo=? AND status='active' ORDER BY id DESC LIMIT 200").all(repo);
+  const rows = store.handle.prepare("SELECT id,claim,why,decided_at,revision FROM project_decision WHERE repo=? AND status='active' ORDER BY id DESC LIMIT 200").all(repo);
   const q = tokens(query);
   const ranked = rows.map(row => { const claim = String(row['claim']); const score = [...tokens(claim)].reduce((n, t) => n + (q.has(t) ? 3 : 0), 0) + [...tokens(String(row['why']))].reduce((n, t) => n + (q.has(t) ? 1 : 0), 0);
-    return { line: { id: Number(row['id']), claim, decidedAt: String(row['decided_at']) }, score }; })
+    return { line: { id: Number(row['id']), claim, decidedAt: String(row['decided_at']), revision: Number(row['revision']) }, score }; })
     .sort((a, b) => b.score - a.score || b.line.id - a.line.id);
   const limit = options.limit ?? 8, bytes = options.bytes ?? TEXT_LIMITS.knowledgeDecisionsBytes, out: DecisionLine[] = [];
   for (const { line } of ranked) {

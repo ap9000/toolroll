@@ -49,11 +49,19 @@ jobs:
           ref: ${{ env.TESTED_SHA }}
           # Migration tests build old releases from git history (git archive <old commit>).
           fetch-depth: 0
+          # The candidate's copy of this checkout must hold no token.
+          persist-credentials: false
       - name: Tested commit
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The harness comes from the base revision: nothing the candidate wrote decides how it is run.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -63,22 +71,30 @@ jobs:
       - timeout-minutes: 8
         run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run build
-      # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
-      # TOOLROLL_REQUIRE_NATIVE: a Linux fence attack that can't run here fails instead of skipping (a skip is not
-      # evidence); the join's verifier runs with the same --native policy.
-      - run: npm run test:all -- --shard=${{ matrix.shard }}/6 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
-        env:
-          CI: "true"
-          TOOLROLL_REQUIRE_NATIVE: linux
+      # docs/plans/trusted-release-reports.md, H1: every phase that loads the candidate's code (install, typecheck, the
+      # build's Tailwind plugins, the tests) runs as a user of its own, with no sudo, in a copy of the checkout.
+      - name: The candidate's user and its copy of the checkout
+        shell: bash
+        run: |
+          harness=.trusted-base/scripts
+          if [ ! -f "$harness/ci-candidate.mjs" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts; fi
+          mkdir -p "$RUNNER_TEMP/harness"
+          cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$RUNNER_TEMP/harness/"
+          sudo -n "$(command -v node)" "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --npm-cache "$(npm config get cache)" --tool-cache "$RUNNER_TOOL_CACHE"
+      - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
+      # Inside this job, not beside it: what it proves is this job's own isolation.
+      - run: '"$RUNNER_TEMP/candidate" canary'
+      - run: '"$RUNNER_TEMP/candidate" run -- npm run typecheck'
+      - run: '"$RUNNER_TEMP/candidate" run -- npm run build'
+      # Vitest's own JSON report, back on fd 3 and converted on the trusted side: no candidate script summarizes it.
+      # TOOLROLL_REQUIRE_NATIVE: a native attack that can't run here fails instead of skipping (a skip is not evidence);
+      # the join's verifier runs with the same --native policy.
+      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=linux --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/6'
       - uses: actions/upload-artifact@v4
         with:
-          name: shard-22-${{ matrix.shard }}
+          name: shard-22-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: ${{ runner.temp }}/shard-report.json
           if-no-files-found: error
-          overwrite: true
           retention-days: 7
 
   # The required Linux check, under the name `toolroll release` and main's protection wait for. It
@@ -122,7 +138,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: shard-22-*
-          path: ${{ runner.temp }}/shards
+          path: ${{ runner.temp }}/downloads
+      # Attempt-named artifacts (a rerun can't overwrite one): each shard's newest attempt, under the verifier's names.
+      - name: The shards' newest reports
+        shell: bash
+        run: |
+          harness=.trusted-base/scripts/ci-candidate.mjs
+          if [ ! -f "$harness" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts/ci-candidate.mjs; fi
+          node "$harness" join --from "$RUNNER_TEMP/downloads" --to "$RUNNER_TEMP/shards"
       - name: Every shard ran the whole suite
         shell: bash
         run: |
@@ -151,33 +174,49 @@ jobs:
           ref: ${{ env.TESTED_SHA }}
           # Migration tests build old releases from git history (git archive <old commit>).
           fetch-depth: 0
+          # The candidate's copy of this checkout must hold no token.
+          persist-credentials: false
       - name: Tested commit
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The harness comes from the base revision: nothing the candidate wrote decides how it is run.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run build
-      # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
-      # TOOLROLL_REQUIRE_NATIVE: a Seatbelt attack that can't run on the hosted Mac fails instead of skipping; the join's
-      # verifier runs with the same --native policy.
-      # TOOLROLL_TEST_LANE: the macOS lane, as in ci.yml (scripts/ci-shards.mjs laneFiles); Linux runs every file.
-      - run: npm run test:all -- --shard=${{ matrix.shard }}/3 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
+      # docs/plans/trusted-release-reports.md, H1: every phase that loads the candidate's code (install, typecheck, the
+      # build's Tailwind plugins, the tests) runs as a user of its own, with no sudo, in a copy of the checkout.
+      - name: The candidate's user and its copy of the checkout
+        shell: bash
+        run: |
+          harness=.trusted-base/scripts
+          if [ ! -f "$harness/ci-candidate.mjs" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts; fi
+          mkdir -p "$RUNNER_TEMP/harness"
+          cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$RUNNER_TEMP/harness/"
+          sudo -n "$(command -v node)" "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --npm-cache "$(npm config get cache)" --tool-cache "$RUNNER_TOOL_CACHE"
+      - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
+      # Inside this job, not beside it: what it proves is this job's own isolation.
+      - run: '"$RUNNER_TEMP/candidate" canary'
+      - run: '"$RUNNER_TEMP/candidate" run -- npm run typecheck'
+      - run: '"$RUNNER_TEMP/candidate" run -- npm run build'
+      # Vitest's own JSON report, back on fd 3 and converted on the trusted side: no candidate script summarizes it.
+      # TOOLROLL_REQUIRE_NATIVE: a native attack that can't run here fails instead of skipping (a skip is not evidence);
+      # the join's verifier runs with the same --native policy.
+      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=darwin --env TOOLROLL_TEST_LANE="$LANE" --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/3'
         env:
-          CI: "true"
-          TOOLROLL_REQUIRE_NATIVE: darwin
-          TOOLROLL_TEST_LANE: ${{ inputs.macos_lane || 'macos' }}
+          LANE: ${{ inputs.macos_lane || 'macos' }}
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-shard-22-${{ matrix.shard }}
+          name: macos-shard-22-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: ${{ runner.temp }}/shard-report.json
           if-no-files-found: error
-          overwrite: true
           retention-days: 7
 
   # The required macOS check, joined exactly as the Linux one: it always runs, and fails unless every
@@ -222,16 +261,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: shard-22-*
-          path: ${{ runner.temp }}/linux-shards
-      # The verifier reads shard-<node>-<i> folders; macOS artifacts carry a prefix so their names differ from Linux's.
+          path: ${{ runner.temp }}/linux-downloads
+      # The verifier reads shard-<node>-<i> folders; macOS artifacts carry a prefix so their names differ from Linux's, and
+      # both carry their attempt, so a rerun never overwrites one: each shard's newest attempt stands.
       - name: The macOS shards' reports, under the verifier's names
         shell: bash
         run: |
-          mkdir "$RUNNER_TEMP/shards"
-          for folder in "$RUNNER_TEMP"/macos-downloads/*; do
-            name="$(basename "$folder")"
-            case "$name" in macos-shard-*) mv "$folder" "$RUNNER_TEMP/shards/${name#macos-}" ;; *) echo "unexpected $name among the macOS shards' reports" >&2; exit 1 ;; esac
-          done
+          harness=.trusted-base/scripts/ci-candidate.mjs
+          if [ ! -f "$harness" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts/ci-candidate.mjs; fi
+          node "$harness" join --from "$RUNNER_TEMP/macos-downloads" --to "$RUNNER_TEMP/shards"
+          node "$harness" join --from "$RUNNER_TEMP/linux-downloads" --to "$RUNNER_TEMP/linux-shards"
           # The shards ran on macOS runners, whose checkout is /Users/runner/work/<repo>/<repo>; this join runs on Linux.
           # Their reports name files under the macOS checkout: map exactly that prefix onto this checkout, so the
           # (trusted) verifier judges the same relative paths. Nothing else in the reports changes.

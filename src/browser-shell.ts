@@ -47,7 +47,7 @@ export function serveBrowserAsset(request: IncomingMessage, response: ServerResp
 /** Retain the complete native document as the no-JavaScript/unloaded-bundle
  * fallback. React replaces its root only once the local module has loaded.
  * The data script is escaped for HTML parsing, not merely valid JSON. */
-export function browserWorkspaceDocument(document: Html, workspace: BrowserWorkspace, nonce: string, functionalScript: string): Html {
+export function browserWorkspaceDocument(document: Html, workspace: BrowserWorkspace, nonce: string, functionalScript: string, beside: Html = html``): Html {
   const initialize = `window.addEventListener('standing-orders:workspace-rendered',function initializeWorkspace(){window.removeEventListener('standing-orders:workspace-rendered',initializeWorkspace);${functionalScript}});`;
   // A cross-page fade the browser gives up on rejects its promises; settle them from the head, before the
   // first frame (the app's own listener arrives too late when a page is revealed before the bundle runs).
@@ -57,5 +57,5 @@ export function browserWorkspaceDocument(document: Html, workspace: BrowserWorks
     // A page showing a password keeps to its one script (the sensitivity contract), so it goes without.
     html`<link rel="stylesheet" href="/assets/workspace.css">${workspace.sensitive ? "" : scriptElement(settleFades, { nonce })}</head>`);
   out = replaceMarkup(out, /<body>/, () => html`<body><div id="standing-orders-workspace">`);
-  return replaceMarkup(out, /<\/body>/, () => html`</div>${jsonScript(workspace, { id: "standing-orders-workspace-data", nonce })}${scriptElement(initialize, { nonce })}<script type="module" src="/assets/workspace.js" nonce="${nonce}"></script></body>`);
+  return replaceMarkup(out, /<\/body>/, () => html`</div>${beside}${jsonScript(workspace, { id: "standing-orders-workspace-data", nonce })}${scriptElement(initialize, { nonce })}<script type="module" src="/assets/workspace.js" nonce="${nonce}"></script></body>`);
 }

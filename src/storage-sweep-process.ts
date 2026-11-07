@@ -20,7 +20,7 @@ export function sweepRequest(value: unknown): value is SweepRequest {
 export function sweepResponse(value: unknown, request: SweepRequest): value is { version: 1; record: SweepRecord } {
   if (!object(value) || value.version !== 1 || !object(value.record)) return false;
   const record = value.record;
-  const kinds = ["test temp", "orphans", ...(request.poolRoot === null ? [] : ["checkouts"]), "runtimes", "dependencies"];
+  const kinds = ["test temp", "orphans", ...(request.poolRoot === null ? [] : ["checkouts"]), "runtimes", "dependencies", "check history"];
   if (!date(record.at) || record.source !== "automatic" || record.actor !== request.actor || !Array.isArray(record.parts) || record.parts.length !== kinds.length) return false;
   return record.parts.every((part: unknown, index: number) => object(part) && part.kind === kinds[index] &&
     [part.count, part.bytes, part.failed].every(n => typeof n === "number" && Number.isSafeInteger(n) && n >= 0) &&

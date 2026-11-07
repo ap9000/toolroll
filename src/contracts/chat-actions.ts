@@ -88,6 +88,8 @@ export const chatActionRequestSchemas = {
   suggestion_not_now: z.strictObject({ repo: words, suggestion: words }),
   // Slice 3: stopping a trial (starting one stays in Settings → Models, behind a step-up).
   trial_stop: z.strictObject({ repo: words, trial: id }),
+  code_map_switch: z.strictObject({ repo: words, on: z.boolean() }),
+  code_map_holdout_end: z.strictObject({ repo: words }),
   /** The line, and (from 1) the line it replaces; 0 or none adds it. */
   lead_about_you: z.strictObject({ line: words, replaces: z.int().min(0).optional() }),
   scope_approve: z.strictObject({ task: words }),

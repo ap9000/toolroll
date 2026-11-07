@@ -306,7 +306,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
           <KButton type="submit" variant={ink ? "primary" : "outline"} label="Run checks" {...mark} />
         </PostForm>;
       case "request-changes":
-        return <KLinkButton key={kind} variant={ink ? "primary" : "outline"} label="Request changes" href="#request-changes" {...mark} />;
+        return <KLinkButton key={kind} variant={ink ? "primary" : "outline"} label="Send back" href="#request-changes" {...mark} />;
       case "rebuild":
         return need?.rebuild == null ? null : <RebuildForm key={kind} action={need.rebuild.action} csrf={csrf} label={need.label} className="min-h-11" />;
       case "recheck-stopped":
@@ -359,7 +359,7 @@ function Panel({ panel, children }: { panel: BrowserResultPanel; children?: Reac
     {children}
     {/* With nothing saved yet, the form waits hidden until Request changes
         (or a line note) opens it; the page script opens it in place. */}
-    {panel.request !== null && <section id="request-changes" aria-label="Request changes" className={cn("result-request so-result-request-box", panel.requestQuiet && "is-quiet")}>
+    {panel.request !== null && <section id="request-changes" aria-label="Send back" className={cn("result-request so-result-request-box", panel.requestQuiet && "is-quiet")}>
       <Html html={panel.request} className="so-result-request" />
     </section>}
   </div>;
@@ -455,7 +455,7 @@ function Details({ selected }: { selected: Selected }) {
   const why = panel?.status == null ? [] : statusWhyLines(panel.status);
   const record = selected.record;
   const rows: { id: string; title: string; hint: ReactNode; count?: number; body: ReactNode }[] = [
-    { id: "intent", title: "Approved scope", hint: selected.intent === null ? null
+    { id: "intent", title: "Approved plan", hint: selected.intent === null ? null
       : <>{selected.intent.approval}{selected.intent.approvedAt != null && <> · <time dateTime={selected.intent.approvedAt} title={whenTitle(selected.intent.approvedAt)}>{threadWhen(selected.intent.approvedAt)}</time></>}</>,
       body: selected.intent === null ? <p className="text-sm text-muted-foreground">No scope was filed for this task, so there is no approved goal or boundary to review.</p> : <Html html={selected.intent.html} className="so-result-intent" /> },
     ...(selected.notes.length === 0 ? [] : [{ id: "notes", title: "Notes", hint: null, count: selected.notes.length,
@@ -560,7 +560,7 @@ export function ResultView({ view, csrf }: { view: BrowserResultView; csrf: stri
 
     {selected === null
       ? view.results.length === 0
-        ? <Card className="items-start py-10"><p className="text-base text-muted-foreground">Nothing to review yet.</p><Button asChild variant="outline"><a href="/work">Open tasks</a></Button></Card>
+        ? <Card className="items-start py-10"><p className="text-base text-muted-foreground">Nothing to review yet.</p><Button asChild variant="outline"><a href="/tasks">Open tasks</a></Button></Card>
         : <Card aria-label="Results" className="gap-0 overflow-hidden p-0 phone:p-0">
             <ul className="divide-y divide-border">{view.results.map(row => <li key={row.href} className="flex items-start gap-3 px-5 py-3 phone:px-4">
               <span aria-hidden="true" className={cn("mt-2 size-2 shrink-0 rounded-full", row.status === null ? "bg-muted-foreground" : DOT[toneOf(row.status.tone)])} />

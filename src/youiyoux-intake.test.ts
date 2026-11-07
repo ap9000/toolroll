@@ -90,7 +90,7 @@ describe("filing", () => {
     save("r-1111111111.json", request("r-1111111111"));
     expect(pass().filed).toBe(2);
     const cards = () => store.handle.prepare("SELECT task_id, push_class, link, subject FROM notification WHERE kind = 'youiyoux-requests' ORDER BY id").all().map(row => ({ ...row }));
-    expect(cards()).toEqual([{ task_id: taskOf(), push_class: "attention", link: "/work?view=needs-you", subject: "2 youiyoux change requests wait for your approval" }]);
+    expect(cards()).toEqual([{ task_id: taskOf(), push_class: "attention", link: "/tasks?view=needs-you", subject: "2 youiyoux change requests wait for your approval" }]);
     expect(requestPassOf(store, taskOf("r-1111111111"))).toEqual([taskOf(), taskOf("r-1111111111")]);
     expect(pass(later(1)).filed).toBe(0);
     expect(cards()).toHaveLength(1);
@@ -306,7 +306,7 @@ describe("the status beside the request", () => {
     writeFileSync(join(base, "up-console.json"), JSON.stringify({ url: "http://127.0.0.1:4180/" }));
     save(`${ID}.json`, request());
     pass();
-    expect(statusFile()).toMatchObject({ task: { id: taskOf(), url: `https://toolroll.example/t/${taskOf()}` }, home: "https://toolroll.example/work?view=needs-you" });
+    expect(statusFile()).toMatchObject({ task: { id: taskOf(), url: `https://toolroll.example/t/${taskOf()}` }, home: "https://toolroll.example/tasks?view=needs-you" });
   });
 
   test.each([
@@ -323,7 +323,7 @@ describe("the status beside the request", () => {
     const file = statusFile();
     expect(file["task"]).toEqual({ id: taskOf(), url: origin === null ? null : `${origin}/t/${taskOf()}` });
     if (origin === null) expect(file).not.toHaveProperty("home");
-    else expect(file["home"]).toBe(`${origin}/work?view=needs-you`);
+    else expect(file["home"]).toBe(`${origin}/tasks?view=needs-you`);
   });
 
   test("a status written before the console had an address is written again with its links, once", () => {
@@ -333,7 +333,7 @@ describe("the status beside the request", () => {
     expect(statusFile()).not.toHaveProperty("home");
     writeFileSync(join(base, "up-console.json"), JSON.stringify({ url: "http://127.0.0.1:4180/" }));
     pass(later(1));
-    expect(statusFile()).toMatchObject({ task: { url: `http://127.0.0.1:4180/t/${taskOf()}` }, home: "http://127.0.0.1:4180/work?view=needs-you", status: "needs-you", updatedAt: later(1).toISOString() });
+    expect(statusFile()).toMatchObject({ task: { url: `http://127.0.0.1:4180/t/${taskOf()}` }, home: "http://127.0.0.1:4180/tasks?view=needs-you", status: "needs-you", updatedAt: later(1).toISOString() });
     pass(later(2));
     expect(statusFile()["updatedAt"]).toBe(later(1).toISOString());
   });
@@ -347,8 +347,8 @@ describe("the status beside the request", () => {
 
   test.each([
     ["no links at all", {}, true],
-    ["its links", { task: { id: "t-1", url: "http://127.0.0.1:4180/t/t-1" }, home: "https://toolroll.example/work?view=needs-you" }, true],
-    ["a home with a password", { home: "https://alex:pw@toolroll.example/work" }, false],
+    ["its links", { task: { id: "t-1", url: "http://127.0.0.1:4180/t/t-1" }, home: "https://toolroll.example/tasks?view=needs-you" }, true],
+    ["a home with a password", { home: "https://alex:pw@toolroll.example/tasks" }, false],
     ["a home that isn't http", { home: "javascript:alert(1)" }, false],
     ["a home over 2,000 characters", { home: `https://toolroll.example/${"a".repeat(2000)}` }, false],
     ["a task link with a user name", { task: { id: "t-1", url: "https://alex@toolroll.example/t/t-1" } }, false],

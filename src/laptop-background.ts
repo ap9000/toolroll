@@ -24,12 +24,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, hostname } from "node:os";
+import { sameMachineHost } from "./machine-identity.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { proveLiveConsole, type AttachProof } from "./console-instance.js";
 import { writeFileDurably, type SupervisorRunner } from "./daemon.js";
-import { compareInstalled, detectOtherServices, laptopServiceDefinition, LAPTOP_LABEL_DARWIN, LAPTOP_LABEL_LINUX, type LaptopConflict, type LaptopServiceDefinition } from "./laptop-service.js";
+import { compareInstalled, detectOtherServices, laptopServiceDefinition, unitCommand, LAPTOP_LABEL_DARWIN, LAPTOP_LABEL_LINUX, type LaptopConflict, type LaptopServiceDefinition } from "./laptop-service.js";
 import { packageVersion } from "./monitoring.js";
+import { admitBuilderRestart, builderWish, databaseFormat, recordBuilderWish, restartPaused } from "./builder-restart.js";
 import { underAgent } from "./prompt.js";
 import { processGone, readRunnerProcessRecord, realProcessProbe, recordedHolderProvedGone, recordStandsFor, runnerProcessFile, type ProcessProbe } from "./runner-process.js";
 import type { Runner } from "./runner.js";
@@ -61,6 +63,8 @@ export type LaptopSeams = {
   host?: string;
   healthTimeoutMs?: number;
   exitTimeoutMs?: number;
+  /** The build an installed unit would start, from its entry point (default: the version in that package's package.json). */
+  buildAt?: (entry: string) => string | null;
   /** The foreground `up` this invoker started (the terminal UI's child): its controller's pid, and how to start it again. */
   foreground?: { controllerPid: number; restart: () => Promise<void> };
 };
@@ -87,6 +91,7 @@ function resolveSeams(seams: LaptopSeams): Resolved {
     portFree: seams.portFree ?? portIsFree,
     sleep: seams.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))),
     host: seams.host ?? hostname(),
+    buildAt: seams.buildAt ?? installedBuild,
     healthTimeoutMs: seams.healthTimeoutMs ?? 30_000,
     // A drain is bounded by `up`'s own forced stop (stop-grace 30 s + 20 s); a margin past it.
     exitTimeoutMs: seams.exitTimeoutMs ?? 75_000,
@@ -99,6 +104,14 @@ const realSupervisor: SupervisorRunner = async (file, args, options) => {
   if (process.env["VITEST"] !== undefined) throw Error(`a test reached the real ${file}: pass LaptopSeams.supervisor`);
   return (await import("./exec.js")).run(file, args, options);
 };
+
+/** The package version beside an installed unit's `dist/bin.js`. Null when it can't be read. */
+function installedBuild(entry: string): string | null {
+  try {
+    const version = (JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8")) as { version?: unknown }).version;
+    return typeof version === "string" ? version : null;
+  } catch { return null; }
+}
 
 function parentPid(pid: number): number | null {
   if (!Number.isSafeInteger(pid) || pid <= 1 || process.platform === "win32") return null;
@@ -221,7 +234,7 @@ export type ControllerProof = {
 export function findController(store: Store, databaseFile: string, console_: { pid: number; port: number; url: string }, s: Pick<Resolved, "probe" | "parentOf" | "host">): ControllerProof | { why: string } {
   let why = "no Toolroll process record names the running console";
   for (const runner of store.listRunners()) {
-    if (runner.retiredAt !== null || runner.host !== s.host) continue;
+    if (runner.retiredAt !== null || !sameMachineHost(runner.host, s.host)) continue;
     const holder = store.getRunner(runner.name);
     if (holder === null) continue;
     let file: string;
@@ -451,6 +464,8 @@ export async function backgroundOff(store: Store, databaseFile: string, seams: L
   const label = labelOf(platform), path = unitPath(platform, s.home);
   const present = existsSync(path);
   const loaded = await serviceLoaded(s, platform);
+  // The wish goes first: a restart must never race a person turning this off.
+  recordBuilderWish(store, "stopped", "background off", packageVersion(), new Date());
   if (!present && !loaded) return { ok: true, action: "already-off", label, unit: path };
   let controller: ControllerProof | null = null;
   if (loaded) {
@@ -479,6 +494,8 @@ export async function laptopStop(store: Store, databaseFile: string, seams: Lapt
   const platform = s.platform;
   const live = await s.proveConsole(databaseFile, store);
   if (!live.ok && live.state === "refused") return { ok: false, reason: "console-unproven", message: live.message };
+  // The wish goes first: a restart must never race a person stopping this.
+  recordBuilderWish(store, "stopped", "stop", packageVersion(), new Date());
   const found = live.ok ? findController(store, databaseFile, live, s) : null;
   // Our service, loaded: the supervisor stops it (SIGTERM reaches the controller, which drains). It starts at login.
   if ((platform === "darwin" || platform === "linux") && existsSync(unitPath(platform, s.home)) && await serviceLoaded(s, platform)) {
@@ -549,4 +566,83 @@ export async function startInstalledService(store: Store, databaseFile: string, 
   }
   const healthy = await awaitHealthy(databaseFile, store, s);
   return healthy.ok ? healthy : { ok: false, state: "refused", message: `the background service did not answer within ${Math.round(s.healthTimeoutMs / 1000)} s (${healthy.message})` };
+}
+
+// ---- restarting this computer's own builder (plain-toolroll.md P2.3) ---------------------------------------------------
+
+/** Whether the supervisor shows our process gone: not loaded, or loaded with nothing running. Null when it can't tell. */
+async function supervisedExit(s: Resolved, platform: "darwin" | "linux"): Promise<boolean | null> {
+  if (platform === "darwin") {
+    const shown = await s.supervisor("launchctl", ["print", `gui/${uid()}/${LAPTOP_LABEL_DARWIN}`]);
+    if (shown.code !== 0) return shown.notFound ? null : true;
+    return !/^\s*state = running\b/m.test(shown.stdout) && !/^\s*pid = \d+/m.test(shown.stdout);
+  }
+  const shown = await s.supervisor("systemctl", ["--user", "is-active", `${LAPTOP_LABEL_LINUX}.service`]);
+  if (shown.notFound) return null;
+  const state = shown.stdout.trim();
+  return state === "inactive" || state === "failed" ? true : state === "" || state === "unknown" ? null : false;
+}
+
+/** Whether the unit is switched off at the supervisor (`background off` disabled it). Null when it can't tell. */
+async function labelDisabled(s: Resolved, platform: "darwin" | "linux"): Promise<boolean | null> {
+  if (platform === "darwin") {
+    const shown = await s.supervisor("launchctl", ["print-disabled", `gui/${uid()}`]);
+    if (shown.code !== 0) return null;
+    const line = shown.stdout.split("\n").find(one => one.includes(`"${LAPTOP_LABEL_DARWIN}"`));
+    return line !== undefined && /=>\s*(disabled|true)\b/.test(line);
+  }
+  const shown = await s.supervisor("systemctl", ["--user", "is-enabled", `${LAPTOP_LABEL_LINUX}.service`]);
+  if (shown.notFound) return null;
+  return shown.stdout.trim() === "enabled" ? false : true;
+}
+
+/** Whether every process of this computer's current registrations is proved gone, by their signed records. False: one
+ * may live, or nothing proves it. */
+function recordedRuntimeGone(store: Store, databaseFile: string, s: Resolved): boolean {
+  let proved = 0;
+  for (const runner of store.listRunners()) {
+    if (runner.retiredAt !== null || !sameMachineHost(runner.host, s.host)) continue;
+    const holder = store.getRunner(runner.name);
+    if (holder === null || !recordedHolderProvedGone(runnerProcessFile(databaseFile, runner.name), holder, s.host, s.probe).gone) return false;
+    proved++;
+  }
+  return proved > 0;
+}
+
+export type BuilderRestart = { restarted: true } | { restarted: false; reason: "unsupported" | "not-installed" | "not-wanted" | "paused" | "running" | "unproven" | "disabled" | "identity" | "attempts" | "failed"; message?: string };
+
+/**
+ * Start our own service again, by Toolroll alone, only when a person's recorded wish is to run, nothing is stopping or
+ * updating, the old process is proved gone, what would start is what ran, and it isn't over its attempts. Every other
+ * answer leaves the need with one label, "Start the builder". This never enables a disabled label, which is what sets it
+ * apart from `startService`: a person's own yes.
+ */
+export async function restartOwnBuilder(store: Store, databaseFile: string, seams: LaptopSeams = {}, now: Date = new Date()): Promise<BuilderRestart> {
+  const s = resolveSeams(seams);
+  const platform = s.platform;
+  const no = (reason: Exclude<BuilderRestart, { restarted: true }>["reason"], message?: string): BuilderRestart => ({ restarted: false, reason, ...(message === undefined ? {} : { message }) });
+  if (platform !== "darwin" && platform !== "linux") return no("unsupported");
+  const path = unitPath(platform, s.home);
+  const unit = readUnit(path);
+  if (unit === null) return no("not-installed");
+  const wish = builderWish(store);
+  if (wish?.desired !== "running") return no("not-wanted");
+  if (restartPaused(store, now)) return no("paused");
+  const live = await s.proveConsole(databaseFile, store);
+  if (live.ok) return no("running");
+  if (live.state === "refused") return no("unproven", live.message);
+  const exited = await supervisedExit(s, platform);
+  if (exited === false) return no("running");
+  if (exited === null || !recordedRuntimeGone(store, databaseFile, s)) return no("unproven");
+  const entry = unitCommand(unit, platform)[1];
+  if (entry === undefined || s.buildAt(entry) !== wish.build || databaseFormat(store) !== wish.schema) return no("identity");
+  const disabled = await labelDisabled(s, platform);
+  if (disabled !== false) return no("disabled");
+  const admission = admitBuilderRestart(store, now);
+  if (admission !== "admitted") return no(admission);
+  const loaded = await serviceLoaded(s, platform);
+  const started = platform === "darwin"
+    ? await s.supervisor("launchctl", loaded ? ["kickstart", `gui/${uid()}/${LAPTOP_LABEL_DARWIN}`] : ["bootstrap", `gui/${uid()}`, path])
+    : await s.supervisor("systemctl", ["--user", "start", `${LAPTOP_LABEL_LINUX}.service`]);
+  return started.code === 0 ? { restarted: true } : no("failed", firstLine(started.stderr) || `exit ${started.code}`);
 }

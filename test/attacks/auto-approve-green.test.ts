@@ -461,7 +461,7 @@ describe("attack 7: a branch that changes what CI or the check runs", () => {
   });
 
   test("an ordinary change (code, tests, docs, a version bump) is approved", () => {
-    const f = open({ candidate: { "src/index.js": "export const answer = 43;\n", "src/index.test.ts": "test('answer', () => {});\ntest('more', () => {});\n", "docs/guide.md": "# Guide 2\n" } });
+    const f = open({ candidate: { "src/index.js": "export const answer = 43;\n", "src/more.test.ts": "test('answer', () => {});\ntest('more', () => {});\n", "docs/guide.md": "# Guide 2\n" } });
     authorize(f);
     expect(seal(f, check(f))).toMatchObject({ ok: true });
   });
@@ -757,8 +757,26 @@ describe("codex r1: a direct deploy can't pass for the coordinator's", () => {
 });
 
 describe("coordinator: test files under test/ ship like src's tests", () => {
-  test("an added and a modified attack test, with product code, are approved", () => {
-    const f = open({ candidate: { "test/attacks/fence.test.ts": "test('fence', () => {});\ntest('more fence', () => {});\n", "test/attacks/new-guard.test.ts": "test('guard', () => {});\n", "src/index.js": "export const answer = 45;\n" } });
+  test("an appended attack test needs a person: existing tests stay as they are (H4)", () => {
+    const f = open({ candidate: { "test/attacks/fence.test.ts": "test('fence', () => {});\ntest('more fence', () => {});\n" } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("existing test code") });
+  });
+
+  test.each([["another test", "import './index.test.js';\ntest('x', () => {});\n"], ["a computed path", "await import(name);\ntest('x', () => {});\n"]])("a new test importing %s needs a person", (_name, text) => {
+    const f = open({ candidate: { "src/new.test.ts": text } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("a person decides") });
+  });
+
+  test.each(["src/new.test.tsx", "src/new.test.js", "src/new.test.mjs"])("%s importing another test needs a person, as a .test.ts would", path => {
+    const f = open({ candidate: { [path]: "import './index.test.js';\n" } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("imports another test file") });
+  });
+
+  test("an added attack test, with product code, is approved", () => {
+    const f = open({ candidate: { "test/attacks/new-guard.test.ts": "test('guard', () => {});\n", "src/index.js": "export const answer = 45;\n" } });
     authorize(f);
     const sealed = seal(f, check(f));
     expect(sealed.ok ? "" : sealed.why).toBe("");

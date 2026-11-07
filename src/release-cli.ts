@@ -17,6 +17,7 @@ import { RELEASE_LIMITS, runRelease, type ReleaseAdapters, type ReleaseOutcome }
 import { processes, releaseAdapters } from "./release-adapters.js";
 import { journals, releaseGate, type GateReleaseWorld } from "./release-gate.js";
 import { rescueDeployment, type RescueWorld } from "./deploy-rescue.js";
+import { settleDeployment, takeReleaseRun, type RunLockSeams, type SettleWorld } from "./release-next.js";
 import { databasePath, elapsedSeconds, latestReleaseStepTask, openStore, releaseProgressFor, revokeRelease, type Database } from "./store.js";
 import { dur } from "./design/kit.js";
 import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit, setUnsandboxedCarry } from "./release-carry.js";
@@ -36,7 +37,10 @@ export const RELEASE_HELP = `toolroll release <branch> — release Toolroll itse
   squash-merges, deletes the matching remote branch, verifies the merged tree and tags. Both macOS legs gate npm
   publication; Homebrew waits for its checks to register and all pass before merging.
 
-  Run the same command to resume after a stop. Interrupted deployments recover their saved stage before retrying.
+  Run the same command to go on after any stop. It reads where the release got to and does the one thing that's next:
+  finishes a deployment forward, puts one back, lifts a pause left before a swap, waits for another run of the release
+  (naming its computer and process), or waits for your approval. It says what it did. A branch behind main is brought up
+  to date for you; that new commit needs its own approval, CI and check.
 
   A branch whose name is one of this command's own words (approve, status, nightly, carry…) is named with --branch <name>
   or after --: \`toolroll release --branch status\`.
@@ -48,19 +52,6 @@ toolroll release approve [<branch>] [--repo <path>] — approve the release wait
 
 toolroll release status [<task>] — the steps of a release (the newest one recorded, or the release task named): each
   step's state and how long it took, and where it stopped
-
-toolroll release --release-gate <id> [--yes] — lift the update pause a deployment left before its swap
-
-  Shows why it is safe first: the pause is that deployment's, its journal stopped before the swap, and the
-  database, service definition and running service are all still the previous build's. --yes lifts that one pause.
-  Any missing or contradicting evidence refuses and leaves the pause in place.
-
-toolroll release --recover-deploy [--stage <dir>] [--yes] — put back a deployment that stopped half way
-
-  Finds the one unfinished deployment (or the stage named) and shows what its recovery will do; --yes does it. When
-  the old service isn't proved stopped, it boots the service out and stops what it left running, but only processes
-  proved, by exact runtime path and arguments, to be that deployment's own; then it starts the previous service
-  again, waits for it, and lifts the update pause. Anything it can't prove refuses. Safe to run again.
 
 toolroll release carry <release> --to <commit> [--request <id>] — carry a person's release approval to a later commit
 
@@ -102,10 +93,6 @@ Options
   --new                  release a new commit on the branch, setting the earlier unfinished release aside
   --limit <step>=<min>   change one step's time limit (${Object.entries(RELEASE_LIMITS).map(([step, minutes]) => `${step} ${minutes}`).join(", ")})
   --tap <owner/name>     the Homebrew tap (default ap9000/homebrew-toolroll)
-  --release-gate <id>    check (and with --yes, lift) one update pause left before a deployment's swap
-  --yes                  with --release-gate: lift the pause once it is proved safe; with --recover-deploy: recover
-  --recover-deploy       recover the unfinished deployment (see above)
-  --stage <dir>          with --recover-deploy: the deployment's staging folder, when more than one is unfinished
   --json                 answer with one machine envelope
 
 A runner's lease is returned with \`toolroll worker release <lease>\`.`;
@@ -125,6 +112,9 @@ export type ReleaseCliDeps = {
   gateWorld?: GateReleaseWorld;
   /** What --recover-deploy reads and runs (deploy-rescue.ts); the installation's own by default. */
   rescueWorld?: RescueWorld;
+  /** What a stopped deployment left, settled before the release goes on (release-next.ts). Tests that inject adapters skip it. */
+  settle?: SettleWorld;
+  runLock?: RunLockSeams;
   /** The plane's database for the authority commands (default: this installation's). */
   database?: string;
   now?: () => Date;
@@ -248,8 +238,18 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   const adapters = deps.adapters === undefined
     ? releaseAdapters({ checkout, say, ...(tap === undefined ? {} : { tap }), ...(limits["deploy"] === undefined ? {} : { deployMinutes: limits["deploy"] }) })
     : { ...deps.adapters, say };
-  const outcome = await runRelease({ branch, checkout, stateDir, limits, fresh: bare.has("--new"), noCarry: bare.has("--no-carry") }, adapters);
-  return report(outcome, write, json, lines);
+  // One command: wait out another run of this release, settle what a stopped deployment left, then go on from the journal.
+  const taken = await takeReleaseRun(stateDir, branch, say, deps.runLock);
+  if (!taken.ok) return refuse("running", `Another release of ${branch} is still running on ${taken.holder.host} (process ${taken.holder.pid}). Nothing was changed.`, 3);
+  try {
+    const world = deps.settle ?? (deps.adapters === undefined ? { rescue: installedRescueWorld(checkout), gate: installedGateWorld() } : null);
+    if (world !== null) {
+      const settled = await settleDeployment(world, say);
+      if (!settled.ok) return refuse("deployment", settled.message, 3);
+    }
+    const outcome = await runRelease({ branch, checkout, stateDir, limits, fresh: bare.has("--new"), noCarry: bare.has("--no-carry") }, adapters);
+    return report(outcome, write, json, lines);
+  } finally { taken.release(); }
 }
 
 function report(outcome: ReleaseOutcome, write: (line: string) => void, json: boolean, lines: readonly string[]): number {
@@ -509,8 +509,13 @@ async function runStatusCommand(task: string | undefined, write: (line: string) 
     if (json) { write(checkedEnvelopeJson({ ok: true, command, task: taskId, release: { ...progress, steps } })); return 0; }
     const word = { running: "running", waiting: "waiting", done: "done", failed: "failed" } as const;
     write(`Release ${progress.version} (${progress.tag})${progress.pr === null ? "" : ` · pull request #${progress.pr}`} · task ${taskId}`);
-    for (const one of steps) write(`  ${one.step.padEnd(9)} ${word[one.state].padEnd(8)} ${one.seconds === null ? "–" : dur(one.seconds)}${one.detail === null ? "" : `  ${one.detail}`}`);
+    for (const one of steps) {
+      // A failure the release has gone on from is history, as on the task page.
+      const passed = one.state === "failed" && progress.stopped === null;
+      write(`  ${one.step.padEnd(9)} ${(passed ? "went on" : word[one.state]).padEnd(8)} ${one.seconds === null ? "–" : dur(one.seconds)}${one.detail === null ? "" : `  ${one.detail}`}`);
+    }
     if (progress.stopped !== null) write(`Stopped at ${progress.stopped.step}: ${progress.stopped.message}`);
+    if (progress.building !== null) write(`Build #${progress.building.run} is running the check.`);
     return 0;
   } finally { store.close(); }
 }

@@ -10,6 +10,8 @@ import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
 import { reclaimDatabase } from "./database-reclaim.js";
 import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
+import { codeMapRemoteChanged, codeMapShapeProblem, forgetCodeMap, V152_ADDED_COLUMNS, V152_SCHEMA } from "./code-map-store.js";
+import { readStamps, stampDigest, stampRefusal, V154_SCHEMA, type CheckStamp, type StampReading } from "./check-stamp.js";
 import { refArchived, taskArchived } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -77,8 +79,10 @@ import { ownedProcessCount, runOwnerTag } from "./exec.js";
 import { worktreeProcessOccupancy } from "./worktree.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
+import { currentMachineId, isThisMachine, liveHostAliases, rememberHostAliases, thisMachine, type ThisMachine } from "./machine-identity.js";
 import { containerEmptiness } from "./container-state.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
+import { ACTIVITY_ONLY_KINDS } from "./needs-you.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
 import { hashPassword, liveReleaseOf } from "./scope.js";
@@ -106,6 +110,10 @@ import type { ProgressSnapshot } from "./plan.js";
 import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 
 import { authorityStandsSql } from "./approval-authority.js";
+import { clearRetryEpisode, settleVanished } from "./vanished-retry.js";
+import { issueImported } from "./task-source.js";
+import { BUILDER_SERVICE_SCHEMA, CHECK_ONLY_SCHEMA, FAST_PREVIEW_SCHEMA, ROUTE_CHANGE_SCHEMA, V153_ADDED_COLUMNS, VANISHED_SCHEMA } from "./plain-schema.js";
+export { V153_ADDED_COLUMNS } from "./plain-schema.js";
 import { releasePolicyDigest, serializeReleaseCheckPurpose, storedReleaseCheckPurpose, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseCheckPurpose, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
@@ -122,7 +130,7 @@ import { REQUEST_BUDGET_SCHEMA } from "./request-budget.js";
 import { REVIEW_SCHEMA, reviewSwitchWords, type ReviewSwitch } from "./review-switch.js";
 import { SPEND_SCHEMA, billingOf, budgetStates, canPrice, claudeMachineBilling, countsToward, filersOf, monthOf, priceWork, seenBilling as seenBillingOf, spendItems, subagentFilers, usd, type Billing, type Budget, type BudgetAgent, type BudgetHold, type BudgetScope, type BudgetState, type SpendItem } from "./spend.js";
 import { DEFAULT_PERIODS, RETENTION_SCHEMA, periodWords, widenRetentionSchema, type RetentionKind, type RetentionPeriods } from "./retention.js";
-import { CHECKOUT_CLEANUP_SCHEMA, LANDED_CLEANUP_SCHEMA, STORAGE_SWEEP_SCHEMA, DEFAULT_CLEANUP, cleanupWords, type CheckoutCleanup } from "./storage.js";
+import { CHECKOUT_CLEANUP_SCHEMA, LANDED_CLEANUP_SCHEMA, STORAGE_SWEEP_SCHEMA, DEFAULT_CLEANUP, DEFAULT_IDLE, V151_ADDED_COLUMNS, cleanupWords, idleWords, type CheckoutCleanup, type CheckoutIdle } from "./storage.js";
 import { inReadOnlyRequest } from "./read-only-request.js";
 import { IN_RANGE, LEDGER_CHAIN_SCHEMA, safeWhole, sealLedger, verifyLedgerChain, type LedgerChainReport, type VerifiedHead } from "./ledger-chain.js";
 import { NO_RULES, filerFor, isProtectedWork, protectedChanges, rulesWords, type ApprovalGate, type ApprovalRules, type ApproverKind, type Filer, type FilerKind } from "./approval-policy.js";
@@ -1177,7 +1185,18 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v149 adds, and changes no saved row (docs/plans/learning-loops.md): every learning-loops table (V149_SCHEMA, new
 // tables only) — each check's recorded conditions and results, mixed-outcome observations, tracked identities, lesson
 // notes and their tallies, memory use, tidy-up proposals and decision merges.
-export const SCHEMA_VERSION = 149;
+// v150 adds, and changes no saved row: this machine's stable id on each process witness (run_process.machine_id;
+// saved witnesses read NULL and keep being matched by host name) and the hostnames each machine id was seen under
+// (machine_host_alias, a new table; machine-identity.ts). V150_SCHEMA, V150_ADDED_COLUMNS.
+// v151 adds, and changes no saved row: how long a task stays idle before its clean folder goes
+// (V151_ADDED_COLUMNS: a saved cleanup setting reads NULL, the default).
+// v152 adds, and changes no saved row (docs/plans/code-map.md): the code map's tables (V152_SCHEMA, code-map-store.ts) and
+// a project's map switch and enrollment end (V152_ADDED_COLUMNS: a saved project reads on, not enrolled).
+// v153 adds, and changes no saved row (docs/plans/plain-toolroll.md Phase 2): new tables and columns only.
+// V153_SCHEMA, V153_ADDED_COLUMNS.
+// v154 adds, and changes no saved row (docs/plans/trusted-release-reports.md, H2): each check launch's execution stamp
+// (check_stamp, a new table; check-stamp.ts). A run from before reads no stamp: how its checks ran is unknown.
+export const SCHEMA_VERSION = 154;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1315,7 +1334,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1579,7 +1598,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -1951,6 +1970,39 @@ export const V149_TABLES = Object.freeze(["check_result", "check_fact", "local_o
 export const V149_REPO_TABLES = Object.freeze(["check_fact", "local_observation", "ci_flaky_observation", "learning_watch", "lesson_note", "memory_use", "memory_tidy_proposal"] as const);
 /** The v149 migration's steps after v148's, in order (OpenOptions.migrationStep may stop after each). */
 export const V149_STEPS = Object.freeze(["learning-tables"] as const);
+/**
+ * v150 (machine-identity.ts): which computer a process witness belongs to, by the machine's stable id rather than its
+ * network hostname (which follows the network on a Mac with no HostName set). machine_host_alias records each
+ * hostname this machine read while it knew its own id, written only by a process on that machine, beside the id it
+ * read; a witness with no id (every saved one) is this machine's when its host is one of them. Never read for any
+ * other machine's id.
+ */
+export const V150_SCHEMA = `
+CREATE TABLE IF NOT EXISTS machine_host_alias (
+  machine_id    TEXT NOT NULL CHECK (length(machine_id) = 32),
+  host          TEXT NOT NULL CHECK (host <> ''),
+  first_seen_at TEXT NOT NULL,
+  PRIMARY KEY (machine_id, host)
+);
+`;
+/** The tables V150_SCHEMA adds. */
+export const V150_TABLES = Object.freeze(["machine_host_alias"] as const);
+/** v150: a process witness's machine id (saved witnesses read NULL: matched by host name, as before). */
+export const V150_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  run_process: { machine_id: { definition: "TEXT CHECK (machine_id IS NULL OR length(machine_id) = 32)", saved: "NULL" } },
+});
+/** The v150 migration's steps after v149's, in order (OpenOptions.migrationStep may stop after each). */
+export const V150_STEPS = Object.freeze(["machine-aliases", "witness-machine"] as const);
+/** The v151 migration's steps after v150's, in order (OpenOptions.migrationStep may stop after each). */
+export const V151_STEPS = Object.freeze(["checkout-idle"] as const);
+/** The v152 migration's steps after v151's, in order (OpenOptions.migrationStep may stop after each). */
+export const V152_STEPS = Object.freeze(["code-map-tables", "code-map-switch", "code-map-watermark"] as const);
+/** v153 (plain-toolroll.md Phase 2): the tables each slice owns. */
+export const V153_SCHEMA = VANISHED_SCHEMA + CHECK_ONLY_SCHEMA + BUILDER_SERVICE_SCHEMA + FAST_PREVIEW_SCHEMA + ROUTE_CHANGE_SCHEMA;
+/** The v153 migration's steps after v152's, in order (OpenOptions.migrationStep may stop after each). */
+export const V153_STEPS = Object.freeze(["plain-tables", "plain-columns"] as const);
+/** The v154 migration's steps after v153's, in order (OpenOptions.migrationStep may stop after each). */
+export const V154_STEPS = Object.freeze(["check-stamps"] as const);
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -2842,10 +2894,10 @@ function lifecycleWords(value: string, cap: number): string {
 const LIFECYCLE_PHASE_WORDS: Record<RunPhase, { subject: string; body: string }> = {
   "agent-running": { subject: "agent working", body: "The agent is working in its own checkout. Nothing is finished yet." },
   "validating-handoff": { subject: "checking the handoff", body: "The agent finished its turn; what it handed back is being checked." },
-  "capturing-evidence": { subject: "capturing evidence", body: "The diff, checks and proof are being captured." },
+  "capturing-evidence": { subject: "saving its files", body: "The diff, checks and report are being saved." },
   "committing": { subject: "committing", body: "The work is being committed on the task branch." },
-  "verifying-proof": { subject: "verifying the proof", body: "The proof is being checked against the approved acceptance criteria." },
-  "correcting-proof": { subject: "correcting the proof", body: "The proof did not match the sealed result; a bounded correction turn is running." },
+  "verifying-proof": { subject: "checking the report", body: "The report is being checked against the approved requirements." },
+  "correcting-proof": { subject: "correcting the report", body: "The report didn't match the saved result; one short correction turn is running." },
 };
 
 /** An operator's cancellation as one closed sentence: the reason, if any,
@@ -2859,10 +2911,10 @@ function cancellationWords(reason: string | null): string {
 
 /** What an independent review concluded, in the words the saved result shows. */
 const LIFECYCLE_REVIEW_WORDS: Record<"verified" | "attested" | "short" | "refuted" | "none", { subject: string; body: string }> = {
-  verified: { subject: "checks verified", body: "Every acceptance check was verified against the saved result." },
-  refuted: { subject: "evidence conflicts with the result", body: "The reviewer found evidence that contradicts the saved result. It is not accepted as done." },
-  attested: { subject: "agent-reported evidence only", body: "The result rests on agent-reported evidence that was not independently verified." },
-  short: { subject: "required evidence is missing", body: "Required evidence is missing from the saved result." },
+  verified: { subject: "checks verified", body: "Every requirement was checked against the saved result." },
+  refuted: { subject: "the report doesn't match the result", body: "The reviewer found something that contradicts the saved result. It is not accepted as done." },
+  attested: { subject: "only the agent's own checks", body: "The result rests on checks the agent reported, not checked independently." },
+  short: { subject: "a requirement isn't shown", body: "Something a requirement needs is missing from the saved result." },
   none: { subject: "comments only", body: "The reviewer left comments; no acceptance judgement was recorded." },
 };
 
@@ -5930,6 +5982,8 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // A current file is this build's exact shape: the checks above read, the connection gets its settings, and no DDL
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   if (preflight === SCHEMA_VERSION) {
+    const missing = codeMapShapeProblem(db);
+    if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
   }
@@ -6280,6 +6334,30 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   // v149: the learning-loops tables (new tables only; docs/plans/learning-loops.md). Idempotent, as v148's steps are.
   db.exec(V149_SCHEMA);
   step("learning-tables");
+  // v150: this machine's stable id on each process witness and the hostnames it was seen under (V150_SCHEMA,
+  // V150_ADDED_COLUMNS: saved witnesses read NULL). Idempotent, as v149's step is.
+  db.exec(V150_SCHEMA);
+  step("machine-aliases");
+  for (const [column, { definition }] of Object.entries(V150_ADDED_COLUMNS["run_process"]!)) addColumn(db, "run_process", column, definition);
+  step("witness-machine");
+  // v151: the idle limit beside the cleanup setting (V151_ADDED_COLUMNS: a saved row reads NULL). Idempotent, as v150's steps are.
+  for (const [column, { definition }] of Object.entries(V151_ADDED_COLUMNS["checkout_cleanup_setting"]!)) addColumn(db, "checkout_cleanup_setting", column, definition);
+  step("checkout-idle");
+  // v152: the code map's tables, a project's switch, and the run-id watermark, set once. Idempotent, as v151's step is.
+  db.exec(V152_SCHEMA);
+  step("code-map-tables");
+  for (const [column, { definition }] of Object.entries(V152_ADDED_COLUMNS["project"]!)) addColumn(db, "project", column, definition);
+  step("code-map-switch");
+  db.exec("INSERT OR IGNORE INTO code_map_meta (id, run_watermark) SELECT 1, COALESCE(MAX(id), 0) FROM run");
+  step("code-map-watermark");
+  // v153: Phase 2's tables (new tables only). Idempotent, as v152's steps are.
+  db.exec(V153_SCHEMA);
+  step("plain-tables");
+  for (const [table, columns] of Object.entries(V153_ADDED_COLUMNS)) for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  step("plain-columns");
+  // v154: each check launch's execution stamp (a new table). Idempotent, as v153's steps are.
+  db.exec(V154_SCHEMA);
+  step("check-stamps");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -7508,6 +7586,8 @@ export class Store {
     this.db = instrumentDatabase(trackWorkspaceWrites(db), this.telemetry);
     // And on each instance: the sealed methods as its own locked properties, so nothing shadows one later.
     lockStoreMoneyMethods(this);
+    // This machine's recorded names (v150), for the custody checks that hold no store (machine-identity.ts).
+    rememberStoredHostAliases(this.db);
   }
 
   /** TESTS ONLY: raw database access for migration fixtures. Production
@@ -7813,7 +7893,7 @@ export class Store {
                 {
                   taskRef: ref.id, kind: "task-queued", identity: `t${ref.id}`,
                   subject: "Back in the queue",
-                  body: prior["state"] === "running" ? "Its worker released it without finishing; another attempt can start." : "Reopened for another attempt.",
+                  body: prior["state"] === "running" ? "Its builder let it go without finishing; another attempt can start." : "Reopened for another attempt.",
                   link: chatControlHref("task", id),
                 },
                 now,
@@ -9398,6 +9478,10 @@ export class Store {
           // chat tap, only with the digest of every word the card showed (`terms`, chat-terms.ts), recomputed below
           // from the live scope: a card that cut a word, or terms that changed since, seal nothing.
           if (basis.kind !== "chat" && this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA) return false;
+          // THE IMPORT QUARANTINE (github-import.ts): a task filed from a GitHub issue or pull request, or a revision of
+          // one, is outside text too. Its provenance is immutable and copied through revisions, so no automatic basis
+          // ever seals it, here, whatever road it came by.
+          if (basis.kind !== "chat" && issueImported(this, taskId)) return false;
           // CHECK ACCESS (v132, check-access.ts): a scope whose checks reach beyond the fence (sign-ins, or no sandbox at
           // all) seals only on a person's password ceremony — never a mode, a grant, a chat confirmation or a carry.
           const profileText = this.db.prepare("SELECT profile_json FROM task_scope WHERE task_id = ?").get(taskId)?.["profile_json"];
@@ -9461,17 +9545,21 @@ export class Store {
         if (purpose.purpose !== null && basis !== undefined && basis.kind !== "chat") return false;
         if (deployGate && basis?.kind === "chat" && !(basis.card === "release" && typeof basis.cardDigest === "string" && /^[0-9a-f]{64}$/.test(basis.cardDigest))) return false;
         // The outside-request quarantine's chat road (above): the card showed every word of these live terms.
-        if (basis?.kind === "chat" && this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA
+        if (basis?.kind === "chat" && (this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA || issueImported(this, taskId))
           && !(basis.card === "terms" && typeof basis.cardDigest === "string" && basis.cardDigest === shownTermsDigest(readScope(working)))) return false;
         // AUTOMATIC RELEASE SEALS (auto-approve-green.md): only on a release task (a candidate and release terms signed
         // in), only naming the evidence row the plane wrote for exactly this task, kind, digest and candidate.
         const automatic = basis?.kind === "auto-check" || basis?.kind === "auto-green";
+        // A FAST START (fast-start.ts) stays a person's: no automatic release seal ever lands on one.
+        if (automatic && this.db.prepare("SELECT 1 AS hit FROM task_ref WHERE backend = ? AND external_id = ? AND fast_start_at IS NOT NULL").get(BUILT_IN, taskId) !== undefined) return false;
         if (automatic) {
           if (terms.terms === null || typeof working["candidate"] !== "string" || working["candidate"] === "") return false;
           const evidence = autoEvidenceOf(this, taskId, basis!.modeDigest, basis!.kind as "auto-check" | "auto-green");
           if (evidence === null || evidence.digest !== String(working["digest"]) || evidence.candidate !== working["candidate"] || evidence.by !== by) return false;
         }
         if (terms.terms !== null && basis !== undefined && basis.kind !== "chat" && !automatic) return false;
+        // Nor does a fast start ever anchor a release, whoever approves it.
+        if (terms.terms !== null && this.db.prepare("SELECT 1 AS hit FROM task_ref WHERE backend = ? AND external_id = ? AND fast_start_at IS NOT NULL").get(BUILT_IN, taskId) !== undefined) return false;
         if (terms.terms !== null && releaseSealProblem(this, terms.terms) !== null) return false;
         const changed = this.db
           .prepare(
@@ -9501,7 +9589,12 @@ export class Store {
           // (setup review): the approval is what was stale, and it is new.
           const ref = this.db.prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, taskId);
           if (ref !== undefined) {
-            if (basis === undefined || basis.kind === "chat") this.noteTaskAct(Number(ref["id"]), "approved", now);
+            if (basis === undefined || basis.kind === "chat") {
+              this.noteTaskAct(Number(ref["id"]), "approved", now);
+              clearRetryEpisode(this, Number(ref["id"]));
+              // An ordinary yes stands on its own: a fast start's window is over (its Accept backstop stays).
+              this.db.prepare("UPDATE task_ref SET fast_start_until = NULL WHERE id = ? AND fast_start_until IS NOT NULL").run(Number(ref["id"]));
+            }
             this.db.prepare("DELETE FROM hold WHERE owner_kind = 'backoff' AND owner_id = ?").run(`stale:${Number(ref["id"])}`);
             // Results routing: this yes closes the task's open exposure (as proposed, or with the model it sealed),
             // and lifts the hold a switched-off rule put on the approval it replaces.
@@ -9523,20 +9616,20 @@ export class Store {
               this.noteLifecycle(
                 {
                   taskRef: Number(ref["id"]), kind: "scope-approved", identity: `t${Number(ref["id"])}`,
-                  subject: "Scope approved",
+                  subject: "Plan approved",
                   body: basis === undefined
-                    ? `Approved by ${lifecycleWords(by, 40)}. A connected worker can take it next.`
+                    ? `Approved by ${lifecycleWords(by, 40)}. A connected builder can take it next.`
                     : basis.kind === "chat"
-                      ? `Approved by ${lifecycleWords(by, 40)} in chat. A connected worker can take it next.`
+                      ? `Approved by ${lifecycleWords(by, 40)} in chat. A connected builder can take it next.`
                       : basis.kind === "grant"
-                        ? "Approved automatically: its flow runs on its own. A connected worker can take it next."
+                        ? "Approved automatically: its flow runs on its own. A connected builder can take it next."
                         : basis.kind === "schedule"
-                          ? "Approved by its standing order. A connected worker can take it next."
+                          ? "Approved by its standing order. A connected builder can take it next."
                           : basis.kind === "auto-check"
                             ? "Checking automatically: it approves itself once CI and the release check pass."
                           : basis.kind === "auto-green"
                             ? "Approved automatically: CI and the release check passed."
-                          : "Approved automatically under the operating mode. A connected worker can take it next.",
+                          : "Approved automatically under the operating mode. A connected builder can take it next.",
                   link: chatControlHref("task", taskId),
                 },
                 now,
@@ -9585,7 +9678,7 @@ export class Store {
          WHERE task_scope.approved_at IS NOT NULL
            AND NOT ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`,
       )
-      .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString());
+      .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString(), now.toISOString());
     if (dead !== undefined) return false;
     // A release task (release-once.md): the whole live-release predicate, beyond what the SQL can say.
     const external = this.db.prepare("SELECT external_id FROM task_ref WHERE id = ? AND backend = 'built-in'").get(taskRef);
@@ -11190,11 +11283,7 @@ export class Store {
         .prepare("SELECT backend, external_id FROM task_ref WHERE id = ?")
         .get(taskRef);
       if (ref === undefined || String(ref["backend"]) !== BUILT_IN) continue;
-
-      const { changes } = this.db
-        .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'")
-        .run(now.toISOString(), String(ref["external_id"]));
-      if (Number(changes) > 0) requeued?.push(String(ref["external_id"]));
+      if (settleVanished(this, taskRef, now) === "queued") requeued?.push(String(ref["external_id"]));
     }
 
     return held.map(row => String(row["lease_id"]));
@@ -12225,7 +12314,7 @@ export class Store {
           {
             taskRef: run.taskRef, run: runId, kind: "review-requested", identity: `r${runId}`,
             subject: "Independent review requested",
-            body: `${automatic ? "Queued automatically" : `Requested by ${lifecycleWords(by, 40)}`} for attempt #${runId}'s saved result. A connected reviewer runs it next.`,
+            body: `${automatic ? "Queued automatically" : `Requested by ${lifecycleWords(by, 40)}`} for build #${runId}'s saved result. A connected reviewer runs it next.`,
             link: chatResultHref(reviewedTask, runId, "checks"),
           },
           now,
@@ -13685,6 +13774,9 @@ export class Store {
       for (const incident of incidents) this.resolveIncidentLocked(incident, by, now);
 
       this.resetStrikes(taskRef);
+      clearRetryEpisode(this, taskRef);
+      // A person's Retry is a new person act: a fast start gets a new start window. A machine's never does.
+      if (!machineActing()) this.db.prepare("UPDATE task_ref SET fast_start_until = ? WHERE id = ? AND fast_start_until IS NOT NULL").run(new Date(now.getTime() + 30 * 60_000).toISOString(), taskRef);
       this.db
         .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state IN ('failed','queued','done')")
         .run(stamp, taskId);
@@ -13693,10 +13785,10 @@ export class Store {
       this.noteLifecycle(
         {
           taskRef, kind: "task-requeued", identity: `t${taskRef}`,
-          subject: "Requeued",
+          subject: "Queued again",
           body: rejectedRun !== null
-            ? `Its last result (attempt #${rejectedRun}) was not accepted; the next attempt continues on the same branch under the current scope.`
-            : `${incidents.length > 0 ? "Its incident is resolved and its" : "Its"} failure streak is cleared; a worker can take it again.`,
+            ? `Its last result (build #${rejectedRun}) was not accepted; the next attempt continues on the same branch under the current plan.`
+            : `Its repeated failures are cleared; a builder can take it again.`,
           link: chatControlHref("task", taskId),
         },
         now,
@@ -15512,16 +15604,16 @@ export class Store {
     const stopped = result.outcome === "failed" && result.reason === "interrupted" && this.stopOf(id) !== null;
     if (role === "builder") {
       if (stopped) {
-        this.noteLifecycle({ taskRef, run: id, kind: "run-stopped", identity: `r${id}`, subject: `Attempt #${id} stopped`, body: "Its work is preserved. Resume this attempt from the task page when ready.", link: chatControlHref("recovery", taskId) }, now);
+        this.noteLifecycle({ taskRef, run: id, kind: "run-stopped", identity: `r${id}`, subject: `Build #${id} stopped`, body: "Its work is preserved. Resume this attempt from the task page when ready.", link: chatControlHref("recovery", taskId) }, now);
       } else if (result.outcome === "built") {
         this.noteLifecycle({
           taskRef, run: id, kind: "run-finished", identity: `r${id}`,
-          subject: `Attempt #${id} built`,
+          subject: `Build #${id} built`,
           body: result.committed === false ? "It finished without a commit; the handoff explains why." : "The result is saved locally. It is not yet independently reviewed or published.",
           link: chatResultHref(taskId, id, "changes"),
         }, now);
       } else if (result.outcome === "no-change") {
-        this.noteLifecycle({ taskRef, run: id, kind: "run-finished", identity: `r${id}`, subject: `Attempt #${id} finished with no changes`, body: "Nothing needed to change; the handoff explains why.", link: chatResultHref(taskId, id) }, now);
+        this.noteLifecycle({ taskRef, run: id, kind: "run-finished", identity: `r${id}`, subject: `Build #${id} finished with no changes`, body: "Nothing needed to change; the handoff explains why.", link: chatResultHref(taskId, id) }, now);
       }
       return;
     }
@@ -16148,12 +16240,12 @@ export class Store {
       const agent = lifecycleWords(`${provider ?? "claude"}${model === null ? "" : ` · ${model}`}`, 60);
       const words =
         role === "reviewer"
-          ? { subject: `Independent review started (attempt ${reviewAttempt ?? 1})`, body: `Reviewing the saved result of attempt #${run.parentRun}. Running on ${agent}.`, link: chatResultHref(taskId, run.parentRun as number, "checks") }
+          ? { subject: `Independent review started (attempt ${reviewAttempt ?? 1})`, body: `Reviewing the saved result of build #${run.parentRun}. Running on ${agent}.`, link: chatResultHref(taskId, run.parentRun as number, "checks") }
           : role === "planner"
-            ? { subject: `Planning started (run #${id})`, body: `Drafting the scope and plan on ${agent}.`, link: chatControlHref("planning", taskId) }
+            ? { subject: "Planning started", body: `Drafting the plan on ${agent}.`, link: chatControlHref("planning", taskId) }
             : role === "scout"
-              ? { subject: `Scouting started (run #${id})`, body: `A read-only look on ${agent}; what comes back is a report.`, link: chatControlHref("task", taskId) }
-              : { subject: road.road === "recovered" ? `Attempt #${id} resumed from its preserved draft` : `Attempt #${id} started`, body: `Building on ${agent}.`, link: chatControlHref("task", taskId) };
+              ? { subject: "Research started", body: `A read-only look on ${agent}; what comes back is a report.`, link: chatControlHref("task", taskId) }
+              : { subject: road.road === "recovered" ? `Build #${id} resumed from its saved draft` : `Build #${id} started`, body: `Building on ${agent}.`, link: chatControlHref("task", taskId) };
       this.noteLifecycle({ taskRef: run.taskRef, run: id, kind: "run-started", identity: `r${id}`, ...words }, run.now);
     }
     return id;
@@ -17241,7 +17333,7 @@ export class Store {
       const taskId = this.externalIdFor(taskRef);
       if (taskId === null) return;
       const words = LIFECYCLE_PHASE_WORDS[phase];
-      this.noteLifecycle({ taskRef, run: id, kind: "run-phase", identity: `r${id}`, subject: `Attempt #${id}: ${words.subject}`, body: words.body, link: chatControlHref("task", taskId) }, now);
+      this.noteLifecycle({ taskRef, run: id, kind: "run-phase", identity: `r${id}`, subject: `Build #${id}: ${words.subject}`, body: words.body, link: chatControlHref("task", taskId) }, now);
     });
   }
 
@@ -21132,6 +21224,7 @@ export class Store {
     this.db.prepare(`INSERT INTO action_ledger(at,actor,repo,task_id,run_id,action,outcome,source,detail)
       VALUES (?,?,?,NULL,NULL,'project remote recorded','recorded','access',?)`)
       .run(now.toISOString(), actor, repo, JSON.stringify({ previousRemote: previous, remoteUrl }));
+    codeMapRemoteChanged(this, repo);
   }
 
   /** The remote URL captured on admission or explicitly supplied by the owner; null when none was (or the project was removed). */
@@ -21142,7 +21235,10 @@ export class Store {
 
   /** A project removed from the lists (project-admission.ts): only its row goes; its tasks, results and settings stay. */
   forgetProject(path: string): void {
-    this.db.prepare("DELETE FROM project WHERE path = ?").run(path);
+    this.transact(() => {
+      forgetCodeMap(this, path);
+      this.db.prepare("DELETE FROM project WHERE path = ?").run(path);
+    });
   }
 
   /** Most recently opened first — the opener page's order. */
@@ -22010,10 +22106,7 @@ export class Store {
           .prepare("SELECT external_id FROM task_ref WHERE id = ? AND backend = ?")
           .get(taskRef, BUILT_IN);
         if (ref === undefined) return;
-        const { changes } = this.db
-          .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'")
-          .run(stamp, String(ref["external_id"]));
-        if (Number(changes) > 0) requeued.push(String(ref["external_id"]));
+        if (settleVanished(this, taskRef, now) === "queued") requeued.push(String(ref["external_id"]));
       };
       const open = this.db
         .prepare(
@@ -22109,18 +22202,11 @@ export class Store {
           .run(stamp, leaseId);
         this.db
           .prepare(
-            `UPDATE task SET state = 'queued', updated_at = ?
-              WHERE state = 'running' AND id = (
-                SELECT external_id FROM task_ref WHERE id = ? AND backend = ?
-              )`,
-          )
-          .run(stamp, taskRef, BUILT_IN);
-        this.db
-          .prepare(
             `UPDATE run SET outcome = 'failed', reason = 'interrupted', finished_at = ?
               WHERE lease_id = ? AND outcome IS NULL`,
           )
           .run(stamp, leaseId);
+        settleVanished(this, taskRef, now);
         this.db
           .prepare(
             `UPDATE worktree SET released_at = ?, verified = 0
@@ -22146,16 +22232,7 @@ export class Store {
         this.db
           .prepare("UPDATE run SET outcome = 'failed', reason = 'interrupted', finished_at = ? WHERE id = ?")
           .run(stamp, Number(row["run_id"]));
-        if (this.currentLiveLease(taskRef, now) === null) {
-          this.db
-            .prepare(
-              `UPDATE task SET state = 'queued', updated_at = ?
-                WHERE state = 'running' AND id = (
-                  SELECT external_id FROM task_ref WHERE id = ? AND backend = ?
-                )`,
-            )
-            .run(stamp, taskRef, BUILT_IN);
-        }
+        settleVanished(this, taskRef, now);
         this.db
           .prepare("UPDATE worktree SET released_at = ?, verified = 0 WHERE runner = ? AND task_ref = ? AND released_at IS NULL")
           .run(stamp, runner, taskRef);
@@ -22306,7 +22383,7 @@ export class Store {
         this.noteLifecycle(
           run.role === "reviewer"
             ? { taskRef: run.taskRef, run: run.id, kind: "run-stopping", identity: `r${run.id}`, subject: `Stopping review #${run.id}`, body: "The review is being stopped. The saved result is unchanged.", link: chatControlHref("recovery", stoppedTask) }
-            : { taskRef: run.taskRef, run: run.id, kind: "run-stopping", identity: `r${run.id}`, subject: `Stopping attempt #${run.id}`, body: "Its processes are being stopped and its work is preserved. The task stays paused until this attempt is resumed.", link: chatControlHref("recovery", stoppedTask) },
+            : { taskRef: run.taskRef, run: run.id, kind: "run-stopping", identity: `r${run.id}`, subject: `Stopping build #${run.id}`, body: "Its processes are being stopped and its work is kept. The task stays paused until this build is resumed.", link: chatControlHref("recovery", stoppedTask) },
           now,
         );
       }
@@ -22362,6 +22439,7 @@ export class Store {
       if (run.outcome === null) return fact(id, "open", `run #${id} is still open`);
       if (ownedProcessCount(runOwnerTag(this, id)) > 0) return fact(id, "alive", `run #${id} still has an owned subprocess`);
       const witnesses = this.db.prepare("SELECT * FROM run_process WHERE run = ? ORDER BY id").all(id);
+      const here = storeMachine(this.db);
       let incompleteSpawn = false;
       if (run.providerStartedAt !== null && witnesses.length === 0 && !this.processesSummarized(id)) {
         return provable(id, `run #${id} may have spawned before its process witness was recorded; exit is unproven`, "no-witness");
@@ -22370,14 +22448,16 @@ export class Store {
         // A recorded group exit proves the whole group ended, not just its
         // leader. Re-probing its number could mistake reuse for the old group.
         if (witness["exited_at"] !== null) continue;
-        const host = String(witness["host"]);
         const bootId = witness["boot_id"] === null || witness["boot_id"] === undefined ? null : String(witness["boot_id"]);
-        // A VERIFIED boot change on this host (v53): nothing of the old
+        // This machine by its stable id, or by one of its own names for a witness from before v150 (machine-identity.ts):
+        // a hostname that moved with the network never makes this machine's own witness another computer's.
+        const local = witnessIsLocal(witness, here);
+        // A VERIFIED boot change on this machine (v53): nothing of the old
         // boot survives — an incomplete spawn, a reused pid and a native
         // object alike are gone. Every other case keeps the conservative
         // road below.
-        if (provenDeadByBootChange({ host, bootId })) continue;
-        if (host !== hostname()) return fact(id, "elsewhere", `run #${id}'s process belongs to another host; exit is unproven here`);
+        if (local && provenDeadByBootChange({ host: String(witness["host"]), bootId }, { host: String(witness["host"]), bootId: currentBootId() })) continue;
+        if (!local) return fact(id, "elsewhere", `run #${id}'s process belongs to another host; exit is unproven here`);
         const backend = witness["containment"] === null || witness["containment"] === undefined ? null : String(witness["containment"]);
         const container = witness["container"] === null || witness["container"] === undefined ? null : String(witness["container"]);
         if (backend !== null || container !== null) {
@@ -22424,8 +22504,9 @@ export class Store {
   }
 
   reserveRunProcess(runId: number, now: Date, group = true): number {
-    return Number(this.db.prepare("INSERT INTO run_process (run,host,process_group,observed_at,boot_id) VALUES (?,?,?,?,?)")
-      .run(runId, hostname(), group ? 1 : 0, now.toISOString(), currentBootId()).lastInsertRowid);
+    recordMachineHostAliases(this.db, now);
+    return Number(this.db.prepare("INSERT INTO run_process (run,host,process_group,observed_at,boot_id,machine_id) VALUES (?,?,?,?,?,?)")
+      .run(runId, hostname(), group ? 1 : 0, now.toISOString(), currentBootId(), currentMachineId()).lastInsertRowid);
   }
 
   /** The run's process witnesses not yet proved exited — after first saving whatever exit evidence is available. */
@@ -22447,11 +22528,12 @@ export class Store {
     // check uses: ESRCH, or a process now holding the pid that was born after
     // the run ended. An open run has no finish time, so only ESRCH counts.
     const finishedAt = this.getRun(runId)?.finishedAt ?? null;
+    const here = storeMachine(this.db);
     let recorded = 0;
     for (const row of rows) {
       const host = String(row["host"]), bootId = row["boot_id"] == null ? null : String(row["boot_id"]);
-      if (host !== hostname() || typeof row["observed_at"] !== "string" || !Number.isFinite(Date.parse(row["observed_at"])) || Date.parse(row["observed_at"]) > now.getTime()) continue;
-      let gone = provenDeadByBootChange({ host, bootId });
+      if (!witnessIsLocal(row, here) || typeof row["observed_at"] !== "string" || !Number.isFinite(Date.parse(row["observed_at"])) || Date.parse(row["observed_at"]) > now.getTime()) continue;
+      let gone = provenDeadByBootChange({ host, bootId }, { host, bootId: currentBootId() });
       if (!gone) {
         const backend = row["containment"] == null ? null : String(row["containment"]);
         const container = row["container"] == null ? null : String(row["container"]);
@@ -22463,9 +22545,9 @@ export class Store {
         }
       }
       if (gone) recorded += Number(this.db.prepare(`UPDATE run_process SET exited_at = ?
-        WHERE id = ? AND run = ? AND exited_at IS NULL AND pid IS ? AND host = ? AND process_group = ?
+        WHERE id = ? AND run = ? AND exited_at IS NULL AND pid IS ? AND host = ? AND machine_id IS ? AND process_group = ?
           AND observed_at = ? AND boot_id IS ? AND containment IS ? AND container IS ? AND container_identity IS ?`)
-        .run(now.toISOString(), row["id"], runId, row["pid"], row["host"], row["process_group"], row["observed_at"], row["boot_id"], row["containment"], row["container"], row["container_identity"]).changes);
+        .run(now.toISOString(), row["id"], runId, row["pid"], row["host"], row["machine_id"] ?? null, row["process_group"], row["observed_at"], row["boot_id"], row["containment"], row["container"], row["container_identity"]).changes);
     }
     return recorded;
   }
@@ -22476,12 +22558,13 @@ export class Store {
    * yet stays open and is passed over, never holding newer runs behind it:
    * every finished run is visited, a batch at a time. Never signals. */
   recordFinishedRunExits(now: Date, batch = 200): number {
+    const local = localWitnessSql(storeMachine(this.db), "p");
     const page = this.db.prepare(`SELECT DISTINCT p.run FROM run_process p JOIN run r ON r.id = p.run
-      WHERE p.exited_at IS NULL AND p.host = ? AND p.run > ? AND r.outcome IS NOT NULL AND r.finished_at IS NOT NULL
+      WHERE p.exited_at IS NULL AND ${local.sql} AND p.run > ? AND r.outcome IS NOT NULL AND r.finished_at IS NOT NULL
       ORDER BY p.run LIMIT ?`);
     let recorded = 0;
     for (let after = 0; ;) {
-      const runs = page.all(hostname(), after, batch).map(row => Number(row["run"]));
+      const runs = page.all(...local.params, after, batch).map(row => Number(row["run"]));
       for (const run of runs) recorded += this.recordRunProcessExits(run, now);
       if (runs.length < batch) break;
       after = runs[runs.length - 1]!;
@@ -22515,10 +22598,11 @@ export class Store {
    * entry. A sole pid-less witness has no group to prove gone and stays for
    * Toolroll's own look (stop-proof.ts). Native witnesses keep their OS-only road. */
   settleUnspawnedWitnesses(now: Date, onlyRun?: number): number {
+    const local = localWitnessSql(storeMachine(this.db), "p");
     const candidates = this.db.prepare(`SELECT DISTINCT p.run FROM run_process p JOIN run r ON r.id = p.run
       WHERE p.exited_at IS NULL AND p.pid IS NULL AND p.containment IS NULL AND p.container IS NULL
-        AND p.host = ? AND r.outcome IS NOT NULL AND r.finished_at IS NOT NULL
-        AND (? IS NULL OR p.run = ?) ORDER BY p.run`).all(hostname(), onlyRun ?? null, onlyRun ?? null);
+        AND ${local.sql} AND r.outcome IS NOT NULL AND r.finished_at IS NOT NULL
+        AND (? IS NULL OR p.run = ?) ORDER BY p.run`).all(...local.params, onlyRun ?? null, onlyRun ?? null);
     let settled = 0;
     for (const candidate of candidates) {
       const runId = Number(candidate["run"]);
@@ -22551,10 +22635,11 @@ export class Store {
    * their fences; only an observed single-process exit avoids a new probe. */
   private settleableUnspawnedWitnesses(run: Run, rows: Record<string, unknown>[]): Record<string, unknown>[] {
     if (run.outcome === null || run.finishedAt === null || ownedProcessCount(runOwnerTag(this, run.id)) > 0) return [];
-    const pidless = rows.filter(row => row["exited_at"] === null && row["pid"] === null && row["containment"] === null && row["container"] === null && row["host"] === hostname());
+    const here = storeMachine(this.db);
+    const pidless = rows.filter(row => row["exited_at"] === null && row["pid"] === null && row["containment"] === null && row["container"] === null && witnessIsLocal(row, here));
     const others = rows.filter(row => !pidless.includes(row));
     if (pidless.length === 0 || others.length === 0 || others.some(row => row["exited_at"] === null)) return [];
-    const known = others.filter(row => row["pid"] !== null && row["host"] === hostname());
+    const known = others.filter(row => row["pid"] !== null && witnessIsLocal(row, here));
     if (known.length === 0 || known.some(row => processMayBeAlive(Number(row["pid"]), row["process_group"] === 1,
       { observedAt: row["observed_at"], finishedAt: run.finishedAt, exitedAt: row["exited_at"] }))) return [];
     return pidless;
@@ -22568,8 +22653,9 @@ export class Store {
       if (Number(changed.changes) !== 1) throw new Error("spawn witness custody changed");
       return;
     }
-    this.db.prepare("INSERT INTO run_process (run,pid,host,process_group,observed_at,boot_id) VALUES (?,?,?,?,?,?)")
-      .run(runId, pid, hostname(), group ? 1 : 0, now.toISOString(), currentBootId());
+    recordMachineHostAliases(this.db, now);
+    this.db.prepare("INSERT INTO run_process (run,pid,host,process_group,observed_at,boot_id,machine_id) VALUES (?,?,?,?,?,?,?)")
+      .run(runId, pid, hostname(), group ? 1 : 0, now.toISOString(), currentBootId(), currentMachineId());
   }
 
   /** The native OS object a witnessed spawn ran inside (v53) — recorded
@@ -22591,10 +22677,11 @@ export class Store {
    * must independently prove gone; this never grants authority to signal. */
   runCustodyProvenGone(runId: number): boolean {
     const rows = this.db.prepare("SELECT * FROM run_process WHERE run = ?").all(runId);
+    const here = storeMachine(this.db);
     // A summarized run's witnesses all exited, each on recorded proof.
     return (rows.length > 0 || this.processesSummarized(runId)) && rows.every(row => {
-      if (String(row["host"]) !== hostname()) return false;
-      if (provenDeadByBootChange({ host: String(row["host"]), bootId: row["boot_id"] == null ? null : String(row["boot_id"]) })) return true;
+      if (!witnessIsLocal(row, here)) return false;
+      if (provenDeadByBootChange({ host: String(row["host"]), bootId: row["boot_id"] == null ? null : String(row["boot_id"]) }, { host: String(row["host"]), bootId: currentBootId() })) return true;
       if (row["containment"] == null || row["container"] == null) return false;
       return row["container_empty_at"] != null || containerEmptiness(String(row["containment"]), String(row["container"]), process.platform, row["container_identity"] == null ? null : String(row["container_identity"])) === "empty";
     });
@@ -22673,7 +22760,7 @@ export class Store {
       const resumedTask = this.externalIdFor(args.taskRef);
       if (resumedTask !== null) {
         this.noteLifecycle(
-          { taskRef: args.taskRef, run: args.runId, kind: "run-resumed", identity: `r${args.runId}`, subject: `Attempt #${args.runId} resumed`, body: "The next pass takes a fresh claim and continues from the preserved work.", link: chatControlHref("task", resumedTask) },
+          { taskRef: args.taskRef, run: args.runId, kind: "run-resumed", identity: `r${args.runId}`, subject: `Build #${args.runId} resumed`, body: "The next attempt continues from the saved work.", link: chatControlHref("task", resumedTask) },
           now,
         );
       }
@@ -23573,13 +23660,15 @@ export class Store {
         `INSERT OR IGNORE INTO push_delivery (notification, subscription, created_at)
          SELECT notification.id, push_subscription.id, ?
            FROM notification, push_subscription
-          WHERE (notification.push_class IS NOT NULL OR notification.kind = 'check-progress')
+          WHERE notification.push_class IS NOT NULL
+            -- A fact that needs nothing from a person (checks in progress) stays in the activity log: no phone ping.
+            AND notification.kind NOT IN (SELECT value FROM json_each(?))
             AND notification.resolved_at IS NULL
             AND (notification.recipient IS NULL OR notification.recipient = push_subscription.approver)
             AND push_subscription.retired_at IS NULL
             AND notification.id > push_subscription.starts_after_notification`,
       )
-      .run(now.toISOString());
+      .run(now.toISOString(), JSON.stringify([...ACTIVITY_ONLY_KINDS]));
     // Pings follow responsibility: a pair this person must not be alerted about retires before it is ever sent.
     if (Number(changes) > 0) {
       const fresh = this.db.prepare(`SELECT p.id AS pair, s.approver AS approver, n.* FROM push_delivery p
@@ -23955,7 +24044,8 @@ export class Store {
     try { return networkFromValue(JSON.parse(text)); } catch { return null; }
   }
 
-  /** The level a run's checks ran at: missing or unreadable reads as sandboxed. */
+  /** The level a later check of this run may run at, at most: missing or unreadable reads as sandboxed, the narrowest.
+   * Never an account of how its checks DID run: that is runCheckStamp (check-stamp.ts). */
   runCheckAccess(runId: number): CheckAccess {
     return checkAccessOf(this.db.prepare("SELECT sandbox_access FROM run WHERE id = ?").get(runId)?.["sandbox_access"]);
   }
@@ -25613,6 +25703,10 @@ export function carryReleaseApproval(store: Store, w: CarryWrite, now: Date, rec
     if (a.artifactDigest === null || a.artifactDigest !== w.artifactDigest) return { ok: false as const, why: "The production build differs from the approved one." };
     const problem = recheck();
     if (problem !== null) return { ok: false as const, why: problem };
+    // How the release's check ran, read again with the write: a launch since the preflight counts (H2).
+    const ran = taskCheckStamp(store, a.repo, a.tipTask);
+    const unshown = ran === null ? null : stampRefusal(ran.reading, checkAccessOf(a.accessDigest));
+    if (unshown !== null) return { ok: false as const, why: `This release's approval can't carry: ${unshown}.` };
     if (store.getTask(w.taskId) !== null) return { ok: false as const, why: `A task ${w.taskId} already exists.` };
     const anchorRow = store.handle.prepare("SELECT * FROM task_scope WHERE task_id = ?").get(a.anchorTask);
     if (anchorRow === undefined) return { ok: false as const, why: "The approved release task has no scope." };
@@ -25644,7 +25738,7 @@ export function carryReleaseApproval(store: Store, w: CarryWrite, now: Date, rec
     store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: w.taskId, runId: null, action: "release carried", outcome: "carried", source: "work",
       detail: `release ${a.id} · carry ${carryId} · ${a.tipSha} → ${w.to} · ${w.files} files · ${w.changedLines} lines · request ${w.requestId}` });
     // One quiet task notification, no push.
-    store.enqueueNotification({ dedupeKey: `release-carried:${a.id}:${carryId}`, kind: "release-carried", subject: `Carried to ${w.to.slice(0, 7)}`,
+    store.enqueueNotification({ dedupeKey: `release-carried:${a.id}:${carryId}`, kind: "release-carried", subject: `Release now includes ${w.to.slice(0, 7)}`,
       body: `Release ${a.version} now ships ${w.to.slice(0, 7)} (${w.files} file${w.files === 1 ? "" : "s"}, ${w.changedLines} line${w.changedLines === 1 ? "" : "s"}) under ${anchor.approvedBy ?? "the"} release approval.`,
       link: chatControlHref("task", w.taskId), source: { taskRef: ref.id } }, now);
     return { ok: true as const, taskId: w.taskId, carry: releaseCarryTo(store, a.id, w.to)! };
@@ -26458,7 +26552,10 @@ export function shipChecksForTask(store: Store, taskId: string): ShipChecks | nu
 
 /** One release step as `toolroll release` moved through it (v146 release_step). */
 export type ReleaseStepRow = { step: string; state: "running" | "done" | "failed" | "waiting"; startedAt: string; endedAt: string | null; detail: string | null };
-export type ReleaseProgress = { tag: string; version: string; pr: number | null; startedAt: string; updatedAt: string; steps: ReleaseStepRow[]; stopped: { step: string; message: string; at: string } | null };
+export type ReleaseProgress = { tag: string; version: string; pr: number | null; startedAt: string; updatedAt: string; steps: ReleaseStepRow[]; stopped: { step: string; message: string; at: string } | null;
+  /** The release's task moved on since its last recorded failure: this build started after it and is running now, so
+   * the release isn't stopped there, even though `toolroll release` hasn't recorded a step since. */
+  building: { run: number; startedAt: string } | null };
 /** What a release coordinator says about one step. */
 export type ReleaseStepEntry = { taskId: string; tag: string; version: string; pr: number | null; step: string; state: ReleaseStepRow["state"]; at: Date; detail?: string | null };
 
@@ -26486,7 +26583,8 @@ export function recordReleaseStep(store: Store, entry: ReleaseStepEntry): void {
 }
 
 /** A release's steps, for the release task: the newest tag recorded for it, its steps in the order they ran, and the
- * step it stopped at when the last thing recorded was a failure. Null: no step recorded. */
+ * step it stopped at when the last thing recorded was a failure and no build of the task has started since. Null: no
+ * step recorded. */
 export function releaseProgressFor(store: Store, taskId: string): ReleaseProgress | null {
   const newest = store.handle.prepare("SELECT tag FROM release_step WHERE task_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1").get(taskId);
   if (newest === undefined) return null;
@@ -26495,9 +26593,13 @@ export function releaseProgressFor(store: Store, taskId: string): ReleaseProgres
   const steps: ReleaseStepRow[] = rows.map(row => ({ step: String(row["step"]), state: String(row["state"]) as ReleaseStepRow["state"], startedAt: String(row["started_at"]),
     endedAt: row["ended_at"] === null ? null : String(row["ended_at"]), detail: row["detail"] === null ? null : String(row["detail"]) }));
   const last = [...rows].sort((a, b) => String(a["updated_at"]).localeCompare(String(b["updated_at"]))).at(-1)!;
-  const stopped = String(last["state"]) === "failed" ? { step: String(last["step"]), message: last["detail"] === null ? "" : String(last["detail"]), at: String(last["updated_at"]) } : null;
+  const failed = String(last["state"]) === "failed";
+  const live = !failed ? undefined : store.handle.prepare(`SELECT id, started_at FROM run WHERE task_ref IN (SELECT value FROM json_each(?)) AND role = 'builder'
+      AND finished_at IS NULL AND outcome IS NULL AND started_at > ? ORDER BY id DESC LIMIT 1`).get(JSON.stringify(taskFamilyRefs(store, taskId).map(one => one.id)), String(last["updated_at"]));
+  const building = live === undefined ? null : { run: Number(live["id"]), startedAt: String(live["started_at"]) };
+  const stopped = failed && building === null ? { step: String(last["step"]), message: last["detail"] === null ? "" : String(last["detail"]), at: String(last["updated_at"]) } : null;
   const pr = last["pr"] === null ? null : Number(last["pr"]);
-  return { tag, version: String(last["version"]), pr, startedAt: steps[0]!.startedAt, updatedAt: String(last["updated_at"]), steps, stopped };
+  return { tag, version: String(last["version"]), pr, startedAt: steps[0]!.startedAt, updatedAt: String(last["updated_at"]), steps, stopped, building };
 }
 
 /** The release task whose steps were recorded most recently (v146), or null when none was. */
@@ -26744,13 +26846,15 @@ export function settleRunStopByObservation(store: Store, args: { runId: number; 
     const at = now.toISOString();
     let what: string;
     if (args.cause === "incomplete-spawn") {
+      const local = localWitnessSql(storeMachine(db));
       const changed = db.prepare(`UPDATE run_process SET exited_at = ? WHERE run = ? AND exited_at IS NULL AND pid IS NULL
-        AND containment IS NULL AND container IS NULL AND host = ?`).run(at, args.runId, hostname()).changes;
+        AND containment IS NULL AND container IS NULL AND ${local.sql}`).run(at, args.runId, ...local.params).changes;
       if (Number(changed) === 0) return false;
       what = `${Number(changed)} process witness${Number(changed) === 1 ? "" : "es"} with no process ID recorded ended`;
     } else if (args.cause === "no-witness") {
-      db.prepare("INSERT INTO run_process (run,host,process_group,observed_at,boot_id,exited_at) VALUES (?,?,0,?,?,?)")
-        .run(args.runId, hostname(), at, currentBootId(), at);
+      recordMachineHostAliases(db, now);
+      db.prepare("INSERT INTO run_process (run,host,process_group,observed_at,boot_id,exited_at,machine_id) VALUES (?,?,0,?,?,?,?)")
+        .run(args.runId, hostname(), at, currentBootId(), at, currentMachineId());
       what = "its missing process witness recorded ended";
     } else {
       store.recordAction({ at, actor: "system", repo: ref?.repo ?? null, taskId: ref?.externalId ?? null, runId: args.runId,
@@ -26763,4 +26867,88 @@ export function settleRunStopByObservation(store: Store, args: { runId: number; 
     store.settleQuiescentStops(now);
     return true;
   });
+}
+
+/**
+ * This machine as the store knows it (v150, machine-identity.ts): its stable id and every name it is known by, the
+ * hostnames recorded beside its own id included. Read fresh each time, so a name recorded by another process on this
+ * machine counts at once.
+ */
+export function storeMachine(db: Database): ThisMachine {
+  const id = currentMachineId();
+  let recorded: string[] = [];
+  if (id !== null) {
+    try { recorded = db.prepare("SELECT host FROM machine_host_alias WHERE machine_id = ?").all(id).map(row => String(row["host"])); }
+    catch { recorded = []; }
+    rememberHostAliases(id, recorded);
+  }
+  return thisMachine(recorded);
+}
+
+/** Load this machine's recorded names for the checks that hold no store; a store that can't read them loads none. */
+export function rememberStoredHostAliases(db: Database): void {
+  try { storeMachine(db); } catch { /* none recorded, or no table to read: only the live names count */ }
+}
+
+/** Record the names this machine is known by right now beside its own id, read here at this moment (never a name a
+ * witness, a note or another computer supplied). Nothing when this machine's id is unknown. */
+export function recordMachineHostAliases(db: Database, now: Date): void {
+  const id = currentMachineId();
+  if (id === null) return;
+  const names = liveHostAliases();
+  const insert = db.prepare("INSERT OR IGNORE INTO machine_host_alias (machine_id, host, first_seen_at) VALUES (?, ?, ?)");
+  for (const host of names) insert.run(id, host, now.toISOString());
+  rememberHostAliases(id, names);
+}
+
+/** Whether a run_process row is this machine's (machine-identity.ts isThisMachine). */
+export function witnessIsLocal(row: Record<string, unknown>, here: ThisMachine): boolean {
+  return isThisMachine({ host: String(row["host"]), machineId: row["machine_id"] == null ? null : String(row["machine_id"]) }, here);
+}
+
+/** The same rule as witnessIsLocal, as SQL over run_process (optionally aliased): its id is ours, or it has none and
+ * its host is one of our names. With our id unknown, `machine_id = NULL` matches nothing: an id-bearing witness is
+ * never taken for ours. */
+export function localWitnessSql(here: ThisMachine, alias?: string): { sql: string; params: [string | null, string] } {
+  const p = alias === undefined ? "" : `${alias}.`;
+  return { sql: `(${p}machine_id = ? OR (${p}machine_id IS NULL AND ${p}host IN (SELECT value FROM json_each(?))))`, params: [here.id, JSON.stringify(here.hosts)] };
+}
+
+// ---- Idle cleanup (checkout-cleanup.ts) ----------------------------------------------------------------------------
+
+/** Settings → Storage: how long a task stays idle before its clean folder goes (the default until someone chooses). */
+export function checkoutIdle(store: Store): CheckoutIdle {
+  const row = store.handle.prepare("SELECT idle FROM checkout_cleanup_setting WHERE id = 1").get();
+  return row === undefined || row["idle"] === null ? DEFAULT_IDLE : String(row["idle"]) as CheckoutIdle;
+}
+
+/** Choose how long a task stays idle before its clean folder goes; the ledger keeps before → after. */
+export function setCheckoutIdle(store: Store, idle: CheckoutIdle, by: string, now: Date): CheckoutIdle {
+  return store.transact(() => {
+    const before = checkoutIdle(store);
+    store.handle.prepare("INSERT INTO checkout_cleanup_setting (id, cleanup, idle, updated_by, updated_at) VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET idle = excluded.idle, updated_by = excluded.updated_by, updated_at = excluded.updated_at")
+      .run(store.checkoutCleanup(), idle, by, now.toISOString());
+    if (before !== idle) store.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: "idle cleanup changed", outcome: "changed", source: "policy", detail: `${idleWords(before)} → ${idleWords(idle)}` });
+    return checkoutIdle(store);
+  });
+}
+
+/** A check launch's execution stamp (check-stamp.ts), written by the code that launched it. One row per distinct launch. */
+export function recordCheckStamp(store: Store, runId: number, stamp: CheckStamp, now: Date): void {
+  store.handle.prepare("INSERT OR IGNORE INTO check_stamp (run_id, digest, stamp, at) VALUES (?, ?, ?, ?)").run(runId, stampDigest(stamp), JSON.stringify(stamp), now.toISOString());
+}
+
+/** How a run's checks actually ran, by every launch it stamped: `unknown` when none is there or one can't be read. */
+export function runCheckStamp(store: Store, runId: number): StampReading {
+  return readStamps(store.handle.prepare("SELECT stamp FROM check_stamp WHERE run_id = ? ORDER BY id").all(runId).map(row => row["stamp"]));
+}
+
+/** The newest run of a task whose checks ran (it saved a check log), and how they ran; null when none has. */
+export function taskCheckStamp(store: Store, repo: string, taskId: string): { runId: number; reading: StampReading } | null {
+  const runs = store.handle.prepare(`SELECT r.id FROM run r JOIN task_ref t ON t.id = r.task_ref WHERE t.repo = ? AND t.external_id = ? ORDER BY r.id DESC`).all(repo, taskId);
+  for (const row of runs) {
+    const runId = Number(row["id"]);
+    if (store.artifactsFor(runId).some(one => one.kind === "check-log")) return { runId, reading: runCheckStamp(store, runId) };
+  }
+  return null;
 }
