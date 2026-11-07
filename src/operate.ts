@@ -124,7 +124,7 @@ import {
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
-import { backgroundOff, backgroundOn, backgroundShow, laptopStatus, laptopStop, type LaptopSeams } from "./laptop-background.js";
+import { backgroundOff, backgroundOn, backgroundShow, laptopStatus, laptopStop, restartOwnBuilder, type LaptopSeams } from "./laptop-background.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
@@ -314,6 +314,7 @@ import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES,
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { retryVanishedWhenStopped } from "./vanished-retry.js";
 import { requestMissingRechecks } from "./check-only.js";
+import { recordBuilderWish } from "./builder-restart.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
 import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, readUpConsoleUrl, saveConsoleUrl, savePrimary, UP_CONSOLE_FILE } from "./webhooks.js";
@@ -7945,6 +7946,8 @@ async function upCommand(
           retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
           return fail(write, json, "up", "runner-alive", "The worker process record could not be saved; nothing started", EXIT.refused);
         }
+        // What a person asked for, and what ran: an automatic restart acts on exactly this (builder-restart.ts).
+        recordBuilderWish(store, "running", "up", packageVersion(), clock());
         doorAnswer = answer;
         break;
       }
@@ -9131,6 +9134,8 @@ async function statusCommand(
   // This installation's console and background service (easy-start D), beside its updates and integrations: a person
   // limited to some projects returned above without it; an all-project caller reads what a local one does.
   const laptop = { laptop: await laptopStatus(context.store, context.databaseFile, context.laptopSeams) };
+  // Nothing else on this computer is left to notice a builder that died: a look at status brings it back when it may.
+  if (!laptop.laptop.running && laptop.laptop.background === "on" && !machineActing()) await restartOwnBuilder(context.store, context.databaseFile, context.laptopSeams, context.clock()).catch(() => null);
   return succeed(context.write, context.json, command, { ...status, projects, ...laptop, ...update, ...integrations, ...updateWaiting, ...unsentReplies, ...(legacyWebhookWarning === null ? {} : { legacyWebhookWarning }) }, () => [...(waiting === null ? [] : [waiting.words]), ...(unsentLine === null ? [] : [unsentLine]), ...renderInstallationStatus(status), ...(projectsLine === null ? [] : [projectsLine]), ...(line === null ? [] : [line]), ...(brokenLine === null ? [] : [brokenLine]), ...(legacyWebhookWarning === null ? [] : [legacyWebhookWarning])]);
 }
 
@@ -13750,6 +13755,7 @@ async function backgroundCommand(positional: readonly string[], flags: Map<strin
   }
 
   const on = await backgroundOn(context.store, context.databaseFile, port, seams);
+  if (on.ok) recordBuilderWish(context.store, "running", "background on", packageVersion(), context.clock());
   if (!on.ok) {
     const code = ["agent", "conflict", "declined", "running-elsewhere", "unsupported", "console-unproven", "invalid-unit", "unreadable"].includes(on.reason) ? EXIT.refused : EXIT.failed;
     if (json) { write(envelopeJson({ ok: false, command, reason: on.reason, message: on.message, ...(on.rolledBack === undefined ? {} : { rolledBack: on.rolledBack }) })); return code; }

@@ -43,3 +43,20 @@ CREATE TABLE IF NOT EXISTS check_authorization (
 );
 CREATE INDEX IF NOT EXISTS check_authorization_open ON check_authorization (expires_at) WHERE used_at IS NULL AND closed_at IS NULL;
 `;
+
+/** Whether this computer's own builder is meant to be running, and with what (builder-restart.ts): set by `background
+ * on` and `up`, cleared by `background off` and `stop`. `builder_restart` is every automatic restart Toolroll tried. */
+export const BUILDER_SERVICE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS builder_service (
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  desired        TEXT NOT NULL CHECK (desired IN ('running', 'stopped')),
+  build          TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  set_by         TEXT NOT NULL,
+  set_at         TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS builder_restart (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL
+);
+`;
