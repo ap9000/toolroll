@@ -17,7 +17,7 @@ import { checkLeadIdentity } from "./lead-identity.js";
 import { hasForbiddenControls } from "./decision.js";
 import { activeUnattendedGrant, candidatesDigestOf, FLOW_ACCEPTANCE, parseUnattendedAsk, revokeUnattended, sealUnattended, unattendedCandidates, unattendedSignProblem, untilWords, workReposOf, type UnattendedAsk } from "./flow-unattended.js";
 import { UNATTENDED_RULE_WORDS, unattendedCoverWords, unattendedHeadWords, unattendedLimitWords } from "./flow-unattended-words.js";
-import { CHECK_ACTION, checkFindingAt, cleanFindingText, FINDING_EXCERPT_LIMIT, FINDING_ROUND_LIMIT, FINDING_TEXT_LIMIT, findingLine, findingStandingWords, getFinding, resendFinding, REVIEW_ACTION, reviewFindingAt, sendCheckFinding, sendFinding, sendReviewFinding } from "./findings.js";
+import { CHECK_ACTION, checkFindingAt, cleanFindingText, familyInReach, FINDING_EXCERPT_LIMIT, FINDING_ROUND_LIMIT, FINDING_TEXT_LIMIT, findingLine, findingStandingWords, getFinding, resendFinding, REVIEW_ACTION, reviewFindingAt, sendCheckFinding, sendFinding, sendReviewFinding } from "./findings.js";
 import { lessonNoteOf } from "./lesson-notes.js";
 import { decideProposal, listProposals } from "./memory-pass.js";
 import { authPauseOf, liftAuthPause } from "./provider-auth.js";
@@ -1878,13 +1878,9 @@ function waitingRevision(store: Store, task: string, asked: unknown) {
   return found;
 }
 
-/** Every project a task's family reaches must be in this person's reach: a finding follows the family. */
+/** A finding follows its task's family, so every project the family reaches must be in reach (findings.ts, one gate). */
 function familyWithin(store: Store, who: VerifiedApprover, task: string): void {
-  const family = store.taskFamilyOf(task, null, true);
-  for (const id of family?.versions.map(one => one.id) ?? [task]) {
-    const repo = store.lookupRef(id)?.repo;
-    if (repo != null && (!who.repos.includes(repo) || !store.accountCanAccess(who.name, repo))) throw Error("This task's work reaches a project outside your access here.");
-  }
+  if (familyInReach(store, who, task) === null) throw Error("This task's work reaches a project outside your access here.");
 }
 
 function parityAction(store: Store, who: VerifiedApprover, operation: ChatAction, input: Record<string, unknown>, repo: string, flow: FlowRow | null, now: Date, request: Record<string, unknown>, root?: string): { state: Record<string, unknown>; title: string; terms: string[] } {

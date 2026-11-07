@@ -104,6 +104,27 @@ export function waitingFindings(store: Store, repos: readonly string[] | null): 
     .map(row => findingOf(store, row)).filter(one => repos === null || (one.repo !== null && repos.includes(one.repo))), []);
 }
 
+/** Who is reading or sending: the projects this chat reaches, and the person they must reach them as. */
+export type FindingReader = { name: string; repos: readonly string[] };
+const inReach = (store: Store, who: FindingReader, repo: string): boolean => who.repos.includes(repo) && store.accountCanAccess(who.name, repo);
+
+/** Every project a task's family reaches, or null unless this person reaches all of them: one gate for every chat road to
+ * a family's findings and handover. A task with no project is out of reach. */
+export function familyInReach(store: Store, who: FindingReader, task: string): readonly string[] | null {
+  const family = store.taskFamilyOf(task, null, true);
+  const repos = (family?.versions.map(one => one.id) ?? [task]).map(id => store.lookupRef(id)?.repo ?? null);
+  if (repos.length === 0 || repos.some(one => one === null || !inReach(store, who, one))) return null;
+  return [...new Set(repos as string[])];
+}
+
+/** The findings this person may see: a task's, only if its whole family is in reach, else those waiting in `repos`. Null
+ * for a task out of reach. A finding with no project, or one out of reach, is left out. */
+export function findingsInReach(store: Store, who: FindingReader, query: { task?: string; repos: readonly string[] }): Finding[] | null {
+  if (query.task !== undefined && familyInReach(store, who, query.task) === null) return null;
+  const list = query.task !== undefined ? findingsOfTask(store, query.task) : waitingFindings(store, query.repos);
+  return list.filter(one => one.repo !== null && inReach(store, who, one.repo));
+}
+
 const words = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").slice(0, 12).join(" ");
 
 /** The same finding, in another reviewer's words: the same file, and the same opening words or nearly the same line. */

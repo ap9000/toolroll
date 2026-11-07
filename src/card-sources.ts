@@ -8,7 +8,7 @@ import { basename } from "node:path";
 import type { CardSourceName } from "./card-catalog.js";
 import { publicChatText } from "./chat-display.js";
 import { CARD_LIMITS } from "./contracts/chat-card.js";
-import { findingLine, findingsOfTask, findingSourceWords, findingStandingWords, waitingFindings } from "./findings.js";
+import { familyInReach, findingLine, findingsInReach, findingSourceWords, findingStandingWords } from "./findings.js";
 import { flowInsights } from "./flow-insights.js";
 import { handoverLines, handoverNoteOf } from "./handover-note.js";
 import type { Integration } from "./integrations.js";
@@ -204,22 +204,14 @@ function providers(reader: CardReader, query: CardQuery): Read {
   };
 }
 
-/** Every project a task's family reaches, or null when one is out of this person's reach. */
-function familyInReach(reader: CardReader, task: string): readonly string[] | null {
-  const { store, who } = reader, family = store.taskFamilyOf(task, null, true);
-  const repos = [...new Set((family?.versions.map(one => one.id) ?? [task]).flatMap(id => { const repo = store.lookupRef(id)?.repo; return repo == null ? [] : [repo]; }))];
-  return repos.length > 0 && repos.every(one => who.repos.includes(one) && store.accountCanAccess(who.name, one)) ? repos : null;
-}
-
 function findings(reader: CardReader, query: CardQuery): Read {
-  const { store, who } = reader, limit = query.limit ?? 10;
-  if (query.task !== undefined && familyInReach(reader, query.task) === null) return { problem: "No such task in your projects." };
-  const reach = reposOf(reader, query).filter(one => store.accountCanAccess(who.name, one));
-  const list = query.task !== undefined ? findingsOfTask(store, query.task) : waitingFindings(store, reach);
+  const limit = query.limit ?? 10;
+  const list = findingsInReach(reader.store, reader.who, { ...(query.task === undefined ? {} : { task: query.task }), repos: reposOf(reader, query) });
+  if (list === null) return { problem: "No such task in your projects." };
   const counts = new Map<string, number>();
   for (const one of list) counts.set(one.state, (counts.get(one.state) ?? 0) + 1);
   return {
-    heading: query.task === undefined ? "Findings waiting" : "Findings", origin: "report", repos: [...new Set(list.flatMap(one => one.repo === null ? [] : [one.repo]))],
+    heading: query.task === undefined ? "Findings waiting" : "Findings", origin: "report", repos: [...new Set(list.map(one => one.repo!))],
     columns: [{ id: "id", label: "Finding", numeric: true }, { id: "where", label: "Where" }, { id: "state", label: "State" }, { id: "from", label: "From" }, { id: "task", label: "Task" }],
     rows: list.slice(0, limit).map(one => ({ id: String(one.id), where: clean(one.file === null ? "" : `${one.file}${one.line === null ? "" : `:${one.line}`}`), state: clean(one.state), from: clean(findingSourceWords(one.source)), task: clean(one.taskId) })),
     more: Math.max(0, list.length - limit),
@@ -231,7 +223,7 @@ function findings(reader: CardReader, query: CardQuery): Read {
 
 function handover(reader: CardReader, query: CardQuery): Read {
   if (query.task === undefined) return { problem: "Name the task: handover needs task." };
-  const repos = familyInReach(reader, query.task);
+  const repos = familyInReach(reader.store, reader.who, query.task);
   if (repos === null) return { problem: "No such task in your projects." };
   if (reader.evidenceRoot === undefined) return { problem: "The handover note can't be read here. Use toolroll task handover." };
   const note = handoverNoteOf(reader.store, reader.evidenceRoot, query.task, reader.now);

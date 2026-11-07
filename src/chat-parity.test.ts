@@ -3,7 +3,7 @@
  * one; a person's yes through the confirm door runs the console's own write; and a project-limited person gets what the
  * console gives them.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +13,7 @@ import { withActor } from "./actor.js";
 import { readCardSource } from "./card-sources.js";
 import { APPROVAL_ACTIONS, CHAT_ACTIONS, mintSharedActionReview, prepareSharedAction, type ChatAction } from "./chat-actions.js";
 import { chatControlHref } from "./chat-controls.js";
-import { findingsOfTask, getFinding, sendFinding } from "./findings.js";
+import { findingsInReach, findingsOfTask, getFinding, sendFinding } from "./findings.js";
 import { setChatApproval } from "./chat-approval.js";
 import { chatTaskStamp } from "./chat-task-actions.js";
 import { storeEvidence } from "./evidence.js";
@@ -326,6 +326,57 @@ describe("the new chat actions", () => {
       const call = (args: Record<string, unknown>) => executeLeadTool({ store, who, now, step: 1, readDecisions: new Map(), draft: () => null }, "get_findings", args);
       expect(call({ task: "t-1" })).toMatchObject({ ok: true, body: { findings: [{ state: "rejected" }] } });
       expect(call({ task: "not-a-task" })).toMatchObject({ ok: false });
+    });
+
+    describe("a project-limited person", () => {
+      let sam: VerifiedApprover, bank: string;
+      beforeEach(() => {
+        bank = join(root, "bank");
+        mkdirSync(bank);
+        const made = addApprover(store, "sam", now, { name: "operator", token });
+        if (!made.ok) throw Error("sam");
+        expect(store.setAccountProjects("sam", [repo], "operator", now)).toEqual({ ok: true });
+        const verified = verifyApproverStanding(store, "sam", store.accountOf("sam")!.generation, [repo]);
+        if (!verified.ok) throw Error("identity");
+        sam = verified.who;
+      });
+      const familyOverBank = () => {
+        if (!fileTaskProposal(store, { id: "t-2", title: "Elsewhere", repo: bank, filedVia: "cli" }, now).ok) throw Error("task");
+        const family = store.taskFamilyOf("t-1", null, true)!;
+        vi.spyOn(store, "taskFamilyOf").mockReturnValue({ ...family, versions: [...family.versions, store.taskFamilyOf("t-2", null, true)!.versions[0]!] });
+      };
+      const lead = (who: VerifiedApprover, args: Record<string, unknown>) => executeLeadTool({ store, who, now, step: 1, readDecisions: new Map(), draft: () => null }, "get_findings", args);
+
+      test("a family reaching a project they can't: no findings, no handover, no send, on any road", () => {
+        const id = answered();
+        familyOverBank();
+        expect(lead(sam, { task: "t-1" })).toMatchObject({ ok: false });
+        expect(readCardSource({ store, now, who: sam }, "findings", { repo: null, task: "t-1" })).toEqual({ problem: "No such task in your projects." });
+        expect(readCardSource({ store, now, who: sam, evidenceRoot: root }, "handover", { repo: null, task: "t-1" })).toEqual({ problem: "No such task in your projects." });
+        expect(() => prepareSharedAction(store, sam, "finding_send", { task: "t-1", summary: "x" }, root, now)).toThrow("outside your access here");
+        expect(() => prepareSharedAction(store, sam, "finding_resend", { finding: id }, root, now)).toThrow("outside your access here");
+      });
+
+      test("a chat that names a project their account can't reach gets nothing from it", () => {
+        const wide = { ...sam, repos: [repo, bank] } as VerifiedApprover;
+        familyOverBank();
+        answered();
+        expect(findingsInReach(store, wide, { task: "t-1", repos: wide.repos })).toBeNull();
+        vi.restoreAllMocks();
+        const other = sendFinding(store, { taskId: "t-2", source: "person", by: "operator", summary: "In the other project." }, now);
+        if (!other.ok) throw Error(other.message);
+        expect(findingsInReach(store, wide, { repos: wide.repos })!.map(one => one.id)).not.toContain(other.id);
+        expect(readCardSource({ store, now, who: wide }, "findings", { repo: null })).not.toHaveProperty("problem");
+        expect(JSON.stringify(readCardSource({ store, now, who: wide }, "findings", { repo: null }))).not.toContain("In the other project.");
+      });
+
+      test("a finding with no project is left out, and their own project's still read", () => {
+        const id = answered();
+        expect(lead(sam, { task: "t-1" })).toMatchObject({ ok: true, body: { findings: [{ finding: id }] } });
+        store.handle.prepare("UPDATE finding SET repo = NULL WHERE id = ?").run(id);
+        expect(lead(sam, { task: "t-1" })).toMatchObject({ ok: true, body: { findings: [] } });
+        expect(readCardSource({ store, now, who: sam }, "findings", { repo: null, task: "t-1" })).toMatchObject({ rows: [] });
+      });
     });
 
     test("closing a finding and starting a repair stay a person's on the task, and automatic repair has no chat road", () => {
