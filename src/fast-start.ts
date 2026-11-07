@@ -226,6 +226,8 @@ export function fastStartBuild(store: Store, input: { preview: string; digest: s
  */
 export function expireFastStarts(store: Store, now: Date): number {
   const stamp = now.toISOString();
+  // Forms nobody pressed hold a person's words: they go once they can't be pressed.
+  store.handle.prepare("DELETE FROM fast_preview WHERE expires_at <= ?").run(stamp);
   const late = store.handle.prepare(`SELECT r.id AS ref, r.external_id AS task, r.repo AS repo FROM task_ref r JOIN task t ON t.id = r.external_id
     WHERE r.backend = ? AND r.fast_start_until IS NOT NULL AND r.fast_start_until <= ? AND t.state = 'queued'`).all(BUILT_IN, stamp);
   let cleared = 0;
