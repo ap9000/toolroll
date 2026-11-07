@@ -7,5 +7,5 @@ import { KPageHeader } from "./k-page-header.js";
 
 export function KNotFound({ path, title, text }: { path: string; title?: string; text?: string }) {
   return <><KPageHeader title="Not found" /><div className="k-nf"><KEmpty title={title ?? NOT_FOUND.title(path)} text={text ?? NOT_FOUND.text}
-    action={<KActs><KLinkButton sm href="/" label="Go to Home" /><KLinkButton sm variant="ghost" href="/work" label="Open Tasks" /></KActs>} /></div></>;
+    action={<KActs><KLinkButton sm href="/" label="Go to Home" /><KLinkButton sm variant="ghost" href="/tasks" label="Open Tasks" /></KActs>} /></div></>;
 }

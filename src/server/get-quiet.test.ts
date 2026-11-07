@@ -63,7 +63,7 @@ test("every GET and HEAD row only reads: no writes beyond bookkeeping, no proces
   const project = encodeURIComponent(world.repo);
   const deeper = [`/settings/pull-requests?repo=${project}`, `/settings/knowledge?repo=${project}&q=refunds`, `/settings/tools?repo=${project}`,
     `/settings/project?repo=${project}`, "/control?provider=openrouter&refresh-models=1", "/control?check-connection=1", "/settings?check-connection=claude",
-    "/settings/updates?check=now", "/chat?task=one", "/chat/mate/status?task=one", "/chat/task-status?task=one", "/workbench?t=one", "/t/one"];
+    "/settings/updates?check=now", "/chat?task=one", "/chat/mate/status?task=one", "/chat/task-status?task=one", "/tasks?scope=all", "/t/one"];
   const targets = [...rows.flatMap(row => (row.method === "GET,HEAD" ? ["GET", "HEAD"] : ["GET"]).map(method => ({ method, path: row.sample, id: row.id }))),
     ...deeper.map(path => ({ method: "GET", path, id: "deeper" }))];
   const found: string[] = [];
@@ -98,7 +98,7 @@ test("every GET and HEAD row only reads: no writes beyond bookkeeping, no proces
   }
   expect(found).toEqual([]);
   // The pages that used to act really rendered (no redirect or refusal hid their handler).
-  const rendered = ["/lead/status", "/inbox", "/chat", "/settings", "/settings/lead", "/settings/models", "/settings/integrations", "/settings/updates",
+  const rendered = ["/lead/status", "/", "/chat", "/settings", "/settings/lead", "/settings/models", "/settings/integrations", "/settings/updates",
     "/settings/storage", "/settings/skills", "/settings/learning", "/control", "/control/connection", "/projects/github", "/push/key", "/mode", "/t/one",
     ...deeper];
   expect(Object.fromEntries(rendered.map(path => [path, answered.get(path)]))).toEqual(Object.fromEntries(rendered.map(path => [path, 200])));

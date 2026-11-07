@@ -85,6 +85,8 @@ import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
 import { pullRequestLines, runTaskMergeCommand, runTaskOutcomeCommand } from "./task-outcome-cli.js";
+import { withTaskAlias } from "./task-aliases.js";
+import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 /**
  * The commands that actually move work: authoring tasks, and the claim loop.
@@ -187,7 +189,7 @@ function planContractLines(store: Store, evidenceRoot: string, taskId: string): 
     ...describeContractChanges(record.changes).map(line => `    ${line}`),
   ];
 }
-import { verdictWords as proofVerdictWords, matrixWords, semanticCoverage, coverageWords } from "./proof.js";
+import { verdictWords as proofVerdictWords, matrixWords, plainReasonWords, semanticCoverage, coverageWords } from "./proof.js";
 import { probeRepo } from "./probe.js";
 import {
   diagnoseTaskDispatch,
@@ -854,7 +856,7 @@ export const TASK_ACTIONS = [
   "add", "list", "show", "wait", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign",
   "reopen", "scope", "approve", "hold", "unhold", "require", "requeue", "regate", "plan",
   "review", "accept", "repair", "route", "stop", "resume", "complete", "revise", "merge", "ask",
-  "checks", "add-tests", "archive", "restore", "tidy", "ship",
+  "checks", "add-tests", "archive", "restore", "tidy", "ship", "ready",
 ] as const;
 export const PUBLISH_ACTIONS = ["setup", "grant", "revoke", "status", "unblock", "rearm", "merge", "refire"] as const;
 export const CONFIG_ACTIONS = ["show", "set", "clear"] as const;
@@ -919,8 +921,12 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "read-deny", "mach",
   // task scope --release <version>:<pr>:<branch>: a release scope's terms (release-once.md).
   "release",
+  // task accept --despite "<reason>": acceptance with a reason, never a completion.
+  "despite",
 ]);
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  // task accept --finish: the person's Accept, exactly task complete's exact-receipt completion.
+  "finish",
   // evals run: a report-only campaign; keep each attempt's world for a look afterwards.
   "diagnostic", "keep",
   // task scope --release ... --no-carry: every later commit asks again.
@@ -1020,6 +1026,8 @@ export async function runOperate(
   write: Write,
   options: OperateOptions = {},
 ): Promise<number> {
+  // People's names for task commands (task-aliases.ts) are the commands they name, before any rule reads the command.
+  if (command === "task") argv = withTaskAlias(["task", ...argv]).slice(1);
   // Each command gets its own remembered-login holder (Passwordless: "cli-login" is this command's, never the next one's).
   return withPasswordSource(CLI_PASSWORD_SOURCE, () => rememberedLogin.run({ login: null }, () => runOperateLocal(command, argv, write, options)));
 }
@@ -1248,6 +1256,8 @@ export async function runOperateAs(
   const source: RemoteSource = opts.source === "mcp" ? "mcp" : "api";
   const options = opts.options ?? {};
   const now = options.now ?? new Date();
+  // People's names for task commands are the commands they name, before the remote policy reads the command.
+  argv = [...withTaskAlias(argv)];
   const [root = "", ...rest] = argv;
   const json = rest.includes("--json");
   let invocation = root;
@@ -2034,7 +2044,7 @@ async function runnerCommand(
     // at the mint. A caller flag never grants what the mint did not.
     const acting = await askCredentials(flags, context);
     if (acting === null) {
-      return fail(write, json, "runner register", "usage", "`runner register <name> --repo <path> --as <you> --token <t>` — minting runner authority is an operator act", EXIT.usage);
+      return fail(write, json, "runner register", "usage", "`runner register <name> --repo <path> --as <you> --token <t>` — adding a builder is an approver's act", EXIT.usage);
     }
     const authenticated = credentialApprover(store, acting.name, acting.token);
     if (!authenticated.ok) return fail(write, json, "runner register", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
@@ -2129,7 +2139,7 @@ async function runnerCommand(
     // Retiring is revoking authority — the same operator act as minting it.
     const acting = await askCredentials(flags, context);
     const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
-    if (acting === null || !verified?.ok) return refuseApprover(context, "runner retire", verified, "`runner retire <name> --as <you> --token <t>` — revoking runner authority is an operator act", name);
+    if (acting === null || !verified?.ok) return refuseApprover(context, "runner retire", verified, "`runner retire <name> --as <you> --token <t>` — retiring a builder is an approver's act", name);
     const retired = store.retireRunner(name, now, mutationFrom(flags, now));
     if (!retired) return fail(write, json, "runner retire", "unknown", `no runner \`${name}\``, EXIT.refused);
     return succeed(write, json, "runner retire", { name }, () => [`${name} is retired.`]);
@@ -2145,7 +2155,7 @@ async function runnerCommand(
     // stated authority, never accumulation nobody can read back.
     const acting = await askCredentials(flags, context);
     if (acting === null) {
-      return fail(write, json, "runner bind", "usage", "`runner bind <name> --repo <path> --as <you> --token <t>` — binding repositories is an operator act", EXIT.usage);
+      return fail(write, json, "runner bind", "usage", "`runner bind <name> --repo <path> --as <you> --token <t>` — choosing a builder's projects is an approver's act", EXIT.usage);
     }
     const authenticated = credentialApprover(store, acting.name, acting.token);
     if (!authenticated.ok) return fail(write, json, "runner bind", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
@@ -2228,7 +2238,7 @@ async function coordinatorCommand(
     }
     const acting = await askCredentials(flags, context);
     if (acting === null) {
-      return fail(write, json, "coordinator mint", "usage", "`coordinator mint <name> --repo <path> --as <you> --token <t>` — minting filing authority is an operator act", EXIT.usage);
+      return fail(write, json, "coordinator mint", "usage", "`coordinator mint <name> --repo <path> --as <you> --token <t>` — minting your lead's credential is an approver's act", EXIT.usage);
     }
     const authenticated = credentialApprover(store, acting.name, acting.token);
     if (!authenticated.ok) return fail(write, json, "coordinator mint", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
@@ -2273,7 +2283,7 @@ async function coordinatorCommand(
     if (name === undefined) return fail(write, json, "coordinator revoke", "usage", "which coordinator? (`coordinator list` shows cids)", EXIT.usage);
     const acting = await askCredentials(flags, context);
     const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
-    if (acting === null || !verified?.ok) return refuseApprover(context, "coordinator revoke", verified, "`coordinator revoke <cid> --as <you> --token <t>` — revoking is an operator act", name);
+    if (acting === null || !verified?.ok) return refuseApprover(context, "coordinator revoke", verified, "`coordinator revoke <cid> --as <you> --token <t>` — revoking is an approver's act", name);
     const revoked = revokeCoordinator(store, name, acting.name, now);
     if (!revoked.ok) {
       const said = revoked.reason === "unknown" ? `no coordinator \`${name}\` — \`coordinator list\` shows cids` : "already revoked";
@@ -9274,6 +9284,8 @@ function taskAction(
       return runTaskChecks(rest, flags, context);
     case "ship":
       return taskShipCommand(rest, context);
+    case "ready":
+      return taskReadyCommand(rest, context);
     case "add-tests":
       return addTestsTask(rest, flags, context);
     case "list":
@@ -9867,8 +9879,8 @@ function showTask(positional: readonly string[], context: Context): number {
     ...(task.state !== "done" || detail.proofVerdict === null
       ? []
       : [
-          `  proof: ${proofVerdictWords(current?.receipt?.runId === latestFinished?.id ? current?.readiness?.verdict ?? detail.proofVerdict : detail.proofVerdict, detail.proofReasons).word}${detail.proofAccepted ? " (accepted)" : ""}`,
-          ...(detail.proofReasons.length > 0 ? [`    ${detail.proofReasons.join("; ")}`] : []),
+          `  checked: ${proofVerdictWords(current?.receipt?.runId === latestFinished?.id ? current?.readiness?.verdict ?? detail.proofVerdict : detail.proofVerdict, detail.proofReasons).word}${detail.proofAccepted ? " (accepted)" : ""}`,
+          ...(detail.proofReasons.length > 0 ? [`    ${detail.proofReasons.map(plainReasonWords).join(" ")}`] : []),
           ...matrixWords(detail.proofMatrix),
           ...(detail.semanticCoverage === null ? [] : coverageWords(detail.semanticCoverage).map(line => `  ${line}`)),
         ]),
@@ -9876,11 +9888,11 @@ function showTask(positional: readonly string[], context: Context): number {
       ? []
       : detail.report.ok
         ? [
-            `  report: ${detail.report.report.title} (run ${detail.report.run})`,
+            `  report: ${detail.report.report.title} (build #${detail.report.run})`,
             `    ${detail.report.report.summary}`,
             ...detail.report.report.followUps.map((one, index) => `    follow-up ${index + 1}: ${one.title}`),
           ]
-        : [`  report: ${detail.report.problem} (run ${detail.report.run})`]),
+        : [`  report: ${detail.report.problem} (build #${detail.report.run})`]),
     ...pullRequestLines(detail.pullRequest),
     ...(base === null ? [] : [`  base: ${baseStandingWords(base)}`]),
     ...(detail.blockedBy.length > 0 ? [`  waits for ${detail.blockedBy.join(", ")}`] : []),
@@ -9913,7 +9925,7 @@ function showTask(positional: readonly string[], context: Context): number {
     ...detail.runs
       .filter(one => one.route !== null)
       .slice(0, 8)
-      .map(one => `  run #${one.id}  ${one.role.padEnd(8)} ${one.route!.provider}${one.route!.model === null ? "" : ` · ${one.route!.model}`}  [${one.route!.chosen}] route ${one.route!.routeDigest}`),
+      .map(one => `  build #${one.id}  ${one.role.padEnd(8)} ${one.route!.provider}${one.route!.model === null ? "" : ` · ${one.route!.model}`}  [${one.route!.chosen}]`),
   ]);
 }
 
@@ -9952,19 +9964,22 @@ function taskRouteView(routed: TaskRoute | null, readiness: ReadinessLookup): Re
 function taskRouteStandingLines(id: string, routed: TaskRoute | null): string[] {
   if (routed === null) return [];
   if (routed.kind === "route") {
-    return [`  agents       ${routed.source === "approved" ? "sealed by the approval — configuration changes cannot reroute it" : routed.source === "proposed" ? "proposed — the next approval seals them" : "recommended live — no scope filed yet"}`];
+    return [`  agents       ${routed.source === "approved" ? "approved with the plan — a configuration change never moves them" : routed.source === "proposed" ? "proposed — approving the plan approves them" : "recommended now — no plan filed yet"}`];
   }
   if (routed.kind === "legacy") {
     return [`  agents       approved before agent routing existed — ${routed.profile.provider} · ${routed.profile.model} builds and repairs (repair model ${routed.profile.repairModel === "inherit" ? routed.profile.model : routed.profile.repairModel}); the planner and reviewer resolve from configuration at run time`];
   }
-  return [`  agents       UNREADABLE — ${routed.problem}`, `               nothing runs for ${id} until its scope is re-filed and approved again`];
+  return [`  agents       UNREADABLE — ${routed.problem}`, `               nothing runs for ${id} until its plan is saved again and approved`];
 }
 
 /**
- * `task accept <id>` (Priority 2): the operator's explicit acceptance of a
- * short or refuted proof verdict — the one act that lets the task read
- * done despite incomplete evidence. Credentialed like approving a scope:
- * accepting bad news is still authority.
+ * `task accept <id>`: every call names what it means (docs/plans/plain-toolroll.md P1.1), so the same words never
+ * quietly start meaning something else.
+ * - `--finish` or `--digest <receipt>` is the person's Accept: exactly `task complete`'s exact-receipt completion, with
+ *   the same rule that `--json` and scoped credentials must pass `--digest`.
+ * - `--despite "<reason>"` (`--note` is its alias) is acceptance only: an explicit acceptance of a short or refuted
+ *   result with a reason, credentialed like approving a plan. It never completes, and never combines with the above.
+ * - A bare `task accept <id>` refuses, for good, naming both.
  */
 async function acceptTaskProof(
   positional: readonly string[],
@@ -9972,15 +9987,40 @@ async function acceptTaskProof(
   context: Context,
 ): Promise<number> {
   const { store, write, json, now } = context;
+  const finishing = flags.has("finish") || flags.has("digest");
+  const despiteFlag = flags.has("despite") ? flags.get("despite") : flags.get("note");
+  const despiting = flags.has("despite") || flags.has("note");
+  if (flags.has("despite") && flags.has("note")) return fail(write, json, "task accept", "usage", "Use --despite \"<reason>\" once (--note is the same flag).", EXIT.usage);
+  if (finishing && despiting) {
+    return fail(write, json, "task accept", "usage", "--despite accepts a result with a reason and never finishes the task; --finish and --digest finish it. Use one: first accept with --despite, then finish with --finish.", EXIT.usage);
+  }
+  if (!finishing && !despiting) {
+    return fail(write, json, "task accept", "usage", "Say what accepting means: `toolroll task accept <id> --finish` accepts the result and finishes the task, or `--despite \"<reason>\"` accepts it with a reason without finishing.", EXIT.usage);
+  }
+  if (finishing) {
+    // The person's Accept: `task complete`, unchanged, under this command's name.
+    if (flags.get("finish") !== undefined && flags.get("finish") !== true) return fail(write, json, "task accept", "usage", "--finish takes no value.", EXIT.usage);
+    const rest = new Map(flags);
+    rest.delete("finish");
+    return runTaskOutcomeCommand("complete", positional, rest, { ...context, command: "task accept", operator: async () => {
+      const acting = await askCredentials(flags, context);
+      if (acting === null) return null;
+      const authenticated = verifyApproverByPassword(context.store, acting.name, acting.token, context.store.knownRepos().filter(repo => context.store.accountCanAccess(acting.name, repo)));
+      return authenticated.ok ? authenticated.who : null;
+    } });
+  }
   const id = positional[0];
-  if (id === undefined) return fail(write, json, "task accept", "usage", "`toolroll task accept <id> [--note <text>] --as <you> --token <t>`", EXIT.usage);
+  if (id === undefined) return fail(write, json, "task accept", "usage", "`toolroll task accept <id> --despite \"<reason>\" --as <you> --token <t>`", EXIT.usage);
+  if (typeof despiteFlag !== "string" || despiteFlag.trim() === "") return fail(write, json, "task accept", "usage", "--despite needs the reason you accept it anyway: `--despite \"<reason>\"`.", EXIT.usage);
+  const validated = validateNote(despiteFlag);
+  if (!validated.ok) return fail(write, json, "task accept", "invalid", validated.problem, EXIT.usage);
 
   const task = store.getTask(id);
   if (task === null) return fail(write, json, "task accept", "unknown-task", `no task \`${id}\``, EXIT.refused);
 
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
-  if (acting === null || !verified?.ok) return refuseApprover(context, "task accept", verified, "accepting incomplete proof is a person's act — it takes `--as <you> --token <t>`", id);
+  if (acting === null || !verified?.ok) return refuseApprover(context, "task accept", verified, "accepting a result with a reason is a person's act — it takes `--as <you> --token <t>`", id);
 
   const ref = store.refFor(BUILT_IN, id);
   // v40 fix: a reviewer run is never the attempt whose proof is accepted.
@@ -9988,16 +10028,9 @@ async function acceptTaskProof(
     one => one.finishedAt !== null && (one.role === "builder" || one.role === "scout"),
   );
   if (latest === undefined) return fail(write, json, "task accept", "no-run", `${id} has no finished attempt to accept`, EXIT.refused);
-  const rawNote = text(flags, "note");
-  let note: string | null = null;
-  if (rawNote !== undefined && rawNote.trim() !== "") {
-    const validated = validateNote(rawNote);
-    if (!validated.ok) return fail(write, json, "task accept", "invalid", validated.problem, EXIT.usage);
-    note = validated.note;
-  }
-  store.acceptProof(latest.id, acting.name, note, now);
+  store.acceptProof(latest.id, acting.name, validated.note, now);
   return succeed(write, json, "task accept", { id, run: latest.id, acceptedBy: acting.name }, () => [
-    `Accepted: ${id}'s build #${latest.id} reads done despite its proof, on ${acting.name}'s say-so.`,
+    `Accepted ${id}'s build #${latest.id} with your reason, ${acting.name}. It isn't finished: \`toolroll task accept ${id} --finish\` finishes it.`,
   ]);
 }
 
@@ -10272,7 +10305,7 @@ async function pauseTask(
   const id = positional[0];
   if (id === undefined) return fail(write, json, "task pause", "usage", "`toolroll task pause <id> [--run <run-id>] --as <you> --token <t>`", EXIT.usage);
   const acting = await askCredentials(flags, context);
-  if (acting === null) return fail(write, json, "task pause", "usage", "pausing takes `--as <you> --token <t>` — it is an operator's act and is recorded against your name", EXIT.usage);
+  if (acting === null) return fail(write, json, "task pause", "usage", "pausing takes `--as <you> --token <t>` — it is an approver's act and is recorded against your name", EXIT.usage);
   const authed = authenticateApprover(store, acting.name, acting.token);
   if (!authed.ok) return fail(write, json, "task pause", "not-an-approver", "that is not an approver, or the token does not match", EXIT.refused);
   return pauseRunningBuild("task pause", id, undefined, verifiedAuthor(acting.name), flags, context);
@@ -10292,7 +10325,7 @@ async function continueTask(
   const id = positional[0];
   if (id === undefined) return fail(write, json, "task continue", "usage", "`toolroll task continue <id> [--run <run-id>] --as <you> --token <t>`", EXIT.usage);
   const acting = await askCredentials(flags, context);
-  if (acting === null) return fail(write, json, "task continue", "usage", "resuming takes `--as <you> --token <t>` — it is an operator's act and is recorded against your name", EXIT.usage);
+  if (acting === null) return fail(write, json, "task continue", "usage", "resuming takes `--as <you> --token <t>` — it is an approver's act and is recorded against your name", EXIT.usage);
   const authed = authenticateApprover(store, acting.name, acting.token);
   if (!authed.ok) return fail(write, json, "task continue", "not-an-approver", "that is not an approver, or the token does not match", EXIT.refused);
   const ref = store.lookupRef(id);
@@ -11338,7 +11371,7 @@ async function stopTaskCommand(
   if (store.getTask(id) === null) return fail(write, json, "task stop", "unknown-task", `no task \`${id}\``, EXIT.refused);
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
-  if (acting === null || !verified?.ok) return refuseApprover(context, "task stop", verified, "stopping takes `--as <you> --token <t>` — it is an operator's act and is recorded against your name", id);
+  if (acting === null || !verified?.ok) return refuseApprover(context, "task stop", verified, "stopping takes `--as <you> --token <t>` — it is an approver's act and is recorded against your name", id);
   const asked = requestTaskStop(store, { taskId: id, runId, by: acting.name, via: "cli" }, clock());
   if (!asked.ok) return fail(write, json, "task stop", asked.reason, asked.detail, EXIT.refused, { run: runId });
   const control = taskControlOf(store, store.refFor(BUILT_IN, id).id, clock());
@@ -13933,4 +13966,23 @@ async function releaseApproveCommand(positional: readonly string[], flags: Map<s
     `Approved release ${cardData.version} (${cardData.candidate.slice(0, 7)}). The release check runs next; it deploys, merges and publishes once GitHub CI and the check pass.`,
     ...(shown.stopped === null ? [] : [`The release isn't running: run \`toolroll release ${chosen.branch}\` to go on.`]),
   ]);
+}
+
+/**
+ * `toolroll task ready <task>` (read-only; docs/plans/plain-toolroll.md P1.6): "Can I merge?" — the task's checklist
+ * from the records the task page reads (merge-checklist.ts), each blocker with the existing act that clears it. A task
+ * outside the caller's projects is no task here.
+ */
+function taskReadyCommand(positional: readonly string[], context: Context): number {
+  const { store, write, json } = context;
+  const command = "task ready";
+  const id = positional[0];
+  if (id === undefined || positional.length > 1) return fail(write, json, command, "usage", "`toolroll task ready <task>`", EXIT.usage);
+  const lens = context.principal?.lens ?? null;
+  const ref = store.lookupRef(id);
+  if (ref === null || store.getTask(id) === null || (lens !== null && (ref.repo === null || !lens.includes(ref.repo)))) return fail(write, json, command, "unknown-task", `no task \`${id}\``, EXIT.refused);
+  const now = (context.clock ?? (() => context.now))();
+  const list = mergeChecklistOf(store, id, now, { principal: "operator", repos: lens, includeUnplaced: lens === null, dependencyRepos: lens }, context.evidenceRoot);
+  if (list === null) return fail(write, json, command, "unknown-task", `no task \`${id}\``, EXIT.refused);
+  return succeed(write, json, command, list, () => checklistLines(list));
 }

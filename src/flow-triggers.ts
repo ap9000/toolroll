@@ -780,7 +780,7 @@ export async function firePlaneReview(store: Store, trigger: FlowTriggerRow, con
 }
 
 /** Where a person sees everything that waits on them. */
-export const NEEDS_YOU_HREF = "/work?view=needs-you";
+export const NEEDS_YOU_HREF = "/tasks?view=needs-you";
 
 /** A plane review whose summary mentions long waits on a person links to Needs you. */
 export function planeStatusLink(config: TriggerConfig | null, status: string | null): { label: string; href: string } | null {

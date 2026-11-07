@@ -155,8 +155,8 @@ test("a same-tab link or a form is leaving even where beforeunload never fires (
     await page.wait(LEAVING_HOLD_MS + 100);
     const assign = vi.fn();
     Object.defineProperty(window, "location", { configurable: true, value: { ...page.here, assign } });
-    leaveFor("/work?project=shop");
-    expect(assign).toHaveBeenCalledWith("/work?project=shop");
+    leaveFor("/tasks?project=shop");
+    expect(assign).toHaveBeenCalledWith("/tasks?project=shop");
     await page.answer({ lead: "on", agent: true });
     expect(page.reload).not.toHaveBeenCalled();
     // Restored from the back/forward cache: it asks again and shows the new state.

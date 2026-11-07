@@ -102,8 +102,8 @@ async function seed(): Promise<{ run: number; harnesses: ChatHarness[] }> {
   const run = readyResult("guard-1", "Keep the guard readable");
   for (const h of harnesses) await h.pass();
   for (const h of harnesses) {
-    const card = [...h.cards(h.member(0))].reverse().find(one => one.buttons.some(button => button.label === "Accept and finish"))!;
-    h.tap(card, /^Accept and finish$/, h.member(0));
+    const card = [...h.cards(h.member(0))].reverse().find(one => one.buttons.some(button => button.label === "Accept"))!;
+    h.tap(card, /^Accept$/, h.member(0));
     await h.pass();
   }
   // A send that failed, waiting to retry, in every app.

@@ -1308,7 +1308,7 @@ describe("task show and task accept speak the machine's own proof verdict (Prior
 
     const prose = await run(["task", "show", "t-1"]);
     expect(prose).toBe(EXIT.ok);
-    expect(out()).toContain("conflicting evidence");
+    expect(out()).toContain("the report doesn't match the changes");
     expect(out()).toContain("src/other.ts");
   });
 
@@ -1331,7 +1331,7 @@ describe("task show and task accept speak the machine's own proof verdict (Prior
   test("task accept refuses an unknown task", async () => {
     await run(["approver", "add", "alex", "--json"]);
     const token = payload().token as string;
-    const code = await run(["task", "accept", "nope", "--as", "alex", "--token", token, "--json"]);
+    const code = await run(["task", "accept", "nope", "--despite", "seen it", "--as", "alex", "--token", token, "--json"]);
     expect(code).toBe(EXIT.refused);
     expect(payload()).toMatchObject({ ok: false, reason: "unknown-task" });
   });

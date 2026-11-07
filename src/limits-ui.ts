@@ -88,7 +88,7 @@ export function usageChipOf(windows: Parameters<typeof limitsView>[0], now: Date
   // A window with no known length or reset has no reset to name.
   const reset = old ? "window reset" : top.resetsAt === null || top.windowMinutes === null ? "resets: unknown" : `resets ${shortReset(top.resetsAt, now)}`;
   const text = `${PROVIDER_NAMES[top.provider] ?? top.provider} ${windowLabel(top.window, top.windowMinutes)} · ${Math.round(top.usedPercent)}% · ${reset}${stale ? ` · as of ${ago(top.observedAt, now)}` : ""}`;
-  return { text, tone: old ? "neutral" : toneOf(top.usedPercent, top.reached), stale, href: "/work", title: `What the providers last reported: ${text}` };
+  return { text, tone: old ? "neutral" : toneOf(top.usedPercent, top.reached), stale, href: "/tasks", title: `What the providers last reported: ${text}` };
 }
 
 /** The same tiles for the page without scripts. */

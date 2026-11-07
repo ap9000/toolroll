@@ -177,7 +177,7 @@ function usePlanEditing(): boolean {
   return editing;
 }
 
-function ApprovalBox({ approve, latest, onEdit }: { approve: NonNullable<BrowserTaskView["approve"]>; latest: BrowserTaskView["approve"]; onEdit: (() => void) | null }) {
+function ApprovalBox({ approve, latest, onEdit, reject = false }: { approve: NonNullable<BrowserTaskView["approve"]>; latest: BrowserTaskView["approve"]; onEdit: (() => void) | null; reject?: boolean }) {
   const ref = useRef<HTMLFormElement>(null);
   const editing = usePlanEditing();
   const changed = latest == null || latest.fields["digest"] !== approve.fields["digest"];
@@ -186,7 +186,7 @@ function ApprovalBox({ approve, latest, onEdit }: { approve: NonNullable<Browser
   const terms = approve.termsWords ?? termsOf(approve.kind, facts);
   // Belt and braces: a press that lands while the editor opened is refused in place, never sent.
   const approveNow = (password: string | null) => editorOpen()
-    ? Promise.resolve("Save or cancel your edit first: approving now would sign the plan as it was. Nothing changed.")
+    ? Promise.resolve("Save or cancel your edit first: approving now would approve the plan as it was. Nothing changed.")
     : submitNative(ref.current, password);
   const live = !changed && !editing;
   return <PostForm ref={ref} action={approve.action} className="k-approve" data-approval-kind={approve.kind} data-task-approval data-editing={editing ? "" : undefined}>
@@ -196,7 +196,8 @@ function ApprovalBox({ approve, latest, onEdit }: { approve: NonNullable<Browser
       acts={changed ? <KButton variant="primary" label="Reload" onClick={() => window.location.reload()} />
         : editing ? <KButton label="Back to the edit" onClick={() => onEdit?.()} />
         : <><KApprove kind={approve.kind} facts={facts} label={approve.label} docked terms={terms} text={approve.text} onApprove={approveNow} />
-          {onEdit !== null && <KButton label="Edit plan" onClick={onEdit} />}</>}
+          {onEdit !== null && <KButton label="Request changes" onClick={onEdit} />}
+          {reject && <KLinkButton variant="ghost" label="Reject" href="#cancel-task" data-approval-reject="" />}</>}
       terms={changed ? "The plan changed since this page loaded. Reload to see the version you would approve."
         : editing ? "You’re editing the plan. Save it (it then asks for approval again) or cancel the edit to approve this version." : terms} />
     {/* On a phone the one primary lives in the dock: the same act, the same form. */}
@@ -218,13 +219,50 @@ function ShipBox({ ship }: { ship: NonNullable<BrowserTaskView["ship"]> }) {
 /** A release's own steps, in order on one time axis, where it stands in one line, and why it stopped
  * (`toolroll release status` is its twin). */
 function ReleaseBox({ release }: { release: NonNullable<BrowserTaskView["release"]> }) {
-  const chip = release.state === "failed" ? <KChip word="Failed" tone="failed" /> : release.state === "done" ? <KChip word="Released" tone="done" />
-    : release.state === "waiting" ? <KChip word="Needs you" tone="needs" /> : <KChip word="Releasing" tone="live" />;
+  const chip = release.state === "failed" ? <KChip word="Failed" tone="failed" /> : release.state === "done" ? <KChip word="Done" tone="done" />
+    : release.state === "waiting" ? <KChip word="Needs you" tone="needs" /> : <KChip word="Running" tone="live" />;
   return <section className="k-sec" aria-label="Release" data-release={release.state}>
     <h3>{release.headline}</h3>
     {release.stopped !== null && <KNotice>{release.stopped.step}: {release.stopped.message} Run the same release command again to continue from there.</KNotice>}
     <KTiming label={`Release ${release.version}`} chip={chip} rows={release.rows}
       foot={<>Tag <span className="k-mono">{release.tag}</span>{release.pr !== null && <> · pull request #{release.pr}</>} · started <time dateTime={release.startedAt} title={whenTitle(release.startedAt)}>{threadWhen(release.startedAt)}</time></>} />
+  </section>;
+}
+
+/** "Can I merge?" (docs/plans/plain-toolroll.md P1.6; `toolroll task ready` is its twin): one row per fact from
+ * Toolroll's records, and each blocker's existing act. Ask the agent to fix is Send back with the blocker as its note,
+ * editable before it is sent; Run checks and Retry post exactly as their own boxes do. Nothing here acts on its own. */
+function MergeReadyBox({ ready, retry }: { ready: NonNullable<BrowserTaskView["mergeReady"]>; retry: BrowserTaskView["retry"] }) {
+  const MARK: Readonly<Record<string, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?" };
+  const chip = ready.answer === "yes" || ready.answer === "merged" ? <KChip word={ready.answer === "merged" ? "Merged" : "Ready"} tone="done" />
+    : ready.answer === "no" ? <KChip word="Not yet" tone="needs" /> : <KChip word="Not yet" />;
+  return <section className="k-sec so-merge-ready" aria-label="Can I merge?" data-merge-ready={ready.answer}>
+    <KSlots status={<>{chip}<h3>Can I merge?</h3></>} text={ready.sentence} acts={null} terms={null} />
+    <ul className="so-merge-rows">
+      {ready.rows.map(row => <li key={row.key} data-merge-row={row.key} data-mark={row.mark}>
+        <span className="so-merge-mark" aria-hidden="true">{MARK[row.mark] ?? ""}</span>
+        <span><strong>{row.label}</strong> <span className="meta">{row.say}</span></span>
+        {row.act?.kind === "run-checks" && <PostForm action={row.act.action} className="inline" data-merge-act="run-checks">
+          <input type="hidden" name="level" value={row.act.level} />
+          <input type="hidden" name="return" value={row.act.returnTo} />
+          <KButton type="submit" sm label="Run checks" />
+        </PostForm>}
+        {row.act?.kind === "retry" && retry != null && <PostForm action={retry.action} className="inline" data-merge-act="retry">
+          <KButton type="submit" sm label="Retry" />
+        </PostForm>}
+        {row.act?.kind === "fix" && <KDisclose summary="Ask the agent to fix">
+          <PostForm action={row.act.action} className="k-field" data-merge-act="fix">
+            <input type="hidden" name="intent" value="revise" />
+            <input type="hidden" name="batch" value={row.act.batch} />
+            <input type="hidden" name="source" value={row.act.source} />
+            <input type="hidden" name="request" value={row.act.request} />
+            <input type="hidden" name="return" value={row.act.returnTo} />
+            <KTextarea name="note" rows={3} maxLength={TEXT_LIMITS.note} defaultValue={row.act.note} aria-label="What the agent should fix" />
+            <div className="k-acts"><KButton type="submit" label="Ask the agent to fix" title="Sends it back with this note, as Send back does" /></div>
+          </PostForm>
+        </KDisclose>}
+      </li>)}
+    </ul>
   </section>;
 }
 
@@ -250,8 +288,8 @@ function headingOf(card: AssignmentCard): string {
 /** How the plan was approved, in one line: by whom, when and how, or the rule that approved it automatically. */
 function approvedWords(approved: NonNullable<BrowserTaskView["approved"]>): string {
   const at = shortWhen(approved.at, new Date(), viewerZone());
-  return approved.automatic ? `Approved automatically by ${approved.rule ?? "a rule"} · ${at} · plan version ${approved.version}`
-    : `Approved by ${approved.by} · ${at}${approved.how === "" ? "" : ` · ${approved.how}`} · plan version ${approved.version}`;
+  return approved.automatic ? `Approved automatically by ${approved.rule ?? "a rule"} · ${at}`
+    : `Approved by ${approved.by} · ${at}${approved.how === "" ? "" : ` · ${approved.how}`}`;
 }
 
 /** The status box: chip and heading, one sentence, the one act, and a terms line (src/design/KIT.md "Approval"
@@ -269,7 +307,7 @@ function StatusBox({ view, card, csrf, approved }: { view: BrowserTaskView; card
     : pausedWords({ until: pause.until ?? null, limitMs: pause.limitMs ?? null }, iso => shortWhen(iso, new Date(), viewerZone(), true));
   const waits = card.status.headline === "Needs you" || card.status.headline === "Ready for review";
   const acts: ReactNode = confirm != null && csrf !== "" ? <RecheckStopped form={confirm} label={card.action?.label ?? "Check again"} />
-    : rebuild != null && csrf !== "" ? <PostForm action={rebuild.action} data-rebuild><KButton type="submit" variant="primary" label={card.action?.label ?? "Build again"} data-primary-action="" /></PostForm>
+    : rebuild != null && csrf !== "" ? <PostForm action={rebuild.action} data-rebuild><KButton type="submit" variant="primary" label={card.action?.label ?? "Retry"} data-primary-action="" /></PostForm>
     : retrying ? <RetryForm action={retry.action} note={retry.note ?? failure?.suggestion} />
     : <>
       {stuck?.action != null ? <KLinkButton label={stuck.action.label} href={stuck.action.href} data-stuck-action="" />
@@ -466,7 +504,7 @@ function AttemptsPanel({ view }: { view: BrowserTaskView }) {
         const headline = HEADLINES.find(one => one === word) as Headline | undefined;
         return <KRow key={attempt.taskId} href={attempt.href} chip={headline === undefined ? <KChip word={word} /> : <KHeadlineChip headline={headline} />}
           title={parts.length > 1 ? parts.slice(0, -1).join(" · ") : attempt.label} desc={attempt.detail ?? ""}
-          meta={attempt.runId === null ? undefined : <span className="k-num">Run #{attempt.runId}</span>} />;
+          meta={attempt.runId === null ? undefined : <span className="k-num">Build #{attempt.runId}</span>} />;
       })}
     </section>}
     {earlier.length > 0 && <section aria-label="Earlier builds" data-earlier-attempts={earlier.length}>
@@ -580,18 +618,18 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   const first = hasResult ? "Result" : view.scout ? "Investigation" : "Plan";
   const meta = <>{view.project !== null && <>{view.project} · </>}<span className="k-mono">{view.id}</span>{view.scout && <> · research only</>}
     {people.length > 0 && <> · <AlsoViewing people={people} /></>}</>;
-  const record = view.more?.find(one => one.kind === "link" && one.label === "Evidence pack");
+  const record = view.audit ?? null;
   const needs = view.status?.status.headline === "Needs you" || view.status?.status.headline === "Ready for review";
   const primary = approve === null && needs && view.status?.action != null && view.recheckStopped == null && view.rebuild == null && view.retry == null
     ? <KLinkButton variant="primary" label={view.status.action.label} href={view.status.action.href} /> : null;
   return <div data-kit-page data-task-page={view.id}>
     <div className="k-doc" onClick={inPage}>
-      <KDocHeader back={["/work", "Tasks"]} title={view.title} meta={meta}
+      <KDocHeader back={["/tasks", "Tasks"]} title={view.title} meta={meta}
         right={<nav className="k-acts so-task-tools" aria-label="Task tools">
-          {record !== undefined && record.kind === "link" && <KLinkButton variant="ghost" sm className="k-desk-only" label="Full record" href={record.href} />}
+          {record !== null && <KLinkButton variant="ghost" sm className="k-desk-only" label={record.label} href={record.href} />}
           <KButton ref={detailsButton} variant="ghost" sm lead="panel" label="Details" className="k-desk-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} data-open-details="" />
           <KButton variant="ghost" sm iconOnly="panel" label="Details" className="k-phone-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} />
-          <MoreMenu items={[...(view.more ?? []).map(one => one === record ? { ...one, label: "Full record" } : one), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} showTab={showTab} />
+          <MoreMenu items={[...(view.more ?? []), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} showTab={showTab} />
         </nav>} />
       {view.version !== null && <KInfoLine>{view.version.label} · <a className="k-link" href={view.version.current.href}>{view.version.current.label}</a></KInfoLine>}
       {view.archived != null && <KSlots status={<><KChip word="Archived" /><h2>Put away</h2></>}
@@ -602,13 +640,14 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
         </PostForm> : null}
         terms={view.archived.restore !== null ? "Restoring puts it back in Tasks. Its history and results were kept." : "An approver can restore it."} />}
       {view.journey != null && <KSteps steps={stepsOf(view.journey)} />}
-      {approve !== null && <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} />}
+      {approve !== null && <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} />}
       {/* The approval box is the status while the plan waits on this person: never a second box saying the same. */}
       {approve !== null ? null : view.status !== null ? <StatusBox view={view} card={view.status} csrf={csrf} approved={view.approved ?? null} /> : <Html html={view.statusHtml} />}
       {/* The older approval region (a blocked or closed approval, a fold of updated terms): installed once, and a new
           region when what it is changes (folded or open, and the exact plan it signs). */}
       {approvalHere && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
       {view.release != null && <ReleaseBox release={view.release} />}
+      {view.mergeReady != null && <MergeReadyBox ready={view.mergeReady} retry={view.retry ?? null} />}
       {view.ship != null && <ShipBox ship={view.ship} />}
       {view.lead.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />)}
       {view.questions !== "" && <Html html={view.questions} className="so-task-questions" />}

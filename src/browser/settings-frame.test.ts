@@ -11,8 +11,8 @@ import { currentProjectOf } from "./app.js";
 import { Rail } from "./shell.js";
 import { SETTINGS_KIT_SCRIPT } from "../settings-kit-script.js";
 
-const shop = { name: "shop", path: "/r/shop", href: "/work?project=%2Fr%2Fshop", knowledgeHref: "/settings/knowledge?repo=%2Fr%2Fshop" };
-const ops = { name: "ops", path: "/r/ops", href: "/work?project=%2Fr%2Fops", knowledgeHref: "/settings/knowledge?repo=%2Fr%2Fops" };
+const shop = { name: "shop", path: "/r/shop", href: "/tasks?project=%2Fr%2Fshop", knowledgeHref: "/settings/knowledge?repo=%2Fr%2Fshop" };
+const ops = { name: "ops", path: "/r/ops", href: "/tasks?project=%2Fr%2Fops", knowledgeHref: "/settings/knowledge?repo=%2Fr%2Fops" };
 const workspace = (over: Partial<BrowserWorkspace>): BrowserWorkspace => ({
   version: 1, path: "/settings/retention", title: "Retention", user: "alex", csrf: "c", sensitive: false, refreshUrl: "/settings/retention", receipt: null,
   projects: [shop, ops], crew: [], crewTruncated: false, conversation: null, focus: null, result: null, catchUpHtml: "", controlsHtml: "", notices: [], pageHtml: "",

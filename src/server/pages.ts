@@ -61,7 +61,8 @@ import { refuse, regionScript, relativeAge as relativeAgeOf, screen, settingsRow
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
 import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
-import { githubIdentityOf,homePage,portfolioOverview,startBuilderHtml,workbenchRail } from "./render-pages.js";
+import { githubIdentityOf,homePage,startBuilderHtml } from "./render-pages.js";
+import { retiredRedirect } from "./retired-routes.js";
 import { browsePage,githubReposPage,projectHref,projectPage,projectsPage,unknownProject,type ProblemAt,type ProjectPageTask } from "./render-projects.js";
 import { notFound as kitNotFound } from "./kit.js";
 import { type ProjectPeek } from "./render-pages.js";
@@ -199,7 +200,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   // A token or a restricted session keeps landing on Tasks; a first run with nothing filed yet keeps its checklist in the chat.
   async function homeRedirect(ctx: HandlerContext): Promise<void> {
     const { who, response, now, project } = ctx;
-    if (who.via !== "cookie" || restricted()) return redirect(response, "/work");
+    if (who.via !== "cookie" || restricted()) return redirect(response, "/tasks");
     if (firstRunStepsNow(now) !== null && !store.hasAnyWork()) return redirect(response, "/chat");
     // One scope for the page and the chrome around it: the project its address names (proved by the router), else all.
     const chrome = chromeFor(project, "none");
@@ -207,7 +208,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const view = { ...homeView({ store, now, access: workAccess(), evidenceRoot, project, projects, chat: chrome.chat === true, canAnswer: who.role === "approver" }),
       // Until the first result: the welcome's three steps stay one link away.
       setup: firstRunStepsNow(now) !== null ? "/welcome" : null };
-    return sendScreen(response, 200, screen("Home", html`<div data-kit-page><h1>Home</h1><p>${view.say}</p><p><a href="/work">Tasks</a></p></div>`, { chrome, workspace: { view } }));
+    return sendScreen(response, 200, screen("Home", html`<div data-kit-page><h1>Home</h1><p>${view.say}</p><p><a href="/tasks">Tasks</a></p></div>`, { chrome, workspace: { view } }));
   }
 
   // Search (UI revamp wave B): the ⌘K menu's "See all results". The places come from the page; the tasks here are the
@@ -243,88 +244,6 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return;
   }
 
-  async function workbench(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, now, project } = ctx;
-    // The fleet under one gaze (attended A1): the rail rolls up the whole
-    // ceiling regardless of the open project — watching is cross-project
-    // by nature; acting happens on task screens that re-prove everything.
-    const admission = admissionList();
-    const snapshot = store.boardScoped(null, now, 200, admission);
-    const rows = snapshot.tasks.filter(facts => facts.repo === null || visible(facts.repo));
-    const cards = rows.map(facts =>
-      classify(facts.blockerRepo !== null && !visible(facts.blockerRepo) ? { ...facts, blockerState: null } : facts, now),
-    );
-    const attention = cards.filter(card => card.lane === "attention").slice(0, 100);
-    const building = cards.filter(card => card.lane === "building");
-    const waiting = cards.filter(card => card.lane === "waiting");
-    const queued = cards.filter(card => card.lane === "queued");
-    const done = snapshot.done
-      .filter(one => one.repo === null || visible(one.repo))
-      .slice(0, 5)
-      .map(one => ({ taskId: one.taskId, title: one.title, outcome: one.outcome, repo: one.repo }));
-    const selected = url.searchParams.get("t");
-    const rail = workbenchRail({ attention, building, waiting, queued, done, selected, saturated: snapshot.saturated });
-    if (url.searchParams.get("fragment") === "rail") {
-      // The rail alone: same auth, same ceiling, no shell, no scripts.
-      return respond(response, 200, "text/html; charset=utf-8", rail);
-    }
-    // The portfolio overview (arc slice 1a). All-scope hygiene throughout:
-    // admission binds inside every bounded SQL read, and every unlimited
-    // feed's rows pass visible() BEFORE they render or tally — a hidden
-    // project must not leak into a row, a count, or a dollar.
-    const sinceIso = new Date(now.getTime() - 24 * 3_600_000).toISOString();
-    const decisions = store
-      .listDecisionsScoped(null)
-      .filter(one => visible(one.repo ?? null))
-      .slice(0, 10);
-    const approvals = store.scopesAwaitingApproval(null, 10, admission).filter(one => visible(one.repo ?? null));
-    const requeueables = store.listRequeueablesScoped(null, now, 10, admission).filter(one => visible(one.repo ?? null));
-    const cancelledBlockers = store
-      .listCancelledBlockersScoped(null, 10, admission)
-      .filter(one => visible(one.repo ?? null) && visible(one.blockerRepo ?? null));
-    const runs24 = store.runsSinceScoped(sinceIso, null).filter(run => visible(taskRepoOf(run.taskRef)));
-    const live = store.liveClaims(null, now).filter(one => visible(one.repo));
-    const ledger = store
-      .portfolioLedgerScoped(null, sinceIso, 30, admission)
-      .filter(row => visible(row.repo));
-    // Gaps stay project-relative (the roll-up inbox's rule): computed for
-    // the OPEN project only — there is no scope-safe road to another
-    // project's /caps.
-    const gaps = project === null ? [] : computeGaps(store, project, now).filter(gap => gap.unblocks.length > 0).slice(0, 10);
-    const csrf = who.via === "cookie" ? who.session.csrf : "";
-    let detail = html`${portfolioOverview({
-      attention, building, waiting, queued, done, saturated: snapshot.saturated,
-      decisions, approvals, requeueables, cancelledBlockers, gaps,
-      gapsProject: project, runs24, live, ledger, csrf, now,
-    })}<div class="workbench-mobile-rail">${rail}</div>`;
-    if (selected !== null) {
-      const view = taskViewData(selected, who, null);
-      detail = view === null
-        ? html`<p class="workbench-mobile-back"><a href="/workbench">← all work</a></p><div class="card"><p class="meta">No such task — it may have been outside this console's view</p></div>`
-        : html`<p class="workbench-mobile-back"><a href="/workbench">← all work</a></p>${taskBody({ ...view, degraded: "pane" })}`;
-    }
-    return sendScreen(
-      response,
-      200,
-      screen("portfolio", detail, {
-        chrome: chromeFor(
-          project,
-          "workbench",
-          html`<div id="wb-rail">${rail}</div><p class="meta" id="wb-rail-stamp"></p>`,
-          "all",
-        ),
-        functional: {
-          // The decision enhancement rides ONLY the overview: a selected
-          // task's pane may carry a password ceremony, and sensitive
-          // pages gain no new scripts (commit-1 review, finding 1).
-          script:
-            regionScript("wb-rail", "rail") +
-            (selected === null && decisions.length > 0 ? decisionAnswerScript() : ""),
-          fetches: true,
-        },
-      }),
-    );
-  }
 
   async function ledgerPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, now } = ctx;
@@ -1148,7 +1067,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // session's selection is left alone. Unknown, unplaced or not visible to this person: 404, the same answer.
     const taskId = url.searchParams.get("task");
     const ref = taskId === null ? null : store.lookupRef(taskId.slice(0, 200));
-    if (taskId !== null && (ref === null || ref.repo === null || !visible(ref.repo))) return refuse(response, who, 404, "That task is not available.", "/work");
+    if (taskId !== null && (ref === null || ref.repo === null || !visible(ref.repo))) return refuse(response, who, 404, "That task is not available.", "/tasks");
     const shown = ref !== null ? ref.repo : project !== null && visible(project) ? project : null;
     const connected = shown === null ? null : buildersFor(store, shown, now, ref?.assignedRunner ?? null).alive.length > 0;
     return sendScreen(response, 200, screen("Start a builder", startBuilderHtml({
@@ -1165,7 +1084,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "home": homeRedirect,
     "search": searchPage,
     "morning": morningAlias,
-    "workbench": workbench,
+    "workbench": async ctx => retiredRedirect("workbench", ctx.url, ctx.response),
     "ledger": ledgerPage,
     "activity": activityPage,
     "system": systemScreen,

@@ -5,7 +5,7 @@
 
 import { DEFAULT_MAX_DEPTH } from "./scan.js";
 
-export const HELP = `toolroll — a control plane for unattended coding agents
+export const HELP = `toolroll — hand coding work to agents, walk away, come back to pull requests
 
 Usage
   toolroll                  at your terminal: start Toolroll here (or attach) and open it in the terminal
@@ -28,52 +28,41 @@ Usage
   toolroll unlink           take it off again
   toolroll update           update to the latest release: verified, drained, undoable
                                    (preview first; --yes, --now, --at HH:MM, --rollback)
-  toolroll release <branch> release Toolroll itself: gate, your approval, deploy, merge, tag, publish
-                                   (resumable: rerun to continue; --help)
-  toolroll contract         the machine contract: envelope version + capabilities
-                                   (--commands dumps the declared command guide)
+  toolroll release <branch> release Toolroll itself: checks, your approval, deploy, merge, tag, publish
+                                   (rerun the same command to continue; --help)
   toolroll skills install --claude-code [--dir <path>]
                                    install this binary's guides for Claude Code (preview first)
   toolroll skills install   teach a repo's agents this queue exists (preview first)
-  toolroll skills list      the guides this exact binary serves
-  toolroll skills get <name>  print one guide (version-matched, never stale)
   toolroll demo             a seeded throwaway sandbox — see it working in 90 seconds
   toolroll up               app + builder for every saved project — the normal start
   toolroll onboard          make your agent Toolroll's lead: add this repo, install its skill (--yes), offer starter flows (--starter)
   toolroll status           running, queued, ready results, release check and plan windows
-  toolroll health           recent server latency, write waits and live streams
   toolroll integrations     which integrations work, and what to do about the ones that don't (--json)
-  toolroll lead token       mint your lead agent's credential: its own work pings nobody
+  toolroll lead token       mint your lead agent's sign-in: its own work pings nobody
   toolroll lead say "<text>"  (the lead) one short message in its person's chat
 
-Operating the queue — \`toolroll task\` prints the whole surface,
-and any queue command + --help prints it too
+Tasks — \`toolroll task\` prints the whole list,
+and any task command + --help prints it too
   toolroll approver add <name>
-                               mint the credential that lets a person say yes
-  toolroll ready            what could be dispatched right now
-  toolroll check-progress <run>  current or final approved check progress
-  toolroll task wait <id> [--timeout <seconds>]
-                               wait for this attempt to finish or need a person
+                               add a person who can approve work
   toolroll task add <title> queue work
-  toolroll task scope <id> --goal <text>
-                               state what success is; approval binds to it
+  toolroll task show <id>   one task: its plan, builds and what it waits for
   toolroll task approve <id>
                                the yes — nothing builds without one
-  toolroll claim <id> --runner <name>
-  toolroll heartbeat <lease> / worker release <lease> / reap
-  toolroll tick --runner <name> --token <t> --repo <path>
-                               one unattended pass over the ready set
-  toolroll flows list | show <id> | create | edit | trigger | script | card | archive
-                               set up and inspect flows (writes preview until --yes)
+  toolroll task accept <id> --finish
+                               accept the result you read (--despite "<why>": accept it with a reason, without finishing)
+  toolroll task send-back <id> --feedback "<what to change>"
+                               send the result back for changes
+  toolroll task retry <id>  build it again
+  toolroll task ready <id>  can I merge it? each check, and what clears a blocker
   toolroll chat --as <you> --token <t>
                                talk to your lead: one conversation across every
                                project; it proposes, you confirm (--say "…" for one turn)
-  toolroll serve --repo <path>  advanced: run only the console
-                               (--editor vscode with --runner: file links
-                               open in VS Code on the device you browse from)
-  toolroll watch / daemon install   advanced: run only the builder
-  toolroll doctor           check that Toolroll's service holds no key a build could read
-  toolroll reconcile        recover what the last stretch left behind
+  toolroll flows list | show <id> | create | edit | trigger | script | card | archive
+                               set up and inspect flows (writes preview until --yes)
+
+Machine and agent commands (the builder, agent tools, recovery):
+  toolroll internals        lists them; each keeps working as before
 
 With nothing connected it reports everything it can find below the working
 directory. Once you connect repositories it reports those instead.
@@ -99,3 +88,32 @@ where listing branches takes milliseconds.
 link shows what it would do and changes nothing; add --yes to apply it,
 or --to <dir> to choose where. It never uses sudo, never leaves your
 home directory, and never touches a file it did not create.`;
+
+
+/** The commands people rarely type: the builder's own loop, the machine contract and recovery. They all keep working;
+ * `toolroll internals` (or `toolroll internals --help`) lists them so top-level help stays about the work. */
+export const INTERNALS_HELP = `toolroll internals — machine and agent commands
+
+  toolroll contract         the machine contract: envelope version + capabilities
+                                   (--commands dumps the declared command guide)
+  toolroll skills list      the guides this exact binary serves
+  toolroll skills get <name>  print one guide (version-matched, never stale)
+  toolroll health           recent server latency, write waits and live streams
+  toolroll ready            what could be started right now
+  toolroll check-progress <run>  current or final approved check progress
+  toolroll task wait <id> [--timeout <seconds>]
+                               wait for this attempt to finish or need a person
+  toolroll task scope <id> --goal <text>
+                               write a task's plan from the command line
+  toolroll claim <id> --runner <name>
+  toolroll heartbeat <lease> / worker release <lease> / reap
+  toolroll tick --runner <name> --token <t> --repo <path>
+                               one unattended pass over the ready set
+  toolroll serve --repo <path>  run only the console
+                               (--editor vscode with --runner: file links
+                               open in VS Code on the device you browse from)
+  toolroll watch / daemon install   run only the builder
+  toolroll doctor           check that Toolroll's service holds no key a build could read
+  toolroll reconcile        recover what the last stretch left behind
+  toolroll release <branch> --recover-deploy | --release-gate
+                               the release tool's recovery steps (toolroll release <branch> runs them for you)`;

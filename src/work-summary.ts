@@ -2,6 +2,7 @@
  * State, decisions, approval, process custody and proof still belong to
  * their existing owners. Action hints are navigation/proposal guidance,
  * never credentials or permission to bypass an owning operation. */
+import { machineChecked } from "./machine-check.js";
 import { resultCheckLevel } from "./result-follow-ups.js";
 import { diagnoseTaskDispatch, type DispatchAction } from "./dispatch.js";
 import { isAlive } from "./runner.js";
@@ -123,6 +124,7 @@ export function taskWorkSummaryOf(store: Store, taskId: string, now: Date, acces
   const publication = result === null ? null : store.publicationForRun(result.id);
   const facts: WorkFacts = {
     id: task.id, title: task.title, repo: ref.repo, state: task.state, updatedAt: task.updatedAt,
+    ...(machineChecked(store, task.id) ? { machine: true } : {}),
     dispatch: diagnoseTaskDispatch(store, taskId, now, access.dependencyRepos ?? null), liveRunId: live?.id ?? null,
     unfinishedRunId: runs.find(one => one.outcome === null && one.role !== "reviewer")?.id ?? null,
     control: taskControlOf(store, ref.id, now), openDecision: openWorkDecisionOf(store, ref.id, now),

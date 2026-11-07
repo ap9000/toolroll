@@ -48,8 +48,8 @@ export function newTaskPage(
   /** Ideas for the chosen project: one tap drafts the words into the box. */
   suggestions: ReadonlyArray<{ label: string; draft: string }> = [],
 ): Screen {
-  const head = html`${phoneHeader("New task", { back: "/work" })}`;
-  const header = docHeader({ title: "New task", back: ["/work", "Tasks"], meta: "Nothing is built until you approve its plan.", same: true });
+  const head = html`${phoneHeader("New task", { back: "/tasks" })}`;
+  const header = docHeader({ title: "New task", back: ["/tasks", "Tasks"], meta: "Nothing is built until you approve its plan.", same: true });
   const items = projectItems(projects, project);
   const values = prefill?.values;
   // No project to choose from: the task names its folder (the server proves it), and adding a project is one link away.

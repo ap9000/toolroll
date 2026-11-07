@@ -79,16 +79,18 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
     workIndexPage(store, now, access, { view, limit, project, ...(facts.evidenceRoot === undefined ? {} : { root: facts.evidenceRoot }) });
   const needs = read("needs-you", HOME_NEEDS_SHOWN);
   const running = read("running", HOME_RUNNING_SHOWN);
+  // Waiting (docs/plans/plain-toolroll.md P1.4): what Toolroll or another task moves on, with no person asked.
+  const waiting = workIndexPage(store, now, access, { view: "queued", limit: HOME_RUNNING_SHOWN, project, ...(facts.evidenceRoot === undefined ? {} : { root: facts.evidenceRoot }) });
   const totals = needs.totals;
   // Queued: the Tasks list's own Queued count (the same predicate its view=queued filter lists).
   const queued = totals.queued;
-  // Every project is said by name (all=1): /work alone would narrow to the session's open project.
-  const scopeQuery = project === null ? "all=1&" : `project=${encodeURIComponent(project)}&`;
+  // Every project is said by name (scope=all): /tasks alone would narrow to the session's open project.
+  const scopeQuery = project === null ? "scope=all&" : `project=${encodeURIComponent(project)}&`;
   const counts: BrowserHomeView["counts"] = [
-    { key: "needs", label: "Needs you", value: totals["needs-you"], href: `/work?${scopeQuery}view=needs-you` },
-    { key: "running", label: "Running", value: totals.running, href: `/work?${scopeQuery}view=running` },
-    { key: "queued", label: "Queued", value: queued, href: `/work?${scopeQuery}view=queued` },
-    { key: "finished", label: "Finished", value: totals.completed, href: `/work?${scopeQuery}view=completed` },
+    { key: "needs", label: "Needs you", value: totals["needs-you"], href: `/tasks?${scopeQuery}view=needs-you` },
+    { key: "running", label: "Running", value: totals.running, href: `/tasks?${scopeQuery}view=running` },
+    { key: "queued", label: "Queued", value: queued, href: `/tasks?${scopeQuery}view=queued` },
+    { key: "finished", label: "Finished", value: totals.completed, href: `/tasks?${scopeQuery}view=completed` },
   ];
   const multi = project === null && new Set([...needs.items, ...running.items].map(one => one.repo ?? "")).size > 1;
   const groups: BrowserHomeView["groups"] = [];
@@ -104,9 +106,11 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
   }
   const live = running.items.filter(one => !one.status.views.includes("needs-you")).map(one => rowOf(store, one, now, multi, facts.canAnswer));
   if (live.length > 0) groups.push({ key: "running", label: "Running", rows: live });
+  const waits = waiting.items.filter(one => one.status.label === "Waiting" && !one.status.views.includes("needs-you")).map(one => rowOf(store, one, now, multi, facts.canAnswer));
+  if (waits.length > 0) groups.push({ key: "waiting", label: "Waiting", rows: waits });
   const perProject = needs.projects.map(one => ({ name: one.repo === null ? "Unplaced" : projectName(one.repo), needs: one.totals["needs-you"] }));
   const any = totals.all > 0 || totals.completed > 0 || (totals.archived ?? 0) > 0;
-  const shown = groups.filter(one => one.key !== "running").reduce((sum, one) => sum + one.rows.length, 0);
+  const shown = groups.filter(one => one.key !== "running" && one.key !== "waiting").reduce((sum, one) => sum + one.rows.length, 0);
   return {
     kind: "home",
     say: homeSentence(totals["needs-you"], perProject, project === null ? null : projectName(project), any),

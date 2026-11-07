@@ -195,29 +195,29 @@ describe("decisions finish in the chat app", () => {
   test("c1: the pushed Ready card accepts and finishes in two taps, bound to the exact result; Cancel restores it and a spent Yes does nothing", async () => {
     const { run } = readyResult("guard-1", "Keep the guard readable");
     await pass();
-    const card = script.cardWith(BOB, /^Accept and finish$/);
-    expect(card.text).toBe("Keep the guard readable is ready. Your tests passed. Accept and finish it?");
-    expect(card.labels).toEqual(["Accept and finish", "Request changes", "Look first ↗"]);
-    expect(card.rows.find(one => one.text === "Look first")!.url).toBe(`${ORIGIN}/chat?task=guard-1&result=${run}&tab=changes`);
+    const card = script.cardWith(BOB, /^Accept$/);
+    expect(card.text).toBe("Keep the guard readable is ready. Your tests passed. Accept it?");
+    expect(card.labels).toEqual(["Accept", "Send back", "Open result ↗"]);
+    expect(card.rows.find(one => one.text === "Open result")!.url).toBe(`${ORIGIN}/chat?task=guard-1&result=${run}&tab=changes`);
     // Opaque tokens only: no task, run or digest rides the button.
-    expect(card.token(/^Accept and finish$/)).toMatch(/^d:[0-9a-f]{24}$/);
+    expect(card.token(/^Accept$/)).toMatch(/^d:[0-9a-f]{24}$/);
 
-    await tapIn(BOB, card.token(/^Accept and finish$/), card.messageId);
+    await tapIn(BOB, card.token(/^Accept$/), card.messageId);
     const armed = script.current(BOB, card.messageId);
-    expect(armed.text).toBe(`${card.text}\n\nAccept and finish "Keep the guard readable"?`);
+    expect(armed.text).toBe(`${card.text}\n\nAccept "Keep the guard readable"?`);
     expect(armed.labels).toEqual(["Yes", "Cancel"]);
     expect(assignment("guard-1")?.state).toBe("ready-to-check");
 
     await tapIn(BOB, armed.token(/^Cancel$/), card.messageId);
     const restored = script.current(BOB, card.messageId);
     expect(restored.text).toBe(card.text);
-    expect(restored.labels).toEqual(["Accept and finish", "Request changes", "Look first ↗"]);
+    expect(restored.labels).toEqual(["Accept", "Send back", "Open result ↗"]);
     // The Yes the Cancel replaced is spent.
     await tapIn(BOB, armed.token(/^Yes$/), card.messageId);
     expect(script.acks().at(-1)).toBe("That button was already used or has expired.");
     expect(assignment("guard-1")?.state).toBe("ready-to-check");
 
-    await tapIn(BOB, restored.token(/^Accept and finish$/), card.messageId);
+    await tapIn(BOB, restored.token(/^Accept$/), card.messageId);
     const yes = script.current(BOB, card.messageId).token(/^Yes$/);
     await tapIn(BOB, yes, card.messageId);
     expect(assignment("guard-1")).toMatchObject({ state: "complete", completion: { actor: "operator:bob" } });
@@ -232,31 +232,31 @@ describe("decisions finish in the chat app", () => {
   test("c1: a stale card says so and acts on nothing — the task finished elsewhere, before the first tap or between the two", async () => {
     readyResult("guard-2", "Keep the guard readable");
     await pass();
-    const card = script.cardWith(BOB, /^Accept and finish$/);
+    const card = script.cardWith(BOB, /^Accept$/);
     // Armed on the phone, then finished on the console: the Yes acts on nothing.
-    await tapIn(BOB, card.token(/^Accept and finish$/), card.messageId);
+    await tapIn(BOB, card.token(/^Accept$/), card.messageId);
     const yes = script.current(BOB, card.messageId).token(/^Yes$/);
     expect(checkAssignmentAsOperator(store, "guard-2", assignment("guard-2")!.receipt!.digest, who("alex"), now, dir).ok).toBe(true);
     await tapIn(BOB, yes, card.messageId);
     const stale = script.current(BOB, card.messageId);
     expect(stale.text).toBe(`${card.text}\n\nThis task is already finished. Nothing was done.`);
-    expect(stale.labels).toEqual(["Look first ↗"]);
+    expect(stale.labels).toEqual(["Open result ↗"]);
     expect(store.settledBy(store.refFor("built-in", "guard-2").id)).toBe("alex");
 
     // Another person's card for the same result: its first tap says so too.
-    const other = script.cardWith(ALEX, /^Accept and finish$/);
-    await tapIn(ALEX, other.token(/^Request changes$/), other.messageId);
+    const other = script.cardWith(ALEX, /^Accept$/);
+    await tapIn(ALEX, other.token(/^Send back$/), other.messageId);
     expect(script.current(ALEX, other.messageId).text).toContain("This task is already finished. Nothing was done.");
     // A button is the person's own: bob's token from alex's chat does nothing.
-    await tapIn(ALEX, card.token(/^Request changes$/), card.messageId, card.text);
+    await tapIn(ALEX, card.token(/^Send back$/), card.messageId, card.text);
     expect(script.acks().at(-1)).toBe("That button isn't for this chat.");
   });
 
   test("c1: Request changes asks what should change, and the next message becomes the revision's feedback", async () => {
     const { run } = readyResult("guard-3", "Keep the guard readable");
     await pass();
-    const card = script.cardWith(BOB, /^Request changes$/);
-    await tapIn(BOB, card.token(/^Request changes$/), card.messageId);
+    const card = script.cardWith(BOB, /^Send back$/);
+    await tapIn(BOB, card.token(/^Send back$/), card.messageId);
     expect(script.acks().at(-1)).toBe("What should change?");
     const prompt = script.inChat(BOB).filter(call => call.method === "sendMessage").at(-1)!;
     expect(String(prompt.params["text"])).toBe('What should change? Your next message is the feedback for "Keep the guard readable".');
@@ -276,20 +276,20 @@ describe("decisions finish in the chat app", () => {
     // The prompt is spent: the next message is ordinary chat again, and the old card is out of date.
     await sayIn(BOB, "Thanks");
     expect(store.taskFamilyOf("guard-3", [REPO], false)!.current.id).toBe(family.current.id);
-    await tapIn(BOB, card.token(/^Accept and finish$/), card.messageId);
+    await tapIn(BOB, card.token(/^Accept$/), card.messageId);
     expect(script.current(BOB, card.messageId).text).toContain("A newer result is current. Nothing was done.");
   });
 
   test("c1: a Yes left past its ten minutes says it expired, keeps the card's link and acts on nothing", async () => {
     readyResult("guard-11", "Keep the guard readable");
     await pass();
-    const card = script.cardWith(BOB, /^Accept and finish$/);
-    await tapIn(BOB, card.token(/^Accept and finish$/), card.messageId);
+    const card = script.cardWith(BOB, /^Accept$/);
+    await tapIn(BOB, card.token(/^Accept$/), card.messageId);
     const yes = script.current(BOB, card.messageId).token(/^Yes$/);
     now = new Date(now.getTime() + 11 * 60_000);
     await tapIn(BOB, yes, card.messageId);
     expect(script.current(BOB, card.messageId).text).toBe(`${card.text}\n\nThat button expired. Nothing was done.`);
-    expect(script.current(BOB, card.messageId).labels).toEqual(["Look first ↗"]);
+    expect(script.current(BOB, card.messageId).labels).toEqual(["Open result ↗"]);
     expect(assignment("guard-11")?.state).toBe("ready-to-check");
   });
 
@@ -328,19 +328,20 @@ describe("decisions finish in the chat app", () => {
     const ref = planWaiting("plan-5", "Refuse over-limit payouts");
     planReady(ref, "plan-5");
     await pass();
-    const card = script.cardWith(BOB, /^Approve & start$/);
-    // On Telegram the yes's terms come right under the title; the plan's detail follows.
-    expect(card.text).toBe([
+    const card = script.cardWith(BOB, /^Review plan$/);
+    // One line, one button and Details; Review plan shows the full terms, with the yes's terms right under the title.
+    expect(card.text).toBe(`#${ref}: plan ready · Refuse over-limit payouts`);
+    expect(card.labels).toEqual(["Review plan", "Details ↗"]);
+    await tapIn(BOB, card.token(/^Review plan$/), card.messageId);
+    expect(script.current(BOB, card.messageId).text).toBe(`${[
       "Plan ready: Refuse over-limit payouts",
       "Starting allows: file edits and routine commands; anything risky stops · up to $2.00 per attempt", "",
       "Refuse over-limit payouts.", "Keep the public API unchanged.", "Only in: src/guard.ts", "",
       "Done when:", "• Over-limit payouts are refused.",
-    ].join("\n"));
-    expect(card.labels).toEqual(["Approve & start", "Edit ↗", "Not now"]);
-    await tapIn(BOB, card.token(/^Approve & start$/), card.messageId);
-    expect(script.current(BOB, card.messageId).text).toBe(`${card.text}\n\nApprove and start "Refuse over-limit payouts"?`);
+    ].join("\n")}\n\nApprove and start "Refuse over-limit payouts"? This approves exactly this plan.`);
+    expect(script.current(BOB, card.messageId).labels).toEqual(["Approve & start", "Edit ↗", "Not now"]);
     expect(store.getScope("plan-5")!.approvedDigest).toBeNull();
-    await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId);
+    await tapIn(BOB, script.current(BOB, card.messageId).token(/^Approve & start$/), card.messageId);
     const scope = store.getScope("plan-5")!;
     expect(scope).toMatchObject({ approvedBy: "bob", approvedDigest: scope.digest, approvalBasis: "chat" });
     expect(script.current(BOB, card.messageId).text).toContain("✓ Approved. Work starts when a worker is free.");
@@ -358,13 +359,14 @@ describe("decisions finish in the chat app", () => {
     const ref = planWaiting("plan-6", "Refuse over-limit payouts");
     planReady(ref, "plan-6");
     await pass();
-    const card = script.cardWith(BOB, /^Approve & start$/);
-    await tapIn(BOB, card.token(/^Approve & start$/), card.messageId);
-    const yes = script.current(BOB, card.messageId).token(/^Yes$/);
+    const card = script.cardWith(BOB, /^Review plan$/);
+    await tapIn(BOB, card.token(/^Review plan$/), card.messageId);
+    const terms = script.current(BOB, card.messageId).text.replace(/\n\nApprove and start .*$/, "");
+    const yes = script.current(BOB, card.messageId).token(/^Approve & start$/);
     propose(store, { taskId: "plan-6", goal: "Refuse over-limit payouts, and log each refusal.", touches: ["src/guard.ts"], budgetMicrousd: 2_000_000,
       acceptance: [{ id: "c1", statement: "Over-limit payouts are refused.", how: null, evidence: ["check"] }], now });
     await tapIn(BOB, yes, card.messageId);
-    expect(script.current(BOB, card.messageId).text).toBe(`${card.text}\n\nThe plan changed since this card was sent. Nothing was done.`);
+    expect(script.current(BOB, card.messageId).text).toBe(`${terms}\n\nThe plan changed since this card was sent. Nothing was done.`);
     expect(script.current(BOB, card.messageId).labels).toEqual(["Review & start ↗"]);
     expect(store.getScope("plan-6")!.approvedDigest).toBeNull();
 
@@ -373,9 +375,11 @@ describe("decisions finish in the chat app", () => {
     const later = planWaiting("plan-7", "Log refused payouts");
     planReady(later, "plan-7");
     await pass();
-    const next = script.cardWith(BOB, /^Approve & start$/);
-    await tapIn(BOB, next.token(/^Not now$/), next.messageId);
-    expect(script.current(BOB, next.messageId).text).toBe(`${next.text}\n\nNot now. It waits for you in Tasks.`);
+    const next = script.cardWith(BOB, /^Review plan$/);
+    await tapIn(BOB, next.token(/^Review plan$/), next.messageId);
+    const nextTerms = script.current(BOB, next.messageId).text.replace(/\n\nApprove and start .*$/, "");
+    await tapIn(BOB, script.current(BOB, next.messageId).token(/^Not now$/), next.messageId);
+    expect(script.current(BOB, next.messageId).text).toBe(`${nextTerms}\n\nNot now. It waits for you in Tasks.`);
     expect(script.current(BOB, next.messageId).labels).toEqual(["Edit ↗"]);
     expect(store.getScope("plan-7")!.approvedDigest).toBeNull();
   });
@@ -429,7 +433,7 @@ describe("decisions finish in the chat app", () => {
     ready();
     await pass();
     const card = script.cardWith(BOB, /^Merge$/);
-    expect(card.labels).toEqual(["Merge", "Look first ↗"]);
+    expect(card.labels).toEqual(["Merge", "Open result ↗"]);
     await tapIn(BOB, card.token(/^Merge$/), card.messageId);
     expect(script.current(BOB, card.messageId).text).toBe(`${card.text}\n\nMerge "Keep the guard readable"?`);
     expect(merges).toEqual([]);
@@ -470,8 +474,8 @@ describe("decisions finish in the chat app", () => {
     const ref = planWaiting("plan-13", "Refuse over-limit payouts");
     planReady(ref, "plan-13");
     await pass();
-    const card = script.cardWith(BOB, /^Approve & start$/);
-    const first = card.token(/^Approve & start$/);
+    const card = script.cardWith(BOB, /^Review plan$/);
+    const first = card.token(/^Review plan$/);
 
     // A second notice for the plan within the batch window repaints the card; Telegram refuses the edit.
     now = new Date(now.getTime() + 20_000);
@@ -479,21 +483,21 @@ describe("decisions finish in the chat app", () => {
     store.enqueueNotification({ dedupeKey: "plan-ready:plan-13:again", kind: "plan-ready", subject: "plan-13: plan ready for review", body: "Still waiting for you.", source: { taskRef: ref } }, now);
     await pass();
     expect(script.inChat(BOB).some(call => call.method === "editMessageText (refused)")).toBe(true);
-    expect(script.current(BOB, card.messageId).token(/^Approve & start$/)).toBe(first);
+    expect(script.current(BOB, card.messageId).token(/^Review plan$/)).toBe(first);
     // The buttons still showing still work.
     await tapIn(BOB, first, card.messageId);
-    expect(script.current(BOB, card.messageId).text).toBe(`${card.text}\n\nApprove and start "Refuse over-limit payouts"?`);
-    await tapIn(BOB, script.current(BOB, card.messageId).token(/^Cancel$/), card.messageId);
+    expect(script.current(BOB, card.messageId).text).toMatch(/\n\nApprove and start "Refuse over-limit payouts"\? This approves exactly this plan\.$/);
     // The next notice repaints it, and only the new buttons act.
     const before = script.current(BOB, card.messageId).token(/^Approve & start$/);
     now = new Date(now.getTime() + 20_000);
     store.enqueueNotification({ dedupeKey: "plan-ready:plan-13:again-2", kind: "plan-ready", subject: "plan-13: plan ready for review", body: "Still waiting for you.", source: { taskRef: ref } }, now);
     await pass();
-    expect(script.current(BOB, card.messageId).token(/^Approve & start$/)).not.toBe(before);
+    expect(script.current(BOB, card.messageId).labels).toEqual(["Review plan", "Details ↗"]);
     await tapIn(BOB, before, card.messageId);
     expect(script.acks().at(-1)).toBe("That button was already used or has expired.");
 
     // Not now spends this card's buttons.
+    await tapIn(BOB, script.current(BOB, card.messageId).token(/^Review plan$/), card.messageId);
     await tapIn(BOB, script.current(BOB, card.messageId).token(/^Not now$/), card.messageId);
     expect(script.current(BOB, card.messageId).labels).toEqual(["Edit ↗"]);
     // A later notice in the same window repaints the card with fresh buttons, not the spent ones.
@@ -501,31 +505,30 @@ describe("decisions finish in the chat app", () => {
     store.enqueueNotification({ dedupeKey: "plan-ready:plan-13:later", kind: "plan-ready", subject: "plan-13: plan ready for review", body: "Still waiting for you.", source: { taskRef: ref } }, now);
     await pass();
     const repainted = script.current(BOB, card.messageId);
-    expect(repainted.labels).toEqual(["Approve & start", "Edit ↗", "Not now"]);
-    expect(repainted.token(/^Approve & start$/)).not.toBe(first);
-    await tapIn(BOB, repainted.token(/^Approve & start$/), card.messageId);
-    expect(script.current(BOB, card.messageId).labels).toEqual(["Yes", "Cancel"]);
-    await tapIn(BOB, script.current(BOB, card.messageId).token(/^Cancel$/), card.messageId);
+    expect(repainted.labels).toEqual(["Review plan", "Details ↗"]);
+    expect(repainted.token(/^Review plan$/)).not.toBe(first);
+    await tapIn(BOB, repainted.token(/^Review plan$/), card.messageId);
+    expect(script.current(BOB, card.messageId).labels).toEqual(["Approve & start", "Edit ↗", "Not now"]);
     await tapIn(BOB, script.current(BOB, card.messageId).token(/^Not now$/), card.messageId);
 
     // And past the window, a new message with fresh buttons that act.
     now = new Date(now.getTime() + 3 * 60_000);
     store.enqueueNotification({ dedupeKey: "plan-ready:plan-13:tomorrow", kind: "plan-ready", subject: "plan-13: plan ready for review", body: "Still waiting for you.", source: { taskRef: ref } }, now);
     await pass();
-    const fresh = script.cardWith(BOB, /^Approve & start$/);
+    const fresh = script.cardWith(BOB, /^Review plan$/);
     expect(fresh.messageId).not.toBe(card.messageId);
-    await tapIn(BOB, fresh.token(/^Approve & start$/), fresh.messageId);
-    await tapIn(BOB, script.current(BOB, fresh.messageId).token(/^Yes$/), fresh.messageId);
+    await tapIn(BOB, fresh.token(/^Review plan$/), fresh.messageId);
+    await tapIn(BOB, script.current(BOB, fresh.messageId).token(/^Approve & start$/), fresh.messageId);
     expect(store.getScope("plan-13")).toMatchObject({ approvedBy: "bob", approvalBasis: "chat" });
   });
 
   test("c1: a decide button tapped from another chat is answered with why, and does nothing", async () => {
     readyResult("guard-14", "Keep the guard readable");
     await pass();
-    const card = script.cardWith(BOB, /^Accept and finish$/);
+    const card = script.cardWith(BOB, /^Accept$/);
     const before = script.acks().length;
     const tap = (from: number, chat: { id: number; type: string }) => {
-      script.updates.push([{ update_id: nextUpdate++, callback_query: { id: `cb-${nextUpdate}`, data: card.token(/^Accept and finish$/), from: { id: from },
+      script.updates.push([{ update_id: nextUpdate++, callback_query: { id: `cb-${nextUpdate}`, data: card.token(/^Accept$/), from: { id: from },
         message: { message_id: card.messageId, chat, text: card.text } } }]);
       return pass();
     };
@@ -537,7 +540,7 @@ describe("decisions finish in the chat app", () => {
       "These buttons work only for the person they were sent to. Nothing was done.",
     ]);
     expect(assignment("guard-14")?.state).toBe("ready-to-check");
-    expect(script.current(BOB, card.messageId).labels).toEqual(["Accept and finish", "Request changes", "Look first ↗"]);
+    expect(script.current(BOB, card.messageId).labels).toEqual(["Accept", "Send back", "Open result ↗"]);
   });
 
   test("c3: an agent's question pushes with its options as buttons, and a tap answers it", async () => {

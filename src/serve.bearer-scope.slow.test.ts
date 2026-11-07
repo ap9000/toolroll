@@ -392,7 +392,7 @@ test("verified password admission is shared by account across sources, the conso
   if (!other.ok) throw Error("sam");
   const get = (path: string, name = "alex", secret = password, source = "203.0.113.8") => fetch(`${base}${path}`, { headers: { authorization: `Bearer ${name}:${secret}`, "x-forwarded-for": source, "x-forwarded-proto": "https" } });
   for (let i = 0; i < SOURCE_BUDGET_DEFAULTS.password; i++) {
-    const response = await get(["/login", "/api/team", "/work"][i % 3]!, "alex", password, `203.0.113.${i % 3 + 1}`);
+    const response = await get(["/login", "/api/team", "/tasks"][i % 3]!, "alex", password, `203.0.113.${i % 3 + 1}`);
     expect(response.status).toBe(200); await response.arrayBuffer();
   }
   const denied = await get("/login", "alex", password, "203.0.113.99");
@@ -408,7 +408,7 @@ test("verified password admission is shared by account across sources, the conso
 
 test("unverified password admission is per source across console pages and team before authentication", async () => {
   const send = (i: number, source = "203.0.113.8") => {
-    const path = ["/login", "/api/team", "/work"][i % 3]!;
+    const path = ["/login", "/api/team", "/tasks"][i % 3]!;
     return fetch(`${base}${path}`, { redirect: "manual", headers: {
       authorization: `Bearer fabricated-${i}:bad`, "x-forwarded-for": source, "x-forwarded-proto": "https" } });
   };

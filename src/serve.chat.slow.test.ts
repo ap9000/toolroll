@@ -1021,7 +1021,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     const lead = store.liveLeadThreadFor('alex');
     expect(lead === null ? [] : store.listLeadMessages(lead.id, 10)).toEqual([]);
     // The project's Tasks page docks it, and the chat list names it.
-    const projectRead = await (await fetch(url(`/work?project=${encodeURIComponent(repoDir)}&format=workspace`), { headers: { cookie } })).json() as Workspace;
+    const projectRead = await (await fetch(url(`/tasks?project=${encodeURIComponent(repoDir)}&format=workspace`), { headers: { cookie } })).json() as Workspace;
     expect(projectRead.view?.kind).toBe('tasks');
     expect(projectRead.conversation).toMatchObject({ project: repoDir, taskId: null });
     expect(projectRead.conversation!.messages.map(one => one.text)).toEqual(['What is queued?', 'Two tasks are queued here.']);
@@ -1061,12 +1061,12 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
 
   test('React project links narrow reads without changing the selected project', async () => {
     const cookie = await login();
-    const target = `/work?project=${encodeURIComponent(repoDir)}&format=workspace`;
+    const target = `/tasks?project=${encodeURIComponent(repoDir)}&format=workspace`;
     const response = await fetch(url(target), { headers: { cookie } });
     expect(response.status).toBe(200);
     const data = await response.json() as import('./browser-workspace.js').BrowserWorkspace;
     expect(data.crew.map(one => one.id).sort()).toEqual(['a', 'b']);
-    expect(data.path).toBe(`/work?project=${encodeURIComponent(repoDir)}`);
+    expect(data.path).toBe(`/tasks?project=${encodeURIComponent(repoDir)}`);
     // The rebuilt Tasks view carries the same facts as the HTML fallback:
     // tabs keep the project filter, rows keep their ids and task links.
     expect(data.view?.kind).toBe('tasks');
@@ -1075,8 +1075,8 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(tasksView.tabs.find(tab => tab.active)?.label).toBe('All');
     expect(tasksView.rows.map(row => row.id).sort()).toEqual(['a', 'b']);
     expect(tasksView.rows.every(row => row.href.startsWith('/t/'))).toBe(true);
-    expect((await fetch(url('/work?project=%2Fforeign&format=workspace'), { headers: { cookie } })).status).toBe(404);
-    expect((await fetch(url(`/work?project=${encodeURIComponent(repoDir)}&project=%2Fforeign&format=workspace`), { headers: { cookie } })).status).toBe(404);
+    expect((await fetch(url('/tasks?project=%2Fforeign&format=workspace'), { headers: { cookie } })).status).toBe(404);
+    expect((await fetch(url(`/tasks?project=${encodeURIComponent(repoDir)}&project=%2Fforeign&format=workspace`), { headers: { cookie } })).status).toBe(404);
   });
 
   test("the mint card is the one password ceremony; the thread then takes messages without one", async () => {
@@ -1157,7 +1157,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(html).toContain('<div class="approval-row"><dt>Goal</dt><dd><p class="approval-goal">do a</p></dd></div>');
     expect(html).toContain('<div class="approval-row"><dt>Done when</dt>');
     expect(html).toContain("Your password signs this approval.");
-    expect(html.match(/<button type="submit" data-primary-action>Approve & start<\/button>/g)).toHaveLength(1);
+    expect(html.match(/<button type="submit" data-primary-action>Approve<\/button>/g)).toHaveLength(1);
     expect(html).toContain('action="/t/a/approve"');
     expect(html).toContain('name="return" value="/chat?task=a"');
     expect(html).toContain('data-poll="0"');
@@ -1571,7 +1571,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     const counts = () => store.raw().prepare(`SELECT (SELECT COUNT(*) FROM lead_session) AS sessions, (SELECT COUNT(*) FROM lead_thread) AS threads,
       (SELECT COUNT(*) FROM lead_message) AS messages, (SELECT COUNT(*) FROM mate_turn) AS turns`).get();
     const project = encodeURIComponent(repoDir);
-    const pages = ["/chat", "/chat?task=a", `/chat?project=${project}`, "/t/a", `/work?project=${project}`, "/chat/mate/status?task=a", "/lead/status", "/chat/task-status?task=a"];
+    const pages = ["/chat", "/chat?task=a", `/chat?project=${project}`, "/t/a", `/tasks?project=${project}`, "/chat/mate/status?task=a", "/lead/status", "/chat/task-status?task=a"];
     const visitAll = async () => {
       for (const path of pages) {
         for (const shown of [path, path + (path.includes("?") ? "&" : "?") + "format=workspace"]) {

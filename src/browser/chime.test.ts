@@ -8,7 +8,7 @@ import type { BrowserAsk, BrowserProjectState } from "../browser-workspace.js";
 import { CHIME_MEMORY_MS, CHIME_SETTLE_MS, createChime, setChime, type Showing } from "./chime.js";
 
 const ask = (key: string, task: string | null = null, run: number | null = null, at = new Date().toISOString()): BrowserAsk => ({ key: `k${key.padEnd(10, "0")}`, task, run, at });
-const snapshot = (...asks: BrowserAsk[]): BrowserProjectState[] => [{ path: "/r", name: "r", href: "/work", state: asks.length ? "needs-you" : "idle",
+const snapshot = (...asks: BrowserAsk[]): BrowserProjectState[] => [{ path: "/r", name: "r", href: "/tasks", state: asks.length ? "needs-you" : "idle",
   counts: { ...NO_COUNTS, "needs-you": asks.length }, tasks: [], more: 0, asks }];
 const away = (): Showing => ({ visible: false, task: null, run: null });
 /** A lock manager that serializes, the way the browser's does across tabs, with each holder yielding inside. */

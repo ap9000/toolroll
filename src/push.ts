@@ -228,21 +228,25 @@ export const PUSH_WORDS: Record<PushClass, { title: string; body: string }> = {
   decision: { title: "Toolroll", body: "a decision needs you" },
   pick: { title: "Toolroll", body: "agents finished — pick a winner" },
   merge: { title: "Toolroll", body: "a pull request needs a person" },
-  attention: { title: "Toolroll", body: "the plane needs attention" },
+  attention: { title: "Toolroll", body: "Toolroll needs your attention" },
   progress: { title: "Toolroll", body: "checks in progress" },
   release: { title: "Toolroll", body: RELEASE_PUSH_WORDS },
 };
 
 // `/approve/<n>`: a release's opaque locator (a task ref number: no version, commit or branch), resolved by the console.
 const RELEASE_LINK = /^\/approve\/[0-9]{1,15}$/;
-const LINK_SHAPES = [/^\/next$/, /^\/review$/, /^\/system$/, /^\/routines$/, /^\/routines\/[0-9]{1,15}$/, /^\/d\/[0-9]{1,15}$/, /^\/r\/[0-9]{1,15}$/, RELEASE_LINK];
+/** The relative links a push may carry (docs/plans/plain-toolroll.md P1.4): every shape an older worker took, kept for
+ * good (/next and /review now redirect to Home and Tasks' Ready view; the rest keep their pages), then Home, Tasks'
+ * Ready and Board views, and a task by its stored number (/n/<n>, resolved under the viewer's own access). */
+export const LINK_SHAPES: readonly RegExp[] = [/^\/next$/, /^\/review$/, /^\/system$/, /^\/routines$/, /^\/routines\/[0-9]{1,15}$/, /^\/d\/[0-9]{1,15}$/, /^\/r\/[0-9]{1,15}$/, RELEASE_LINK,
+  /^\/$/, /^\/tasks\?view=ready$/, /^\/tasks\?view=board$/, /^\/n\/[1-9][0-9]{0,14}$/];
 const CLASS_FALLBACK: Record<PushClass, string> = {
-  decision: "/next",
-  pick: "/next",
-  merge: "/review",
-  attention: "/next",
-  progress: "/next",
-  release: "/next",
+  decision: "/",
+  pick: "/",
+  merge: "/tasks?view=ready",
+  attention: "/",
+  progress: "/",
+  release: "/",
 };
 
 /** Static words and machine-minted numbers only — re-proved at send time. */
@@ -253,17 +257,38 @@ export function safePushLink(pushClass: PushClass, link: string | null): string 
   return CLASS_FALLBACK[pushClass];
 }
 
-/** `release`: the class and link the plane derived for this row at send time (releasePushOf); absent or null, the
- * row's stored class and link, revalidated. */
+/** One line per ping (docs/plans/plain-toolroll.md P1.5), built only from the task's stored number and fixed words: no
+ * title, no free text. A fact about a task opens that task (/n/<n>); anything else keeps its class's fixed words and
+ * its own allow-listed link. Rows are tried in order; the first that matches says the line. */
+export const PUSH_LINES: readonly { when: (notification: Pick<Notification, "kind" | "pushClass">) => boolean; say: (number: number) => string }[] = [
+  { when: one => one.kind === "plan-ready", say: number => `#${number}: plan ready` },
+  { when: one => one.pushClass === "decision" || one.kind === "task-ask" || one.kind === "decision", say: number => `#${number} has a question` },
+  { when: one => one.pushClass === "merge" || one.pushClass === "pick" || one.kind === "pull-request-ready" || one.kind === "acceptance-ready", say: number => `#${number} is ready to review` },
+  { when: () => true, say: number => `#${number} needs you` },
+];
+
+/** The one line a ping says, and where its tap lands. */
+export function pushLineOf(notification: Pick<Notification, "kind" | "pushClass" | "body" | "link" | "taskRef">): { body: string; url: string } {
+  const pushClass = notification.pushClass as NonNullable<Notification["pushClass"]>;
+  if (pushClass === "progress" && isCheckProgressLine(notification.body)) return { body: notification.body, url: safePushLink(pushClass, notification.link) };
+  const number = notification.taskRef;
+  if (typeof number === "number" && Number.isSafeInteger(number) && number > 0) {
+    const row = PUSH_LINES.find(one => one.when(notification))!;
+    return { body: row.say(number), url: `/n/${number}` };
+  }
+  return { body: PUSH_WORDS[pushClass].body, url: safePushLink(pushClass, notification.link) };
+}
+
+/** `release`: the class and link the plane derived for this row at send time (releasePushOf): fixed words and a release's
+ * own link, never the task line. Absent or null, the row's own line. */
 export function buildPushPayload(notification: Notification, waiting: number | null = null, release: { link: string } | null = null): string {
-  const pushClass: PushClass = release !== null ? "release" : notification.pushClass as NonNullable<Notification["pushClass"]>;
-  const words = PUSH_WORDS[pushClass];
+  const line = release !== null ? { body: PUSH_WORDS.release.body, url: safePushLink("release", release.link) } : pushLineOf(notification);
   return JSON.stringify({
-    title: words.title,
-    body: pushClass === "progress" && isCheckProgressLine(notification.body) ? notification.body : words.body,
-    url: safePushLink(pushClass, release !== null ? release.link : notification.link),
+    title: "Toolroll",
+    body: line.body,
+    url: line.url,
     // The opaque tag collapses a crash-duplicate on the lock screen.
-    tag: pushClass === "progress" && notification.run !== null ? `so-run-${notification.run}` : `so-${notification.id}`,
+    tag: release === null && notification.pushClass === "progress" && notification.run !== null ? `so-run-${notification.run}` : `so-${notification.id}`,
     // The app-icon badge (Phase 2E, v2 S4): the server-computed
     // waiting-on-you COUNT at send time — a number, never content, so the
     // closed-class discipline holds. The console page recomputes and

@@ -440,7 +440,7 @@ export function familyRepoOf(store: Store, refs: readonly number[]): string | nu
 
 /** "Archived by tidy: <reason>" or "Archived by <person>: <reason>": the one sentence every surface shows. */
 export function archivedWords(archived: { by: string; byKind: "person" | "tidy"; reason: string }): string {
-  return `Archived by ${archived.byKind === "tidy" ? "tidy" : archived.by}: ${archived.reason}`;
+  return `${archived.byKind === "tidy" ? "Archived automatically" : `Archived by ${archived.by}`}: ${archived.reason}`;
 }
 
 /** The release journals beside the store's own database file (none for an in-memory one). */

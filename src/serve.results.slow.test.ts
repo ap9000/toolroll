@@ -177,7 +177,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(reviewPriorityOf(facts({}))).toEqual({ band: 2, label: "no flags", reasons: [] });
     expect(reviewPriorityOf(facts({ runId: null, proofVerdict: null }))).toEqual({ band: 1, label: "review", reasons: ["no build record"] });
     expect(reviewPriorityOf(facts({ proofVerdict: "refuted" }))).toMatchObject({ band: 0, label: "needs action", reasons: ["conflicting evidence"] });
-    expect(reviewPriorityOf(facts({ proofVerdict: "refuted", proofAccepted: true }))).toMatchObject({ band: 1, reasons: ["conflicting evidence — accepted with exception"] });
+    expect(reviewPriorityOf(facts({ proofVerdict: "refuted", proofAccepted: true }))).toMatchObject({ band: 1, reasons: ["the report doesn't match the changes — accepted with a reason"] });
     expect(reviewPriorityOf(facts({ proofVerdict: "short" }))).toMatchObject({ band: 0, reasons: ["missing evidence"] });
     expect(reviewPriorityOf(facts({ proofVerdict: "short", proofAccepted: true }))).toMatchObject({ band: 1 });
     const manualOnly = facts({ proofVerdict: "short", proofReasons: ['criterion "c1" requires manual-review evidence — an operator must accept it before this can verify'], proofMatrix: [row("c1", "Inspect phone layout", "manual-review")] });
@@ -768,7 +768,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(done).not.toContain("Checks passed");
     expect(done).toContain("read it myself");
     expect(queueOf(done)).toContain("Needs you");
-    expect(queueOf(done)).not.toContain("missing evidence — accepted with exception");
+    expect(queueOf(done)).not.toContain("not all requirements shown — accepted with a reason");
     expect(done).toContain('data-next-action="revise"');
     // The stored verdict never moved.
     expect(store.proofVerdictFor(run)?.verdict).toBe("short");
@@ -1054,7 +1054,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(first.panel!.requirements).toMatchObject({ met: 0, total: 1, yours: 1, missed: 0 });
     // Checks didn't run and the item is still the person's: Accept without your check, naming it, and that it finishes the task.
     expect(first.decision).toEqual({ label: "Accept without your check", ready: false, why: `Not checked yet: “${statement}”.`,
-      effect: "Finishes the task. The branch stays; publishing isn't set up.", sentence: "Review the change, then accept it or ask for changes.",
+      effect: "Finishes the task. The branch stays; publishing isn't set up.", sentence: "Review the change, then accept it or send it back.",
       base: { label: "Accept without checks", ready: false, why: "Checks didn't run." } });
     // One request: the completion carries the acceptance the person's check owes.
     expect(first.complete).toMatchObject({ action: "/t/t-look/complete", run, accept: { note: null } });
@@ -1070,7 +1070,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // A receipt other than the one read refuses both: nothing is accepted or completed.
     expect((await post(cookie, "/t/t-look/complete", { csrf, run: String(run), receipt: "0".repeat(64), accept: "1" })).status).toBe(409);
     expect(store.proofAcceptance(run)).toBeNull();
-    // Accept and finish: one request records the acceptance and completes the receipt that acceptance produces.
+    // Accept: one request records the acceptance and completes the receipt that acceptance produces.
     const done = await post(cookie, "/t/t-look/complete", { csrf, run: String(run), receipt: first.complete!.receipt, accept: "1" });
     expect(done.status).toBe(303);
     expect(done.headers.get("location")).toBe(`/review?result=t-look&run=${run}`);
@@ -1093,7 +1093,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(after.panel!.youCheck).toBeNull();
   });
 
-  test("Accept and finish refused at completion keeps no acceptance", async () => {
+  test("Accept refused at completion keeps no acceptance", async () => {
     const statement = "The copy reads clearly";
     const reason = 'criterion "c1" requires manual-review evidence — an operator must accept it before this can verify';
     const ref = seed("t-undo", "Clarify the copy", "/repo/main", { acceptance: [{ id: "c1", statement, evidence: ["manual-review"] }] });
@@ -1118,7 +1118,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(read().state).toBe("complete");
   });
 
-  test("a crafted Accept and finish records an acceptance only for a person's check or a reasoned exception, refuses an exception without its reason, and is otherwise a plain completion", async () => {
+  test("a crafted Accept records an acceptance only for a person's check or a reasoned exception, refuses an exception without its reason, and is otherwise a plain completion", async () => {
     const mismatch = { verdict: "refuted" as const, reasons: ["a criterion cites a file that did not change"] };
     const patch = "diff --git a/z b/z\n--- a/z\n+++ b/z\n@@ -1 +1 @@\n-a\n+b\n";
     const bare = build("t-bare", seed("t-bare", "Round the totals"), { patch, stat: [{ path: "z", additions: 1, deletions: 1 }] });
@@ -1129,7 +1129,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const cookie = await login();
     const read = (id: string) => assignmentOf(store, id, new Date(), { principal: "operator", repos: null }, evidenceRoot)!;
     const acceptances = (id: string) => store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE task_id = ? AND action = 'task accept-proof'").get(id);
-    // A report that doesn't match its changes: the page's Accept and finish asks for the reason, required, in the same form.
+    // A report that doesn't match its changes: the page's Accept asks for the reason, required, in the same form.
     const html = await (await fetch(url(`/review?result=t-silent&run=${silent}`), { headers: { cookie } })).text();
     const form = /<form[^>]*action="\/t\/t-silent\/complete"[^>]*>[\s\S]*?<\/form>/.exec(html)?.[0] ?? "";
     expect(form).toContain('name="accept" value="1"');
@@ -1309,18 +1309,18 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(queueOf(html)).toContain('data-work-status="assignment-ready-to-check"');
     expect(queueOf(html)).not.toContain('conflicting evidence');
     expect(html).toContain('1 needs your attention');
-    expect(html).not.toContain('Accept and finish</button>');
+    expect(html).not.toContain('Accept</button>');
     const decision = ((await (await fetch(url(`/review?result=t-complete&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
     expect(decision.selected!.complete).toBeNull();
     // The one ink act is Request changes, after one line saying why and what to do.
-    expect(decision.selected!.acts).toMatchObject({ primary: "request-changes", line: "Checks failed (exit 1). Fix them and run checks again, or ask for changes." });
+    expect(decision.selected!.acts).toMatchObject({ primary: "request-changes", line: "Checks failed (exit 1). Fix them and run checks again, or send it back." });
     const receipt = assignmentOf(store, "t-complete", new Date(), { principal: "operator", repos: null }, evidenceRoot)!.receipt!.digest;
     const csrf = csrfOf(html);
     const chatResult = await (await fetch(url(`/chat?task=t-complete&result=${run}`), { headers: { cookie } })).text();
-    expect(chatResult).not.toContain('Accept and finish</button>');
+    expect(chatResult).not.toContain('Accept</button>');
     const historicalChat = await (await fetch(url(`/chat?task=t-complete&result=${historical}`), { headers: { cookie } })).text();
     expect(historicalChat).toContain(`data-result-run="${historical}"`);
-    expect(historicalChat).not.toContain('Accept and finish</button>');
+    expect(historicalChat).not.toContain('Accept</button>');
     expect(historicalChat).not.toContain('/t/t-complete/complete');
     const before = store.proofVerdictFor(run);
     const approvedBefore = store.getScope('t-complete');
@@ -1332,7 +1332,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // A failed check refuses completion (the one readiness guard, task-status.ts): said plainly, nothing recorded.
     const done = await post(cookie, "/t/t-complete/complete", { csrf, run: String(run), receipt: receipt! });
     expect(done.status).toBe(409);
-    expect(await done.text()).toContain("Checks failed (exit 1). Fix them and run checks again, or ask for changes.");
+    expect(await done.text()).toContain("Checks failed (exit 1). Fix them and run checks again, or send it back.");
     expect(store.proofVerdictFor(run)).toEqual(before);
     expect(store.getScope('t-complete')).toEqual(approvedBefore);
     expect(store.runsFor(ref)).toEqual(runsBefore);
@@ -1373,7 +1373,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(one.selected!.title).toBe("one result, five surfaces");
     expect(one.selected!.record).toMatchObject({ build: run, href: `/r/${run}?record=1` });
     expect(one.results.every(row => !row.href.includes("project="))).toBe(true);
-    const expected = { run: String(run), head: "b".repeat(12), base: "a".repeat(12), "head-source": "sealed diff", checks: "1/1", caveats: "1", evidence: "ok", publication: "none" };
+    const expected = { run: String(run), head: "b".repeat(12), base: "a".repeat(12), "head-source": "saved diff", checks: "1/1", caveats: "1", evidence: "ok", publication: "none" };
     for (const [name, html] of Object.entries(pages)) {
       const stamped = factsOf(html);
       expect(stamped.length, name).toBeGreaterThan(0);
@@ -1561,7 +1561,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       expect(attention?.[2]).toContain("Only the USD path was exercised.");
       // Nothing renders the tampered bytes or calls them validated.
       expect(html).not.toContain(`<img src="/r/${run}/evidence/${shot.id}"`);
-      expect(html).not.toContain("validated visual proof");
+      expect(html).not.toContain("checked screenshots");
       expect(html).toContain("0 validated screenshots, 1 unavailable");
       expect(html).toContain('data-result-lead="changes"');
       expect(html).toMatch(/Check output \(shortened — [0-9]+ of [0-9]+ bytes stored\)/);
@@ -1689,10 +1689,10 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       expect(chat).toContain(`data-task="${root}" data-execution="${child}"`);
       expect(chat).toContain(`data-execution="${child}"`);
       expect(chat).toContain(`action="/t/${child}/approve"`);
-      const work = await read("/work");
+      const work = await read("/tasks");
       expect(work.match(new RegExp(`class="work-row" data-task="${root}"`, "g"))).toHaveLength(1);
       expect(work).not.toContain(`class="work-row" data-task="${child}"`);
-      expect(await read("/work")).not.toContain(`href="/t/${child}"`);
+      expect(await read("/tasks")).not.toContain(`href="/t/${child}"`);
       const form = new RegExp(`<form method="post" action="/t/${child}/approve"[\\s\\S]*?</form>`).exec(chat)![0];
       const digest = /name="digest" value="([^"]+)"/.exec(form)![1]!;
       const nonce = /name="nonce" value="([^"]+)"/.exec(form)![1]!;
@@ -1815,7 +1815,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(await read(`/chat?task=${root}`)).not.toContain(`action="/t/${child}/approve"`);
     plannerKeptTerms(store, child);
     expect(await read(`/chat?task=${root}`)).toContain(`action="/t/${child}/approve"`);
-    expect(await read("/work")).toContain(`data-task="${root}"`);
+    expect(await read("/tasks")).toContain(`data-task="${root}"`);
     await post(cookie, `/chat/proposal/${revise.id}/confirm`, { csrf });
     expect(store.taskFamilyOf(root, [repo], false)?.versions).toHaveLength(2);
     expect(store.allDiffComments(run)).toHaveLength(3);
@@ -2381,7 +2381,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const acceptedDamagedResult = await read(`/review?result=t-short&run=${shortRun}`);
     expect(acceptedDamagedResult).toContain('data-actual-checks="unavailable"');
     expect(acceptedDamagedResult).toContain("The retained verification log no longer verifies.");
-    expect(acceptedDamagedResult).toContain('Accept and finish</button>');
+    expect(acceptedDamagedResult).toContain('Accept</button>');
     expect(acceptedDamagedResult).not.toContain('data-actual-checks="passed"');
     expect(store.proofAcceptance(shortRun)?.approver).toBe("alex");
     const damagedTask = await read("/t/t-log");
@@ -2449,7 +2449,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
         expect(currentResult).toContain('data-work-status="assignment-ready-to-check"');
         expect(currentResult).toContain('data-actual-checks="unavailable"');
         expect(currentResult).toContain('data-result-attention=');
-        expect(currentResult).toContain('Accept and finish</button>');
+        expect(currentResult).toContain('Accept</button>');
         expect(currentResult).not.toContain('data-actual-checks="passed"');
       }
     }
@@ -2471,7 +2471,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const childRef = store.lookupRef(child)!.id;
     const line = async () => /<p class="result-revision" data-result-revision="[^"]+" data-result-revision-approved="([01])" data-tone="([a-z]+)"><strong>Revision<\/strong> <a href="[^"]+">[^<]*<\/a> <span class="meta">· ([^<]*)<\/span><\/p>/.exec(await read(`/r/${run}`));
     // The Work row names the assignment; the selected result still names the exact revision state.
-    const rowWords = async () => /<span class="status-label">([^<]*)<\/span>/.exec((await read("/work?view=all")).split(`data-task="t-standing"`)[1] ?? "")?.[1] ?? null;
+    const rowWords = async () => /<span class="status-label">([^<]*)<\/span>/.exec((await read("/tasks?view=all")).split(`data-task="t-standing"`)[1] ?? "")?.[1] ?? null;
     // Planned first: nothing to approve until the plan is updated (this fixture's worker is stale, and it says so).
     // The revision's standing is its shared headline (task-status.ts).
     expect((await line())?.[3]).toBe("Needs you");

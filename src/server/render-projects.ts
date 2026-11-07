@@ -205,17 +205,17 @@ export function projectPage(chrome: Chrome, data: {
   const counts = peek === null
     ? note("Not scanned yet.")
     : html`<p>${joinHtml([
-      countWords(peek.waiting, peek.waiting === 1 ? "needs you" : "need you", "/work"),
-      countWords(peek.running, "running", "/work"),
-      countWords(peek.queued, "queued", "/board?view=order"),
-      countWords(peek.doneRecently, "built today", "/done"),
+      countWords(peek.waiting, peek.waiting === 1 ? "needs you" : "need you", "/tasks"),
+      countWords(peek.running, "running", "/tasks"),
+      countWords(peek.queued, "queued", "/tasks?view=order"),
+      countWords(peek.doneRecently, "built today", "/tasks?view=done"),
     ], " · ")}</p>`;
   const tasks = data.tasks.length === 0
     ? note(`Nothing needs you or is running in ${data.name}.`)
     : html`${data.tasks.map(task => row({
       href: task.href, chip: task.needs ? status("needs") : status("running"), title: task.title, desc: task.reason, wait: task.needs,
       meta: task.since === null ? "" : html`<span class="k-num">${relativeAge(task.since, data.now)}</span>`,
-    }))}${data.moreTasks > 0 ? note(data.open ? html`<a class="k-link" href="/work">${data.moreTasks} more in Tasks</a>` : `${data.moreTasks} more`) : ""}`;
+    }))}${data.moreTasks > 0 ? note(data.open ? html`<a class="k-link" href="/tasks">${data.moreTasks} more in Tasks</a>` : `${data.moreTasks} more`) : ""}`;
   const setup = facts([
     ["Folder", mono(data.path)],
     ...(data.checks === null ? [] : [["Checks", html`<a class="k-link" href="${data.checks.href}">${data.checks.level}</a>`] as const]),

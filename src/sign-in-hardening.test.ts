@@ -122,7 +122,7 @@ test("policy changes are ledger events with what changed, and a person's coordin
 
 test("log lines say the event and its facts, and never carry key-shaped text", () => {
   const key = ["sk", "live", "a".repeat(28)].join("_");
-  expect(formatLogLine("error", "serve.error", { path: "/work", error: `boom ${key}` }, T0, false)).toBe('2026-09-27T18:00:00.000Z error serve.error path=/work error="[redacted: key-shaped text]"');
+  expect(formatLogLine("error", "serve.error", { path: "/tasks", error: `boom ${key}` }, T0, false)).toBe('2026-09-27T18:00:00.000Z error serve.error path=/tasks error="[redacted: key-shaped text]"');
   expect(JSON.parse(formatLogLine("warn", "sign-in.locked", { account: "alex", minutes: 15 }, T0, true))).toEqual({ at: T0.toISOString(), level: "warn", event: "sign-in.locked", account: "alex", minutes: 15 });
   // The shapes teams paste most are caught; ordinary words aren't.
   for (const secret of [key, `AIza${"B".repeat(35)}`, `glpat-${"c".repeat(20)}`, `8929217973:AA${"d".repeat(33)}`, "postgres://app:s3cret-pw@db.internal/app"]) expect(scanForSecrets(secret), secret).toHaveLength(1);

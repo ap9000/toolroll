@@ -662,7 +662,7 @@ export async function sweepMerges(
   const pagePerson = (publication: Publication, suffix: string, subject: string, body: string): void => {
     store.enqueueEpisode(
       `merge-attn:${publication.id}`,
-      { source: { run: publication.run }, kind: "merge", subject, body, pushClass: "merge", link: "/review" },
+      { source: { run: publication.run }, kind: "merge", subject, body, pushClass: "merge", link: "/tasks?view=ready" },
       suffix,
       clock(),
     );

@@ -10,7 +10,7 @@ import { approvalFactsNow, approveForm, composer, row, select, sendButton, slots
 import { requestContext } from "./request-context.js";
 import type { ApprovalFacts, ApprovalKind } from "../design/kit.js";
 
-const render = <T>(passwordless: boolean, run: () => T): T => requestContext.run({ csrf: "c-1", returnTo: "/work", passwordless }, run);
+const render = <T>(passwordless: boolean, run: () => T): T => requestContext.run({ csrf: "c-1", returnTo: "/tasks", passwordless }, run);
 const form = (kind: ApprovalKind, facts: Omit<ApprovalFacts, "passwordless">, passwordless = false): string =>
   render(passwordless, () => htmlString(approveForm({ action: "/t/x/approve", kind, facts: approvalFactsNow(facts), label: "Approve and start" })));
 const PASSWORD = /<input[^>]*type="password"[^>]*name="token"[^>]*autocomplete="current-password"[^>]*required/;

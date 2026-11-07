@@ -23,7 +23,7 @@ export function useNow(everyMs = 5_000): number {
 export function ActivityLine({ activity, className }: { activity: RunActivity; className?: string }) {
   const line = activityLine(activity, useNow());
   return <span className={cn("block min-w-0 truncate text-body", line.quiet ? "font-medium text-warning" : "font-normal text-muted-foreground", className)}
-    data-activity={line.quiet ? "quiet" : "fresh"} title={line.text}>
+    data-activity={line.quiet ? "quiet" : line.stale ? "stale" : "fresh"} title={line.text}>
     <time dateTime={activity.at}>{line.text}</time>
   </span>;
 }

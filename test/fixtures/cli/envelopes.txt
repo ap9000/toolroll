@@ -2925,6 +2925,36 @@ $ contract --commands --json → 0
       "remote": "yes"
     },
     {
+      "invocation": "task ready",
+      "synopsis": "Can I merge? The task's checklist from Toolroll's records, each blocker with the act that clears it (Run checks, Retry, Ask the agent to fix)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "positionals": [
+        {
+          "name": "task",
+          "required": true,
+          "meaning": "any version of the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ],
+      "notableReasons": [
+        "unknown-task"
+      ],
+      "remote": "yes"
+    },
+    {
       "invocation": "task add-tests",
       "synopsis": "file a small task to write tests for the task's latest change; it waits for approval like any task",
       "audience": "agent",
@@ -4126,10 +4156,50 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "task accept",
-      "synopsis": "record an explicit acceptance with limitations; does not change checks or prove deployment",
+      "synopsis": "accept a result: --finish (or --digest <receipt>) is exactly task complete's completion of the exact receipt; --despite \"<reason>\" records an acceptance with limitations and never completes; a bare call refuses",
       "audience": "operator",
       "agentMayInvoke": false,
       "mutation": "unkeyed",
+      "positionals": [
+        {
+          "name": "id",
+          "required": true,
+          "meaning": "the task"
+        }
+      ],
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "finish",
+          "takesValue": false,
+          "meaning": "accept the result and finish the task: task complete's exact-receipt completion; --json and scoped agents pass --digest"
+        },
+        {
+          "name": "digest",
+          "takesValue": true,
+          "meaning": "the exact receipt from assignment show; accepts and finishes exactly that result"
+        },
+        {
+          "name": "despite",
+          "takesValue": true,
+          "meaning": "accept with this reason, without finishing; never combines with --finish or --digest (--note is its alias)"
+        }
+      ],
+      "notableReasons": [
+        "usage",
+        "unknown-task",
+        "no-run",
+        "not-ready"
+      ],
       "remote": "step-up"
     },
     {
@@ -5699,6 +5769,7 @@ $ task list --json → 0
   "totals": {
     "all": 2,
     "needs-you": 2,
+    "ready": 0,
     "running": 0,
     "queued": 0,
     "completed": 0,
@@ -5848,8 +5919,8 @@ $ task show t-readme --json → 0
   "dispatch": {
     "condition": "waiting",
     "code": "needs-scope",
-    "summary": "Needs a scope",
-    "detail": "Write the success contract or ask the planner to draft it.",
+    "summary": "Needs a plan",
+    "detail": "Write the plan, or ask the planner to draft it.",
     "action": "write-scope",
     "nextAt": null,
     "role": "builder",
@@ -5951,6 +6022,7 @@ $ task list --view archived --json → 0
   "totals": {
     "all": 2,
     "needs-you": 2,
+    "ready": 0,
     "running": 0,
     "queued": 0,
     "completed": 0,
@@ -6072,8 +6144,8 @@ $ ready --json → 0
       "dispatch": {
         "condition": "waiting",
         "code": "needs-scope",
-        "summary": "Needs a scope",
-        "detail": "Write the success contract or ask the planner to draft it.",
+        "summary": "Needs a plan",
+        "detail": "Write the plan, or ask the planner to draft it.",
         "action": "write-scope",
         "nextAt": null,
         "role": "builder",

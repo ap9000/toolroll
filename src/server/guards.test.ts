@@ -98,7 +98,7 @@ test.each(['/allowed', null, '/removed'])('unrestricted cookies recover when the
     repos = ['/allowed'];
     const fallback = defaultProject === '/allowed' ? '/allowed' : null;
     expect(guards.projectOf(who, request)).toBe(fallback);
-    for (const path of ['/', '/projects', '/chat', '/work', '/settings/models', '/board']) {
+    for (const path of ['/', '/projects', '/chat', '/tasks', '/settings/models', '/board']) {
       const row = matchRoute('GET', path)!;
       expect(guards.projectRequestAllowed(row, row.project, new URL(path, 'http://local'), who, request, response, null), path).toBe(true);
     }

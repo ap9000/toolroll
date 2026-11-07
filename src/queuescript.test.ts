@@ -99,7 +99,7 @@ describe("queueScript, executed", () => {
     dropTwoOnOne();
     await flush();
     expect(document.querySelector(".queue-problem")).toBeNull();
-    expect(navigated).toEqual(["/board?view=order"]);
+    expect(navigated).toEqual(["/tasks?view=order"]);
   });
 
   test("a login bounce goes to the login page, never inline", async () => {
@@ -122,7 +122,7 @@ describe("queueScript, executed", () => {
     });
     dropTwoOnOne();
     await flush();
-    expect(calls).toEqual(["/queue/move", "/queue?fragment=1"]);
+    expect(calls).toEqual(["/queue/move", "/tasks?view=order&fragment=1"]);
     expect(document.getElementById("queue-region")?.textContent).not.toContain("login");
     expect(document.querySelector('[data-task="t-1"]')).not.toBeNull();
     expect(navigated).toEqual(["/login"]);
@@ -140,7 +140,7 @@ describe("queueScript, executed", () => {
     });
     dropTwoOnOne();
     await flush();
-    expect(calls).toEqual(["/queue/move", "/queue?fragment=1"]);
+    expect(calls).toEqual(["/queue/move", "/tasks?view=order&fragment=1"]);
     expect(document.getElementById("queue-region")?.textContent).toContain("fresh");
     expect(navigated).toEqual([]);
   });

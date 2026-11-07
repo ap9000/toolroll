@@ -58,6 +58,7 @@ import type { Phase } from "./provider.js";
 import { TOOL_CATALOG, credentialModeOf, discoverTools, projectToolsOf, secretsSetFor, toolCommandLine, toolSecretStorage, toolStanding, type FoundTool } from "./project-tools.js";
 import { deciderOf, durationWords, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowFromSteps, stepsFor, withKeptSteps, type FlowDefinition } from "./flows.js";
 import { parseContract, toModelSchema, type ContractResult } from "./contracts/contract.js";
+import { mergeChecklistOf } from "./merge-checklist.js";
 import { LEAD_TOOL_INPUTS, LEAD_TOOL_READ_INPUTS, LEAD_TOOL_OPTIONS, LEAD_TOOL_OUTPUTS, reportToolOutput, type LeadToolInput, type LeadToolName } from "./contracts/lead-tools.js";
 import { flowCardHref, flowDefinitionOf } from "./flow-engine.js";
 import { activeUnattendedGrant } from "./flow-unattended.js";
@@ -1485,7 +1486,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   get_task: {
-    description: "Read currentExecution, state, dispatch, history, scope, dependencies, holds, queue, attempts, decisions and whether the agent has read your notes before acting.",
+    description: "Read currentExecution, state, dispatch, history, scope, dependencies, holds, queue, attempts, decisions, canMerge (\"Can I merge?\": each check and the act that clears it) and whether the agent has read your notes before acting.",
     handle: (ctx, args) => {
       const taskId = taskIdOf(args);
       if (taskId === null) return { ok: false, message: "task is an id, 1-64 characters" };
@@ -1544,6 +1545,13 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
           })(),
           // The running agent's open questions (Agents board): reply with propose_steer and its question id.
           agentQuestions: openAgentQuestions(ctx.store, ref.id).map(one => ({ question: one.id, key: one.key, asks: one.question, askedAt: one.askedAt })),
+          // "Can I merge?" (merge-checklist.ts; `toolroll task ready` is its twin): the answer and each check; a blocker
+          // names its act (run-checks, retry, or fix: Send back with that note), which the person takes.
+          canMerge: (() => {
+            const list = mergeChecklistOf(ctx.store, taskId, ctx.now, { principal: "coordinator", repos: ctx.who.repos }, ctx.evidenceRoot);
+            return list === null ? null : { answer: list.answer, sentence: list.sentence,
+              checks: list.rows.filter(one => one.mark !== "skip").map(one => ({ check: one.label, mark: one.mark, says: one.say, act: one.act?.kind ?? null })) };
+          })(),
         },
       };
     },

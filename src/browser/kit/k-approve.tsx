@@ -50,6 +50,7 @@ export function KApprove({ kind, facts, label, terms, text, primary = true, dock
   return <>
     <KButton variant={primary ? "primary" : "outline"} label={label} docked={docked === true} busy={busy && trigger === null ? busyLabel : false}
       aria-haspopup={ask === "password" ? "dialog" : undefined}
+      {...(primary ? { "data-ink-approve": "" } : {})}
       onClick={event => { if (pending.current || (check !== undefined && !check())) return; if (ask === "password") setTrigger(event.currentTarget); else void run(null); }} />
     {ask === "click" && refusal && <KNotice>{refusal}</KNotice>}
     {trigger && <KOverlay kind="popover" title="Confirm with your password" trigger={trigger} onClose={() => { setTrigger(null); setRefusal(null); }}>

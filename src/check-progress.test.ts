@@ -132,7 +132,7 @@ describe("saved and delivered progress", () => {
   let dir: string | null = null;
   afterEach(() => { if (dir !== null) rmSync(dir, { recursive: true, force: true }); dir = null; });
 
-  test("saves every line, notifies once a minute, and always sends the final summary", () => {
+  test("saves every line, notes it once a minute, and never pings a phone for it", () => {
     const store = openStore(":memory:");
     const run = fixture(store);
     expect(store.enrollPushSubscription({
@@ -156,12 +156,11 @@ describe("saved and delivered progress", () => {
     expect(notices.map(row => row.body)).toEqual([unit.line, "unit ✓ 191 · flows ✓ 2 · app 1", final.line]);
     expect(notices.every(row => isTelegramProgressNotification(row))).toBe(true);
     expect(telegramProgressCard(store, store.getRun(run)!, "progress-1", REPO, later(60_001)).text).toContain(final.line);
-    expect(store.seedPushPairs(later(120_000))).toBe(3);
-    const pairs = store.claimPushPairs("push", 60_000, 10, later(120_000));
-    const fenced = pairs.map(pair => store.pushSendFence(pair.id, "push", pair.claimGeneration)?.notificationRow).filter(Boolean);
-    expect(fenced).toHaveLength(3);
-    expect(fenced.at(-1)?.pushClass).toBe("progress");
-    expect(JSON.parse(buildPushPayload(fenced.at(-1)!))).toMatchObject({ body: final.line, url: `/r/${run}`, tag: `so-run-${run}` });
+    // Checks in progress need nothing from a person (docs/plans/plain-toolroll.md P1.2): the activity keeps every line
+    // and the chat card repaints in place, but no phone is pinged.
+    expect(store.seedPushPairs(later(120_000))).toBe(0);
+    expect(store.claimPushPairs("push", 60_000, 10, later(120_000))).toEqual([]);
+    expect(JSON.parse(buildPushPayload(notices.at(-1)!))).toMatchObject({ body: final.line, tag: `so-run-${run}` });
     store.close();
   });
 

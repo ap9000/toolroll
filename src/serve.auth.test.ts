@@ -126,10 +126,9 @@ describe("the web decision view", () => {
   test("the milestone sentence: one screen, answerable", async () => {
     const cookie = await login();
 
-    // The list knows what waits.
-    const list = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
+    // Home knows what waits (the inbox retired into it, docs/plans/plain-toolroll.md P1.4).
+    const list = await (await fetch(url("/"), { headers: { cookie } })).text();
     expect(list).toContain("t-1");
-    expect(list).toContain("Fail open or fail closed?");
 
     // One screen: recap, question, options with consequences, the
     // recommendation marked, the irreversible one visibly armed, evidence.
@@ -232,7 +231,7 @@ describe("the web decision view", () => {
     [`/t/${"x".repeat(600)}`, "/"],
     ["/t/t-1?token=leaked&password=p&csrf=c&tab=checks", "/t/t-1?tab=checks"],
     ["/chat?task=t-1&result=7&tab=changes", "/chat?task=t-1&result=7&tab=changes"],
-    ["/work", "/work"],
+    ["/tasks", "/tasks"],
     ["/settings#providers", "/settings"],
     ["/board?fragment=1", "/"],
     ["/chat?task=t-1&fragment=rail", "/"],
@@ -712,7 +711,12 @@ describe("the first run: three plain steps to a first result", () => {
     rmSync(evidenceRoot, { recursive: true, force: true });
   });
 
-  const agentStep = async (cookie: string) => /<p class="row" data-step="agent">(.*?)<\/p>/.exec(await (await fetch(url("/inbox"), { headers: { cookie } })).text())?.[1] ?? "";
+  // The first run's agent step, as the chat's first-run checklist says it (the inbox that also said it retired, P1.4).
+  const agentStep = async (cookie: string): Promise<string> => {
+    const chat = await (await fetch(url("/chat?format=workspace"), { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
+    const step = chat.firstRun?.steps.find(one => one.key === "agent");
+    return step === undefined ? "done" : `${JSON.stringify(step)}${step.done ? " done" : ""}${step.checking ? " checking…" : ""}`;
+  };
   const signedIn = async (file: string) => ({ code: 0, stdout: file === "claude" ? JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }) : "Not logged in\n", stderr: "", timedOut: false, notFound: false });
 
   test("a signed-in agent on the worker's machine checks off the first step", async () => {
@@ -755,12 +759,12 @@ describe("the first run: three plain steps to a first result", () => {
     expect(await agentStep(cookie)).not.toContain("claude auth login");
   });
 
-  test("Chat and the inbox never wait on gh, git grep or a sign-in probe", async () => {
+  test("Chat and Home never wait on gh, git grep or a sign-in probe", async () => {
     register(store, { name: "builder-1", host: hostname(), capacity: 1, repos: ["/repo/main"], now: new Date(), newToken: () => "tok-builder-1" });
     const never = vi.fn(() => new Promise<never>(() => {}));
     await boot({ repo: "/repo/main", connectionProbe: never, firstTaskRunner: never });
     const cookie = await login();
-    expect((await fetch(url("/inbox"), { headers: { cookie }, signal: AbortSignal.timeout(3_000) })).status).toBe(200);
+    expect((await fetch(url("/"), { headers: { cookie }, signal: AbortSignal.timeout(3_000) })).status).toBe(200);
     const chat = await (await fetch(url("/chat?format=workspace"), { headers: { cookie }, signal: AbortSignal.timeout(3_000) })).json() as import("./browser-workspace.js").BrowserWorkspace;
     expect(chat.firstRun!.suggestions.map(one => one.source)).toEqual(["generic", "generic", "generic"]);
     // The reads were started by the background checks, never by the pages.
@@ -819,7 +823,7 @@ describe("the first run: three plain steps to a first result", () => {
     store.finishRun(run, { outcome: "no-change", committed: false, now: new Date("2026-08-14T13:00:00.000Z") });
     expect(store.installationFact("first-success-at")).toBeNull();
     expect(store.firstSuccessAt(new Date())).toBeNull();
-    expect(await (await fetch(url("/inbox"), { headers: { cookie } })).text()).toContain("Get to your first result");
+    expect(await (await fetch(url("/welcome"), { headers: { cookie } })).text()).toContain("Get to your first result");
   });
 });
 

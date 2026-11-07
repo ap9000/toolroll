@@ -16,8 +16,8 @@ const row = (id: string, extra: Partial<BrowserHomeRow> = {}): BrowserHomeRow =>
 const view = (over: Partial<BrowserHomeView> = {}): BrowserHomeView => ({
   kind: "home", say: "3 need you across 2 projects.", project: null, scopes: null,
   counts: [
-    { key: "needs", label: "Needs you", value: 3, href: "/work?view=needs-you" }, { key: "running", label: "Running", value: 1, href: "/work?view=running" },
-    { key: "queued", label: "Queued", value: 0, href: "/work?view=queued" }, { key: "finished", label: "Finished", value: 2, href: "/work?view=completed" }],
+    { key: "needs", label: "Needs you", value: 3, href: "/tasks?view=needs-you" }, { key: "running", label: "Running", value: 1, href: "/tasks?view=running" },
+    { key: "queued", label: "Queued", value: 0, href: "/tasks?view=queued" }, { key: "finished", label: "Finished", value: 2, href: "/tasks?view=completed" }],
   groups: [
     { key: "decide", label: "Decide", rows: [row("a"), row("q", { chip: { word: "Question", tone: "ask" }, question: { id: 7, text: "How should retries back off?", recap: "They hammer endpoints.", options: [
       { id: "exp", label: "Exponential", consequence: "Slow to give up.", recommended: true }, { id: "fixed", label: "Fixed", consequence: "Gives up fast.", recommended: false }] } })] },
@@ -48,7 +48,7 @@ test("the sentence reads the same totals as the figures", () => {
 test("four counts link to the Tasks filters; rows group by what they ask; the first that waits is open beside the list", async () => {
   await mount(view());
   expect([...document.querySelectorAll("[data-home-count]")].map(one => [one.getAttribute("data-home-count"), one.getAttribute("href"), one.querySelector(".so-count-v")?.textContent]))
-    .toEqual([["needs", "/work?view=needs-you", "3"], ["running", "/work?view=running", "1"], ["queued", "/work?view=queued", "0"], ["finished", "/work?view=completed", "2"]]);
+    .toEqual([["needs", "/tasks?view=needs-you", "3"], ["running", "/tasks?view=running", "1"], ["queued", "/tasks?view=queued", "0"], ["finished", "/tasks?view=completed", "2"]]);
   expect([...document.querySelectorAll(".so-tri-g")].map(one => one.textContent)).toEqual(["Decide", "Running"]);
   expect(document.querySelector('[aria-selected="true"]')?.getAttribute("data-row")).toBe("a");
   expect(document.querySelector(".so-tri-open")?.textContent).toContain("Approve plan");
@@ -103,12 +103,12 @@ test("search with nothing found in a truncated read says so and offers every tas
   const workspace = { crew: [], projects: [], chats: [], navigation: [] } as never;
   await act(async () => root!.render(createElement(SearchView, { view: { kind: "search", q: "zzqq", tasks: [], truncated: true }, workspace })));
   expect(host.textContent).toContain("so an older task may not show");
-  expect(host.querySelector('a[href="/work?view=all"]')?.textContent).toBe("Open every task in Tasks");
+  expect(host.querySelector('a[href="/tasks?view=all"]')?.textContent).toBe("Open every task in Tasks");
 });
 
 test("the one Needs-you count moves when work does: read again from its list, the rail, the dock and its sheet agree", async () => {
   const { Rail, NeedsDock, refreshNeeds } = await import("./shell.js");
-  const href = "/work?all=1&view=needs-you";
+  const href = "/tasks?scope=all&view=needs-you";
   const workspace = { version: 1, path: "/search", title: "Search", user: "alex", csrf: "c", sensitive: false, refreshUrl: "/search", receipt: null, projects: [], crew: [], crewTruncated: false,
     conversation: null, focus: null, result: null, catchUpHtml: "", controlsHtml: "", notices: [], pageHtml: "", navigation: [{ label: "Home", href: "/", active: false, count: 3 }],
     needsYou: { count: 3, saturated: false, scope: null, label: "3 need you across all your projects", href } } as unknown as import("../browser-workspace.js").BrowserWorkspace;
@@ -120,7 +120,7 @@ test("the one Needs-you count moves when work does: read again from its list, th
   await act(async () => root!.render(createElement("div", null, createElement(Rail, { workspace, states: null, current: null }), createElement(NeedsDock, { workspace }))));
   expect(host.querySelector("[data-needs-count]")?.textContent).toBe("3");
   await act(async () => { await refreshNeeds(href); });
-  expect(asked[0]).toBe("/work?all=1&view=needs-you&format=workspace");
+  expect(asked[0]).toBe("/tasks?scope=all&view=needs-you&format=workspace");
   expect(host.querySelector("[data-needs-count]")?.textContent).toBe("4");
   expect(host.querySelector(".k-dock-needs")?.getAttribute("aria-label")).toBe("Needs you: 4 need you across all your projects");
   await act(async () => { host.querySelector<HTMLButtonElement>(".k-dock-needs")!.click(); });

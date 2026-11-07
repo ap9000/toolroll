@@ -178,7 +178,7 @@ export type SharedResultFacts = {
    * else from the run record — `headSource` says which. */
   base: string | null;
   head: string | null;
-  headSource: "sealed diff" | "run record" | null;
+  headSource: "saved diff" | "build record" | null;
   /** Signed criteria passed, from the machine's matrix; null = no rubric. */
   checks: { passed: number; total: number } | null;
   caveats: readonly string[];

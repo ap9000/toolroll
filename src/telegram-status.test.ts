@@ -209,9 +209,9 @@ describe("read-only phone status", () => {
     const until = new Date(NOW.getTime() + 60_000);
     store.holdOwned({ taskRef: ref, ownerKind: "backoff", ownerId: "attempt-1", reason: "temporary failure", until }, NOW);
     const detail = phoneTask(store, [REPO], "mobile-nav", NOW);
-    expect(detail.split("\n")[4]).toBe("Queued");
+    expect(detail.split("\n")[4]).toBe("Waiting");
     expect(detail).toContain(`Earliest recorded wake: ${until.toISOString()}`);
-    expect(detail).toContain("a connected worker is still required");
+    expect(detail).toContain("a connected builder is still required");
   });
 
   test("a hidden dependency's ID is not disclosed by the shared diagnosis", () => {

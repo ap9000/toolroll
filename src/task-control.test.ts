@@ -585,7 +585,7 @@ describe("a finished run's processes settle by themselves", () => {
     try {
       const runId = finishedWithLiveProcess("t-outlived");
       expect(item("t-outlived").status.label).toBe("Waiting");
-      expect(item("t-outlived").status.detail).toBe("Waiting for build #1 to stop. Nothing is needed from you.");
+      expect(item("t-outlived").status.detail).toBe("Waiting: Toolroll is stopping build #1.");
       // Still alive: nothing is recorded.
       expect(store.recordFinishedRunExits(later(2_000))).toBe(0);
       kill.mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });

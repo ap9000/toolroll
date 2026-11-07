@@ -53,7 +53,7 @@ function scopeOf(workspace: BrowserWorkspace): DraftScope | null {
 
 function canRefreshWorkspace(): boolean { return !document.hidden && navigator.onLine !== false; }
 
-const FULL_WIDTH_PAGES = new Set(["/work", "/work/put-away", "/agents", "/board", "/queue", "/workbench", "/code"]);
+const FULL_WIDTH_PAGES = new Set(["/tasks", "/tasks/archive", "/agents", "/code"]);
 
 export function useWorkspace(initial: BrowserWorkspace) {
   const [workspace, setWorkspace] = useState(initial);
@@ -357,7 +357,7 @@ function Crew({ workspace }: { workspace: BrowserWorkspace }) {
   const active = workspace.crew.filter(item => !isFinished(item));
   const finished = workspace.crew.filter(isFinished);
   return <section className="so-crew" aria-labelledby="crew-title" data-workspace-crew>
-    <div className="so-section-heading"><h2 id="crew-title">Crew</h2><a href="/work">All tasks</a></div>
+    <div className="so-section-heading"><h2 id="crew-title">Crew</h2><a href="/tasks">All tasks</a></div>
     {workspace.crew.length === 0 ? <div className="so-crew-empty"><p>No tasks yet.</p><p>Work you start with the lead appears here.</p></div> : <>
       {active.length === 0 && <p className="so-crew-quiet">Nothing is running or waiting on you.</p>}
       {CREW_GROUPS.map(group => {
@@ -373,7 +373,7 @@ function Crew({ workspace }: { workspace: BrowserWorkspace }) {
       })}
       {finished.length > 0 && <Disclosure summary={`Finished (${finished.length}${workspace.crewTruncated ? "+" : ""})`} className="so-crew-finished"><CrewRows workspace={workspace} items={finished} /></Disclosure>}
     </>}
-    {workspace.crewTruncated && <a className="so-all-work" href="/work">View more tasks</a>}
+    {workspace.crewTruncated && <a className="so-all-work" href="/tasks">View more tasks</a>}
   </section>;
 }
 

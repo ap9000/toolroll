@@ -164,12 +164,13 @@ describe("the task stream", () => {
 describe("the last-activity line", () => {
   const text = () => [...host.querySelectorAll<HTMLElement>("[data-activity]")].map(one => `${one.dataset.activity}: ${one.textContent}`);
 
-  test("sits under the step on the task page, counts on, and turns quiet after five minutes", async () => {
+  test("sits under the step on the task page, counts on, and after five minutes says when it last heard, never marked", async () => {
     vi.stubGlobal("fetch", vi.fn<typeof fetch>());
     await act(async () => root!.render(createElement(TaskView, { view: taskView({ activity: { what: "Ran a command", at: ago(40), worker: "online" } }), details: false })));
     expect(text()).toEqual(["fresh: Ran a command · 40 s ago"]);
     await act(async () => vi.advanceTimersByTimeAsync(5 * 60_000));
-    expect(text()).toEqual(["quiet: No word for 5 min"]);
+    expect(text()).toEqual(["stale: Last update 5 min ago"]);
+    expect(host.querySelector("[data-activity]")!.className).not.toContain("text-warning");
     await act(async () => root!.render(createElement(TaskView, { view: taskView({ activity: { what: "Ran a command", at: new Date(Date.now() - 40_000).toISOString(), worker: "offline" } }), details: false })));
     expect(text()).toEqual(["quiet: Worker offline · last word 40 s ago"]);
   });

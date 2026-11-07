@@ -646,7 +646,7 @@ describe("the operations console", () => {
     expect(workspaceOf(inbox).refreshSeconds).toBeUndefined();
     expect(inbox).not.toContain('http-equiv="refresh"');
     // Tasks, a task and Home read themselves every 10 s while something builds, without a docked chat.
-    for (const path of ["/work", "/t/t-live", "/chat"]) {
+    for (const path of ["/tasks", "/t/t-live", "/chat"]) {
       const html = await (await fetch(url(path), { headers: { cookie } })).text();
       expect(workspaceOf(html).refreshSeconds, path).toBe(10);
       expect(workspaceOf(html).conversation ?? null, path).toBeNull();
@@ -2496,7 +2496,7 @@ describe("the filesystem browser — confined to what opening allows", () => {
     await identities.refresh([repo, root]);
     await boot({ repos: [repo], projectRoots: [root], identities, backgroundChecks: true, backgroundChecksMs: 100 });
     const cookie = await login();
-    for (const path of ["/healthz", "/projects", "/work", "/chat", "/settings/project", "/settings/tools"]) {
+    for (const path of ["/healthz", "/projects", "/tasks", "/chat", "/settings/project", "/settings/tools"]) {
       expect((await fetch(url(path), { headers: { cookie }, redirect: "manual" })).status, path).toBeLessThan(500);
     }
     // A path a request names that no answer vouches for is refused, never resolved on the console's thread.

@@ -254,21 +254,14 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     expect((await refused.json() as BrowserWorkspace).home).toBeUndefined();
   });
 
-  test("the Inbox has Needs you, Ready, Running and All as real links; each tab shows its own sections", async () => {
+  test("the retired Inbox lands on Home, which holds what needs you and what runs (docs/plans/plain-toolroll.md P1.4)", async () => {
     filed("waiting", "Show the balance", T0, false);
     building("mine", "Export orders", "builder-1");
     const cookie = await login();
-    const all = await fetch(url("/inbox"), { headers: { cookie } });
-    const allHtml = await all.text();
-    expect(all.headers.get("set-cookie")).toMatch(/^so-inbox-seen=[0-9a-f]{8}(\.[0-9a-f]{8}){3};/);
-    for (const tab of ["needs-you", "ready", "running", "all"]) expect(allHtml).toContain(`href="/inbox?tab=${tab}"`);
-    expect(allHtml).toContain("Approve a scope");
-    expect(allHtml).toContain("Running now");
-    const running = await (await fetch(url("/inbox?tab=running"), { headers: { cookie } })).text();
-    expect(running).toContain("Running now");
-    expect(running).not.toContain("Approve a scope");
-    const needs = await (await fetch(url("/inbox?tab=needs-you"), { headers: { cookie } })).text();
-    expect(needs).toContain("Approve a scope");
-    expect(needs).not.toContain("Running now");
+    const moved = await fetch(url("/inbox?tab=running"), { headers: { cookie }, redirect: "manual" });
+    expect([moved.status, moved.headers.get("location")]).toEqual([301, "/"]);
+    const home = await (await fetch(url("/"), { headers: { cookie } })).text();
+    expect(home).toContain("Show the balance");
+    expect(home).toContain("Export orders");
   });
 });

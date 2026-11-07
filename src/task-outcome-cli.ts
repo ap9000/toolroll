@@ -17,57 +17,59 @@ import { proveRunStopped } from './stop-proof.js';
 export async function runTaskOutcomeCommand(action: 'complete' | 'revise', positional: readonly string[], flags: Map<string, string | true>, context: {
   store: Store; evidenceRoot: string; json: boolean; write: (line: string) => void; now: Date;
   operator: () => Promise<VerifiedApprover | null>;
+  /** The command it answers as: `task accept --finish` is this same completion under its own name. */
+  command?: string;
 }): Promise<number> {
-  const command = `task ${action}`;
+  const command = context.command ?? `task ${action}`;
   const emit = (result: { ok: boolean; reason?: string; message?: string; result?: unknown; pullRequest?: unknown }, lines?: string[]) => {
     context.write(context.json ? envelopeJson({ ...result, command }) : result.ok ? (lines ?? []).join('\n') : result.message ?? 'The action was refused.');
     return result.ok ? 0 : result.reason === 'usage' ? 2 : 3;
   };
   const fail = (reason: string, message: string) => emit({ ok: false, reason, message });
   const allowed = new Set(['json', 'db', 'as', 'token', 'token-env', 'token-file', ...(action === 'complete' ? ['digest', 'pull-request'] : ['feedback', 'run', 'source', 'key'])]);
-  for (const key of flags.keys()) if (!allowed.has(key)) return fail('usage', `--${key} is not a task ${action} option.`);
+  for (const key of flags.keys()) if (!allowed.has(key)) return fail('usage', `--${key} is not a ${command} option.`);
   const task = positional[0];
-  if (positional.length !== 1 || !task || task.length > 64 || /[\x00-\x1f]/.test(task)) return fail('usage', `Use task ${action} <task>${action === 'complete' ? ' --digest <receipt> [--pull-request]' : ' --feedback "requested change"'}.`);
+  if (positional.length !== 1 || !task || task.length > 64 || /[\x00-\x1f]/.test(task)) return fail('usage', `Use ${command} <task>${action === 'complete' ? `${command === 'task accept' ? ' --finish' : ''} --digest <receipt> [--pull-request]` : ' --feedback "requested change"'}.`);
   const pullRequest = flags.has('pull-request');
   const credential = coordinatorToken(flags, process.env);
   if ('ok' in credential) return emit(credential);
-  if (credential.token !== null && (flags.has('as') || flags.has('token'))) return fail('usage', 'Choose a scoped credential or your operator sign-in.');
-  if (credential.token !== null && pullRequest) return fail('unauthenticated', 'Opening a pull request is an approver\'s act. Use your operator sign-in (--as and --token), not a scoped credential.');
+  if (credential.token !== null && (flags.has('as') || flags.has('token'))) return fail('usage', 'Choose your lead\'s credential or your own sign-in, not both.');
+  if (credential.token !== null && pullRequest) return fail('unauthenticated', 'Opening a pull request is an approver\'s act. Use your own sign-in (--as and --token), not your lead\'s credential.');
   const operator = credential.token === null ? await context.operator() : null;
-  if (credential.token === null && operator === null) return fail('unauthenticated', 'Sign in with up, or supply --as and --token. Agents can use --token-file or --token-env with a scoped credential.');
+  if (credential.token === null && operator === null) return fail('unauthenticated', 'Sign in with up, or supply --as and --token. Your lead can use --token-file or --token-env with its own credential.');
   const { store, now, evidenceRoot } = context;
   // A result whose build Toolroll hasn't yet proven stopped: it looks now (stop-proof.ts), so completing never waits
   // on a person to confirm it, only on Toolroll's own check (a refusal says "stopping" until it lands).
   if (action === 'complete') await proveTaskBuildsStopped(store, task, () => now);
   return store.transact(() => {
     const coordinator = credential.token === null ? null : authenticateCoordinator(store, credential.token);
-    if (coordinator !== null && !coordinator.ok) return fail('unauthenticated', 'The scoped credential is invalid or revoked.');
+    if (coordinator !== null && !coordinator.ok) return fail('unauthenticated', 'That credential is invalid or revoked.');
     if (operator !== null && !reproveApprover(store, operator).ok) return fail('unauthenticated', 'Your sign-in is no longer valid.');
     const repos = coordinator?.ok ? coordinator.who.repos : operator!.repos;
     const current = assignmentOf(store, task, now, { principal: coordinator === null ? 'operator' : 'coordinator', repos }, evidenceRoot);
     if (current === null) return fail('not-found', 'That task is unavailable in your projects.');
     if (action === 'complete') {
       const supplied = flags.get('digest');
-      if (supplied !== undefined && (typeof supplied !== 'string' || !/^[a-f0-9]{64}$/.test(supplied))) return fail('usage', '--digest requires the exact receipt from assignment show.');
-      if (supplied === undefined && (context.json || coordinator !== null)) return fail('usage', 'Read assignment show <task>, then pass its exact --digest to mark that result complete.');
+      if (supplied !== undefined && (typeof supplied !== 'string' || !/^[a-f0-9]{64}$/.test(supplied))) return fail('usage', '--digest needs the exact result version from assignment show.');
+      if (supplied === undefined && (context.json || coordinator !== null)) return fail('usage', 'Read assignment show <task>, then pass its exact --digest to accept that result.');
       const digest = typeof supplied === 'string' ? supplied : current.receipt?.digest;
-      if (!digest) return fail('not-ready', 'This task has no finished result to mark complete.');
+      if (!digest) return fail('not-ready', 'This task has no finished result to accept.');
       if (pullRequest) {
         // The console's "Complete and open a pull request": the same exact-receipt completion and owed PR, one transaction.
         const repo = store.lookupRef(current.activeTaskId)?.repo ?? null;
         const publishing = publishingOf(store, repo);
         if (!publishing.on) return fail('pull-requests-off', `Pull requests aren't set up for this project. Turn them on with: toolroll publish setup --repo ${repo ?? '<path>'} --yes`);
-        if (publishing.legacy) return fail('pull-requests-off', 'This project opens a pull request for every build. Complete without --pull-request.');
+        if (publishing.legacy) return fail('pull-requests-off', 'This project opens a pull request for every build. Accept without --pull-request.');
         const runId = current.receipt?.runId;
-        if (runId === undefined) return fail('not-ready', 'This task has no finished result to mark complete.');
+        if (runId === undefined) return fail('not-ready', 'This task has no finished result to accept.');
         const opened = completeAndOpenPullRequest(store, { taskId: task, digest, runId, who: operator!, root: evidenceRoot }, now);
         if (!opened.ok) return emit(opened);
         const link = opened.publication.prUrl;
         return emit({ ok: true, result: assignmentOf(store, task, now, { principal: 'operator', repos }, evidenceRoot), pullRequest: pullRequestViewOf(store, runId) }, [
-          `${current.rootId} · Complete`,
-          `Result: ${current.activeTaskId} · run ${runId} · ${opened.publication.headSha}`,
-          link === null ? `Pull request: opening from ${opened.publication.headSha.slice(0, 12)} into ${publishing.githubRepo} ${publishing.base}. toolroll task show ${current.rootId} prints its link.` : `Pull request: ${link}`,
-          `Next: CI is watched on GitHub. Merge when green: toolroll task merge ${current.rootId}`,
+          `${current.rootId} · Accepted`,
+          `Result: ${current.activeTaskId} · build #${runId} · ${opened.publication.headSha.slice(0, 7)}`,
+          link === null ? `Pull request: opening from ${opened.publication.headSha.slice(0, 7)} into ${publishing.githubRepo} ${publishing.base}. toolroll task show ${current.rootId} prints its link.` : `Pull request: ${link}`,
+          `Next: Toolroll follows its CI on GitHub. Merge when green: toolroll task merge ${current.rootId}`,
         ]);
       }
       const changed = credential.token !== null
@@ -76,7 +78,7 @@ export async function runTaskOutcomeCommand(action: 'complete' | 'revise', posit
       if (!changed.ok) return emit(changed);
       const assignment = 'body' in changed ? changed.body : changed.assignment;
       // Checks deliberately Off: nothing to say about them here.
-      return emit({ ok: true, result: assignment }, [`${current.rootId} · Complete`, `Result: ${current.activeTaskId} · run ${current.receipt!.runId} · ${current.receipt!.head ?? 'no commit'}`,
+      return emit({ ok: true, result: assignment }, [`${current.rootId} · Accepted`, `Result: ${current.activeTaskId} · build #${current.receipt!.runId} · ${current.receipt!.head?.slice(0, 7) ?? 'no commit'}`,
         ...(current.readiness?.checksOff ? [] : [current.receipt!.checks.detail])]);
     }
     const feedback = flags.get('feedback'), runFlag = flags.get('run'), sourceFlag = flags.get('source'), keyFlag = flags.get('key');
