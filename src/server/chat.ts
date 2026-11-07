@@ -803,7 +803,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     }
     if (outcome.ok && outcome.kind === "task_action" && outcome.taskId !== null) {
       const proposal = store.getLeadProposal(id)!;
-      if (proposal.payload["operation"] === "resume") {
+      if (proposal.payload["operation"] === "resume" && who.via !== "cookie") {
         return armTaskResume(response, who, outcome.taskId, String(proposal.payload["run"]), "chat", now);
       }
       return redirect(response, `${proposalTaskHref(outcome.taskId)}#task-chat-live`);

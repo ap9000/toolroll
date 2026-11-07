@@ -13,9 +13,16 @@ import { withActor } from "./actor.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import { publicChatText } from "./chat-display.js";
 import { gateWords } from "./approval-policy.js";
+import { checkLeadIdentity } from "./lead-identity.js";
+import { hasForbiddenControls } from "./decision.js";
+import { activeUnattendedGrant, revokeUnattended } from "./flow-unattended.js";
+import { decideProposal, listProposals } from "./memory-pass.js";
+import { authPauseOf, liftAuthPause } from "./provider-auth.js";
+import { isProviderId } from "./provider.js";
+import { approverStandsNow, familyRepoOf } from "./tidy.js";
 import { chatApproveMode } from "./chat-approval.js";
 import { createHash, randomBytes } from "node:crypto";
-import { leadTurnKeepsProposals, verifiedAuthor, type Store } from "./store.js";
+import { archiveTaskFamily, leadTurnKeepsProposals, restoreTaskFamily, verifiedAuthor, type Store } from "./store.js";
 import {
   isVerifiedApprover,
   reproveApprover,
@@ -171,6 +178,18 @@ export const CHAT_ACTIONS = {
   // The code map's switch and holdout (docs/plans/code-map.md §5): a person's yes on the card, re-proved in the write.
   code_map_switch: { label: "Change code map", protected: false, password: false },
   code_map_holdout_end: { label: "End holdout", protected: false, password: false },
+  // Chat and console parity (docs/plans/toolroll-cards.md): plain acts that lower authority or change no one's reach,
+  // each the console's own write. Ending a mode and turning a flow off its own only ever lower authority.
+  mode_revoke: { label: "End automatic approvals", protected: false, password: false },
+  flow_unattended_off: { label: "Stop running on its own", protected: false, password: false },
+  flow_archive: { label: "Archive flow", protected: false, password: false },
+  provider_resume: { label: "Resume agent", protected: false, password: false },
+  worker_note: { label: "Note on worker", protected: false, password: false },
+  lead_identity: { label: "Name your lead", protected: false, password: false },
+  task_archive: { label: "Put away task", protected: false, password: false },
+  task_restore: { label: "Restore task", protected: false, password: false },
+  incident_resolve: { label: "Resolve incident", protected: false, password: false },
+  memory_decide: { label: "Decide memory proposal", protected: false, password: false },
   // What the owner's own lead knows about them: theirs alone, in no project (lead-about.ts).
   lead_about_you: { label: "Remember", protected: false, password: false },
   scope_approve: { label: "Approve work", protected: true, password: false },
@@ -190,7 +209,9 @@ export const APPROVAL_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["s
 export const APPROVAL_TERM_CHARS = 3000;
 export const CHALLENGE_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["result_accept", ...APPROVAL_ACTIONS]);
 /** Actions about the person themselves, in no project: their card carries no project (repo ""). */
-export const OWNER_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["lead_about_you"]);
+export const OWNER_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["lead_about_you", "provider_resume", "worker_note", "lead_identity"]);
+/** Actions the console refuses a project-limited account (route table: limited "deny"): the same here. */
+const INSTANCE_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["mode_revoke", "flow_unattended_off", "provider_resume", "worker_note", "lead_identity", "incident_resolve", "memory_decide"]);
 export function isChatAction(value: unknown): value is ChatAction {
   return typeof value === "string" && Object.hasOwn(CHAT_ACTIONS, value);
 }
@@ -323,6 +344,13 @@ export function prepareSharedAction(
   // confirmation rebuilds the same stamp from the same bytes.
   const read = readChatActionRequest(operation, input);
   if (!read.ok) throw Error(`This action can't be read — ${read.issues.map(issue => issue.line).join("; ")}.`);
+  if (INSTANCE_ACTIONS.has(operation) && store.accountOf(who.name)?.projects !== null) throw Error("That needs an account with access to every project, as in the console.");
+  if (operation === "provider_resume" || operation === "worker_note" || operation === "lead_identity") {
+    requireActor(store, who, "", operation);
+    const { request, terms, state, title } = instanceAction(store, operation, input);
+    const stamp = hash({ operation, request, repo: "", state, terms, actor: who.name, generation: who.generation, ceiling: who.ceilingDigest });
+    return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
+  }
   if (operation === "lead_about_you") {
     // The owner's own note: the card shows the line, and the line it replaces beside it.
     const checked = checkAboutYouLine(input["line"]);
@@ -344,7 +372,7 @@ export function prepareSharedAction(
     return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
   }
   const task =
-    operation.startsWith("code_map_") || operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_") || operation.startsWith("suggestion_") || operation.startsWith("trial_")
+    operation === "mode_revoke" || operation === "memory_decide" || operation === "incident_resolve" || operation.startsWith("code_map_") || operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_") || operation.startsWith("suggestion_") || operation.startsWith("trial_")
       ? null
       : text(input, "task", 64);
   const flowTarget = operation.startsWith("flow_") && operation !== "flow_create" && operation !== "flow_script_save" && operation !== "flow_starter" ? flowTargetOf(store, input) : null;
@@ -356,6 +384,7 @@ export function prepareSharedAction(
   if (operation === "subagent_answer" && (questionTarget === null || questionFlow === null)) throw Error("That question isn't open any more.");
   const repo =
     operation === "sweep_cancel_rest" ? store.getSweep(integer(input, "sweep"))?.repo
+      : operation === "incident_resolve" ? incidentRepoOf(store, integer(input, "incident"))
       : flowTarget !== null ? flowTarget.flow.repo : subagentTarget !== null ? subagentTarget.repo : questionFlow !== null ? questionFlow.repo : task === null ? text(input, "repo", 4096) : store.lookupRef(task)?.repo;
   if (!repo) throw Error("Choose an available project.");
   requireActor(store, who, repo);
@@ -363,7 +392,12 @@ export function prepareSharedAction(
     terms: string[] = [];
   let state: Record<string, unknown>,
     title = CHAT_ACTIONS[operation].label as string;
-  if (operation.startsWith("skill_")) {
+  if (PARITY_ACTIONS.has(operation)) {
+    const made = parityAction(store, who, operation, input, repo, flowTarget?.flow ?? null, now);
+    state = made.state;
+    title = made.title;
+    terms.push(...made.terms);
+  } else if (operation.startsWith("skill_")) {
     const view = skillsView(store, repo, who.name);
     state = {
       identity: view.identity,
@@ -1287,6 +1321,7 @@ export function executeSharedAction(
         repo = payload.repo,
         actor = who.name;
       let taskId = task;
+      if (PARITY_ACTIONS.has(payload.operation) || OWNER_PARITY.has(payload.operation)) return runParityAction(store, who, payload, now);
       if (payload.operation === "lead_about_you") {
         const next = withAboutYouLine(aboutYouOf(store, actor), String(req["line"]), Number(req["replaces"] ?? 0));
         if (!next.ok) throw Error(next.message);
@@ -1748,4 +1783,122 @@ function runFlowAction(store: Store, payload: SharedAction, actor: string, repos
       })();
   if (!acted.ok) throw Error(acted.message);
   return settle(card.flow, acted.said, card.id);
+}
+
+// ---- chat and console parity (docs/plans/toolroll-cards.md) ------------------------------------------------------------
+
+const PARITY_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["mode_revoke", "flow_unattended_off", "flow_archive", "task_archive", "task_restore", "incident_resolve", "memory_decide"]);
+const OWNER_PARITY: ReadonlySet<ChatAction> = new Set<ChatAction>(["provider_resume", "worker_note", "lead_identity"]);
+
+function incidentRepoOf(store: Store, id: number): string | null {
+  const open = store.openIncidents().find(one => one.id === id);
+  return open === undefined ? null : store.lookupRef(open.taskId)?.repo ?? null;
+}
+
+function instanceAction(store: Store, operation: "provider_resume" | "worker_note" | "lead_identity", input: Record<string, unknown>): { request: Record<string, unknown>; terms: string[]; state: Record<string, unknown>; title: string } {
+  if (operation === "provider_resume") {
+    const provider = text(input, "provider", 40);
+    if (!isProviderId(provider)) throw Error("Choose an agent provider.");
+    const pause = authPauseOf(store, provider);
+    if (pause === null) throw Error("That agent isn't paused.");
+    return { request: { provider }, title: `Resume ${provider}`, state: { pause: pause.id }, terms: [`Lifts the sign-in pause on ${provider} and sends its waiting tasks back to the queue. Existing approvals and holds still apply.`] };
+  }
+  if (operation === "worker_note") {
+    const runner = text(input, "runner", 120), note = String(input["note"] ?? "").trim();
+    if (note.length > 200 || hasForbiddenControls(note)) throw Error("A worker's note is at most 200 plain characters.");
+    const worker = store.listRunners().find(one => one.name === runner && one.retiredAt === null);
+    if (worker === undefined) throw Error("No such worker.");
+    return { request: { runner, note }, title: `Note on ${runner}`, state: { runner }, terms: [note === "" ? "Clears this worker's note." : `Sets this worker's note to: ${note}`] };
+  }
+  const checked = checkLeadIdentity(String(input["name"] ?? ""), String(input["persona"] ?? ""));
+  if (!checked.ok) throw Error(checked.message);
+  return { request: { name: checked.identity.name, persona: checked.identity.persona }, title: `Call your lead ${checked.identity.name}`, state: {}, terms: [`Name: ${checked.identity.name}`, `Persona: ${checked.identity.persona}`] };
+}
+
+function parityAction(store: Store, who: VerifiedApprover, operation: ChatAction, input: Record<string, unknown>, repo: string, flow: FlowRow | null, now: Date): { state: Record<string, unknown>; title: string; terms: string[] } {
+  switch (operation) {
+    case "mode_revoke": {
+      const mode = store.activeMode(repo, now);
+      if (mode === null) throw Error("No automatic approvals are on for this project.");
+      return { state: { mode: mode.id, digest: mode.digest }, title: "End automatic approvals", terms: [`Ends the ${mode.name} mode signed by ${mode.signedBy}. Every act goes back to its own approval.`] };
+    }
+    case "flow_unattended_off": {
+      const grant = activeUnattendedGrant(store, flow!.id, now);
+      if (grant === null) throw Error(`${flow!.name} isn't running on its own.`);
+      return { state: { flow: flow!.id, grant: grant.id }, title: `Stop ${flow!.name} running on its own`, terms: ["New cards wait for a person again."] };
+    }
+    case "flow_archive":
+      return { state: { flow: flow!.id, revision: flow!.revision }, title: `Archive ${flow!.name}`, terms: ["Takes this flow off the list. Its triggers stop starting cards."] };
+    case "task_archive": {
+      const task = String(input["task"]), row = store.getTask(task);
+      if (row === null) throw Error("No such task.");
+      return { state: { task, updatedAt: row.updatedAt, state: row.state }, title: `Put away ${row.title}`, terms: ["Takes this task out of every list. It stays saved and can be restored."] };
+    }
+    case "task_restore": {
+      const task = String(input["task"]), row = store.getTask(task);
+      if (row === null) throw Error("No such task.");
+      return { state: { task, updatedAt: row.updatedAt }, title: `Restore ${row.title}`, terms: ["Puts this task back in the lists."] };
+    }
+    case "incident_resolve": {
+      const id = integer(input, "incident"), open = store.openIncidents().find(one => one.id === id)!;
+      return { state: { incident: id }, title: `Resolve the incident on ${open.taskId}`, terms: ["Marks this incident resolved. Nothing else about the task changes."] };
+    }
+    case "memory_decide": {
+      const id = integer(input, "proposal"), decision = input["decision"] === "accept" ? "accept" : "reject";
+      const proposal = listProposals(store, repo).find(one => one.id === id);
+      if (proposal === undefined) throw Error("That proposal isn't waiting any more.");
+      return { state: { proposal: id }, title: `${decision === "accept" ? "Accept" : "Reject"} a memory proposal`, terms: [proposal.title, ...(proposal.beforeText === null ? [] : [`Was: ${proposal.beforeText}`]), `Becomes: ${proposal.afterText}`, decision === "accept" ? "Later agent sessions in this project read this." : "Nothing is added to project memory."] };
+    }
+    default:
+      throw Error("Choose an available action.");
+  }
+}
+
+/** Each runs the write the console's own handler calls, as this person, inside the confirm door's transaction. */
+function runParityAction(store: Store, who: VerifiedApprover, payload: SharedAction, now: Date): { ok: true; taskId: string | null; said: string; href?: string } {
+  const req = payload.request, actor = who.name, repo = payload.repo;
+  const done = (said: string, href?: string, taskId: string | null = null) => ({ ok: true as const, taskId, said, ...(href === undefined ? {} : { href }) });
+  switch (payload.operation) {
+    case "mode_revoke":
+      if (!store.revokeMode(repo, actor, "operator", now)) throw Error("That mode already ended.");
+      return done("Automatic approvals are off. Every act goes back to its own approval.", "/mode");
+    case "flow_unattended_off":
+      if (!revokeUnattended(store, Number(req["flow"]), actor, now)) throw Error("It wasn't running on its own.");
+      return done("It no longer runs on its own. New cards wait for a person.", `/flows/${Number(req["flow"])}`);
+    case "flow_archive":
+      store.archiveFlow(Number(req["flow"]), actor, now);
+      return done("Flow archived.", "/flows");
+    case "task_archive": case "task_restore": {
+      const task = String(req["task"]);
+      const standing = (refs: readonly number[]) => approverStandsNow(store, actor, familyRepoOf(store, refs));
+      const made = payload.operation === "task_archive"
+        ? archiveTaskFamily(store, task, { by: actor, byKind: "person", rule: null, reason: String(req["reason"] ?? "").trim() || "Put away from chat" }, now, { guard: standing })
+        : restoreTaskFamily(store, task, actor, now, standing);
+      if (!made.ok) throw Error(made.message);
+      return done(payload.operation === "task_archive" ? "Put away." : "Restored.", undefined, task);
+    }
+    case "incident_resolve":
+      if (!store.resolveIncident(Number(req["incident"]), actor, now)) throw Error("That incident was already resolved.");
+      return done("Incident resolved.");
+    case "memory_decide": {
+      const decision = req["decision"] === "accept" ? "accept" : "reject";
+      decideProposal(store, { repo, actor, id: Number(req["proposal"]), decision }, now);
+      return done(decision === "accept" ? "Added to project memory." : "Rejected.", `/settings/knowledge?repo=${encodeURIComponent(repo)}`);
+    }
+    case "provider_resume": {
+      const lifted = liftAuthPause(store, String(req["provider"]), "person", actor, now);
+      if (lifted === null) throw Error("That agent isn't paused any more.");
+      return done(`Resumed. ${lifted.resumed} ${lifted.resumed === 1 ? "task went" : "tasks went"} back to the queue.`);
+    }
+    case "worker_note": {
+      const note = String(req["note"]);
+      if (!store.setRunnerQueueNote(String(req["runner"]), note === "" ? null : note).ok) throw Error("No such worker.");
+      return done("Note saved.", "/fleet");
+    }
+    case "lead_identity":
+      store.setLeadConfig(actor, String(req["name"]), String(req["persona"]), now);
+      return done(`Your lead is called ${String(req["name"])} now.`, "/settings/lead");
+    default:
+      throw Error("Choose an available action.");
+  }
 }

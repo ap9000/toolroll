@@ -911,7 +911,7 @@ export const CHAT_ACTION_PARITY: Record<
   propose_task_action: {
     support: "direct",
     how: "stop, retry, plan, wait_for and stop_waiting confirm through the shared door (a stop is audited via telegram); resume, on a person's own tap, lifts the stop, and links the task where the password step lives.",
-    gap: "resume completes in the console (incomplete phone action).",
+    gap: null,
   },
   propose_answer: {
     support: "direct",
@@ -980,7 +980,7 @@ export function confirmedCardText(
       : revise && state === "approved"
         ? "Revision created under your automatic approval settings."
         : said;
-  const next = resume
+  const next = resume && said.startsWith("Resume requested")
     ? "Nothing has resumed yet: finish it on the task."
     : approval && note !== null
       ? "Approve it in Toolroll on the computer."

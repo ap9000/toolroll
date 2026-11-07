@@ -45,6 +45,8 @@ const RENAMED: Record<Surface, Record<string, { from: string; fields: Record<str
 const REMOVED: Record<Surface, Record<string, string>> = { lead: {}, gateway: {} };
 const DESCRIPTION_CHANGES: Record<string, string> = {
   get_models: "results routing slices 2-3: also lists cheaper models a project's results suggest, its earned rules, Not now, trial offers, trials and Stop",
+  propose_scope: "toolroll-cards: approval takes no password from chat",
+  propose_task_action: "toolroll-cards: resuming is the person's own approval, on its card, no password",
   propose_review: "v137: attach a verified screenshot to feedback or name the result Comment control",
   get_flows: "D5: describe delegation through the lead and named subagents",
   propose_flow: "D5: teammate tools, steps and fields are named subagent",

@@ -670,7 +670,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       if(operation.startsWith('flow_'))return {ok:false,message:'Use propose_flow for flows.'};
       if(operation.startsWith('subagent_'))return {ok:false,message:'Use propose_subagent for subagents.'};
       const input:Record<string,unknown>={...args};delete input['operation'];
-      if(operation.startsWith('skill_')||operation.startsWith('knowledge_')||operation.startsWith('tool_')){
+      if(operation.startsWith('skill_')||operation.startsWith('knowledge_')||operation.startsWith('tool_')||operation==='mode_revoke'||operation==='memory_decide'){
         const repo=repoPathOf(ctx.who,args['repo']);if(repo===null)return {ok:false,message:'Choose a project from list_repos.'};input['repo']=repo;
       }
       if(operation==='skill_test')input['nonce']=randomUUID();
@@ -1165,6 +1165,8 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
           // Browser use in the flow's script zones: a proposal only; the person allows it with their own yes on its card.
           case "allow_browser": operation = "flow_browser"; input = pick(["flow"]); break;
           case "turn_off_browser": operation = "flow_browser_off"; input = pick(["flow"]); break;
+          case "archive": operation = "flow_archive"; input = pick(["flow"]); break;
+          case "turn_off_unattended": operation = "flow_unattended_off"; input = pick(["flow"]); break;
           default: return { ok: false, message: "Choose create, edit, add_card, move_card, approve, send_back, cancel_card, comment, assign, follow, unfollow, add_trigger, pause_trigger, resume_trigger, remove_trigger, allow_browser or turn_off_browser." };
         }
         const action = prepareSharedAction(ctx.store, ctx.who, operation, input, ctx.evidenceRoot, ctx.now);

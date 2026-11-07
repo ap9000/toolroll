@@ -89,6 +89,17 @@ export const chatActionRequestSchemas = {
   // Slice 3: stopping a trial (starting one stays in Settings → Models, behind a step-up).
   trial_stop: z.strictObject({ repo: words, trial: id }),
   code_map_switch: z.strictObject({ repo: words, on: z.boolean() }),
+  // Chat and console parity (docs/plans/toolroll-cards.md): each runs the console's own write.
+  mode_revoke: z.strictObject({ repo: words }),
+  provider_resume: z.strictObject({ provider: words }),
+  worker_note: z.strictObject({ runner: words, note: words }),
+  lead_identity: z.strictObject({ name: words, persona: words }),
+  task_archive: z.strictObject({ task: words, reason: words.optional() }),
+  task_restore: z.strictObject({ task: words }),
+  flow_archive: z.strictObject({ flow: id }),
+  flow_unattended_off: z.strictObject({ flow: id }),
+  incident_resolve: z.strictObject({ incident: id }),
+  memory_decide: z.strictObject({ repo: words, proposal: id, decision: z.enum(["accept", "reject"]) }),
   code_map_holdout_end: z.strictObject({ repo: words }),
   /** The line, and (from 1) the line it replaces; 0 or none adds it. */
   lead_about_you: z.strictObject({ line: words, replaces: z.int().min(0).optional() }),

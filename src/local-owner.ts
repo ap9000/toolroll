@@ -207,6 +207,9 @@ export const CHAT_ACTION_LOCAL_ACTS: Readonly<Record<ChatAction, LocalOwnerAct |
   subagent_create: null, subagent_soul: null, subagent_state: null, subagent_note: null, subagent_ask: null,
   subagent_answer: null, subagent_tools: null, subagent_memory: null, subagent_routine: null, subagent_undo: null,
   kit_setup: null, decision_record: null, decision_retire: null, lead_about_you: null,
+  // Chat and console parity: decided one by one, and none is a local owner's act yet. A password opens them.
+  mode_revoke: null, flow_unattended_off: null, flow_archive: null, provider_resume: null, worker_note: null, lead_identity: null,
+  task_archive: null, task_restore: null, incident_resolve: null, memory_decide: null,
   // Results routing: Not now only lowers (the rule door checks this exact act).
   suggestion_not_now: "dismiss-suggestion",
   // Stopping a trial only lowers (the rule door checks this exact act).
