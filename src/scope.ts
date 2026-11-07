@@ -2,7 +2,7 @@
 export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { mintSecret } from "./secret-mint.js";
 import { passwordlessOn } from "./passwordless.js";
-import { routeChangeProblem } from "./route-change.js";
+import { routeChangeProblem } from "./route-change-check.js";
 import { currentPasswordSource, passwordGuardOf, provenPasswordAccount } from "./sign-in-guard.js";
 import { validateScopeText } from "./task-text.js";
 import { contractChangesOf } from "./contract-changes.js";

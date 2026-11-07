@@ -1083,6 +1083,74 @@ const moveTo = (s: ReturnType<typeof world>["s"], head: string) => {
   s.checks.set(head, passing(REQUIRED_PR_CHECKS));
 };
 
+describe("toolroll release: a branch behind main is updated, and is a new candidate (plain-toolroll.md P2.6)", () => {
+  const NEWER = "e".repeat(40);
+  const updating = (s: ReturnType<typeof world>["s"], adapters: ReleaseAdapters, answer?: { ok: false; why: string }) => {
+    const asked: { expected: string }[] = [];
+    adapters.github.updateBranch = async (_repo, _pr, expected) => {
+      asked.push({ expected });
+      if (answer !== undefined) return answer;
+      moveTo(s, NEWER);
+      s.mainMoved = false;
+      return { ok: true };
+    };
+    return asked;
+  };
+
+  test("at the gate: updated under the gated head, and the new head is what's filed", async () => {
+    const { s, adapters } = world();
+    s.mainMoved = true;
+    const asked = updating(s, adapters);
+    const dir = stateDir();
+    await runRelease(options(dir), adapters);
+    expect(asked).toEqual([{ expected: SHA }]);
+    const journal = readJournal(journalFile(dir, options(dir).branch))!;
+    expect(journal.candidate.sha).toBe(NEWER);
+    expect(journal.task.id).toBe(gateTaskId(journal.packageVersion, NEWER));
+  });
+
+  test("attack: an update racing a push aborts, and nothing moves", async () => {
+    const { s, adapters } = world();
+    s.mainMoved = true;
+    updating(s, adapters, { ok: false, why: "expected head sha didn't match" });
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, reason: "drift", message: expect.stringContaining("expected head sha") });
+    expect(s.calls).toEqual([]);
+    expect(s.branchHead).toBe(SHA);
+  });
+
+  test("attack: a head that already moved is never updated", async () => {
+    const { s, adapters } = world();
+    s.mainMoved = true;
+    const asked = updating(s, adapters);
+    s.pr = { ...s.pr, head: OTHER };
+    await runRelease(options(stateDir()), adapters);
+    expect(asked).toEqual([]);
+  });
+
+  test("attack: no approval crosses the update: never carried, and the authority stops first", async () => {
+    const dir = stateDir();
+    const { s, adapters, rel } = releaseWorld();
+    const asked = updating(s, adapters);
+    // Main moves once the release is approved and its lease held: it reaches the merge with an approval to lose.
+    s.onSleep.push(state => { if (state.gate.approval !== null) state.mainMoved = true; });
+    const outcome = await runRelease(options(dir), adapters);
+    expect(outcome).toMatchObject({ ok: false, reason: "approval", message: expect.stringContaining("needs a person's approval") });
+    expect(asked).toEqual([{ expected: SHA }]);
+    expect(rel.approvalsNeeded.join()).toContain("brought up to main");
+    expect(s.calls).not.toContain("merge");
+    expect(readJournal(journalFile(dir, options(dir).branch))?.needsApproval).toBe(true);
+  });
+
+  test("attack: a coordinator that lost the lease doesn't update", async () => {
+    const { s, adapters } = releaseWorld();
+    const asked = updating(s, adapters);
+    s.onSleep.push(state => { if (state.gate.approval !== null) state.mainMoved = true; });
+    adapters.release!.renew = async () => false;
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, reason: "lease" });
+    expect(asked).toEqual([]);
+  });
+});
+
 describe("toolroll release: one approval per release", () => {
   test.each(["approval", "check", "complete", "quiet"] as const)("a head move during the %s wait restarts from check for the new tip; nothing from the old step runs afterwards", async during => {
     const dir = stateDir();

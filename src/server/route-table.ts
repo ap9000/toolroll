@@ -632,6 +632,8 @@ post("people", "people.revoke", "/people/revoke", { scope: "step-up" });
 post("pages", "fleet.retire", "/fleet/runner/retire", { scope: "step-up" });
 // Answering a parked decision needs act access and irreversible-choice confirmation, not password step-up.
 post("tasks", "decision.answer", `^\\/d\\/${ID}\\/answer$`, { project: "decision", limited: "resource", scope: "act", sample: "/d/1/answer" });
+// A held automatic release goes on: a person, with their password typed now (release-auto.ts allowAutoPublish).
+post("tasks", "task.release.go-on", `^\\/t\\/${TASK}\\/release\\/go-on$`, { project: "task", limited: "resource", scope: "step-up", sample: "/t/one/release/go-on", ...approver("An approver lets a release go on.", "/tasks") });
 post("tasks", "task.act.keep-grown", `^\\/t\\/${TASK}\\/keep-grown$`, { project: "task", limited: "resource", sample: "/t/one/keep-grown", callers: ["cookie"], ...approver("An approver keeps a change.", "/tasks") });
 post("tasks", "task.act.hold", `^\\/t\\/${TASK}\\/hold$`, { project: "task", limited: "resource", sample: "/t/one/hold" });
 post("tasks", "task.act.unhold", `^\\/t\\/${TASK}\\/unhold$`, { project: "task", limited: "resource", sample: "/t/one/unhold" });

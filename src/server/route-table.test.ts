@@ -57,7 +57,7 @@ const LIMITED_ACCESS = {
   'settings.telegram-retry': 'self', 'settings.chat-approval-confirm': 'self',
   'settings.chat-approval-save': 'self', 'settings.chat-approval-off': 'self',
   'settings.telegram-pair': 'self', 'settings.telegram-unpair': 'self',
-  'projects.select': 'unscoped', 'agents': 'unscoped', 'agents.live': 'unscoped', 'agents.live.read': 'unscoped', 'agents.seen': 'unscoped', 'agents.watch': 'unscoped', 'tasks.add': 'collection', 'tasks.fast': 'collection', 'task.act.keep-grown': 'resource', 'decision.answer': 'resource',
+  'projects.select': 'unscoped', 'agents': 'unscoped', 'agents.live': 'unscoped', 'agents.live.read': 'unscoped', 'agents.seen': 'unscoped', 'agents.watch': 'unscoped', 'tasks.add': 'collection', 'tasks.fast': 'collection', 'task.act.keep-grown': 'resource', 'task.release.go-on': 'resource', 'decision.answer': 'resource',
   'task.act.hold': 'resource', 'task.act.unhold': 'resource', 'task.act.requeue': 'resource',
   'task.act.cancel': 'resource', 'task.act.scope': 'resource', 'task.act.approve': 'resource',
   'task.act.plan': 'resource', 'task.act.plan-edit': 'resource', 'task.act.next': 'resource',

@@ -34,6 +34,7 @@ import { hasForbiddenControls,validateNote } from "../decision.js";
 import { builderReadyFor,diagnoseTaskDispatch,firstRunBuilderRepo } from "../dispatch.js";
 import { firstTaskSuggestions,withBuilderStep } from "../first-run.js";
 import { fastStartPage, fastTermsRows, newTaskPage,type TaskComposerPrefill } from "./render-new-task.js";
+import { allowAutoPublish, autoPublishHeld } from "../release-auto.js";
 import { fastStartBuild, keepGrownChange, prepareFastStart, type PasswordFacts } from "../fast-start.js";
 import { evidencePack } from "../evidence-pack.js";
 import { decisionPage, evidenceRecordPage, runPage } from "./render-history.js";
@@ -3091,7 +3092,7 @@ export function createAgentSignalHandlers(runtime: ServerRuntime) {
  * unchanged approve() (release-approval.ts approveReleaseCard).
  */
 export function createReleaseSheetHandlers(runtime: ServerRuntime) {
-  const { store, sendScreen, chromeFor, visible, mintApprovalNonce, clock } = runtime;
+  const { store, sendScreen, chromeFor, visible, mintApprovalNonce, clock, authenticateApprover } = runtime;
   const missing = (who: Who, response: ServerResponse) => refuse(response, who, 404, "There's no release waiting for approval at this address.", "/work");
 
   /** The sheet, with a problem said where it happened. */
@@ -3113,7 +3114,7 @@ export function createReleaseSheetHandlers(runtime: ServerRuntime) {
       const gate = store.approvalGate(taskId, who.name, "person");
       return freshlyApprovable(store, taskId, card.scope, gate.verdict === "seal" && !gate.protectedWork);
     })();
-    return sendScreen(response, status, releaseSheetPage(chromeFor(project ?? ref.repo, "work"), { card, nonce, facts: approvalFactsNow({ remembered }), local, problem }));
+    return sendScreen(response, status, releaseSheetPage(chromeFor(project ?? ref.repo, "work"), { card, nonce, facts: approvalFactsNow({ remembered }), local, problem, held: who.role === "approver" ? autoPublishHeld(store, taskId) : null }));
   }
 
   async function showSheet(ctx: HandlerContext): Promise<void> {
@@ -3146,5 +3147,19 @@ export function createReleaseSheetHandlers(runtime: ServerRuntime) {
     return sheetScreen(ctx, taskId, approveRefusalWords(refused.reason), refused.reason === "changed" || refused.reason === "unrouted" ? 409 : 403);
   }
 
-  return { routes: { "task.release": showSheet, "release.locate": locate }, sheetScreen, approveFromSheet };
+  /** A held automatic release goes on: a person only, proved now. The watch then resumes it (release-next.ts). */
+  async function goOn(ctx: HandlerContext): Promise<void> {
+    const { who, url, posted, now, response } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.releaseGoOn);
+    const task = matchTaskPath(url.pathname, "/release/go-on$");
+    if (task === null || who.via !== "cookie") return missing(who, response);
+    const ref = store.lookupRef(task.taskId);
+    if (ref === null || !visible(ref.repo)) return missing(who, response);
+    if (!authenticateApprover(who, body.get("password") ?? "", ref.repo).ok) return sheetScreen(ctx, task.taskId, "Enter your Toolroll password to let this release go on.", 403);
+    const allowed = allowAutoPublish(store, { taskId: task.taskId, by: who.name, now });
+    if (!allowed.ok) return sheetScreen(ctx, task.taskId, allowed.why, 409);
+    return redirect(response, releaseSheetHref(task.taskId));
+  }
+
+  return { routes: { "task.release": showSheet, "task.release.go-on": goOn, "release.locate": locate }, sheetScreen, approveFromSheet };
 }

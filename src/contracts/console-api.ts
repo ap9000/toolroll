@@ -198,6 +198,7 @@ export const CONSOLE_FORMS = {
   projectsOpen: formContract("POST /projects/open", ["path", "return"]),
   tasksFast: formContract("POST /tasks/fast", ["preview", "digest"]),
   keepGrown: formContract("POST /t/<id>/keep-grown", []),
+  releaseGoOn: formContract("POST /t/<id>/release/go-on", ["password"]),
   tasksAdd: formContract("POST /tasks/add", ["projectRevision", "plain", "id", "title", "repo", "goal", "not", "touches", "scout", "permission-mode", "quality-mode", "after", "acceptance", "planning-policy", "plan-first"]),
   queue: formContract("POST /queue/move, /queue/note", ["runner", "note", "from", "projectRevision", "respond", "task", "column", "before", "queueRevision"]),
   runnerRegister: formContract("POST /fleet/runner/register", ["token", "name", "capacity"]),

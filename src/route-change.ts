@@ -69,16 +69,6 @@ export function routeChangeOf(store: Store, taskId: string): string | null {
   return route !== null && routeDigestOf(route) === row["to_route_digest"] ? String(row["words"]) : null;
 }
 
-/** Whether a line on record for this exact plan describes some other route. An Approve under it is a yes to the wrong words. */
-export function routeChangeProblem(store: Store, taskId: string, scope: Scope): boolean {
-  const ref = store.lookupRef(taskId);
-  if (ref === null) return false;
-  const row = store.handle.prepare("SELECT to_route_digest FROM route_change WHERE task_ref = ? AND scope_digest = ?").get(ref.id, scope.digest);
-  if (row === undefined) return false;
-  const route = routeFromJson(scope.proposedRouteJson ?? null);
-  return route === null || routeDigestOf(route) !== row["to_route_digest"];
-}
-
 /** Each sweep: an unapproved row from before routing gets its route, and the same one Approve. A standing old approval
  * is left alone (the stale check reaches it if its route ever differs). */
 export function routeLegacyPlans(store: Store, now: Date): number {

@@ -317,6 +317,9 @@ import { requestMissingRechecks } from "./check-only.js";
 import { recordBuilderWish } from "./builder-restart.js";
 import { expireFastStarts, fastRefusalWords, fastStartBuild, keepGrownChange, prepareFastStart, type FastBuild, type PasswordFacts } from "./fast-start.js";
 import { fastTermsLines } from "./fast-terms.js";
+import { resumeAllowedReleases } from "./release-next.js";
+import { runRelease } from "./release.js";
+import { releaseAdapters } from "./release-adapters.js";
 import { routeChangeOf, routeLegacyPlans } from "./route-change.js";
 import { passwordlessOn } from "./passwordless.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
@@ -7001,6 +7004,8 @@ async function runWatchLoop(args: {
       // Batch checks first: a cohort that is ready runs one check for all its results.
       const batched = await runBatchChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
       if (batched > 0) progress(`watch: settled ${batched} batch-checked result(s)`);
+      // A held release a person let go on resumes by itself, in the background of this pass (release-next.ts).
+      if (context.agentRunner === undefined) void resumeHeldReleases(store, dirname(context.databaseFile), context.clock());
       // A result whose verdict went missing asks for its one automatic recheck (check-only.ts).
       requestMissingRechecks(store, context.evidenceRoot, context.clock());
       const ran = await runWaitingChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
@@ -14106,4 +14111,14 @@ async function keepGrownCommand(positional: readonly string[], flags: Map<string
   const kept = keepGrownChange(store, id, clock());
   if (!kept.ok) return fail(write, json, "task keep", "refused", kept.message, EXIT.refused);
   return succeed(write, json, "task keep", { id, digest: kept.digest }, () => [`Its plan now names the exact commit. Approve it with \`toolroll task approve ${id}\`.`]);
+}
+
+/** One resume at a time per process; a release's own steps can take many minutes. */
+let resumingReleases = false;
+async function resumeHeldReleases(store: Store, stateDir: string, now: Date): Promise<void> {
+  if (resumingReleases) return;
+  resumingReleases = true;
+  try {
+    await resumeAllowedReleases(store, stateDir, journal => runRelease({ branch: journal.branch, checkout: journal.checkout, stateDir, limits: {} }, releaseAdapters({ checkout: journal.checkout, say: () => {} })), now);
+  } catch { /* the release's own journal says where it stopped; the next person act tries again */ } finally { resumingReleases = false; }
 }

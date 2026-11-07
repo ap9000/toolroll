@@ -115,5 +115,6 @@ export const INTERNALS_HELP = `toolroll internals — machine and agent commands
   toolroll watch / daemon install   run only the builder
   toolroll doctor           check that Toolroll's service holds no key a build could read
   toolroll reconcile        recover what the last stretch left behind
-  toolroll release <branch> --recover-deploy | --release-gate
+  toolroll release --recover-deploy [--stage <dir>] [--yes]
+  toolroll release --release-gate <id> [--yes]
                                the release tool's recovery steps (toolroll release <branch> runs them for you)`;
