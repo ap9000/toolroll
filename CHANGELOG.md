@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.94 — 2026-11-07
+
 - **Small tasks start in one step.** For small work you start yourself, New
   task shows the exact terms and **Build** is your approval. If the change
   grows past small, Toolroll stops and asks you to approve it to keep it.
