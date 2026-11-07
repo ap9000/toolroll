@@ -136,6 +136,7 @@ export const CONSOLE_FORMS = {
   projectConcurrency: formContract("POST /settings/project/concurrency", ["repo", "concurrency"]),
   projectLiveView: formContract("POST /settings/project/live-view", ["repo", "act", "password", "nonce"]),
   projectNetwork: formContract("POST /settings/project/network", ["repo", "mode", "local", "hosts", "password"]),
+  projectFallback: formContract("POST /settings/project/fallback", ["repo", "agents", "paid", "password"]),
   projectWrites: formContract("POST /settings/project/writes", ["repo", "writes", "password"]),
   projectCheckAccess: formContract("POST /settings/project/check-access", ["repo", "level", "confirm-open", "password"]),
   projectSandbox: formContract("POST /settings/project/sandbox", ["repo", "read-deny", "mach", "password"]),

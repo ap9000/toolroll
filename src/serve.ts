@@ -1,4 +1,5 @@
 import { secretFolder } from "./tool-secret-store.js";
+import { fallbackSettingOf } from "./fallback.js";
 import { acceptedIdentities, recoverLearning } from "./project-learning.js";
 import { consoleFolderGate, syncProjectIdentities, type ProjectIdentities } from "./project-identity.js";
 import { inFolderScope, type FolderGate } from "./folder-gate.js";
@@ -519,6 +520,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     builds: projectBuildsOf(repo, who),
     access: projectAccessOf(repo),
     network: { setting: store.projectNetwork(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
+    fallback: { setting: fallbackSettingOf(store, repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     writes: { setting: store.projectWrites(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     sandbox: { setting: store.projectSandbox(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     checkAccess: {

@@ -22,9 +22,10 @@ import { adapterFor, auditOf, claudePluginEnv, isolationUnsupported, ALL_CREDENT
 import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV, type AuthMode } from "./keys.js";
 import { ACP_AGENTS, isAcpProvider, isKeyedProvider, type AcpProviderId } from "./acp-agents.js";
 import { launchFromJson, verifyLaunch } from "./acp-attest.js";
-import { classifyTerminal } from "./exhaustion.js";
+import { classifyTerminal, terminalMatchesLimit } from "./exhaustion.js";
+import { chainCustodyProblem, pinnedEntryOf } from "./fallback.js";
 import { liftAuthPause } from "./provider-auth.js";
-import { attestProvider, type VersionProbe } from "./attest.js";
+import { attestProvider, reportedVersion, type VersionProbe } from "./attest.js";
 import { run as runCommand, runOwnerTag, streamsInput } from "./exec.js";
 import { spawnSync } from "node:child_process";
 import { currentContainment } from "./containment.js";
@@ -381,7 +382,12 @@ export async function invokeAgent(
       diagnostic: strict.problem,
     };
   }
-  const authMode: AuthMode = strict.mode;
+  // A run on an approved chain spends under the auth mode that entry was pinned to, never the provider's current setting.
+  const pinned = invocation.phase === "review" ? null : pinnedEntryOf(store, runId);
+  if (pinned !== null && "problem" in pinned) {
+    return { kind: "refused", reason: "route-authority", providerVersion: attested === null ? null : attested.version, diagnostic: `the fallback agent's authority lapsed before spawn — ${pinned.problem}` };
+  }
+  const authMode: AuthMode = pinned === null ? strict.mode : pinned.entry.authMode;
   if (spec.provider === "claude" && invocation.phase !== "review") {
     const problem = claudeSettingsAuthProblem(options.env?.["CLAUDE_CONFIG_DIR"] ?? process.env["CLAUDE_CONFIG_DIR"] ?? join(keyHome ?? homedir(), ".claude"));
     if (problem !== null) return { kind: "refused", reason: "auth-mode", providerVersion: attested?.version ?? null, diagnostic: problem };
@@ -394,6 +400,10 @@ export async function invokeAgent(
     authMode === "api-key" && keyed !== null && keyEnvName !== null
       ? readProviderKey(keyed, keyHome) ?? (process.env[keyEnvName] || null)
       : null;
+  // A pinned API key that isn't there never falls through to some other credential.
+  if (pinned !== null && authMode === "api-key" && managedKey === null) {
+    return { kind: "refused", reason: "auth-mode", providerVersion: attested === null ? null : attested.version, diagnostic: `this fallback agent is approved on an API key, and ${spec.provider} has none here` };
+  }
   // Resume XOR mint, enforced at the GATEWAY (Codex gemini verify round 2,
   // finding 3): a resume and a minted start id are mutually exclusive —
   // geminiArgv silently prefers --resume, so a minted id that rides
@@ -777,9 +787,19 @@ export async function invokeAgent(
         return { kind: "refused", reason: "provider-unattested", providerVersion: acpAttestation.agent.version, diagnostic: verified.problem };
       }
     }
-    if (attested !== null) store.stampProviderStart(runId, clock(), attested.version);
-    else if (acpAttestation !== null) store.stampProviderStart(runId, clock(), acpAttestation.agent.version);
-    else store.stampProviderStart(runId, clock());
+    // THE CHAIN'S LAST LOOK (fallback.ts): the walk's place, the approval, and for a paid entry the live grant, read in
+    // the one transaction that stamps the spend, after every await.
+    const chainRefusal = store.transact(() => {
+      const custody = invocation.phase === "review" ? null : chainCustodyProblem(store, runId);
+      if (custody !== null) return custody;
+      if (attested !== null) store.stampProviderStart(runId, clock(), attested.version);
+      else if (acpAttestation !== null) store.stampProviderStart(runId, clock(), acpAttestation.agent.version);
+      else store.stampProviderStart(runId, clock());
+      return null;
+    });
+    if (chainRefusal !== null) {
+      return { kind: "refused", reason: "route-authority", providerVersion: attested === null ? null : attested.version, diagnostic: `the fallback chain's authority lapsed before spawn — ${chainRefusal}` };
+    }
     // The brief is queued only once the checkout has passed the fence check.
     liveInput?.begin(invocation.brief);
     spawnedAt = Date.now();
@@ -887,8 +907,12 @@ export async function invokeAgent(
     result.code !== 0 && !result.timedOut && !result.notFound &&
     Date.now() - spawnedAt <= AUTH_EARLY_EXIT_MS &&
     envelope.promptConsumed !== true && (envelope.tokensOut ?? 0) === 0;
+  // Claude has no attested range (attest.ts), so a terminal that reads as a plan limit asks the installed CLI its version.
+  const limitVersion = !terminalMatchesLimit(spec.provider, authMode, envelope.structuralTerminal) ? null
+    : attested !== null ? attested.version : await reportedVersion(adapter.binary, options.versionProbe);
   const terminalClass = classifyTerminal({
     terminal: envelope.structuralTerminal,
+    run: { provider: spec.provider, authMode, version: limitVersion },
     // stderr and plain stdout only: a JSON event line can carry the agent's
     // own command output (codex aggregated_output), never its sign-in.
     earlyExit: quietEarlyExit ? `${result.stderr.slice(-4096)}\n${plainLines(result.stdout).slice(-4096)}` : null,

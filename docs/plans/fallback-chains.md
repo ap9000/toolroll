@@ -42,8 +42,9 @@ Claude's spend-cap family (`You've hit your monthly spend limit`, …), `Server 
 do not match: a spend cap is someone's deliberate limit and a throttle passes.
 
 Version: recognised on Claude Code 2.1.290 up to, not including, 2.2. The exact text must match the whole terminal; a
-wording change misses and takes the ordinary failure road. A new minor line needs a fresh look. The installed CLI's
-version comes from the gateway's attestation, never from the checkout.
+wording change misses and takes the ordinary failure road. A new minor line needs a fresh look. Claude has no attested
+version range, and adding one would refuse every Claude run outside it. So when a terminal already reads as a limit, the
+gateway asks the installed CLI its version, with no agent in the loop; no answer means no recognition.
 
 ## Design
 
@@ -92,6 +93,6 @@ update-safe. Everything reachable from update drain tolerates the tables being a
 
 ## Surfaces
 
-CLI `toolroll fallback show|set|clear|allow-paid|revoke-paid`; project settings page; the task page and chat cards show the
+CLI `toolroll project fallback`; Settings → Project → Fallback agents (both a password typed now); the task page and chat cards show the
 chain in full through the shared terms. Each entry says whether Toolroll can recognise its limit: "Moves on when its plan
 runs out" or "Won't move on: Toolroll can't yet recognise this agent running out".

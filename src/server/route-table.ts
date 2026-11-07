@@ -547,6 +547,7 @@ post("settings", "spend.budget", "/spend/budget", { scope: "step-up", ...operato
 post("settings", "settings.project-concurrency", "/settings/project/concurrency");
 post("settings", "settings.project-live-view", "/settings/project/live-view", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-network", "/settings/project/network", { scope: "step-up", callers: ["cookie"] });
+post("settings", "settings.project-fallback", "/settings/project/fallback", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-writes", "/settings/project/writes", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-check-access", "/settings/project/check-access", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-sandbox", "/settings/project/sandbox", { scope: "step-up", callers: ["cookie"] });

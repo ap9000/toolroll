@@ -38,6 +38,7 @@ import type { Store } from "./store.js";
 import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
 import { phoneText, projectLabel } from "./telegram-status.js";
 import { permissionPlainWords, scopeTermsText, shownTermsDigest } from "./chat-terms.js";
+import { chainTermsLines } from "./scope.js";
 import { YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH } from "./contracts/youiyoux-request.js";
 import { FILED_PER_PASS, requestKindWord, requestPassOf } from "./youiyoux-intake.js";
 import { discordPlain } from "./reply-shape.js";
@@ -378,10 +379,13 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
   const allowing = [permissionPlainWords(scope.profile), scope.budgetMicrousd === null ? "no attempt limit" : `up to ${money(scope.budgetMicrousd)} per attempt`]
     .filter((one): one is string => one !== null);
   const changed = routeChangeOf(store, taskId);
+  // Fallback agents are terms: in full on every card, near the top, and never cut.
+  const chain = chainTermsLines(scope);
   if (channel === "telegram") {
     return [
       `Plan ready: ${title(store, taskId)}`,
       ...(changed === null ? [] : [changed]),
+      ...chain,
       `Starting allows: ${allowing.join(" · ")}`,
       "",
       ...goal,
@@ -395,6 +399,7 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
   return [
     `Plan ready: ${title(store, taskId)}`,
     ...(changed === null ? [] : [changed]),
+    ...chain,
     "",
     ...goal,
     "",

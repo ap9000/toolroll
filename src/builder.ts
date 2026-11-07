@@ -65,7 +65,8 @@ import { runWithIsolatedDatabase } from "./child-database.js";
 import { recordWorktreeProcess, saveWorkPatch } from "./worktree.js";
 import type { Decision, RunCheckSuite, SteerNote, Store } from "./store.js";
 import { launchSandboxOf, protectedChanges, protectedLinks } from "./agent-fence.js";
-import { approvalOf, digestOf, idleClock, isAcpProfile, profileDigestOf, releaseCheckScope, routeParityProblem, watchdogsOf, type ExecutionProfile, type Scope } from "./scope.js";
+import { fallbackBriefFor, pinnedEntryOf, ranOutOnChain } from "./fallback.js";
+import { approvalOf, digestOf, idleClock, isAcpProfile, LIVE_CHAIN_VERSION, liveChainFromJson, profileDigestOf, releaseCheckScope, routeParityProblem, watchdogsOf, type ExecutionProfile, type Scope } from "./scope.js";
 import { legOf, routeDigestOf, routeFromJson, type RouteStamp } from "./phase-routing.js";
 import { execFileSync } from "node:child_process";
 import { currentClaim, heartbeat, SYNC_MAX_AGE_MS, finalize } from "./claim.js";
@@ -594,6 +595,8 @@ export function proveApprovedProfile(
     timeoutMs: number | undefined;
     skipPermissions: boolean;
   },
+  /** The fallback entry a chain run is bound to, proved by its walk: what must run instead of the base. */
+  pinned: ExecutionProfile | null = null,
 ):
   | { ok: true; effective: { model: string; maxTurns: number | undefined; timeoutMs: number; skipPermissions: boolean; profile: ExecutionProfile } }
   | { ok: false; message: string } {
@@ -602,8 +605,10 @@ export function proveApprovedProfile(
   if (scope !== null && scope.termsProblem != null) {
     return { ok: false, message: `the scope's stored terms cannot be read exactly (${scope.termsProblem}) — re-file the scope and approve it again (stale-approval)` };
   }
-  const snapshot = scope?.approvedProfile ?? null;
-  if (snapshot === null) {
+  const sealedProfile = scope?.approvedProfile ?? null;
+  // A fallback entry runs as its own sealed profile; the seal itself is still proved below, whole.
+  const snapshot = pinned ?? sealedProfile;
+  if (snapshot === null || sealedProfile === null) {
     return {
       ok: false,
       message:
@@ -615,6 +620,7 @@ export function proveApprovedProfile(
   // v1 approvals rederive without the profile (their signed bytes) and are
   // held to the snapshot pinned at migration.
   if (scope !== null) {
+    const chain = scope.approvalKind === "chain" ? liveChainFromJson(scope.approvedChainJson ?? null) : null;
     const rederived =
       (scope.digestVersion ?? 1) >= 2
         ? digestOf(
@@ -628,7 +634,7 @@ export function proveApprovedProfile(
               releaseTerms: scope.releaseTerms ?? null,
               releaseCheck: scope.releaseCheck ?? null,
             },
-            snapshot,
+            chain === null ? sealedProfile : { chain, version: LIVE_CHAIN_VERSION },
             // v47: the SEALED route is part of the signed bytes whenever it
             // says more than the legacy resolution — re-derived here from
             // the seal's own snapshot, never from mutable configuration.
@@ -653,7 +659,7 @@ export function proveApprovedProfile(
       // the seal and the sealed-route reader apply — build and repair legs
       // against the sealed profile, the route's signed risk and quality
       // against the row's.
-      const parity = routeParityProblem(route, snapshot, { riskLevel: scope.riskLevel ?? "routine", qualityMode: scope.qualityMode ?? "default" });
+      const parity = routeParityProblem(route, sealedProfile, { riskLevel: scope.riskLevel ?? "routine", qualityMode: scope.qualityMode ?? "default" });
       if (parity !== null) {
         return { ok: false, message: `${parity} — re-file and approve again (stale-approval)` };
       }
@@ -750,13 +756,16 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   // the authority: request fields left unset take its values; request
   // fields that DIVERGE refuse, typed, naming what moved.
   let effective: { model: string; maxTurns: number | undefined; timeoutMs: number; skipPermissions: boolean; profile: ExecutionProfile };
+  // A run bound to a chain proves against its own entry (fallback.ts); a binding that doesn't stand runs nothing.
+  const walkEntry = request.runId === undefined ? null : pinnedEntryOf(store, request.runId);
+  if (walkEntry !== null && "problem" in walkEntry) return { ok: false, reason: "stale-approval", message: `${taskId}: ${walkEntry.problem} (stale-approval)` };
   const dispatchProof = proveApprovedProfile(scope, {
     provider,
     model: request.model,
     maxTurns: request.maxTurns,
     timeoutMs: request.timeoutMs,
     skipPermissions,
-  });
+  }, walkEntry === null ? null : walkEntry.entry.profile);
   if (!dispatchProof.ok) {
     return { ok: false, reason: "stale-approval", message: `${taskId}: ${dispatchProof.message}` };
   }
@@ -1496,6 +1505,10 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
         previousHandoff = null; // advisory context; unreadable simply means absent
       }
     }
+    // A run taking over from an agent that ran out: fallback.ts is the one place that says so (and, once it merges, where
+    // the handover note arrives).
+    const takenOver = request.runId === undefined ? null : fallbackBriefFor(store, request.runId);
+    if (takenOver !== null) previousHandoff = previousHandoff === null ? takenOver : `${takenOver}\n\n${previousHandoff}`;
   }
 
   // The machine's own boundary, stamped by the machine: the spawn follows
@@ -1970,6 +1983,8 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
   // handoff as it would after any ending; a spent budget with nothing handed off ran out of turns, as --max-turns did.
   const liveEnding = captured.live?.close === "turn-budget" || captured.live?.close === "paused-idle";
   if (result.code !== 0 && !liveEnding) {
+    // Out of plan on an approved chain: its changes become a commit, so the next agent continues from them.
+    if (ranOutOnChain(store, request.runId)) await keepForNextAgent(captured);
     return { ok: false, reason: "agent", message: agentExitWords(result) };
   }
   if (captured.live?.close === "turn-budget" && ![done, mailbox, captured.plan?.proposal].some(name => name !== undefined && existsSync(join(worktree, name)))) {
@@ -3125,7 +3140,7 @@ async function startsFromKeptWork(captured: CapturedBuild, baseRevision: string,
   const { store, request, git, worktree, branch } = captured;
   if (pinnedBase === baseRevision) return false;
   const kept = store.runsFor(request.taskRef).some(one =>
-    one.id < request.runId && one.role === "builder" && one.branch === branch && one.outcome === "failed" && one.reason === "no-handoff");
+    one.id < request.runId && one.role === "builder" && one.branch === branch && one.outcome === "failed" && (one.reason === "no-handoff" || one.reason === "usage-exhausted"));
   if (!kept) return false;
   const message = await git(GIT, ["--no-optional-locks", "log", "-1", "--format=%B", baseRevision], { cwd: worktree });
   if (message.code !== 0 || !message.stdout.includes(WIP_COMMIT_WORDS)) return false;
@@ -3295,6 +3310,18 @@ async function keepUnhandedWork(captured: CapturedBuild, sessionId: string | und
     }
   }
   return { ok: false, reason: "no-handoff", message: NO_HANDOFF_WORDS };
+}
+
+/** The changes an exhausted attempt left, saved and committed for the next agent. A commit that fails leaves them in
+ * place with their patch, as a no-handoff attempt's do: the work is never lost to the move. */
+async function keepForNextAgent(captured: CapturedBuild): Promise<void> {
+  const { store, request, git, worktree, branch, taskId, scope, root, clock } = captured;
+  const changes = await unhandedChanges(git, worktree);
+  if (changes === null || changes.length === 0 || scope === null) return;
+  const saved = await saveWorkPatch(git, worktree, join(root, String(request.runId), "unhanded-work.patch"),
+    `# work left when the agent ran out of its plan, in ${worktree}\n# kept ${clock().toISOString()}\n`);
+  if (!saved.ok || stopRequestedFor(store, request.runId, request.shouldStop)) return;
+  await commit(git, worktree, branch, taskId, scope as Scope, WIP_COMMIT_WORDS);
 }
 
 async function ingestPark(args: {
@@ -3555,10 +3582,12 @@ function admitProtocolRepair(
       return { ok: false, problems: [{ reason: "route-unreadable", message: `the repair cannot run: ${repairSealed.detail}` }] };
     }
     const leg = legOf(repairSealed.route, "repair");
-    if (leg.provider !== repairProvider || repairModel !== leg.model) {
+    // A fallback entry repairs as itself, not as the base's sealed leg: the admission proves the entry.
+    if (parentRoute?.chosen === "fallback") repairChosen = "fallback";
+    else if (leg.provider !== repairProvider || repairModel !== leg.model) {
       return { ok: false, problems: [{ reason: "route-mismatch", message: `the approved route repairs on ${leg.provider} · ${leg.model} but this repair would run ${repairProvider} · ${repairModel ?? "(no model)"} — nothing substitutes; re-file and approve again` }] };
     }
-    repairChosen = leg.chosen;
+    if (parentRoute?.chosen !== "fallback") repairChosen = leg.chosen;
   }
   return store.transact(() => {
     // The budget is durable and shared by proof and parked-decision repairs.

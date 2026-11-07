@@ -51,8 +51,8 @@ describe("the v150 migration", () => {
   test("a fresh database has the table and the column", () => {
     dir = mkdtempSync(join(tmpdir(), "so-v150-"));
     const store = opened(openStore(join(dir, "fresh.db")));
-    expect(SCHEMA_VERSION).toBe(154);
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(154);
+    expect(SCHEMA_VERSION).toBe(156);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(156);
     expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'machine_host_alias'").get()).toBeDefined();
     expect(store.handle.prepare("PRAGMA table_info(run_process)").all().map(row => String(row["name"]))).toContain("machine_id");
   });
@@ -63,7 +63,7 @@ describe("the v150 migration", () => {
     expect(updateSafeSchema(149)).toBe(true);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(150);
     const store = opened(openStore(file));
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(154);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(156);
     expect(store.handle.prepare("SELECT host, machine_id FROM run_process ORDER BY id").all().map(row => ({ ...row })))
       .toEqual([{ host: hostname(), machine_id: null }, { host: "other-mac", machine_id: null }]);
     // No saved name is taken for this machine's: the alias table starts empty.
@@ -99,7 +99,7 @@ describe("the v150 migration", () => {
     const peek = new DatabaseSync(crashed, { readOnly: true });
     try { expect(peek.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(-149); } finally { peek.close(); }
     const resumed = opened(openStore(crashed));
-    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(154);
+    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(156);
     expect(rowsOf(resumed)).toEqual(rowsOf(whole));
   });
 });
