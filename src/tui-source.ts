@@ -54,7 +54,9 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
   const evidenceRoot = join(dirname(file), "evidence");
   const tails: NonNullable<Parameters<typeof snapshotLiveRuns>[3]> = new Map();
   let reader: Store | null = null;
+  let closed = false;
   const read = (): Store | null => {
+    if (closed) return null;
     reader ??= openStoreReadOnly(file);
     return reader;
   };
@@ -166,13 +168,19 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       if (setupCache !== null && Date.now() - setupCache.at < 30_000) return setupCache.value;
       const store = read();
       if (store === null) return null;
-      const here = await welcomeHere(store, file, clock(), options.check === undefined ? {} : { check: options.check });
+      // The screen can close while this waits on the sign-in checks: the store it holds is gone then, and so is the question.
+      const here = await welcomeHere(store, file, clock(), options.check === undefined ? {} : { check: options.check }).catch((problem: unknown) => {
+        if (closed) return null;
+        throw problem;
+      });
+      if (here === null) return null;
       const value = here.model.left === 0 ? null : { left: here.model.left, lines: welcomeLines(here.model).map(line => terminalText(line)) };
       setupCache = { at: Date.now(), value };
       return value;
     },
 
     close(): void {
+      closed = true;
       reader?.close();
       reader = null;
     },

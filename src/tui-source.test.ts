@@ -130,6 +130,17 @@ describe("the terminal UI on a laptop database", () => {
   }, 60_000);
 });
 
+test("the screen closing while setup waits on the sign-in checks answers nothing, and opens nothing again", async () => {
+  let go = (): void => {};
+  const gate = new Promise<void>(resolve => { go = resolve; });
+  const source = createTuiSource({ databaseFile: file, operate: { now }, check: async () => { await gate; return check(); } });
+  const asked = source.setup();
+  source.close();
+  go();
+  await expect(asked).resolves.toBeNull();
+  await expect(source.setup()).resolves.toBeNull();
+});
+
 describe("text someone else wrote reaches the screen clean", () => {
   test("a title and a plan line carrying escapes and overwrite tricks come out of the source as plain text, the whole plan kept", async () => {
     const hostile = "Make the footer link work.\x1b[2J\x1b]8;;https://evil.example\x07 see docs\x1b]8;;\x07\x1b[1A\x9b2K done\rhidden";
