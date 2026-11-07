@@ -46,7 +46,7 @@ describe("the result page's one ink act", () => {
 
   it("each verb is today's post: Accept, Send back and Retry over the acts they always made", () => {
     expect(RESULT_VERB).toEqual({ accept: "Accept", "accept-anyway": "Accept", "request-changes": "Send back", revise: "Send back", "draft-repair": "Send back",
-      retry: "Retry", rebuild: "Retry", "confirm-stopped": null, "next-check": null, "checks-running": null, "run-checks": null });
+      retry: "Retry", rebuild: "Retry", "recheck-stopped": null, "next-check": null, "checks-running": null, "run-checks": null });
   });
 
   it("says why a refuted result can't be accepted yet, once, until a person accepts it", () => {

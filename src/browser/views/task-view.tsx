@@ -237,7 +237,7 @@ function MergeReadyBox({ ready, retry }: { ready: NonNullable<BrowserTaskView["m
   const chip = ready.answer === "yes" || ready.answer === "merged" ? <KChip word={ready.answer === "merged" ? "Merged" : "Ready"} tone="done" />
     : ready.answer === "no" ? <KChip word="Not yet" tone="needs" /> : <KChip word="Not yet" />;
   return <section className="k-sec so-merge-ready" aria-label="Can I merge?" data-merge-ready={ready.answer}>
-    <KSlots status={<>{chip}<h3>Can I merge?</h3></>} text={ready.sentence} />
+    <KSlots status={<>{chip}<h3>Can I merge?</h3></>} text={ready.sentence} acts={null} terms={null} />
     <ul className="so-merge-rows">
       {ready.rows.map(row => <li key={row.key} data-merge-row={row.key} data-mark={row.mark}>
         <span className="so-merge-mark" aria-hidden="true">{MARK[row.mark] ?? ""}</span>

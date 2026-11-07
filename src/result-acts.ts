@@ -90,14 +90,14 @@ export type ResultActs = {
 
 /** The three verbs, and the posts each one makes (docs/plans/plain-toolroll.md P1.3): Accept is today's Accept (and
  * finish), or Accept anyway with a reason; Send back is today's request for changes and its revision from saved notes
- * for an unpublished result, or the repair of a published one; Retry is today's Retry, or Build again. Confirm it
- * stopped keeps its own words (it is leaving: another branch removes it). */
+ * for an unpublished result, or the repair of a published one; Retry is today's Retry, or Build again. Check again
+ * keeps its own words (its act stands on the build, not on the result). */
 export type ResultVerb = "Accept" | "Send back" | "Retry";
 export const RESULT_VERB: Readonly<Record<ResultActKind, ResultVerb | null>> = {
   accept: "Accept", "accept-anyway": "Accept",
   "request-changes": "Send back", revise: "Send back", "draft-repair": "Send back",
   retry: "Retry", rebuild: "Retry",
-  "confirm-stopped": null,
+  "recheck-stopped": null,
   // Never in the act row: Run checks lives in the Checks row, and a person's own checks in the Checks list.
   "next-check": null, "checks-running": null, "run-checks": null,
 };
