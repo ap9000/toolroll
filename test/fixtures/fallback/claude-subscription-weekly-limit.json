@@ -1,0 +1,7 @@
+{
+  "provider": "claude",
+  "authMode": "subscription",
+  "version": "2.1.290 (Claude Code)",
+  "observed": "2026-10-10, six builder runs; two mid-task, four within seconds of starting",
+  "terminal": { "failed": true, "text": "You've hit your weekly limit · resets 12am (America/Los_Angeles)\n" }
+}
