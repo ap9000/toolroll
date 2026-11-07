@@ -303,3 +303,9 @@ export function afterwardsWords(after: NoteAfterwards): string {
     after.partial ? "Partial: not every check was counted." : "",
   ].filter(Boolean).join(" ");
 }
+
+/** What waits for a person, for pages and chat. */
+export function memoryWaiting(store: Store, repo: string): { notes: number; cleanups: number } {
+  return { notes: Number(store.handle.prepare("SELECT COUNT(*) AS n FROM memory_proposal WHERE repo = ? AND status = 'pending' AND surface = ?").get(repo, NOTE_SURFACE)?.["n"] ?? 0),
+    cleanups: Number(store.handle.prepare("SELECT COUNT(*) AS n FROM memory_tidy_proposal WHERE repo = ? AND status = 'pending'").get(repo)?.["n"] ?? 0) };
+}

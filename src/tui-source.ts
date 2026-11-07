@@ -17,6 +17,8 @@ import type { ConnectionChecker } from "./provider-connection.js";
 import { loadProjectRegistry } from "./repos.js";
 import { describeScope } from "./scope.js";
 import { localModeOf, openStoreReadOnly, type Store } from "./store.js";
+import { flakyCount } from "./flaky.js";
+import { memoryWaiting } from "./lesson-notes.js";
 import type { TuiAct, TuiActResult, TuiDecision, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
 import { terminalText } from "./terminal-text.js";
 import { welcomeHere, welcomeLines } from "./welcome-facts.js";
@@ -87,7 +89,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       const store = read();
       const mode = store === null ? null : localModeOf(store);
       const passwordSet = store !== null && mode !== null && store.accountOf(mode.owner)?.passwordSet === true;
-      return { rows, needsYou, projects: "error" in registry ? [] : registry.repos, passwordSet };
+      return { rows, needsYou, projects: "error" in registry ? [] : registry.repos, passwordSet, learning: store === null ? null : learningLine(store, "error" in registry ? [] : registry.repos, clock()) };
     },
 
     async task(id: string): Promise<TuiTask | null> {
@@ -163,4 +165,18 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       reader = null;
     },
   };
+}
+
+/** The screen's one line about the learning loops: flaky tests and what waits in project memory, each with its command. */
+function learningLine(store: Store, repos: readonly string[], now: Date): string | null {
+  let flaky = 0, memory = 0;
+  try {
+    for (const repo of repos) {
+      flaky += flakyCount(store, repo, now);
+      const waiting = memoryWaiting(store, repo);
+      memory += waiting.notes + waiting.cleanups;
+    }
+  } catch { return null; }
+  const parts = [flaky === 0 ? "" : `${flaky} flaky test${flaky === 1 ? "" : "s"}: open the project's Flaky tests in the browser`, memory === 0 ? "" : `${memory} project memory suggestion${memory === 1 ? "" : "s"}: open Settings → Knowledge`].filter(Boolean);
+  return parts.length === 0 ? null : parts.join(" · ");
 }

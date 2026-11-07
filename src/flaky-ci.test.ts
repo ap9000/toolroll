@@ -3,7 +3,7 @@
  * success pairing of one job per lane is a row; everything else is rejected with its reason, never guessed.
  */
 import { afterEach, describe, expect, test } from "vitest";
-import { ciNotPaired, observeCiRun } from "./flaky-ci.js";
+import { ciCursorKey, ciNotPaired, observeCiRun } from "./flaky-ci.js";
 import { flakyList, flakyShow } from "./flaky.js";
 import type { GhRead } from "./nightly-github.js";
 import { openStore, type Store } from "./store.js";
@@ -63,5 +63,11 @@ describe("GitHub attempts", () => {
     expect(whys(f)).toEqual(["the run's commit isn't the one recorded"]);
     const g = open();
     expect(await observe(g, fake({ 1: [] }, { run_attempt: 1 }))).toEqual({ observed: 0, rejected: 0 });
+  });
+
+  test("a project's read is remembered under a key the store accepts", () => {
+    const f = open();
+    f.store.setServiceCursor(ciCursorKey("/Users/someone/Developer/My Project"), 5, RELEASE_NOW);
+    expect(f.store.serviceCursor(ciCursorKey("/Users/someone/Developer/My Project"))).toBe(5);
   });
 });

@@ -242,6 +242,12 @@ export function flakyList(store: Store, repo: string, now: Date, days: number = 
     complete: !(span > FLAKY_RETAIN_DAYS && pruned), notPaired: ciNotPaired(store, ciRepositoriesOf(store, repo), since), reported: Number(checks?.["reported"] ?? 0), unreported: Number(checks?.["n"] ?? 0) - Number(checks?.["reported"] ?? 0) };
 }
 
+/** How many rows the list has now, cheaply: no tree is read. */
+export function flakyCount(store: Store, repo: string, now: Date): number {
+  const since = new Date(now.getTime() - FLAKY_WINDOW_DAYS * DAY_MS).toISOString();
+  return Number(store.handle.prepare("SELECT (SELECT COUNT(DISTINCT identity) FROM local_observation WHERE repo = ? AND observed_at >= ?) + (SELECT COUNT(DISTINCT lane_id) FROM ci_flaky_observation WHERE repo = ? AND observed_at >= ?) AS n").get(repo, since, repo, since)?.["n"] ?? 0);
+}
+
 /** One row's history, newest first: each observation with both checks (or the CI run and attempts). Null: no such row. */
 export function flakyShow(store: Store, repo: string, key: string, now: Date, days: number = FLAKY_RETAIN_DAYS): { row: FlakyRow; history: FlakyObservation[]; fix: { title: string; goal: string } } | null {
   const row = flakyList(store, repo, now, Math.max(days, FLAKY_WINDOW_DAYS)).rows.find(one => one.key === key);

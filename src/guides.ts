@@ -411,6 +411,11 @@ and crew agent reads from it before working:
   history); \`memory show <id>\` prints one with its reason and history.
 - In chat, the lead searches with the same index before asking you again.
   Cite the kind and id of what you rely on: "decision #12", "reference".
+- \`memory status --repo PATH\` says when each entry was last included in a
+  run. Lead chats aren't counted.
+- \`toolroll flaky list --repo PATH\` lists tests with mixed outcomes under
+  recorded conditions, and \`flaky show <identity>\` one test's history and the
+  task that would fix it. It reads only and reruns nothing.
 
 ## Change it
 

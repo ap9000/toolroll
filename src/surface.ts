@@ -512,7 +512,7 @@ const REMOTE_STEP_UP: readonly string[] = [
   // Putting tasks away and restoring them: a person's act, in the console or on the server's machine.
   "task archive", "task restore", "task tidy", "knowledge apply",
   // Changing project memory: a person's own password, never a token (the lead only proposes it in chat).
-  "memory decide", "memory retire", "memory apply",
+  "memory decide", "memory retire", "memory apply", "memory tidy", "memory restore", "memory unmerge",
   "flows card approve", "flows card send-back", "flows script approve", "flows unattended",
   "approver list", "approver add", "people list", "people invite", "people projects", "people revoke",
   // A person's own API tokens: a password step-up on the server's machine, or the console. Never with a token.
@@ -555,7 +555,7 @@ const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   pulls: "read", graph: "read", repos: "read", status: "read", ready: "read", gaps: "read", contract: "read", "skills list": "read", "skills get": "read",
   "flaky list": "read", "flaky show": "read", "memory review": "read", "memory status": "read", "memory decisions": "read", "memory show": "read",
   // Learning loops (D3): a lesson note or a clean-up, decided by a person at the laptop (the writers check the act).
-  "memory apply": "memory-review",
+  "memory apply": "memory-review", "memory tidy": "memory-review", "memory restore": "memory-review", "memory unmerge": "memory-review",
   "task list": "read", "task show": "read", "task state": "read", "task wait": "read", "check-progress": "read", "review show": "read", welcome: "read",
   // Acts (plan C1's list).
   "task add": "file-task",

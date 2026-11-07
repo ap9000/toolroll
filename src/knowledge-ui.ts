@@ -1,7 +1,7 @@
 import { STALE_KNOWLEDGE, type KnowledgeDraft, type KnowledgeSelection, type KnowledgeView } from './project-knowledge.js';
 import { html, joinHtml, postForm, type Html } from './html.js';
 import { lastIncludedWords, type MemoryUse } from './memory-use.js';
-import { acts, btn, codeLine, disclose, formRow, input, note, notice, settingsLink, settingsRecord, settingsSection, textarea } from './server/kit.js';
+import { acts, btn, codeLine, disclose, formRow, input, note, notice, radios, settingsLink, settingsRecord, settingsSection, textarea } from './server/kit.js';
 // Hidden fields as they always were: a missing value is an empty field.
 const fields = (data:Record<string,unknown>):Record<string,string> => Object.fromEntries(Object.entries(data).map(([k,v])=>[k,String(v ?? '')]));
 /** A section as a frame (after ReUI's Frame, MIT): its heading on the raised well, its body one paper panel. The
@@ -131,4 +131,53 @@ export function proposalsHtml(repo: string, proposals: MemoryProposal[], status:
     ]),
   }));
   return settingsSection({ id: 'proposals', title: 'Proposed changes', body: joinHtml([line, cards.length ? joinHtml(cards) : note('Nothing to review. Suggestions appear when the same mistake shows up in two sessions.')]) });
+}
+
+// ---- clean-up of project memory (docs/plans/learning-loops.md) ----------------------------
+import type { TidyProposal } from './memory-tidy.js';
+const CLEANUP_TITLES: Record<TidyProposal['kind'], string> = { retire: 'Retire unused', merge: 'Merge duplicates', contradiction: 'Contradiction', 'note-failing': 'Note keeps failing', restore: 'Restore', unmerge: 'Undo merge' };
+const cleanupItem = (p: TidyProposal, item: TidyProposal['items'][number]): string => item.kind === 'decision' ? `Decision #${item.id} · version ${item.revision} · ${item.status}${p.titles[`decision:${item.id}`] ? ` · ${p.titles[`decision:${item.id}`]}` : ''}`
+  : item.kind === 'lesson' ? `Lesson #${item.id} · version ${item.version}` : `Reference · knowledge version ${item.revision}`;
+/** Radio choices for a proposal with no default: nothing is pre-selected. */
+const choices = (name: string, options: readonly (readonly [string, string])[]): Html => radios({ name, legend: 'Choose one', current: '', items: options.map(([value, label]) => ({ value, label })) });
+export function cleanUpHtml(repo: string, proposals: readonly TidyProposal[], manage: boolean): Html {
+  const form = (body: Html, hidden: Record<string, unknown>) => postForm('/settings/knowledge/tidy', body, { hidden: fields({ repo, ...hidden }) });
+  const accept = (p: TidyProposal): Html => {
+    const tail = Array.isArray(p.evidence['tail']) ? p.evidence['tail'] as number[] : [];
+    const decisions = p.items.flatMap(item => item.kind === 'decision' ? [item.id] : []);
+    const extra = p.kind === 'contradiction' ? joinHtml([choices('choice', [...decisions.map(id => [`keep:${id}`, `Keep #${id}, retire the other`] as const), ['both', 'Keep both'], ['new', 'Write a new one']]),
+        formRow('New decision', null, input({ id: `tidy-${p.id}-claim`, name: 'claim', attrs: { maxlength: 240, 'aria-label': 'New decision' } }), 'wide'), formRow('Why', null, input({ id: `tidy-${p.id}-why`, name: 'why', attrs: { maxlength: 500, 'aria-label': 'Why' } }), 'wide')])
+      : p.kind === 'note-failing' ? joinHtml([choices('choice', [['rewrite', 'Rewrite it'], ['retire', 'Retire it']]),
+        formRow('New note', null, input({ id: `tidy-${p.id}-claim`, name: 'claim', attrs: { maxlength: 240, 'aria-label': 'New note' } }), 'wide'), formRow('Why', null, input({ id: `tidy-${p.id}-why`, name: 'why', attrs: { maxlength: 500, 'aria-label': 'Why' } }), 'wide')])
+      : (p.kind === 'restore' || p.kind === 'unmerge') && tail.length > 0 ? choices('choice', [['retire', `Retire ${tail.map(id => `#${id}`).join(', ')}`], ['keep', 'Keep both active']])
+      : p.kind === 'merge' ? formRow('Merged decision', null, input({ id: `tidy-${p.id}-claim`, name: 'claim', value: p.afterText ?? '', attrs: { maxlength: 240, 'aria-label': 'Merged decision' } }), 'wide') : '';
+    return form(joinHtml([extra, acts(btn('Accept', { sm: true, type: 'submit' }))]), { action: 'accept', proposal: p.id });
+  };
+  const rows = proposals.map(p => settingsRecord({
+    title: CLEANUP_TITLES[p.kind], sub: p.rationale,
+    more: joinHtml([
+      html`<ul class="k-note">${p.items.map(item => html`<li>${cleanupItem(p, item)}</li>`)}</ul>`,
+      manage ? joinHtml([accept(p), form(btn('Reject', { sm: true, variant: 'ghost', type: 'submit' }), { action: 'reject', proposal: p.id })]) : '',
+    ]),
+  }));
+  return settingsSection({ id: 'clean-up', title: 'Clean up', body: joinHtml([
+    rows.length ? joinHtml(rows) : note('Nothing to clean up.'),
+    manage ? form(acts(btn('Clean up', { sm: true, type: 'submit' })), { action: 'propose' }) : '',
+  ]) });
+}
+/** On a saved version's page: the references that aren't in current knowledge, each back as a new version. */
+export function referenceRestoreHtml(repo: string, revision: number, references: readonly { id: string; title: string }[], manage: boolean): Html | '' {
+  if (!manage || references.length === 0) return '';
+  return settingsSection({ id: 'reference-restore', title: 'References no longer in use', body: joinHtml(references.map(ref => settingsRecord({ title: ref.title,
+    action: postForm('/settings/knowledge/tidy', btn('Restore', { sm: true, variant: 'ghost', type: 'submit' }), { hidden: fields({ repo, action: 'reference', target: ref.id, revision }) }) }))) });
+}
+/** Retired decisions, undoable merges and disabled lessons, each with its way back. */
+export function restoreHtml(repo: string, retired: readonly Decision[], merges: readonly { merge: number; successor: number; predecessors: number[] }[], lessons: readonly { id: number; observation: string }[], manage: boolean): Html | '' {
+  if (retired.length + merges.length + lessons.length === 0) return '';
+  const form = (label: string, action: string, target: number) => manage ? postForm('/settings/knowledge/tidy', btn(label, { sm: true, variant: 'ghost', type: 'submit' }), { hidden: fields({ repo, action, target }) }) : '';
+  return html`<details class="knowledge frame"><summary class="frame-head">Retired</summary><div class="frame-panel">${joinHtml([
+    ...merges.map(m => settingsRecord({ title: `Merge of ${m.predecessors.map(id => `#${id}`).join(', ')} into #${m.successor}`, action: form('Undo merge', 'unmerge', m.merge) })),
+    ...retired.map(d => settingsRecord({ title: d.claim, sub: html`<span class="k-num">#${d.id}</span> · ${d.status}`, action: form('Restore', 'restore', d.id) })),
+    ...lessons.map(l => settingsRecord({ title: l.observation, sub: 'Lesson', action: form('Use again', 'readopt', l.id) })),
+  ])}</div></details>`;
 }

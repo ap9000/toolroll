@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Flaky tests**: each project lists tests with mixed outcomes under recorded conditions, from local checks and GitHub CI re-runs, with history and one action, "Make a task to fix it". `toolroll flaky list|show`. Read only: nothing is rerun and no check changes.
+- **Lesson notes**: when a revision passes a test that failed, Toolroll proposes a note with what was recorded. You put it in your own words and accept it as a decision, then see how often that test fails afterwards.
+- **Last included in a run** on lessons, references and decisions, and decisions now reach runs in projects with no other knowledge.
+- **Clean up** in Settings → Knowledge proposes retiring, merging or settling memory entries. Nothing changes until you accept, and restore and undo merge are there when you change your mind. `toolroll memory tidy|restore|unmerge`.
+
 - **Toolroll cleans up task folders nobody is using.** A task idle for 14
   days now loses its working folder even if its result is still waiting for
   review or the task never finished, as long as nothing would be lost: no

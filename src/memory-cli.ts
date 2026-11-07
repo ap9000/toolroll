@@ -3,9 +3,10 @@
  * record who did them. Nothing here starts a model. */
 import { envelopeJson } from './envelope.js';
 import { decisionHistory, getDecision, listDecisions, recordDecision, retireDecision, searchMemory, type Decision } from './project-memory.js';
-import { decideProposal, defaultAnalyzer, listProposals, memoryStatus, runMemoryPass, type MemoryAnalyzer, type MemoryProposal } from './memory-pass.js';
+import { decideProposal, defaultAnalyzer, defaultTidyAnalyzer, listProposals, memoryStatus, runMemoryPass, type MemoryAnalyzer, type MemoryProposal } from './memory-pass.js';
 import type { Store } from './store.js';
 import { afterwardsWords, noteAfterwards, NOTE_SURFACE } from './lesson-notes.js';
+import { decideTidy, listTidy, proposeTidy, restoreDecision, restoreLesson, restoreReference, unmergeDecisions, type ExpandedChange, type TidyAnalyzer, type TidyProposal } from './memory-tidy.js';
 
 const flags = [
   { name: 'repo', takesValue: true, meaning: 'admitted project checkout root' },
@@ -17,7 +18,9 @@ const flags = [
   { name: 'json', takesValue: false, meaning: 'versioned structured response' },
   { name: 'db', takesValue: true, meaning: 'local Toolroll database' },
   { name: 'decision', takesValue: true, meaning: 'accept or reject, for memory apply' },
-  { name: 'claim', takesValue: true, meaning: 'your own words for a lesson note, for memory apply' },
+  { name: 'claim', takesValue: true, meaning: 'your own words for a lesson note or a clean-up, for memory apply' },
+  { name: 'choice', takesValue: true, meaning: 'what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep' },
+  { name: 'revision', takesValue: true, meaning: 'the saved knowledge version a reference comes back from, for memory restore' },
   { name: 'sessions', takesValue: true, meaning: 'at most this many newest sessions for one pass (default 100)' },
   { name: 'no-local', takesValue: false, meaning: 'read only the plane\'s own transcripts, not local Claude Code or Codex session files' },
 ] as const;
@@ -30,18 +33,26 @@ export const MEMORY_DESCRIPTORS = [
   { action: 'propose', synopsis: 'the backward pass: read recent sessions, keep a ledger of evidenced gaps, propose a few edits (writes nothing to memory)', mutation: 'unkeyed', takesQuery: false, flags },
   { action: 'review', synopsis: 'list pending memory proposals with their evidence', mutation: 'none', takesQuery: false, flags },
   { action: 'apply', synopsis: 'decide one proposal: memory apply <id> --decision accept|reject [--claim "<your words>"] — the only writer', mutation: 'unkeyed', takesQuery: true, flags, audience: 'operator' },
+  { action: 'tidy', synopsis: 'propose retiring, merging or settling memory entries; a person accepts each (writes nothing to memory)', mutation: 'unkeyed', takesQuery: false, flags, audience: 'operator' },
+  { action: 'restore', synopsis: 'bring back a decision: memory restore <id>, lesson:<id>, or reference:<id> --revision <version>', mutation: 'unkeyed', takesQuery: true, flags, audience: 'operator' },
+  { action: 'unmerge', synopsis: 'undo a merge of decisions: memory unmerge <merge>', mutation: 'unkeyed', takesQuery: true, flags, audience: 'operator' },
   { action: 'status', synopsis: 'surface version, instruction budget, sessions analysed, open gaps and pending proposals', mutation: 'none', takesQuery: false, flags },
 ] as const;
-export type MemoryCliContext = { store: Store; write: (line: string) => void; json: boolean; now: Date; actor: string | null; repos: readonly string[]; evidenceRoot?: string; configDir?: string; analyzer?: MemoryAnalyzer; home?: string };
+export type MemoryCliContext = { store: Store; write: (line: string) => void; json: boolean; now: Date; actor: string | null; repos: readonly string[]; evidenceRoot?: string; configDir?: string; tidyAnalyzer?: TidyAnalyzer; analyzer?: MemoryAnalyzer; home?: string };
 
 const line = (d: Decision) => `#${d.id} ${d.claim} — ${d.decidedBy}, ${d.decidedAt.slice(0, 10)}${d.status === 'active' ? '' : ` (${d.status})`}`;
+
+const TIDY_WORDS: Record<TidyProposal['kind'], string> = { retire: 'Retire unused', merge: 'Merge duplicates', contradiction: 'Contradiction', 'note-failing': 'Note keeps failing', restore: 'Restore', unmerge: 'Undo merge' };
+const itemWords = (p: TidyProposal, item: TidyProposal['items'][number]): string => item.kind === 'decision' ? `decision #${item.id} (version ${item.revision}, ${item.status}) ${p.titles[`decision:${item.id}`] ?? ''}`.trim()
+  : item.kind === 'lesson' ? `lesson #${item.id} (version ${item.version})` : `reference ${item.id} (knowledge version ${item.revision})`;
+const tidyLine = (p: TidyProposal): string => `t${p.id} ${TIDY_WORDS[p.kind]}${p.status === 'pending' ? '' : ` (${p.status})`}\n  ${p.rationale}${p.afterText ? `\n  → ${p.afterText}` : ''}\n${p.items.map(item => `  - ${itemWords(p, item)}`).join('\n')}`;
 
 export async function runMemoryCommand(positional: readonly string[], options: Map<string, string | true>, context: MemoryCliContext): Promise<number> {
   const action = positional[0];
   const command = action ? `memory ${action}` : 'memory';
   const fail = (reason: 'usage' | 'unauthenticated' | 'not-found' | 'refused', message: string) => { context.write(context.json ? envelopeJson({ ok: false, command, reason, message }) : message); return reason === 'usage' ? 2 : 1; };
   const ok = (result: Record<string, unknown>, lines: string[]) => { context.write(context.json ? envelopeJson({ ok: true, command, ...result }) : lines.join('\n')); return 0; };
-  if (!MEMORY_DESCRIPTORS.some(d => d.action === action)) return fail('usage', 'Use memory search <query> | decisions | show <id> | decide "<choice>" --why "<reason>" | retire <id> --reason "<why>" | propose | review | apply <id> --decision accept|reject | status, with --repo PATH.');
+  if (!MEMORY_DESCRIPTORS.some(d => d.action === action)) return fail('usage', 'Use memory search <query> | decisions | show <id> | decide "<choice>" --why "<reason>" | retire <id> --reason "<why>" | tidy | restore <id> | unmerge <id> | propose | review | apply <id> --decision accept|reject | status, with --repo PATH.');
   if (context.actor === null) return fail('unauthenticated', 'Sign in first: the remembered local login drives memory commands.');
   const text = (key: string): string | null => { const v = options.get(key); return typeof v === 'string' ? v : null; };
   const repo = text('repo') ?? (context.repos.length === 1 ? context.repos[0]! : null);
@@ -53,6 +64,8 @@ export async function runMemoryCommand(positional: readonly string[], options: M
   }
   if (repo === null) return fail('usage', 'Use --repo with the project checkout root.');
   if (!context.repos.includes(repo)) return fail('not-found', 'That project is outside your access.');
+  const expanded = (done: { restored: true } | ExpandedChange, words: string): number => done.restored ? ok({ done }, [words]) : ok({ done },
+    [`Nothing changed yet: this reaches past what replaced it. Review t${done.proposal} (memory review) and apply it with --choice retire or --choice keep.`]);
   try {
     if (action === 'decisions') {
       const decisions = listDecisions(context.store, repo, context.actor, { status: options.has('all') ? 'all' : 'active', limit: 100 });
@@ -79,9 +92,35 @@ export async function runMemoryCommand(positional: readonly string[], options: M
       return ok({ status }, [`Surface ${status.surface} · instructions ${status.instructionBytes}/${status.budgetBytes} bytes`, `Sessions: ${status.sessions.total} seen, ${status.sessions.analyzed} analysed, ${status.sessions.failed} failed`, `Open gaps: ${status.openGaps} · pending proposals: ${status.pending}`, ...status.included.map(one => `${one.kind} ${one.title}: ${one.words}`), ...(status.included.length === 0 ? [] : ['Last included is counted in runs; lead chats aren\'t counted.'])]);
     }
     const proposalLine = (p: MemoryProposal) => p.surface === NOTE_SURFACE ? `#${p.id} ${p.title}${p.status === 'pending' ? '' : ` (${p.status})`}\n  ${p.rationale}\n  Draft: ${p.afterText}\n  Accept with your own words: memory apply ${p.id} --decision accept --claim "…"` : `#${p.id} ${p.kind} · ${p.title} (${p.sessions} sessions${p.status === 'pending' ? '' : `, ${p.status}`})\n  ${p.rationale}${p.afterText ? `\n  → ${p.afterText}` : ''}${p.beforeText ? `\n  ← ${p.beforeText}` : ''}${p.evidence.map(e => `\n  "${e.quote.slice(0, 160)}" — ${e.session.split(':')[0]}`).join('')}`;
+    const proof = 'cli-login';
     if (action === 'review') {
       const proposals = listProposals(context.store, repo, options.has('all') ? 'all' : 'pending');
-      return ok({ proposals }, proposals.length === 0 ? ['No proposals waiting. Run memory propose after more sessions.'] : proposals.map(proposalLine));
+      const cleanups = listTidy(context.store, repo, options.has('all') ? 'all' : 'pending');
+      return ok({ proposals, cleanups }, proposals.length + cleanups.length === 0 ? ['No proposals waiting. Run memory propose after more sessions.'] : [...proposals.map(proposalLine), ...cleanups.map(tidyLine)]);
+    }
+    if (action === 'tidy') {
+      const analyzer = context.tidyAnalyzer ?? defaultTidyAnalyzer(context.store, { ...(context.configDir === undefined ? {} : { configDir: context.configDir }) });
+      const report = await proposeTidy(context.store, { repo, actor: context.actor, analyzer }, context.now);
+      return ok({ report }, [`New clean-up suggestions: ${report.made}`, ...(report.problem === null ? [] : [report.problem]), 'Review them with memory review.']);
+    }
+    if (action === 'restore') {
+      const target = positional[1] ?? '';
+      const lesson = /^lesson:(\d+)$/.exec(target), reference = /^reference:([a-f0-9]{20})$/.exec(target);
+      if (lesson !== null) { restoreLesson(context.store, context.evidenceRoot ?? '', { repo, actor: context.actor, id: Number(lesson[1]), proof }, context.now); return ok({ lesson: Number(lesson[1]) }, [`Lesson #${lesson[1]} is in use again.`]); }
+      if (reference !== null) {
+        const revision = Number(text('revision'));
+        if (!Number.isSafeInteger(revision) || revision < 1) return fail('usage', 'memory restore reference:<id> --revision <saved version>');
+        restoreReference(context.store, { repo, actor: context.actor, id: reference[1]!, fromRevision: revision, proof }, context.now);
+        return ok({ reference: reference[1] }, ['Reference added back as a new version.']);
+      }
+      const id = Number(target);
+      if (!Number.isSafeInteger(id) || id < 1) return fail('usage', 'memory restore <decision id> | lesson:<id> | reference:<id> --revision <version>');
+      return expanded(restoreDecision(context.store, { repo, actor: context.actor, id, proof }, context.now), `Restored decision #${id}.`);
+    }
+    if (action === 'unmerge') {
+      const merge = Number(positional[1]);
+      if (!Number.isSafeInteger(merge) || merge < 1) return fail('usage', 'memory unmerge <merge id>');
+      return expanded(unmergeDecisions(context.store, { repo, actor: context.actor, merge, proof }, context.now), `Undid merge ${merge}.`);
     }
     if (action === 'propose') {
       const sessions = text('sessions');
@@ -92,8 +131,14 @@ export async function runMemoryCommand(positional: readonly string[], options: M
       return ok({ report }, [`Sessions: ${report.sessions} found, ${report.analyzed} analysed now, ${report.cached} already analysed, ${report.failed} failed`, `Open gaps: ${report.gaps} · new proposals: ${report.proposals}`, ...report.problems.slice(0, 5).map(p => `  problem: ${p}`), report.proposals > 0 ? 'Review them with memory review, then memory apply <id> --decision accept|reject.' : 'Nothing to propose yet: a gap needs the same mistake in two distinct sessions.']);
     }
     if (action === 'apply') {
-      const id = Number(positional[1]), decision = text('decision');
+      const cleanup = /^t(\d+)$/.exec(positional[1] ?? '');
+      const id = cleanup === null ? Number(positional[1]) : Number(cleanup[1]), decision = text('decision');
       if (!Number.isSafeInteger(id) || id < 1 || (decision !== 'accept' && decision !== 'reject')) return fail('usage', 'memory apply <proposal id> --decision accept|reject');
+      if (cleanup !== null) {
+        const choice = text('choice'), said = text('claim'), why = text('why');
+        const decided = decideTidy(context.store, context.evidenceRoot ?? '', { repo, actor: context.actor, id, decision, proof, ...(choice === null ? {} : { choice }), ...(said === null ? {} : { claim: said }), ...(why === null ? {} : { why }) }, context.now);
+        return ok({ cleanup: decided }, [`${decision === 'accept' ? 'Applied' : 'Rejected'} ${tidyLine(decided)}`]);
+      }
       const claim = text('claim');
       const proposal = decideProposal(context.store, { repo, actor: context.actor, id, decision, ...(claim === null ? {} : { claim }) }, context.now);
       return ok({ proposal }, [`${decision === 'accept' ? 'Applied' : 'Rejected'} ${proposalLine(proposal)}`]);

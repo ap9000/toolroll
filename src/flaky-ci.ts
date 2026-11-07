@@ -11,6 +11,7 @@
  * The only writer of `ci_flaky_observation` and `ci_pairing_rejected`. Nothing here reruns anything or changes a check,
  * a verdict or an approval. A policy path (release-auto.ts EVAL_POLICY).
  */
+import { createHash } from "node:crypto";
 import { failedBeforeTests } from "./github-jobs.js";
 import { githubNightlyOf, laneIdOf, readAttemptJobs, readRun, resolveLane, type GhJob, type GhRead } from "./nightly-github.js";
 import type { Store } from "./store.js";
@@ -22,6 +23,9 @@ const READ_MS = 15_000;
 /** How often a project is read at most. */
 export const CI_READ_EVERY_MS = 30 * 60_000;
 const RETAIN_MS = 180 * 86_400_000;
+
+/** The service cursor a project's reads keep (a cursor key can't hold a path). */
+export const ciCursorKey = (repo: string): string => `flaky-ci:${createHash("sha256").update(repo).digest("hex").slice(0, 32)}`;
 
 /** The GitHub repositories this project's records name: the nightly's opt-in and its failed-checks triggers. */
 export function ciRepositoriesOf(store: Store, repo: string): string[] {

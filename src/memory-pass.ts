@@ -26,6 +26,7 @@ import { TEXT_LIMITS } from './text-limits.js';
 import { lastIncludedWords, memoryUseOf } from './memory-use.js';
 import { lessonNoteOf, lessonNoteSourceRef, NOTE_SURFACE, watchNote } from './lesson-notes.js';
 import { currentLocalOwner } from './local-owner.js';
+import { CONTRADICTION_SCHEMA, type TidyAnalyzer } from './memory-tidy.js';
 import { contractError, parseContract } from './contracts/contract.js';
 import { MEMORY_VERDICT_MODEL_SCHEMA, MEMORY_VERDICT_VERSION, memoryEvidenceSchema, memoryProposalSchema, memoryVerdictReadSchema, readSavedVerdict, savedVerdictSchema, type MemoryProposal, type Verdict } from './contracts/memory-pass.js';
 
@@ -199,6 +200,27 @@ export function defaultAnalyzer(store: Store, options: { configDir?: string; env
     }
     // The verdict's own schema is the harness's structured output, so the answer is the verdict itself.
     const answer = await performSubscriptionLeadRequest({ provider: config.provider as SubscriptionChatProviderId, model: config.model, system, dataDocument, history, tools: [], outputSchema: MEMORY_VERDICT_MODEL_SCHEMA, timeoutMs: options.timeoutMs ?? 180_000 }, options.runner);
+    return answer.ok ? { ok: true, text: answer.answer.text } : { ok: false, problem: answer.problem };
+  };
+}
+
+/** The clean-up's question to the chat model, asked only on a person's request (memory-tidy.ts proposeTidy). */
+export function defaultTidyAnalyzer(store: Store, options: { env?: NodeJS.ProcessEnv; configDir?: string; fetcher?: typeof fetch; runner?: Parameters<typeof performSubscriptionLeadRequest>[1]; timeoutMs?: number } = {}): TidyAnalyzer {
+  return async input => {
+    if (inEvalWorld()) return { ok: false, problem: 'Clean up makes no provider call in an eval world.' };
+    const config = store.getChatConfig();
+    if (config === null) return { ok: false, problem: 'Chat is not configured, so contradictions were not looked for.' };
+    const history = [{ role: 'operator' as const, text: 'Read the decisions above and return the JSON object.' }];
+    if (isDirectChatProvider(config.provider)) {
+      const env = options.env ?? process.env;
+      let key = env[CHAT_KEY_ENV[config.provider as DirectChatProviderId]] ?? '';
+      if (!key && options.configDir !== undefined) { try { key = readFileSync(join(options.configDir, `chat-key-${config.provider}`), 'utf8').trim(); } catch { key = ''; } }
+      if (!key) return { ok: false, problem: `No ${config.provider} key is available, so contradictions were not looked for.` };
+      const request = composeLeadRequest({ provider: config.provider as DirectChatProviderId, model: config.model, key, system: input.system, dataDocument: input.data, history, tools: [] });
+      const answer = await performLeadRequest(request, config.provider as DirectChatProviderId, AbortSignal.timeout(options.timeoutMs ?? 120_000), options.fetcher);
+      return answer.ok ? { ok: true, text: answer.answer.text } : { ok: false, problem: answer.problem };
+    }
+    const answer = await performSubscriptionLeadRequest({ provider: config.provider as SubscriptionChatProviderId, model: config.model, system: input.system, dataDocument: input.data, history, tools: [], outputSchema: CONTRADICTION_SCHEMA, timeoutMs: options.timeoutMs ?? 180_000 }, options.runner);
     return answer.ok ? { ok: true, text: answer.answer.text } : { ok: false, problem: answer.problem };
   };
 }

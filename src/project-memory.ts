@@ -157,6 +157,22 @@ export function recordDecision(store: Store, args: { repo: string; actor: string
     return { id, ...record };
   });
 }
+/** A decision no longer active, with its history row. Inside the caller's transaction; memory-tidy.ts merges through it. */
+export function changeDecisionStatus(store: Store, repo: string, actor: string, id: number, status: 'superseded' | 'retired', reason: string, now: Date): Decision {
+  return changeStatus(store, repo, actor, id, status, reason, now);
+}
+/** A retired or superseded decision active again (memory-tidy.ts restore and unmerge), with its history row. Inside the
+ * caller's transaction, which has proved the person. */
+export function reactivateDecision(store: Store, repo: string, actor: string, id: number, action: string, reason: string, now: Date): Decision {
+  const existing = getDecision(store, repo, actor, id);
+  if (existing === null) throw Error('That decision is unavailable.');
+  if (existing.status === 'active') throw Error('That decision is already active.');
+  const { id: _id, ...was } = existing;
+  const next: DecisionRecord = { ...was, revision: existing.revision + 1, status: 'active' };
+  store.handle.prepare('UPDATE project_decision SET revision=?,status=?,sha=? WHERE id=?').run(next.revision, 'active', digestOf(next), id);
+  store.handle.prepare('INSERT INTO decision_change(decision,revision,actor,at,action,payload,sha) VALUES (?,?,?,?,?,?,?)').run(id, next.revision, actor, now.toISOString(), action, history({ reason }), digestOf(next));
+  return { id, ...next };
+}
 function changeStatus(store: Store, repo: string, actor: string, id: number, status: 'superseded' | 'retired', reason: string, now: Date): Decision {
   const existing = getDecision(store, repo, actor, id);
   if (existing === null) throw Error('That decision is unavailable.');

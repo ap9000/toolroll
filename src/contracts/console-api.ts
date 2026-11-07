@@ -171,6 +171,7 @@ export const CONSOLE_FORMS = {
   knowledgeRefresh: formContract("POST /settings/knowledge/refresh", ["repo"]),
   knowledgeProposal: formContract("POST /settings/knowledge/proposal", ["repo", "decision", "proposal"]),
   knowledgeNote: formContract("POST /settings/knowledge/note", ["repo", "decision", "proposal", "claim"]),
+  knowledgeTidy: formContract("POST /settings/knowledge/tidy", ["repo", "action", "proposal", "choice", "claim", "why", "target", "revision"]),
   knowledgeDecision: formContract("POST /settings/knowledge/decision", ["repo", "action", "claim", "why", "decision", "reason"]),
   knowledgeChange: formContract("POST /settings/knowledge/change", ["repo", "action", "identity", "revision", "instructions", "title", "content", "path", "id", "restore"]),
   learningChange: formContract("POST /settings/learning/change", ["repo", "action", "identity", "revision", "lesson", "version", "sha"]),

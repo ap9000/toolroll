@@ -150,11 +150,11 @@ describe("when a note is proposed", () => {
 
   test("a test with mixed outcomes at the failed commit gets no note", () => {
     const f = open();
-    const failed = check(f, f.taskId, f.approved, FAILING);
     check(f, f.taskId, f.approved, PASSING);
+    const failed = check(f, f.taskId, f.approved, FAILING);
     const passing = check(f, revisionOf(f, failed), f.commit({ "src/a.ts": "a\n" }), PASSING);
     expect(pending(f)).toEqual([]);
-    expect(notesOn(f, passing).join(" ")).toEqual("");
+    expect(notesOn(f, passing).join(" ")).toMatch(/has mixed outcomes at that commit/);
   });
 
   test("test and harness paths are told from source", () => {
