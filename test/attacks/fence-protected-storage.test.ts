@@ -12,12 +12,12 @@
  * readable under policy 2.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { codexFenceArgv, fenceFor, runFolders, srtTermsOf, taskBoundary, trustedWorktreeBinding, type FenceGrants, type FencePolicy } from "../../src/agent-fence.js";
 import { run } from "../../src/exec.js";
-import { CONTAINER_LOOK_MS, containersListable, linkCacheFile, lookOutcome, protectedStorageDenies, readLinkCache, rootsAnswering } from "../../src/protected-storage.js";
+import { CONTAINER_LOOK_MS, containersListable, LINK_CACHE_FRESH_MS, linkCacheFile, lookOutcome, protectedStorageDenies, readLinkCache, readLinkCacheRoots, rootsAnsweringLate, storageBlockedWords, rootsAnswering } from "../../src/protected-storage.js";
 import { readDenyPath } from "../../src/project-sandbox.js";
 import { codexSandbox, git, lines, marker, needs, osFence, repository, underCodex, underSandbox, useScratch, write } from "./harness.js";
 
@@ -126,19 +126,59 @@ describe("protected storage: chat apps, browser profiles and password managers, 
     return { root, home, slack, teams, worktree, fence, cache: linkCacheFile(home, {}) };
   };
 
-  test("macOS waiting with nothing kept: the containers stay denied by name and real path, unwalked, said once; nothing else changes", () => {
-    const { root, home, slack, teams, cache } = containerHome();
-    const asked: string[][] = [], said: string[] = [];
-    const denies = protectedStorageDenies(home, {}, "darwin", line => said.push(line), roots => { asked.push([...roots].sort()); return false; });
+  // Codex round 1: a root that timed out with no recent record of its links left where it leads readable. It refuses now.
+  test("macOS waiting with nothing kept: the launch is refused, saying how to allow it, and nothing inside is opened", () => {
+    const { home, slack, teams } = containerHome();
+    const asked: string[][] = [], late: string[][] = [];
+    const run = () => protectedStorageDenies(home, {}, "darwin", () => {}, roots => { asked.push([...roots].sort()); return false; }, undefined, undefined, roots => { late.push([...roots].sort()); return new Set(); });
+    expect(run).toThrow(/Nothing was started: macOS is asking whether Toolroll may look inside .*Slack.* Privacy & Security/);
     expect(asked).toEqual([[slack, teams].sort()]);
-    // The browser profile's nested link (a Mac's paths) is still walked and denied.
-    for (const path of [slack, teams, ...(mac ? [join(root, "profiles", "chrome-default")] : [])]) expect(denies, path).toContain(path);
-    for (const path of ["Stash", "Moved"]) expect(denies, path).not.toContain(join(home, path));
-    expect(existsSync(cache)).toBe(false);
-    protectedStorageDenies(home, {}, "darwin", line => said.push(line), () => false);
-    expect(said.filter(line => line.includes("other apps' containers"))).toHaveLength(1);
+    // The longer look was asked about exactly the roots with no record.
+    expect(late).toEqual([[slack, teams].sort()]);
     // Not a Mac: nothing to ask.
     protectedStorageDenies(home, {}, "linux", () => {}, () => { throw new Error("asked"); });
+  });
+
+  test("a slow first look on a Mac that doesn't ask: the longer look answers, the roots are walked and the launch goes on", () => {
+    const { home, cache } = containerHome();
+    const denies = protectedStorageDenies(home, {}, "darwin", () => {}, () => false, undefined, undefined, roots => new Set(roots));
+    for (const path of ["Stash", "Moved"]) expect(denies, path).toContain(join(home, path));
+    expect(readLinkCache(cache, home)).toEqual(expect.arrayContaining([join(home, "Moved"), join(home, "Stash")]));
+  });
+
+  test("a record is proof only while recent and while its root is unchanged", () => {
+    const { home, teams, cache } = containerHome();
+    let clock = Date.parse("2026-11-07T09:00:00Z");
+    const now = () => clock;
+    protectedStorageDenies(home, {}, "darwin", () => {}, () => true, undefined, undefined, () => new Set(), now);
+    const waiting = () => protectedStorageDenies(home, {}, "darwin", () => {}, () => false, undefined, undefined, () => new Set(), now);
+    expect(waiting()).toContain(join(home, "Moved"));
+    clock += LINK_CACHE_FRESH_MS + 1;
+    expect(waiting).toThrow(/Nothing was started/);
+    clock -= 2;
+    expect(waiting()).toContain(join(home, "Moved"));
+    // The root changed since it was walked (an entry added at its top): its record no longer stands.
+    mkdirSync(join(teams, "New"));
+    utimesSync(teams, new Date(), new Date(Date.now() + 5_000));
+    expect(waiting).toThrow(/Nothing was started/);
+    // An older record's shape is no record at all.
+    writeFileSync(cache, JSON.stringify({ version: 1, home, targets: [join(home, "Moved")] }));
+    expect(readLinkCache(cache, home)).toBeNull();
+  });
+
+  test("a refused launch looks again only after a minute, so a run of launches doesn't each wait", () => {
+    let clock = 0, looks = 0;
+    const roots = [join(scratch(), "waits")];
+    const look = () => { looks++; return { finished: [], outcome: "waiting" as const }; };
+    expect([...rootsAnsweringLate(roots, look, () => clock)]).toEqual([]);
+    clock += 30_000;
+    expect([...rootsAnsweringLate(roots, look, () => clock)]).toEqual([]);
+    expect(looks).toBe(1);
+    clock += 31_000;
+    rootsAnsweringLate(roots, look, () => clock);
+    expect(looks).toBe(2);
+    expect(() => rootsAnsweringLate([join(scratch(), "fails")], () => ({ finished: [], outcome: "failed" }))).toThrow(/nothing was launched/);
+    expect(storageBlockedWords([join(scratch(), "Chrome")], scratch())).toContain("Privacy & Security");
   });
 
   // The 0.9.94 deploy: an open() of a root outside the containers waited on the prompt, on the console's own thread.
@@ -148,7 +188,14 @@ describe("protected storage: chat apps, browser profiles and password managers, 
     const list = (path: string) => { opened.push(path); return readdirSync(path, { withFileTypes: true }); };
     const safari = join(home, "Library/Safari"), cookies = join(home, "Library/Cookies");
     for (const path of [safari, cookies]) mkdirSync(path, { recursive: true });
-    const denies = protectedStorageDenies(home, {}, "darwin", () => {}, () => true, list, roots => new Set(roots.filter(root => root !== safari)));
+    const silentSafari = (roots: readonly string[]) => new Set(roots.filter(root => root !== safari));
+    // With no record of what Safari's folder links to, nothing launches, and it is never opened here.
+    expect(() => protectedStorageDenies(home, {}, "darwin", () => {}, () => true, list, silentSafari, () => new Set())).toThrow(/Safari/);
+    expect(opened.filter(path => path === safari || path.startsWith(`${safari}/`))).toEqual([]);
+    // After a complete look at every root, a later silence stands on that record: the others are walked, Safari isn't.
+    protectedStorageDenies(home, {}, "darwin", () => {}, () => true, undefined, roots => new Set(roots), () => new Set());
+    opened.length = 0;
+    const denies = protectedStorageDenies(home, {}, "darwin", () => {}, () => true, list, silentSafari, () => new Set());
     expect(opened).toContain(cookies);
     expect(opened.filter(path => path === safari || path.startsWith(`${safari}/`))).toEqual([]);
     expect(denies).toContain(safari);
@@ -176,7 +223,7 @@ describe("protected storage: chat apps, browser profiles and password managers, 
     expect(statSync(cache).mode & 0o777).toBe(0o600);
     // Every root's links are kept, a browser profile's too: a root that stops answering later keeps its denies.
     expect(readLinkCache(cache, home)).toEqual(expect.arrayContaining([join(home, "Moved"), join(home, "Stash")]));
-    const waiting = protectedStorageDenies(home, {}, "darwin", () => {}, () => false);
+    const waiting = protectedStorageDenies(home, {}, "darwin", () => {}, () => false, undefined, undefined, () => new Set());
     for (const path of ["Stash", "Moved"]) expect(waiting, path).toContain(join(home, path));
     // Kept for this home only, as a plain file of the right shape: anything else is no cache.
     expect(readLinkCache(cache, join(home, "other"))).toBeNull();
@@ -184,7 +231,7 @@ describe("protected storage: chat apps, browser profiles and password managers, 
     writeFileSync(planted, readFileSync(cache));
     rmSync(cache); symlinkSync(planted, cache);
     expect(readLinkCache(cache, home)).toBeNull();
-    rmSync(cache); writeFileSync(cache, JSON.stringify({ version: 1, home, targets: ["relative/path"] }));
+    rmSync(cache); writeFileSync(cache, JSON.stringify({ version: 2, home, roots: { [home]: { at: "2026-11-07T09:00:00Z", stamp: null, targets: ["relative/path"] } } }));
     expect(readLinkCache(cache, home)).toBeNull();
     rmSync(cache); writeFileSync(cache, " ".repeat(300 * 1024));
     expect(readLinkCache(cache, home)).toBeNull();
@@ -207,7 +254,8 @@ describe("protected storage: chat apps, browser profiles and password managers, 
     };
     const denies = protectedStorageDenies(home, {}, "darwin", () => {}, () => true, list);
     expect(denies).toContain(join(home, "Stash"));
-    expect(existsSync(cache)).toBe(false);
+    // Kept by root: the root that met it isn't kept; the others are.
+    expect(readLinkCacheRoots(cache, realpathSync(home))?.has(realpathSync(slack))).toBe(false);
   });
 
   test("the container look: only its own limit is macOS waiting; any other failure is tried once more, then refuses the launch", () => {

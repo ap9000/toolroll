@@ -21,7 +21,7 @@
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, lstatSync, openSync, constants as fsConstants, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { configBase, namedFolder } from "./names.js";
 
 /** One app's storage, relative to the home folder, per platform. */
@@ -170,14 +170,18 @@ const unwalkedSaid = new Set<string>();
  * prompt when the process asking has no answer yet (a plane run by launchd: every launch, and the console with it, hung
  * there in release check 3249). So every root is walked only after a time-limited look in a child process
  * (`containers`, containersListable) shows they can be listed without waiting. A look that fails any other way refuses
- * the launch (it throws). When macOS is waiting on the person, the containers stay denied by name and real path, and
- * the outward links the last complete walk found (kept in the plane's own state folder, linkCacheFile) stay denied too;
- * with none kept, only the roots are denied, and that is said once.
+ * the launch (it throws). When macOS is waiting on the person, the roots stay denied by name and real path, and the
+ * outward links a recent complete walk of each found (kept by root in the plane's own state folder, linkCacheFile) stay
+ * denied too. A record counts only while it is recent (LINK_CACHE_FRESH_MS) and the root itself is unchanged; it can't
+ * see a link moved deeper inside since. With no such record, one longer look (SLOW_LOOK_MS) tells a slow Mac from one
+ * waiting on the person, and a root still waiting refuses the launch in words that say how to allow it: its outward
+ * links are unknown, and launching anyway would leave moved session data readable.
  */
 export function protectedStorageDenies(home: string = homedir(), env: Readonly<Record<string, string | undefined>> = process.env, platform: NodeJS.Platform = process.platform,
   say: (line: string) => void = line => process.stderr.write(`${line}\n`), containers: (roots: readonly string[]) => boolean = roots => containersListable(roots),
   list: (path: string) => import("node:fs").Dirent[] = path => readdirSync(path, { withFileTypes: true }),
-  others: (roots: readonly string[]) => ReadonlySet<string> = roots => rootsAnswering(roots)): string[] {
+  others: (roots: readonly string[]) => ReadonlySet<string> = roots => rootsAnswering(roots),
+  late: (roots: readonly string[]) => ReadonlySet<string> = roots => rootsAnsweringLate(roots), now: () => number = Date.now): string[] {
   const base = real(home);
   const out = new Set<string>();
   const add = (path: string) => { if (!tooWide(path, base)) out.add(path); };
@@ -196,26 +200,72 @@ export function protectedStorageDenies(home: string = homedir(), env: Readonly<R
   // so on a Mac each is looked at the same way. Only a root that answered is walked here; the rest stay denied.
   const plain = platform === "darwin" ? [...new Set(present.map(one => one.root))].filter(root => !held.includes(root)) : [];
   const answering = plain.length === 0 ? new Set<string>() : others(plain);
-  const silent = plain.filter(root => !answering.has(root));
   const cache = held.length + plain.length === 0 ? null : linkCacheFile(base, env);
-  if (!listable || silent.length > 0) {
-    const kept = cache === null ? null : readLinkCache(cache, base);
-    for (const target of kept ?? []) add(target);
-    if (!unwalkedSaid.has(CONTAINERS_UNLISTED)) {
-      unwalkedSaid.add(CONTAINERS_UNLISTED);
-      say(`toolroll: fence: macOS didn't let Toolroll look inside other apps' containers without asking you; they stay denied, ${kept === null ? "but links inside them weren't checked" : "with the links found inside them when they were last checked"}. Allow Toolroll's service to access data from other apps (Privacy & Security) to check them.`);
-    }
+  const kept = cache === null ? null : readLinkCacheRoots(cache, base);
+  // A root that wasn't looked inside: its outward links are known only from a recent complete walk of it, unchanged since.
+  const fresh = (root: string): boolean => { const one = kept?.get(root); return one !== undefined && now() - Date.parse(one.at) <= LINK_CACHE_FRESH_MS && one.stamp === rootStamp(root); };
+  const unwalked = [...(listable ? [] : held), ...plain.filter(root => !answering.has(root))];
+  // Neither a missing nor a stale record is proof. One longer look tells a slow Mac from one waiting on the person (only a
+  // child waits); a root still waiting after it refuses the launch, which would otherwise leave its moved data readable.
+  const unverified = unwalked.filter(root => !fresh(root));
+  const answeredLate = unverified.length === 0 ? new Set<string>() : late(unverified);
+  const blocked = unverified.filter(root => !answeredLate.has(root));
+  if (blocked.length > 0) throw new Error(storageBlockedWords(blocked, base));
+  const skipped = unwalked.filter(root => !answeredLate.has(root));
+  for (const root of skipped) for (const target of kept?.get(root)?.targets ?? []) add(target);
+  if (skipped.length > 0 && !unwalkedSaid.has(CONTAINERS_UNLISTED)) {
+    unwalkedSaid.add(CONTAINERS_UNLISTED);
+    say("toolroll: fence: macOS didn't let Toolroll look inside some apps' data without asking you; they stay denied, with the links found inside them on a recent look (allow Toolroll in Privacy & Security to stop this)");
   }
-  const walked = { complete: true }, inside: string[] = [];
+  const looked = new Map<string, string[]>();
   for (const { name, root } of present) {
-    const container = held.includes(root);
-    if ((container && !listable) || silent.includes(root)) continue;
-    const kept = container || plain.includes(root);
-    for (const target of outwardLinks(name, root, base, say, list, kept ? walked : undefined)) { add(target); if (kept) inside.push(target); }
+    if (skipped.includes(root)) continue;
+    const walked = { complete: true };
+    const found = outwardLinks(name, root, base, say, list, walked);
+    for (const target of found) add(target);
+    // Only a walk of a Mac root that met no error but "not there" or "not allowed" is kept for later.
+    if (platform === "darwin" && walked.complete) looked.set(root, [...(looked.get(root) ?? []), ...found]);
   }
-  // Only a walk of every container that met no error but "not there" or "not allowed" is kept for later.
-  if (listable && silent.length === 0 && walked.complete && cache !== null) writeLinkCache(cache, base, inside);
+  if (cache !== null && looked.size > 0) writeLinkCacheRoots(cache, base, looked, kept, now());
   return [...out].sort();
+}
+
+/** How long a root's kept links stand in for a look inside it, while the root itself is unchanged. */
+export const LINK_CACHE_FRESH_MS = 24 * 60 * 60_000;
+/** A root's own identity and last change, read without opening it: a moved or replaced root is another root. */
+function rootStamp(root: string): string | null {
+  try { const held = lstatSync(root); return `${held.dev}:${held.ino}:${held.mtimeMs}`; } catch { return null; }
+}
+
+/** The apps behind these roots, by name, for the words a person reads. */
+function appsOf(roots: readonly string[], home: string): string[] {
+  const names = roots.map(root => PROTECTED_STORAGE.find(row => row.darwin.some(one => real(join(home, one)) === root))?.app ?? basename(root));
+  return [...new Set(names)];
+}
+
+/** Why nothing was launched, and what the person does about it. */
+export function storageBlockedWords(roots: readonly string[], home: string): string {
+  const apps = appsOf(roots, home);
+  const named = apps.length === 1 ? apps[0]! : `${apps.slice(0, -1).join(", ")} and ${apps.at(-1)!}`;
+  return `Nothing was started: macOS is asking whether Toolroll may look inside ${named}'s data, and until it can, Toolroll can't tell what to keep out of a build. Answer the prompt, or allow Toolroll in System Settings → Privacy & Security (App Management or Full Disk Access), then try again.`;
+}
+
+/** How long the longer look may take, after the first look ran out (a slow Mac answers in time; one asking the person doesn't). */
+export const SLOW_LOOK_MS = 10_000;
+/** A launch refused for waiting roots stays refused this long without looking again, so a run of launches doesn't each wait. */
+const REFUSED_FOR_MS = 60_000;
+const refusedLooks = new Map<string, number>();
+
+/** The longer look at roots the first look didn't finish: those that answer now, remembered as answering. */
+export function rootsAnsweringLate(roots: readonly string[], look: (roots: readonly string[]) => RootsLook = roots => lookAtRoots(roots, SLOW_LOOK_MS), now: () => number = Date.now): ReadonlySet<string> {
+  const key = [...roots].sort().join("\0");
+  const refused = refusedLooks.get(key);
+  if (refused !== undefined && now() - refused < REFUSED_FOR_MS) return new Set();
+  const seen = look(roots);
+  if (seen.outcome === "failed") throw new Error("Toolroll couldn't look inside other apps' data to fence it (the look failed), so nothing was launched.");
+  for (const root of seen.finished) rootLooks.set(root, { listable: true, at: now() });
+  if (seen.finished.length < roots.length) refusedLooks.set(key, now()); else refusedLooks.delete(key);
+  return new Set(seen.finished);
 }
 
 /** Where the links inside a present root lead, when outside it: a walk that never follows a link, bounded. */
@@ -358,9 +408,9 @@ roots.forEach((root,at)=>{let seen=0;const queue=[{p:root,d:0}];while(queue.leng
 try{entries=fs.readdirSync(p,{withFileTypes:true});}catch{continue;}for(const e of entries){if(++seen>Number(limit)){queue.length=0;break;}
 if(!e.isSymbolicLink()&&e.isDirectory()&&d+1<Number(depth))queue.push({p:path.join(p,e.name),d:d+1});}}fs.writeSync(1,at+"\\n");});`;
 
-function lookAtRoots(roots: readonly string[]): RootsLook {
+function lookAtRoots(roots: readonly string[], limit: number = CONTAINER_LOOK_MS): RootsLook {
   const result = spawnSync(process.execPath, ["-e", ROOTS_LOOK, String(PROTECTED_WALK.depth), String(PROTECTED_WALK.entries), ...roots],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: CONTAINER_LOOK_MS, killSignal: "SIGKILL", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: limit, killSignal: "SIGKILL", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
   const finished = String(result.stdout ?? "").split("\n").filter(line => /^[0-9]+$/.test(line)).map(line => roots[Number(line)]).filter((root): root is string => root !== undefined);
   return { finished, outcome: lookOutcome(result) };
 }
@@ -390,9 +440,11 @@ export function linkCacheFile(home: string, env: Readonly<Record<string, string 
   return join(namedFolder(configBase({ ...env }, home)), "protected-links.json");
 }
 
-/** The kept links for this home: only a plain file of this user's (no link), at most LINK_CACHE_MAX, of exactly the
- * kept shape; anything else is no cache at all. */
-export function readLinkCache(file: string, home: string): string[] | null {
+type KeptRoot = { at: string; stamp: string | null; targets: string[] };
+
+/** The kept links for this home, by root: only a plain file of this user's (no link), at most LINK_CACHE_MAX, of exactly
+ * the kept shape; anything else (an older shape included) is no cache at all. */
+export function readLinkCacheRoots(file: string, home: string): Map<string, KeptRoot> | null {
   let fd: number;
   try {
     const held = lstatSync(file);
@@ -406,20 +458,35 @@ export function readLinkCache(file: string, home: string): string[] | null {
     const read = readSync(fd, buffer, 0, buffer.length, 0);
     const value = JSON.parse(buffer.subarray(0, read).toString("utf8")) as unknown;
     if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-    const { version, home: kept, targets } = value as Record<string, unknown>;
-    if (version !== 1 || kept !== home || !Array.isArray(targets) || targets.some(one => typeof one !== "string" || !isAbsolute(one))) return null;
-    return targets as string[];
+    const { version, home: kept, roots } = value as Record<string, unknown>;
+    if (version !== 2 || kept !== home || roots === null || typeof roots !== "object" || Array.isArray(roots)) return null;
+    const out = new Map<string, KeptRoot>();
+    for (const [root, one] of Object.entries(roots as Record<string, unknown>)) {
+      const entry = one as Record<string, unknown> | null;
+      if (!isAbsolute(root) || entry === null || typeof entry !== "object" || typeof entry["at"] !== "string" || Number.isNaN(Date.parse(entry["at"])) || !(entry["stamp"] === null || typeof entry["stamp"] === "string")
+        || !Array.isArray(entry["targets"]) || entry["targets"].some(target => typeof target !== "string" || !isAbsolute(target))) return null;
+      out.set(root, { at: entry["at"], stamp: entry["stamp"] as string | null, targets: entry["targets"] as string[] });
+    }
+    return out;
   } catch { return null; }
   finally { closeSync(fd); }
 }
 
-/** Keep a complete walk's links: written aside (owner-only) and renamed into place, only into a state folder that is
- * already there. A failed write keeps whatever was kept before. */
-export function writeLinkCache(file: string, home: string, targets: readonly string[]): void {
+/** Every kept link for this home, whichever root it was found in. */
+export function readLinkCache(file: string, home: string): string[] | null {
+  const roots = readLinkCacheRoots(file, home);
+  return roots === null ? null : [...new Set([...roots.values()].flatMap(one => one.targets))].sort();
+}
+
+/** Keep these roots' complete walks beside the others kept: written aside (owner-only) and renamed into place, only into a
+ * state folder that is already there. A failed write keeps whatever was kept before. */
+export function writeLinkCacheRoots(file: string, home: string, walked: ReadonlyMap<string, readonly string[]>, kept: ReadonlyMap<string, KeptRoot> | null, at: number): void {
   if (!existsSync(dirname(file))) return;
+  const roots: Record<string, KeptRoot> = Object.fromEntries(kept ?? []);
+  for (const [root, targets] of walked) roots[root] = { at: new Date(at).toISOString(), stamp: rootStamp(root), targets: [...new Set(targets)].sort() };
   const aside = `${file}.${process.pid}.part`;
   try {
-    writeFileSync(aside, JSON.stringify({ version: 1, home, targets: [...new Set(targets)].sort() }), { mode: 0o600, flag: "wx" });
+    writeFileSync(aside, JSON.stringify({ version: 2, home, roots }), { mode: 0o600, flag: "wx" });
     renameSync(aside, file);
   } catch { rmSync(aside, { force: true }); }
 }
