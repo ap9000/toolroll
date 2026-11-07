@@ -4,6 +4,7 @@
  */
 import { githubRepoOf } from "../pull-request-flow.js";
 import { areaRows, areaView, fileView, searchMap, type AreaRow, type MapStatus } from "../code-map-read.js";
+import { NOT_ENOUGH, reportRows, type CodeMapReport } from "../code-map-report.js";
 import type { CodeMap, MapFile, MapWarning } from "../code-map-shape.js";
 import { html, joinHtml, postForm, type Html, type HtmlValue } from "../html.js";
 import { type Chrome, relativeAge, screen, type Screen } from "./chrome.js";
@@ -100,6 +101,14 @@ function provenance(data: CodeMapPage, map: CodeMap): Html {
   ]));
 }
 
+/** "Builds with and without the map": read by people; nothing switches on it. */
+export function codeMapReportBlock(report: CodeMapReport): Html | null {
+  if (report.arms.map.families + report.arms.holdout.families === 0) return null;
+  return html`<section class="k-sec" aria-labelledby="cm-report"><h3 id="cm-report">Builds with and without the map</h3>
+    ${report.enough ? "" : note(NOT_ENOUGH)}
+    ${facts(reportRows(report).map(row => [row.label, `With ${row.map} · without ${row.holdout}`] as const))}</section>`;
+}
+
 export function codeMapPage(chrome: Chrome, data: CodeMapPage): Screen {
   const { status, map } = data;
   const age = status.version === null ? "" : ` · ${relativeAge(status.version.builtAt, data.now)}`;
@@ -126,7 +135,7 @@ export function codeMapPage(chrome: Chrome, data: CodeMapPage): Screen {
   }
   const body = joinHtml([
     phoneHeader("Code map", { back: data.selfHref.replace(/\/map(?:\?.*)?$/, "") }),
-    doc(docHeader({ back: [data.base.replace(/\/map$/, ""), data.name], title: "Code map", meta, right: check || undefined, same: true } as Parameters<typeof docHeader>[0]), stated, warn, content),
+    doc(docHeader({ back: [data.base.replace(/\/map$/, ""), data.name], title: "Code map", meta, ...(check === "" ? {} : { right: check }), same: true }), stated, warn, content),
   ]);
   return screen("Code map", body, { chrome });
 }

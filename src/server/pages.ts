@@ -65,7 +65,8 @@ import { githubIdentityOf,homePage,startBuilderHtml } from "./render-pages.js";
 import { retiredRedirect } from "./retired-routes.js";
 import { codeMapStatus, openMap } from "../code-map-read.js";
 import { requestRefresh } from "../code-map-store.js";
-import { codeMapPage } from "./render-code-map.js";
+import { codeMapReport } from "../code-map-report.js";
+import { codeMapPage, codeMapReportBlock } from "./render-code-map.js";
 import { browsePage,githubReposPage,projectHref,projectPage,projectsPage,unknownProject,type ProblemAt,type ProjectPageTask } from "./render-projects.js";
 import { notFound as kitNotFound } from "./kit.js";
 import { type ProjectPeek } from "./render-pages.js";
@@ -980,7 +981,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const canRefresh = who.via === "cookie" && who.authority !== "local-owner" && store.accountOf(who.name)?.role === "approver" && store.accountCanAccess(who.name, found.path);
     return sendScreen(response, 200, codeMapPage(chromeFor(open, "projects"), {
       name: found.name, repo: found.path, base: found.base, selfHref: found.selfHref, status, map: map?.map ?? null, versionId: map?.version.id ?? null, remoteUrl: store.projectRemote(found.path),
-      q: url.searchParams.get("q"), area: url.searchParams.get("area"), file: url.searchParams.get("file"), canRefresh, now, report: null,
+      q: url.searchParams.get("q"), area: url.searchParams.get("area"), file: url.searchParams.get("file"), canRefresh, now, report: codeMapReportBlock(codeMapReport(store, found.path, now)),
       said: url.searchParams.get("said"), problem: repoed !== null ? "The map changed. Showing the current one." : url.searchParams.get("problem"),
     }));
   }

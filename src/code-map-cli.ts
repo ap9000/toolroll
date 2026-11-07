@@ -5,6 +5,7 @@
 import { resolve } from "node:path";
 import { answerMap, areaRows, codeMapStatus, openMap, type MapAnswer, type MapView } from "./code-map-read.js";
 import { endHoldout, setCodeMapSwitch, type MapDoor } from "./code-map-acts.js";
+import { codeMapReport, NOT_ENOUGH, reportRows } from "./code-map-report.js";
 import { requestRefresh } from "./code-map-store.js";
 import { canonicalProject } from "./project.js";
 import { envelopeJson } from "./envelope.js";
@@ -70,7 +71,10 @@ export async function runMapCommand(positional: readonly string[], options: Map<
     if (!done.ok) return fail("refused", done.problem);
     return ok({ repo: wanted, ...(action === "holdout" ? { holdout: "ended" } : { codeMap: action }) }, [action === "holdout" ? "The holdout has ended: no new builds are enrolled, and existing ones keep their arm." : `The code map is ${action} for this project.`]);
   }
-  if (action === "report") return fail("refused", "The report isn't ready yet.");
+  if (action === "report") {
+    const report = codeMapReport(store, wanted, now);
+    return ok({ report }, ["Builds with and without the map", ...reportRows(report).map(row => `${row.label}: with ${row.map} · without ${row.holdout}`), ...(report.enough ? [] : [NOT_ENOUGH])]);
+  }
   const cursor = options.get("cursor");
   if (cursor === true) return fail("usage", "--cursor takes the value the last answer gave.");
   if (action === "") {
