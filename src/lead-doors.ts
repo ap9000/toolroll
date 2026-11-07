@@ -81,6 +81,8 @@ export type DoorOptions = {
   actionReview?: SharedActionOptions["review"];
   /** The existing ceremony for an irreversible decision option: `confirm=yes`, typed explicitly (ruling 12). */
   confirm?: boolean;
+  /** The web door only: a person's signed-in browser session, never a token. An approval from the web needs it. */
+  person?: boolean;
   /** Which surface answered — recorded on the decision, the stop and the
    * proposal's outcome. Named by the caller, never defaulted (v3 review,
    * finding 1); `telegram` is the paired phone, never relabelled as the CLI. */
@@ -230,7 +232,7 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
     // Both executors run as the card's own act: the prover answers "local-owner" only for it.
     const execute = <T,>(body: () => T): T => localAct === null ? body() : withLocalAct(localAct, body);
     const outcome: DoorOutcome = proposal.kind === "action"
-      ? { ...execute(() => executeSharedAction(store, who, proposal.id, sharedActionPayload(proposal.payload)!, now, {via:options.via, authority: localAct === null ? "full" : "local-owner", ...(options.evidenceRoot===undefined?{}:{root:options.evidenceRoot}), ...(options.actionReview===undefined?{}:{review:options.actionReview}), ...(options.confirm===undefined?{}:{confirm:options.confirm})})), kind: proposal.kind }
+      ? { ...execute(() => executeSharedAction(store, who, proposal.id, sharedActionPayload(proposal.payload)!, now, {via:options.via, ...(options.person === undefined ? {} : { person: options.person }), authority: localAct === null ? "full" : "local-owner", ...(options.evidenceRoot===undefined?{}:{root:options.evidenceRoot}), ...(options.actionReview===undefined?{}:{review:options.actionReview}), ...(options.confirm===undefined?{}:{confirm:options.confirm})})), kind: proposal.kind }
       : execute(() => executeProposal(store, who, proposal.kind, proposal.payload, now, { ...options, deferSignal: defer }));
     if (!outcome.ok && outcome.reason === "needs-confirm") {
       store.casLeadProposal(proposalId, "confirming", "pending", null, null, now);
@@ -408,7 +410,7 @@ function executeProposal(
   if (kind === "task_action") {
     // A person's own surface (the console, the paired phone) honours the
     // operator's own automatic-approval mode; the CLI keeps its ceremony.
-    const result = applyChatTaskAction(store, actor, payload, now, options.via !== "cli", { deferSignal: options.deferSignal, via: options.via, ...(options.evidenceRoot === undefined ? {} : { evidenceRoot: options.evidenceRoot }) });
+    const result = applyChatTaskAction(store, actor, payload, now, options.via !== "cli", { deferSignal: options.deferSignal, via: options.via, person: options.via === "web" ? options.person === true : options.via !== "cli", ...(options.evidenceRoot === undefined ? {} : { evidenceRoot: options.evidenceRoot }) });
     return result.ok ? { ok: true, kind, taskId: result.taskId, said: result.said } : refuse("stale", result.message);
   }
 

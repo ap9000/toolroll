@@ -4,10 +4,9 @@
  * and each button is one opaque token bound to the exact result, receipt, plan or commit the card showed: a card a
  * newer result, a finished task or a changed plan has overtaken says so and acts on nothing.
  *
- * Approving a plan or merging needs the password, which never goes in chat, so they act in chat only where the owner
- * turned approving from chat on (their lasting setting, chat-approval.ts, or a signed mode's chatApprove term), for
- * their own chat; otherwise, and for a plan that widens permissions, exceeds the limit or touches protected paths, the
- * card keeps its link. The change requests one youiyoux pass filed come as one card that shows every word of each
+ * A person with the authority approves a plan or merges from their own linked chat by default (owner's decision,
+ * docs/plans/toolroll-cards.md); their own off or limits (chat-approval.ts) and a signed mode's chatApprove term still
+ * hold. A tap is theirs alone, and the card binds it to the exact terms. The change requests one youiyoux pass filed come as one card that shows every word of each
  * task's terms, with Approve all and each one's own Approve (the requests card, below).
  *
  * The same in every chat app: Telegram's bridge and the shared engine Slack, Discord and Teams run on (chat-delivery.ts)
@@ -24,15 +23,15 @@ import { chatControlHref, chatResultHref } from "./chat-controls.js";
 import { applyChatTaskAction, chatTaskStamp } from "./chat-task-actions.js";
 import { chatTitle } from "./chat-voice.js";
 import { readVerifiedArtifact, scanForSecrets } from "./evidence.js";
-import { effectiveChatApproval, type ChatApprovalLimits } from "./chat-approval.js";
-import { chatApproveChatsOf, chatNames, modeTermsFromJson, type ModeTerms } from "./modes.js";
+import { chatApproveMode } from "./chat-approval.js";
 import { parseExecutionPlanDocument } from "./plan.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { pullRequestFollowOf } from "./pull-request-flow.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
 import type { Scope } from "./scope.js";
-import { APPROVAL_PROOF, approvalOf, approvalProofDetail, deployGateScope, quarantinedAuthor } from "./scope.js";
+import { APPROVAL_PROOF, approvalOf, approvalProofDetail, approve, deployGateScope, quarantinedAuthor } from "./scope.js";
+import { gateWords } from "./approval-policy.js";
 import { releaseCardOf, type ReleaseCard } from "./release-card.js";
 import type { Store } from "./store.js";
 import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
@@ -98,23 +97,7 @@ const title = (store: Store, taskId: string): string => phoneText(chatTitle(stor
 
 // ---- the chatApprove term ----------------------------------------------------------
 
-/** What lets this person's chat on `channel` approve on this repository now: their lasting chat-approval setting
- * (chat-approval.ts), or else a live signed mode carrying the chatApprove term, signed by them, that names this chat
- * app (a mode signed before the term named its apps covers Telegram alone). `digest` names that authority for the
- * ledger; the yes itself is the person's tap and is sealed as theirs, so it doesn't lapse when the authority does. */
-export function chatApproveMode(store: Store, repo: string | null, approver: string, now: Date, channel: DecideChannel):
-  { ok: true; digest: string; limits: ChatApprovalLimits; source: "setting" | "mode" } | { ok: false; why: string } {
-  if (repo === null) return { ok: false, why: "Approving from chat isn't turned on for this project." };
-  const setting = effectiveChatApproval(store, repo, approver);
-  if (setting.ok) return { ok: true, digest: setting.setting.digest, limits: setting.limits, source: "setting" };
-  const mode = store.activeMode(repo, now);
-  const terms: ModeTerms | null = mode === null ? null : modeTermsFromJson(mode.termsJson);
-  if (mode === null || terms === null || !terms.chatApprove) return setting;
-  if (mode.signedBy !== approver || !store.accountCanAccess(approver, repo)) return { ok: false, why: "Only the person who signed this project's mode can approve from chat." };
-  const chats = chatApproveChatsOf(terms);
-  if (!chats.includes(channel)) return { ok: false, why: `Your mode approves from ${chatNames(chats)} only. Sign it again to approve from ${chatNames([channel])}.` };
-  return { ok: true, digest: mode.digest, limits: { fullAccess: terms.permissionDefault === "escalated", capMicrousd: terms.perAttemptBudgetMicrousd }, source: "mode" };
-}
+export { chatApproveMode };
 
 function fullAccess(profile: Scope["profile"] | null | undefined): boolean {
   if (profile === null || profile === undefined) return false;
@@ -129,7 +112,7 @@ const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(2)}`;
 export function planInChat(store: Store, taskId: string, approver: string, now: Date, channel: DecideChannel, root?: string,
   /** A youiyoux card asking (requestsOffer): its own words are checked there, every one shown. */
   from?: "requests"):
-  { ok: true; modeDigest: string; source: "setting" | "mode"; digest: string; scope: Scope } | { ok: false; why: string } {
+  { ok: true; modeDigest: string; source: "setting" | "mode"; digest: string; scope: Scope; whole: boolean } | { ok: false; why: string } {
   // A change request's terms are outside text: they approve in chat only on its own card, which shows every word.
   if (from !== "requests" && store.filedViaOf(taskId) === YOUIYOUX_FILED_VIA) return { ok: false, why: OUTSIDE_TERMS };
   const ref = store.lookupRef(taskId);
@@ -144,14 +127,15 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
   if (store.getTask(taskId)?.state === "cancelled" || store.getTask(taskId)?.state === "done") return { ok: false, why: "This task is already finished." };
   const family = store.taskFamilyOf(taskId, [ref.repo], false);
   if (family === null || family.problem !== null || family.current.id !== taskId) return { ok: false, why: "A newer version of this task is current." };
-  // What the mode's seal refuses anyway, said first: model- or coordinator-written terms, an unreadable route.
-  if (ref.coordinatorCid !== null || quarantinedAuthor(scope.proposedVia ?? null)) return { ok: false, why: "This plan was written for you, so you approve it in Toolroll." };
+  // Terms a machine wrote, or checks that reach past the sandbox: a person reads every word before a yes, so the card shows them whole.
+  const whole = ref.coordinatorCid !== null || quarantinedAuthor(scope.proposedVia ?? null);
   if (scope.profileState === "unresolved" || scope.routeEra == null || (scope.termsProblem ?? null) !== null) return { ok: false, why: "This plan can't say exactly which agents run, so you approve it in Toolroll." };
   const yours = mode.source === "setting" ? "your chat approval setting" : "your mode";
   if (fullAccess(scope.profile) && !mode.limits.fullAccess) return { ok: false, why: `This plan asks for more access than ${yours} allows.` };
   const cap = mode.limits.capMicrousd;
   if (cap !== null && (scope.budgetMicrousd === null || scope.budgetMicrousd > cap)) return { ok: false, why: `This plan has ${scope.budgetMicrousd === null ? "no attempt limit" : `a ${money(scope.budgetMicrousd)} attempt limit`}, more than ${yours === "your mode" ? "your mode's" : "your chat approval limit of"} ${money(cap)}.` };
-  if (store.approvalGate(taskId, approver, "mode").verdict !== "seal") return { ok: false, why: "This plan touches protected work, so two people approve it in Toolroll." };
+  const gate = store.approvalGate(taskId, approver, "person");
+  if (gate.verdict === "refuse") return { ok: false, why: gateWords(gate) };
   if (store.scopePolicyRefusal(taskId) !== null) return { ok: false, why: "Your organisation's policy needs this plan approved in Toolroll." };
   // A revision approves only against notes that still verify, as on the console.
   if (ref.revisionBriefArtifact !== null) {
@@ -167,7 +151,7 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
     try { verified = root !== undefined && readVerifiedArtifact(root, plan).ok; } catch { verified = false; }
     if (!verified) return { ok: false, why: "The saved plan can't be verified here, so you approve it in Toolroll." };
   }
-  return { ok: true, modeDigest: mode.digest, source: mode.source, scope, digest: sha(`${scope.digest}:${plan?.sha256 ?? ""}`) };
+  return { ok: true, modeDigest: mode.digest, source: mode.source, scope, whole, digest: sha(`${scope.digest}:${plan?.sha256 ?? ""}`) };
 }
 
 /** A ready pull request this person's chat may merge now, bound to the exact commit. */
@@ -443,7 +427,7 @@ export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApp
         try { head = release ? releaseCardOf(store, plan.scope, plan.digest, { profile: permissionPlainWords }).short.split("\n").slice(0, 3)
           : planCardText(store, target.taskId, plan.scope, root, channel).split("\n").slice(0, 1); }
         catch { head = [title(store, target.taskId)]; }
-        return { text: [...head, "", needsPassword(plan.scope)].join("\n"), rows: [[{ label: "Approve in Toolroll", path: chatControlHref("approval", target.taskId) }]] };
+        return { text: [...head, "", needsFullCard(plan.scope)].join("\n"), rows: [[{ label: "Approve in Toolroll", path: chatControlHref("approval", target.taskId) }]] };
       }
       // A deploy gate is approved from chat only through its release card (chat-management.md §0a.5).
       if (release) {
@@ -581,7 +565,7 @@ export type ChatMerge = { runId: number; taskId: string; by: string; repo: strin
 /** A release card's acts carry its card digest (release-card.ts), never a plan's. */
 const RELEASE_DIGEST = "release:";
 /** Why a password-only scope (passwordOnlySeal) isn't approved from chat, for a release or a plan. */
-const needsPassword = (scope: Scope): string => `This ${deployGateScope(scope) ? "release" : "plan"}'s checks run outside the sandbox, so it's approved in Toolroll with your password.`;
+const needsFullCard = (scope: Scope): string => `This ${deployGateScope(scope) ? "release" : "plan"}'s checks run outside the sandbox. Ask your lead for its approval card, which shows every term.`;
 /** Whether only a person's password ceremony seals this scope (store.ts sealScopeApproval): checks that reach beyond the
  * sandbox (sign-ins, or none at all) or extra macOS services, sealed into its profile. */
 const passwordOnlySeal = (scope: Scope): boolean => {
@@ -620,7 +604,7 @@ export function releaseInChat(store: Store, taskId: string, approver: string, no
   const plan = planInChat(store, taskId, approver, now, channel, root);
   if (!plan.ok) return plan;
   if (!deployGateScope(plan.scope)) return { ok: false, why: "This plan isn't a release." };
-  if (passwordOnlySeal(plan.scope)) return { ok: false, why: needsPassword(plan.scope) };
+  if (passwordOnlySeal(plan.scope)) return { ok: false, why: needsFullCard(plan.scope) };
   const ref = store.lookupRef(taskId);
   if (ref === null || nightlyTaskRef(store, ref.id)) return { ok: false, why: NIGHTLY_CHECK_ONLY };
   if (seat !== "offer" && (seat.channel !== channel || !privateReleaseChat(store, seat))) return { ok: false, why: "A release is approved only in your private chat with Toolroll." };
@@ -698,7 +682,7 @@ function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | 
       if (!plan.ok) return plan.why;
       // A deploy gate's plain plan card never approves it: only its release card does.
       if (deployGateScope(plan.scope)) return "This is a release: approve it from its release card.";
-      if (passwordOnlySeal(plan.scope)) return needsPassword(plan.scope);
+      if (passwordOnlySeal(plan.scope)) return needsFullCard(plan.scope);
       return plan.digest === row.digest ? null : "The plan changed since this card was sent.";
     }
     case "merge": {
@@ -852,7 +836,9 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       const spec: ActSpec = { act: "approve", run: null, digest: row.digest };
       const yes = mint(store, seat, input.message, spec, row.taskId, "yes", now);
       const later = mint(store, seat, input.message, { act: "not-now", run: null, digest: row.digest }, row.taskId, "offer", now);
-      return { ack: "Read the plan, then approve.", edit: { text: `${planCardText(store, row.taskId, plan.scope, input.root, seat.channel)}\n\n${QUESTIONS.approve(name)} This approves exactly this plan.`,
+      // Terms a machine wrote go on the card word for word, or the yes isn't to what they say.
+      if (plan.whole && scopeTermsText(plan.scope).length > PLATFORM_LIMITS[seat.channel] - ROOM) return stale(`This plan's ${TOO_LONG}, so you approve it in Toolroll.`);
+      return { ack: "Read the plan, then approve.", edit: { text: `${plan.whole ? `${name}\n\n${scopeTermsText(plan.scope)}` : planCardText(store, row.taskId, plan.scope, input.root, seat.channel)}\n\n${QUESTIONS.approve(name)} This approves exactly this plan.`,
         rows: [[{ label: DECIDE_LABELS.approve, token: yes }], [{ label: DECIDE_LABELS.edit, link: { label: DECIDE_LABELS.edit, path: chatControlHref("approval", row.taskId) } }, { label: DECIDE_LABELS["not-now"], token: later }]], tokens: [yes, later] } };
     }
     // The first tap asks; only the yes acts, bound to exactly what this button was.
@@ -906,8 +892,13 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       const plan = planInChat(store, row.taskId, who.name, now, seat.channel, input.root);
       if (!plan.ok) return notDone(plan.why);
       if (deployGateScope(plan.scope)) return notDone("This is a release: approve it from its release card.");
-      if (passwordOnlySeal(plan.scope)) return notDone(needsPassword(plan.scope));
-      if (!sealPlanInChat(store, who, seat, ref.repo, row.taskId, plan, now)) return notDone("the plan couldn't be approved from chat. Open it in Toolroll.");
+      if (passwordOnlySeal(plan.scope)) return notDone(needsFullCard(plan.scope));
+      // The one approval every road shares (scope.ts approve): the rules, two-person votes and the proof, as this person.
+      const approved = approve(store, row.taskId, who.name, now, plan.scope.digest, "", {}, undefined, { modeDigest: plan.modeDigest, shown: plan.whole });
+      if (!approved.ok && approved.reason === "second-approver") return done(gateWords({ verdict: "vote", have: approved.have, need: 2, already: approved.already }));
+      if (!approved.ok) return notDone("the plan couldn't be approved from chat. Open it in Toolroll.");
+      store.recordAction({ at: now.toISOString(), actor: who.name, repo: ref.repo, taskId: row.taskId, runId: null, action: "plan approved in chat", outcome: "approved",
+        source: "request", detail: `via ${seat.channel} · chat binding #${seat.binding} · ${plan.source} ${plan.modeDigest}` });
       return done("✓ Approved. Work starts when a worker is free.");
     }
     case "merge": {

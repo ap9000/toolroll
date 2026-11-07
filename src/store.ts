@@ -9459,10 +9459,15 @@ export class Store {
         // this wall. The promise to the operator is a fresh password
         // ceremony that shows WHO asked; only `basis: password` seals it.
         if (basis !== undefined) {
+          // A PERSON'S YES IN CHAT TO EVERY WORD (owner's decision, docs/plans/toolroll-cards.md): a chat seal naming the
+          // digest of the terms its card showed, recomputed here from the live scope, is a person who read them, as the
+          // ceremony is. Nothing automatic (a mode, a grant, a schedule) ever gets through the walls below.
+          const liveScope = basis.kind === "chat" && basis.card === "terms" ? this.getScope(taskId) : null;
+          const personReadTerms = liveScope !== null && typeof basis.cardDigest === "string" && basis.cardDigest === shownTermsDigest(liveScope);
           const filedByCoordinator = this.db
             .prepare("SELECT 1 AS hit FROM task_ref WHERE backend = ? AND external_id = ? AND coordinator_cid IS NOT NULL")
             .get(BUILT_IN, taskId);
-          if (filedByCoordinator !== undefined) return false;
+          if (filedByCoordinator !== undefined && !personReadTerms) return false;
           // THE MATE QUARANTINE (mate arc, ruling 2): a scope a confirmed
           // lead proposal wrote is model-authored text; mode coverage never
           // seals it. Only the password ceremony — which shows the operator
@@ -9470,7 +9475,7 @@ export class Store {
           const writtenByLead = this.db
             .prepare("SELECT 1 AS hit FROM task_scope WHERE task_id = ? AND proposed_via IN ('mate','coordinator','scout')")
             .get(taskId);
-          if (writtenByLead !== undefined) return false;
+          if (writtenByLead !== undefined && !personReadTerms) return false;
           // THE OUTSIDE-REQUEST QUARANTINE (youiyoux-intake.ts): a task filed from a youiyoux change request is text
           // anyone who can write the project's folder wrote, so only a person who read every word of it approves it.
           // Its provenance is immutable, so no road around this exists. A mode, a grant, a schedule, auto-check and
@@ -9483,18 +9488,19 @@ export class Store {
           // ever seals it, here, whatever road it came by.
           if (basis.kind !== "chat" && issueImported(this, taskId)) return false;
           // CHECK ACCESS (v132, check-access.ts): a scope whose checks reach beyond the fence (sign-ins, or no sandbox at
-          // all) seals only on a person's password ceremony — never a mode, a grant, a chat confirmation or a carry.
+          // all) seals only on a person's own yes to those terms: the ceremony, or a chat card that showed every word —
+          // never a mode, a grant, a plain chat tap or a carry.
           const profileText = this.db.prepare("SELECT profile_json FROM task_scope WHERE task_id = ?").get(taskId)?.["profile_json"];
           let sealedAccess: unknown;
           // SANDBOX WIDENINGS (v133, project-sandbox.ts): extra macOS services seal, likewise,
-          // only on a person's own password yes to exactly them.
+          // only on a person's own yes to exactly them.
           let sandboxWidened = false;
           try {
             const stored = typeof profileText === "string" ? JSON.parse(profileText) as { profile?: Record<string, unknown> | null } | null : null;
             sealedAccess = stored?.profile?.["checkAccess"];
             sandboxWidened = stored?.profile?.["machLookup"] !== undefined;
           } catch { sealedAccess = "unreadable"; }
-          if (sealedAccess !== undefined || sandboxWidened) return false;
+          if ((sealedAccess !== undefined || sandboxWidened) && !personReadTerms) return false;
         }
         // SEPARATION OF DUTIES (v102), enforced in the primitive so no road
         // around it exists: a project's rules can refuse the requester, and

@@ -157,6 +157,7 @@ describe("lead sweeps", () => {
       : null;
     return confirmLeadProposal(store, who, id, now, { authority: "full", 
       via: secure ? "web" : "telegram",
+      ...(secure ? { person: true } : {}),
       evidenceRoot: root,
       ...(review
         ? {
@@ -170,7 +171,7 @@ describe("lead sweeps", () => {
   const ACCEPTANCE = [{ id: "c1", statement: "Fixed with proof, or shown not reproducible.", evidence: ["check"] }];
   const sweepCard = (over: Record<string, unknown> = {}) => proposal("sweep_file", { repo, title: "Discord bug sweep", brief: "Reproduce first; not reproducible is a valid result.", items: ITEMS, acceptance: ACCEPTANCE, maxParallel: 2, ...over });
 
-  test("one card shows every item and the shared rules; a tap alone does nothing; the password files and approves all", () => {
+  test("one card shows every item and the shared rules; a first tap alone does nothing; the person's own yes files and approves all", () => {
     const id = sweepCard();
     const saved = store.getLeadProposal(id)!.payload as { title: string; terms: string[] };
     expect(saved.title).toContain("Discord bug sweep");

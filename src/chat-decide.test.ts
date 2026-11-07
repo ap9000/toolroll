@@ -21,7 +21,7 @@ import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type Tele
 import { modeDigestOf, modeTermsJson, modeWords, presetTerms, type ModeTerms } from "./modes.js";
 import { mergeInChat, planInChat } from "./chat-decide.js";
 import { runOperate } from "./operate.js";
-import { setChatApproval } from "./chat-approval.js";
+import { ALL_PROJECTS, setChatApproval } from "./chat-approval.js";
 import { readYouiyouxRequest } from "./contracts/youiyoux-request.js";
 import { fileYouiyouxRequest, noteYouiyouxFiled } from "./youiyoux-intake.js";
 
@@ -384,15 +384,15 @@ describe("decisions finish in the chat app", () => {
     expect(store.getScope("plan-7")!.approvedDigest).toBeNull();
   });
 
-  test("c2: outside the mode's terms the plan keeps its link — no term, another signer, over budget, wider access, protected paths", async () => {
+  test("c2: a person's standing approves in chat; their own mode's limits still hold, and protected work takes a vote each", async () => {
     const id = "plan-8";
     planWaiting(id, "Refuse over-limit payouts");
     const why = () => { const plan = planInChat(store, id, "bob", now, "telegram"); return plan.ok ? "in chat" : plan.why; };
-    expect(why()).toBe("Approving from chat isn't turned on for this project.");
+    expect(why()).toBe("in chat");
     sign("bob", { chatApprove: false });
-    expect(why()).toBe("Approving from chat isn't turned on for this project.");
+    expect(why()).toBe("in chat");
     sign("alex");
-    expect(why()).toBe("Only the person who signed this project's mode can approve from chat.");
+    expect(why()).toBe("in chat");
     sign("bob", { perAttemptBudgetMicrousd: 1_000_000 });
     expect(why()).toBe("This plan has a $2.00 attempt limit, more than your mode's $1.00.");
     sign("bob");
@@ -409,7 +409,7 @@ describe("decisions finish in the chat app", () => {
     store.saveArtifact({ run: plannerRun, kind: "plan", key: `${plannerRun}/plan.json`, bytesOriginal: 2, bytesStored: 2, truncated: false, sha256: "0".repeat(64), capture: "planner" }, now);
     expect(planInChat(store, id, "bob", now, "telegram", dir)).toEqual({ ok: false, why: "The saved plan can't be verified here, so you approve it in Toolroll." });
     store.setApprovalRules(REPO, { notRequester: false, protectProject: false, protectedPaths: ["src/"] }, "alex", now);
-    expect(why()).toBe("This plan touches protected work, so two people approve it in Toolroll.");
+    expect(why()).toBe("The saved plan can't be verified here, so you approve it in Toolroll.");
 
     // Pushed, it keeps the card's ordinary link: no act rides it.
     planReady(store.refFor("built-in", id).id, id);
@@ -421,12 +421,13 @@ describe("decisions finish in the chat app", () => {
   test("c2: a ready pull request merges in chat with two taps under the term, bound to its commit; otherwise a link", async () => {
     const { run, head, publication, ready } = readyPullRequest("merge-9");
 
-    // No term: the link.
+    // Turned off by the person: the link.
+    setChatApproval(store, { approver: "bob", scope: ALL_PROJECTS, enabled: false, via: "test" }, now);
     ready();
     await pass();
     const linked = [...script.inChat(BOB)].reverse().find(call => call.method === "sendMessage" && String(call.params["text"]).includes("Ready to merge"))!;
     expect(script.buttons(linked).map(one => [one.text, one.callback_data === undefined])).toEqual([["Merge", true]]);
-    expect(mergeInChat(store, "merge-9", run, "bob", now, "telegram")).toEqual({ ok: false, why: "Approving from chat isn't turned on for this project." });
+    expect(mergeInChat(store, "merge-9", run, "bob", now, "telegram")).toEqual({ ok: false, why: "You turned off approving from chat for this project." });
 
     sign("bob");
     now = new Date(now.getTime() + 60_000);
@@ -669,7 +670,8 @@ describe("decisions finish in the chat app", () => {
       expect(script.current(BOB, card.messageId).labels).toEqual(["Open 1 ↗", "Open 2 ↗"]);
     });
 
-    test("y4: without approving from chat turned on, the card still arrives with each task's link, and nothing approves", async () => {
+    test("y4: with approving from chat turned off, the card still arrives with each task's link, and nothing approves", async () => {
+      setChatApproval(store, { approver: "bob", scope: ALL_PROJECTS, enabled: false, via: "test" }, now);
       const calm = fileRequest("r-0000000007", "Calmer button");
       const wide = fileRequest("r-0000000008", "Wider page", { touches: [], touchesKnown: false });
       noteYouiyouxFiled(store, [calm, wide], now);
@@ -678,7 +680,7 @@ describe("decisions finish in the chat app", () => {
       expect(card.labels).toEqual(["Open 1 ↗", "Open 2 ↗"]);
       expect(card.text).toBe([
         "2 youiyoux change requests wait for you · alpha", "",
-        "Approving from chat isn't turned on for this project. Open each to approve it in Toolroll.", "",
+        "You turned off approving from chat for this project. Open each to approve it in Toolroll.", "",
         // In short, as chat text always is (a route reads as a path there).
         "1. Calmer button", "Files: src/button.tsx", "Make calmer button on [path]", "",
         "2. Wider page", "Files: any file (no file list)", "Make wider page on [path]",

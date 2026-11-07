@@ -1,5 +1,6 @@
 // The rubric's vocabulary loads before anything that reaches the plan contract (see contracts/acceptance-terms.ts).
 export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
+import { shownTermsDigest } from "./chat-terms.js";
 import { mintSecret } from "./secret-mint.js";
 import { passwordlessOn } from "./passwordless.js";
 import { routeChangeProblem } from "./route-change-check.js";
@@ -1526,6 +1527,10 @@ export function approve(
   mutation: Mutation = {},
   /** A fast start (fast-start.ts): Build is this same yes, with its marker in the proof. Only that road passes it. */
   fastStart?: { rule: string; at: string },
+  /** A person's own yes in chat (owner's decision, docs/plans/toolroll-cards.md): their tap or signed-in click stands in
+   * for a password, so `token` is unused. Every rule below still applies. The caller has proved the person is the one
+   * tapping; `shown` says the card showed these exact terms, and binds the seal to them. */
+  chat?: { modeDigest: string; shown: boolean },
 ): ApproveResult {
   // Read and write in one transaction, re-reading inside it — the credential
   // check included, so a token rotated between authentication and the write
@@ -1534,7 +1539,12 @@ export function approve(
   // this approval — which would resurrect the old wording *and* mark it
   // agreed, the precise opposite of what the digest is for.
   return store.transact(() => {
-    const authenticated = authenticateApprover(store, by, token, store.lookupRef(taskId)?.repo ?? null);
+    const repoNow = store.lookupRef(taskId)?.repo ?? null;
+    const account = chat === undefined ? null : store.accountOf(by);
+    // A machine never reaches this road, and the person's role and reach are read here, in the seal's transaction.
+    if (chat !== undefined && machineActing()) return { ok: false as const, reason: "machine-proof" as const };
+    if (chat !== undefined && (account === null || account.revokedAt !== null || account.role !== "approver" || repoNow === null || !store.accountCanAccess(by, repoNow))) return { ok: false as const, reason: "not-an-approver" as const };
+    const authenticated: { ok: true; method: AuthMethod | "chat"; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" } = chat !== undefined ? { ok: true, method: "chat", at: now.getTime() } : authenticateApprover(store, by, token, repoNow);
     if (!authenticated.ok) return authenticated;
     // ONLY A PERSON APPROVES (docs/plans/approval-policy.md, phase 1): a lead token or a remote API token proves the
     // credential, not a person at a ceremony. Refused before any vote or proof row is written.
@@ -1616,7 +1626,8 @@ export function approve(
         // profile — the exact bytes the digest the approver signed was bound
         // to. Routing saveScope here would re-run resolution and could sign a
         // profile nobody saw.
-        const sealed = store.sealScopeApproval(taskId, by, now, mutation);
+        const sealed = chat === undefined ? store.sealScopeApproval(taskId, by, now, mutation)
+          : store.sealScopeApproval(taskId, by, now, mutation, { kind: "chat", modeDigest: chat.modeDigest, ...(chat.shown ? { card: "terms" as const, cardDigest: shownTermsDigest(scope) } : {}) }, "person");
         const approved = sealed ? store.getScope(taskId) : null;
         if (!sealed || approved === null) { refused.result = { ok: false as const, reason: sealed ? "no-scope" as const : "changed" as const }; throw refused; }
         proved();

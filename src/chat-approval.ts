@@ -1,15 +1,17 @@
-/** Approving from chat as a lasting owner setting. An approver turns it on for all their projects or for one, with the
- * limits they agree to (whether a plan may ask for full access, and the most one attempt may cost); a project's own
- * row outranks the all-projects one, and an explicit "off" on a project keeps it off there. Turning it off for all
- * projects also disables that owner's saved project rows. It is off until turned on.
+/** Approving from chat (owner's decision, docs/plans/toolroll-cards.md): a person with the authority approves from their
+ * own linked chat by default, with no limits of their own. This setting is how they say otherwise: off for all their
+ * projects or for one, or on with limits (whether a plan may ask for full access, and the most one attempt may cost). A
+ * project's own row outranks the all-projects one, and an explicit "off" keeps it off. Turning it off for all projects
+ * also disables that owner's saved project rows.
  *
- * It never lapses by date, but it ends with the account: a reset password, revoked access or a lost project ends it.
- * Turning it on or changing its limits takes the password; turning it off is one step. Every change is a ledger line.
+ * A saved row ends with the account: a reset password, revoked access or a lost project ends it, and it must be saved
+ * again. Saving limits takes the password; turning it off is one step. Every change is a ledger line.
  *
  * What the setting allows is only that the owner's own two taps in their paired chat count as their yes. Every other
  * rule still applies at the offer and again at the tap (chat-decide.ts planInChat): protected paths, separation of
  * duties, organisation policy, written-for-you plans, unresolved routes, and the limits here. */
 import { createHash } from "node:crypto";
+import { chatApproveChatsOf, chatNames, modeTermsFromJson, type ModeTerms } from "./modes.js";
 import type { Store } from "./store.js";
 
 /** The all-projects row's scope. */
@@ -49,13 +51,36 @@ export function effectiveChatApproval(store: Store, repo: string, approver: stri
   const all = store.handle.prepare("SELECT * FROM chat_approval_setting WHERE approver = ? AND scope = ?").get(approver, ALL_PROJECTS);
   const row = project ?? all;
   const setting = row === undefined ? null : readRow(row as Record<string, unknown>);
-  if (setting === null || !setting.enabled) return { ok: false, why: "Approving from chat isn't turned on for this project." };
   const account = store.accountOf(approver);
+  if (setting === null) {
+    if (account === null || account.revokedAt !== null || account.role !== "approver" || !store.accountCanAccess(approver, repo)) return { ok: false, why: "Only an approver for this project can approve it." };
+    const limits: ChatApprovalLimits = { fullAccess: true, capMicrousd: null };
+    return { ok: true, limits, setting: { ...limits, approver, scope: ALL_PROJECTS, enabled: true, generation: account.generation, digest: digestOf(approver, ALL_PROJECTS, limits, account.generation), updatedBy: approver, updatedAt: "" } };
+  }
+  if (!setting.enabled) return { ok: false, why: "You turned off approving from chat for this project." };
   if (account === null || account.revokedAt !== null || account.role !== "approver" || account.generation !== setting.generation || !store.accountCanAccess(approver, repo)) {
-    return { ok: false, why: "Your access changed since you turned on approving from chat. Turn it on again in Settings." };
+    return { ok: false, why: "Your access changed since you saved your chat approval setting. Save it again in Settings." };
   }
   if (setting.digest !== digestOf(setting.approver, setting.scope, setting, setting.generation)) return { ok: false, why: "Your chat approval setting can't be read. Turn it on again in Settings." };
   return { ok: true, setting, limits: { fullAccess: setting.fullAccess, capMicrousd: setting.capMicrousd } };
+}
+
+/** What this person's chat on `channel` may approve on this repository now, and under whose limits: their saved setting,
+ * else their own live signed mode that names this chat app, else their standing as an approver. `digest` names that for
+ * the ledger; the yes itself is the person's tap and is sealed as theirs, so it doesn't lapse when the authority does. */
+export function chatApproveMode(store: Store, repo: string | null, approver: string, now: Date, channel: "telegram" | "slack" | "discord" | "teams"):
+  { ok: true; digest: string; limits: ChatApprovalLimits; source: "setting" | "mode" } | { ok: false; why: string } {
+  if (repo === null) return { ok: false, why: "Approving from chat isn't turned on for this project." };
+  const setting = effectiveChatApproval(store, repo, approver);
+  const saved = setting.ok && setting.setting.updatedAt !== "";
+  const chosen = { ok: true as const, source: "setting" as const };
+  if (setting.ok && saved) return { ...chosen, digest: setting.setting.digest, limits: setting.limits };
+  // Their own signed mode's limits, where it names this chat app; otherwise their standing as an approver.
+  const mode = store.activeMode(repo, now);
+  const terms: ModeTerms | null = mode === null ? null : modeTermsFromJson(mode.termsJson);
+  if (mode !== null && terms !== null && terms.chatApprove && mode.signedBy === approver && store.accountCanAccess(approver, repo) && chatApproveChatsOf(terms).includes(channel))
+    return { ok: true, digest: mode.digest, limits: { fullAccess: terms.permissionDefault === "escalated", capMicrousd: terms.perAttemptBudgetMicrousd }, source: "mode" };
+  return setting.ok ? { ...chosen, digest: setting.setting.digest, limits: setting.limits } : setting;
 }
 
 export type ChatApprovalChange = { approver: string; scope: string; enabled: boolean; limits?: ChatApprovalLimits; via: string };

@@ -38,8 +38,8 @@ const ledger = () => store.handle.prepare("SELECT actor, repo, action, outcome, 
 const on = (scope: string, limits = { fullAccess: false, capMicrousd: 5_000_000 }) => setChatApproval(store, { approver: "owner", scope, enabled: true, limits, via: "test" }, NOW);
 
 describe("the lasting setting", () => {
-  test("is off until turned on; a project's own row outranks all projects; it still holds weeks later", () => {
-    expect(effectiveChatApproval(store, alpha, "owner")).toEqual({ ok: false, why: "Approving from chat isn't turned on for this project." });
+  test("is on with no limits until a person says otherwise (owner's decision); a project's own row outranks all projects; it still holds weeks later", () => {
+    expect(effectiveChatApproval(store, alpha, "owner")).toMatchObject({ ok: true, limits: { fullAccess: true, capMicrousd: null } });
     expect(on(ALL_PROJECTS)).toMatchObject({ ok: true, said: "Approving from chat is on for all your projects: plans that ask for full access open in Toolroll · attempts up to $5.00." });
     expect(effectiveChatApproval(store, alpha, "owner")).toMatchObject({ ok: true, limits: { fullAccess: false, capMicrousd: 5_000_000 } });
     // An explicit off on one project keeps it off there, and only there.
@@ -63,11 +63,11 @@ describe("the lasting setting", () => {
     on(ALL_PROJECTS);
     expect(effectiveChatApproval(store, alpha, "owner").ok).toBe(true);
     store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = 'owner'").run();
-    expect(effectiveChatApproval(store, alpha, "owner")).toEqual({ ok: false, why: "Your access changed since you turned on approving from chat. Turn it on again in Settings." });
+    expect(effectiveChatApproval(store, alpha, "owner")).toEqual({ ok: false, why: "Your access changed since you saved your chat approval setting. Save it again in Settings." });
     on(ALL_PROJECTS);
     expect(effectiveChatApproval(store, alpha, "owner").ok).toBe(true);
-    // Someone else's setting is never this person's.
-    expect(effectiveChatApproval(store, alpha, "sam").ok).toBe(false);
+    // Someone with no account gets nothing from it.
+    expect(effectiveChatApproval(store, alpha, "nobody").ok).toBe(false);
   });
 
   test("all-projects off rolls back every setting and ledger entry if recording a project fails", () => {
@@ -91,7 +91,7 @@ describe("the lasting setting", () => {
     expect(ledger()).toEqual(ledgerBefore);
   });
 
-  test("keeps today's exclusions: wider access, over the limit and protected paths still open in Toolroll", () => {
+  test("a person's own limits hold; protected work is approved in chat, one vote each", () => {
     for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "owner", NOW);
     register(store, { name: "worker-1", host: "test", capacity: 9, repos: [alpha], now: NOW, newToken: () => "tok-worker-1" });
     store.createTask({ id: "plan-1", title: "Refuse over-limit payouts" }, NOW);
@@ -100,7 +100,7 @@ describe("the lasting setting", () => {
       acceptance: [{ id: "c1", statement: "Over-limit payouts are refused.", how: null, evidence: ["check"] }], now: NOW, ...extra });
     file();
     const why = () => { const plan = planInChat(store, "plan-1", "owner", NOW, "slack"); return plan.ok ? "in chat" : plan.why; };
-    expect(why()).toBe("Approving from chat isn't turned on for this project.");
+    expect(why()).toBe("in chat");
     on(alpha, { fullAccess: false, capMicrousd: 1_000_000 });
     expect(why()).toBe("This plan has a $2.00 attempt limit, more than your chat approval limit of $1.00.");
     on(alpha);
@@ -109,7 +109,7 @@ describe("the lasting setting", () => {
     expect(why()).toBe("This plan asks for more access than your chat approval setting allows.");
     file();
     store.setApprovalRules(alpha, { notRequester: false, protectProject: false, protectedPaths: ["src/"] }, "owner", NOW);
-    expect(why()).toBe("This plan touches protected work, so two people approve it in Toolroll.");
+    expect(why()).toBe("in chat");
   });
 });
 
@@ -141,13 +141,13 @@ describe("turning it on and off", () => {
     // Without the password, nothing changes.
     const bare = await confirm({ scope: alpha, "cap-usd": "5" });
     expect((await send("/settings/chat-approval/save", bare)).status).toBe(403);
-    expect(effectiveChatApproval(store, alpha, "owner").ok).toBe(false);
+    expect(chatApprovalSettings(store, "owner")).toEqual([]);
     // The nonce was spent; and a form whose limits changed after the terms were read is refused.
     bare.set("token", ownerToken);
     expect((await send("/settings/chat-approval/save", bare)).status).toBe(409);
     const changed = await confirm({ scope: alpha, "cap-usd": "5" }); changed.set("token", ownerToken); changed.set("full-access", "1");
     expect((await send("/settings/chat-approval/save", changed)).status).toBe(409);
-    expect(effectiveChatApproval(store, alpha, "owner").ok).toBe(false);
+    expect(chatApprovalSettings(store, "owner")).toEqual([]);
     const good = await confirm({ scope: alpha, "cap-usd": "5" }); good.set("token", ownerToken);
     expect((await send("/settings/chat-approval/save", good)).status).toBe(303);
     expect(effectiveChatApproval(store, alpha, "owner")).toMatchObject({ ok: true, limits: { fullAccess: false, capMicrousd: 5_000_000 } });
@@ -197,7 +197,7 @@ describe("turning it on and off", () => {
     expect(await cli(["on", "--repo", alpha])).toMatchObject({ code: 3, body: { ok: false, reason: "unauthenticated" } });
     expect(await cli(["on", "--repo", alpha, "--cap-usd", "5", ...as])).toMatchObject({ code: 0, body: { applied: false } });
     store = openStore(file);
-    expect(effectiveChatApproval(store, alpha, "owner").ok).toBe(false);
+    expect(chatApprovalSettings(store, "owner")).toEqual([]);
     store.close();
     expect(await cli(["on", "--repo", alpha, "--cap-usd", "5", "--yes", ...as])).toMatchObject({ code: 0, body: { applied: true, scope: alpha } });
     expect((await cli(["show", ...as])).body.settings).toEqual([{ scope: alpha, enabled: true, fullAccess: false, capMicrousd: 5_000_000, updatedAt: NOW.toISOString() }]);

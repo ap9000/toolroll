@@ -678,9 +678,10 @@ describe("approving anywhere the owner has authority", () => {
     placed("plan-36", "Refuse over-limit payouts");
     propose(store, { taskId: "plan-36", goal: "Refuse over-limit payouts.", touches: ["src/guard.ts"], budgetMicrousd: 2_000_000,
       acceptance: [{ id: "c1", statement: "Over-limit payouts are refused.", how: null, evidence: ["check"] }], now });
-    // Not turned on: the lead hears why, and nothing is sent.
-    expect(offer.handle(ctx as never, { task: "plan-36" })).toEqual({ ok: true, body: { offered: false, task: "plan-36", why: "Approving from chat isn't turned on for this project.", control: "approval" } });
+    // Turned off by the person: the lead hears why, and nothing is sent.
     const { setChatApproval } = await import("./chat-approval.js");
+    setChatApproval(store, { approver: "bob", scope: REPO, enabled: false, via: "test" }, now);
+    expect(offer.handle(ctx as never, { task: "plan-36" })).toEqual({ ok: true, body: { offered: false, task: "plan-36", why: "You turned off approving from chat for this project.", control: "approval" } });
     setChatApproval(store, { approver: "bob", scope: REPO, enabled: true, via: "test" }, now);
     expect(offer.handle(ctx as never, { task: "plan-36" })).toMatchObject({ ok: true, body: { offered: true, task: "plan-36" } });
     expect(store.getScope("plan-36")!.approvedDigest).toBeNull();

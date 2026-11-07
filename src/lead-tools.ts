@@ -680,7 +680,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   propose_task_action: {
-    description: "Propose stop/resume/retry/plan/wait_for/stop_waiting/run_checks/run_full_checks/add_tests for currentExecution. Stop/resume needs get_task control.run; resume requires password review. run_checks and run_full_checks check the latest result's exact commit; add_tests files a task to write tests for it.",
+    description: "Propose stop/resume/retry/plan/wait_for/stop_waiting/run_checks/run_full_checks/add_tests for currentExecution. Stop/resume needs get_task control.run; resume is the person's own approval, on its card. run_checks and run_full_checks check the latest result's exact commit; add_tests files a task to write tests for it.",
     handle: (ctx, args) => {
       const task = taskIdOf(args), operation = args["operation"];
       if (task === null || !isChatTaskAction(operation)) return { ok: false, message: "Choose a task and an available action." };
@@ -1002,7 +1002,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
           ...(() => {
             const view = browserViewOf(ctx.store, flow);
             return view === null ? {} : { browser: view.status === "allowed" ? "allowed: its browser zones may start Chromium (turn_off_browser stops it)"
-              : `${view.status === "ended" ? "approval ended: the flow or a script changed" : "not allowed"}; its browser zones wait. Propose allow_browser: a person allows it with their own password in the secure screen.` };
+              : `${view.status === "ended" ? "approval ended: the flow or a script changed" : "not allowed"}; its browser zones wait. Propose allow_browser: a person allows it with their own yes on its card, in the secure screen.` };
           })(),
           steps: definition.stages.map(stage => ({
             id: stage.id, title: stage.title, does: FLOW_KIND_WORDS[stage.kind].label, kind: stage.kind,
@@ -1162,7 +1162,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
           case "pause_trigger": operation = "flow_trigger_pause"; input = pick(["trigger"]); break;
           case "resume_trigger": operation = "flow_trigger_resume"; input = pick(["trigger"]); break;
           case "remove_trigger": operation = "flow_trigger_remove"; input = pick(["trigger"]); break;
-          // Browser use in the flow's script zones: a proposal only; the person allows it with their own password.
+          // Browser use in the flow's script zones: a proposal only; the person allows it with their own yes on its card.
           case "allow_browser": operation = "flow_browser"; input = pick(["flow"]); break;
           case "turn_off_browser": operation = "flow_browser_off"; input = pick(["flow"]); break;
           default: return { ok: false, message: "Choose create, edit, add_card, move_card, approve, send_back, cancel_card, comment, assign, follow, unfollow, add_trigger, pause_trigger, resume_trigger, remove_trigger, allow_browser or turn_off_browser." };
@@ -1893,7 +1893,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
   },
   propose_scope: {
     description:
-      "Rewrite goal/non-goals/paths; confirmation saves scope, then password approval is separate.",
+      "Rewrite goal/non-goals/paths; confirmation saves scope, then approval is separate.",
     handle: (ctx, args) => {
       const taskId = taskIdOf(args);
       const ref = taskId === null ? null : admittedRef(ctx, taskId);
@@ -1910,7 +1910,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const scope = ctx.store.getScope(taskId);
       const id = ctx.draft("scope", { task: taskId, repoId: ref.repoId, goal: args["goal"], not, touches, acceptance, sawDigest: scope?.digest ?? null });
       if (id === null) return tooMany();
-      return { ok: true, body: { proposal: id, kind: "scope", task: taskId, awaiting: "the operator's confirmation, then a password to approve" } };
+      return { ok: true, body: { proposal: id, kind: "scope", task: taskId, awaiting: "the operator's confirmation, then their approval" } };
     },
   },
   propose_agents: {

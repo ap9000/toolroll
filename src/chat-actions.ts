@@ -13,6 +13,7 @@ import { withActor } from "./actor.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import { publicChatText } from "./chat-display.js";
 import { gateWords } from "./approval-policy.js";
+import { chatApproveMode } from "./chat-approval.js";
 import { createHash, randomBytes } from "node:crypto";
 import { leadTurnKeepsProposals, verifiedAuthor, type Store } from "./store.js";
 import {
@@ -128,7 +129,7 @@ export const CHAT_ACTIONS = {
   flow_starter: { label: "Switch on", protected: false, password: false },
   // Lead fan-out (docs/plans/lead-fan-out.md): files N tasks under one brief and approves each one's scope — the
   // person's ceremony (protected, with the password), N ordinary approvals of exactly the scopes shown.
-  sweep_file: { label: "Start sweep", protected: true, password: true },
+  sweep_file: { label: "Start sweep", protected: true, password: false },
   // Stops every item of a sweep not yet ready; finished results stay. An ordinary act, like cancelling a task.
   sweep_cancel_rest: { label: "Cancel the rest", protected: false, password: false },
   flow_edit: { label: "Save flow", protected: false, password: false },
@@ -146,9 +147,9 @@ export const CHAT_ACTIONS = {
   flow_trigger_pause: { label: "Pause trigger", protected: false, password: false },
   flow_trigger_resume: { label: "Turn trigger on", protected: false, password: false },
   flow_trigger_remove: { label: "Remove trigger", protected: false, password: false },
-  // Browser use widens a flow's sandbox (flow-browser.ts): the lead may only propose it; a person allows it with their
-  // own password on the secure screen, never on a chat card or a paired phone's tap. Turning it off lowers authority.
-  flow_browser: { label: "Allow browser", protected: true, password: true },
+  // Browser use widens a flow's sandbox (flow-browser.ts): the lead may only propose it; a person allows it with their own
+  // yes on a card that shows every term, in a chat they are signed in to or linked from. Turning it off lowers authority.
+  flow_browser: { label: "Allow browser", protected: true, password: false },
   flow_browser_off: { label: "Turn off browser", protected: false, password: false },
   subagent_create: { label: "Add subagent", protected: false, password: false },
   subagent_soul: { label: "Update soul file", protected: false, password: false },
@@ -172,19 +173,22 @@ export const CHAT_ACTIONS = {
   code_map_holdout_end: { label: "End holdout", protected: false, password: false },
   // What the owner's own lead knows about them: theirs alone, in no project (lead-about.ts).
   lead_about_you: { label: "Remember", protected: false, password: false },
-  scope_approve: { label: "Approve work", protected: true, password: true },
+  scope_approve: { label: "Approve work", protected: true, password: false },
   result_accept: { label: "Accept", protected: true, password: false },
   task_cancel: { label: "Cancel task", protected: true, password: false },
-  task_resume: { label: "Resume task", protected: true, password: true },
+  task_resume: { label: "Resume task", protected: true, password: false },
 } as const;
 export type ChatAction = keyof typeof CHAT_ACTIONS;
 // Every action has a schema (contracts/chat-actions.ts) and every schema an action: a mismatch fails to compile.
 const SAME_ACTIONS: [ChatAction, ChatActionOperation] extends [ChatActionOperation, ChatAction] ? true : never = true;
 void SAME_ACTIONS;
-/** Protected actions a paired phone may confirm behind its own explicit
- * yes/cancel challenge instead of the console's secure screen. Password
- * actions and long or redacted terms never qualify. */
-export const CHALLENGE_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["result_accept"]);
+/** Approvals (owner's decision, docs/plans/toolroll-cards.md): a person's own yes from their chat stands without a password.
+ * Only a person's tap in a linked chat, or their click in a signed-in browser, ever runs one. */
+export const APPROVAL_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["scope_approve", "task_resume", "sweep_file", "flow_browser"]);
+/** Protected actions a linked chat may confirm behind its own explicit yes/cancel challenge instead of the review screen.
+ * Password actions and long or redacted terms never qualify: the card must show the exact terms. */
+export const APPROVAL_TERM_CHARS = 3000;
+export const CHALLENGE_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["result_accept", ...APPROVAL_ACTIONS]);
 /** Actions about the person themselves, in no project: their card carries no project (repo ""). */
 export const OWNER_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["lead_about_you"]);
 export function isChatAction(value: unknown): value is ChatAction {
@@ -1056,13 +1060,15 @@ export function sharedActionPayload(value: unknown): SharedAction | null {
 /** A shortened or redacted preview is not complete consent. This rule lives
  * in the shared door, so a forged transport callback cannot bypass it. */
 function sharedActionContentNeedsReview(action: SharedAction): boolean {
+  // An approval's card has room for longer terms, and shows a digest as a word: the digest itself is bound in the state.
+  const approval = APPROVAL_ACTIONS.has(action.operation), cap = approval ? APPROVAL_TERM_CHARS : 1200;
   const content = [action.title, ...action.terms];
   return (
-    action.terms.join("\n").length > 1200 ||
+    action.terms.join("\n").length > cap ||
     content.some(
       (value, index) =>
-        publicChatText(value, index === 0 ? 200 : 1200) !==
-        value.replace(/\s+/g, " ").trim(),
+        publicChatText(value, index === 0 ? 200 : cap) !==
+        (approval ? value.replace(/\b[0-9a-f]{32,}\b/gi, "[digest]") : value).replace(/\s+/g, " ").trim(),
     )
   );
 }
@@ -1184,6 +1190,8 @@ export type SharedActionOptions = {
   root?: string;
   review?: { nonce: string; password: string };
   confirm?: boolean;
+  /** The web door only: a person's signed-in browser session, never a token. */
+  person?: boolean;
 };
 /** Called inside the proposal door's transaction, after ownership and session
  * checks. No password or review receipt is ever part of a saved proposal. */
@@ -1233,7 +1241,6 @@ export function executeSharedAction(
   }
   // The review nonce was minted against the saved proposal's stamp: it is checked against that, whoever reviews.
   const savedStamp = payload.stamp;
-  let personProved: string | null = null;
   payload = live;
   const config = CHAT_ACTIONS[live.operation],
     req = live.request;
@@ -1242,6 +1249,9 @@ export function executeSharedAction(
     options.via !== "cli" &&
     options.confirm === true &&
     sharedActionAllowsChallenge(payload);
+  // A lead's or remote token reaches the same web door: an approval needs a person's own session (or tap, above).
+  if (APPROVAL_ACTIONS.has(live.operation) && options.via === "web" && options.authority !== "local-owner" && options.person !== true)
+    return refuse("needs-confirm", "Approve this yourself, in your signed-in chat.");
   if (sharedActionNeedsReview(payload) && !challenged) {
     if (options.via !== "web" || !options.review || options.confirm !== true)
       return refuse(
@@ -1262,20 +1272,8 @@ export function executeSharedAction(
         "needs-confirm",
         "This confirmation expired or was already used. Open the review again.",
       );
-    // A scope approval proves its person inside approve() (one transaction with the seal, under the same freshness
-    // rule as the task page); here an empty field is only looked at, never spent (an explicit re-check is one-use).
-    const emptyApproval = payload.operation === "scope_approve" && options.review.password === "";
-    const proved = config.password && !emptyApproval ? authenticateApprover(store, who.name, options.review.password, payload.repo) : null;
-    // How the person was proved, for an approval that records it (browser use: flow-browser.ts refuses any but a person's).
-    if (proved?.ok === true) personProved = proved.method;
-    if (
-      config.password &&
-      (emptyApproval
-        ? !passwordlessSessionFor(store, who.name) && !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null
-          // Easy-start C5: a local owner's eligible approval takes no password (approve() proves it again in the seal).
-          && !(options.authority === "local-owner" && currentLocalOwner()?.act === "approve-plan" && typeof req["task"] === "string" && localApprovalEligible(store, who.name, req["task"]).ok)
-        : proved?.ok !== true)
-    )
+    const proved = config.password ? authenticateApprover(store, who.name, options.review.password, payload.repo) : null;
+    if (config.password && proved?.ok !== true)
       return refuse(
         "needs-confirm",
         "Confirm with your password in the secure screen.",
@@ -1340,7 +1338,7 @@ export function executeSharedAction(
         // re-reads the flow, its zones and scripts in this transaction and refuses unless they are what the card showed.
         const flow = Number(payload.state["flow"]);
         // signFlowBrowser re-reads the account's generation and reach in its transaction (it may have narrowed since).
-        const signed = signFlowBrowser(store, { flow, signer: actor, proof: personProved, sawDigest: String(payload.state["digest"] ?? ""), console: { generation: who.generation } }, now);
+        const signed = signFlowBrowser(store, { flow, signer: actor, proof: "chat", sawDigest: String(payload.state["digest"] ?? ""), console: { generation: who.generation } }, now);
         if (!signed.ok) throw Error(signed.message);
         return { ok: true as const, taskId: null, said: "Browser allowed. Its browser zones can start Chromium now.", href: `/flows/${flow}` };
       }
@@ -1358,7 +1356,7 @@ export function executeSharedAction(
         return { ok: true as const, taskId: null, said, href: `/sweeps/${Number(req["sweep"])}` };
       }
       else if (payload.operation === "sweep_file") {
-        const done = fileSweep(store, who, id, payload, options.review?.password ?? "", now);
+        const done = fileSweep(store, who, id, payload, approvalBy(store, who, payload.repo, now, options), now);
         return { ok: true as const, taskId: null, said: done.said, href: done.href };
       }
       else if (payload.operation === "kit_setup") {
@@ -1428,14 +1426,10 @@ export function executeSharedAction(
       else if (payload.operation === "scope_approve") {
         const scope = store.getScope(task!)!;
         // Cockpit B2: classified by the act, not the road — the same standard-approval freshness as /t/:id/approve.
-        const result = withFreshness("approve-standard", () => approve(
-          store,
-          task!,
-          actor,
-          now,
-          scope.digest,
-          options.review!.password,
-        ));
+        const by = approvalBy(store, who, repo, now, options);
+        if (by.ok === false) throw Error(by.why);
+        // A local owner keeps its own road (approve proves it again in the seal); everyone else, their own yes from chat.
+        const result = withFreshness("approve-standard", () => approve(store, task!, actor, now, scope.digest, options.review?.password ?? "", {}, undefined, by.chat));
         if (!result.ok) {
           // A first yes on protected work is kept, with how its person was proved: committed, never rolled back.
           // The card stays open (`awaiting`) for the second approver; the same person again changes nothing.
@@ -1568,7 +1562,17 @@ function sweepChildScopes(store: Store, who: VerifiedApprover, repo: string, bri
   return found;
 }
 
-function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payload: SharedAction, password: string, now: Date): { said: string; href: string } {
+/** How this yes stands: a person's own from chat, under their own chat setting; a local owner's own road has none. */
+function approvalBy(store: Store, who: VerifiedApprover, repo: string, now: Date, options: SharedActionOptions): { ok: true; chat?: { modeDigest: string; shown: true } } | { ok: false; why: string } {
+  if (options.authority === "local-owner") return { ok: true };
+  if (options.via === "web") return { ok: true, chat: { modeDigest: hash({ web: who.name, generation: who.generation }), shown: true } };
+  if (options.via === "cli") return { ok: false, why: "Approve this in chat or in Toolroll." };
+  const allowed = chatApproveMode(store, repo, who.name, now, options.via);
+  return allowed.ok ? { ok: true, chat: { modeDigest: allowed.digest, shown: true } } : allowed;
+}
+
+function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payload: SharedAction, by: ReturnType<typeof approvalBy>, now: Date): { said: string; href: string } {
+  if (by.ok === false) throw Error(by.why);
   const req = payload.request;
   const already = store.sweepOfProposal(proposal);
   if (already !== null) return { said: "This sweep was already started.", href: `/sweeps/${already}` };
@@ -1589,7 +1593,7 @@ function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payloa
   const waiting: string[] = [];
   for (const one of filed) {
     const scope = store.getScope(one.id);
-    const approved = scope === null ? null : withFreshness("approve-standard", () => approve(store, one.id, who.name, now, scope.digest, password));
+    const approved = scope === null ? null : withFreshness("approve-standard", () => approve(store, one.id, who.name, now, scope.digest, "", {}, undefined, by.chat));
     if (approved === null || !approved.ok) waiting.push(one.title);
   }
   const said = waiting.length === 0

@@ -765,7 +765,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     }
     // A scope approval's re-check is spent only if the whole confirmation commits (one transaction: the proposal's
     // settlement included). Any other action spends it whatever comes of it (its effects aren't all in the database).
-    const confirmIt = () => confirmLeadProposal(store, principal, id, now, { authority: who.authority, chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
+    const confirmIt = () => confirmLeadProposal(store, principal, id, now, { authority: who.authority, chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", person: who.via === "cookie", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
     const proposed = store.getLeadProposal(id);
     const approving = proposed?.kind === "action" && sharedActionPayload(proposed.payload)?.operation === "scope_approve";
     const outcome = approving ? spendingOnlyOnSuccess(confirmIt, result => !result.ok || ("already" in result && result.already === true)) : confirmIt();
