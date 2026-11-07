@@ -558,7 +558,7 @@ export type ChatMerge = { runId: number; taskId: string; by: string; repo: strin
 /** A release card's acts carry its card digest (release-card.ts), never a plan's. */
 const RELEASE_DIGEST = "release:";
 /** Why a password-only scope (passwordOnlySeal) isn't approved from chat, for a release or a plan. */
-const needsFullCard = (scope: Scope): string => `This ${deployGateScope(scope) ? "release" : "plan"}'s checks run outside the sandbox. Ask your lead for its approval card, which shows every term.`;
+const needsFullCard = (scope: Scope): string => `This ${deployGateScope(scope) ? "release" : "plan"}'s checks run outside the sandbox, so this card can't approve it. Approve it in Toolroll, or ask your lead for its approval card, which shows every term.`;
 /** Whether only a person's password ceremony seals this scope (store.ts sealScopeApproval): checks that reach beyond the
  * sandbox (sign-ins, or none at all) or extra macOS services, sealed into its profile. */
 const passwordOnlySeal = (scope: Scope): boolean => {
