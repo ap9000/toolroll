@@ -5,7 +5,7 @@ One arc, on branch `toolroll-cards`. Chat should be able to show and do what the
 ## Decisions
 
 - **One card format.** A lead writes a [json-render](https://json-render.dev) spec limited to our catalog: Card, Text, Fields, Table, Chart, Divider, Actions, Button. `@json-render/core` (0.22.0, pinned) defines the catalog and checks the spec's structure. `@json-render/chat`, `chat` and `ai` are not used; Toolroll's own Slack, Discord and Telegram code stays.
-- **Real numbers only.** The spec has no field a figure can be typed into. Fields, Table and Chart name a source (`tasks`, `results`, `flows`, `flow_zones`, `spend`, `projects`, `workers`, `mode`, `integrations`, `providers`); Toolroll fills every value from its records when the card is made and saves that snapshot with its time. There is no model title: headings are the source's own. The only free text is `Text`, shown as a plain paragraph, and a card must hold at least one data part.
+- **Real numbers only.** The spec has no field a figure can be typed into. Fields, Table and Chart name a source (`tasks`, `results`, `flows`, `flow_zones`, `spend`, `projects`, `builders`, `mode`, `integrations`, `providers`); Toolroll fills every value from its records when the card is made and saves that snapshot with its time. There is no model title: headings are the source's own. The only free text is `Text`, shown as a plain paragraph, and a card must hold at least one data part.
 - **Safe buttons.** A Button is a `CHAT_CONTROLS` destination (same checks as `show_control`) or a pointer to a proposal drafted earlier in the same turn. Labels are Toolroll's. No field accepts a URL. The proposal keeps its own message or row, with the existing Confirm door, directly under the card.
 - **No migration.** A card is a `control` proposal with `control: "card"` (`lead_proposal.kind` has a CHECK, and `control` is already "shows something, confirms nothing"). A chat part carries it as an optional `rich` field beside `text`, which is always the plain version.
 - **Never lose the message.** The reply is separate from the card. A card the store can't read, a part a platform can't show, or a platform that refuses the blocks falls back to the part's plain text.
@@ -84,7 +84,7 @@ From the route table's 273 console POST rows. **Chat**: already in chat. **Add**
 | Browser only | session.*, push.*, agents.seen, agents.watch, projects.select, onboarding.phone-dismiss, lead.check, welcome.sample, chat.demo.*, settings.updates-dismiss, run.act.reveal, recipes.*, code.*, term.* | Browser | One browser's state, terminals and coding sessions, or the demo |
 | Incidents | incident.resolve | Add | `incident_resolve`, through store.resolveIncident |
 
-Reads the console shows and chat only linked to now come back as cards: `projects`, `workers`, `mode`, `integrations`, `providers`, `spend`.
+Reads the console shows and chat only linked to now come back as cards: `projects`, `builders`, `mode`, `integrations`, `providers`, `spend`.
 
 ## Follow-through in chat (docs/plans/fleet-follow-through.md)
 

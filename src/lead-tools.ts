@@ -486,7 +486,7 @@ export const LEAD_CORE_TOOLS: ReadonlySet<string> = new Set([
 
 /** Words a deferred tool is found by, beyond its name and description. */
 const LEAD_TOOL_KEYWORDS: Partial<Record<LeadToolName, readonly string[]>> = {
-  show_card: ["findings", "handover", "card", "table", "chart", "graph", "report", "summary", "numbers", "data", "spend", "projects", "workers", "integrations", "show", "dashboard"],
+  show_card: ["findings", "handover", "card", "table", "chart", "graph", "report", "summary", "numbers", "data", "spend", "projects", "builders", "workers", "integrations", "show", "dashboard"],
   propose_flow: ["flow", "automation", "workflow", "schedule", "trigger", "every", "when", "email", "inbox", "sort", "follow-up", "nudge"],
   get_findings: ["finding", "findings", "review", "handover", "follow-through", "failed check", "send back"],
   get_flows: ["flow", "automation", "workflow", "running", "card"],

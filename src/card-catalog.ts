@@ -12,7 +12,7 @@ import { z } from "zod";
 import { CHAT_CONTROLS } from "./chat-controls.js";
 import { CARD_CHART_TYPES, CARD_LIMITS } from "./contracts/chat-card.js";
 
-export const CARD_SOURCES = ["tasks", "results", "flows", "flow_zones", "spend", "projects", "workers", "mode", "integrations", "providers", "findings", "handover"] as const;
+export const CARD_SOURCES = ["tasks", "results", "flows", "flow_zones", "spend", "projects", "builders", "mode", "integrations", "providers", "findings", "handover"] as const;
 export type CardSourceName = (typeof CARD_SOURCES)[number];
 export const CARD_TASK_STATES = ["queued", "running", "done", "failed", "cancelled"] as const;
 

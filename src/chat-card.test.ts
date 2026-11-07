@@ -222,7 +222,7 @@ describe("the lead shows a card", () => {
     if (!addApprover(store, "sam", now, { name: who.name, token }).ok) throw Error("account");
     expect(store.setAccountProjects("sam", [repo], who.name, now)).toEqual({ ok: true });
     const sam = { name: "sam", repos: [repo] };
-    for (const source of ["workers", "mode", "integrations"] as const) expect(readCardSource({ store, now, who: sam, integrations: () => [], workers: () => [] }, source, { repo: null })).toHaveProperty("problem");
+    for (const source of ["builders", "mode", "integrations"] as const) expect(readCardSource({ store, now, who: sam, integrations: () => [], workers: () => [] }, source, { repo: null })).toHaveProperty("problem");
     expect(readCardSource({ store, now, who: sam }, "tasks", { repo: null })).toHaveProperty("heading");
   });
 

@@ -147,16 +147,16 @@ function projects(reader: CardReader, query: CardQuery): Read {
   };
 }
 
-function workers(reader: CardReader, query: CardQuery): Read {
+function builders(reader: CardReader, query: CardQuery): Read {
   if (!instanceWide(reader)) return INSTANCE_ONLY;
-  if (reader.workers === undefined) return { problem: "Workers can't be read here." };
+  if (reader.workers === undefined) return { problem: "Builders can't be read here." };
   const repos = reposOf(reader, query), limit = query.limit ?? 10, list = reader.workers(repos);
   return {
-    heading: "Workers", repos,
-    columns: [{ id: "name", label: "Worker" }, { id: "state", label: "State" }, { id: "capacity", label: "Capacity", numeric: true }, { id: "running", label: "Running", numeric: true }],
+    heading: "Builders", repos,
+    columns: [{ id: "name", label: "Builder" }, { id: "state", label: "State" }, { id: "capacity", label: "Capacity", numeric: true }, { id: "running", label: "Running", numeric: true }],
     rows: list.slice(0, limit).map(one => ({ name: clean(one.name), state: clean(one.state), capacity: String(one.capacity), running: String(one.running) })),
     more: Math.max(0, list.length - limit),
-    facts: [{ id: "workers", label: "Workers", value: String(list.length) }, { id: "capacity", label: "Capacity", value: String(list.reduce((sum, one) => sum + one.capacity, 0)) }],
+    facts: [{ id: "builders", label: "Builders", value: String(list.length) }, { id: "capacity", label: "Capacity", value: String(list.reduce((sum, one) => sum + one.capacity, 0)) }],
     points: count(list.map(one => [one.name, one.running] as [string, number])),
   };
 }
@@ -239,7 +239,7 @@ function handover(reader: CardReader, query: CardQuery): Read {
   };
 }
 
-const READERS: Record<CardSourceName, (reader: CardReader, query: CardQuery) => Read> = { tasks, results, flows, flow_zones: flowZones, spend, projects, workers, mode, integrations, providers, findings, handover };
+const READERS: Record<CardSourceName, (reader: CardReader, query: CardQuery) => Read> = { tasks, results, flows, flow_zones: flowZones, spend, projects, builders, mode, integrations, providers, findings, handover };
 
 /** One source, read now as this person. */
 export function readCardSource(reader: CardReader, name: CardSourceName, query: CardQuery): Read {

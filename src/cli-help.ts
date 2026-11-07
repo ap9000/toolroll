@@ -59,7 +59,7 @@ and any task command + --help prints it too
                                talk to your lead: one conversation across every
                                project; it proposes, you confirm (--say "…" for one turn)
   toolroll card <source>    the data chat shows as a card: tasks, results, flows, spend,
-                               projects, workers, mode, integrations, providers, findings, handover
+                               projects, builders, mode, integrations, providers, findings, handover
   toolroll flows list | show <id> | create | edit | trigger | script | card | archive
                                set up and inspect flows (writes preview until --yes)
 
