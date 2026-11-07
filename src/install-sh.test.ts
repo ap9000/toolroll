@@ -43,6 +43,8 @@ function run(command: string, args: string[], env: Record<string, string>, stdin
     let out = "";
     child.stdout.on("data", chunk => { out += String(chunk); });
     child.stderr.on("data", chunk => { out += String(chunk); });
+    // A script that exits first closes its stdin: that write's EPIPE is not this test's answer, the exit code is.
+    child.stdin?.on("error", () => {});
     child.stdin?.end("");
     child.on("exit", code => resolve({ code, out }));
   });

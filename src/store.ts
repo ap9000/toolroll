@@ -22544,10 +22544,11 @@ export class Store {
             finishedAt === null ? undefined : { observedAt: row["observed_at"], finishedAt });
         }
       }
+      const sameMachine = witnessesCarryMachine(this.db);
       if (gone) recorded += Number(this.db.prepare(`UPDATE run_process SET exited_at = ?
-        WHERE id = ? AND run = ? AND exited_at IS NULL AND pid IS ? AND host = ? AND machine_id IS ? AND process_group = ?
+        WHERE id = ? AND run = ? AND exited_at IS NULL AND pid IS ? AND host = ?${sameMachine ? " AND machine_id IS ?" : ""} AND process_group = ?
           AND observed_at = ? AND boot_id IS ? AND containment IS ? AND container IS ? AND container_identity IS ?`)
-        .run(now.toISOString(), row["id"], runId, row["pid"], row["host"], row["machine_id"] ?? null, row["process_group"], row["observed_at"], row["boot_id"], row["containment"], row["container"], row["container_identity"]).changes);
+        .run(now.toISOString(), row["id"], runId, row["pid"], row["host"], ...(sameMachine ? [row["machine_id"] as string | null ?? null] : []), row["process_group"], row["observed_at"], row["boot_id"], row["containment"], row["container"], row["container_identity"]).changes);
     }
     return recorded;
   }
@@ -22558,7 +22559,7 @@ export class Store {
    * yet stays open and is passed over, never holding newer runs behind it:
    * every finished run is visited, a batch at a time. Never signals. */
   recordFinishedRunExits(now: Date, batch = 200): number {
-    const local = localWitnessSql(storeMachine(this.db), "p");
+    const local = localWitnessSql(this.db, "p");
     const page = this.db.prepare(`SELECT DISTINCT p.run FROM run_process p JOIN run r ON r.id = p.run
       WHERE p.exited_at IS NULL AND ${local.sql} AND p.run > ? AND r.outcome IS NOT NULL AND r.finished_at IS NOT NULL
       ORDER BY p.run LIMIT ?`);
@@ -22598,7 +22599,7 @@ export class Store {
    * entry. A sole pid-less witness has no group to prove gone and stays for
    * Toolroll's own look (stop-proof.ts). Native witnesses keep their OS-only road. */
   settleUnspawnedWitnesses(now: Date, onlyRun?: number): number {
-    const local = localWitnessSql(storeMachine(this.db), "p");
+    const local = localWitnessSql(this.db, "p");
     const candidates = this.db.prepare(`SELECT DISTINCT p.run FROM run_process p JOIN run r ON r.id = p.run
       WHERE p.exited_at IS NULL AND p.pid IS NULL AND p.containment IS NULL AND p.container IS NULL
         AND ${local.sql} AND r.outcome IS NOT NULL AND r.finished_at IS NOT NULL
@@ -26846,7 +26847,7 @@ export function settleRunStopByObservation(store: Store, args: { runId: number; 
     const at = now.toISOString();
     let what: string;
     if (args.cause === "incomplete-spawn") {
-      const local = localWitnessSql(storeMachine(db));
+      const local = localWitnessSql(db);
       const changed = db.prepare(`UPDATE run_process SET exited_at = ? WHERE run = ? AND exited_at IS NULL AND pid IS NULL
         AND containment IS NULL AND container IS NULL AND ${local.sql}`).run(at, args.runId, ...local.params).changes;
       if (Number(changed) === 0) return false;
@@ -26909,9 +26910,17 @@ export function witnessIsLocal(row: Record<string, unknown>, here: ThisMachine):
 /** The same rule as witnessIsLocal, as SQL over run_process (optionally aliased): its id is ours, or it has none and
  * its host is one of our names. With our id unknown, `machine_id = NULL` matches nothing: an id-bearing witness is
  * never taken for ours. */
-export function localWitnessSql(here: ThisMachine, alias?: string): { sql: string; params: [string | null, string] } {
-  const p = alias === undefined ? "" : `${alias}.`;
+export function localWitnessSql(db: Database, alias?: string): { sql: string; params: (string | null)[] } {
+  const p = alias === undefined ? "" : `${alias}.`, here = storeMachine(db);
+  if (!witnessesCarryMachine(db)) return { sql: `${p}host IN (SELECT value FROM json_each(?))`, params: [JSON.stringify(here.hosts)] };
   return { sql: `(${p}machine_id = ? OR (${p}machine_id IS NULL AND ${p}host IN (SELECT value FROM json_each(?))))`, params: [here.id, JSON.stringify(here.hosts)] };
+}
+
+/** Whether this database has v150's run_process.machine_id. An update settles leftover records on the database it is
+ * about to back up, still at the older schema (toolroll-update.ts drain), so no query it reaches may assume the column:
+ * there every witness has no id, and the host-name rule above is the whole rule. */
+export function witnessesCarryMachine(db: Database): boolean {
+  return db.prepare("SELECT 1 FROM pragma_table_info('run_process') WHERE name = 'machine_id'").get() !== undefined;
 }
 
 // ---- Idle cleanup (checkout-cleanup.ts) ----------------------------------------------------------------------------
