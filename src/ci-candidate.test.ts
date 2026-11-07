@@ -8,7 +8,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
-import { allowedEnv, CANARY_ROUTES, canaryProblems, candidateEnv, convertReport, killAll, launch, newestAttempts } from "../scripts/ci-candidate.mjs";
+import { spawnSync } from "node:child_process";
+import { allowedEnv, CANARY_ROUTES, canaryProblems, candidateEnv, convertReport, killAll, launch, newestAttempts, processesOf } from "../scripts/ci-candidate.mjs";
 
 const { attacks } = createRequire(import.meta.url)("../scripts/ci-candidate-probe.cjs") as { attacks: (config: Record<string, unknown>, env?: Record<string, string>, identity?: Record<string, unknown>) => { name: string; refused: boolean; detail: string }[] };
 const folder = mkdtempSync(join(tmpdir(), "ci-candidate-"));
@@ -31,6 +32,16 @@ describe("what the candidate is given", () => {
   test("ending a user's processes refuses unless root", () => {
     if (process.getuid?.() === 0) return;
     expect(() => killAll(state)).toThrow(/only root/);
+  });
+  test("a user's processes: found by either uid, a zombie has ended, and other users' are not theirs", () => {
+    const listing = ["    0     0     1 Ss", " 1002  1002   40 S+", " 1002  1002   41 Z", " 1002     0   42 R", "    0  1002   43 S", "  501   501   44 S", " 10021 10021  45 S", ""].join("\n");
+    expect(processesOf(listing, 1002)).toEqual([40, 42, 43]);
+    expect(processesOf("  501   501   44 S\n", 1002)).toEqual([]);
+  });
+  test("this machine's own ps answers in the shape the listing reads", () => {
+    const listing = spawnSync("ps", ["-A", "-o", "uid=", "-o", "ruid=", "-o", "pid=", "-o", "stat="], { encoding: "utf8" });
+    expect(listing.status).toBe(0);
+    expect(processesOf(listing.stdout, process.getuid!())).toContain(process.pid);
   });
 });
 

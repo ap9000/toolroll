@@ -136,14 +136,31 @@ export function launch(state, command, { env, report = null, settle = async () =
 /** A helper as the user itself: `kill(-1)` reaches exactly what that uid may signal, which is all of its processes. */
 const asUser = (state, code) => spawnSync(state.toolchain === null ? process.execPath : join(state.toolchain, "bin", "node"), ["-e", code], { uid: state.uid, gid: state.gid, env: { PATH: "/usr/bin:/bin" }, cwd: "/", stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 20_000 });
 
-/** Every process of the user, gone and shown gone (a `kill(-1, 0)` that finds nothing). Only as root, only on that user:
+/** The live processes in a `ps` listing (uid, real uid, pid, state) that run as `uid`. A zombie has already ended. */
+export function processesOf(listing, uid) {
+  const pids = [];
+  for (const line of listing.split("\n")) {
+    const [effective, real, pid, stat] = line.trim().split(/\s+/);
+    if (stat === undefined || stat.startsWith("Z")) continue;
+    if (Number(effective) === uid || Number(real) === uid) pids.push(Number(pid));
+  }
+  return pids;
+}
+
+/** What `ps` shows of the user, read as root. Null when it can't be read: that proves nothing. `kill(-1, 0)` can't answer
+ * this: Linux counts processes it may not signal as found, and macOS says EPERM where nothing is left. */
+function candidateProcesses(state) {
+  const listing = spawnSync("ps", ["-A", "-o", "uid=", "-o", "ruid=", "-o", "pid=", "-o", "stat="], { encoding: "utf8", timeout: 20_000 });
+  return listing.status === 0 && listing.stdout.trim() !== "" ? processesOf(listing.stdout, state.uid) : null;
+}
+
+/** Every process of the user, gone and shown gone (a `ps` that lists none). Only as root, only on that user:
  * it is a whole-user signal, so anything else refuses before it. False when one stays. */
 export function killAll(state) {
   if (process.getuid?.() !== 0 || !Number.isSafeInteger(state.uid) || state.uid <= 0) throw new Error("only root ends a candidate's processes");
   for (let round = 0; round < 25; round++) {
     asUser(state, 'try { process.kill(-1, "SIGKILL"); } catch {}');
-    const left = asUser(state, 'try { process.kill(-1, 0); process.exit(3); } catch (e) { process.exit(e.code === "ESRCH" ? 0 : 4); }');
-    if (left.status === 0) return true;
+    if (candidateProcesses(state)?.length === 0) return true;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
   }
   return false;
@@ -280,8 +297,9 @@ async function canary(flags) {
   for (const route of CANARY_ROUTES) {
     try { results[route] = JSON.parse(readFileSync(join(out, `${route}.json`), "utf8")); pids.push(...(results[route].left ?? [])); } catch { results[route] = null; }
   }
-  const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== "ESRCH"; } };
-  const survivors = pids.filter(pid => Number.isSafeInteger(pid) && pid > 1 && alive(pid));
+  // A pid the system has since given to someone else is not a survivor; an unreadable listing counts every pid as one.
+  const remaining = candidateProcesses(state);
+  const survivors = pids.filter(pid => Number.isSafeInteger(pid) && pid > 1 && (remaining === null || remaining.includes(pid)));
   const problems = canaryProblems(results, { routes: CANARY_ROUTES, survivors });
   if (!settle) problems.push(`${state.user}'s processes couldn't be ended`);
   for (const route of CANARY_ROUTES) console.log(`canary ${route}: ${results[route]?.attacks?.length ?? 0} attempts`);
