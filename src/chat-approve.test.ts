@@ -16,6 +16,7 @@ import { confirmLeadProposal } from "./lead-doors.js";
 import { ISSUE_IMPORT_FILED_VIA } from "./task-source.js";
 import { executeLeadTool, LEAD_TOOL_SCHEMAS } from "./lead-tools.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
+import { modeDigestOf, modeTermsJson, presetTerms, type ModeTerms } from "./modes.js";
 import { fileTaskProposal } from "./proposal.js";
 import { addApprover, approve, approvalProofOf, propose } from "./scope.js";
 import { openStore, type Store } from "./store.js";
@@ -114,6 +115,16 @@ describe("approving from chat", () => {
     const id = draft();
     expect(setChatApproval(store, { approver: "operator", scope: ALL_PROJECTS, enabled: false, via: "test" }, now).ok).toBe(true);
     expect(tap(id)).toMatchObject({ ok: false });
+    expect(sealed()).toBeNull();
+  });
+
+  test("a person's own off holds even under a mode they signed that lets chat approve", () => {
+    const id = draft();
+    expect(setChatApproval(store, { approver: "operator", scope: ALL_PROJECTS, enabled: false, via: "test" }, now).ok).toBe(true);
+    const terms: ModeTerms = { ...presetTerms("standard", new Date(now.getTime() + 86_400_000).toISOString()), chatApprove: true, chatApproveChats: ["slack"], permissionDefault: "escalated" };
+    store.signMode({ repo, name: terms.name, termsJson: modeTermsJson(terms), digest: modeDigestOf(terms), signedBy: "operator", absoluteExpiry: terms.absoluteExpiry, publication: terms.publication }, now);
+    expect(store.activeMode(repo, now)?.signedBy).toBe("operator");
+    expect(tap(id)).toMatchObject({ ok: false, reason: "refused", said: "You turned off approving from chat for this project." });
     expect(sealed()).toBeNull();
   });
 

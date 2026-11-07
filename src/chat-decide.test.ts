@@ -428,8 +428,10 @@ describe("decisions finish in the chat app", () => {
     const linked = [...script.inChat(BOB)].reverse().find(call => call.method === "sendMessage" && String(call.params["text"]).includes("Ready to merge"))!;
     expect(script.buttons(linked).map(one => [one.text, one.callback_data === undefined])).toEqual([["Merge", true]]);
     expect(mergeInChat(store, "merge-9", run, "bob", now, "telegram")).toEqual({ ok: false, why: "You turned off approving from chat for this project." });
-
+    // Their own signed mode doesn't reopen what they turned off. Only with nothing saved does the mode count.
     sign("bob");
+    expect(mergeInChat(store, "merge-9", run, "bob", now, "telegram")).toEqual({ ok: false, why: "You turned off approving from chat for this project." });
+    store.handle.prepare("DELETE FROM chat_approval_setting WHERE approver = 'bob'").run();
     now = new Date(now.getTime() + 60_000);
     ready();
     await pass();

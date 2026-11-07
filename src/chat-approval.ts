@@ -66,21 +66,24 @@ export function effectiveChatApproval(store: Store, repo: string, approver: stri
 }
 
 /** What this person's chat on `channel` may approve on this repository now, and under whose limits: their saved setting,
- * else their own live signed mode that names this chat app, else their standing as an approver. `digest` names that for
+ * else (only with nothing saved) their own live signed mode that names this chat app, else their standing as an
+ * approver. A saved setting that refuses refuses here. `digest` names that for
  * the ledger; the yes itself is the person's tap and is sealed as theirs, so it doesn't lapse when the authority does. */
 export function chatApproveMode(store: Store, repo: string | null, approver: string, now: Date, channel: "telegram" | "slack" | "discord" | "teams"):
   { ok: true; digest: string; limits: ChatApprovalLimits; source: "setting" | "mode" } | { ok: false; why: string } {
   if (repo === null) return { ok: false, why: "Approving from chat isn't turned on for this project." };
   const setting = effectiveChatApproval(store, repo, approver);
-  const saved = setting.ok && setting.setting.updatedAt !== "";
+  // A saved setting decides: its "off", a lapse after an access change or an unreadable row refuses before any mode is
+  // looked at, so a signed mode never reopens what the person turned off. The mode counts only when nothing is saved.
+  if (!setting.ok) return setting;
   const chosen = { ok: true as const, source: "setting" as const };
-  if (setting.ok && saved) return { ...chosen, digest: setting.setting.digest, limits: setting.limits };
-  // Their own signed mode's limits, where it names this chat app; otherwise their standing as an approver.
+  if (setting.setting.updatedAt !== "") return { ...chosen, digest: setting.setting.digest, limits: setting.limits };
+  // Nothing saved: their own signed mode's limits, where it names this chat app; otherwise their standing as an approver.
   const mode = store.activeMode(repo, now);
   const terms: ModeTerms | null = mode === null ? null : modeTermsFromJson(mode.termsJson);
   if (mode !== null && terms !== null && terms.chatApprove && mode.signedBy === approver && store.accountCanAccess(approver, repo) && chatApproveChatsOf(terms).includes(channel))
     return { ok: true, digest: mode.digest, limits: { fullAccess: terms.permissionDefault === "escalated", capMicrousd: terms.perAttemptBudgetMicrousd }, source: "mode" };
-  return setting.ok ? { ...chosen, digest: setting.setting.digest, limits: setting.limits } : setting;
+  return { ...chosen, digest: setting.setting.digest, limits: setting.limits };
 }
 
 export type ChatApprovalChange = { approver: string; scope: string; enabled: boolean; limits?: ChatApprovalLimits; via: string };
