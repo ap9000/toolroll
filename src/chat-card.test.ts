@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readCardSpec } from "./card-catalog.js";
+import { runCardCommand } from "./card-cli.js";
 import { cardPlainText, discordCardEmbed, slackCardBlocks, telegramCardMessage, webCardHtml } from "./card-render.js";
 import { readCardSource } from "./card-sources.js";
 import { cardOfProposal, cardsFirst, cardWithin } from "./chat-card.js";
@@ -236,5 +237,29 @@ describe("a flow's result", () => {
     expect(readFlowSend(flowSendForStore(content))?.card?.title).toBe(content.card?.title);
     expect(flowDoneCard(store, { dedupeKey: `flow-card:${card.id}:done:1:operator` }, now)?.repos).toEqual([repo]);
     expect(flowDoneCard(store, { dedupeKey: `flow-card:${card.id}:comment:1:operator` }, now)).toBeNull();
+  });
+});
+
+describe("toolroll card", () => {
+  let root: string, store: Store;
+  const repo = "/projects/shop";
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), "card-cli-")));
+    store = openStore(join(root, "orders.db"));
+    if (!addApprover(store, "operator", now).ok) throw Error("account");
+  });
+  afterEach(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const run = (positional: string[], options: [string, string][] = [], actor: string | null = "operator", json = false) => {
+    const lines: string[] = [];
+    return { code: runCardCommand(positional, new Map(options), { store, write: line => lines.push(line), json, now, actor, repos: [repo] }), lines };
+  };
+
+  test("shows the same card chat does, and refuses what the person can't see", () => {
+    expect(run(["projects"]).code).toBe(0);
+    expect(run(["projects"]).lines.join("\n")).toContain("Projects: 1");
+    expect(JSON.parse(run(["projects"], [], "operator", true).lines[0]!).card.repos).toEqual([repo]);
+    expect(run(["nothing"]).code).toBe(2);
+    expect(run(["projects"], [], null).code).toBe(2);
+    expect(run(["projects"], [["repo", "/projects/bank"]]).lines.join("")).toContain("outside your access");
   });
 });

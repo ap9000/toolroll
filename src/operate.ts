@@ -1,3 +1,4 @@
+import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
 import { inspectAcpAgent } from "./acp-inspect.js";
@@ -897,7 +898,7 @@ export const KEYS_ACTIONS = ["status", "set", "clear", "verify", "auth"] as cons
 export const SECRET_VALUE_FLAGS: ReadonlySet<string> = new Set(["token", "password"]);
 
 export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
-  "key", "db", "runner", "ttl", "state", "on", "reason", "until", "id", "backend", "build", "from",
+  "key", "db", "runner", "ttl", "state", "flow", "on", "reason", "until", "id", "backend", "build", "from",
   "allow", "selector", "paths", "credentials", "repo", "token", "capacity",
   "goal", "not", "touches", "acceptance", "candidate", "by", "digest", "as", "branch", "pool", "base", "model", "turns",
   "max", "cap", "probe", "kind", "expires", "cmd", "since", "repair-model",
@@ -1617,6 +1618,8 @@ async function dispatch(
       const who = currentLocalOwner() !== null ? localReader(context) : verified !== null && verified.ok ? verified.who : null;
       return runMemoryCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: who?.name ?? null, repos: who?.repos ?? [], configDir: dirname(context.databaseFile), ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }) });
     }
+    case "card":
+      return cardCommand(positional, flags, context);
     case "flaky":
       return flakyCommand(positional, flags, context);
     case "claim":
@@ -14229,6 +14232,14 @@ export async function refreshLearning(store: Store, now: () => Date, reads?: GhR
       await observeCiAttempts(store, repo, reads ?? githubReads(releaseExec, releaseTools().gh, { retry: true }), at);
     } catch { /* advisory: the next pass tries again */ }
   }
+}
+
+/** `toolroll card <source>`: reads only, for the remembered local login (or --as/--token) and its projects. */
+async function cardCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null || currentLocalOwner() !== null ? null : verifyApproverByPassword(context.store, acting.name, acting.token, context.store.knownRepos().filter(repo => context.store.accountCanAccess(acting.name, repo)));
+  const who = currentLocalOwner() !== null ? localReader(context) : verified !== null && verified.ok ? verified.who : null;
+  return runCardCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: who?.name ?? null, repos: who?.repos ?? [] });
 }
 
 /** The laptop's local owner as a reader: its name and its projects. Never a proof: every write proves its own act. */
