@@ -2038,7 +2038,8 @@ function runParityAction(store: Store, who: VerifiedApprover, payload: SharedAct
       const sent = payload.operation === "finding_resend" ? resendFinding(store, Number(req["finding"]), now)
         : req["pointer"] !== undefined ? sendReviewFinding(store, task!, String(req["pointer"]), actor, now)
         : req["run"] !== undefined ? sendCheckFinding(store, root ?? "", task!, Number(req["run"]), actor, now)
-        : sendFinding(store, { taskId: task!, source: "person", by: actor, summary: String(req["summary"]), file: typeof req["file"] === "string" ? req["file"] : null, line: typeof req["line"] === "number" ? req["line"] : null }, now);
+        // The lead drafted these words and the person confirmed them: recorded as the lead's, sent by the person.
+        : sendFinding(store, { taskId: task!, source: "lead", by: actor, summary: String(req["summary"]), file: typeof req["file"] === "string" ? req["file"] : null, line: typeof req["line"] === "number" ? req["line"] : null }, now);
       if (!sent.ok) throw Error(sent.message);
       const said = sent.standing === "with-person" ? `Finding #${sent.id} needs a person's decision on the task.` : sent.standing === "already-sent" ? `Finding #${sent.id} was already sent.`
         : sent.standing === "running" ? `Finding #${sent.id} sent to the running build.` : `Finding #${sent.id} goes to the next attempt.`;

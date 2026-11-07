@@ -13,7 +13,7 @@ import { withActor } from "./actor.js";
 import { readCardSource } from "./card-sources.js";
 import { APPROVAL_ACTIONS, CHAT_ACTIONS, mintSharedActionReview, prepareSharedAction, type ChatAction } from "./chat-actions.js";
 import { chatControlHref } from "./chat-controls.js";
-import { findingsInReach, findingsOfTask, getFinding, sendFinding } from "./findings.js";
+import { findingFromWords, findingsInReach, findingSourceWords, findingsOfTask, getFinding, sendFinding } from "./findings.js";
 import { setChatApproval } from "./chat-approval.js";
 import { chatTaskStamp } from "./chat-task-actions.js";
 import { storeEvidence } from "./evidence.js";
@@ -267,11 +267,15 @@ describe("the new chat actions", () => {
   describe("follow-through in chat", () => {
     const termsOf = (id: number) => (store.getLeadProposal(id)!.payload as { terms: string[] }).terms.join("\n");
 
-    test("a finding's card shows every value it will send, and a person's yes records them as sent", () => {
+    test("a finding's card shows every value it will send, and a person's yes records them as the lead's words they confirmed", () => {
       const id = draft("finding_send", { task: "t-1", summary: "The total rounds down.", file: "src/total.ts", line: 12 });
       for (const words of ["Finding: The total rounds down.", "Where: src/total.ts:12", "Asks: ", "Tidy the footer"]) expect(termsOf(id)).toContain(words);
       expect(yes(id)).toMatchObject({ ok: true, said: expect.stringContaining("goes to the next attempt") });
-      expect(findingsOfTask(store, "t-1")[0]).toMatchObject({ summary: "The total rounds down.", file: "src/total.ts", line: 12, sentBy: "operator", source: "person", state: "open" });
+      // The lead drafted the words; the person confirmed them. The record never shows the person as their author.
+      const sent = findingsOfTask(store, "t-1")[0]!;
+      expect(sent).toMatchObject({ summary: "The total rounds down.", file: "src/total.ts", line: 12, sentBy: "operator", source: "lead", state: "open" });
+      expect(findingSourceWords(sent.source)).toBe("the lead, confirmed by a person");
+      expect(findingFromWords(sent)).toBe("the lead, confirmed by operator");
     });
 
     test.each<[string, Record<string, unknown>, string]>([

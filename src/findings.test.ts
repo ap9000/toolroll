@@ -6,7 +6,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, s
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { steerFolderName } from "./evidence.js";
-import { closeFinding, FINDING_ROUND_LIMIT, findingsBriefLines, findingStandingWords, findingsOfTask, getFinding, recordReviewFindings, NOT_ON_TASK, resendFinding, sameFinding, saveFindingAnswer, sendCheckFinding, sendFinding, sendReviewFinding, settleFindingAnswers, attachFindings } from "./findings.js";
+import { htmlString } from "./html.js";
+import { followThroughView } from "./server/render-follow-through.js";
+import { closeFinding, FINDING_ROUND_LIMIT, findingFromWords, findingsBriefLines, findingStandingWords, findingsOfTask, getFinding, recordReviewFindings, NOT_ON_TASK, resendFinding, sameFinding, saveFindingAnswer, sendCheckFinding, sendFinding, sendReviewFinding, settleFindingAnswers, attachFindings } from "./findings.js";
 import { claudeSteerHooks, closeSteerMailbox, findingNoteName, openSteerMailbox, pulseSteerMailbox, STEER_ANSWERS, STEER_FINDINGS, STEER_HANDLED } from "./steer-mailbox.js";
 import { BUILT_IN, openStore, type Store } from "./store.js";
 
@@ -133,6 +135,19 @@ describe("the bound", () => {
     expect(sendFinding(store, { ...person, summary: "and a slow query" }, T0)).toMatchObject({ ok: true, standing: "next-attempt" });
     expect(findingsOfTask(store, "t-1").filter(found => found.source === "person")).toHaveLength(2);
     expect(sameFinding({ file: null, line: 1, summary: "x" }, { file: null, line: 1, summary: "x" })).toBe(false);
+  });
+
+  test("words the lead drafted are kept as the lead's, sent by the person who confirmed them, in the store, the brief and the page", () => {
+    const id = sendFinding(store, { taskId: "t-1", source: "lead", by: "alex", summary: "The total rounds down." }, T0);
+    if (!id.ok) throw Error(id.message);
+    expect(store.handle.prepare("SELECT source, sent_by FROM finding WHERE id = ?").get(id.id)).toEqual({ source: "lead", sent_by: "alex" });
+    const found = getFinding(store, id.id)!;
+    expect(findingFromWords(found)).toBe("the lead, confirmed by alex");
+    expect(findingsBriefLines([found], { folder: "f", key: KEY }).join("\n")).toContain("From the lead, confirmed by a person");
+    const view = followThroughView(store, worktree, "t-1", "/t/t-1", false, T0).findings;
+    expect(view === "" ? "" : htmlString(view)).toContain("From the lead, confirmed by alex.");
+    // The table refuses any source it doesn't name.
+    expect(() => store.handle.prepare("UPDATE finding SET source = 'model' WHERE id = ?").run(id.id)).toThrow(/CHECK/);
   });
 });
 

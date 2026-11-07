@@ -5,7 +5,7 @@
  */
 import { checkRepairsOfTask, checkRepairWords } from "./check-repair.js";
 import { askFailingFirst, dropFailingFirst, evidencePairsOf, evidenceWords, failingFirstOf, failingFirstWords, rerunEvidence, saveEvidencePair } from "./evidence-pair.js";
-import { closeFinding, findingLine, findingsOfTask, findingStandingWords, getFinding, resendFinding, sendCheckFinding, sendFinding, sendReviewFinding, waitingFindings, type Finding, type SendAnswer } from "./findings.js";
+import { closeFinding, findingFromWords, findingLine, findingsOfTask, findingStandingWords, getFinding, resendFinding, sendCheckFinding, sendFinding, sendReviewFinding, waitingFindings, type Finding, type SendAnswer } from "./findings.js";
 import { handoverLines, handoverNoteOf } from "./handover-note.js";
 import { captureFixture, labelProviderCapture, providerCapture, providerCaptures } from "./provider-capture.js";
 import type { Store } from "./store.js";
@@ -23,7 +23,7 @@ export type FollowThroughContext = {
 type Flags = Map<string, string | true>;
 const text = (flags: Flags, name: string): string | undefined => { const value = flags.get(name); return typeof value === "string" ? value : undefined; };
 
-const findingLines = (finding: Finding): string[] => [`${findingLine(finding)}`, `  ${finding.taskId} · from ${finding.sentBy}: ${findingStandingWords(finding)}`];
+const findingLines = (finding: Finding): string[] => [`${findingLine(finding)}`, `  ${finding.taskId} · from ${finding.source === "lead" ? findingFromWords(finding) : finding.sentBy}: ${findingStandingWords(finding)}`];
 
 export const sendWords = (sent: Extract<SendAnswer, { ok: true }>): string => ({
   running: `Finding #${sent.id} goes to the running build.`,

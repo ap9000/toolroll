@@ -3,7 +3,7 @@
  * escaping, and no action here is reachable from it. Every form posts to the one action in tasks.ts. */
 import { checkRepairsOfTask, checkRepairWords } from "../check-repair.js";
 import { evidencePairsOf, evidenceWords, failingFirstOf, failingFirstWords } from "../evidence-pair.js";
-import { findingLine, findingsOfTask, findingSourceWords, findingStandingWords, type Finding } from "../findings.js";
+import { findingLine, findingFromWords, findingsOfTask, findingStandingWords, type Finding } from "../findings.js";
 import { handoverLines, handoverNoteOf } from "../handover-note.js";
 import { html, joinHtml, postForm, type Html } from "../html.js";
 import { providerCaptures, type ProviderCapture } from "../provider-capture.js";
@@ -26,7 +26,7 @@ function findingRow(one: Finding, taskHref: string, canAct: boolean): Html {
     field({ id: `finding-close-${one.id}`, label: "Why it can close", control: input({ id: `finding-close-${one.id}`, name: "note" }) }),
     btn("Close finding", { variant: "outline", type: "submit" }),
   ]))) : "";
-  return html`<li data-finding="${one.state}"><p>${findingLine(one)}</p><p class="meta">${findingStandingWords(one)}</p><p class="meta">From ${findingSourceWords(one.source)}. Requested: ${one.action}</p>${
+  return html`<li data-finding="${one.state}"><p>${findingLine(one)}</p><p class="meta">${findingStandingWords(one)}</p><p class="meta">From ${findingFromWords(one)}. Requested: ${one.action}</p>${
     canAct && answered ? act(taskHref, "resend", "Send it back", { finding: one.id }) : ""}${closing}</li>`;
 }
 

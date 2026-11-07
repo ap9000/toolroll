@@ -32,7 +32,9 @@ const SAME_PLACE_LINES = 10;
 export const REVIEW_ACTION = "Check this against the code. Fix it and say what changed, or reject it with a reason that names the file.";
 export const CHECK_ACTION = "Find the cause of this failed check. Fix it and say what changed, or reject it with a reason that names the file.";
 
-export type FindingSource = "build-review" | "person" | "check-failure";
+/** `lead`: words the lead (a model) drafted, sent only once a person confirmed them; `sent_by` is that person. They are
+ * never recorded as the person's own words. */
+export type FindingSource = "build-review" | "person" | "lead" | "check-failure";
 export type FindingState = "open" | "accepted" | "rejected" | "with-person" | "closed";
 export type FindingAnswer = {
   round: number; run: number; answer: "accepted" | "rejected"; detail: string; file: string | null; line: number | null;
@@ -48,8 +50,11 @@ export type Finding = {
   answer: FindingAnswer | null;
 };
 
-const SOURCE_WORDS: Readonly<Record<FindingSource, string>> = { "build-review": "automatic review", person: "a person", "check-failure": "the project check" };
+const SOURCE_WORDS: Readonly<Record<FindingSource, string>> = { "build-review": "automatic review", person: "a person", lead: "the lead, confirmed by a person", "check-failure": "the project check" };
 export const findingSourceWords = (source: FindingSource): string => SOURCE_WORDS[source];
+/** Who a finding's words are from, naming the person who confirmed the lead's draft: never the person as its author. */
+export const findingFromWords = (finding: Pick<Finding, "source" | "sentBy">): string =>
+  finding.source === "lead" ? `the lead, confirmed by ${finding.sentBy}` : SOURCE_WORDS[finding.source];
 
 /** The family a task belongs to: a broken history keeps the finding on the task it named. */
 export function familyRootOf(store: Store, taskId: string): string {

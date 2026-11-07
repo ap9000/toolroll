@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS finding (
   family_root   TEXT NOT NULL,
   task_id       TEXT NOT NULL,
   repo          TEXT,
-  source        TEXT NOT NULL CHECK (source IN ('build-review', 'person', 'check-failure')),
+  source        TEXT NOT NULL CHECK (source IN ('build-review', 'person', 'lead', 'check-failure')),
   source_key    TEXT UNIQUE,
   source_run    INTEGER,
   severity      TEXT CHECK (severity IS NULL OR severity IN ('HIGH', 'MEDIUM', 'LOW')),
