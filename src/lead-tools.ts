@@ -1048,13 +1048,13 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
             return { trigger: trigger.id, kind: trigger.kind, what: config === null ? "can't be read" : describeTrigger(config, ctx.store),
               startsIn: titleOf(config?.zone ?? definition.start), state: trigger.state, lastCheck: trigger.lastOutcome };
           }),
-          // "Runs on its own" is signed with the owner's password on the flow page, never in chat; revoking is one click there.
+          // "Runs on its own" is the owner's own yes, on its card or the flow page; a model only proposes it.
           runsOnItsOwn: (() => {
             const own = activeUnattendedGrant(ctx.store, flow.id, ctx.now);
-            return own === null || own.terms.flowRevision !== flow.revision ? { on: false, change: `Turn it on (the owner's password) on the flow page: /flows/${flow.id}` }
-              : { on: true, until: own.absoluteExpiry, change: `Revoke it on the flow page: /flows/${flow.id}` };
+            return own === null || own.terms.flowRevision !== flow.revision ? { on: false, change: `Propose allow_unattended with days: the owner's own yes turns it on. Or the flow page: /flows/${flow.id}` }
+              : { on: true, until: own.absoluteExpiry, change: `Propose turn_off_unattended, or the flow page: /flows/${flow.id}` };
           })(),
-          rule: "Change it with propose_flow. Build and research steps file ordinary tasks under the usual approvals, unless runsOnItsOwn is on: then its schedule's cards are approved by the owner's signed grant. Signing or revoking that is on the flow page; send the person there.",
+          rule: "Change it with propose_flow. Build and research steps file ordinary tasks under the usual approvals, unless runsOnItsOwn is on: then its schedule's cards are approved by the owner's signed grant. Turning it on is the owner's own yes on its card (propose_flow allow_unattended); never yours.",
         } };
       }
       const repo = args["repo"] === undefined ? null : repoPathOf(ctx.who, args["repo"]);
@@ -1166,6 +1166,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
           case "allow_browser": operation = "flow_browser"; input = pick(["flow"]); break;
           case "turn_off_browser": operation = "flow_browser_off"; input = pick(["flow"]); break;
           case "archive": operation = "flow_archive"; input = pick(["flow"]); break;
+          case "allow_unattended": operation = "flow_unattended"; input = pick(["flow", "days", "budget", "runs", "include"]); break;
           case "turn_off_unattended": operation = "flow_unattended_off"; input = pick(["flow"]); break;
           default: return { ok: false, message: "Choose create, edit, add_card, move_card, approve, send_back, cancel_card, comment, assign, follow, unfollow, add_trigger, pause_trigger, resume_trigger, remove_trigger, allow_browser or turn_off_browser." };
         }

@@ -15,7 +15,8 @@ import { publicChatText } from "./chat-display.js";
 import { gateWords } from "./approval-policy.js";
 import { checkLeadIdentity } from "./lead-identity.js";
 import { hasForbiddenControls } from "./decision.js";
-import { activeUnattendedGrant, revokeUnattended } from "./flow-unattended.js";
+import { activeUnattendedGrant, candidatesDigestOf, FLOW_ACCEPTANCE, parseUnattendedAsk, revokeUnattended, sealUnattended, unattendedCandidates, unattendedSignProblem, untilWords, type UnattendedAsk } from "./flow-unattended.js";
+import { UNATTENDED_RULE_WORDS, unattendedCoverWords, unattendedHeadWords, unattendedLimitWords } from "./flow-unattended-words.js";
 import { decideProposal, listProposals } from "./memory-pass.js";
 import { authPauseOf, liftAuthPause } from "./provider-auth.js";
 import { isProviderId } from "./provider.js";
@@ -49,6 +50,7 @@ import { passwordlessSessionFor,
   authenticateApprover,
   describeScope,
   scopeAuthorityOf,
+  machineActing,
   type ExecutionProfile,
   freshnessFor,
   localApprovalEligible,
@@ -191,6 +193,11 @@ export const CHAT_ACTIONS = {
   task_restore: { label: "Restore task", protected: false, password: false },
   incident_resolve: { label: "Resolve incident", protected: false, password: false },
   memory_decide: { label: "Decide memory proposal", protected: false, password: false },
+  // The rest of the approvals: a person's own yes on a card that shows every term.
+  task_reopen: { label: "Reopen task", protected: true, password: false },
+  revision_accept: { label: "Accept plan revision", protected: true, password: false },
+  revision_reject: { label: "Reject plan revision", protected: true, password: false },
+  flow_unattended: { label: "Let flow run on its own", protected: true, password: false },
   // What the owner's own lead knows about them: theirs alone, in no project (lead-about.ts).
   lead_about_you: { label: "Remember", protected: false, password: false },
   scope_approve: { label: "Approve work", protected: true, password: false },
@@ -204,7 +211,7 @@ const SAME_ACTIONS: [ChatAction, ChatActionOperation] extends [ChatActionOperati
 void SAME_ACTIONS;
 /** Approvals (owner's decision, docs/plans/toolroll-cards.md): a person's own yes from their chat stands without a password.
  * Only a person's tap in a linked chat, or their click in a signed-in browser, ever runs one. */
-export const APPROVAL_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["scope_approve", "task_resume", "sweep_file", "flow_browser"]);
+export const APPROVAL_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["scope_approve", "task_resume", "sweep_file", "flow_browser", "task_reopen", "revision_accept", "revision_reject", "flow_unattended"]);
 /** Protected actions a linked chat may confirm behind its own explicit yes/cancel challenge instead of the review screen.
  * Password actions and long or redacted terms never qualify: the card must show the exact terms. */
 export const APPROVAL_TERM_CHARS = 3000;
@@ -212,7 +219,7 @@ export const CHALLENGE_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["
 /** Actions about the person themselves, in no project: their card carries no project (repo ""). */
 export const OWNER_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["lead_about_you", "provider_resume", "worker_note", "lead_identity"]);
 /** Actions the console refuses a project-limited account (route table: limited "deny"): the same here. */
-const INSTANCE_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["mode_revoke", "flow_unattended_off", "provider_resume", "worker_note", "lead_identity", "incident_resolve", "memory_decide"]);
+const INSTANCE_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["mode_revoke", "flow_unattended_off", "flow_unattended", "provider_resume", "worker_note", "lead_identity", "incident_resolve", "memory_decide"]);
 export function isChatAction(value: unknown): value is ChatAction {
   return typeof value === "string" && Object.hasOwn(CHAT_ACTIONS, value);
 }
@@ -394,7 +401,7 @@ export function prepareSharedAction(
   let state: Record<string, unknown>,
     title = CHAT_ACTIONS[operation].label as string;
   if (PARITY_ACTIONS.has(operation)) {
-    const made = parityAction(store, who, operation, input, repo, flowTarget?.flow ?? null, now);
+    const made = parityAction(store, who, operation, input, repo, flowTarget?.flow ?? null, now, request, root);
     state = made.state;
     title = made.title;
     terms.push(...made.terms);
@@ -1292,6 +1299,7 @@ export function executeSharedAction(
     options.via !== "cli" &&
     options.confirm === true &&
     sharedActionAllowsChallenge(payload);
+  if (APPROVAL_ACTIONS.has(live.operation) && machineActing()) return refuse("needs-confirm", "Only a person approves this.");
   // A lead's or remote token reaches the same web door: an approval needs a person's own session (or tap, above).
   if (APPROVAL_ACTIONS.has(live.operation) && options.via === "web" && options.authority !== "local-owner" && options.person !== true)
     return refuse("needs-confirm", "Approve this yourself, in your signed-in chat.");
@@ -1330,6 +1338,7 @@ export function executeSharedAction(
         repo = payload.repo,
         actor = who.name;
       let taskId = task;
+      if (LATE_APPROVALS.has(payload.operation)) return runLateApproval(store, who, payload, approvalBy(store, who, payload.repo, now, options, drafted), now);
       if (PARITY_ACTIONS.has(payload.operation) || OWNER_PARITY.has(payload.operation)) return runParityAction(store, who, payload, now);
       if (payload.operation === "lead_about_you") {
         const next = withAboutYouLine(aboutYouOf(store, actor), String(req["line"]), Number(req["replaces"] ?? 0));
@@ -1507,8 +1516,7 @@ export function executeSharedAction(
             taskId: task!,
             runId: Number(req["run"]),
             by: verifiedAuthor(actor),
-            // The stop's own column knows the phone and the browser: any other chat app is recorded as the web.
-            via: options.via === "telegram" ? "telegram" : "web",
+            via: options.via,
           },
           now,
         );
@@ -1813,7 +1821,8 @@ function runFlowAction(store: Store, payload: SharedAction, actor: string, repos
 
 // ---- chat and console parity (docs/plans/toolroll-cards.md) ------------------------------------------------------------
 
-const PARITY_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["mode_revoke", "flow_unattended_off", "flow_archive", "task_archive", "task_restore", "incident_resolve", "memory_decide"]);
+const LATE_APPROVALS: ReadonlySet<ChatAction> = new Set<ChatAction>(["task_reopen", "revision_accept", "revision_reject", "flow_unattended"]);
+const PARITY_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["mode_revoke", "flow_unattended_off", "flow_archive", "task_archive", "task_restore", "incident_resolve", "memory_decide", ...LATE_APPROVALS]);
 const OWNER_PARITY: ReadonlySet<ChatAction> = new Set<ChatAction>(["provider_resume", "worker_note", "lead_identity"]);
 
 function incidentRepoOf(store: Store, id: number): string | null {
@@ -1841,8 +1850,52 @@ function instanceAction(store: Store, operation: "provider_resume" | "worker_not
   return { request: { name: checked.identity.name, persona: checked.identity.persona }, title: `Call your lead ${checked.identity.name}`, state: {}, terms: [`Name: ${checked.identity.name}`, `Persona: ${checked.identity.persona}`] };
 }
 
-function parityAction(store: Store, who: VerifiedApprover, operation: ChatAction, input: Record<string, unknown>, repo: string, flow: FlowRow | null, now: Date): { state: Record<string, unknown>; title: string; terms: string[] } {
+const REOPEN_REFUSED: Record<string, string> = {
+  "unknown-task": "This task is not external work.", "not-latched": "The tracker never closed this: there is nothing to reopen.",
+  "not-seen-open": "The tracker hasn't been seen open again since the close. Reopen it there first; the next sync notices.",
+  claimed: "This task is being built right now.", held: "A hold stands: lift it first.", "question-open": "An unanswered question stands: answer or close it first.",
+  "incident-open": "An unresolved incident stands: resolve it first.", "bad-state": "This task is not in a state reopen can take.",
+};
+
+/** The one plan revision waiting on a decision for this task, by its id or as the only one. */
+function waitingRevision(store: Store, task: string, asked: unknown) {
+  const ref = store.lookupRef(task);
+  const waiting = ref === null ? [] : store.listPlanRevisions(ref.id).filter(one => one.status === "blocked");
+  const found = asked === undefined ? (waiting.length === 1 ? waiting[0]! : null) : waiting.find(one => one.id === asked) ?? null;
+  if (found === null) throw Error("That plan revision isn't waiting on a decision.");
+  return found;
+}
+
+function parityAction(store: Store, who: VerifiedApprover, operation: ChatAction, input: Record<string, unknown>, repo: string, flow: FlowRow | null, now: Date, request: Record<string, unknown>, root?: string): { state: Record<string, unknown>; title: string; terms: string[] } {
   switch (operation) {
+    case "task_reopen": {
+      const task = String(input["task"]), row = store.getTask(task);
+      if (row === null) throw Error("No such task.");
+      if (store.mirrorByTask(task) === null) throw Error(REOPEN_REFUSED["unknown-task"]!);
+      return { state: { task, updatedAt: row.updatedAt, taskState: row.state }, title: `Reopen ${row.title}`, terms: ["Takes this outside work back up: the tracker shows it open again, and Toolroll may build it. Existing approvals and holds still apply."] };
+    }
+    case "revision_accept": case "revision_reject": {
+      const task = String(input["task"]), revision = waitingRevision(store, task, input["revision"]);
+      request["revision"] = revision.id;
+      const artifact = store.getArtifact(revision.artifact);
+      if (artifact === null || root === undefined) throw Error("The revised plan can't be read here.");
+      const read = readVerifiedArtifact(root, artifact);
+      if (!read.ok || artifact.truncated || artifact.redacted) throw Error("The revised plan couldn't be verified in full.");
+      return { state: { task, revision: revision.id, artifact: artifact.sha256, authority: revision.authorityDigest }, title: `${operation === "revision_accept" ? "Accept" : "Reject"} revision ${revision.revision} of this plan`,
+        terms: [`Why the builder asked: ${revision.reason}`, `Changes: ${revision.changedFields.join(", ") || "the plan only"}${revision.authorityKind === "authority-change" ? ". This changes what was approved." : "."}`, `Plan:\n${read.content.toString("utf8")}`] };
+    }
+    case "flow_unattended": {
+      const asked = parseUnattendedAsk({ days: input["days"], budget: input["budget"], runs: input["runs"], include: input["include"] });
+      if (!asked.ok) throw Error(asked.message);
+      const problem = unattendedSignProblem(store, flow!, who.name);
+      if (problem !== null) throw Error(problem);
+      const candidates = unattendedCandidates(store, flow!.id), include = asked.ask.include ?? [];
+      const covered = candidates.filter(one => one.optional === null || include.includes(one.id));
+      if (include.some(id => !candidates.some(one => one.id === id))) throw Error("Name schedules from this flow's own list.");
+      if (covered.length === 0) throw Error("Choose a schedule to include: this flow's schedules bring in outside content, so none is covered unless you pick it.");
+      return { state: { flow: flow!.id, revision: flow!.revision, schedules: candidatesDigestOf(candidates), ask: asked.ask }, title: `Let ${flow!.name} run on its own`,
+        terms: [...unattendedHeadWords(who.name, FLOW_ACCEPTANCE), unattendedCoverWords(covered), ...unattendedLimitWords(asked.ask.budgetMicrousd, asked.ask.dailyRunCap), ...UNATTENDED_RULE_WORDS, `It ends after ${asked.ask.days} ${asked.ask.days === 1 ? "day" : "days"}.`] };
+    }
     case "mode_revoke": {
       const mode = store.activeMode(repo, now);
       if (mode === null) throw Error("No automatic approvals are on for this project.");
@@ -1880,6 +1933,31 @@ function parityAction(store: Store, who: VerifiedApprover, operation: ChatAction
   }
 }
 
+/** The approvals added last: the console's own write, after the same question every approval asks. */
+function runLateApproval(store: Store, who: VerifiedApprover, payload: SharedAction, by: ReturnType<typeof approvalBy>, now: Date): { ok: true; taskId: string | null; said: string; href?: string } {
+  const req = payload.request, actor = who.name;
+  // Rejecting lowers: it takes a person's yes, not their approving setting.
+  if (by.ok === false && payload.operation !== "revision_reject") throw Error(by.why);
+  if (payload.operation === "task_reopen") {
+    const task = String(req["task"]), reopened = store.reopenMirror(task, actor, now);
+    if (!reopened.ok) throw Error(REOPEN_REFUSED[reopened.reason] ?? "The task could not be reopened.");
+    return { ok: true, taskId: task, said: "Reopened." };
+  }
+  if (payload.operation === "flow_unattended") {
+    const ask = payload.state["ask"] as UnattendedAsk;
+    if (by.ok && by.limits.capMicrousd !== null && (ask.budgetMicrousd === null || ask.budgetMicrousd > by.limits.capMicrousd)) throw Error("This has a higher attempt limit than your chat approval setting allows.");
+    const signed = sealUnattended(store, { flow: Number(req["flow"]), signer: actor, ask, sawRevision: Number(payload.state["revision"]), sawSchedules: String(payload.state["schedules"]) }, now);
+    if (!signed.ok) throw Error(signed.message);
+    return { ok: true, taskId: null, said: `Runs on its own until ${untilWords(signed.grant.absoluteExpiry)}.`, href: `/flows/${Number(req["flow"])}` };
+  }
+  const task = String(req["task"]), revision = waitingRevision(store, task, req["revision"]), accept = payload.operation === "revision_accept";
+  // A saved limit can't be read against a change of authority: that one opens in Toolroll.
+  if (accept && by.ok && revision.authorityKind === "authority-change" && (!by.limits.fullAccess || by.limits.capMicrousd !== null)) throw Error("This revision changes what was approved, beyond your chat approval limits. Open it in Toolroll.");
+  if (!store.resolvePlanRevision(revision.id, accept ? "applied" : "rejected", actor, now)) throw Error("That plan revision is no longer waiting on a decision.");
+  store.releaseOwnedHold("revision", String(revision.id));
+  return { ok: true, taskId: task, said: accept ? "Revision accepted." : "Revision rejected." };
+}
+
 /** Each runs the write the console's own handler calls, as this person, inside the confirm door's transaction. */
 function runParityAction(store: Store, who: VerifiedApprover, payload: SharedAction, now: Date): { ok: true; taskId: string | null; said: string; href?: string } {
   const req = payload.request, actor = who.name, repo = payload.repo;
@@ -1908,7 +1986,7 @@ function runParityAction(store: Store, who: VerifiedApprover, payload: SharedAct
       return done("Incident resolved.");
     case "memory_decide": {
       const decision = req["decision"] === "accept" ? "accept" : "reject";
-      decideProposal(store, { repo, actor, id: Number(req["proposal"]), decision }, now);
+      decideProposal(store, { repo, actor, id: Number(req["proposal"]), decision, ...(typeof req["claim"] === "string" ? { claim: req["claim"] } : {}) }, now);
       return done(decision === "accept" ? "Added to project memory." : "Rejected.", `/settings/knowledge?repo=${encodeURIComponent(repo)}`);
     }
     case "provider_resume": {

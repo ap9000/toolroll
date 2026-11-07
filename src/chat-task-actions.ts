@@ -57,7 +57,7 @@ export function applyChatTaskAction(store: Store, who: VerifiedApprover, payload
       const allowed = effectiveChatApproval(store, ref.repo!, who.name);
       if (!allowed.ok && controls.via !== "web") { const mode = controls.via === undefined || controls.via === "cli" ? allowed : chatApproveMode(store, ref.repo!, who.name, now, controls.via); if (!mode.ok) return { ok: false, message: mode.why }; }
       if (!allowed.ok && controls.via === "web") return { ok: false, message: allowed.why };
-      const resumed = resumeTaskStop(store, { taskId: task, runId: run, by: verifiedAuthor(who.name), via: controls.via === "telegram" ? "telegram" : "web" }, now);
+      const resumed = resumeTaskStop(store, { taskId: task, runId: run, by: verifiedAuthor(who.name), via: controls.via ?? "web" }, now);
       return resumed.ok ? { ok: true, taskId: task, said: `Stop released. ${resumed.gate ? "Other requirements still prevent the next attempt." : "The next attempt may start."}` } : { ok: false, message: resumed.detail };
     }
     const { via, evidenceRoot: _root, ...rest } = controls;

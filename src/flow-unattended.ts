@@ -588,10 +588,20 @@ export async function signUnattended(store: Store, input: { flow: number; signer
   const schedules = canonicalJson(store.flowTriggers(input.flow));
   await prepareUnattendedCandidates(store, input.flow);
   const prepared = candidatesDigestOf(unattendedCandidates(store, input.flow));
+  return sealUnattended(store, input, now, { revision, schedules, prepared });
+}
+
+/**
+ * The signature itself, in one transaction. `before` is what signUnattended read around its file pass. Chat's door is
+ * synchronous, so it signs without one, over the script snapshots the worker's pass keeps (prepareUnattendedCandidates)
+ * and the schedules its card showed (`sawSchedules`). A snapshot older than the files fails closed: a firing runs a
+ * signed script only if it is still the very code signed.
+ */
+export function sealUnattended(store: Store, input: { flow: number; signer: string; ask: UnattendedAsk; sawRevision?: number; sawSchedules?: string }, now: Date, before?: { revision: number | undefined; schedules: string; prepared: string }): { ok: true; grant: UnattendedGrant } | { ok: false; message: string } {
   return store.transact(() => {
     const flow = store.getFlow(input.flow);
     if (flow === null) return { ok: false as const, message: "No such flow." };
-    if (revision !== flow.revision || schedules !== canonicalJson(store.flowTriggers(input.flow)) || prepared !== candidatesDigestOf(unattendedCandidates(store, input.flow))) return { ok: false as const, message: "This flow changed while preparing its scripts. Read the terms again." };
+    if (before !== undefined && (before.revision !== flow.revision || before.schedules !== canonicalJson(store.flowTriggers(input.flow)) || before.prepared !== candidatesDigestOf(unattendedCandidates(store, input.flow)))) return { ok: false as const, message: "This flow changed while preparing its scripts. Read the terms again." };
     if (input.sawRevision !== undefined && input.sawRevision !== flow.revision) return { ok: false as const, message: "This flow changed while you were reading. Read the terms again." };
     const problem = unattendedSignProblem(store, flow, input.signer);
     if (problem !== null) return { ok: false as const, message: problem };

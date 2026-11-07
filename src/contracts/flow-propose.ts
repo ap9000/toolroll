@@ -13,7 +13,7 @@ import { TEXT_LIMITS } from "../text-limits.js";
 import { toModelSchema } from "./contract.js";
 import { flowStepsSchema, leadTriggerSchema, SCRIPT_LANGUAGES, SCRIPT_NAME } from "./flow.js";
 
-export const PROPOSE_FLOW_OPERATIONS = ["archive", "turn_off_unattended", "create", "edit", "add_card", "move_card", "approve", "send_back", "choose", "cancel_card", "comment", "assign", "follow", "unfollow", "save_script", "add_trigger", "pause_trigger", "resume_trigger", "remove_trigger", "kit", "starter", "allow_browser", "turn_off_browser"] as const;
+export const PROPOSE_FLOW_OPERATIONS = ["archive", "turn_off_unattended", "allow_unattended", "create", "edit", "add_card", "move_card", "approve", "send_back", "choose", "cancel_card", "comment", "assign", "follow", "unfollow", "save_script", "add_trigger", "pause_trigger", "resume_trigger", "remove_trigger", "kit", "starter", "allow_browser", "turn_off_browser"] as const;
 
 const id = z.int().min(1);
 const enumOf = (values: readonly string[]) => z.enum(values as [string, ...string[]]);
@@ -23,6 +23,8 @@ export const proposeFlowInputSchema = z.strictObject({
   /** A project as list_repos names it (r1, r2). */
   repo: z.string().regex(/^r[0-9]{1,3}$/, { error: "must be a project from list_repos, like r1" }).optional(),
   flow: id.optional(), card: id.optional(),
+  /** allow_unattended: how long it runs on its own, what it may spend, and the schedules chosen beyond the plain ones. */
+  days: z.int().min(1).optional(), budget: z.string().max(20).optional(), runs: z.string().max(20).optional(), include: z.array(id).max(50).optional(),
   kit: enumOf(KITS.map(one => one.id)).optional(),
   starter: z.enum(STARTER_IDS).optional(),
   name: z.string().max(TEXT_LIMITS.flowName).optional(),

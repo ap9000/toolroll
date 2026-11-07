@@ -34,7 +34,7 @@ From the route table's 273 console POST rows. **Chat**: already in chat. **Add**
 |---|---|---|---|
 | Tasks | tasks.add, tasks.fast, task.act.scope, plan, plan-edit, next, hold, unhold, requeue, cancel, stop, pause, steer, reply, block, unblock, repair-dependency, follow-up, route, accept-proof, complete, merge; run.act.note, comment, revise, draft-repair, checks, add-tests; queue.move; decision.answer; sweep.cancel-rest | Chat | propose_task, propose_scope, propose_hold, propose_task_action, propose_review, chat-decide cards and shared actions |
 | Approvals | task.act.approve, task.act.resume, flow.browser, sweep start, task.release.go-on's release card | Add (no password in chat) | Owner's decision |
-| Approvals not reached this arc | task.act.reopen, accept-revision, reject-revision, flow.unattended | Secure for now | Approvals with their own forms; flow.unattended's signing is asynchronous and the shared door is synchronous. Listed for the owner |
+| Approvals | task.act.reopen, accept-revision, reject-revision, flow.unattended | Add (no password in chat) | `task_reopen`, `revision_accept`, `revision_reject`, `flow_unattended`. flow.unattended signs over the script snapshots the worker keeps: its file pass is asynchronous and the door is not, and a snapshot older than the files fails closed at the firing |
 | Task tidy | task.act.archive, task.act.restore | Add | `task_archive`, `task_restore`, through archiveTaskFamily / restoreTaskFamily |
 | Task tidy, many | work.put-away.apply | Secure | Bound to a preview's digest of many tasks |
 | Task repair | task.act.keep-grown, retry-review, recheck-stopped, stop-carrying, resume-arm | Secure for now | Rare repair acts, not one of the priorities; listed |
