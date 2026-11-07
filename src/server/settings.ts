@@ -371,7 +371,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/project?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}#code-map`);
     if (posted.getAll("repo").length !== 1 || posted.getAll("on").length > 1) return back("problem", "That form was sent twice over. Nothing changed.");
     if (!consoleProjects().includes(repo) || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
-    const door: MapDoor = who.authority === "local-owner" ? { kind: "local-owner", actor: who.name } : { kind: "person", person: { actor: who.name, generation: store.accountOf(who.name)?.generation ?? -1, method: "session" } };
+    const door: MapDoor = who.authority === "local-owner" ? { kind: "local-owner", actor: who.name } : { kind: "person", person: modelsAuthority(who, "session") };
     const on = posted.get("on") === "1";
     const done = kind === "switch" ? setCodeMapSwitch(store, door, repo, on, now) : endHoldout(store, door, repo, now);
     if (!done.ok) return back("problem", done.problem);
