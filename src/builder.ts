@@ -15,7 +15,7 @@ import { skillsContext } from "./project-skills.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
 import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable, prepareCheckAttempt, reportFromOutput, sealCheckOutcome, sealJson, type PreparedAttempt } from "./check-report.js";
 import { CHECK_LOAD_CAPTURE, CheckLoadWatch, type MachineSample } from "./check-load.js";
-import { retriedInside } from "./check-failure.js";
+import { NOTHING_STARTED_ACTION, retriedInside } from "./check-failure.js";
 import type { CheckReport } from "./contracts/release-check.js";
 import { planTargetedRecheck, settleCoverage } from "./release-recheck.js";
 import { effectiveCheckFacts, type ReleaseCheckFacts } from "./verification-evidence.js";
@@ -462,6 +462,13 @@ export const SETUP_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS, OP
  * over-redacting a diagnostic costs a glance at the real log; under-
  * redacting costs a secret.
  */
+/** Why a git command failed, in words, for a refusal: the hardened runner's own reason, or git's first line. Keeping it
+ * is the point: runs 3316–3324 and run 3332 lost theirs, and only a person guessing was left. */
+export function gitFailureWords(result: ExecResult): string {
+  const why = gitRefusal(result) ?? result.stderr.split("\n").map(line => line.trim()).find(line => line !== "") ?? (result.timedOut ? "git ran out of time" : `git exited ${result.code}`);
+  return redactSecretText(why).slice(0, 400);
+}
+
 export function redactSecretText(text: string): string {
   return redactSecretAssignments(text).slice(0, 200);
 }
@@ -967,18 +974,23 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   const preparedCandidate = scope?.candidate ?? null;
   let preparedEvidence: PreparedEvidence | null = null;
   if (preparedCandidate !== null) {
+    // Nothing has run yet: no setup, no check, no agent. Said in the ledger here, at the only place it is true, because a
+    // release's gate reads it (check-failure.ts ranNoCheck): this attempt is no check failure of the commit.
+    const refusedUnrun = (message: string): BuildResult => {
+      store.recordAction({ at: (request.clock ?? (() => now))().toISOString(), actor: "toolroll", repo: leased.repo, taskId, runId: request.runId, action: NOTHING_STARTED_ACTION, outcome: "refused", source: "work", detail: message.slice(0, 300) });
+      return { ok: false, reason: "no-op", message };
+    };
     const refusal = await proveCandidate(git, worktree, preparedCandidate, store.firstBuilderBase(taskRef, branch));
-    if (refusal !== null) return { ok: false, reason: "no-op", message: refusal };
+    if (refusal !== null) return refusedUnrun(refusal);
     // Check the exact candidate before setup or the full gate spends anything.
     const listed = await git(GIT, [...preparedEvidenceGit(), "ls-tree", "-z", preparedCandidate, "--", PREPARED_EVIDENCE_FILE], { cwd: worktree, maxBuffer: 2048 });
     if (listed.code !== 0) {
       // Say why (runs 3316–3324 said only this sentence while the real cause was a refused config read).
-      const why = gitRefusal(listed) ?? listed.stderr.split("\n").map(line => line.trim()).find(line => line !== "") ?? `git exited ${listed.code}`;
-      return { ok: false, reason: "no-op", message: `The committed screenshot inventory could not be inspected (${redactSecretText(why).slice(0, 400)}). Restore the saved candidate before review.` };
+      return refusedUnrun(`The committed screenshot inventory could not be inspected (${gitFailureWords(listed)}). Restore the saved candidate before review.`);
     }
     const required = scope?.acceptance.some(criterion => criterion.evidence.includes("screenshot")) ?? false;
     try { if (required || listed.stdout.length > 0) preparedEvidence = readPreparedEvidence(worktree, preparedCandidate, required); }
-    catch (error) { return { ok: false, reason: "no-op", message: error instanceof Error ? error.message : "The committed screenshots could not be verified." }; }
+    catch (error) { return refusedUnrun(error instanceof Error ? error.message : "The committed screenshots could not be verified."); }
   }
   const observeSpawn = request.onProviderSpawn;
   request = { ...request, onProviderSpawn: pid => {
@@ -1130,7 +1142,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   // accepted. A worktree whose HEAD cannot be read cannot be built in.
   const revision = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
   if (revision.code !== 0) {
-    return { ok: false, reason: "git", message: `could not read the base revision in ${worktree}` };
+    return { ok: false, reason: "git", message: `could not read the base revision in ${worktree} (${gitFailureWords(revision)})` };
   }
   const baseRevision = revision.stdout.trim();
   if (codingHandoff !== null) {
@@ -1768,15 +1780,16 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
  * otherwise the current HEAD). Plain words on refusal, nothing touched. */
 export async function proveCandidate(git: Runner, worktree: string, candidate: string, pinnedBase: string | null): Promise<string | null> {
   const known = await git(GIT, ["--no-optional-locks", "cat-file", "-e", `${candidate}^{commit}`], { cwd: worktree });
-  if (known.code !== 0) return `prepared candidate ${candidate.slice(0, 7)} is not a commit in this repository — fetch it first`;
+  if (known.code !== 0) return `prepared candidate ${candidate.slice(0, 7)} is not a commit in this repository — fetch it first (${gitFailureWords(known)})`;
   let base = pinnedBase;
   if (base === null) {
     const head = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
-    if (head.code !== 0) return `could not read the base revision in ${worktree}`;
+    if (head.code !== 0) return `could not read the base revision in ${worktree} (${gitFailureWords(head)})`;
     base = head.stdout.trim();
   }
   const lineage = await git(GIT, ["--no-optional-locks", "merge-base", "--is-ancestor", base, candidate], { cwd: worktree });
-  if (lineage.code !== 0) return `prepared candidate ${candidate.slice(0, 7)} does not descend from this task's base ${base.slice(0, 7)}`;
+  // 1 is git's answer, no. Anything else means git couldn't say.
+  if (lineage.code !== 0) return `prepared candidate ${candidate.slice(0, 7)} does not descend from this task's base ${base.slice(0, 7)}${lineage.code === 1 ? "" : ` (${gitFailureWords(lineage)})`}`;
   return null;
 }
 

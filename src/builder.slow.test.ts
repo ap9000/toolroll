@@ -1,5 +1,6 @@
 import { checkRepairOfRun, routeFailedCheck } from "./check-repair.js";
 import { evidencePairsOf } from "./evidence-pair.js";
+import { NOTHING_STARTED_ACTION } from "./check-failure.js";
 import { allowWhereUnfenced } from "./unfenced-test-support.js";
 import * as projectSkills from "./project-skills.js";
 import { disposeBuildOutcome } from "./dispose.js";
@@ -434,6 +435,8 @@ describe("the builder's gates", () => {
     claimIt();
     const strangerGit: Runner = async (file, args, options) => args.includes("cat-file") ? { ...OK, code: 1, stderr: "fatal: Not a valid object name" } : git(file, args, options);
     expect(await build(store, request({ git: strangerGit }))).toMatchObject({ ok: false, reason: "no-op", message: expect.stringContaining("is not a commit in this repository") });
+    // The refusal says nothing ran, in the ledger the release's gate reads (check-failure.ts ranNoCheck).
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = ? AND outcome = 'refused'").get(NOTHING_STARTED_ACTION)?.["n"]).toBe(1);
     expect(agentCalls).toHaveLength(0);
   });
 
