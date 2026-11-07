@@ -5,7 +5,7 @@
  * and its folders are outside every write, and nothing around it is read back.
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { codexFenceArgv, fenceFor, flattened, runFolders, sandboxedSpawn, srtTermsOf, taskBoundary, trustedWorktreeBinding, writeAllowlist } from "../../src/agent-fence.js";
@@ -45,6 +45,21 @@ const probe = (at: ReturnType<typeof plane>): string => [
 ].join("\n");
 const WANT = ["MAP-BODY", "sibling-denied", "other-denied", "chmod-refused", "overwrite-refused", "unlink-refused", "rename-refused", "folder-refused", "ancestor-refused"];
 
+/**
+ * What matters is the real disk, read from outside the fence, whatever the build was told. On Linux the sandbox hides the
+ * denied folder under an in-memory filesystem and binds the one file back, so `7-1` in there is a throwaway stand-in: a
+ * rename of it can succeed and reach nothing. That answer is accepted only there, and only with the disk untouched.
+ */
+function heldOnDisk(at: ReturnType<typeof plane>, said: string[]): void {
+  const stubOnly = process.platform === "linux";
+  expect(said.map(line => stubOnly && line === "folder-done" ? "folder-refused" : line)).toEqual(WANT);
+  expect(readFileSync(at.file, "utf8")).toBe("MAP-BODY");
+  expect(statSync(at.file).mode & 0o777).toBe(0o444);
+  expect(readFileSync(at.sibling, "utf8")).toBe("SIBLING-BODY");
+  expect(readFileSync(at.other, "utf8")).toBe("OTHER-BODY");
+  for (const moved of [`${at.file}.moved`, `${dirname(at.file)}-moved`, `${at.delivery}-moved`]) expect(existsSync(moved), moved).toBe(false);
+}
+
 test("policy: exactly that file is read back, with no listing of its folder, and it is never written", () => {
   const at = plane(false);
   const { fence, fenceGrants: grants } = at.launch;
@@ -64,7 +79,7 @@ describe.each([["a write allowlist", true], ["write anywhere", false]])("under %
     const at = plane(workspace);
     const fenced = sandboxedSpawn("/bin/sh", ["-c", probe(at)], at.launch.fence, at.launch.fenceGrants, at.worktree);
     const ran = spawnSync(fenced.file, fenced.args, { cwd: at.worktree, encoding: "utf8", env: { ...process.env, ...fenced.env }, timeout: 30_000 });
-    expect(ran.stdout.trim().split("\n"), ran.stderr).toEqual(WANT);
+    heldOnDisk(at, ran.stdout.trim().split("\n"));
   }, 60_000);
   test("attack: Codex's sandbox", ctx => {
     needs(ctx, codexSandbox());
@@ -72,6 +87,6 @@ describe.each([["a write allowlist", true], ["write anywhere", false]])("under %
     const home = join(at.root, "codex-home"); mkdirSync(home);
     const ran = spawnSync("codex", ["sandbox", ...codexFenceArgv(at.launch.fence, false, at.launch.fenceGrants), "-P", "standing-orders", "--", "/bin/sh", "-c", probe(at)],
       { cwd: at.worktree, encoding: "utf8", env: { ...process.env, CODEX_HOME: home }, timeout: 60_000 });
-    expect(ran.stdout.trim().split("\n"), ran.stderr).toEqual(WANT);
+    heldOnDisk(at, ran.stdout.trim().split("\n"));
   }, 90_000);
 });
