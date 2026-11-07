@@ -198,6 +198,8 @@ export const CONSOLE_FORMS = {
   projectsSelect: formContract("POST /projects/select", ["path", "return"]),
   projectsRemove: formContract("POST /projects/remove", ["repo"]),
   projectsOpen: formContract("POST /projects/open", ["path", "return"]),
+  codeMap: formContract("POST /settings/project/code-map, /settings/project/code-map/holdout", ["repo", "on"]),
+  codeMapRefresh: formContract("POST /projects/<project>/map/refresh", []),
   tasksFast: formContract("POST /tasks/fast", ["preview", "digest"]),
   keepGrown: formContract("POST /t/<id>/keep-grown", []),
   releaseGoOn: formContract("POST /t/<id>/release/go-on", ["password"]),

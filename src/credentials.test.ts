@@ -89,7 +89,7 @@ test("tokens outlive a password change but end with an access change", async () 
   expect(store.apiTokens("sam")[0]?.revokedAt).toBeNull();
   expect(store.setAccountProjects("sam", ["/repo/main"], "alex", new Date())).toEqual({ ok: true });
   expect(store.apiTokens("sam")[0]?.revokedAt).not.toBeNull();
-  expect((await fetch(`${base}/work`, { headers: { authorization: `Bearer ${token}` }, redirect: "manual" })).status).toBe(303);
+  expect((await fetch(`${base}/tasks`, { headers: { authorization: `Bearer ${token}` }, redirect: "manual" })).status).toBe(303);
   expect(cookie).toBeTruthy();
 });
 
@@ -106,8 +106,8 @@ test("a browser session survives a restart, lists where it came from, and can be
   // End the phone's session from the laptop.
   const ended = await fetch(`${base}/settings/sessions`, { method: "POST", headers: { cookie: laptop, origin: base }, body: new URLSearchParams({ csrf: csrfOf(page), action: "end-others" }), redirect: "manual" });
   expect(decodeURIComponent(ended.headers.get("location")!)).toContain("Signed out of 1 other session.");
-  expect((await fetch(`${base}/work`, { headers: { cookie: phone }, redirect: "manual" })).status).toBe(303);
-  expect((await fetch(`${base}/work`, { headers: { cookie: laptop }, redirect: "manual" })).status).toBe(200);
+  expect((await fetch(`${base}/tasks`, { headers: { cookie: phone }, redirect: "manual" })).status).toBe(303);
+  expect((await fetch(`${base}/tasks`, { headers: { cookie: laptop }, redirect: "manual" })).status).toBe(200);
   // No cookie is kept, only its hash.
   expect(JSON.stringify(store.handle.prepare("SELECT id_hash FROM web_session").all())).not.toContain(laptop.split("=")[1]!);
 });

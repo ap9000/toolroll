@@ -43,7 +43,7 @@ test("each kind of credential opens only its own doors", async () => {
   if (!coordinator.ok) throw new Error("coordinator");
   const doors = async (secret: string) => {
     const authorization = `Bearer ${secret}`;
-    const page = await fetch(`${base}/work`, { headers: { authorization }, redirect: "manual" });
+    const page = await fetch(`${base}/tasks`, { headers: { authorization }, redirect: "manual" });
     const cli = await fetch(`${base}/api/cli`, { method: "POST", headers: { authorization, "content-type": "application/json" }, body: JSON.stringify({ argv: ["status"] }) });
     const team = await fetch(`${base}/api/team`, { headers: { authorization } });
     const mcp = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) });

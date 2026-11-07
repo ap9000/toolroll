@@ -104,7 +104,7 @@ describe("missing paths", () => {
     const code = await main(["help"], line => lines.push(line));
 
     expect(code).toBe(0);
-    expect(lines.join("\n")).toContain("a control plane for unattended coding agents");
+    expect(lines.join("\n")).toContain("hand coding work to agents, walk away, come back to pull requests");
   });
 });
 

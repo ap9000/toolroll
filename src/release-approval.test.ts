@@ -269,7 +269,7 @@ describe("the notification's whole life", () => {
     expect(rows().map(row => [row["task_id"], row["resolved_at"] === null])).toEqual([[f.taskId, false], ["release-next", true]]);
   });
 
-  test("a forged or obsolete row is never a release push: a fake release-named task gets the decision words and /next", () => {
+  test("a forged or obsolete row is never a release push: a fake release-named task gets the ordinary ping and its task's locator", () => {
     f.store.createTask({ id: "release-9.9.9-abcdef0", title: "Release 9.9.9" }, NOW);
     const ref = f.store.refFor("built-in", "release-9.9.9-abcdef0").id;
     f.store.placeTask(ref, f.repo, {}, NOW);
@@ -278,7 +278,7 @@ describe("the notification's whole life", () => {
     f.store.enqueueNotification({ dedupeKey: `release-ready:${ref}:${digest}`, kind: "release-ready", pushClass: "decision", link: `/approve/${ref}`, source: { taskRef: ref }, subject: "x", body: "y" }, NOW);
     const row = f.store.notificationById(Number(f.store.handle.prepare("SELECT id FROM notification WHERE task_ref = ? AND kind = 'release-ready'").get(ref)!["id"]))!;
     expect(releasePushOf(f.store, row)).toBeNull();
-    expect(JSON.parse(buildPushPayload(row, null, releasePushOf(f.store, row)))).toMatchObject({ body: "a decision needs you", url: "/next" });
+    expect(JSON.parse(buildPushPayload(row, null, releasePushOf(f.store, row)))).toMatchObject({ body: `#${ref} has a question`, url: `/n/${ref}` });
     // The real release's row under another task's ref, or another digest, is no release push either.
     noteReleaseReady(f.store, { taskId: f.taskId, now: NOW });
     const real = f.store.notificationById(Number(rows().find(one => one["task_id"] === f.taskId)!["id"]))!;

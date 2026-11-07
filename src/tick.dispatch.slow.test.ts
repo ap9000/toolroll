@@ -664,8 +664,8 @@ describe("tick, against real git", () => {
     const resumed = allowWhereUnfenced(openStore(db));
     try {
       const items = workIndexPage(resumed, T0, { principal: "operator", repos: null, includeUnplaced: true }).items;
-      // Waiting for a worker to draft its plan: Queued, and the sentence says what for.
-      expect(items.find(one => one.activeTaskId === "t-plan")?.status).toMatchObject({ label: "Queued", detail: "A connected worker can draft the plan." });
+      // Waiting for a worker to draft its plan: a wait, worded as what it waits for.
+      expect(items.find(one => one.activeTaskId === "t-plan")?.status).toMatchObject({ label: "Waiting", detail: "Waiting to plan." });
     } finally { resumed.close(); }
   });
 

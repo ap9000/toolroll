@@ -111,14 +111,14 @@ test("a person signs in with the provider: an account from their groups, set aga
   expect(store.accountOf("priya")).toMatchObject({ role: "viewer", projects: ["/repo/main"] });
   expect(store.ssoAccount(ISSUER, "00u-priya")).toBe("priya");
   const cookie = cookieOf(first);
-  expect((await fetch(`${base}/work`, { headers: { cookie }, redirect: "manual" })).status).toBe(200);
+  expect((await fetch(`${base}/tasks`, { headers: { cookie }, redirect: "manual" })).status).toBe(200);
   // Promoted in the provider: the next sign-in makes them an operator everywhere, on the record.
   person.groups = ["eng", "eng-leads"];
   expect((await providerSignIn()).status).toBe(303);
   expect(store.accountOf("priya")).toMatchObject({ role: "approver", projects: null });
   expect(store.actionLedger({ repos: null, source: "access" }).find(one => one.action === "access changed by groups")?.detail).toBe("viewer · main → operator · all projects");
   // The old session ended with the change.
-  expect((await fetch(`${base}/work`, { headers: { cookie }, redirect: "manual" })).status).toBe(303);
+  expect((await fetch(`${base}/tasks`, { headers: { cookie }, redirect: "manual" })).status).toBe(303);
   // No matching group: refused, and said so.
   person = { sub: "00u-sales", email: "sam@acme.com", groups: ["sales"] };
   const refused = await providerSignIn();

@@ -103,9 +103,9 @@ describe("watch — the loop, zero tokens idle", () => {
     return { runnerToken, approverToken };
   };
 
-  const approved = async (id: string, approverToken: string, acceptance = "It is fixed and verified.|manual-review") => {
+  const approved = async (id: string, approverToken: string, acceptance = "It is fixed and verified.|manual-review", budget: readonly string[] = []) => {
     await run(["task", "add", "the work", "--id", id, "--repo", repo]);
-    await run(["task", "scope", id, "--goal", "add a guard on the payout path", "--acceptance", acceptance]);
+    await run(["task", "scope", id, "--goal", "add a guard on the payout path", "--acceptance", acceptance, ...budget]);
     await run(["task", "approve", id, "--json"]);
     const digest = payload().scope.digest as string;
     await run(["task", "approve", id, "--yes", "--digest", digest, "--as", "alex", "--token", approverToken]);
@@ -142,7 +142,8 @@ describe("watch — the loop, zero tokens idle", () => {
   test("reconciliation recovers an unrelated abandoned run while a live provider is still busy", async () => {
     const { runnerToken, approverToken } = await setup();
     await approved("t-live", approverToken);
-    await approved("t-orphan", approverToken);
+    // A vanished build retries only inside a budget (vanished-retry.ts).
+    await approved("t-orphan", approverToken, undefined, ["--budget-usd", "1"]);
     // One build at a time: t-orphan is the abandoned worker's, not a second lane's.
     saveProjectConcurrency(db, realpathSync(repo), 1);
     let spawns = 0;
@@ -367,7 +368,7 @@ describe("watch — the loop, zero tokens idle", () => {
   test("Never Stuck certification: a successor recovers a crashed worker, proves one result, and never duplicates it", async () => {
     const { runnerToken, approverToken } = await setup();
     const criterion = "The recovered task commits the requested guard file.";
-    await approved("t-1", approverToken, `${criterion}|changed-path`);
+    await approved("t-1", approverToken, `${criterion}|changed-path`, ["--budget-usd", "1"]);
 
     // The predecessor: an expired watch lease and a claim it never released,
     // its task stranded mid-flight — the crash liveness cannot see, because

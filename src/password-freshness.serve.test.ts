@@ -144,23 +144,25 @@ test("a protected-work yes whose seal is refused leaves nothing behind: no vote,
   expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE task_id = 't-seal-refused' AND action = ?").get(APPROVAL_PROOF)?.["n"]).toBe(0);
 });
 
-test("/next asks exactly what the task page asks: a remembered password is one click, a lapsed one a required field, Passwordless none", async () => {
+test("the task page's approve form: a remembered password is one click, a lapsed one is typed, Passwordless none", async () => {
   const { cookie, post, filed } = await signedIn();
-  const nextOf = async () => (await fetch(`${base}/next`, { headers: { cookie } })).text();
-  const passwordField = /<input[^>]*type="password"[^>]*name="token"[^>]*required/;
+  const pageOf = async (id: string) => (await fetch(`${base}/t/${id}`, { headers: { cookie } })).text();
   const remembered = await filed("t-next-fresh");
-  const fresh = await nextOf();
+  const fresh = await pageOf("t-next-fresh");
   expect(fresh).toContain('action="/t/t-next-fresh/approve"');
-  expect(fresh).not.toMatch(passwordField);
+  expect(fresh).toContain("data-approval-fresh");
+  expect(fresh).not.toContain("Type your password to approve.");
   // The one click approves through the same POST check as the task page.
   expect((await post("/t/t-next-fresh/approve", { nonce: nonceOf(fresh), digest: remembered.digest, token: "", return: "next" })).status).toBe(303);
   expect(store.getScope("t-next-fresh")?.approvedBy).toBe("alex");
   await filed("t-next-stale");
   vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16 * 60_000);
-  expect(await nextOf()).toMatch(passwordField);
+  const lapsed = await pageOf("t-next-stale");
+  expect(lapsed).toContain("Type your password to approve.");
+  expect(lapsed).not.toContain("data-approval-fresh");
   vi.restoreAllMocks();
   const { setPasswordless } = await import("./passwordless.js");
   setPasswordless(store, true, "alex", new Date());
   expect((await post("/session/forget-password", { return: "/tasks" })).status).toBe(303);
-  expect(await nextOf()).not.toMatch(/type="password"/);
+  expect(await pageOf("t-next-stale")).not.toMatch(/type="password"/);
 });

@@ -1471,9 +1471,8 @@ describe("the filed contract reaches planning and survives it", () => {
     expect(taskPage).toContain("Drops a check:");
     expect(taskPage).toContain("No new runtime dependency is added.");
     expect(taskPage).toContain("src/prefs.ts");
-    const next = await web.page("/next");
-    expect(next).toContain("amendment proposed");
-    expect(next).toContain(reason);
+    // Home names it with the task's page one tap away; the reason and the terms are the task page's, above.
+    expect(await web.page("/")).toContain("dark mode");
     await web.close();
 
     // Approving the filed digest refuses (it is not what is on the row);

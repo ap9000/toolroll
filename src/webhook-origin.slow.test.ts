@@ -71,7 +71,7 @@ test("the flow's name is rendered only for a viewer who can open its project; th
   const samChat = await samSees("/chat?task=fix-checkout&format=workspace");
   expect(samChat).toContain("This area requires instance access");
   expect(samChat).not.toContain("Classified Incident Desk");
-  const samNext = await samSees("/next");
+  const samNext = await samSees("/t/fix-checkout");
   expect(samNext).not.toContain("Classified Incident Desk");
   expect(samNext).toContain("Started by an outside event: Sentry issue (signed by Sentry) · acme.sentry.io.");
 });
