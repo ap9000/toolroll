@@ -13,6 +13,7 @@
  * The same in every chat app: Telegram's bridge and the shared engine Slack, Discord and Teams run on (chat-delivery.ts)
  * offer, mint and answer these through the same tokens (the `channel` column). Every act runs through the door the
  * console uses. */
+import { routeChangeOf } from "./route-change.js";
 import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, releaseTaskRef } from "./store.js";
 import { isAcpProfile } from "./acp-agents.js";
 import { DECIDE_ACTS, readDecideActionRow, type DecideActionRow } from "./contracts/chat-callback-rows.js";
@@ -376,9 +377,11 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
   const goal = scope.goal.split("\n").filter(one => one.trim() !== "").slice(0, 2).map(one => phoneText(one, 160));
   const allowing = [permissionPlainWords(scope.profile), scope.budgetMicrousd === null ? "no attempt limit" : `up to ${money(scope.budgetMicrousd)} per attempt`]
     .filter((one): one is string => one !== null);
+  const changed = routeChangeOf(store, taskId);
   if (channel === "telegram") {
     return [
       `Plan ready: ${title(store, taskId)}`,
+      ...(changed === null ? [] : [changed]),
       `Starting allows: ${allowing.join(" · ")}`,
       "",
       ...goal,
@@ -391,6 +394,7 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
   }
   return [
     `Plan ready: ${title(store, taskId)}`,
+    ...(changed === null ? [] : [changed]),
     "",
     ...goal,
     "",

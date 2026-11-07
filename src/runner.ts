@@ -501,7 +501,8 @@ export function recoverDead(
       const claims = store.releaseClaimsOf(candidate.name, now, requeued);
       const worktrees = store.releaseWorktreesOf(candidate.name, now);
       const settled = store.recoverRunnerWork(candidate.name, now);
-      return { runner: candidate.name, claims, worktrees, runs: settled.runs, requeued: [...new Set([...requeued, ...settled.requeued])] };
+      // Only what recovery left in the queue: a vanished build it stopped for a person isn't requeued (vanished-retry.ts).
+      return { runner: candidate.name, claims, worktrees, runs: settled.runs, requeued: [...new Set([...requeued, ...settled.requeued])].filter(id => store.getTask(id)?.state === "queued") };
     });
     if (recovery !== null) recovered.push(recovery);
   }

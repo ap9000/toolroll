@@ -11,7 +11,7 @@ import { Box, Text, useApp, useInput, type Key } from "ink";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { terminalText } from "../terminal-text.js";
-import type { TuiAct, TuiExit, TuiRow, TuiSession, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./data.js";
+import type { TuiAct, TuiExit, TuiFastTerms, TuiRow, TuiSession, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./data.js";
 
 /** Text that came from outside this screen (an agent, a person, a project), as the terminal shows it: escapes and
  * controls never reach it (terminal-text.ts). The source cleans it first; this is the second layer. */
@@ -33,6 +33,7 @@ type Screen =
   | { kind: "task"; task: TuiTask }
   | { kind: "approve"; task: TuiTask }
   | { kind: "compose"; purpose: "new" | "revise"; id: string | null; text: string; project: number }
+  | { kind: "build"; terms: TuiFastTerms; text: string; repo: string | null }
   | { kind: "password"; message: string }
   | { kind: "help" }
   | { kind: "quit" }
@@ -198,6 +199,12 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
         if (input === "y") { const { task } = screen; void act({ kind: "approve", id: task.id, digest: task.plan!.digest }).then(ok => { if (ok) setScreen({ kind: "main" }); }); }
         return;
       }
+      case "build": {
+        if (key.escape) { setScreen({ kind: "main" }); setMessage("Nothing started."); return; }
+        if (input === "p") { const { text, repo } = screen; setScreen({ kind: "main" }); void act({ kind: "new", text, repo }); return; }
+        if (key.return) { const { preview, digest } = screen.terms; void act({ kind: "build", preview, digest }).then(ok => { if (ok) setScreen({ kind: "main" }); }); }
+        return;
+      }
       case "compose": {
         if (key.escape) { setScreen({ kind: "main" }); return; }
         const projects = snapshot?.projects ?? [];
@@ -208,6 +215,8 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
           if (text === "") return;
           const sent: TuiAct = screen.purpose === "new" ? { kind: "new", text, repo: projects[screen.project] ?? null } : { kind: "revise", id: screen.id!, text };
           setScreen({ kind: "main" });
+          // A small task shows its exact terms and Enter is Build; anything else files as it always has.
+          if (sent.kind === "new") { setBusy("Reading it…"); void source.fastTerms(text, sent.repo).catch(() => null).then(terms => { setBusy(null); if (terms === null) void act(sent); else setScreen({ kind: "build", terms, text, repo: sent.repo }); }); return; }
           void act(sent);
           return;
         }
@@ -255,6 +264,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
       case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve/accept · b send back · r retry · s stop · w browser · ? help · q quit";
       case "task": return "a approve/accept · b send back · r retry · s stop · 1–9 answer · w browser · Esc back";
       case "approve": return "y approve · Esc cancel";
+      case "build": return "Enter Build · p plan it first · Esc cancel";
       case "compose": return screen.purpose === "new" && (snapshot?.projects.length ?? 0) > 1 ? "Enter send · Tab project · Esc cancel" : "Enter send · Esc cancel";
       case "quit": return "s stop · b background · Esc cancel";
       case "background": return "y yes · n no";
@@ -284,6 +294,13 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
         );
       case "background":
         return <Box borderStyle="single" paddingX={1}><Text bold>Keep Toolroll running in the background? (Y/n)</Text></Box>;
+      case "build":
+        return (
+          <Box flexDirection="column" borderStyle="single" paddingX={1}>
+            <Text bold>Build approves exactly this:</Text>
+            {screen.terms.terms.map((line, index) => <SafeText key={index}>{`${line.label}: ${line.words}`}</SafeText>)}
+          </Box>
+        );
       case "compose": {
         const project = snapshot?.projects[screen.project] ?? null;
         return (

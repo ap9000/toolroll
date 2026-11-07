@@ -15,6 +15,7 @@
  * the race; the branch is deleted; the merge commit and who merged are recorded in the ledger.
  */
 
+import { fastPublishProblem } from "./fast-start.js";
 import { createHash, randomUUID } from "node:crypto";
 import { run as execRun } from "./exec.js";
 import { bodyHashOf, publicationBody, publicationGrantOf, type ObservedPullRequest, type PublishExec } from "./publish.js";
@@ -427,6 +428,9 @@ export async function mergePullRequest(
   if (mergedTask !== null && belongsToRelease(store, mergedTask)) return refuse("release", "This result belongs to a release; it merges only through `toolroll release`.");
   // A release task the plane approved (or is checking) automatically (auto-approve-green.md) never merges here either.
   if (mergedTask !== null && autoReleaseSealed(store, mergedTask)) return refuse("release", "This result was approved automatically for a release; it merges only through `toolroll release`.");
+  // A fast start merges only after a person accepted it, and only a change that stayed small (fast-start.ts).
+  const fastHold = mergedTask === null ? null : fastPublishProblem(store, mergedTask, input.runId);
+  if (fastHold !== null) return refuse("fast-start", fastHold);
   const publication = store.publicationForRun(input.runId);
   const follow = publication === null ? null : followOf(store, publication.id);
   if (publication === null || follow === null || publication.prNumber === null) return refuse("no-pr", "This result has no open pull request to merge.");

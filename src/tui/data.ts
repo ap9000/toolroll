@@ -3,7 +3,7 @@
  * TuiSession. The real ones are the CLI's (tui-source.ts, easy-start.ts); the sample here is for running the bundle on
  * its own (`node dist/tui.js`), its rows labelled as samples so nobody mistakes them for real agent output.
  */
-export type { TuiAct, TuiActResult, TuiDecision, TuiExit, TuiRow, TuiSession, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "../tui-contract.js";
+export type { TuiAct, TuiActResult, TuiDecision, TuiExit, TuiFastTerms, TuiRow, TuiSession, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "../tui-contract.js";
 import type { TuiRow, TuiSession, TuiSource, TuiTask } from "../tui-contract.js";
 
 /** A sample plane that changes nothing: every write is refused with words that say so. */
@@ -14,6 +14,7 @@ export function sampleSource(): TuiSource {
     { id: "t3", title: "Sample: upgrade the test runner", status: "Needs you", detail: "Plan ready to approve", needsYou: true, liveRunId: null, repo: null },
   ];
   return {
+    fastTerms: async () => null,
     snapshot: async () => ({ rows, needsYou: "1 task needs you: Sample: upgrade the test runner", projects: [], passwordSet: false }),
     task: async id => {
       const row = rows.find(one => one.id === id);

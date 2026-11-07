@@ -571,6 +571,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       async complete(repo, sha) { return readSuitesComplete(reads, ciGh, repo, sha); },
       async mainHead(repo) { return readMainHead(reads, ciGh, repo); },
       async contains(repo, sha, ancestor) { return readContains(reads, ciGh, repo, sha, ancestor); },
+      async updateBranch(repo, pr, expectedHead) { return updatePullRequestBranch(reads, ciGh, repo, pr, expectedHead); },
       async upToDateRequired(repo) { return readMainProtection(reads, ciGh, repo); },
       async merge(repo, pr, head, message) {
         // The squash commit's message lists every commit that landed after the approval (release-once.md). Never asked
@@ -1139,6 +1140,13 @@ export async function readMainHead(run: Exec, gh: string, repo: string, branch =
   const match = /^commit ([0-9a-f]{40})$/.exec(out);
   if (match === null) throw new Error(`GitHub named no commit for ${branch}`);
   return match[1]!;
+}
+
+/** GitHub's own "Update branch", with its expected head: a push that got there first refuses. */
+export async function updatePullRequestBranch(run: Exec, gh: string, repo: string, pr: number, expectedHead: string): Promise<{ ok: true } | { ok: false; why: string }> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !Number.isSafeInteger(pr) || pr < 1 || !/^[0-9a-f]{40}$/.test(expectedHead)) return { ok: false, why: "not a pull request GitHub can be asked to update" };
+  const ran = await run(gh, ["api", "--hostname", "github.com", "--method", "PUT", `repos/${repo}/pulls/${pr}/update-branch`, "-f", `expected_head_sha=${expectedHead}`], { cwd: "/", env: ciEnv() });
+  return ran.code === 0 ? { ok: true } : { ok: false, why: (ran.stderr.trim().split("\n")[0] ?? "").slice(0, 200) || `gh exited ${ran.code}` };
 }
 
 /** Whether `sha` already holds `ancestor` (GitHub's compare: `sha` is not behind it), as GitHub answers now. */

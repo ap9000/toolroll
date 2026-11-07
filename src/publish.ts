@@ -22,6 +22,7 @@
 
 import { createHash } from "node:crypto";
 import { protectedPublicationHold } from "./result-completion.js";
+import { fastPublishProblem } from "./fast-start.js";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -187,6 +188,10 @@ export async function publishPass(
     if (publication.state === "intended") {
       const held = protectedPublicationHold(store, publication.run, options.evidenceRoot);
       if (held !== null) { report.problems.push(`publication ${publication.id}: ${held}`); continue; }
+      // A fast start waits for a person's Accept, and for a change that stayed small (fast-start.ts).
+      const fastTask = store.externalIdFor(publication.taskRef);
+      const fast = fastTask === null ? null : fastPublishProblem(store, fastTask, publication.run);
+      if (fast !== null) { report.problems.push(`publication ${publication.id}: held: ${fast}`); continue; }
     }
 
     if (publication.state === "intended") {

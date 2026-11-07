@@ -329,6 +329,9 @@ export type ReleaseAdapters = {
     mainHead(repo: string): Promise<string>;
     /** Whether `sha` already holds `ancestor`, by GitHub's own comparison. */
     contains(repo: string, sha: string, ancestor: string): Promise<boolean>;
+    /** Bring a pull request's branch up to main, only while its head is `expectedHead` (GitHub's own compare-and-swap: a
+     * push that got there first refuses). Absent: a behind branch stops, for a person to update. */
+    updateBranch?(repo: string, pr: number, expectedHead: string): Promise<{ ok: true } | { ok: false; why: string }>;
     /** Whether GitHub refuses to merge a branch that is behind main ("Require branches to be up to date before
      * merging"); null when it can't be read. Read only. */
     upToDateRequired(repo: string): Promise<MainProtection | null>;
@@ -436,7 +439,8 @@ class Stop extends Error {
 class HomebrewFailed extends Error {}
 /** The branch moved before the deploy reservation: carry the approval to the new head, or file it for a person. */
 class Restart extends Error {
-  constructor(readonly head: string) { super(`restart at ${head}`); }
+  /** `updated`: Toolroll itself brought the branch up to main; the new commit is a new candidate and nothing carries. */
+  constructor(readonly head: string, readonly updated = false) { super(`restart at ${head}`); }
 }
 
 /** Every commit that landed after the approval, in words: the summary and the merge message list them all. */
@@ -823,11 +827,36 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     };
     /** identity(), on a plane that keeps release authority; a legacy plane keeps the old rules. */
     const watch = async (action: ReleaseAction) => { if (rel !== undefined) await identity(action, true); };
-    const restart = async (head: string) => {
+    /**
+     * Behind main (plain-toolroll.md P2.6): update the branch under this release's lease and the head it was gated on.
+     * A concurrent push aborts it. The approval stops first, so nothing can ride it across the update; the updated head
+     * is a new candidate with a new approval, fresh CI and a fresh check, and there is no carry.
+     */
+    const updateFromMain = async (): Promise<string | null> => {
+      const update = adapters.github.updateBranch;
+      if (update === undefined) return null;
+      if (rel !== undefined && j.authority) {
+        if (epoch === null || !await rel.renew(j.authority.id, owner, epoch)) throw new Stop("lease", "Another release coordinator took over this release.");
+      }
+      const pr = await adapters.github.pullRequest(j.github, j.branch);
+      if (pr === null || pr.number !== j.pr || pr.state !== "open" || pr.head !== j.candidate.sha) throw new Stop("drift", `${j.branch} moved while it was being brought up to main. Nothing was changed; rerun \`${resume}\`.`);
+      if (rel !== undefined && j.authority && !await rel.needsApproval(j.authority.id, "the branch was brought up to main, so its new commit needs a fresh approval", epoch!)) {
+        throw new Stop("lease", "The release's approval couldn't be stopped before the update, so the branch wasn't updated.");
+      }
+      say(`  ${j.branch} is behind main: bringing it up to date`);
+      const moved = await update(j.github, j.pr, j.candidate.sha);
+      if (!moved.ok) throw new Stop("drift", `${j.branch} couldn't be brought up to main: ${moved.why}. Rerun \`${resume}\`.`);
+      return waitFor("ci", `${j.branch} to move past ${j.candidate.sha.slice(0, 7)}`, async () => {
+        const head = await adapters.repo.remoteHead(j.branch);
+        return head !== null && head !== j.candidate.sha ? head : null;
+      });
+    };
+    const restart = async (head: string, updated = false) => {
       // The step this commit was at ends here: the release goes on with the new commit (and, filed again, a new task).
       mark(j.step, "failed", `${j.branch} moved to ${head.slice(0, 7)}`);
       const tree = await adapters.repo.tree(head);
-      if (rel !== undefined && j.authority && epoch !== null) {
+      if (updated) say(`  ${j.branch} is at ${head.slice(0, 7)}: a new commit, so it needs its own approval, CI and check`);
+      else if (rel !== undefined && j.authority && epoch !== null) {
         say(`  ${j.branch} moved to ${head.slice(0, 7)}: checking whether the approval carries`);
         const carried = await rel.carry(j.authority.id, head, randomUUID(), epoch);
         if (carried.ok) {
@@ -957,7 +986,13 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           }
           // The tree CI tested (the pull request's head, not GitHub's merge commit) is the tree that merges only when the
           // branch already contains main's head: refused here, before anything is filed, and again right before merging.
-          await containsMain(adapters, j, "Nothing was filed or sent for approval");
+          try { await containsMain(adapters, j, "Nothing was filed or sent for approval"); }
+          catch (error) {
+            if (!(error instanceof Stop) || error.reason !== "base-moved") throw error;
+            const head = await updateFromMain();
+            if (head === null) throw error;
+            throw new Restart(head, true);
+          }
           if (j.intents.gate === undefined) await mainProtection(adapters, j, false, "Nothing was filed or sent for approval");
           const existing = await adapters.toolroll.gate(j.task.id);
           // A fresh task this journal never filed has appeared under its id: it isn't ours, and isn't a fresh approval.
@@ -1256,7 +1291,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             if (rel !== undefined && j.authority) await identity("merge", false);
             await pinned();
             // A squash merge only reproduces the gated (and CI-tested) tree when main hasn't moved past the branch's base.
-            const main = await containsMain(adapters, j, "Nothing was merged");
+            let main: string;
+            try { main = await containsMain(adapters, j, "Nothing was merged"); }
+            catch (error) {
+              if (!(error instanceof Stop) || error.reason !== "base-moved") throw error;
+              // Past the deploy: the updated commit isn't what's running, so it starts over, with a person.
+              const head = await updateFromMain();
+              if (head === null) throw error;
+              j.needsApproval = true; save();
+              throw new Stop("approval", `${j.branch} was behind main, so it's now at ${head.slice(0, 7)}. Nothing was merged. The new commit needs a person's approval: run \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
+            }
             // Every release merges only where GitHub itself refuses a branch behind main.
             await mainProtection(adapters, j, j.auto?.state === "approved", "Nothing was merged");
             // The checks again, at the moment of merging: a rerun that failed since must not merge.
@@ -1343,7 +1387,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       }
       } catch (error) {
         if (!(error instanceof Restart)) throw error;
-        await restart(error.head);
+        await restart(error.head, error.updated);
       }
     }
     const left = homebrewLeft as { state: "pending" | "failed"; why: string | null } | null;

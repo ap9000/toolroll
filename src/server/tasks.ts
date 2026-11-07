@@ -33,7 +33,10 @@ import { checkResponse, CONSOLE_FORMS, readForm } from "../contracts/console-api
 import { hasForbiddenControls,validateNote } from "../decision.js";
 import { builderReadyFor,diagnoseTaskDispatch,firstRunBuilderRepo } from "../dispatch.js";
 import { firstTaskSuggestions,withBuilderStep } from "../first-run.js";
-import { newTaskPage,type TaskComposerPrefill } from "./render-new-task.js";
+import { fastStartPage, fastTermsRows, importPage, newTaskPage,type TaskComposerPrefill } from "./render-new-task.js";
+import { fileGithubItem, readGithubItem } from "../github-import.js";
+import { allowAutoPublish, autoPublishHeld } from "../release-auto.js";
+import { fastStartBuild, keepGrownChange, prepareFastStart, type PasswordFacts } from "../fast-start.js";
 import { evidencePack } from "../evidence-pack.js";
 import { decisionPage, evidenceRecordPage, runPage } from "./render-history.js";
 import { readVerifiedArtifact,readVerifiedReport,writeEvidenceFile } from "../evidence.js";
@@ -866,6 +869,26 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
     // One filing door for every surface (Codex adoption review, finding 7).
     const after = (body.get("after") ?? "").trim();
+    // From an issue or pull request (github-import.ts): read and quoted first; filing is the second press, on what was read.
+    const fromLink = (body.get("from") ?? "").trim();
+    if (fromLink !== "") {
+      if (who.via !== "cookie" || repo === "") return newTaskScreen(ctx, 400, "Choose the project this issue belongs to.", draft);
+      if (body.get("from-read") !== "1") {
+        const read = await readGithubItem(store, { url: fromLink, repo });
+        if (!read.ok) return newTaskScreen(ctx, 400, read.message, draft);
+        return sendScreen(response, 200, importPage(chromeFor(project ?? null, "tasks"), { repo, url: read.item.url, title: read.item.title, body: read.item.body, kind: read.item.kind, number: read.item.number, head: read.item.head }));
+      }
+      const filed = await fileGithubItem(store, { url: fromLink, repo, actor: who.name, shownHead: body.get("from-head") ?? null }, now);
+      if (!filed.ok) return newTaskScreen(ctx, filed.reason === "head-moved" ? 409 : 400, filed.message, draft);
+      return redirect(response, taskHref(filed.taskId));
+    }
+    // Small work a person starts themselves: their words become the exact terms, and Build is their yes (fast-start.ts).
+    // Anything else, or any doubt, is the ordinary filing below. `plain` is "Plan it first" from that form.
+    if (who.via === "cookie" && body.get("plain") !== "1" && repo !== "" && goal === "" && notThis === "" && touchesGiven.length === 0 && !scout && id === "" && after === ""
+      && (qualityMode === null || qualityMode === "default") && (permissionMode === null || permissionMode === "auto")) {
+      const fast = await prepareFastStart(store, { actor: who.name, repo, title: typed.trim(), via: "console", ...(permissionMode === null ? {} : { permissionMode }), password: fastPasswordFacts(who) }, now);
+      if (fast.eligible) return sendScreen(response, 200, fastStartPage(chromeFor(project ?? null, "tasks"), { title: typed.trim(), repo, preview: fast.preview, digest: fast.digest, terms: fastTermsRows(store, fast.scope, repo) }));
+    }
     let chainProblem: string | null = null;
     const made = store.transact(() => {
       // A project folder's identity changed while this request waited (a root or link now leads elsewhere): what was
@@ -2879,6 +2902,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "code.answer-send": codeAct("answer"),
     "code.act-other": codeAct("unknown"),
     "tasks.add": addTask,
+    "tasks.fast": buildNow,
+    "task.act.keep-grown": keepGrown,
     "queue.move": queueMove,
     "queue.note": queueNote,
     "decision.answer": answerDecision,
@@ -2939,8 +2964,42 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const startsOn = draft?.values?.get("repo") ?? project ?? chrome.projects?.[0]?.path ?? null;
     const found = startsOn === null ? null : runtime.firstTasks.get(startsOn)?.found ?? null;
     const ideas = found ?? (runtime.firstRunStepsNow(ctx.now) !== null && !store.hasAnyWork() ? firstTaskSuggestions({ issues: [], todos: [] }) : []);
-    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft, text, ideas));
+    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft, text, ideas, ctx.url.searchParams.get("from")?.slice(0, 300) ?? null));
   }
+  /** What the password rule reads for this request (approval-password.ts), the same facts the approve forms read. */
+  function fastPasswordFacts(who: Who): PasswordFacts {
+    return { passwordless: passwordlessSessionFor(store, who.name), localOwner: who.via === "cookie" && who.authority === "local-owner",
+      freshAt: withFreshness("approve-standard", () => freshnessFor(who.name, Date.now(), true))?.at ?? null, returnTo: "/tasks/new" };
+  }
+
+  /** Build: the fast start's one write. Every check is made again inside fastStartBuild's transaction. */
+  async function buildNow(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.tasksFast);
+    if (who.via !== "cookie") return refuse(response, who, 403, "Only a person starts a build this way.", "/tasks/new");
+    const preview = body.get("preview") ?? "";
+    const row = store.handle.prepare("SELECT repo, title FROM fast_preview WHERE id = ?").get(preview);
+    const title = row === undefined ? "" : String(row["title"]);
+    if (row !== undefined && !visible(String(row["repo"]))) return refuse(response, who, 403, "That project is outside your access.", "/projects");
+    const built = spendingOnlyOnSuccess(() => withFreshness("approve-standard", () => fastStartBuild(store, { preview, digest: body.get("digest") ?? "", actor: who.name, via: "console", password: fastPasswordFacts(who),
+      approveNow: (taskId, sawDigest, fast) => approveScope(store, taskId, who.name, now, sawDigest, "", {}, fast) }, now)), result => !result.ok);
+    if (!built.ok) return newTaskScreen(ctx, built.reason === "changed" ? 409 : 403, built.message, { title, goal: "", not: "", touches: "", acceptance: "" });
+    const actionContext = requestContext.getStore();
+    if (actionContext !== undefined) actionContext.createdTask = built.taskId;
+    return redirect(response, taskHref(built.taskId));
+  }
+
+  /** "Approve it to keep it": a fast start that grew gets a plan for its exact commit, on the ordinary approval. It seals nothing. */
+  async function keepGrown(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, posted } = ctx;
+    readForm(posted, CONSOLE_FORMS.keepGrown);
+    const act = matchTaskPath(url.pathname, "/keep-grown$");
+    if (act === null) return noPage(who, response);
+    const kept = keepGrownChange(store, act.taskId, now);
+    if (!kept.ok) return taskScreen(response, who, act.taskId, kept.message, 409);
+    return redirect(response, taskHref(act.taskId));
+  }
+
   return { registrations, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, peekGuards, liveRunIds };
 }
 
@@ -3047,7 +3106,7 @@ export function createAgentSignalHandlers(runtime: ServerRuntime) {
  * unchanged approve() (release-approval.ts approveReleaseCard).
  */
 export function createReleaseSheetHandlers(runtime: ServerRuntime) {
-  const { store, sendScreen, chromeFor, visible, mintApprovalNonce, clock } = runtime;
+  const { store, sendScreen, chromeFor, visible, mintApprovalNonce, clock, authenticateApprover } = runtime;
   const missing = (who: Who, response: ServerResponse) => refuse(response, who, 404, "There's no release waiting for approval at this address.", "/work");
 
   /** The sheet, with a problem said where it happened. */
@@ -3069,7 +3128,7 @@ export function createReleaseSheetHandlers(runtime: ServerRuntime) {
       const gate = store.approvalGate(taskId, who.name, "person");
       return freshlyApprovable(store, taskId, card.scope, gate.verdict === "seal" && !gate.protectedWork);
     })();
-    return sendScreen(response, status, releaseSheetPage(chromeFor(project ?? ref.repo, "work"), { card, nonce, facts: approvalFactsNow({ remembered }), local, problem }));
+    return sendScreen(response, status, releaseSheetPage(chromeFor(project ?? ref.repo, "work"), { card, nonce, facts: approvalFactsNow({ remembered }), local, problem, held: who.role === "approver" ? autoPublishHeld(store, taskId) : null }));
   }
 
   async function showSheet(ctx: HandlerContext): Promise<void> {
@@ -3102,5 +3161,19 @@ export function createReleaseSheetHandlers(runtime: ServerRuntime) {
     return sheetScreen(ctx, taskId, approveRefusalWords(refused.reason), refused.reason === "changed" || refused.reason === "unrouted" ? 409 : 403);
   }
 
-  return { routes: { "task.release": showSheet, "release.locate": locate }, sheetScreen, approveFromSheet };
+  /** A held automatic release goes on: a person only, proved now. The watch then resumes it (release-next.ts). */
+  async function goOn(ctx: HandlerContext): Promise<void> {
+    const { who, url, posted, now, response } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.releaseGoOn);
+    const task = matchTaskPath(url.pathname, "/release/go-on$");
+    if (task === null || who.via !== "cookie") return missing(who, response);
+    const ref = store.lookupRef(task.taskId);
+    if (ref === null || !visible(ref.repo)) return missing(who, response);
+    if (!authenticateApprover(who, body.get("password") ?? "", ref.repo).ok) return sheetScreen(ctx, task.taskId, "Enter your Toolroll password to let this release go on.", 403);
+    const allowed = allowAutoPublish(store, { taskId: task.taskId, by: who.name, now });
+    if (!allowed.ok) return sheetScreen(ctx, task.taskId, allowed.why, 409);
+    return redirect(response, releaseSheetHref(task.taskId));
+  }
+
+  return { routes: { "task.release": showSheet, "task.release.go-on": goOn, "release.locate": locate }, sheetScreen, approveFromSheet };
 }

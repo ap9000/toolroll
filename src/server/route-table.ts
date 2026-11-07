@@ -148,6 +148,7 @@ function row(stage: Stage, domain: Domain, id: string, method: RouteMethod, patt
 /** The console POST rows a local owner may use, and the act each is. Everything else is refused. */
 const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "tasks.add": "file-task",
+  "tasks.fast": "build-now",
   "chat.file": "file-task",
   "chat.send": "lead-send",
   "chat.queued-remove": "lead-send",
@@ -160,6 +161,7 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "chat.proposal.dismiss": "lead-send",
   "task.act.steer": "lead-send",
   "task.act.approve": "approve-plan",
+  "task.act.keep-grown": "approve-plan",
   "decision.answer": "answer-question",
   "task.act.reply": "answer-question",
   "task.act.stop": "stop-run",
@@ -623,6 +625,8 @@ post("pages", "projects.map-refresh", "^\\/projects\\/[^/]+\\/map\\/refresh$", {
 post("pages", "projects.remove", "/projects/remove", { project: "form", ...operator("An instance operator removes projects.", "/settings/project") });
 post("pages", "projects.open", "/projects/open", { project: "form-path" });
 post("tasks", "tasks.add", "/tasks/add", { project: "form", limited: "collection", bodyCap: LARGE_FORM });
+// Build (fast-start.ts): a person's own browser session only. No token, chat, agent or webhook reaches it.
+post("tasks", "tasks.fast", "/tasks/fast", { callers: ["cookie"], project: "none", limited: "collection", ...approver("An approver starts builds.", "/tasks/new") });
 post("tasks", "queue.move", "/queue/move");
 post("tasks", "queue.note", "/queue/note");
 post("pages", "fleet.register", "/fleet/runner/register", { scope: "step-up" });
@@ -636,6 +640,9 @@ post("people", "people.revoke", "/people/revoke", { scope: "step-up" });
 post("pages", "fleet.retire", "/fleet/runner/retire", { scope: "step-up" });
 // Answering a parked decision needs act access and irreversible-choice confirmation, not password step-up.
 post("tasks", "decision.answer", `^\\/d\\/${ID}\\/answer$`, { project: "decision", limited: "resource", scope: "act", sample: "/d/1/answer" });
+// A held automatic release goes on: a person, with their password typed now (release-auto.ts allowAutoPublish).
+post("tasks", "task.release.go-on", `^\\/t\\/${TASK}\\/release\\/go-on$`, { project: "task", limited: "resource", scope: "step-up", sample: "/t/one/release/go-on", ...approver("An approver lets a release go on.", "/tasks") });
+post("tasks", "task.act.keep-grown", `^\\/t\\/${TASK}\\/keep-grown$`, { project: "task", limited: "resource", sample: "/t/one/keep-grown", callers: ["cookie"], ...approver("An approver keeps a change.", "/tasks") });
 post("tasks", "task.act.hold", `^\\/t\\/${TASK}\\/hold$`, { project: "task", limited: "resource", sample: "/t/one/hold" });
 post("tasks", "task.act.unhold", `^\\/t\\/${TASK}\\/unhold$`, { project: "task", limited: "resource", sample: "/t/one/unhold" });
 post("tasks", "task.act.requeue", `^\\/t\\/${TASK}\\/requeue$`, { project: "task", limited: "resource", sample: "/t/one/requeue" });

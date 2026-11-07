@@ -7,6 +7,11 @@
 import type { FlowCardSource, Store } from "./store.js";
 import { SENDER_WORDS, type WebhookSender } from "./webhook-signing.js";
 
+/** A task filed from a GitHub issue or pull request (github-import.ts): its filed-via, and its snapshot's proof. Its
+ * provenance is outside text however it reaches a seal, and a revision keeps it (markRevision copies the snapshot). */
+export const ISSUE_IMPORT_FILED_VIA = "issue-import";
+export const ISSUE_IMPORT_VERIFIED = "github-import";
+
 /** What a task keeps of the card it was filed from. */
 export type TaskSourceSnapshot = { label: string; verified: string; external: { id: string | null; url: string | null }; receipt: string | null };
 
@@ -49,6 +54,7 @@ export function linkWords(url: string, max = 72): string {
 
 /** How a snapshot's delivery was proved, in words: "signed by Sentry", or "unsigned". */
 export function provedWords(snapshot: TaskSourceSnapshot): string {
+  if (snapshot.verified === ISSUE_IMPORT_VERIFIED) return "read from GitHub";
   const by = snapshot.verified === "github" ? "GitHub" : snapshot.verified === "linear" ? "Linear" : SENDER_WORDS[snapshot.verified as WebhookSender] ?? snapshot.verified;
   return snapshot.verified === "none" ? "unsigned" : `signed by ${by}`;
 }
@@ -119,4 +125,12 @@ export function originNote(origin: TaskOrigin | null | undefined): string | null
   if (origin?.source == null) return null;
   const where = origin.source.host === null ? "" : ` · ${origin.source.host}`;
   return `Started by an outside event: ${origin.source.label} (${origin.source.proved})${where}. The agent reads what it sent as data, not instructions.`;
+}
+
+/** Whether this task, or the task it revises, came from a GitHub import. Unreadable provenance on a row counts: it was
+ * written by the import road, and nothing here widens on a doubt. */
+export function issueImported(store: Pick<Store, "filedViaOf" | "taskSourceOf">, taskId: string): boolean {
+  if (store.filedViaOf(taskId) === ISSUE_IMPORT_FILED_VIA) return true;
+  const kept = store.taskSourceOf(taskId);
+  return kept !== null && (kept.sourceJson.includes(`"verified":"${ISSUE_IMPORT_VERIFIED}"`) || readSnapshot(kept.sourceJson) === null);
 }

@@ -1,5 +1,6 @@
 /** Task pages: approval, agents, plans, controls, decisions and the task body. */
 import { archivedWords } from "../tidy.js";
+import { btn } from "./kit.js";
 import { whenUtc } from "../when-html.js";
 import { networkWords } from "../egress.js";
 import type { ReleaseView } from "../release-view.js";
@@ -603,7 +604,7 @@ export function consentDoorOf(scope: Scope | null, route: RouteView | null | und
       return { open: false, title: "The provider’s auth mode can’t be read", why: `${authority.problem} — restate it, then approve`, road: "agents" };
     }
     if (authority.reason === "unrouted") {
-      return { open: false, title: "This plan was made before agents were chosen per task", why: "its approval no longer stands. An approval now names exactly which agent plans, builds and fixes it: edit and save the plan to choose today’s agents, then approve it", road: "scope" };
+      return { open: false, title: "This plan was made before agents were chosen per task", why: "Toolroll is choosing its agents, then you'll approve them. An approval now names exactly which agent plans, builds and fixes it: edit and save the plan to choose today’s agents, then approve it", road: "scope" };
     }
     return { open: false, title: "The agents on file can’t be read", why: `${authority.problem}. Edit and save the plan to choose today’s agents again`, road: "scope" };
   }
@@ -612,7 +613,7 @@ export function consentDoorOf(scope: Scope | null, route: RouteView | null | und
     return { open: false, title: "The agents on file can’t be read", why: `${route.problem}. Edit and save the plan to choose today’s agents again`, road: "scope" };
   }
   if (route.kind === "legacy") {
-    return { open: false, title: "This plan was made before agents were chosen per task", why: "its approval no longer stands. An approval now names exactly which agent plans, builds and fixes it: edit and save the plan to choose today’s agents, then approve it", road: "scope" };
+    return { open: false, title: "This plan was made before agents were chosen per task", why: "Toolroll is choosing its agents, then you'll approve them. An approval now names exactly which agent plans, builds and fixes it: edit and save the plan to choose today’s agents, then approve it", road: "scope" };
   }
   if (route.projection !== null && route.projection.problems.length > 0) {
     return { open: false, title: "The agents on file can’t run", why: `${route.projection.problems.join("; ")} — change the agents, then approve`, road: "agents" };
@@ -1550,6 +1551,10 @@ export function taskBodyParts(data: {
   steerRecent?: number[];
   /** Cockpit B2: when this person's remembered password was given, when it may approve these terms. */
   approvalFresh?: string | null;
+  /** A new route waiting for its one Approve (route-change.ts): what changed. */
+  routeChange?: string | null;
+  /** A fast start's result grew past a small change (fast-start.ts): its sentence, and the one act on. */
+  fastGrown?: string | null;
   /** Easy-start C5: the viewer is a laptop's local owner — whether this plan is one it approves without a password. */
   approvalLocal?: LocalApprovalView | null;
   /** Cockpit B2: how the current approval's person was proved (approval proved ledger), when it was a remembered one. */
@@ -2936,6 +2941,8 @@ export function taskBodyParts(data: {
     // The plan, progress and plan changes are thread entries now; the rest still needs a person here.
     lead: [
       { key: "history", html: data.history === undefined ? "" : htmlString(data.history) }, { key: "control", html: htmlString(stop === null ? controlHtml : taskControlDetailsHtml(data.control!, task.id, data.csrf, "task", false, true)) }, { key: "problem", html: fragmentString(problemHtml) },
+      { key: "route-change", html: data.routeChange == null ? "" : htmlString(html`<div class="card"><p>${data.routeChange}</p></div>`) },
+      { key: "fast-grown", html: data.fastGrown == null || data.csrf === "" ? "" : htmlString(html`<div class="card"><p>${data.fastGrown}</p>${postForm(`${taskHref(task.id)}/keep-grown`, btn("Approve it", { variant: "primary", type: "submit" }))}</div>`) },
       { key: "pull-request", html: fragmentString(pullRequestCard) },
       { key: "needs-scope", html: fragmentString(needsScopeCard) },
       { key: "mirror", html: fragmentString(mirrorCard) }, { key: "attempt", html: fragmentString(attemptPanel) },

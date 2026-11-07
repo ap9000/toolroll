@@ -109,6 +109,10 @@ import type { ProgressSnapshot } from "./plan.js";
 import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 
 import { authorityStandsSql } from "./approval-authority.js";
+import { clearRetryEpisode, settleVanished } from "./vanished-retry.js";
+import { issueImported } from "./task-source.js";
+import { BUILDER_SERVICE_SCHEMA, CHECK_ONLY_SCHEMA, FAST_PREVIEW_SCHEMA, ROUTE_CHANGE_SCHEMA, V153_ADDED_COLUMNS, VANISHED_SCHEMA } from "./plain-schema.js";
+export { V153_ADDED_COLUMNS } from "./plain-schema.js";
 import { releasePolicyDigest, serializeReleaseCheckPurpose, storedReleaseCheckPurpose, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseCheckPurpose, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
@@ -1187,7 +1191,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // (V151_ADDED_COLUMNS: a saved cleanup setting reads NULL, the default).
 // v152 adds, and changes no saved row (docs/plans/code-map.md): the code map's tables (V152_SCHEMA, code-map-store.ts) and
 // a project's map switch and enrollment end (V152_ADDED_COLUMNS: a saved project reads on, not enrolled).
-export const SCHEMA_VERSION = 152;
+// v153 adds, and changes no saved row (docs/plans/plain-toolroll.md Phase 2): new tables and columns only.
+// V153_SCHEMA, V153_ADDED_COLUMNS.
+export const SCHEMA_VERSION = 153;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1325,7 +1331,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1589,7 +1595,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -1988,6 +1994,10 @@ export const V150_STEPS = Object.freeze(["machine-aliases", "witness-machine"] a
 export const V151_STEPS = Object.freeze(["checkout-idle"] as const);
 /** The v152 migration's steps after v151's, in order (OpenOptions.migrationStep may stop after each). */
 export const V152_STEPS = Object.freeze(["code-map-tables", "code-map-switch", "code-map-watermark"] as const);
+/** v153 (plain-toolroll.md Phase 2): the tables each slice owns. */
+export const V153_SCHEMA = VANISHED_SCHEMA + CHECK_ONLY_SCHEMA + BUILDER_SERVICE_SCHEMA + FAST_PREVIEW_SCHEMA + ROUTE_CHANGE_SCHEMA;
+/** The v153 migration's steps after v152's, in order (OpenOptions.migrationStep may stop after each). */
+export const V153_STEPS = Object.freeze(["plain-tables", "plain-columns"] as const);
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6335,6 +6345,11 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   step("code-map-switch");
   db.exec("INSERT OR IGNORE INTO code_map_meta (id, run_watermark) SELECT 1, COALESCE(MAX(id), 0) FROM run");
   step("code-map-watermark");
+  // v153: Phase 2's tables (new tables only). Idempotent, as v152's steps are.
+  db.exec(V153_SCHEMA);
+  step("plain-tables");
+  for (const [table, columns] of Object.entries(V153_ADDED_COLUMNS)) for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  step("plain-columns");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -9455,6 +9470,10 @@ export class Store {
           // chat tap, only with the digest of every word the card showed (`terms`, chat-terms.ts), recomputed below
           // from the live scope: a card that cut a word, or terms that changed since, seal nothing.
           if (basis.kind !== "chat" && this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA) return false;
+          // THE IMPORT QUARANTINE (github-import.ts): a task filed from a GitHub issue or pull request, or a revision of
+          // one, is outside text too. Its provenance is immutable and copied through revisions, so no automatic basis
+          // ever seals it, here, whatever road it came by.
+          if (basis.kind !== "chat" && issueImported(this, taskId)) return false;
           // CHECK ACCESS (v132, check-access.ts): a scope whose checks reach beyond the fence (sign-ins, or no sandbox at
           // all) seals only on a person's password ceremony — never a mode, a grant, a chat confirmation or a carry.
           const profileText = this.db.prepare("SELECT profile_json FROM task_scope WHERE task_id = ?").get(taskId)?.["profile_json"];
@@ -9518,17 +9537,21 @@ export class Store {
         if (purpose.purpose !== null && basis !== undefined && basis.kind !== "chat") return false;
         if (deployGate && basis?.kind === "chat" && !(basis.card === "release" && typeof basis.cardDigest === "string" && /^[0-9a-f]{64}$/.test(basis.cardDigest))) return false;
         // The outside-request quarantine's chat road (above): the card showed every word of these live terms.
-        if (basis?.kind === "chat" && this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA
+        if (basis?.kind === "chat" && (this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA || issueImported(this, taskId))
           && !(basis.card === "terms" && typeof basis.cardDigest === "string" && basis.cardDigest === shownTermsDigest(readScope(working)))) return false;
         // AUTOMATIC RELEASE SEALS (auto-approve-green.md): only on a release task (a candidate and release terms signed
         // in), only naming the evidence row the plane wrote for exactly this task, kind, digest and candidate.
         const automatic = basis?.kind === "auto-check" || basis?.kind === "auto-green";
+        // A FAST START (fast-start.ts) stays a person's: no automatic release seal ever lands on one.
+        if (automatic && this.db.prepare("SELECT 1 AS hit FROM task_ref WHERE backend = ? AND external_id = ? AND fast_start_at IS NOT NULL").get(BUILT_IN, taskId) !== undefined) return false;
         if (automatic) {
           if (terms.terms === null || typeof working["candidate"] !== "string" || working["candidate"] === "") return false;
           const evidence = autoEvidenceOf(this, taskId, basis!.modeDigest, basis!.kind as "auto-check" | "auto-green");
           if (evidence === null || evidence.digest !== String(working["digest"]) || evidence.candidate !== working["candidate"] || evidence.by !== by) return false;
         }
         if (terms.terms !== null && basis !== undefined && basis.kind !== "chat" && !automatic) return false;
+        // Nor does a fast start ever anchor a release, whoever approves it.
+        if (terms.terms !== null && this.db.prepare("SELECT 1 AS hit FROM task_ref WHERE backend = ? AND external_id = ? AND fast_start_at IS NOT NULL").get(BUILT_IN, taskId) !== undefined) return false;
         if (terms.terms !== null && releaseSealProblem(this, terms.terms) !== null) return false;
         const changed = this.db
           .prepare(
@@ -9558,7 +9581,12 @@ export class Store {
           // (setup review): the approval is what was stale, and it is new.
           const ref = this.db.prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, taskId);
           if (ref !== undefined) {
-            if (basis === undefined || basis.kind === "chat") this.noteTaskAct(Number(ref["id"]), "approved", now);
+            if (basis === undefined || basis.kind === "chat") {
+              this.noteTaskAct(Number(ref["id"]), "approved", now);
+              clearRetryEpisode(this, Number(ref["id"]));
+              // An ordinary yes stands on its own: a fast start's window is over (its Accept backstop stays).
+              this.db.prepare("UPDATE task_ref SET fast_start_until = NULL WHERE id = ? AND fast_start_until IS NOT NULL").run(Number(ref["id"]));
+            }
             this.db.prepare("DELETE FROM hold WHERE owner_kind = 'backoff' AND owner_id = ?").run(`stale:${Number(ref["id"])}`);
             // Results routing: this yes closes the task's open exposure (as proposed, or with the model it sealed),
             // and lifts the hold a switched-off rule put on the approval it replaces.
@@ -9642,7 +9670,7 @@ export class Store {
          WHERE task_scope.approved_at IS NOT NULL
            AND NOT ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`,
       )
-      .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString());
+      .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString(), now.toISOString());
     if (dead !== undefined) return false;
     // A release task (release-once.md): the whole live-release predicate, beyond what the SQL can say.
     const external = this.db.prepare("SELECT external_id FROM task_ref WHERE id = ? AND backend = 'built-in'").get(taskRef);
@@ -11247,11 +11275,7 @@ export class Store {
         .prepare("SELECT backend, external_id FROM task_ref WHERE id = ?")
         .get(taskRef);
       if (ref === undefined || String(ref["backend"]) !== BUILT_IN) continue;
-
-      const { changes } = this.db
-        .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'")
-        .run(now.toISOString(), String(ref["external_id"]));
-      if (Number(changes) > 0) requeued?.push(String(ref["external_id"]));
+      if (settleVanished(this, taskRef, now) === "queued") requeued?.push(String(ref["external_id"]));
     }
 
     return held.map(row => String(row["lease_id"]));
@@ -13742,6 +13766,9 @@ export class Store {
       for (const incident of incidents) this.resolveIncidentLocked(incident, by, now);
 
       this.resetStrikes(taskRef);
+      clearRetryEpisode(this, taskRef);
+      // A person's Retry is a new person act: a fast start gets a new start window. A machine's never does.
+      if (!machineActing()) this.db.prepare("UPDATE task_ref SET fast_start_until = ? WHERE id = ? AND fast_start_until IS NOT NULL").run(new Date(now.getTime() + 30 * 60_000).toISOString(), taskRef);
       this.db
         .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state IN ('failed','queued','done')")
         .run(stamp, taskId);
@@ -22071,10 +22098,7 @@ export class Store {
           .prepare("SELECT external_id FROM task_ref WHERE id = ? AND backend = ?")
           .get(taskRef, BUILT_IN);
         if (ref === undefined) return;
-        const { changes } = this.db
-          .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'")
-          .run(stamp, String(ref["external_id"]));
-        if (Number(changes) > 0) requeued.push(String(ref["external_id"]));
+        if (settleVanished(this, taskRef, now) === "queued") requeued.push(String(ref["external_id"]));
       };
       const open = this.db
         .prepare(
@@ -22170,18 +22194,11 @@ export class Store {
           .run(stamp, leaseId);
         this.db
           .prepare(
-            `UPDATE task SET state = 'queued', updated_at = ?
-              WHERE state = 'running' AND id = (
-                SELECT external_id FROM task_ref WHERE id = ? AND backend = ?
-              )`,
-          )
-          .run(stamp, taskRef, BUILT_IN);
-        this.db
-          .prepare(
             `UPDATE run SET outcome = 'failed', reason = 'interrupted', finished_at = ?
               WHERE lease_id = ? AND outcome IS NULL`,
           )
           .run(stamp, leaseId);
+        settleVanished(this, taskRef, now);
         this.db
           .prepare(
             `UPDATE worktree SET released_at = ?, verified = 0
@@ -22207,16 +22224,7 @@ export class Store {
         this.db
           .prepare("UPDATE run SET outcome = 'failed', reason = 'interrupted', finished_at = ? WHERE id = ?")
           .run(stamp, Number(row["run_id"]));
-        if (this.currentLiveLease(taskRef, now) === null) {
-          this.db
-            .prepare(
-              `UPDATE task SET state = 'queued', updated_at = ?
-                WHERE state = 'running' AND id = (
-                  SELECT external_id FROM task_ref WHERE id = ? AND backend = ?
-                )`,
-            )
-            .run(stamp, taskRef, BUILT_IN);
-        }
+        settleVanished(this, taskRef, now);
         this.db
           .prepare("UPDATE worktree SET released_at = ?, verified = 0 WHERE runner = ? AND task_ref = ? AND released_at IS NULL")
           .run(stamp, runner, taskRef);

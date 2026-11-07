@@ -374,9 +374,9 @@ describe("where freshness may be honoured", () => {
     // Lead sweeps: each child's approval is the ordinary standard approval (chat-actions.ts fileSweep), the same freshness class.
     // One-tap release approval: the release sheet's remembered-password preview (display only, task-views' rule) and its
     // Approve release (the task approval door's own standard-approval freshness and refund), both in tasks.ts.
-    expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 3, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 4 });
+    expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 3, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 6 });
     expect(hits["consumeSsoNow()"]).toEqual({ "src/scope.ts": 1 });
-    expect(hits["spendingOnlyOnSuccess()"]).toEqual({ "src/chat-actions.ts": 1, "src/server/chat.ts": 2, "src/server/tasks.ts": 2 });
+    expect(hits["spendingOnlyOnSuccess()"]).toEqual({ "src/chat-actions.ts": 1, "src/server/chat.ts": 2, "src/server/tasks.ts": 3 });
     // Refunds only where one transaction holds every effect: never console-wide (a refused answer proves nothing).
     expect(hits["spendingOnlyIfDone()"]).toBeUndefined();
     // Every approver step-up goes through authenticateApprover (scope.ts, or the console guard's wrapper of it via
@@ -387,13 +387,13 @@ describe("where freshness may be honoured", () => {
     // person proves each inside its own transaction.
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
-      "src/nightly-github.ts": 1, "src/operate.ts": 61, "src/pull-request-flow.ts": 1,
+      "src/nightly-github.ts": 1, "src/operate.ts": 62, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
       // suggestions on) are an instance operator's step-up; the rule door re-proves the session in the write.
       "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 10, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 27,
-      "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
+      "src/server/tasks.ts": 7, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
     const chatRuns = files.find(one => one.path === "src/server/chat.ts")!.text.match(/freshFacts\.run\([^,]*,/g) ?? [];
@@ -612,6 +612,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#credentialApprover@125": 1,
     "src/scope.ts#proveCredential@41": 1,
     "src/server/settings.ts#createSettingsHandlers@1>telegramPairAct@78><anonymous>@1": 1,
+    // "Approve it to keep it" (fast-start.ts) and a held release's Let it go on (release-next.ts): a person, proved now.
+    "src/operate.ts#keepGrownCommand@225": 1,
+    "src/server/tasks.ts#createReleaseSheetHandlers@6": 2,
+    "src/server/tasks.ts#createReleaseSheetHandlers@6>goOn@6": 1,
   },
   "checkApproverPassword": {
     "src/server/guards.ts#<module>": 1,
@@ -814,6 +818,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/task-views.ts#createTaskViews@1>taskViewData@14><anonymous>@18>fresh:withFreshness(approve-standard,_)@1": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createReleaseSheetHandlers@6>sheetScreen@2>remembered@1>fresh:withFreshness(approve-standard,_)@1": 1,
+    // Build's password rule (fast-start.ts) reads what the approve forms read.
+    "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61>freshAt:withFreshness(approve-standard,_)@1": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>withFreshness(approve-standard,_)@10": 1,
   },
   "mergeAsPerson": {
@@ -863,6 +869,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#createChatHandlers@1>chatSend@24": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createReleaseSheetHandlers@6>approveFromSheet@5": 1,
+    // Build is the fast path's approval door (fast-start.ts): the same refund as the task page's.
+    "src/server/tasks.ts#createTasksHandlers@2>buildNow@62": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
   },
   "ssoNow": {
@@ -934,6 +942,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createReleaseSheetHandlers@6>approveFromSheet@5>answer:spendingOnlyOnSuccess(_,_)@1": 1,
     "src/server/tasks.ts#createReleaseSheetHandlers@6>sheetScreen@2>remembered@1": 1,
+    "src/server/tasks.ts#createTasksHandlers@2>buildNow@62>built:spendingOnlyOnSuccess(_,_)@1": 1,
+    "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>approved:spendingOnlyOnSuccess(_,_)@11": 1,
     // Lead sweeps (docs/plans/lead-fan-out.md): reviewed new sites — one approval per child, as the ordinary approval.
@@ -1003,6 +1013,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/chat-actions.ts#executeSharedAction@25": 1,
     "src/scope.ts#passwordlessSessionFor@39": 1,
     "src/server/tasks.ts#<module>": 2,
+    "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
   },
 };

@@ -4,13 +4,13 @@
  * page only shows: the approval POST (`/t/<id>/approve`, `sheet=release`) proves the person, the card and the scope
  * again (release-approval.ts approveReleaseCard).
  */
-import { html, joinHtml, type Html } from "../html.js";
+import { html, joinHtml, postForm, type Html } from "../html.js";
 import type { ApprovalFacts } from "../design/kit.js";
 import { ciWords, releaseConsequence, type ReleaseApprovalCard } from "../release-approval.js";
 import { checkAccessWords } from "../check-access.js";
 import { projectName } from "../project.js";
 import { screen, type Chrome, type Screen } from "./chrome.js";
-import { approvalTerms, approveForm, chip, disclose, doc, docHeader, facts, infoLine, note, notice, slots, btn } from "./kit.js";
+import { approvalTerms, approveForm, chip, disclose, doc, docHeader, facts, field, infoLine, input, note, notice, slots, btn } from "./kit.js";
 import { taskHref } from "./http.js";
 
 export type ReleaseSheetData = {
@@ -21,6 +21,8 @@ export type ReleaseSheetData = {
   /** This computer's local owner: releases need a full sign-in first (scope.ts localApprovalEligible). */
   local: { message: string; action: string; href: string } | null;
   problem: string | null;
+  /** An automatic release held after its merge (release-auto.ts): why, and that a person may let it go on. */
+  held?: string | null;
 };
 
 /** The change list, folded: every commit when it is whole, or why it isn't. */
@@ -94,6 +96,8 @@ export function releaseSheetPage(chrome: Chrome, data: ReleaseSheetData): Screen
     changesHtml(card),
     slots({ wait, attrs: { "data-release-sheet": card.taskId }, status, text, acts, terms }),
     notRunning,
+    data.held == null ? "" : html`<section class="k-sec" data-release-held><h3>Held after its merge</h3><p class="k-note">${data.held}.</p>${postForm(`${taskHref(card.taskId)}/release/go-on`,
+      html`${field({ id: "go-on-password", label: "Your password", control: input({ id: "go-on-password", name: "password", type: "password", attrs: { required: true, autocomplete: "current-password" } }) })}${btn("Let it go on", { variant: "primary", type: "submit" })}`, { attrs: { class: "k-form" } })}</section>`,
     // When the form isn't shown, the consequence and the terms are still on the page.
     formShown ? "" : html`<section class="k-sec"><h3>What approving does</h3>${joinHtml(consequence.map(line => html`<p class="k-note">${line}</p>`))}</section>${termsHtml(card)}`,
   );
