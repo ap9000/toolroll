@@ -1251,17 +1251,26 @@ export function releaseStepsViewOf(progress: ReturnType<typeof releaseProgressFo
   const all = RELEASE_STEPS.filter(step => step !== "done");
   // A release that started part way (one carried under an earlier approval, or resumed from an older journal) shows
   // the steps from where its own record starts; a step missing between two recorded ones is a write that was lost.
-  const firstAt = all.findIndex(step => recorded.has(step));
+  // A build running since the stop is the release's check, wherever the release last stopped; what follows it is to come.
+  const building = progress.building, checkAt = all.indexOf("check");
+  const firstAt = building === null ? all.findIndex(step => recorded.has(step)) : Math.min(all.findIndex(step => recorded.has(step)), checkAt);
   const lastAt = all.reduce((at, step, index) => recorded.has(step) ? index : at, -1);
   const steps = firstAt <= 0 ? all : all.slice(firstAt);
   const rows: TimingRow[] = steps.map(step => {
     const one = recorded.get(step);
+    if (building !== null && step === "check") {
+      const start = Date.parse(building.startedAt);
+      return { name: RELEASE_STEP_WORDS[step] ?? step, st: "run" as const, start: Number.isFinite(start) && Number.isFinite(origin) ? Math.max(0, (start - origin) / 1000) : 0, dur: Number.isFinite(start) ? Math.max(0, (now.getTime() - start) / 1000) : 0 };
+    }
+    if (building !== null && all.indexOf(step) > checkAt) return { name: RELEASE_STEP_WORDS[step] ?? step, st: "q" as const, start: 0, dur: 0 };
     // A step with no record is never painted as done: between recorded ones it says so, after them it is queued.
     if (one === undefined) return all.indexOf(step) < lastAt ? { name: RELEASE_STEP_WORDS[step] ?? step, sub: "not recorded", st: "q" as const, start: 0, dur: 0 }
       : { name: RELEASE_STEP_WORDS[step] ?? step, st: "q" as const, start: 0, dur: 0 };
     const start = Date.parse(one.startedAt), end = one.endedAt === null ? now.getTime() : Date.parse(one.endedAt);
-    const st: TimingRow["st"] = one.state === "done" ? "ok" : one.state === "failed" ? "bad" : one.state === "waiting" ? "wait" : "run";
-    return { name: RELEASE_STEP_WORDS[step] ?? step, ...(one.detail === null || one.state === "done" ? {} : { sub: one.detail.slice(0, 160) }), st,
+    // A failure the release has gone on from (resumed past it, or a build since) is history, not where it stands.
+    const passed = one.state === "failed" && progress.stopped === null;
+    const st: TimingRow["st"] = one.state === "done" || passed ? "ok" : one.state === "failed" ? "bad" : one.state === "waiting" ? "wait" : "run";
+    return { name: RELEASE_STEP_WORDS[step] ?? step, ...(passed ? { sub: "Stopped here, then went on" } : one.detail === null || one.state === "done" ? {} : { sub: one.detail.slice(0, 160) }), st,
       start: Number.isFinite(start) && Number.isFinite(origin) ? Math.max(0, (start - origin) / 1000) : 0, dur: Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, (end - start) / 1000) : 0 };
   });
   const current = rows.findIndex(row => row.st === "run" || row.st === "wait" || row.st === "bad");

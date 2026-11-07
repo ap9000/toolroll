@@ -38,7 +38,7 @@ const skipBuild = flag("--skip-build");
  * real-model is scripted: it tests Toolroll's own behaviour with the model scripted. */
 const GROUPS = {
   console: { journeys: 16, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, putting old tasks away, projects and their network, knowledge, skills, tools, models, old routine links" },
-  pages: { journeys: 8, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, the release approval sheet, signing out" },
+  pages: { journeys: 9, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, the release approval sheet, a running release check, signing out" },
   task: { journeys: 5, about: "A task from an idea to an accepted result, then sent back twice; the same by keyboard alone" },
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
@@ -712,7 +712,7 @@ async function sendBack(id, note) {
   await page.goto(`${base}/review?result=${encodeURIComponent(id)}&run=${run.id}`);
   // Three verbs (docs/plans/plain-toolroll.md P1.3): the result's acts read Accept, Send back or Retry, nothing else.
   const verbs = await page.locator("[data-result-acts] [data-act]").allInnerTexts();
-  if (verbs.some(one => !/^(Accept( anyway| without checks| without your check)?|Send back|Retry|Confirm it stopped)$/.test(one.trim()))) throw new Error(`the result's acts say: ${verbs.join(" · ")}`);
+  if (verbs.some(one => !/^(Accept( anyway| without checks| without your check)?|Send back|Retry|Check again)$/.test(one.trim()))) throw new Error(`the result's acts say: ${verbs.join(" · ")}`);
   await page.locator('a[href="#request-changes"]').first().click();
   const box = page.locator('#comment-form textarea[name="note"]');
   await box.waitFor({ timeout: 10_000 });
@@ -2419,6 +2419,60 @@ await journey("pages", SCRIPTED, "One-tap release approval: the push's locator o
     cli(["project", "check-access", "--repo", repo, "sandboxed", ...auth], { ok: [0, 1, 2, 3] });
   }
   if (problems.length > 0) throw new Error(problems.join("; "));
+});
+
+await journey("pages", SCRIPTED, "A running release check: a release stopped at Approval reads Stopped; once its check runs, its panel and status say the check is running, on desktop and phone", [], async () => {
+  // A prepared candidate whose project check takes a while, so the page can be read while it runs.
+  const gitShop = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+  gitShop("checkout", "-q", "-b", "release/shop-1.0.2");
+  const manifest = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+  writeFileSync(join(repo, "package.json"), `${JSON.stringify({ ...manifest, scripts: { ...manifest.scripts, test: "sleep 45" } }, null, 2)}\n`);
+  gitShop("add", "package.json"); gitShop("commit", "-qm", "Synthetic journey commit: a check that takes a while");
+  const candidate = gitShop("rev-parse", "HEAD");
+  gitShop("checkout", "-q", "main");
+  const id = `release-1.0.2-${candidate.slice(0, 7)}`;
+  cli(["task", "add", "Release 1.0.2", "--id", id, "--repo", repo, "--checks", "full", ...auth]);
+  cli(["task", "scope", id, "--candidate", candidate, "--goal", `Verify shop 1.0.2 at ${candidate} passes its check.`, "--acceptance", "The check passes on the candidate commit|check", ...auth]);
+  // `toolroll release` got as far as Approval and stopped there (synthetic), and nothing has happened since.
+  const stoppedAt = new Date().toISOString();
+  sql(`INSERT INTO release_step (task_id, tag, version, pr, step, state, started_at, ended_at, detail, updated_at) VALUES
+    ('${id}', 'v1.0.2', '1.0.2', 8, 'gate', 'done', '${stoppedAt}', '${stoppedAt}', NULL, '${stoppedAt}'),
+    ('${id}', 'v1.0.2', '1.0.2', 8, 'approval', 'failed', '${stoppedAt}', '${stoppedAt}', 'Nobody approved it in time.', '${stoppedAt}');`);
+  const panel = on => on.locator('[aria-label="Release"]');
+  const problems = [];
+  try {
+    await page.goto(`${base}/t/${id}`);
+    await panel(page).waitFor({ timeout: 15_000 });
+    if (await panel(page).getAttribute("data-release") !== "failed" || !(await panel(page).innerText()).includes("Stopped at Approval")) problems.push(`before anything moved the panel read: ${(await panel(page).innerText()).slice(0, 200)}`);
+    await shot("release-stopped-desktop");
+    const digest = cli(["task", "show", id]).scope.digest;
+    cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
+    const running = await until("the release's check to start", async () => {
+      const one = latestBuild(id);
+      return one && !one.finished_at && (rows(`SELECT status FROM run_check WHERE run = ${one.id}`).length === 0) && rows(`SELECT 1 AS hit FROM run_process WHERE run = ${one.id} AND exited_at IS NULL LIMIT 1`).length > 0 ? one : null;
+    }, { timeoutMs: 120_000, everyMs: 250 });
+    const reads = async on => {
+      await on.goto(`${base}/t/${id}`);
+      await panel(on).waitFor({ timeout: 15_000 });
+      const text = await panel(on).innerText(), body = await on.locator("body").innerText();
+      if (await panel(on).getAttribute("data-release") !== "running") problems.push(`the running panel is ${await panel(on).getAttribute("data-release")}`);
+      if (/Stopped at|Failed/.test(text)) problems.push(`the running panel still reads: ${text.slice(0, 200)}`);
+      if (!text.includes("Release check · Step")) problems.push(`the panel doesn't say the check: ${text.slice(0, 200)}`);
+      if (!/release check|project check/i.test(body) || /an agent/i.test(body)) problems.push(`the page's status: ${body.slice(0, 300)}`);
+      if (await on.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)) problems.push("the running release page scrolls sideways");
+    };
+    await reads(page);
+    await shot("release-check-running-desktop");
+    const phone = await alexPhone();
+    await reads(phone);
+    await phone.screenshot({ path: join(w.out, "release-check-running-phone.png"), fullPage: true });
+    await putPhoneDown();
+    await until("the check to finish", async () => latestBuild(id)?.finished_at != null ? true : null, { timeoutMs: 120_000, everyMs: 500 });
+    return { run: running.id };
+  } finally {
+    cli(["task", "archive", id, ...auth], { ok: [0, 1, 2, 3] });
+    if (problems.length > 0) throw new Error(problems.join("; "));
+  }
 });
 
 await journey("pages", SCRIPTED, "Signing out ends the session: pages ask to sign in again", [], async () => {

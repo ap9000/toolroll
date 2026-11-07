@@ -108,11 +108,27 @@ describe("a release check the machine runs", () => {
 
   test("the release panel reads Running while a machine step waits; Needs you only at Approval", async () => {
     expect((await viewOf("release-1.2.3")).release?.state).toBe("running");
-    const at = (step: string) => releaseStepsViewOf({ tag: "v1", version: "1", pr: null, startedAt: ago(5).toISOString(), updatedAt: ago(1).toISOString(), stopped: null,
+    const at = (step: string) => releaseStepsViewOf({ tag: "v1", version: "1", pr: null, startedAt: ago(5).toISOString(), updatedAt: ago(1).toISOString(), stopped: null, building: null,
       steps: [{ step: "gate", state: "done", startedAt: ago(5).toISOString(), endedAt: ago(4).toISOString(), detail: null }, { step, state: "waiting", startedAt: ago(4).toISOString(), endedAt: null, detail: null }] }, NOW)!.state;
     expect(at("approval")).toBe("waiting");
     for (const step of ["check", "ci", "quiet", "deploy", "publish"]) expect(at(step), step).toBe("running");
     expect(releaseProgressFor(store, "release-1.2.3")).not.toBeNull();
+  });
+
+  test("a stop stands until a build of the task starts after it: running now, it is over; finished, or older than the stop, it isn't", async () => {
+    const id = "release-1.2.5", run = running(id, "c".repeat(40));
+    const step = (name: string, state: "done" | "failed", at: Date) => recordReleaseStep(store, { taskId: id, tag: "v1.2.5", version: "1.2.5", pr: 9, step: name, state, at, detail: state === "failed" ? "Approval timed out." : null });
+    step("gate", "done", ago(30));
+    step("approval", "failed", ago(20));
+    expect(releaseProgressFor(store, id)).toMatchObject({ stopped: null, building: { run } });
+    expect(await viewOf(id).then(view => view.release)).toMatchObject({ state: "running", stopped: null, at: { step: "check" } });
+    // The stop came after the build started: it stands, the build was not the task moving on.
+    step("approval", "failed", ago(5));
+    expect(releaseProgressFor(store, id)).toMatchObject({ stopped: { step: "approval" }, building: null });
+    step("approval", "failed", ago(20));
+    store.raw().prepare("UPDATE release_step SET updated_at = ? WHERE task_id = ? AND step = 'approval'").run(ago(20).toISOString(), id);
+    store.finishRun(run, { outcome: "failed", reason: "interrupted", now: ago(2) });
+    expect(releaseProgressFor(store, id)).toMatchObject({ stopped: { step: "approval" }, building: null });
   });
 });
 

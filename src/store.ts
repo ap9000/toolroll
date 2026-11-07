@@ -26461,7 +26461,10 @@ export function shipChecksForTask(store: Store, taskId: string): ShipChecks | nu
 
 /** One release step as `toolroll release` moved through it (v146 release_step). */
 export type ReleaseStepRow = { step: string; state: "running" | "done" | "failed" | "waiting"; startedAt: string; endedAt: string | null; detail: string | null };
-export type ReleaseProgress = { tag: string; version: string; pr: number | null; startedAt: string; updatedAt: string; steps: ReleaseStepRow[]; stopped: { step: string; message: string; at: string } | null };
+export type ReleaseProgress = { tag: string; version: string; pr: number | null; startedAt: string; updatedAt: string; steps: ReleaseStepRow[]; stopped: { step: string; message: string; at: string } | null;
+  /** The release's task moved on since its last recorded failure: this build started after it and is running now, so
+   * the release isn't stopped there, even though `toolroll release` hasn't recorded a step since. */
+  building: { run: number; startedAt: string } | null };
 /** What a release coordinator says about one step. */
 export type ReleaseStepEntry = { taskId: string; tag: string; version: string; pr: number | null; step: string; state: ReleaseStepRow["state"]; at: Date; detail?: string | null };
 
@@ -26489,7 +26492,8 @@ export function recordReleaseStep(store: Store, entry: ReleaseStepEntry): void {
 }
 
 /** A release's steps, for the release task: the newest tag recorded for it, its steps in the order they ran, and the
- * step it stopped at when the last thing recorded was a failure. Null: no step recorded. */
+ * step it stopped at when the last thing recorded was a failure and no build of the task has started since. Null: no
+ * step recorded. */
 export function releaseProgressFor(store: Store, taskId: string): ReleaseProgress | null {
   const newest = store.handle.prepare("SELECT tag FROM release_step WHERE task_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1").get(taskId);
   if (newest === undefined) return null;
@@ -26498,9 +26502,13 @@ export function releaseProgressFor(store: Store, taskId: string): ReleaseProgres
   const steps: ReleaseStepRow[] = rows.map(row => ({ step: String(row["step"]), state: String(row["state"]) as ReleaseStepRow["state"], startedAt: String(row["started_at"]),
     endedAt: row["ended_at"] === null ? null : String(row["ended_at"]), detail: row["detail"] === null ? null : String(row["detail"]) }));
   const last = [...rows].sort((a, b) => String(a["updated_at"]).localeCompare(String(b["updated_at"]))).at(-1)!;
-  const stopped = String(last["state"]) === "failed" ? { step: String(last["step"]), message: last["detail"] === null ? "" : String(last["detail"]), at: String(last["updated_at"]) } : null;
+  const failed = String(last["state"]) === "failed";
+  const live = !failed ? undefined : store.handle.prepare(`SELECT id, started_at FROM run WHERE task_ref IN (SELECT value FROM json_each(?)) AND role = 'builder'
+      AND finished_at IS NULL AND outcome IS NULL AND started_at > ? ORDER BY id DESC LIMIT 1`).get(JSON.stringify(taskFamilyRefs(store, taskId).map(one => one.id)), String(last["updated_at"]));
+  const building = live === undefined ? null : { run: Number(live["id"]), startedAt: String(live["started_at"]) };
+  const stopped = failed && building === null ? { step: String(last["step"]), message: last["detail"] === null ? "" : String(last["detail"]), at: String(last["updated_at"]) } : null;
   const pr = last["pr"] === null ? null : Number(last["pr"]);
-  return { tag, version: String(last["version"]), pr, startedAt: steps[0]!.startedAt, updatedAt: String(last["updated_at"]), steps, stopped };
+  return { tag, version: String(last["version"]), pr, startedAt: steps[0]!.startedAt, updatedAt: String(last["updated_at"]), steps, stopped, building };
 }
 
 /** The release task whose steps were recorded most recently (v146), or null when none was. */

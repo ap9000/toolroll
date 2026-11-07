@@ -509,8 +509,13 @@ async function runStatusCommand(task: string | undefined, write: (line: string) 
     if (json) { write(checkedEnvelopeJson({ ok: true, command, task: taskId, release: { ...progress, steps } })); return 0; }
     const word = { running: "running", waiting: "waiting", done: "done", failed: "failed" } as const;
     write(`Release ${progress.version} (${progress.tag})${progress.pr === null ? "" : ` · pull request #${progress.pr}`} · task ${taskId}`);
-    for (const one of steps) write(`  ${one.step.padEnd(9)} ${word[one.state].padEnd(8)} ${one.seconds === null ? "–" : dur(one.seconds)}${one.detail === null ? "" : `  ${one.detail}`}`);
+    for (const one of steps) {
+      // A failure the release has gone on from is history, as on the task page.
+      const passed = one.state === "failed" && progress.stopped === null;
+      write(`  ${one.step.padEnd(9)} ${(passed ? "went on" : word[one.state]).padEnd(8)} ${one.seconds === null ? "–" : dur(one.seconds)}${one.detail === null ? "" : `  ${one.detail}`}`);
+    }
     if (progress.stopped !== null) write(`Stopped at ${progress.stopped.step}: ${progress.stopped.message}`);
+    if (progress.building !== null) write(`Build #${progress.building.run} is running the check.`);
     return 0;
   } finally { store.close(); }
 }
