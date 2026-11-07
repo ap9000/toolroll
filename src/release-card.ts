@@ -20,6 +20,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { checkAccessWords } from "./check-access.js";
+import { ranWords } from "./check-stamp.js";
 import { CHECK_LEVEL_WORDS, effectiveCheckLevel } from "./check-levels.js";
 import { verifiedRange } from "./commit-extract.js";
 import { releaseCheckPurposeSchema, releaseTermsSchema, type ReleaseCheckPurpose, type ReleaseTerms } from "./contracts/release-terms.js";
@@ -30,7 +31,7 @@ import { projectName } from "./project.js";
 import { RELEASE_CI_RUNNING_WORDS, releaseCiRunningOf } from "./release-ci-hold.js";
 import { RELEASE_PATH, releaseConfigProblem, releaseGitEnv, releaseRemote, releaseTools } from "./release-git.js";
 import type { Scope } from "./scope.js";
-import type { Store } from "./store.js";
+import { taskCheckStamp, type Store } from "./store.js";
 import { nightlyReleaseLines } from "./nightly-github.js";
 
 /** One signed term as the card says it. `key` names the scope field or the release term's path. */
@@ -390,6 +391,14 @@ function changeWords(changes: ChangeList, terms: Pick<ReleaseTerms, "pr"> | null
 }
 
 /** The release card for a deploy gate, against the live records now. */
+/** How this task's last check ran, when one did and it wasn't plainly sandboxed: the sealed level above is what will run;
+ * this is what did. Nothing for a release no check has run for. */
+function lastCheckWords(store: Store, repo: string | null, taskId: string): string[] {
+  const ran = repo === null ? null : taskCheckStamp(store, repo, taskId);
+  const words = ran === null ? null : ranWords(ran.reading);
+  return words === null ? [] : [`Last check: ${words}.`];
+}
+
 export function releaseCardOf(store: Store, scope: Scope, formDigest: string, words: { profile: (profile: Scope["profile"]) => string | null }, read?: PullRequestReader): ReleaseCard {
   const terms = scope.releaseTerms ?? null;
   // Either sealed form (Codex round 2, finding 1): the identity both share, for the head lines and the change list.
@@ -408,6 +417,8 @@ export function releaseCardOf(store: Store, scope: Scope, formDigest: string, wo
       : `Carry later commits: ${terms.policy.carry ? "yes" : "no"} · checks: ${value("checks")} · expires ${terms.expiresAt}`,
     // What an unsandboxed check means, before consent (Codex round 2, finding 1).
     ...(identity === null || releaseAccessWords(identity.access) === null ? [] : [releaseAccessWords(identity.access)!]),
+    // A check that already ran for this task, from its stamp (H2): never read as sandboxed when it can't be shown.
+    ...lastCheckWords(store, identity?.repo ?? null, scope.taskId),
     // Option A's disclosure, on the card as on the approval sheet: never approved from chat without it.
     ...(terms !== null && terms.policy.carry && terms.access !== "sandboxed" ? ["This project's checks don't run in the sandbox: later test-only commits will run outside the sandbox without being shown to you first."] : []),
     // Filed while CI runs (Alex, 2026-10-29): a person may approve now, and is told plainly what still waits.

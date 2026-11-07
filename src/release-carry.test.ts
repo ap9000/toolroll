@@ -6,7 +6,10 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { chmodSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { releaseFixture, RELEASE_NOW, type ReleaseFixture } from "../test/release-fixture.js";
+import { builtRun, releaseFixture, RELEASE_NOW, type ReleaseFixture } from "../test/release-fixture.js";
+import { CHECK_STAMP_VERSION, unfencedStamp } from "./check-stamp.js";
+import { storeEvidence } from "./evidence.js";
+import { recordCheckStamp } from "./store.js";
 import { changeRefusal, effectivePolicy, preflightCarry, stricterOf } from "./release-carry.js";
 import type { TreeChange } from "./commit-extract.js";
 
@@ -14,6 +17,35 @@ let fixture: ReleaseFixture | null = null;
 afterEach(() => { fixture?.close(); fixture = null; });
 const open = (options: Parameters<typeof releaseFixture>[0] = {}) => (fixture = releaseFixture(options));
 const preflight = (f: ReleaseFixture, to: string) => preflightCarry(f.store, { authority: f.authority().id, to, now: RELEASE_NOW });
+
+describe("a carry leans on the check that ran (H2)", () => {
+  const checked = (f: ReleaseFixture) => {
+    const run = builtRun(f.store, f.taskId, f.approved);
+    storeEvidence(f.store, join(f.dir, "evidence"), run, "check-log", "check-log.txt", Buffer.from("ok"), "check", RELEASE_NOW);
+    return run;
+  };
+  const stamp = { version: CHECK_STAMP_VERSION, level: "sandboxed", policyDigest: "a".repeat(32), writable: ["/w"], readable: [], network: { mode: "machine" } } as const;
+  test("no check yet: nothing to lean on, and it carries", () => {
+    const f = open();
+    expect(preflight(f, f.commit({ "docs/guide.md": "# More\n" }))).toMatchObject({ ok: true });
+  });
+  test("a stamped sandboxed check carries", () => {
+    const f = open();
+    recordCheckStamp(f.store, checked(f), stamp, RELEASE_NOW);
+    expect(preflight(f, f.commit({ "docs/guide.md": "# More\n" }))).toMatchObject({ ok: true });
+  });
+  test.each([
+    ["no stamp", (_f: ReleaseFixture, _run: number) => {}, /wasn't recorded/],
+    ["a damaged stamp", (f: ReleaseFixture, run: number) => { f.store.handle.prepare("INSERT INTO check_stamp (run_id, digest, stamp, at) VALUES (?, 'x', 'sandboxed', 'now')").run(run); }, /wasn't recorded/],
+    ["an older version's stamp", (f: ReleaseFixture, run: number) => { f.store.handle.prepare("INSERT INTO check_stamp (run_id, digest, stamp, at) VALUES (?, 'x', ?, 'now')").run(run, JSON.stringify({ ...stamp, version: 0 })); }, /older Toolroll/],
+    ["a check that ran wider than approved", (f: ReleaseFixture, run: number) => recordCheckStamp(f.store, run, unfencedStamp(), RELEASE_NOW), /wider/],
+    ["one launch of two ran wider", (f: ReleaseFixture, run: number) => { recordCheckStamp(f.store, run, stamp, RELEASE_NOW); recordCheckStamp(f.store, run, unfencedStamp(), RELEASE_NOW); }, /wider/],
+  ])("%s refuses, and the later commit asks again", (_name, plant, words) => {
+    const f = open();
+    plant(f, checked(f));
+    expect(preflight(f, f.commit({ "docs/guide.md": "# More\n" }))).toMatchObject({ ok: false, reason: "rules", message: expect.stringMatching(words) });
+  });
+});
 
 describe("which changes carry", () => {
   test.each([

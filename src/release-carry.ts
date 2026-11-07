@@ -28,13 +28,15 @@ import { checkLaunchRoot, fenceFor, linuxFenceAvailable, macosFenceAvailable, ru
 import { touchesProtected } from "./approval-policy.js";
 import { extractCommit, readVerifiedCommit, verifiedFirstParentWalk, verifiedTreeDiff, type TreeChange, type VerifiedCommit } from "./commit-extract.js";
 import { projectGitDir } from "./check-report.js";
+import { checkAccessOf } from "./check-access.js";
+import { stampRefusal } from "./check-stamp.js";
 import { CARRY_RULES_VERSION, readReleasePolicy, releasePolicyDigest, type ReleaseCheckPurpose, type ReleasePolicy, type ReleaseTerms } from "./contracts/release-terms.js";
 import { run, type ExecResult } from "./exec.js";
 import { proxyEnv, startEgressProxy } from "./egress.js";
 import { liveReleaseOf } from "./scope.js";
 import { UNSANDBOXED_CARRY_ACTION, carriesUnsandboxed } from "./release-authority.js";
 import {
-  carryReleaseApproval, releaseAuthority, releaseCarryTo, sealAnchorArtifact,
+  carryReleaseApproval, releaseAuthority, releaseCarryTo, sealAnchorArtifact, taskCheckStamp,
   type ReleaseAuthority, type ReleaseCarry, type Store,
 } from "./store.js";
 
@@ -229,6 +231,10 @@ export function preflightCarry(store: Store, input: { authority: number; to: str
   if ((a.accessDigest !== "sandboxed" || store.projectCheckAccess(a.repo) !== "sandboxed") && policy.unsandboxedCarry !== true) {
     return refuse("rules", "This project's checks run outside the sandbox, and carrying release approvals then wasn't on when this release was approved, or is off now.");
   }
+  // A carry leans on the check the release already had: it must be shown to have stayed within what was approved (H2).
+  const ran = taskCheckStamp(store, a.repo, a.tipTask);
+  const unshown = ran === null ? null : stampRefusal(ran.reading, checkAccessOf(a.accessDigest));
+  if (unshown !== null) return refuse("rules", `This release's approval can't carry: ${unshown}.`);
   if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(input.to)) return refuse("ancestry", `${input.to} isn't a full commit id.`);
   if (input.to === a.tipSha) return refuse("ancestry", `${input.to.slice(0, 7)} is already the release's commit.`);
   const gitDir = projectGitDir(a.repo);

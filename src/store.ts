@@ -10,6 +10,7 @@ import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
 import { reclaimDatabase } from "./database-reclaim.js";
 import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
+import { readStamps, stampDigest, V154_SCHEMA, type CheckStamp, type StampReading } from "./check-stamp.js";
 import { refArchived, taskArchived } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -1184,7 +1185,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // (machine_host_alias, a new table; machine-identity.ts). V150_SCHEMA, V150_ADDED_COLUMNS.
 // v151 adds, and changes no saved row: how long a task stays idle before its clean folder goes
 // (V151_ADDED_COLUMNS: a saved cleanup setting reads NULL, the default).
-export const SCHEMA_VERSION = 151;
+// v154 adds, and changes no saved row (docs/plans/trusted-release-reports.md, H2): each check launch's execution stamp
+// (check_stamp, a new table; check-stamp.ts). A run from before reads no stamp: how its checks ran is unknown.
+export const SCHEMA_VERSION = 154;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1322,7 +1325,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1586,7 +1589,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V154_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -1983,6 +1986,8 @@ export const V150_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 export const V150_STEPS = Object.freeze(["machine-aliases", "witness-machine"] as const);
 /** The v151 migration's steps after v150's, in order (OpenOptions.migrationStep may stop after each). */
 export const V151_STEPS = Object.freeze(["checkout-idle"] as const);
+/** The v154 migration's steps after v151's, in order (OpenOptions.migrationStep may stop after each). */
+export const V154_STEPS = Object.freeze(["check-stamps"] as const);
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6321,6 +6326,9 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   // v151: the idle limit beside the cleanup setting (V151_ADDED_COLUMNS: a saved row reads NULL). Idempotent, as v150's steps are.
   for (const [column, { definition }] of Object.entries(V151_ADDED_COLUMNS["checkout_cleanup_setting"]!)) addColumn(db, "checkout_cleanup_setting", column, definition);
   step("checkout-idle");
+  // v154: each check launch's execution stamp (a new table). Idempotent, as v151's step is.
+  db.exec(V154_SCHEMA);
+  step("check-stamps");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -24010,7 +24018,8 @@ export class Store {
     try { return networkFromValue(JSON.parse(text)); } catch { return null; }
   }
 
-  /** The level a run's checks ran at: missing or unreadable reads as sandboxed. */
+  /** The level a later check of this run may run at, at most: missing or unreadable reads as sandboxed, the narrowest.
+   * Never an account of how its checks DID run: that is runCheckStamp (check-stamp.ts). */
   runCheckAccess(runId: number): CheckAccess {
     return checkAccessOf(this.db.prepare("SELECT sandbox_access FROM run WHERE id = ?").get(runId)?.["sandbox_access"]);
   }
@@ -26892,4 +26901,24 @@ export function setCheckoutIdle(store: Store, idle: CheckoutIdle, by: string, no
     if (before !== idle) store.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: "idle cleanup changed", outcome: "changed", source: "policy", detail: `${idleWords(before)} → ${idleWords(idle)}` });
     return checkoutIdle(store);
   });
+}
+
+/** A check launch's execution stamp (check-stamp.ts), written by the code that launched it. One row per distinct launch. */
+export function recordCheckStamp(store: Store, runId: number, stamp: CheckStamp, now: Date): void {
+  store.handle.prepare("INSERT OR IGNORE INTO check_stamp (run_id, digest, stamp, at) VALUES (?, ?, ?, ?)").run(runId, stampDigest(stamp), JSON.stringify(stamp), now.toISOString());
+}
+
+/** How a run's checks actually ran, by every launch it stamped: `unknown` when none is there or one can't be read. */
+export function runCheckStamp(store: Store, runId: number): StampReading {
+  return readStamps(store.handle.prepare("SELECT stamp FROM check_stamp WHERE run_id = ? ORDER BY id").all(runId).map(row => row["stamp"]));
+}
+
+/** The newest run of a task whose checks ran (it saved a check log), and how they ran; null when none has. */
+export function taskCheckStamp(store: Store, repo: string, taskId: string): { runId: number; reading: StampReading } | null {
+  const runs = store.handle.prepare(`SELECT r.id FROM run r JOIN task_ref t ON t.id = r.task_ref WHERE t.repo = ? AND t.external_id = ? ORDER BY r.id DESC`).all(repo, taskId);
+  for (const row of runs) {
+    const runId = Number(row["id"]);
+    if (store.artifactsFor(runId).some(one => one.kind === "check-log")) return { runId, reading: runCheckStamp(store, runId) };
+  }
+  return null;
 }
