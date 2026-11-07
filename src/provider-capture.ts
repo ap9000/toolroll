@@ -24,7 +24,7 @@ export type ProviderCapture = {
 /** Save one failed attempt's last words. Bookkeeping: it never costs the run anything. */
 export function captureProviderFailure(store: Store, input: { run: number; provider: string; model: string | null; authMode: string | null; exitCode: number | null; code: string | null; texts: readonly (string | null | undefined)[] }, now: Date): void {
   try {
-    const text = cleanFindingText(input.texts.filter((one): one is string => typeof one === "string" && one.trim() !== "").join(" | "), CAPTURE_TEXT_LIMIT);
+    const text = cleanFindingText(input.texts.filter((one): one is string => typeof one === "string" && one.trim() !== "").join("\n"), CAPTURE_TEXT_LIMIT);
     if (text === "" && input.code === null) return;
     const run = store.getRun(input.run);
     const repo = run === null ? null : store.refById(run.taskRef)?.repo ?? null;

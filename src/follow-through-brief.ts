@@ -9,11 +9,11 @@ import { handoverBriefLines, handoverNoteOf } from "./handover-note.js";
 import { STEER_FINDINGS, STEER_HANDLED } from "./steer-mailbox.js";
 import type { Store } from "./store.js";
 
-export function followThroughBrief(store: Store, root: string, input: { taskId: string; taskRef: number; runId: number; fresh: boolean; steer: { folder: string; key: string } | null; now: Date }): string {
+export function followThroughBrief(store: Store, root: string, input: { taskId: string; taskRef: number; runId: number; newSession: boolean; steer: { folder: string; key: string } | null; now: Date }): string {
   const lines: string[] = [];
   try {
     // A resumed session remembers its own work; a fresh agent, whichever provider it is, starts from the note.
-    if (input.fresh) {
+    if (input.newSession) {
       const note = handoverNoteOf(store, root, input.taskId, input.now);
       if (note !== null) lines.push(...handoverBriefLines(note));
     }

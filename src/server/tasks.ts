@@ -37,6 +37,10 @@ import { firstTaskSuggestions,withBuilderStep } from "../first-run.js";
 import { fastStartPage, fastTermsRows, importPage, newTaskPage,type TaskComposerPrefill } from "./render-new-task.js";
 import { fileGithubItem, readGithubItem } from "../github-import.js";
 import { allowAutoPublish, autoPublishHeld } from "../release-auto.js";
+import { startCheckRepair } from "../check-repair.js";
+import { askFailingFirst, dropFailingFirst, rerunEvidence, saveEvidencePair } from "../evidence-pair.js";
+import { closeFinding, familyRootOf, getFinding, resendFinding, sendFinding, sendReviewFinding } from "../findings.js";
+import { labelProviderCapture, providerCapture } from "../provider-capture.js";
 import { fastStartBuild, keepGrownChange, prepareFastStart, type PasswordFacts } from "../fast-start.js";
 import { evidencePack } from "../evidence-pack.js";
 import { decisionPage, evidenceRecordPage, runPage } from "./render-history.js";
@@ -2907,6 +2911,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "tasks.add": addTask,
     "tasks.fast": buildNow,
     "task.act.keep-grown": keepGrown,
+    "task.act.follow-through": followThroughAct,
     "queue.move": queueMove,
     "queue.note": queueNote,
     "decision.answer": answerDecision,
@@ -3001,6 +3006,67 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const kept = keepGrownChange(store, act.taskId, now);
     if (!kept.ok) return taskScreen(response, who, act.taskId, kept.message, 409);
     return redirect(response, taskHref(act.taskId));
+  }
+
+  /** Findings, a failed check's repair and evidence (render-follow-through.ts). Nothing here is an approval: a repair is a
+   * draft, and its task page asks for the plan's approval as any other. */
+  async function followThroughAct(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.followThrough);
+    const act = matchTaskPath(url.pathname, "/follow-through$");
+    if (act === null) return noPage(who, response);
+    const { taskId } = act;
+    const number = (name: "finding" | "run" | "capture") => Number(body.get(name) ?? "");
+    const back = () => redirect(response, `${taskHref(taskId)}#findings`);
+    const refused = (message: string) => taskScreen(response, who, taskId, message, 409);
+    /** A finding or a run named by a form must belong to this task's family: this page's project was the one admitted. */
+    const ownFinding = () => { const found = getFinding(store, number("finding")); return found !== null && found.familyRoot === familyRootOf(store, taskId) ? found : null; };
+    const ownRun = () => { const run = store.getRun(number("run")); const owner = run === null ? null : store.externalIdFor(run.taskRef); return owner !== null && familyRootOf(store, owner) === familyRootOf(store, taskId) ? run : null; };
+    switch (body.get("act")) {
+      case "send": {
+        const line = body.get("line") ?? "";
+        const pointer = body.get("pointer") ?? "";
+        const sent = pointer !== "" ? sendReviewFinding(store, taskId, pointer, who.name, now)
+          : sendFinding(store, { taskId, source: "person", by: who.name, summary: body.get("note") ?? "", file: body.get("file") || null, line: line === "" ? null : Number(line) }, now);
+        return sent.ok ? back() : refused(sent.message);
+      }
+      case "resend": {
+        if (ownFinding() === null) return refused("That finding isn't on this task.");
+        const sent = resendFinding(store, number("finding"), now);
+        return sent.ok ? back() : refused(sent.message);
+      }
+      case "close": {
+        if (ownFinding() === null) return refused("That finding isn't on this task.");
+        const closed = closeFinding(store, number("finding"), who.name, body.get("note") ?? "", now);
+        return closed.ok ? back() : refused(closed.message);
+      }
+      case "repair": {
+        if (ownRun() === null) return refused("That result isn't on this task.");
+        const started = startCheckRepair(store, evidenceRoot, number("run"), now);
+        return started.ok ? redirect(response, taskHref(started.draft)) : refused(started.message);
+      }
+      case "save-evidence": {
+        if (ownRun() === null) return refused("That result isn't on this task.");
+        const saved = saveEvidencePair(store, evidenceRoot, { taskId, runId: number("run"), by: who.name }, now);
+        return saved.ok ? back() : refused(saved.message);
+      }
+      case "rerun-evidence": {
+        const asked = rerunEvidence(store, taskId, who.name, now);
+        return asked.ok ? back() : refused(asked.message);
+      }
+      case "failing-first-on": askFailingFirst(store, taskId, who.name, now); return back();
+      case "failing-first-off": dropFailingFirst(store, taskId); return back();
+      case "mark": {
+        const capture = providerCapture(store, number("capture"));
+        const label = body.get("label");
+        const run = capture === null ? null : store.getRun(capture.run);
+        const owner = run == null ? null : store.externalIdFor(run.taskRef);
+        if (capture === null || owner === null || familyRootOf(store, owner) !== familyRootOf(store, taskId) || (label !== "exhausted" && label !== "not-exhausted")) return refused("That capture isn't on this task.");
+        labelProviderCapture(store, capture.id, label, who.name);
+        return back();
+      }
+      default: return refused("Reload the page and try again.");
+    }
   }
 
   return { registrations, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, peekGuards, liveRunIds };

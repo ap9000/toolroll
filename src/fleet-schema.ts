@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS check_repair (
   revision     TEXT NOT NULL,
   failure_key  TEXT NOT NULL,
   source_run   INTEGER NOT NULL,
-  state        TEXT NOT NULL CHECK (state IN ('waiting', 'repairing', 'with-person', 'parked', 'fixed')),
+  state        TEXT NOT NULL CHECK (state IN ('waiting', 'repairing', 'rerunning', 'with-person', 'parked', 'fixed', 'closed')),
   why          TEXT NOT NULL,
   repair_task  TEXT,
   attempt      INTEGER,

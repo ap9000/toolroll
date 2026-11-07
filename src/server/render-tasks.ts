@@ -29,6 +29,7 @@ import { taskRoad, type RoadChecks } from "../first-run.js";
 import { starterForWork } from "../flow-starters.js";
 import { type Gap } from "../gaps.js";
 import { readAuthModeStrict } from "../keys.js";
+import type { FollowThroughView } from "./render-follow-through.js";
 import { failedAttemptSentence,type FailureExplanation,retryNoteOf,START_BUILDER_COMMAND,startBuilderHref } from "../needs-you.js";
 import { planVersionWords } from "../plain-words.js";
 import { chosenWords, makesNoPlan, PHASES as ROUTE_PHASES, type RouteOverride, type RouteProjection, TASK_SIZES } from "../phase-routing.js";
@@ -1555,6 +1556,8 @@ export function taskBodyParts(data: {
   routeChange?: string | null;
   /** A fast start's result grew past a small change (fast-start.ts): its sentence, and the one act on. */
   fastGrown?: string | null;
+  /** Findings, failed checks, before and after, and the handover note (render-follow-through.ts). */
+  followThrough?: FollowThroughView | null;
   /** Easy-start C5: the viewer is a laptop's local owner — whether this plan is one it approves without a password. */
   approvalLocal?: LocalApprovalView | null;
   /** Cockpit B2: how the current approval's person was proved (approval proved ledger), when it was a remembered one. */
@@ -2688,6 +2691,10 @@ export function taskBodyParts(data: {
     data.assignment == null ? section("attempts", runs, true, data.runs.length) : section("Build activity", data.runs.length === 0 ? "" : runRows, false, data.runs.length, "attempts"),
     section("usage", spendCard, false),
     section("steering", steeringCard, (data.steering ?? []).length > 0, (data.steering ?? []).length),
+    data.followThrough == null ? "" : section("findings", data.followThrough.findings, data.followThrough.openFindings > 0, data.followThrough.findingCount),
+    data.followThrough == null ? "" : section("failed checks", data.followThrough.repairs, true),
+    data.followThrough == null ? "" : section("before and after", data.followThrough.evidence, false),
+    data.followThrough == null ? "" : section("handover note", data.followThrough.handover, false),
     section(
       "plan",
       // The recipe road rides with the scope it reuses (UI polish

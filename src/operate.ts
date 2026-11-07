@@ -322,6 +322,8 @@ import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES,
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { retryVanishedWhenStopped } from "./vanished-retry.js";
 import { requestMissingRechecks } from "./check-only.js";
+import { checkRepairOfRun, resumeParkedRepairs, startCheckRepair } from "./check-repair.js";
+import { capturesCommand, evidenceCommand, failingFirstCommand, findingCommand, handoverCommand, type FollowThroughContext } from "./follow-through-cli.js";
 import { recordBuilderWish } from "./builder-restart.js";
 import { expireFastStarts, fastRefusalWords, fastStartBuild, keepGrownChange, prepareFastStart, type FastBuild, type PasswordFacts } from "./fast-start.js";
 import { fastTermsLines } from "./fast-terms.js";
@@ -881,7 +883,7 @@ export const TASK_ACTIONS = [
   "add", "new", "keep", "list", "show", "wait", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign",
   "reopen", "scope", "approve", "hold", "unhold", "require", "requeue", "regate", "plan",
   "review", "accept", "repair", "route", "stop", "resume", "complete", "revise", "merge", "ask",
-  "checks", "add-tests", "archive", "restore", "tidy", "ship", "ready",
+  "checks", "add-tests", "archive", "restore", "tidy", "ship", "ready", "handover", "before-after", "failing-first",
 ] as const;
 export const PUBLISH_ACTIONS = ["setup", "grant", "revoke", "status", "unblock", "rearm", "merge", "refire"] as const;
 export const CONFIG_ACTIONS = ["show", "set", "clear"] as const;
@@ -922,7 +924,7 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "command", "timeout-seconds", "setup-digest", "stop-grace", "title", "name", "every", "lines",
   "label", "reviewers", "limit", "role", "key-file", "weekly-usd", "daily-turns", "per-hour", "token-file", "budget-usd", "build-usd", "sync-max-age", "merge-method",
   "phase", "tier", "clear-phase", "size", "risky",
-  "run", "containment", "agent",
+  "run", "containment", "agent", "path", "line", "action", "from-review", "from-check", "task",
   // onboard: the starter flows to switch on.
   "starter",
   // flows: templates, steps, scripts and cards.
@@ -1622,6 +1624,10 @@ async function dispatch(
       return cardCommand(positional, flags, context);
     case "flaky":
       return flakyCommand(positional, flags, context);
+    case "finding":
+      return findingCommand(positional, flags, followThroughContext(context, flags));
+    case "captures":
+      return capturesCommand(positional, followThroughContext(context, flags));
     case "claim":
       return claimCommand(positional, flags, context);
     case "heartbeat":
@@ -7036,6 +7042,8 @@ async function runWatchLoop(args: {
       if (context.agentRunner === undefined) void resumeHeldReleases(store, dirname(context.databaseFile), context.clock());
       // A result whose verdict went missing asks for its one automatic recheck (check-only.ts).
       requestMissingRechecks(store, context.evidenceRoot, context.clock());
+      // A failed check that was parked takes its next step once its task is free again (check-repair.ts).
+      resumeParkedRepairs(store, context.evidenceRoot, context.clock());
       const ran = await runWaitingChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
       if (ran > 0) progress(`watch: ran ${ran} follow-up check(s)`);
       // The nightly check of main and the release checks that clear its failures (release-once.md, part 3).
@@ -9416,6 +9424,12 @@ function taskAction(
       return requeueTask(rest, flags, context);
     case "regate":
       return regateTaskCommand(rest, flags, context);
+    case "handover":
+      return handoverCommand(rest, followThroughContext(context, flags));
+    case "before-after":
+      return evidenceCommand(rest, flags, followThroughContext(context, flags));
+    case "failing-first":
+      return failingFirstCommand(rest, followThroughContext(context, flags));
     case "plan":
       return planTaskCommand(rest, flags, context);
     case "review":
@@ -10132,6 +10146,12 @@ async function repairTaskCommand(
     if (acting === null) return fail(write, json, "task repair", "usage", "Evidence collection requires --as and --token.", EXIT.usage);
     const authenticated = authenticateApprover(store, acting.name, acting.token);
     if (!authenticated.ok) return fail(write, json, "task repair", authenticated.reason, describeApproveFailure(authenticated.reason, String(runId)), EXIT.refused);
+    // A failed check waiting for a person: this draft is what they asked for, and its approval below is the normal one.
+    if (checkRepairOfRun(store, runId) !== null) {
+      const started = startCheckRepair(store, context.evidenceRoot, runId, clock());
+      if (!started.ok) return fail(write, json, "task repair", "refused", started.message, EXIT.refused);
+      chain = store.repairChainFor(runId);
+    }
     const run = store.getRun(runId), proof = store.proofVerdictFor(runId);
     const repo = run && store.refById(run.taskRef)?.repo;
     if (repo && repo === repoFrom(flags) && proof?.matrix.some(row => row.assessment && row.review?.judgement === "cannot-tell") &&
@@ -14254,4 +14274,21 @@ async function cardCommand(positional: readonly string[], flags: Map<string, str
 function localReader(context: Context): { name: string; repos: string[] } | null {
   const local = currentLocalOwner();
   return local === null ? null : { name: local.account, repos: context.store.knownRepos().filter(repo => context.store.accountCanAccess(local.account, repo)) };
+}
+
+/** What the follow-through commands need from this file: its envelope, and a verified person (follow-through-cli.ts). */
+function followThroughContext(context: Context, flags: Map<string, string | true>): FollowThroughContext {
+  const { store, write, json, clock, evidenceRoot } = context;
+  return {
+    store, evidenceRoot, now: clock(),
+    ok: (command, result, lines) => succeed(write, json, command, result, lines),
+    no: (command, reason, message) => fail(write, json, command, reason, message, reason === "usage" ? EXIT.usage : EXIT.refused),
+    prove: async command => {
+      const acting = await askCredentials(flags, context);
+      if (acting === null) { fail(write, json, command, "usage", "this takes `--as <you> --token <t>`", EXIT.usage); return null; }
+      const authed = authenticateApprover(store, acting.name, acting.token);
+      if (!authed.ok) { fail(write, json, command, "not-an-approver", "that is not an approver, or the token does not match", EXIT.refused); return null; }
+      return acting.name;
+    },
+  };
 }

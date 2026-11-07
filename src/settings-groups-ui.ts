@@ -623,7 +623,7 @@ export function modeCeremonyHtml(view: { name: string; project: string; words: s
   return settingsSubPage("approval", `Sign the ${view.name} mode`, joinHtml([
     settingsSection({ id: "mode-terms", title: `What you sign for ${view.project}`,
       body: html`<ul class="k-ssec-lead">${view.words.map(words => html`<li>${words}</li>`)}</ul>` }),
-    kitSectionForm({ proof: view.chatApprove ? "mode-sign-chat-approve" : view.repairAuto ? "mode-sign-repair" : "mode-sign", action: "/mode/sign", id: "mode-sign-form", native: true, hidden: view.hidden,
+    kitSectionForm({ proof: view.repairAuto ? "mode-sign-repair" : view.chatApprove ? "mode-sign-chat-approve" : "mode-sign", action: "/mode/sign", id: "mode-sign-form", native: true, hidden: view.hidden,
       save: { label: "Sign it" }, confirm: `Sign the ${view.name} mode for ${view.project}`, body: html`` }),
     note(html`<a class="k-link" href="/mode">Back, and sign nothing</a>`),
   ]));

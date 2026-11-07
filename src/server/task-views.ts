@@ -29,6 +29,7 @@ import { readSkillsSnapshot,skillTestResult } from "../project-skills.js";
 import { newestPullRequestOf,publishingOf,pullRequestBlocker } from '../pull-request-flow.js';
 import { structuredHandoffView,terminalDiffView } from "../result-evidence-readers.js";
 import { resultCheckLevel } from '../result-follow-ups.js';
+import { followThroughView } from "./render-follow-through.js";
 import { skillsSnapshotHtml,skillTestFeedbackHtml } from "../skills-ui.js";
 import type { TaskFamily, TaskArchive } from "../store.js";
 import { archiveOf } from "../store.js";
@@ -578,6 +579,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
               : field.field === "local-refused" ? { eligible: false as const, message: field.message, href: field.href, action: field.action } : null };
         })(),
         routeChange: ref === null ? null : routeChangeOf(runtime.store, ref.externalId),
+        followThrough: followThroughView(runtime.store, runtime.evidenceRoot, taskId, taskHref(taskId), who.role === "approver" && who.via === "cookie" && !runtime.store.isDemo(), runtime.clock()),
         fastGrown: (() => {
           if (ref === null || runtime.store.getTask(ref.externalId)?.state !== "done" || !fastStarted(runtime.store, ref.externalId)) return null;
           const last = runtime.store.lastBuilderRun(ref.id);

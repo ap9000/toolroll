@@ -345,7 +345,19 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "digest", takesValue: true, meaning: "the exact receipt from assignment show; accepts and finishes exactly that result" },
       { name: "despite", takesValue: true, meaning: "accept with this reason, without finishing; never combines with --finish or --digest (--note is its alias)" }],
     notableReasons: ["usage", "unknown-task", "no-run", "not-ready"] },
-  operator("task repair", "inspect or approve an existing historical repair draft; use task revise for new feedback"),
+  operator("task repair", "inspect or approve a repair draft; --yes starts the repair a failed check is waiting for, under the normal plan approval"),
+  operatorRead("task handover", "where a task stands, from Toolroll's records: revision, decisions, rejected approaches, open findings, checks and the next action"),
+  operator("task before-after", "before-and-after evidence: read it, save a failing result, or rerun the same check on the latest commit with no agent"),
+  operator("task failing-first", "ask a bug fix's next attempt to write a failing test first (on|off); shown in the result as the agent's report"),
+  operatorRead("finding list", "findings still waiting on someone, or every finding of --task <id>"),
+  operatorRead("finding show", "one finding: its text, evidence and how it stands"),
+  operator("finding send", "send a finding to the task that owns the code; the owner must accept it or reject it with a reason"),
+  operator("finding resend", "send an answered finding back, one more round; past the limit it goes to a person"),
+  operator("finding close", "a person's decision on a finding"),
+  operatorRead("captures list", "what providers said when attempts failed, the ones mentioning limits first; nothing routes on these"),
+  operatorRead("captures show", "one saved provider failure"),
+  operatorRead("captures export", "one saved provider failure as a fixture"),
+  operator("captures mark", "a person's reading of a capture: exhausted or not-exhausted"),
   operator("task route", "which configured agents plan, build and repair this task; phase and size changes require renewed approval"),
   operator("task reopen", "resume external work its tracker closed and has been SEEN open again"),
   operator("task stop", "stop ONE exact live attempt (--run <id>): durable before any process is signalled, answers 'stopping' until its own processes are established gone; work, branch, and evidence preserved; no strike, no retry"),
@@ -531,6 +543,11 @@ const REMOTE_NO: readonly string[] = [
   // Reads this machine owner's own Claude and Codex session files (~/.claude, ~/.codex).
   "memory propose",
 ];
+const REMOTE_FOLLOW_THROUGH: readonly string[] = [
+  // On the server's machine or in the console: each writes through a verified person, and they read saved model text.
+  "task handover", "task before-after", "task failing-first", "finding list", "finding show", "finding send", "finding resend", "finding close",
+  "captures list", "captures show", "captures export", "captures mark",
+];
 const REMOTE_STEP_UP: readonly string[] = [
   "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle",
   // Putting tasks away and restoring them: a person's act, in the console or on the server's machine.
@@ -564,11 +581,12 @@ const REMOTE_YES: readonly string[] = [
 /** Every row's remote policy, by invocation. Exported for the contract test, which holds it to the guide exactly. */
 export const REMOTE_POLICY: ReadonlyMap<string, RemotePolicy> = new Map([
   ...REMOTE_NO.map(invocation => [invocation, "no"] as const),
+  ...REMOTE_FOLLOW_THROUGH.map(invocation => [invocation, "no"] as const),
   ...REMOTE_STEP_UP.map(invocation => [invocation, "step-up"] as const),
   ...REMOTE_YES.map(invocation => [invocation, "yes"] as const),
 ]);
 /** How many times each invocation was classified — the contract test refuses a row stated twice. */
-export const REMOTE_POLICY_COUNT: number = REMOTE_NO.length + REMOTE_STEP_UP.length + REMOTE_YES.length;
+export const REMOTE_POLICY_COUNT: number = REMOTE_NO.length + REMOTE_FOLLOW_THROUGH.length + REMOTE_STEP_UP.length + REMOTE_YES.length;
 
 /**
  * Easy-start C3: the commands a laptop's local owner may run through the terminal UI (local-owner.ts runAsLocalOwner),

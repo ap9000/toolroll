@@ -20,6 +20,8 @@ const COOKIE_ONLY_POSTS = [
   'task.act.resume', 'projects.onboard-confirm', 'push.subscribe',
   // A person's own yes from a browser: Build (fast-start.ts), Approve it to keep it, a held release's Let it go on.
   'tasks.fast', 'task.act.keep-grown', 'task.release.go-on',
+  // Findings, a repair's draft and evidence from a browser: a person's act, and none of them an approval.
+  'task.act.follow-through',
   'chat.config', 'chat.mate-mint', 'chat.mate-follow', 'chat.mate-end', 'chat.mate-stop',
   // The lead queue: removing your own waiting message, from a browser.
   'chat.queued-remove',

@@ -202,6 +202,7 @@ export const CONSOLE_FORMS = {
   codeMapRefresh: formContract("POST /projects/<project>/map/refresh", []),
   tasksFast: formContract("POST /tasks/fast", ["preview", "digest"]),
   keepGrown: formContract("POST /t/<id>/keep-grown", []),
+  followThrough: formContract("POST /t/<id>/follow-through", ["act", "note", "file", "line", "finding", "run", "pointer", "capture", "label"]),
   releaseGoOn: formContract("POST /t/<id>/release/go-on", ["password"]),
   tasksAdd: formContract("POST /tasks/add", ["projectRevision", "plain", "from", "from-head", "from-read", "id", "title", "repo", "goal", "not", "touches", "scout", "permission-mode", "quality-mode", "after", "acceptance", "planning-policy", "plan-first"]),
   queue: formContract("POST /queue/move, /queue/note", ["runner", "note", "from", "projectRevision", "respond", "task", "column", "before", "queueRevision"]),

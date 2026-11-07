@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Results keep moving after an agent finishes.** Send a finding to the task that owns the code: the running build gets it, or the next attempt. The owner must accept it, saying what changed, or reject it with a reason that names a file. Reading it closes nothing, and after two rounds it comes to you.
+- **A failed check gets one owner and a limited repair.** The same failure on the same commit never starts a second repair. Sign a mode with repairs on and it runs by itself, up to its limit, inside the plan you approved. Without that, the failure waits for you to start a repair.
+- **Handover note.** Every task has a note built from Toolroll's records: current commit, decisions, rejected approaches, open findings, checks and the next action. A fresh agent starts from it. Read it on the task page or with `toolroll task handover`.
+- **Before and after.** Save a failing result and rerun the same check on the latest commit. If the code moves on, the evidence says it is out of date. A bug fix can also ask for a failing test first.
+- **What a provider said when an attempt failed is saved** (`toolroll captures`), so a real used-up plan can be recognised later. Nothing routes on it.
+- **Pull requests that can affect upgrades now run the upgrade test in CI**, so a broken upgrade shows up before a release.
+
 ## 0.9.94 — 2026-11-07
 
 - **Small tasks start in one step.** For small work you start yourself, New

@@ -2140,7 +2140,8 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   // MEDIUM and LOW never block: suggested follow-ups, on request.
   if (automatic !== null && automatic.followUps.length > 0) {
     summaryParts.push(html`<details class="result-notes" data-review-followups="${automatic.followUps.length}"><summary>Suggested follow-ups · ${automatic.followUps.length}</summary><ul class="result-changes">${
-      automatic.followUps.map(one => html`<li><span class="badge">${one.severity === "MEDIUM" ? "Medium" : "Low"}</span> <span class="mono">${`${one.file}:${one.line}`}</span> ${one.scenario}</li>`)
+      automatic.followUps.map((one, index) => html`<li><span class="badge">${one.severity === "MEDIUM" ? "Medium" : "Low"}</span> <span class="mono">${`${one.file}:${one.line}`}</span> ${one.scenario}${
+        o.csrf === "" ? "" : postForm(`${taskHref(detail.taskId)}/follow-through`, html`<input type="hidden" name="act" value="send"><input type="hidden" name="pointer" value="${`${automatic.run}:${automatic.high.length + index + 1}`}"><button type="submit" class="secondary">Send to the agent</button>`)}</li>`)
     }</ul></details>`);
   }
   const evidenceSources = [

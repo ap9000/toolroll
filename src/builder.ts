@@ -1588,7 +1588,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     steerBox === null ? null : { folder: steerFolder, key: steerBox.key, live: liveSession !== null },
   ) + `\nCanonical signed rubric: ${rubric}. Its statement fields are exact; evidence requirements are separate fields. Do not edit this input. The lead or user reads these criteria directly; no restatement is needed.\n` + sharedDepsBrief(store, worktree)
     + (statusPath === null || statusName === null ? "" : statusBrief(statusName, steerBox === null ? null : steerFolder))
-    + ((scope?.candidate ?? null) !== null ? "" : followThroughBrief(store, root, { taskId: request.taskId, taskRef, runId: request.runId, fresh: resumeSession === null, steer: steerBox === null ? null : { folder: steerFolder, key: steerBox.key }, now: clock() }));
+    + ((scope?.candidate ?? null) !== null ? "" : followThroughBrief(store, root, { taskId: request.taskId, taskRef, runId: request.runId, newSession: resumeSession === null, steer: steerBox === null ? null : { folder: steerFolder, key: steerBox.key }, now: clock() }));
 
   // THE PREPARED-CANDIDATE ROAD (v69): the scope names a commit, proved
   // above before anything moved. The machine brings the worktree to its exact
@@ -3093,7 +3093,8 @@ async function settleProof(
   // right here — a review can only ever lower this verdict, never raise
   // it, so this structural save is the one place "resolved" can fire.
   maybeSettleRepairChain(store, request.taskId, verdict, now());
-  settleCheckRepairs(store, request.taskId, verdict, now());
+  // The machine's own word: a passing check with its goal still to be assessed reads "short" overall.
+  settleCheckRepairs(store, request.taskId, machineVerdict ?? verdict, now());
 }
 
 /** A stable, filesystem-safe tag for a claimed screenshot's stored evidence

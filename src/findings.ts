@@ -13,6 +13,8 @@ import { z } from "zod";
 import { fence } from "./brief-fence.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { readingFleet } from "./fleet-schema.js";
+import { buildReviewOf } from "./review-switch.js";
+import { failedVerificationEvidence } from "./verification-evidence.js";
 import { viewedGitSync } from "./teardown-git.js";
 import type { BuildFinding } from "./contracts/review-findings.js";
 import type { Store } from "./store.js";
@@ -337,6 +339,23 @@ export function recordReviewFindings(store: Store, input: { run: number; taskId:
 
 const BRIEF_FINDINGS = 10;
 const BRIEF_EXCERPT = 500;
+
+/** Send one of a result's review findings: `<run>:<number>`, counted from 1 as the result lists them. */
+export function sendReviewFinding(store: Store, taskId: string, pointer: string, by: string, now: Date): SendAnswer {
+  const match = /^([1-9][0-9]{0,14}):([1-9][0-9]{0,3})$/.exec(pointer);
+  const view = match === null ? null : buildReviewOf(store, Number(match[1]));
+  const finding = view === null ? undefined : [...view.high, ...view.followUps][Number(match![2]) - 1];
+  if (finding === undefined) return { ok: false, reason: "invalid", message: `That result has no review finding ${pointer}.` };
+  return sendFinding(store, { taskId, source: "build-review", by, summary: finding.scenario, file: finding.file, line: finding.line, severity: finding.severity, run: Number(match![1]), key: `review-send:${pointer}` }, now);
+}
+
+/** Send a result's failed check, with the end of its sealed log as the evidence. The summary is Toolroll's own words. */
+export function sendCheckFinding(store: Store, root: string, taskId: string, runId: number, by: string, now: Date): SendAnswer {
+  const failure = Number.isSafeInteger(runId) ? failedVerificationEvidence(store, root, runId) : { kind: "none" as const };
+  if (failure.kind !== "failed") return { ok: false, reason: "invalid", message: `Attempt #${runId} has no failed check to send.` };
+  const head = store.getRun(runId)?.headRevision ?? null;
+  return sendFinding(store, { taskId, source: "check-failure", by, summary: `The approved check failed on ${head?.slice(0, 7) ?? "this result"}.`, run: runId, revision: head, excerpt: failure.log.slice(-FINDING_EXCERPT_LIMIT), key: `check-send:${runId}` }, now);
+}
 
 /** The folder an attempt's answers go in, and what the brief says about writing one. Trusted words: nothing here is quoted. */
 export function findingAnswerRule(folder: string, key: string): string[] {
