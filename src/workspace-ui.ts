@@ -642,7 +642,7 @@ function workStatusWordsOf(facts: WorkFacts, resultDisplay?: DisplayStatus): Wor
   // The control projection knows whether a stop has actually settled.
   // A still-live claim alone cannot distinguish Running from Stopping.
   if (facts.control?.kind === "stopping") {
-    return { token: "stopping", label: "Stopping…", detail: facts.control.detail ?? "The attempt is ending. Its work is preserved; resume becomes available after its processes exit.", tone: "attention", action: { label: "View stop details", kind: "open-task" }, views, rank: 0 };
+    return { token: "stopping", label: "Stopping…", detail: facts.control.detail ?? "The attempt is ending. Its work is preserved; resume becomes available after its processes exit.", tone: "attention", action: { label: "View stop details", kind: "open-task" }, views, rank: 1 };
   }
   if (facts.control?.kind === "paused") {
     return { token: "stopped", label: "Paused", detail: "The stopped attempt's work is preserved. Resuming requires confirmation and checks the current approval again.", tone: "attention", action: { label: "Review pause", kind: "open-task" }, views, rank: 0 };

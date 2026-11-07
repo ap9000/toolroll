@@ -19,7 +19,8 @@ import { createDecisionServer, SENSITIVE_INPUT } from "./serve.js";
 import { routeOfTask } from "./agentconfig.js";
 import { projectRoute } from "./phase-routing.js";
 import { Window } from "happy-dom";
-import { presented, T0, renderedHtmlOf, workspaceOf } from "../test/serve-kit.js";
+import { presented, renderedHtmlOf, sealScopeFixture, T0, workspaceOf } from "../test/serve-kit.js";
+import type { BrowserHomeView, BrowserTasksView } from "./browser-workspace.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { createDemoSandbox } from "./demo.js";
 
@@ -400,11 +401,13 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
   /** A parked decision with one reversible and one irreversible option. */
   const seedDecisionIn = (id: string, repo: string, question: string): number => {
     const ref = seedTaskIn(id, `decide ${id}`, repo);
+    sealScopeFixture(store, id, approverToken);
     const run = store.startRun({
       taskRef: ref, leaseId: `lease-${id}`, runner: "b1",
       branch: `standing-orders/${id}`, worktree: `/pool/${id}`, now: T0,
       ...presented(store, ref, "builder"),
     });
+    store.finishRun(run, { outcome: "parked", reason: "decision:1", now: T0 });
     return store.saveDecision(
       {
         run,
@@ -495,66 +498,87 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
 
     await boot({ repos: ["/repo/main", "/repo/side"] });
     const cookie = await login();
-    const html = await (await fetch(url("/workbench"), { headers: { cookie } })).text();
+    // The portfolio is Tasks across every project now; what waits on a person is Home. Whole responses, so the
+    // workspace snapshot is held to the same rule as the page.
+    const retired = await fetch(url("/workbench"), { headers: { cookie }, redirect: "manual" });
+    expect(retired.status).toBe(301);
+    expect(retired.headers.get("location")).toBe("/tasks?scope=all");
+    const home = await (await fetch(url("/"), { headers: { cookie } })).text();
+    const tasks = await (await fetch(url("/tasks?scope=all"), { headers: { cookie } })).text();
+    const board = await (await fetch(url("/tasks?scope=all&view=board"), { headers: { cookie } })).text();
 
     // Admitted rows render; the hidden project's rows and dollars do not.
-    expect(html).toContain("Answer the admitted question?");
-    expect(html).not.toContain("SECRET-DECIDE");
-    expect(html).not.toContain("SECRET-RUN");
-    expect(html).not.toContain("77.77");
+    const homeView = workspaceOf(home).view as BrowserHomeView;
+    const homeRows = homeView.groups.flatMap(group => group.rows);
+    expect(homeRows.find(row => row.id === "d-main")?.line).toBe("Answer the admitted question?");
+    const tasksView = workspaceOf(tasks).view as BrowserTasksView;
+    expect(tasksView.rows.map(row => row.id).sort()).toEqual(["d-main", "r-main", "r-side"]);
+    expect((workspaceOf(board).view as BrowserTasksView).rows.map(row => row.id).sort()).toEqual(["d-main", "r-main", "r-side"]);
+    for (const page of [home, tasks, board]) {
+      expect(page).not.toContain("SECRET-DECIDE");
+      expect(page).not.toContain("SECRET-RUN");
+      expect(page).not.toContain("77.77");
+      // The hidden live claim never renders as a running row.
+      expect(page).not.toContain("secret-runner");
+      expect(page).not.toContain("SECRET-LIVE");
+      expect(page).not.toContain("/repo/secret");
+      // Deleted fictions never render.
+      expect(page).not.toContain("Pause dispatch");
+      expect(page).not.toContain("idle spend");
+    }
 
-    // The hidden live claim never renders as a running row.
-    expect(html).not.toContain("secret-runner");
-    expect(html).not.toContain("SECRET-LIVE");
+    // Every count reads the admitted projects alone: one asks, nothing of the hidden project runs or waits.
+    expect(homeView.say).toBe("1 needs you in main.");
+    expect(Object.fromEntries(homeView.counts.map(one => [one.key, one.value]))).toEqual({ needs: 1, running: 0, queued: 2, finished: 0 });
+    expect(Object.fromEntries(tasksView.tabs.map(tab => [tab.key, tab.count]))).toMatchObject({ all: 3, "needs-you": 1, running: 0 });
+    expect(workspaceOf(home).needsYou?.count).toBe(1);
 
-    // The window rollup counts only visible runs, by the exhaustive
-    // outcome vocabulary, with spendLine's own wording — and tokens stand
-    // alone, counting the unmeasured invocation's reported usage.
-    expect(html).toContain("runs started");
-    expect(html).toContain("1 built · 1 failed");
-    expect(html).toContain("invocation(s)");
-    expect(html).toContain("$1.23");
-    expect(html).toContain("unmeasured");
-    expect(html).toContain(`>${(7_000 + 700 + 150).toLocaleString()}</span>`);
+    // A hidden project's task is simply not there, by link as by list.
+    expect((await fetch(url("/t/d-secret"), { headers: { cookie } })).status).toBe(404);
 
     // The corrupted PR URL renders as text — the number without navigation.
-    expect(html).toContain("PR #13");
-    expect(html).not.toContain("javascript:alert");
-
-    // Deleted fictions never render.
-    expect(html).not.toContain("Pause dispatch");
-    expect(html).not.toContain("idle spend");
+    const built = await (await fetch(url("/t/r-main"), { headers: { cookie } })).text();
+    expect(built).toContain("PR #13");
+    expect(built).not.toContain("javascript:alert");
 
     // The decision card answers reversibly inline — real words, no letters,
     // no confirm field anywhere near it; the irreversible option is a link.
-    expect(html).toContain("decide-inline");
-    expect(html).not.toContain('name="confirm"');
-    expect(html).not.toContain('value="drop"');
-    expect(html).toContain("Irreversible");
+    const card = await (await fetch(url("/t/d-main"), { headers: { cookie } })).text();
+    expect(card).toContain("decide-inline");
+    expect(card).not.toContain('name="confirm"');
+    expect(card).not.toContain('value="drop"');
+    expect(card).toContain("Irreversible");
   });
 
-  test("the roll-up inbox stays links-only; the selected-project inbox answers on the card", async () => {
+  test("Home's roll-up is links-only for a question with an irreversible option, in every scope", async () => {
     seedDecisionIn("d-one", "/repo/main", "Which way?");
 
     await boot({ repos: ["/repo/main", "/repo/side"] });
     const cookie = await login();
 
-    // Projectless roll-up: the decision is a link, never a form.
-    const rollup = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
-    expect(rollup).toContain("Which way?");
-    expect(rollup).not.toContain("decide-inline");
-    expect(rollup).not.toMatch(/<form[^>]*\/answer/);
+    // Projectless roll-up: the decision is a link, never a form. The old address lands here.
+    const landed = await fetch(url("/inbox"), { headers: { cookie } });
+    expect(new URL(landed.url).pathname).toBe("/");
+    for (const rollup of [await landed.text(), await (await fetch(url(`/?project=${encodeURIComponent("/repo/main")}`), { headers: { cookie } })).text()]) {
+      const row = (workspaceOf(rollup).view as BrowserHomeView).groups.flatMap(group => group.rows).find(one => one.id === "d-one");
+      expect(row).toMatchObject({ line: "Which way?", question: null });
+      expect(row?.action?.href).toMatch(/^\/(?:t|d)\//);
+      expect(rollup).not.toContain("decide-inline");
+      expect(rollup).not.toMatch(/<form[^>]*\/answer/);
+    }
   });
 
-  test("the legacy unscoped projectless inbox is links-only too — no chosen project, no forms", async () => {
+  test("an unplaced question on an unscoped Home is links-only too — no chosen project, no forms", async () => {
     // Unplaced work in an unscoped installation (no ceiling configured).
     store.createTask({ id: "d-free", title: "decide free" }, T0);
     const ref = store.refFor("built-in", "d-free").id;
+    sealScopeFixture(store, "d-free", approverToken);
     const run = store.startRun({
       taskRef: ref, leaseId: "lease-free", runner: "b1",
       branch: "standing-orders/d-free", worktree: "/pool/d-free", now: T0,
       ...presented(store, ref, "builder"),
     });
+    store.finishRun(run, { outcome: "parked", reason: "decision:1", now: T0 });
     store.saveDecision(
       {
         run, urgency: "blocking", recap: "why", question: "Free-floating question?",
@@ -567,9 +591,12 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
     await boot({});
     const cookie = await login();
     const inbox = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
-    expect(inbox).toContain("Free-floating question?");
+    // Unplaced work asks for its project first: Home's row is a link to the task, whose own page keeps the question.
+    const row = (workspaceOf(inbox).view as BrowserHomeView).groups.flatMap(group => group.rows).find(one => one.id === "d-free");
+    expect(row).toMatchObject({ project: "Unplaced", question: null, action: { label: "Choose a project", href: "/t/d-free?version=d-free" } });
     expect(inbox).not.toContain("decide-inline");
     expect(inbox).not.toMatch(/<form[^>]*\/answer/);
+    expect(await (await fetch(url("/t/d-free"), { headers: { cookie } })).text()).toContain("Free-floating question?");
   });
 
   test("a ceremony-bearing selected task never ships the decision script, whatever else is open", async () => {
@@ -585,13 +612,13 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
     await boot({ repo: "/repo/main" });
     const cookie = await login();
 
-    // The overview alone carries the enhancement…
-    const overview = await (await fetch(url("/workbench"), { headers: { cookie } })).text();
+    // The question's own page carries the enhancement…
+    const overview = await (await fetch(url("/t/d-open"), { headers: { cookie } })).text();
     expect(overview).toContain("decide-inline");
 
     // …a selected ceremony page does not — sensitive pages gain no new
     // scripts (commit-1 review, finding 1); the scope bar stays inert.
-    const selected = await (await fetch(url("/workbench?t=t-approve"), { headers: { cookie } })).text();
+    const selected = await (await fetch(url("/t/t-approve"), { headers: { cookie } })).text();
     expect(selected).toContain('type="password"');
     expect(selected).not.toContain("decide-inline");
     expect(selected).not.toContain("replaceChildren");
@@ -603,16 +630,16 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
 
     await boot({ repo: "/repo/main" });
     const cookie = await login();
-    const inbox = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
-    // The selected-project inbox renders the partial: inline reversible
-    // form without confirm, irreversible as a link.
-    expect(inbox).toContain("decide-inline");
-    expect(inbox).toContain(`data-decision-id="${decisionId}"`);
-    expect(inbox).not.toContain('name="confirm"');
-    expect(inbox).not.toContain('value="drop"');
+    const page = await (await fetch(url("/t/d-tap"), { headers: { cookie } })).text();
+    // The task page renders the partial: inline reversible form without
+    // confirm, irreversible as a link.
+    expect(page).toContain("decide-inline");
+    expect(page).toContain(`data-decision-id="${decisionId}"`);
+    expect(page).not.toContain('name="confirm"');
+    expect(page).not.toContain('value="drop"');
 
-    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(inbox)?.[1];
-    if (csrf === undefined) throw new Error("no csrf on the inbox");
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)?.[1];
+    if (csrf === undefined) throw new Error("no csrf on the task page");
     const posted = await fetch(url(`/d/${decisionId}/answer`), {
       method: "POST",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
@@ -755,7 +782,7 @@ describe("the queue (portfolio arc, slice 1b): move-to-front resolved server-sid
 
     const moved = await frontForm(cookie, csrf(page), "t-c", "anyone", before);
     expect(moved.status).toBe(303);
-    expect(moved.headers.get("location")).toBe("/board?view=order");
+    expect(moved.headers.get("location")).toBe("/tasks?view=order");
     // The asserted ORDER: t-c now leads its own partition; the repo-less
     // card's partition is untouched; the revision moved exactly once.
     expect(partition("/repo/main", null)).toEqual(["t-c", "t-b"]);
@@ -1179,7 +1206,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(concern?.textContent).toContain("never wired in");
     expect(concern?.closest(".requirement-evidence")).toBeNull();
     await reviewWindow.happyDOM.close();
-    expect(html).toContain("An independent review found conflicting evidence");
+    expect(html).toContain("An independent review found the report doesn't match the changes.");
     expect(html).toContain("Automatic recovery");
     expect(html).toContain(trigger.draftTaskId);
 
@@ -1196,8 +1223,8 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(sheetMain).not.toContain("inherited terms");
 
     // Historical repair records stay readable on their task pages. They do
-    // not add a second assessment-based stage to the current inbox.
-    const inbox = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
+    // not add a second assessment-based stage to what Home asks of a person.
+    const inbox = await (await fetch(url("/"), { headers: { cookie } })).text();
     expect(inbox).toContain("t-review");
     expect(inbox).not.toContain("repair drafted, awaiting approval");
     expect(store.proofVerdictFor(run)?.verdict).toBe("refuted");
@@ -1351,8 +1378,6 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(html).toContain(`"/r/${run}"+"?fragment=transcript&from="`);
     expect(html).not.toContain("fetch(location.pathname");
     expect(html).not.toContain("/t/t-live?fragment");
-    // Honesty lines preserved verbatim from the run page.
-    expect(html).toContain("display only");
 
     const check = await (await fetch(url(`/r/${run}?fragment=check`), { headers: { cookie } })).text();
     expect(check).toContain('data-final="live"');
@@ -1381,13 +1406,10 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(codex).not.toContain('id="live-transcript"');
     expect(codex).not.toContain("?fragment=transcript");
 
-    // The workbench's selected-task pane carries no run pollers, so the
-    // panel there is the static line with the door — never an empty
-    // region promising a look that cannot land.
+    // The workbench's selected-task pane is gone: its old address lands on Tasks, which carries no run pollers and no
+    // empty region promising a look that cannot land. (Static panel: the sensitive composition test below.)
     const pane = await (await fetch(url("/workbench?t=t-live"), { headers: { cookie } })).text();
-    expect(pane).toContain(`Build #${run} · night-shift-1 · running`);
-    expect(pane).toContain("The live view is on the build page");
-    expect(pane).toContain(`href="/r/${run}">full build view →`);
+    expect((workspaceOf(pane).view as BrowserTasksView).rows.map(row => row.id)).toContain("t-live");
     expect(pane).not.toContain('id="run-peek"');
     expect(pane).not.toContain(`/r/${run}?fragment=peek`);
   });
@@ -1468,7 +1490,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(await words("t-none")).toBe("may push standing-orders/* to ap9000/main · may open a PR against main · may merge (squash)");
   });
 
-  test("economics rows say measured or unmeasured on both lines; the approved scope wears its seal in the rail", async () => {
+  test("economics rows say measured or unmeasured on both lines; the approved plan says who approved it in the rail", async () => {
     const ref = seed("t-money", "costly");
     finished("t-money", ref, "built", 1.25);
     await boot();
@@ -1476,9 +1498,9 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     let rail = railOf(await (await fetch(url("/t/t-money"), { headers: { cookie } })).text());
     expect(rail).toContain("this attempt</span> <span class=\"mono\">$1.25 · 44k tokens · measured");
     expect(rail).toContain("task total</span> <span class=\"mono\">$1.25 · 44k tokens · measured");
-    expect(rail).toContain("approved scope");
-    expect(rail).toContain('<span class="seal">signs ');
-    expect(rail).toContain("approved by alex");
+    expect(rail).toContain("approved plan");
+    expect(rail).toContain("Approved by alex");
+    expect(rail).not.toContain('class="seal"');
 
     // A newer unmeasured attempt: this attempt is unmeasured in words, the
     // total says how many were, and $0 is never invented.
@@ -1562,11 +1584,11 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     const html = await (await fetch(url("/t/t-broke"), { headers: { cookie } })).text();
     const view = workspaceOf(html).view as import("./browser-workspace.js").BrowserTaskView;
     // The latest failed attempt's reason, in words: never the code as stored, never an earlier attempt's.
-    const said = "The result didn't meet its signed requirements.";
+    const said = "The result didn't meet its approved requirements.";
     expect(view.status).toMatchObject({ status: { headline: "Failed", sentence: said }, action: null });
     // No check log and no saved report: the stop reason, one suggestion of what to change, and the build's own result
     // on this task's Result tab (never the run record, which would bring the person back here).
-    const suggestion = "Before handing off, check each signed requirement against the changes.";
+    const suggestion = "Before handing off, check each approved requirement against the changes.";
     expect(view.failure).toEqual({ line: said, evidence: null, suggestion, link: { label: `See build #${failedRun}`, href: `/t/t-broke?tab=result&run=${failedRun}` } });
     expect(renderedHtmlOf(html)).not.toMatch(/“acceptance”|recorded reason “/);
     // Retry stays the one ink act, its note already holding the suggestion.
@@ -1915,7 +1937,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect((await form([["risky", "maybe"]])).status).toBe(400);
   });
 
-  test("consent: the task page, the focused chat, and the next-up triage all restate the same concise exact agents before the password, with runtime limits closed away", async () => {
+  test("consent: the task page and the focused chat restate the same concise exact agents before the password, with runtime limits closed away; Home only leads there", async () => {
     const cookie = await loginAs("alex", approverToken);
     const summary = "claude · sonnet plans; claude · opus builds and repairs";
     const why = "a large change — planning and building use the strongest configured agent";
@@ -1936,25 +1958,19 @@ describe("the phase route on the console (v47): one projection on the task page,
       expect(ceremony).not.toContain("not yet checked");
       expect(ceremony.replace(/<[^>]+>/g, " ")).not.toMatch(/--dangerously|config set|task route/);
     };
-    const check = (ceremony: string): void => {
-      const agentsAt = ceremony.indexOf('<p class="approval-label">agents</p>');
-      const passwordAt = ceremony.indexOf('name="token"');
-      expect(agentsAt).toBeGreaterThan(-1);
-      expect(passwordAt).toBeGreaterThan(agentsAt);
-      expect(ceremony).toContain(`<p class="agents-summary">${summary}</p>`);
-      expect(ceremony).toContain("Large change: strongest agents plan and build");
-      expect(ceremony).toContain('<details class="agents-runtime"><summary>Runtime limits</summary>');
-      expect(ceremony).not.toContain("<details open");
-      expect(ceremony).not.toContain("not yet checked");
-      expect(ceremony.replace(/<[^>]+>/g, " ")).not.toMatch(/--dangerously|config set|task route/);
-    };
     sheet(ceremonyOf(await page(cookie, "/t/payouts"), "\\/t\\/payouts\\/approve"));
     sheet(ceremonyOf(await page(cookie, "/chat?task=payouts"), "\\/t\\/payouts\\/approve"));
-    // /next asks what the rules ask: with the sign-in's remembered password forgotten, the password (a remembered one
-    // is one click there, password-freshness.serve.test.ts).
-    expect((await post(cookie, "/session/forget-password", { csrf: csrfOf(await page(cookie, "/t/payouts")), return: "/next" })).status).toBe(303);
-    const next = await page(cookie, "/next");
-    check(ceremonyOf(next, "\\/t\\/payouts\\/approve"));
+    // With the sign-in's remembered password forgotten, the ceremony still asks for it (a remembered one is one click,
+    // password-freshness.serve.test.ts).
+    expect((await post(cookie, "/session/forget-password", { csrf: csrfOf(await page(cookie, "/t/payouts")), return: "/" })).status).toBe(303);
+    sheet(ceremonyOf(await page(cookie, "/t/payouts"), "\\/t\\/payouts\\/approve"));
+    // Home carries no ceremony of its own: the row is a link to the page that restates the agents.
+    const home = await page(cookie, "/");
+    expect(home).not.toContain('name="token"');
+    expect(ceremonyOf(home, "\\/t\\/payouts\\/approve")).toBe("");
+    const row = (workspaceOf(home).view as BrowserHomeView).groups.flatMap(group => group.rows).find(one => one.id === "payouts");
+    expect(row?.action?.href).toMatch(/^\/t\/payouts(?:[?#]|$)/);
+    sheet(ceremonyOf(await page(cookie, row!.action!.href), "\\/t\\/payouts\\/approve"));
     // Changing an agent invalidates the approval every surface signed under.
     const before = store.getScope("payouts")!;
     expect(approve(store, "payouts", "alex", T0, before.digest, approverToken).ok).toBe(true);
@@ -1962,11 +1978,12 @@ describe("the phase route on the console (v47): one projection on the task page,
     const changed = await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: before.digest, phase: "build", agent: "claude|sonnet" });
     expect(changed.status).toBe(303);
     expect(approvalOf(store.getScope("payouts")!)).toMatchObject({ approved: false, reason: "changed" });
-    const again = await page(cookie, "/next");
-    expect(ceremonyOf(again, "\\/t\\/payouts\\/approve")).toContain("claude · sonnet plans, builds, and repairs");
+    for (const path of ["/t/payouts", "/chat?task=payouts"]) {
+      expect(ceremonyOf(await page(cookie, path), "\\/t\\/payouts\\/approve"), path).toContain("claude · sonnet plans, builds, and repairs");
+    }
   });
 
-  test("risky sizing is named on the task, approval, focused chat, and next-up cards", async () => {
+  test("risky sizing is named on the task's approval and the focused chat, where Home's row leads", async () => {
     const cookie = await loginAs("alex", approverToken);
     const html = await page(cookie, "/t/payouts");
     expect((await post(cookie, "/t/payouts/route", {
@@ -1974,7 +1991,10 @@ describe("the phase route on the console (v47): one projection on the task page,
       size: "medium", risky: "yes",
     })).status).toBe(303);
     store.setPlanState(store.refFor("built-in", "payouts").id, "drafted");
-    for (const path of ["/t/payouts", "/chat?task=payouts", "/next"]) {
+    const home = await page(cookie, "/");
+    const row = (workspaceOf(home).view as BrowserHomeView).groups.flatMap(group => group.rows).find(one => one.id === "payouts");
+    expect(home).not.toContain('name="token"');
+    for (const path of ["/t/payouts", "/chat?task=payouts", row!.action!.href]) {
       const shown = await page(cookie, path);
       const ceremony = /<form method="post" action="\/t\/payouts\/approve"(.*?)<\/form>/s.exec(shown)?.[1] ?? "";
       expect(ceremony, path).toMatch(/a risky change — planning and building use the strongest configured agent|Risky change: strongest agents plan and build/);
@@ -1993,7 +2013,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     const gone = agentsCardOf(await page(cookie, "/t/payouts"));
     expect(gone).toContain('<span class="badge">Cannot be read</span>');
     expect(gone).toContain("the approval sealed no agent route");
-    expect(gone).toContain("Nothing runs for this task until its scope is filed again and approved.");
+    expect(gone).toContain("Nothing runs for this task until its plan is saved again and approved.");
     store.raw().prepare("UPDATE task_scope SET route_era = NULL, proposed_route_json = NULL WHERE task_id = 'payouts'").run();
     const legacy = agentsCardOf(await page(cookie, "/t/payouts"));
     expect(legacy).toContain("claude · opus builds and repairs (repair model opus); the planner and reviewer come from configuration at run time");
@@ -2079,7 +2099,7 @@ describe("/peek: every live agent in the console, now the Agents board", () => {
   });
 });
 
-describe("the inbox says when nothing will build (install review)", () => {
+describe("Home says when nothing will build (install review)", () => {
   let store: Store;
   let server: Server;
   let base: string;
@@ -2111,19 +2131,32 @@ describe("the inbox says when nothing will build (install review)", () => {
   });
 
   test("no worker registered, a stale worker, and an answering worker each say the right thing", async () => {
+    // The inbox's notice became the task's own need: approved work with no one to build it asks on Home, and every
+    // "Connect a builder" leads to the one command.
+    store.createTask({ id: "t-idle", title: "waiting to build" }, T0);
+    store.placeTask(store.refFor("built-in", "t-idle").id, "/repo/main");
+    sealScopeFixture(store, "t-idle", approverToken);
     const cookie = await login();
-    let inbox = await (await fetch(`${base}/inbox`, { headers: { cookie } })).text();
-    expect(inbox).toContain('data-builder-status="not-connected"');
-    expect(inbox).toContain("toolroll up");
-    expect(inbox).not.toContain("toolroll daemon install");
+    const rowOf = async () => {
+      const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+      const view = workspaceOf(home).view as BrowserHomeView;
+      return view.groups.flatMap(group => group.rows.map(row => ({ ...row, group: group.key }))).find(row => row.id === "t-idle");
+    };
+    let row = await rowOf();
+    expect(row).toMatchObject({ group: "unblock", line: "No builder works on this project yet. Connect one so the task can start.", action: { label: "Connect a builder" } });
+    const start = await (await fetch(`${base}${row!.action!.href}`, { headers: { cookie } })).text();
+    expect(start).toContain("No builder is connected");
+    expect(start).toContain("toolroll up");
+    expect(start).not.toContain("toolroll daemon install");
 
     register(store, { name: "old-1", host: "h", capacity: 1, repos: ["/repo/main"], now: new Date(Date.now() - 30 * 24 * 60 * 60_000), newToken: () => "tok-old" });
-    inbox = await (await fetch(`${base}/inbox`, { headers: { cookie } })).text();
-    expect(inbox).toContain('data-builder-status="disconnected"');
+    row = await rowOf();
+    expect(row).toMatchObject({ group: "unblock", action: { label: "Start the builder" } });
 
     store.touchRunner("old-1", new Date());
-    inbox = await (await fetch(`${base}/inbox`, { headers: { cookie } })).text();
-    expect(inbox).not.toContain("data-builder-status=");
+    row = await rowOf();
+    expect(row?.group).not.toBe("unblock");
+    expect(row?.action?.label ?? "").not.toMatch(/builder/i);
   });
 });
 

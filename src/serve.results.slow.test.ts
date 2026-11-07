@@ -176,16 +176,16 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const facts = (over: Partial<ReviewQueueFacts>): ReviewQueueFacts => ({ runId: 1, outcome: "built", proofVerdict: "verified", proofAccepted: false, proofMatrix: [], ciFailing: false, publicationState: null, ...over });
     expect(reviewPriorityOf(facts({}))).toEqual({ band: 2, label: "no flags", reasons: [] });
     expect(reviewPriorityOf(facts({ runId: null, proofVerdict: null }))).toEqual({ band: 1, label: "review", reasons: ["no build record"] });
-    expect(reviewPriorityOf(facts({ proofVerdict: "refuted" }))).toMatchObject({ band: 0, label: "needs action", reasons: ["conflicting evidence"] });
+    expect(reviewPriorityOf(facts({ proofVerdict: "refuted" }))).toMatchObject({ band: 0, label: "needs action", reasons: ["the report doesn't match the changes"] });
     expect(reviewPriorityOf(facts({ proofVerdict: "refuted", proofAccepted: true }))).toMatchObject({ band: 1, reasons: ["the report doesn't match the changes — accepted with a reason"] });
-    expect(reviewPriorityOf(facts({ proofVerdict: "short" }))).toMatchObject({ band: 0, reasons: ["missing evidence"] });
+    expect(reviewPriorityOf(facts({ proofVerdict: "short" }))).toMatchObject({ band: 0, reasons: ["not all requirements shown"] });
     expect(reviewPriorityOf(facts({ proofVerdict: "short", proofAccepted: true }))).toMatchObject({ band: 1 });
     const manualOnly = facts({ proofVerdict: "short", proofReasons: ['criterion "c1" requires manual-review evidence — an operator must accept it before this can verify'], proofMatrix: [row("c1", "Inspect phone layout", "manual-review")] });
     expect(reviewPriorityOf(manualOnly)).toEqual({ band: 1, label: "review", reasons: ["human review needed"] });
     expect(reviewPriorityOf({ ...manualOnly, proofAccepted: true }).reasons).toEqual(["accepted after human review"]);
-    expect(reviewPriorityOf({ ...manualOnly, proofReasons: [...manualOnly.proofReasons!, "no proof was written"] }).reasons).toContain("missing evidence");
+    expect(reviewPriorityOf({ ...manualOnly, proofReasons: [...manualOnly.proofReasons!, "no proof was written"] }).reasons).toContain("not all requirements shown");
     expect(reviewPriorityOf(facts({ proofMatrix: [row("c2", "x", "pass", [{ kind: "check", ref: "npm test" }], [], { judgement: "contradicts", note: "no", author: "reviewer:codex" })] }))).toMatchObject({ band: 0, reasons: ["reviewer raised a concern with c2"] });
-    expect(reviewPriorityOf(facts({ proofMatrix: [row("c1", "x", "failed"), row("c3", "y", "missing")] }))).toMatchObject({ band: 0, reasons: ["missing or failed evidence for c1, c3"] });
+    expect(reviewPriorityOf(facts({ proofMatrix: [row("c1", "x", "failed"), row("c3", "y", "missing")] }))).toMatchObject({ band: 0, reasons: ["not shown, or shown failing, for c1, c3"] });
     expect(reviewPriorityOf(facts({ ciFailing: true }))).toMatchObject({ band: 0, reasons: ["CI failing on its pull request — observed, not inferred"] });
     expect(reviewPriorityOf(facts({ publicationState: "failed" }))).toMatchObject({ band: 1, reasons: ["publication failed — the branch never reached its remote"] });
     expect(reviewPriorityOf(facts({ proofVerdict: "attested", proofMatrix: [row("c1", "x", "manual-review")] }))).toMatchObject({ band: 1, reasons: ["manual review needed for c1"] });
@@ -272,14 +272,21 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
   test("the queue is authenticated, visibility-safe, bounded to done tasks, deep-linkable, and honest when empty or when the link misses", async () => {
     await boot();
     // Unauthenticated: the login door, never the queue.
-    const anonymous = await fetch(url("/review"), { redirect: "manual" });
-    expect(anonymous.status).toBe(303);
-    expect(anonymous.headers.get("location")).toContain("/login");
+    for (const path of ["/review", "/review?result=t-ours", "/tasks?view=ready"]) {
+      const anonymous = await fetch(url(path), { redirect: "manual" });
+      expect(anonymous.status, path).toBe(303);
+      expect(anonymous.headers.get("location"), path).toContain("/login");
+    }
     const cookie = await login();
 
-    // Empty, honestly.
-    const empty = await (await fetch(url("/review"), { headers: { cookie } })).text();
-    expect(empty).toContain("No results in this review list.");
+    // The bare list is retired to Tasks' Ready view; a result keeps its own page, and the list beside it.
+    const retired = await fetch(url("/review"), { headers: { cookie }, redirect: "manual" });
+    expect(retired.status).toBe(301);
+    expect(retired.headers.get("location")).toBe("/tasks?view=ready");
+
+    // Empty, honestly, on both.
+    expect(await (await fetch(url("/tasks?view=ready"), { headers: { cookie } })).text()).toContain("Nothing is ready for review.");
+    expect(await (await fetch(url("/review?result=nope"), { headers: { cookie } })).text()).toContain("No results in this review list.");
 
     // Two visible done tasks, one still running, one done in a repo outside the ceiling.
     seed("t-ours", "ours — the <b>title</b>");
@@ -291,7 +298,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     seed("t-theirs", "theirs — never shown", "/repo/other");
     build("t-theirs", store.refFor("built-in", "t-theirs").id, { verdict: { verdict: "refuted" } });
 
-    const html = await (await fetch(url("/review"), { headers: { cookie } })).text();
+    const html = await (await fetch(url("/review?result=t-ours"), { headers: { cookie } })).text();
     const queue = queueOf(html);
     // Only done tasks inside the ceiling. Both need a decision, so newest
     // comes first; a retired proof verdict does not create another priority.
@@ -303,12 +310,16 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(queue.indexOf("t-ours")).toBeLessThan(queue.indexOf("t-older"));
     expect(html).toContain("2 need your attention");
     expect(queue).toContain("Needs you");
-    expect(queue).not.toContain("missing evidence");
+    expect(queue).not.toContain("not all requirements shown");
     // Escaped everywhere the title lands.
     expect(html).toContain("ours — the &lt;b&gt;title&lt;/b&gt;");
     expect(html).not.toContain("<b>title</b>");
-    // The first-ranked row is selected by default and marked current.
+    // The row a result's link names is the one selected.
     expect(html).toContain('data-review-task="t-ours"');
+    // Tasks' Ready view reads the same ceiling: nothing from outside it.
+    const ready = await (await fetch(url("/tasks?view=ready"), { headers: { cookie } })).text();
+    expect(ready).not.toContain("never shown");
+    expect(ready).not.toContain("t-theirs");
     const olderRun = store.runsFor(store.lookupRef("t-older")!.id)[0]!.id;
 
     // A stable deep link selects, and the row it names is current.
@@ -416,8 +427,8 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const manual = await (await fetch(url("/review?result=t-manual"), { headers: { cookie } })).text();
     expect(manual).toContain('data-review-task="t-manual"');
     expect(manual).toContain('data-work-status="assignment-needs-decision"');
-    expect(manual).toContain("This task was marked complete without a build record.");
-    expect(manual).toContain("No scope was filed for this task");
+    expect(manual).toContain("This task was accepted without a build record.");
+    expect(manual).toContain("No plan was filed for this task");
     expect(manual).toContain("no finished build record");
     expect(manual).toContain('data-next-action="inspect-task"');
     expect(manual).toContain('href="/t/t-manual"');
@@ -426,8 +437,8 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const legacy = await (await fetch(url("/review?result=t-legacy"), { headers: { cookie } })).text();
     expect(legacy).toContain("Needs you");
     expect(legacy).toContain('data-work-status="assignment-needs-decision"');
-    expect(legacy).toContain("no verification result");
-    expect(legacy).toContain("This build has no verification result or captured evidence");
+    expect(legacy).toContain("No check result for this build yet. Run checks on it.");
+    expect(legacy).toContain("This build has no check result or saved files");
     expect(legacy).toContain("No final diff or change summary was captured for this build");
     expect(legacy).not.toContain('data-next-action="inspect-run"');
     expect(legacy).toContain(`href="/r/${legacyRun}">Full build record →</a>`);
@@ -572,7 +583,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     await boot(); const cookie = await login();
     for (const path of [`/r/${run}?tab=checks`, "/review?result=t-assess", "/t/t-assess"]) {
       const html = await (await fetch(url(path), { headers: { cookie } })).text();
-      expect(html).not.toContain("An independent review found conflicting evidence");
+      expect(html).not.toContain("the report doesn't match the changes");
       expect(html).not.toContain("Ready for goal review");
       // Plain words (task-status brief): a retired assessment is never "Not assessed".
       expect(html).not.toContain("Not assessed");
@@ -659,7 +670,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const cookie = await login();
 
     const html = await (await fetch(url("/review?result=t-rich"), { headers: { cookie } })).text();
-    expect(html).toContain("An independent review found conflicting evidence");
+    expect(html).toContain("An independent review found the report doesn't match the changes");
     expect(html).toContain('data-cockpit-source="machine"');
     expect(html).toContain("Check output");
     expect(html).toContain("12 passed");
@@ -689,7 +700,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(plain).toContain("No automated check was configured for this build");
     expect(plain).toContain("The agent reported no checks");
     expect(plain).toContain("No screenshots were needed");
-    expect(plain).toContain("No caveats were reported");
+    expect(plain).toContain("The agent noted no limitations.");
     expect(plain).toContain('data-matrix-state="missing"');
     expect(plain).toContain('data-receipt-publication="failed">The last publication attempt failed; no pull request or merge is recorded here.</p>');
     // The failed publication stays in the open, ahead of the tabs (repair 2026-09-14), as the
@@ -807,7 +818,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const cookie = await login();
 
     // The queue is bounded to the newest 100 and says so.
-    const html = await (await fetch(url("/review"), { headers: { cookie } })).text();
+    const html = await (await fetch(url("/review?result=t-0"), { headers: { cookie } })).text();
     expect(queueOf(html).match(/<li data-review-priority=/g)?.length).toBe(100);
     expect(queueOf(html)).not.toContain("t-old");
     expect(html).toContain("Showing the newest 100; older results still open from their task");
@@ -882,7 +893,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const bearer = await (await fetch(url("/review?result=t-full"), { headers: { authorization: `Bearer alex:${approverToken}` } })).text();
     expect(bearer).not.toContain('class="pick-file"');
     expect(bearer).not.toContain('id="comment-form"');
-    expect(bearer).toContain("Sign in with a browser session to request changes.");
+    expect(bearer).toContain("Sign in with a browser session to send it back.");
   });
 
   test("retired review controls preserve exact saved history without admitting another attempt", async () => {
@@ -1047,7 +1058,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(item.shots).toHaveLength(1);
     expect(item.shots[0]!.src).toMatch(new RegExp(`^/r/${run}/evidence/[0-9]+$`));
     // A requirement only the person checks reads Needs you with that ask; its one Accept is the need's own.
-    expect(first.panel!.status).toMatchObject({ headline: "Needs you", sentence: `Check this requirement yourself, then mark it complete: ${statement}` });
+    expect(first.panel!.status).toMatchObject({ headline: "Needs you", sentence: `Check this requirement yourself, then accept it: ${statement}` });
     expect(first.panel!.need!.accept).toMatchObject({ action: "/t/t-look/accept-proof", run });
     expect(first.panel!.youCheck!.accept).toBeNull();
     // Its Requirements row counts it as the person's, so the page can count each Looks right as met.
@@ -1059,8 +1070,8 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // One request: the completion carries the acceptance the person's check owes.
     expect(first.complete).toMatchObject({ action: "/t/t-look/complete", run, accept: { note: null } });
     expect(first.complete).not.toHaveProperty("publish");
-    // Until the check is answered, the next check is the ink act and Accept waits in outline.
-    expect(first.acts).toEqual({ primary: "next-check", secondary: "accept", line: null });
+    // Until the check is answered, nothing in the act row is ink: the check itself is the next thing (P1.3), and Accept waits in outline.
+    expect(first.acts).toEqual({ primary: null, secondary: "accept", line: null });
     expect(first.actFacts).toMatchObject({ accept: { ready: false }, unanswered: 1, notRight: 0 });
     expect(first.runChecks).toBeNull();
     const csrf = csrfOf(await (await fetch(url(`/review?result=t-look&run=${run}`), { headers: { cookie } })).text());
@@ -1198,7 +1209,8 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(selected.failure).toEqual({ line: `Missed a requirement: ${statement}`, evidence: task.failure!.evidence, suggestion, link: null, retry: { action: "/t/t-fail/requeue", note: suggestion } });
     // The Requirements row says what failed, in a count: never "Unverified".
     expect(selected.panel!.status!.details.find(one => one.key === "requirements")).toMatchObject({ text: "1 missed", mark: "failed" });
-    expect(selected.acts).toEqual({ primary: "retry", secondary: "run-checks", line: null });
+    // Run checks is the Checks row's own act, never the act row's (P1.3); it stays reachable there.
+    expect(selected.acts).toEqual({ primary: "retry", secondary: null, line: null });
     expect(selected.decision).toBeNull();
     expect(selected.complete).toBeNull();
     expect(selected.panel!.views.find(one => one.key === "changes")!.html).toContain("src/flag.ts");
@@ -1210,7 +1222,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const fromTask = await post(cookie, task.runChecks!.action, { csrf, level: "full", return: task.runChecks!.returnTo });
     expect(fromTask.status).toBe(303);
     expect(fromTask.headers.get("location")).toBe("/t/t-fail");
-    expect((await read()).selected!.acts).toEqual({ primary: "retry", secondary: "checks-running", line: null });
+    expect((await read()).selected!.acts).toEqual({ primary: "retry", secondary: null, line: null });
     expect(selected.runChecks).toEqual({ action: `/r/${run}/checks`, level: "full", returnTo: `${page}&tab=checks` });
     const again = await post(cookie, selected.runChecks!.action, { csrf, level: "full", return: selected.runChecks!.returnTo });
     expect(again.headers.get("location")).toBe(`${page}&tab=checks#follow-ups`);
@@ -1307,7 +1319,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // Checks failed on the saved result: the one red headline (task-status.ts). Complete is refused, so nothing offers it.
     expect(html).toContain('>Failed</span>');
     expect(queueOf(html)).toContain('data-work-status="assignment-ready-to-check"');
-    expect(queueOf(html)).not.toContain('conflicting evidence');
+    expect(queueOf(html)).not.toContain("the report doesn't match the changes");
     expect(html).toContain('1 needs your attention');
     expect(html).not.toContain('Accept</button>');
     const decision = ((await (await fetch(url(`/review?result=t-complete&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
@@ -2152,7 +2164,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const bearer = await (await fetch(url(`/r/${run}`), { headers: { authorization: `Bearer alex:${approverToken}` } })).text();
     expect(bearer).toContain("data-result-panel");
     expect(bearer).not.toContain('id="comment-form"');
-    expect(bearer).toContain("Sign in with a browser session to request changes.");
+    expect(bearer).toContain("Sign in with a browser session to send it back.");
   });
 
   // ---- repair 2026-09-14: the five independent findings ------------------
@@ -2356,7 +2368,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(shortPage).toContain(`<details data-check-log="shortened" data-cockpit-source="machine"><summary>Check output (shortened — ${shortLog.bytesStored} of ${shortLog.bytesOriginal} bytes stored)</summary>`);
     expect(shortPage).toContain(`href="/r/${shortRun}/evidence/${shortLog.id}">Download the stored part of the check log (shortened at storage — not the full check log)</a>`);
     expect(shortPage).toContain(`href="/r/${shortRun}/evidence/${shortPatch.id}">Download the stored part of the diff (shortened at storage — not the full diff)</a>`);
-    expect(shortPage).toContain("The sealed diff was shortened at storage: the rest of the change was never captured, here or in the download.");
+    expect(shortPage).toContain("The saved diff was shortened when it was stored: the rest of the change was never captured, here or in the download.");
     expect(shortPage).not.toContain("Download the full diff");
     expect(shortPage).not.toContain("Open the full check log");
     const shortTask = await read("/t/t-short");

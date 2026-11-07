@@ -260,6 +260,8 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
     let evidenceRoot: string;
     let approverToken: string;
     let runId: number;
+    let poolRoot: string;
+    let worktree: string;
 
     const url = (path: string) => `${base}${path}`;
     const login = async (): Promise<string> => {
@@ -290,6 +292,10 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
       store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
       store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
       evidenceRoot = mkdtempSync(join(tmpdir(), "standing-orders-arc6-ev-"));
+      // A real folder: a link to a build folder the idle sweep already removed opens nothing, so none renders.
+      poolRoot = realpathSync(mkdtempSync(join(tmpdir(), "standing-orders-arc6-pool-")));
+      worktree = join(poolRoot, "t review");
+      mkdirSync(worktree);
       const added = addApprover(store, "alex", T0);
       if (!added.ok) throw new Error("bootstrap failed");
       approverToken = added.token;
@@ -297,7 +303,7 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
       const taskRef = store.refFor("built-in", "t-review").id;
       runId = store.startRun({
         taskRef, leaseId: "l-review", runner: "builder-1",
-        branch: "so/t-review", worktree: "/pool/t review", now: T0,
+        branch: "so/t-review", worktree, now: T0,
         ...presented(store, taskRef, "builder"),
       });
       const patch = [
@@ -323,7 +329,7 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
 
       server = createDecisionServer({
         store, evidenceRoot, clock: () => new Date(), repo: "/repo/main",
-        localRunner: "builder-1", poolRoot: "/pool",
+        localRunner: "builder-1", poolRoot,
         editorLinks: "vscode",
       });
       await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -336,6 +342,7 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
       await new Promise<void>(resolve => server.close(() => resolve()));
       store.close();
       rmSync(evidenceRoot, { recursive: true, force: true });
+      rmSync(poolRoot, { recursive: true, force: true });
     });
 
     test("links render only after the SESSION says yes; hostile paths never link; the toggle flips both ways", async () => {
@@ -347,13 +354,17 @@ describe("arc 6 — editor links, the review flow, and their guards", () => {
       // session yes: tame paths link (worktree space encoded), traversal never does
       await activate(cookie);
       const after = await (await fetch(url(`/r/${runId}`), { headers: { cookie } })).text();
-      expect(after).toContain('href="vscode://file/pool/t%20review/src/a.ts"');
+      expect(after).toContain(`href="vscode://file${poolRoot.split("/").map(encodeURIComponent).join("/")}/t%20review/src/a.ts"`);
       expect(after.match(/vscode:[^"]*evil/) ?? []).toEqual([]);
       expect(after).toContain("on THIS device");
       // and off again
       await activate(cookie, false);
       const off = await (await fetch(url(`/r/${runId}`), { headers: { cookie } })).text();
       expect(off).not.toContain("vscode://");
+      // A session's yes never links to a build folder that is gone.
+      await activate(cookie);
+      rmSync(worktree, { recursive: true, force: true });
+      expect(await (await fetch(url(`/r/${runId}`), { headers: { cookie } })).text()).not.toContain("vscode://");
     });
 
     test("a run owned by ANOTHER runner never links and never offers", async () => {
