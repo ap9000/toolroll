@@ -21,7 +21,7 @@ import { authPauseOf, liftAuthPause } from "./provider-auth.js";
 import { isProviderId } from "./provider.js";
 import { approverStandsNow, familyRepoOf } from "./tidy.js";
 import { chatApproveMode, effectiveChatApproval, type ChatApprovalLimits } from "./chat-approval.js";
-import { cardTermsDigest, chatLimitProblem } from "./chat-terms.js";
+import { cardTermsDigest, chatLimitProblem, scopeTermsText } from "./chat-terms.js";
 import { createHash, randomBytes } from "node:crypto";
 import { archiveTaskFamily, leadTurnKeepsProposals, restoreTaskFamily, verifiedAuthor, type Store } from "./store.js";
 import {
@@ -681,6 +681,8 @@ export function prepareSharedAction(
       `Each item's goal is the shared rules, then its own item, then: ${VERDICT_RULE}`,
       ...tests.map(line => `Every item — ${line}`),
       ...(children.every(one => one.runtime === children[0]!.runtime) ? [`Every item — ${children[0]!.runtime}`] : children.map((one, index) => `Item ${index + 1} — ${one.runtime}`)),
+      // Each item's own terms, word for word: its yes is bound to this text.
+      ...children.map((one, index) => `Item ${index + 1} in full:\n${one.terms}`),
       "Confirming files all of them and approves each one's scope exactly as shown. An item that needs a second person, or that the project's rules keep from its requester, is filed and waits for its own approval.",
       "Each ends with a verdict (fixed, not reproducible, blocked or done) and the sweep's table shows them as they land.",
     );
@@ -986,9 +988,11 @@ export function prepareSharedAction(
       });
       if (!authority.ok) throw Error(authority.problem);
       state["authMode"] = authority.authMode;
+      // The whole terms word for word (the yes is bound to this text: chat-terms.ts cardShowsScope), then everything else.
       terms.push(
+        scopeTermsText(scope),
         ...describeScope(scope, undefined, taskEvidenceWords(store, scope.taskId, now))
-          .filter((line) => !/^\s*(reference|approved)\s/.test(line))
+          .filter((line) => !/^\s*(reference|approved|goal|not this|touches)\s/.test(line))
           .map((line) =>
             line
               .trimStart()
@@ -1503,7 +1507,8 @@ export function executeSharedAction(
             taskId: task!,
             runId: Number(req["run"]),
             by: verifiedAuthor(actor),
-            via: "web",
+            // The stop's own column knows the phone and the browser: any other chat app is recorded as the web.
+            via: options.via === "telegram" ? "telegram" : "web",
           },
           now,
         );
@@ -1576,7 +1581,7 @@ function fileSweepChild(store: Store, who: VerifiedApprover, repo: string, brief
 }
 
 /** A filed child's scope in the words an approval agrees to (no identity lines), its runtime terms, and their digest. */
-function sweepChildScopeOf(store: Store, taskId: string): { fingerprint: string; runtime: string; words: string[] } {
+function sweepChildScopeOf(store: Store, taskId: string): { fingerprint: string; runtime: string; words: string[]; terms: string } {
   const scope = store.getScope(taskId);
   if (scope === null) throw Error("A sweep item has no scope to show.");
   const authority = scopeAuthorityOf(scope, { authMode: readAuthModeStrict });
@@ -1587,7 +1592,7 @@ function sweepChildScopeOf(store: Store, taskId: string): { fingerprint: string;
   // as an agent's idle timeout, still makes the card stale): its exact terms with only identity left out.
   const { taskId: _task, digest: _digest, approvedDigest: _approved, approvedBy: _by, approvedAt: _at, proposedAt: _proposed, approvalBasis: _basis,
     modeDigest: _mode, approvedProfile: _approvedProfile, approvedProfileJson: _approvedProfileJson, approvedChainJson: _approvedChain, ...terms } = scope as unknown as Record<string, unknown>;
-  return { fingerprint: hash({ words, runtime, authMode: authority.authMode, profile: authority.profile, terms }), runtime, words };
+  return { fingerprint: hash({ words, runtime, authMode: authority.authMode, profile: authority.profile, terms }), runtime, words, terms: scopeTermsText(scope) };
 }
 
 /** Every child as filing would make it, found in a savepoint that is always rolled back: prepare never writes. */

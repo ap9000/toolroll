@@ -1590,6 +1590,48 @@ $ contract --commands --json → 0
       "remote": "yes"
     },
     {
+      "invocation": "card",
+      "synopsis": "show Toolroll's own data as chat's cards do: tasks, results, flows, flow_zones, spend, projects, workers, mode, integrations, providers (read only)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "one project; default: all of yours"
+        },
+        {
+          "name": "state",
+          "takesValue": true,
+          "meaning": "tasks: queued, running, done, failed or cancelled"
+        },
+        {
+          "name": "limit",
+          "takesValue": true,
+          "meaning": "how many rows, up to 20"
+        },
+        {
+          "name": "flow",
+          "takesValue": true,
+          "meaning": "flow_zones: the flow's number"
+        },
+        {
+          "name": "days",
+          "takesValue": true,
+          "meaning": "flow_zones: how far back, up to 90"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "source",
+          "required": true,
+          "meaning": "which data to show"
+        }
+      ],
+      "remote": "yes"
+    },
+    {
       "invocation": "flaky list",
       "synopsis": "tests with mixed outcomes under recorded conditions (read only)",
       "audience": "agent",

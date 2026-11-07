@@ -190,6 +190,7 @@ describe("shared chat action lifecycle", () => {
       : null;
     return confirmLeadProposal(store, who, id, now, { authority: "full", 
       via: secure ? "web" : "telegram",
+      ...(secure ? { person: true } : {}),
       evidenceRoot: root,
       ...(review
         ? {
@@ -513,7 +514,7 @@ describe("shared chat action lifecycle", () => {
       "Newer saved draft",
     );
   });
-  test("scope approval requires password and full review, then seals the exact scope", () => {
+  test("scope approval takes a person's own yes on the full review, and a token there is refused, then seals the exact scope", () => {
     const id = task();
     propose(store, {
       now,
@@ -525,7 +526,8 @@ describe("shared chat action lifecycle", () => {
       ok: false,
       reason: "needs-confirm",
     });
-    expect(confirm(action, true, "incorrect")).toMatchObject({
+    const review = mintSharedActionReview(store, who, action, root, now);
+    expect(confirmLeadProposal(store, who, action, now, { authority: "full", via: "web", evidenceRoot: root, confirm: true, actionReview: { nonce: review.nonce, password: "" } })).toMatchObject({
       ok: false,
       reason: "needs-confirm",
     });
@@ -547,7 +549,7 @@ describe("shared chat action lifecycle", () => {
       expect(store.getScope(id)?.approvedDigest).toBeNull();
       expect(store.handle.prepare("SELECT COUNT(*) AS n FROM scope_approval_vote WHERE task_id = ? AND digest = ?").get(id, digest)?.["n"]).toBe(1);
       const proof = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = 'approval proved'").get(id);
-      expect(proof?.["outcome"]).toBe("password-now");
+      expect(proof?.["outcome"]).toBe("chat");
       expect(String(proof?.["detail"])).toContain(`digest ${digest}`);
       // The same person again: still one vote, no second proof row, and the card still waits.
       expect(confirm(action, true)).toMatchObject({ ok: true });

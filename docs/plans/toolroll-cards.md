@@ -19,7 +19,9 @@ What keeps it safe:
 
 - Same authority check as the console: the person's own identity and role on that project, re-proved when the act runs. A room gives no authority; a chat user counts only through their own paired binding.
 - A model never approves. The approval is a person's own tap, recorded as that person with proof `chat`; the lead, a lead token or message text can't trigger it. The approval policy rules (Only people / People and the lead) still apply.
-- The card shows the exact terms, written by Toolroll, and the seal is bound to the digest of those terms (`shownTermsDigest`), so changed terms refuse. Tokens are one use.
+- The card shows the exact terms, written by Toolroll. An approval card keeps the digest of its own words when it is made (`state.shown`); `approve()` and the seal check those words against that digest and against the live scope: they must hold the scope's whole terms text (`scopeTermsText`), and any check access or extra services. A tap on a card that showed less opens none of the walls for machine-written or outside text. Changed terms refuse. Tokens are one use.
+- A person's own chat setting holds on every approval, in web chat too: their off, and their limits on access and spend.
+- Terms too long for one message, or holding a path or a credential-shaped string, open the review page in the signed-in console, with no password. A plan card keeps its link when it can't show every word in one message.
 - Project-limited people get what they get in the console.
 
 Approving from chat is now on unless the person turned it off: their explicit off (and their own limits, if they set any) still holds. Still not chat acts: typing or showing secrets, passwords, keys and tokens, and changing who can approve (people's roles, approval policy, raising automatic approvals).
@@ -39,7 +41,8 @@ From the route table's 273 console POST rows. **Chat**: already in chat. **Add**
 | Automatic approvals | mode.revoke | Add | `mode_revoke`: lowers authority; one click on the console |
 | Automatic approvals | mode.confirm, mode.sign | Secure | Raises authority |
 | Providers | provider.resume | Add | `provider_resume`, through liftAuthPause; instance access only, as the console |
-| Providers | settings.provider-key-send, provider-key-clear-send, connection-check | Secure | API keys; connection-check is asynchronous and the shared door is synchronous |
+| Providers | settings.provider-key-send, provider-key-clear-send | Secure | API keys |
+| Providers | settings.connection-check | Secure for now | Asynchronous; the shared door is synchronous |
 | Workers | queue.note | Add | `worker_note`, through setRunnerQueueNote |
 | Workers | fleet.register, fleet.retire | Secure | Password acts that add or remove a computer |
 | Projects | projects.open, select, github-list, onboard-preview, onboard-confirm, remove, settings.project-delete, map-refresh | Secure (map-refresh: Chat, refresh_code_map) | Adding reaches a new folder; removing destroys. project.select is per browser |

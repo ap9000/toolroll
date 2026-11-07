@@ -1,4 +1,6 @@
 /** Scripted Slack API and membership runner. No live Slack acceptance is claimed. */
+import { cardContent } from "./chat-card-part.js";
+import type { ChatCard } from "./contracts/chat-card.js";
 import { notifyPeople } from "./flow-people.js";
 import { SUBAGENT_TEMPLATES } from "./subagents.js";
 import { beforeEach, afterEach, describe, expect, test, vi } from "vitest";
@@ -123,6 +125,44 @@ describe("Slack shared chat", () => {
     state.lease(ID.installation, "test", now);
     expect(await deliverSlackPart(options)).toBe(false);
     expect(state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE provider=:provider AND event='bad-part'").get()).toEqual(row);
+  });
+
+  describe("a Toolroll card", () => {
+    const card = (repos: string[]): ChatCard => ({ version: 1, title: "Tasks", asOf: now.toISOString(), repos, buttons: [], actions: [],
+      blocks: [{ kind: "table", heading: "Tasks", origin: "records", columns: [{ label: "Task", numeric: false }], rows: [["Fix the login page"]], more: 0 }] });
+    const plan = (id: string, repos: string[]) => {
+      const binding = state.binding(ID.installation)!;
+      state.enqueue({ id, installation: ID.installation, binding: binding.id, kind: "notice", channel: CHANNEL, member: MEMBER, ts: "", thread: "", payload: {}, created: now.toISOString() });
+      state.plan(id, [cardContent(card(repos))], now);
+    };
+
+    test("goes out as Block Kit", async () => {
+      plan("card-1", projects);
+      await drain();
+      expect((sends()[0]!.args["blocks"] as { type: string }[]).map(one => one.type)).toContain("data_table");
+    });
+
+    test.each(["invalid_blocks", "msg_too_long"])("refused as %s, the same part goes out as its plain text", async code => {
+      const real = options.api;
+      let refused = 0;
+      options = { ...options, api: async (method, args) => {
+        if (method === "chat.postMessage" && refused++ === 0) throw new SlackError(code);
+        return real(method, args);
+      } };
+      plan("card-2", projects);
+      await drain();
+      expect(refused).toBe(2);
+      const sent = sends().at(-1)!.args;
+      expect(JSON.stringify(sent["blocks"])).toContain("Fix the login page");
+      expect(JSON.stringify(sent["blocks"])).not.toContain("data_table");
+    });
+
+    test("is held back once a project behind it is out of reach", async () => {
+      plan("card-3", ["/somewhere/else"]);
+      await drain();
+      expect(sends()).toEqual([]);
+      expect(state.prepare("SELECT state FROM chat_part WHERE provider=:provider AND event='card-3'").get()).toMatchObject({ state: "dropped" });
+    });
   });
 
   const pair = () => {

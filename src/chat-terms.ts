@@ -56,8 +56,10 @@ export function cardTermsDigest(terms: string): string {
   return createHash("sha256").update(JSON.stringify({ v: 2, shown: terms })).digest("hex");
 }
 
-/** Whether these words show what only a person's own yes may agree to: checks past the sandbox and extra services. */
-export function cardShowsScope(scope: Pick<Scope, "profile">, terms: string): boolean {
+/** Whether these words show this scope as it is now: its whole terms text, word for word, and what only a person's own
+ * yes may agree to (checks past the sandbox, extra services). Part of the terms, or an earlier version's, is not. */
+export function cardShowsScope(scope: ShownScope, terms: string): boolean {
+  if (!terms.includes(scopeTermsText(scope))) return false;
   const profile = scope.profile;
   if (profile === null || profile === undefined) return true;
   const access = profile.checkAccess, mach = sandboxTermsWords(profile).mach;

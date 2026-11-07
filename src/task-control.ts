@@ -154,7 +154,7 @@ export type ResumeRequest = {
   taskId: string;
   runId: number;
   by: string;
-  via: "cli" | "web";
+  via: "cli" | "web" | "telegram";
   /** The workspace occupancy probe (the worktree pool's `inUse`): a
    * checkout some process still holds is not quiescent, whatever the
    * rows say — the concrete gate names the pid. */

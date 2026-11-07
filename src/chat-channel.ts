@@ -293,8 +293,14 @@ export type ChatChannelName = "telegram" | "slack" | "discord" | "teams";
  * challenge action, in the same words on every channel. */
 export function armedCardText(proposal: LeadProposal, previewText: string): string {
   const body = previewText.split("\n\nConfirm or Dismiss below")[0] ?? previewText;
-  if (proposal.kind === "action") return `${body}\n\nThis records that you handled this exact result. Confirm?`;
+  if (proposal.kind === "action") return `${body}\n\n${armedQuestion(proposal)}`;
   return `⚠ This answer is IRREVERSIBLE.\n\n${body}\n\nConfirm?`;
+}
+
+/** The second question on an action's card, in words true of what it does. */
+export function armedQuestion(proposal: LeadProposal): string {
+  const action = proposal.kind === "action" ? sharedActionPayload(proposal.payload) : null;
+  return action?.operation === "result_accept" ? "This records that you handled this exact result. Confirm?" : "You approve exactly what's written above. Confirm?";
 }
 
 /** The "yes" button's label for an armed card. */
@@ -910,7 +916,7 @@ export const CHAT_ACTION_PARITY: Record<
   },
   propose_task_action: {
     support: "direct",
-    how: "stop, retry, plan, wait_for and stop_waiting confirm through the shared door (a stop is audited via telegram); resume, on a person's own tap, lifts the stop, and links the task where the password step lives.",
+    how: "stop, retry, plan, wait_for and stop_waiting confirm through the shared door (a stop is audited via telegram); resume, on a person's own tap, lifts the stop.",
     gap: null,
   },
   propose_answer: {

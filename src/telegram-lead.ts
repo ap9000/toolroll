@@ -1,7 +1,7 @@
 import { telegramCardMessage } from "./card-render.js";
 import { cardOfProposal, cardPlainOf, cardsFirst, cardWithin, isCardProposal } from "./chat-card.js";
 import { CHAT_ACTIONS, sharedActionAllowsChallenge, sharedActionPayload } from "./chat-actions.js";
-import { taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, NO_PHONE_LINK, NO_TASK_LINK, phoneProposalLink, confirmedLink, phoneProposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
+import { armedQuestion, taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, NO_PHONE_LINK, NO_TASK_LINK, phoneProposalLink, confirmedLink, phoneProposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
 export { channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, CHAT_ACTION_PARITY as TELEGRAM_ACTION_PARITY, parityGaps, type PhoneLink, type ResolvedLead, type ParitySupport } from "./chat-channel.js";
 /**
  * The paired phone as one more way to use the same assistant.
@@ -309,7 +309,7 @@ export function applyProposalTap(
     const body = preview.text.split("\n\nConfirm or Dismiss below")[0];
     if (challenged) {
       ack("confirm it");
-      edit(`${body}\n\nThis records that you handled this exact result. Confirm?`, [
+      edit(`${body}\n\n${armedQuestion(proposal)}`, [
         [telegramButton(`✓ Yes, ${CHAT_ACTIONS[sharedAction!.operation].label.toLowerCase()}`, yes)],
         [telegramButton("Cancel", cancel)],
       ]);

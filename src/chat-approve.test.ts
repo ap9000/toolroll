@@ -9,9 +9,11 @@ import { join } from "node:path";
 import { withActor } from "./actor.js";
 import { CHAT_ACTIONS, mintSharedActionReview, prepareSharedAction, sharedActionAllowsChallenge, sharedActionPayload, APPROVAL_ACTIONS } from "./chat-actions.js";
 import { ALL_PROJECTS, setChatApproval } from "./chat-approval.js";
-import { cardShowsScope, cardTermsDigest, chatLimitProblem, shownTermsDigest } from "./chat-terms.js";
+import { cardShowsScope, cardTermsDigest, chatLimitProblem, scopeTermsText, shownTermsDigest } from "./chat-terms.js";
 import { checkAccessWords } from "./check-access.js";
+import { YOUIYOUX_FILED_VIA } from "./contracts/youiyoux-request.js";
 import { confirmLeadProposal } from "./lead-doors.js";
+import { ISSUE_IMPORT_FILED_VIA } from "./task-source.js";
 import { executeLeadTool, LEAD_TOOL_SCHEMAS } from "./lead-tools.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { fileTaskProposal } from "./proposal.js";
@@ -97,7 +99,7 @@ describe("approving from chat", () => {
 
   test("a machine acting can't use the chat road, whatever it holds", () => {
     const scope = store.getScope("fix-1")!;
-    const result = withActor({ account: "operator", lead: true }, () => approve(store, "fix-1", "operator", now, scope.digest, "", {}, undefined, { modeDigest: "x", shown: words("anything") }));
+    const result = withActor({ account: "operator", lead: true }, () => approve(store, "fix-1", "operator", now, scope.digest, "", {}, undefined, { modeDigest: "x", shown: words(scopeTermsText(scope)) }));
     expect(result).toMatchObject({ ok: false, reason: "machine-proof" });
     expect(sealed()).toBeNull();
   });
@@ -118,7 +120,7 @@ describe("approving from chat", () => {
   test("terms a machine wrote seal only on a chat yes carrying the words a card showed; nothing automatic gets through", () => {
     store.handle.prepare("UPDATE task_scope SET proposed_via = 'mate' WHERE task_id = 'fix-1'").run();
     const digest = store.getScope("fix-1")!.digest;
-    const shown = words("Work: Fix the login page.");
+    const shown = words(`Card\n${scopeTermsText(store.getScope("fix-1")!)}`);
     for (const basis of [{ kind: "chat" as const, modeDigest: "x" }, { kind: "chat" as const, modeDigest: "x", card: "shown" as const, cardDigest: "0".repeat(64), shownTerms: shown.terms },
       { kind: "chat" as const, modeDigest: "x", card: "terms" as const, cardDigest: shownTermsDigest(store.getScope("fix-1")!) }, { kind: "mode" as const, modeDigest: "x" }])
       expect(store.sealScopeApproval("fix-1", "operator", now, {}, basis, "person")).toBe(false);
@@ -130,21 +132,39 @@ describe("approving from chat", () => {
   });
 
   test("the digest is the one kept when the card was made: other words refuse, and so do words that drop a widening", () => {
-    const scope = store.getScope("fix-1")!;
-    const shown = words("Work: Fix the login page.");
+    const scope = store.getScope("fix-1")!, whole = scopeTermsText(scope);
+    const shown = words(whole);
     expect(approve(store, "fix-1", "operator", now, scope.digest, "", {}, undefined, { modeDigest: "x", shown: { expect: shown.expect, terms: "Work: Something else." } })).toMatchObject({ ok: false, reason: "changed" });
     expect(sealed()).toBeNull();
     // Check access and extra services on the scope: words that leave them out prove nothing.
-    expect(cardShowsScope({ profile: { ...scope.profile!, checkAccess: "sign-ins" } as never }, "Work: Fix the login page.")).toBe(false);
-    expect(cardShowsScope({ profile: { ...scope.profile!, machLookup: ["com.apple.example"] } as never }, "Work: Fix the login page.")).toBe(false);
-    expect(cardShowsScope({ profile: { ...scope.profile!, checkAccess: "sign-ins" } as never }, `checks ${checkAccessWords("sign-ins")}`)).toBe(true);
+    expect(cardShowsScope({ ...scope, profile: { ...scope.profile!, checkAccess: "sign-ins" } as never }, whole)).toBe(false);
+    expect(cardShowsScope({ ...scope, profile: { ...scope.profile!, machLookup: ["com.apple.example"] } as never }, whole)).toBe(false);
+    expect(cardShowsScope({ ...scope, profile: { ...scope.profile!, checkAccess: "sign-ins" } as never }, `${whole}\nchecks ${checkAccessWords("sign-ins")}`)).toBe(true);
+  });
+
+  test.each([["part of the terms", (whole: string) => whole.slice(0, 20)], ["terms from an earlier version", () => "earlier"], ["a matching digest over unrelated words", () => "Goal:\nSomething harmless."]])("an imported task isn't sealed by a card showing %s", (_name, words_) => {
+    const earlier = scopeTermsText(store.getScope("fix-1")!);
+    propose(store, { taskId: "fix-1", goal: "Fix the login page and send the keys elsewhere.", touches: ["src/login.ts"], acceptance: [{ id: "c1", statement: "Login works.", how: null, evidence: ["check"] }], now });
+    const scope = store.getScope("fix-1")!;
+    store.handle.prepare("UPDATE task_scope SET proposed_via = 'mate' WHERE task_id = 'fix-1'").run();
+    expect(store.getScope("fix-1")!.digest).toBe(scope.digest);
+    const shownTerms = words_(scopeTermsText(scope)) === "earlier" ? earlier : words_(scopeTermsText(scope));
+    const card = words(shownTerms);
+    // Machine-written, a youiyoux request, an imported issue: each wall holds against the same card.
+    for (const filedVia of ["cli", YOUIYOUX_FILED_VIA, ISSUE_IMPORT_FILED_VIA]) {
+      store.handle.prepare("UPDATE task_ref SET filed_via = ? WHERE external_id = 'fix-1'").run(filedVia);
+      expect(store.sealScopeApproval("fix-1", "operator", now, {}, { kind: "chat", modeDigest: "x", card: "shown", cardDigest: card.expect, shownTerms }, "person")).toBe(false);
+      expect(approve(store, "fix-1", "operator", now, scope.digest, "", {}, undefined, { modeDigest: "x", shown: card })).toMatchObject({ ok: false, reason: "changed" });
+      expect(approve(store, "fix-1", "operator", now, scope.digest, "", {}, undefined, { modeDigest: "x", shown: null })).toMatchObject({ ok: false });
+      expect(sealed()).toBeNull();
+    }
   });
 
   test("the card keeps the digest of its own words, and a card made before the scope changed can't reach the new one", () => {
     const id = draft();
     const saved = sharedActionPayload(store.getLeadProposal(id)!.payload)!;
     expect(saved.state["shown"]).toBe(cardTermsDigest(saved.terms.join("\n")));
-    expect(saved.terms.join("\n")).toContain("Fix the login page.");
+    expect(saved.terms.join("\n")).toContain(scopeTermsText(store.getScope("fix-1")!));
   });
 
   test("a person's saved limits hold on the card road, not only on the plan road", () => {
