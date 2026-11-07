@@ -60,10 +60,11 @@ export function entryMovesOnWords(entry: Pick<FallbackEntry, "provider" | "authM
   return limitRecognised(entry.provider, entry.authMode) ? "Moves on when its plan runs out" : "Won't move on: Toolroll can't yet recognise this agent running out";
 }
 
-/** Whether this entry spends money: an API key, a provider that only bills by use, or a CLI this machine saw billing by use. */
-export function entryPaid(store: Store, entry: Pick<FallbackEntry, "provider" | "authMode">): boolean {
-  if (entry.authMode === "api-key" || !planCapable(entry.provider)) return true;
-  return store.agentsFor([entry.provider])[0]?.billing === "api-key";
+/** Whether this entry spends money, by what it was pinned to: an API key, or a provider that only bills by use. A plan
+ * entry is never paid: where its login can't be proved to be that plan, it doesn't run (invoke.ts), it is never
+ * reinterpreted as a paid agent. */
+export function entryPaid(_store: Store, entry: Pick<FallbackEntry, "provider" | "authMode">): boolean {
+  return entry.authMode === "api-key" || !planCapable(entry.provider);
 }
 
 // ---- The project setting. Only a person changes it, and every change is logged.
@@ -405,11 +406,48 @@ export function chainCustodyProblem(store: Store, runId: number): string | null 
   });
 }
 
+/** A builder's newest repair turn, when it ran out of plan holding the builder's exact place in the walk: the evidence a
+ * repair turn gives its owning attempt. Any newer turn, a turn that never spawned or never finished, or one bound
+ * elsewhere, is none. */
+function exhaustedRepairOf(store: Store, run: RunBinding): RunBinding | null {
+  const row = store.handle.prepare("SELECT id FROM run WHERE parent_run = ? AND role = 'repair' ORDER BY id DESC LIMIT 1").get(run.id);
+  const child = row === undefined ? null : bindingOf(store, Number(row["id"]));
+  if (child === null || child.terminalClass !== "usage-exhausted" || child.providerStartedAt === null || child.outcome === null) return null;
+  if (child.taskRef !== run.taskRef || child.chainCycle !== run.chainCycle || child.chainIndex !== run.chainIndex || child.entryDigest !== run.entryDigest) return null;
+  return child;
+}
+
 /** Whether this finished attempt is about to move on: it holds a walk's place and the gateway classed it exhausted. */
 export function ranOutOnChain(store: Store, runId: number): boolean {
   if (!hasTables(store)) return false;
   const run = bindingOf(store, runId);
   return run !== null && run.chainCycle !== null && run.terminalClass === "usage-exhausted";
+}
+
+/** How long after a fallback agent was refused for not being signed in to its plan the task stops moving to it: its
+ * retries then take the ordinary road, with strikes, instead of looping through the base agent. */
+export const SIGNED_OUT_WINDOW_MS = 30 * 60_000;
+
+/** The gateway refused this bound run: its plan login isn't proved. The walk closes, a person is told, no strike. */
+export function closeWalkSignedOut(store: Store, runId: number, now: Date): void {
+  if (!hasTables(store)) return;
+  store.transact(() => {
+    const run = bindingOf(store, runId);
+    if (run === null || run.chainCycle === null) return;
+    const closed = store.handle.prepare("UPDATE fallback_walk SET state = 'closed', closed_reason = 'entry-signed-out', closed_at = ? WHERE id = ? AND state = 'open'").run(now.toISOString(), run.chainCycle);
+    if (Number(closed.changes) === 0) return;
+    const ref = store.refForId(run.taskRef);
+    store.enqueueNotification({
+      source: { run: run.id }, dedupeKey: `fallback:signed-out:${run.id}`, kind: "fallback", pushClass: "attention", link: `/r/${run.id}`,
+      subject: `${ref?.externalId ?? "A task"}: ${providerName(run.provider)} isn't signed in to its plan`,
+      body: `The next approved agent runs on its plan, but ${providerName(run.provider)} here isn't signed in to one. Nothing ran and nothing was spent. Sign it in to its plan, then requeue.`,
+    }, now);
+  });
+}
+
+function signedOutRecently(store: Store, taskRef: number, now: Date): boolean {
+  const since = new Date(now.getTime() - SIGNED_OUT_WINDOW_MS).toISOString();
+  return store.handle.prepare("SELECT 1 AS hit FROM fallback_walk WHERE task_ref = ? AND closed_reason = 'entry-signed-out' AND closed_at >= ?").get(taskRef, since) !== undefined;
 }
 
 export type MoveResult = { moved: true; to: FallbackEntry; paid: boolean } | null;
@@ -423,19 +461,25 @@ export type MoveResult = { moved: true; to: FallbackEntry; paid: boolean } | nul
 export function moveOnIfExhausted(store: Store, runId: number, taskId: string, now: Date): MoveResult {
   if (!hasTables(store)) return null;
   const run = bindingOf(store, runId);
-  if (run === null || run.terminalClass !== "usage-exhausted" || run.outcome !== null || run.providerStartedAt === null) return null;
+  if (run === null || run.outcome !== null || run.providerStartedAt === null) return null;
   if (run.role !== "builder" || run.chainCycle === null || run.chainIndex === null) return null;
+  // The evidence: this attempt's own terminal, or its last repair turn's, proved to hold the same place on the same entry.
+  const evidence = run.terminalClass === "usage-exhausted" ? run : exhaustedRepairOf(store, run);
+  if (evidence === null) return null;
   const walk = openWalk(store, run.taskRef);
   if (walk === null || walk.id !== run.chainCycle || walk.tailRun !== run.id || walk.cursor !== run.chainIndex) return null;
   const sealed = sealedChain(store, taskId);
   if (sealed.kind !== "chain" || sealed.digest !== walk.chainDigest || sealed.scope.digest !== walk.scopeDigest) { closeWalk(store, walk.id, "approval-changed", now); return null; }
   const from = sealed.chain[run.chainIndex];
-  if (from === undefined || entryDigestOf(from) !== run.entryDigest || from.profile.provider !== run.provider || from.authMode !== run.authMode || !limitRecognised(run.provider, from.authMode)) {
+  if (from === undefined || entryDigestOf(from) !== run.entryDigest || from.profile.provider !== run.provider || from.authMode !== run.authMode || !limitRecognised(run.provider, from.authMode)
+    || evidence.provider !== run.provider || evidence.authMode !== run.authMode) {
     closeWalk(store, walk.id, "entry-ended", now);
     return null;
   }
   const next = sealed.chain[run.chainIndex + 1];
   if (next === undefined) { closeWalk(store, walk.id, "chain-ended", now); tell(store, run, taskId, "chain-ended", null, now); return null; }
+  // Its next agent was just refused for not being signed in to its plan: no loop through the base, the ordinary road.
+  if (signedOutRecently(store, run.taskRef, now)) { closeWalk(store, walk.id, "entry-signed-out", now); return null; }
   const to: FallbackEntry = { provider: next.profile.provider, model: next.profile.model, authMode: next.authMode };
   const paid = entryPaid(store, to);
   if (paid && !paidGrantLive(store, store.refForId(run.taskRef)?.repo ?? null)) {
@@ -444,7 +488,7 @@ export function moveOnIfExhausted(store: Store, runId: number, taskId: string, n
     return null;
   }
   store.handle.prepare("INSERT INTO fallback_move (walk, to_index, from_run, terminal_class, paid, moved_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(walk.id, run.chainIndex + 1, run.id, run.terminalClass, paid ? 1 : 0, now.toISOString());
+    .run(walk.id, run.chainIndex + 1, run.id, evidence.terminalClass, paid ? 1 : 0, now.toISOString());
   store.handle.prepare("UPDATE fallback_walk SET cursor = ? WHERE id = ?").run(run.chainIndex + 1, walk.id);
   store.handle.prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'").run(now.toISOString(), taskId);
   store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: store.refForId(run.taskRef)?.repo ?? null, taskId, runId: run.id, action: "work moved to fallback agent", outcome: paid ? "paid" : "plan", source: "work", detail: entryWords(to) });

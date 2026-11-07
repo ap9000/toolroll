@@ -1194,7 +1194,8 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
   }
   // Out of plan on an approved chain: the walk moves on, no strike, and the next agent runs through the ordinary claim.
   // Anything else about this ending (fallback.ts says what closed the walk) stays the ordinary road below.
-  if (failureClass !== "commit-failure") {
+  // Only the agent's own exit moves: a lease, branch or HEAD law that failed, or a commit that failed, is that ending.
+  if (failureClass === "unknown") {
     const moved = moveOnIfExhausted(store, runId, taskId, now);
     if (moved !== null) {
       store.finishRun(runId, { outcome: "failed", reason: "usage-exhausted", now });

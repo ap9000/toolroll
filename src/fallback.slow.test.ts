@@ -9,6 +9,8 @@ import { readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const login = vi.hoisted(() => ({ codex: "subscription" as "subscription" | "api-key" | null }));
+vi.mock("./codex-login.js", () => ({ codexLoginBilling: async () => login.codex }));
 vi.mock("./attest.js", async original => ({ ...await original<typeof import("./attest.js")>(), reportedVersion: async () => "2.1.319 (Claude Code)" }));
 
 import { runOperate } from "./operate.js";
@@ -17,9 +19,12 @@ import { openStore, type Store } from "./store.js";
 import type { Runner } from "./builder.js";
 import { withActor } from "./actor.js";
 import { bindRunToWalk, chainCustodyProblem, clearFallbackChain, setFallbackChain, setPaidGrant, chainJsonOf, chainSealProblem, dispatchEntryOf, fallbackBriefFor, fallbackSettingOf, moveOnIfExhausted, pinnedEntryOf, ranOutOnChain, reconcileWalks } from "./fallback.js";
-import { canonicalChainJson, chainFromJson, chainTermsLines, liveChainFromJson, scopeAuthorityOf } from "./scope.js";
+import { canonicalChainJson, chainFromJson, chainTermsLines, describeScope, liveChainFromJson, scopeAuthorityOf } from "./scope.js";
 import { scopeTermsText, shownTermsDigest } from "./chat-terms.js";
 import { planCardText } from "./chat-decide.js";
+import { approvalSheetHtml, approveKitOf } from "./server/render-tasks.js";
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
 import { OK, T0, AGENT_SAID, registerRunner, concludeDone } from "../test/tick-kit.js";
 
 const FIXTURE = JSON.parse(readFileSync(new URL("../test/fixtures/fallback/claude-subscription-weekly-limit.json", import.meta.url), "utf8")) as { terminal: { text: string } };
@@ -68,6 +73,8 @@ describe("a chain, against real git", () => {
     await say(["task", "add", "seed", "--id", "seed", "--repo", repo]);
     await say(["project", "fallback", "--repo", repo, "--agents", agents, ...(paid ? ["--allow-paid"] : []), "--as", "alex", "--token", approver, "--json"]);
     expect(payload().ok, lines.join("\n")).toBe(true);
+    // This machine has seen Claude bill on its plan (a plan entry with no live probe needs that evidence).
+    withStore(store => store.recordProviderBilling("claude", "subscription", T0));
   };
   const file = async (id: string) => {
     await say(["task", "add", "the work", "--id", id, "--repo", repo]);
@@ -82,6 +89,7 @@ describe("a chain, against real git", () => {
   const walks = () => withStore(store => store.handle.prepare("SELECT cursor, state, closed_reason FROM fallback_walk ORDER BY id").all());
 
   beforeEach(async () => {
+    login.codex = "subscription";
     base = realpathSync(await mkdtemp(join(tmpdir(), "toolroll-fallback-")));
     repo = join(base, "repo"); db = join(base, "queue.db"); pool = join(base, "pool"); runs = [];
     await mkdir(repo, { recursive: true });
@@ -159,6 +167,80 @@ describe("a chain, against real git", () => {
     expect(runs.map(one => one.model)).toEqual(["sonnet", "opus", "opus"]);
     expect(withStore(store => store.handle.prepare("SELECT COUNT(*) AS n FROM fallback_move").get()!["n"])).toBe(1);
     expect(withStore(store => store.handle.prepare("SELECT chain_index FROM run WHERE chain_cycle IS NOT NULL ORDER BY id").all())).toEqual([{ chain_index: 0 }, { chain_index: 1 }, { chain_index: 1 }]);
+  });
+
+  test("a plan entry whose saved login is an API key never runs, never reads as paid, takes no strike, and doesn't loop", async () => {
+    await setUp("codex:gpt-5.5:plan");
+    await file("t-1"); await approve("t-1");
+    login.codex = "api-key";
+    const codexRan: string[] = [];
+    const either: Runner = async (file, args, options) => { if (/codex/.test(file)) { codexRan.push(file); return { ...OK, code: 1 }; } return exhausted(false)(file, args, options); };
+    await tick(either, T0);
+    await tick(either, later(1));
+    expect(codexRan).toEqual([]);
+    expect(withStore(store => store.handle.prepare("SELECT provider, outcome, reason, provider_started_at FROM run WHERE provider = 'codex'").all())).toMatchObject([{ outcome: "refused", reason: "auth-mode", provider_started_at: null }]);
+    expect(walks()).toMatchObject([{ cursor: 1, state: "closed", closed_reason: "entry-signed-out" }]);
+    expect(withStore(store => store.lookupRef("t-1")!.strikes)).toBe(0);
+    // The base runs out again within the window: the ordinary road, a strike, and no second move to the same agent.
+    await tick(either, later(2));
+    expect(walks()).toMatchObject([{ closed_reason: "entry-signed-out" }, { cursor: 0, state: "closed", closed_reason: "entry-signed-out" }]);
+    expect(withStore(store => store.lookupRef("t-1")!.strikes)).toBe(1);
+    expect(codexRan).toEqual([]);
+  });
+
+  test("a Claude plan entry runs only where Claude was seen billing on its plan", async () => {
+    await setUp("claude:opus:plan");
+    await file("t-1"); await approve("t-1");
+    await tick(byModel({ sonnet: exhausted(false), opus: finishes }), T0);
+    withStore(store => store.recordProviderBilling("claude", "api-key", later(1)));
+    await tick(byModel({ sonnet: exhausted(false), opus: finishes }), later(1));
+    expect(runs.map(one => one.model)).toEqual(["sonnet"]);
+    expect(walks()).toMatchObject([{ cursor: 1, closed_reason: "entry-signed-out" }]);
+  });
+
+  test("an agent that commits for itself and then runs out keeps nothing and moves nowhere: the HEAD law holds", async () => {
+    await setUp("claude:opus:plan");
+    await file("t-1"); await approve("t-1");
+    const commitsThenRunsOut: Runner = async (file, args, options) => {
+      const cwd = options?.cwd ?? "";
+      await writeFile(join(cwd, "sneaky.ts"), "export const sneaky = true;\n");
+      await git(["add", "sneaky.ts"], cwd);
+      await git(["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "agent-made"], cwd);
+      await writeFile(join(cwd, "half-done.ts"), "export const half = true;\n");
+      return exhausted(false)(file, args, options);
+    };
+    await tick(byModel({ sonnet: commitsThenRunsOut, opus: finishes }), T0);
+    expect(withStore(store => store.handle.prepare("SELECT reason FROM run ORDER BY id DESC LIMIT 1").get())).toMatchObject({ reason: "no-op" });
+    expect(await git(["log", "--format=%B", "-3", "toolroll/t-1"])).not.toContain("Work in progress");
+    expect(walks()).toMatchObject([{ cursor: 0 }]);
+    expect(withStore(store => store.lookupRef("t-1")!.strikes)).toBe(1);
+  });
+
+  test("running out during a repair turn stops the repairs and moves the owning attempt, with no strike", async () => {
+    await setUp("claude:opus:plan");
+    await file("t-1"); await approve("t-1");
+    let sonnetCalls = 0;
+    const stopsThenRunsOut: Runner = async (file, args, options) => {
+      const cwd = options?.cwd ?? "";
+      await seen(args, cwd);
+      sonnetCalls++;
+      const session = args[args.indexOf("--session-id") + 1] ?? args[args.indexOf("--resume") + 1] ?? "s-1";
+      if (sonnetCalls === 1) {
+        // Changes and no handoff: Toolroll resumes its own session for a short turn.
+        await writeFile(join(cwd, "half-done.ts"), "export const half = true;\n");
+        return { ...OK, stdout: [JSON.stringify({ type: "system", subtype: "init", session_id: session }), JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "stopped", session_id: session })].join("\n") };
+      }
+      const result = { type: "result", subtype: "success", is_error: true, result: FIXTURE.terminal.text, session_id: session };
+      return { ...OK, code: 1, stdout: [JSON.stringify({ type: "system", subtype: "init", session_id: session }), JSON.stringify(result)].join("\n") };
+    };
+    await tick(byModel({ sonnet: stopsThenRunsOut, opus: finishes }), T0);
+    const rows = withStore(store => store.handle.prepare("SELECT role, terminal_class, chain_index FROM run ORDER BY id").all());
+    expect(rows.filter(one => one["role"] === "repair"), lines.join("\n")).toHaveLength(1);
+    expect(rows.filter(one => one["role"] === "repair")[0]).toMatchObject({ terminal_class: "usage-exhausted", chain_index: 0 });
+    expect(walks()).toMatchObject([{ cursor: 1, state: "open" }]);
+    expect(withStore(store => store.lookupRef("t-1")!.strikes)).toBe(0);
+    await tick(byModel({ sonnet: stopsThenRunsOut, opus: finishes }), later(1));
+    expect(outcomeOf("t-1").outcome, lines.join("\n")).toBe("built");
   });
 
   test("an unrecognised failure never moves: the ordinary road runs, with a strike", async () => {
@@ -251,7 +333,21 @@ describe("a chain, against real git", () => {
     withStore(store => {
       const scope = store.getScope("t-1")!;
       expect(shownTermsDigest(scope)).not.toBe(shownTermsDigest({ ...scope, proposedChainJson: null }));
-      for (const card of [scopeTermsText(scope), planCardText(store, "t-1", scope), planCardText(store, "t-1", scope, undefined, "telegram")]) for (const line of chainTermsLines(scope)) expect(card).toContain(line);
+      for (const card of [scopeTermsText(scope), planCardText(store, "t-1", scope), planCardText(store, "t-1", scope, undefined, "telegram"), describeScope(scope).join("\n")]) {
+        for (const line of chainTermsLines(scope)) expect(card).toContain(line);
+      }
+      // The web approval sheet, and the task page's approve box built from the same parts: the chain, and the paid
+      // agent named before the yes.
+      const input = { surface: "task" as const, action: "/t/t-1/approve", csrf: "c", nonce: "n", digest: scope.digest, returnTo: null, scope, planDocument: null, planContract: null,
+        revision: null, revisionSourceHref: "", repairChain: null, route: null, coordinator: null, origin: null, deliverable: "branch" as const, editHref: "#", notNowHref: "#", sticky: false, earlier: { active: 0, running: 0 }, edit: null };
+      const sheet = withFormToken("c", () => htmlString(approvalSheetHtml(input)));
+      expect(sheet).toContain("data-approval-fallback");
+      expect(sheet).toContain("opus");
+      const allowing = /data-approval-allowing>([^<]*)</.exec(sheet)?.[1] ?? "";
+      expect(allowing, sheet.slice(sheet.indexOf("approval-allowing") - 20, sheet.indexOf("approval-allowing") + 400)).toMatch(/opus/i);
+      expect(allowing).toContain("which spends money");
+      const kit = withFormToken("c", () => approveKitOf(input, null));
+      expect(JSON.stringify(kit)).toContain("on an API key, which spends money");
       expect(chainTermsLines(scope).join("\n")).toContain("this spends money");
       expect(chainSealProblem(store, scope, undefined)).toBeNull();
       expect(chainSealProblem(store, scope, { kind: "chat" })).toBeNull();

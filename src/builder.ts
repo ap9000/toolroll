@@ -1983,8 +1983,12 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
   // handoff as it would after any ending; a spent budget with nothing handed off ran out of turns, as --max-turns did.
   const liveEnding = captured.live?.close === "turn-budget" || captured.live?.close === "paused-idle";
   if (result.code !== 0 && !liveEnding) {
-    // Out of plan on an approved chain: its changes become a commit, so the next agent continues from them.
-    if (ranOutOnChain(store, request.runId)) await keepForNextAgent(captured);
+    // Out of plan on an approved chain: its changes become a commit, so the next agent continues from them, but only
+    // under the same lease, branch and HEAD laws every commit here obeys. A law or commit that fails is the ending.
+    if (ranOutOnChain(store, request.runId)) {
+      const kept = await keepForNextAgent(captured);
+      if (kept !== null) return kept;
+    }
     return { ok: false, reason: "agent", message: agentExitWords(result) };
   }
   if (captured.live?.close === "turn-budget" && ![done, mailbox, captured.plan?.proposal].some(name => name !== undefined && existsSync(join(worktree, name)))) {
@@ -1992,35 +1996,8 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
   }
 
   // The claim is re-proved *after* the agent, synchronously, whatever the
-  // pulse said. An interval that fired cleanly a moment ago is a fact about
-  // a moment ago; the commit below is about now. For a leased build the
-  // final beat also extends the lease across the commit itself.
-  if (captured.fenced()) {
-    return {
-      ok: false,
-      reason: "fenced",
-      message: `${taskId}'s lease was superseded while the agent ran — the work is still in ${worktree}, and it is not this lease's to commit`,
-    };
-  }
-  if (request.leaseId !== undefined) {
-    const final = heartbeat(store, request.leaseId, clock());
-    if (!final.ok) {
-      return {
-        ok: false,
-        reason: "fenced",
-        message: `${taskId}'s lease did not survive the build — the work is still in ${worktree}, and it is not this lease's to commit`,
-      };
-    }
-  } else {
-    const still = currentClaim(store, taskRef, clock());
-    if (still === null || still.runner !== runner) {
-      return {
-        ok: false,
-        reason: "fenced",
-        message: `${taskId} is no longer claimed by ${runner} — the work is still in ${worktree}`,
-      };
-    }
-  }
+  // pulse said (proveLeaseNow).
+  { const lapsed = proveLeaseNow(captured); if (lapsed !== null) return lapsed; }
 
   // The park, if the agent chose it. Checked after the fence re-proof and
   // before anything commits: a park never commits — whatever work is in
@@ -2070,6 +2047,10 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
     root,
     sessionId: result.sessionId ?? undefined,
   });
+  if (parked !== null && "exhausted" in parked) {
+    const kept = await keepForNextAgent(captured);
+    return kept ?? { ok: false, reason: "agent", message: "The agent ran out of its plan while correcting its answer." };
+  }
   if (parked !== null) {
     if ("fenced" in parked) {
       return {
@@ -2087,37 +2068,8 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
     };
   }
 
-  // And the branch is re-read, because the agent had half an hour alone with
-  // a git checkout and its word about staying put is not evidence either.
-  const after = await git(GIT, ["--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"], {
-    cwd: worktree,
-  });
-  if (after.code !== 0) {
-    return { ok: false, reason: "git", message: `could not re-read the branch in ${worktree}` };
-  }
-  if (after.stdout.trim() !== branch) {
-    return {
-      ok: false,
-      reason: "moved-branch",
-      message: `${worktree} was on ${branch} and is now on ${after.stdout.trim()} — nothing commits from a branch the agent moved to`,
-    };
-  }
-
-  // The HEAD law: the builder owns commits, so after the agent HEAD must
-  // still be the base revision. An agent that committed for itself may have
-  // committed anything under any message — its work is preserved on disk,
-  // and none of it is accepted from here.
-  const headNow = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
-  if (headNow.code !== 0) {
-    return { ok: false, reason: "git", message: `could not re-read HEAD in ${worktree}` };
-  }
-  if (headNow.stdout.trim() !== baseRevision) {
-    return {
-      ok: false,
-      reason: "moved-head",
-      message: `${worktree}'s HEAD moved from ${baseRevision.slice(0, 12)} to ${headNow.stdout.trim().slice(0, 12)} — the machine commits, the agent does not; the work is preserved`,
-    };
-  }
+  // The branch and HEAD laws (proveBranchAndHead): the agent's word about staying put is not evidence.
+  { const moved = await proveBranchAndHead(captured); if (moved !== null) return moved; }
 
   // The terminal handoff: how this attempt says it ended, or fails to. A
   // clean tree is a success only when the agent said no-change; changes are
@@ -3256,6 +3208,11 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
       reason: spoken.kind === "refused" ? spoken.reason : handedOff ? "resumed-handoff" : ran ? "no-handoff" : spoken.outcome.timedOut ? "timeout" : "agent",
       now: clock(),
     });
+    // Out of plan mid-turn on an approved chain: no more turns; the attempt ends and its walk moves on.
+    if (!handedOff && ranOutOnChain(store, admitted.runId)) {
+      const kept = await keepForNextAgent(captured);
+      return kept ?? { ok: false, reason: "agent", message: "The agent ran out of its plan while finishing its handoff." };
+    }
     if (request.leaseId !== undefined && !heartbeat(store, request.leaseId, clock()).ok) {
       return { ok: false, reason: "fenced", message: `${taskId}'s lease did not survive the resumed turn — the work is still in ${worktree}` };
     }
@@ -3312,16 +3269,98 @@ async function keepUnhandedWork(captured: CapturedBuild, sessionId: string | und
   return { ok: false, reason: "no-handoff", message: NO_HANDOFF_WORDS };
 }
 
-/** The changes an exhausted attempt left, saved and committed for the next agent. A commit that fails leaves them in
- * place with their patch, as a no-handoff attempt's do: the work is never lost to the move. */
-async function keepForNextAgent(captured: CapturedBuild): Promise<void> {
+/** The lease, re-proved after the agent: null when this attempt may still commit, else its ending. */
+function proveLeaseNow(captured: CapturedBuild): BuildResult | null {
+  const { store, request, worktree, taskId, taskRef, runner, clock } = captured;
+  // The claim is re-proved *after* the agent, synchronously, whatever the
+  // pulse said. An interval that fired cleanly a moment ago is a fact about
+  // a moment ago; the commit below is about now. For a leased build the
+  // final beat also extends the lease across the commit itself.
+  if (captured.fenced()) {
+    return {
+      ok: false,
+      reason: "fenced",
+      message: `${taskId}'s lease was superseded while the agent ran — the work is still in ${worktree}, and it is not this lease's to commit`,
+    };
+  }
+  if (request.leaseId !== undefined) {
+    const final = heartbeat(store, request.leaseId, clock());
+    if (!final.ok) {
+      return {
+        ok: false,
+        reason: "fenced",
+        message: `${taskId}'s lease did not survive the build — the work is still in ${worktree}, and it is not this lease's to commit`,
+      };
+    }
+  } else {
+    const still = currentClaim(store, taskRef, clock());
+    if (still === null || still.runner !== runner) {
+      return {
+        ok: false,
+        reason: "fenced",
+        message: `${taskId} is no longer claimed by ${runner} — the work is still in ${worktree}`,
+      };
+    }
+  }
+  return null;
+}
+
+/** The branch and HEAD laws, read again: null when both hold, else the ending. */
+async function proveBranchAndHead(captured: CapturedBuild): Promise<BuildResult | null> {
+  const { git, worktree, branch, baseRevision } = captured;
+  // And the branch is re-read, because the agent had half an hour alone with
+  // a git checkout and its word about staying put is not evidence either.
+  const after = await git(GIT, ["--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: worktree,
+  });
+  if (after.code !== 0) {
+    return { ok: false, reason: "git", message: `could not re-read the branch in ${worktree}` };
+  }
+  if (after.stdout.trim() !== branch) {
+    return {
+      ok: false,
+      reason: "moved-branch",
+      message: `${worktree} was on ${branch} and is now on ${after.stdout.trim()} — nothing commits from a branch the agent moved to`,
+    };
+  }
+
+  // The HEAD law: the builder owns commits, so after the agent HEAD must
+  // still be the base revision. An agent that committed for itself may have
+  // committed anything under any message — its work is preserved on disk,
+  // and none of it is accepted from here.
+  const headNow = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
+  if (headNow.code !== 0) {
+    return { ok: false, reason: "git", message: `could not re-read HEAD in ${worktree}` };
+  }
+  if (headNow.stdout.trim() !== baseRevision) {
+    return {
+      ok: false,
+      reason: "moved-head",
+      message: `${worktree}'s HEAD moved from ${baseRevision.slice(0, 12)} to ${headNow.stdout.trim().slice(0, 12)} — the machine commits, the agent does not; the work is preserved`,
+    };
+  }
+  return null;
+}
+
+/** The changes an exhausted attempt left, committed for the next agent after the same lease, branch and HEAD laws as any
+ * commit. Null: nothing to keep, or kept. Otherwise the ending: a law that failed, or a commit that failed, its patch saved
+ * and the checkout preserved. Never a silent loss. */
+async function keepForNextAgent(captured: CapturedBuild): Promise<BuildResult | null> {
   const { store, request, git, worktree, branch, taskId, scope, root, clock } = captured;
+  const lapsed = proveLeaseNow(captured);
+  if (lapsed !== null) return lapsed;
+  const moved = await proveBranchAndHead(captured);
+  if (moved !== null) return moved;
   const changes = await unhandedChanges(git, worktree);
-  if (changes === null || changes.length === 0 || scope === null) return;
+  if (changes === null) return { ok: false, reason: "git", message: `could not read the changes in ${worktree}` };
+  if (changes.length === 0 || scope === null) return null;
   const saved = await saveWorkPatch(git, worktree, join(root, String(request.runId), "unhanded-work.patch"),
     `# work left when the agent ran out of its plan, in ${worktree}\n# kept ${clock().toISOString()}\n`);
-  if (!saved.ok || stopRequestedFor(store, request.runId, request.shouldStop)) return;
-  await commit(git, worktree, branch, taskId, scope as Scope, WIP_COMMIT_WORDS);
+  if (!saved.ok) return { ok: false, reason: "commit-failure", message: `The agent ran out of its plan. Its changes stay uncommitted in ${worktree}; ${saved.message}.` };
+  if (stopRequestedFor(store, request.runId, request.shouldStop)) return null;
+  const made = await commit(git, worktree, branch, taskId, scope as Scope, WIP_COMMIT_WORDS);
+  if (!made.ok) return { ok: false, reason: "commit-failure", message: `The agent ran out of its plan and its work couldn't be committed for the next agent: ${"message" in made ? made.message : "the commit failed"}. The checkout is preserved.` };
+  return null;
 }
 
 async function ingestPark(args: {
@@ -3341,6 +3380,7 @@ async function ingestPark(args: {
   | { ok: true; park: ParkPackage }
   | { ok: false; problems: Problem[] }
   | { fenced: true }
+  | { exhausted: true }
   | null
 > {
   const { store, request, agent, git, worktree, mailbox, baseRevision, root } = args;
@@ -3530,6 +3570,8 @@ async function ingestPark(args: {
         reason: turnOutcome.timedOut ? "timeout" : turnOutcome.initFailed ? "provider-init" : "agent",
         now: clock(),
       });
+      // Out of plan mid-correction on an approved chain: no more turns; the attempt ends and its walk moves on.
+      if (ranOutOnChain(store, repairRun)) return { exhausted: true };
       continue;
     }
 

@@ -23,7 +23,8 @@ import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV, typ
 import { ACP_AGENTS, isAcpProvider, isKeyedProvider, type AcpProviderId } from "./acp-agents.js";
 import { launchFromJson, verifyLaunch } from "./acp-attest.js";
 import { classifyTerminal, terminalMatchesLimit } from "./exhaustion.js";
-import { chainCustodyProblem, pinnedEntryOf } from "./fallback.js";
+import { chainCustodyProblem, closeWalkSignedOut, pinnedEntryOf } from "./fallback.js";
+import { codexLoginBilling } from "./codex-login.js";
 import { liftAuthPause } from "./provider-auth.js";
 import { attestProvider, reportedVersion, type VersionProbe } from "./attest.js";
 import { run as runCommand, runOwnerTag, streamsInput } from "./exec.js";
@@ -589,6 +590,19 @@ export async function invokeAgent(
   const codexLogin = spec.provider === "codex" && authMode === "subscription" && runner === undefined
     ? await codexLoginBilling(attested !== null ? attested.executable : adapter.binary, [...(runOptions.omitEnv ?? []), ...adapter.extraOmitEnv, ...ownKeyEnv])
     : null;
+  // A fallback agent approved on its plan runs only on a login proved to be that plan, read live where its CLI can say
+  // (Codex), else from how this machine last saw it bill. A saved API key never turns it into a paid agent.
+  if (pinned !== null && pinned.index > 0 && authMode === "subscription") {
+    const live = spec.provider === "codex"
+      ? codexLogin ?? await codexLoginBilling(attested !== null ? attested.executable : adapter.binary, [...(runOptions.omitEnv ?? []), ...adapter.extraOmitEnv, ...ownKeyEnv])
+      : seenBilling(store.handle, spec.provider);
+    if (live !== "subscription") {
+      tools?.cleanup(); codexHome?.cleanup(); removeAgentDatabase(isolatedDb.dir);
+      closeWalkSignedOut(store, runId, clock());
+      return { kind: "refused", reason: "auth-mode", providerVersion: attested === null ? null : attested.version,
+        diagnostic: `this fallback agent is approved on its plan, and ${spec.provider} isn't signed in to one here${live === "api-key" ? " (it's signed in with an API key)" : ""}` };
+    }
+  }
   const childEnv = {
     ...(runOptions.env ?? {}),
     ...(adapter.env?.(buildInvocation) ?? {}),
@@ -1276,18 +1290,6 @@ async function runTools(store: Store, runId: number, spec: AgentSpec, keyHome: s
     // Sign-ins made for this run couldn't all be kept (and were revoked): it doesn't start.
     if (error instanceof RunSignInError) return { refused: error.message };
     return noToolsArgs(spec.provider);
-  }
-}
-
-/** How Codex says it's signed in (`codex login status`): a ChatGPT sign-in is its plan; a key or Bedrock is a key;
- * null when it says neither (not signed in, or it didn't answer). */
-async function codexLoginBilling(binary: string, omitEnv: readonly string[]): Promise<Billing | null> {
-  try {
-    const status = await runCommand(binary, ["login", "status"], { timeoutMs: 15_000, omitEnv, processGroup: true });
-    const said = `${status.stdout}\n${status.stderr}`;
-    return /using chatgpt/i.test(said) ? "subscription" : /api key|bedrock/i.test(said) ? "api-key" : null;
-  } catch {
-    return null;
   }
 }
 
