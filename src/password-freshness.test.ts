@@ -387,7 +387,7 @@ describe("where freshness may be honoured", () => {
     // person proves each inside its own transaction.
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
-      "src/nightly-github.ts": 1, "src/operate.ts": 62, "src/pull-request-flow.ts": 1,
+      "src/nightly-github.ts": 1, "src/operate.ts": 64, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
@@ -403,7 +403,7 @@ describe("where freshness may be honoured", () => {
 
   test("a password is checked only at known places, and every console empty-field step-up goes through proveAccountNow", () => {
     expect(hits["authenticateAccount()"]).toEqual({
-      "src/operate.ts": 1, "src/principal.ts": 1, "src/scope.ts": 1, "src/server/guards.ts": 1, "src/server/people-tokens.ts": 3,
+      "src/operate.ts": 2, "src/principal.ts": 1, "src/scope.ts": 1, "src/server/guards.ts": 1, "src/server/people-tokens.ts": 3,
       "src/server/settings.ts": 2, "src/tokens-cli.ts": 1,
     });
     // The two settings checks are typed-now ceremonies (they also compare the generation); never an empty field.
@@ -439,7 +439,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "approveSetup": {
     "src/control-setup.ts#approveSetup@2": 1,
     "src/server/settings.ts#<module>": 2,
-    "src/server/settings.ts#createSettingsHandlers@1>controlAct@74><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>controlAct@78><anonymous>@1": 1,
   },
   "approverHash": {
     "src/store.ts#<module>": 1,
@@ -459,10 +459,12 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts#createPeopleHandlers@2>rekeySend@26": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>signupSend@13": 1,
     "src/server/settings.ts#<module>": 2,
-    "src/server/settings.ts#createSettingsHandlers@1>chatApprovalAct@77><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>telegramPairAct@78><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>chatApprovalAct@81><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>telegramPairAct@82><anonymous>@1": 1,
     "src/tokens-cli.ts#<module>": 2,
     "src/tokens-cli.ts#runTokensCommand@1": 1,
+    // `toolroll map`: a sign-in limits a read to that person's projects; no window is honoured there.
+    "src/operate.ts#mapCommand@224": 1,
   },
   "authenticateApprover": {
     "src/chat-actions.ts#<module>": 2,
@@ -568,36 +570,36 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts#createPeopleHandlers@2>peopleRevoke@7": 1,
     "src/server/runtime.ts#<module>": 2,
     "src/server/settings.ts#createSettingsHandlers@1": 2,
-    "src/server/settings.ts#createSettingsHandlers@1>approvalSave@50": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>backupsSave@59": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>checksSave@57": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>controlAct@74><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>dataExport@60": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>discordAct@80><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>modeAct@91><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>approvalSave@52": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>backupsSave@61": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>checksSave@59": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>controlAct@78><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>dataExport@62": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>discordAct@84><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modeAct@95><anonymous>@1": 1,
     // Settings → Models (spend-dashboard slice 3): the editor's save and a preset's or switch's apply.
-    "src/server/settings.ts#createSettingsHandlers@1>modelsApply@109": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modelsApply@113": 1,
     // Easy-start C5: turning local mode off is an operator's step-up from a full session, proved inside the write's transaction.
-    "src/server/settings.ts#createSettingsHandlers@1>localModeOff@110>turned:store.transact(_)@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>modelsSave@108": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>localModeOff@114>turned:store.transact(_)@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modelsSave@112": 1,
     // Results routing (slice 2): Settings → Models → Suggested's step-up acts (accept, keep, suggestions on), last in
     // the handlers so the reviewed positions above stay as they were.
-    "src/server/settings.ts#createSettingsHandlers@1>modelsRuleAct@112><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>monitoringSave@64": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>permissionDefaultSave@82": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>policySave@49": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectDelete@48": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectLiveView@46": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>pullRequestsSave@56": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>requestLimitsSave@51": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>retentionSave@54": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>slackAct@75><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>spendBudget@44": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>storageAct@55><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>teamsAct@79><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>toolsChange@66": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>toolsConnect@65": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>updatesAct@53><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modelsRuleAct@116><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>monitoringSave@66": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>permissionDefaultSave@86": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>policySave@51": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectDelete@50": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectLiveView@48": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>pullRequestsSave@58": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>requestLimitsSave@53": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>retentionSave@56": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>slackAct@79><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>spendBudget@46": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>storageAct@57><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>teamsAct@83><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>toolsChange@68": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>toolsConnect@67": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>updatesAct@55><anonymous>@1": 1,
     "src/server/tasks.ts#createTasksHandlers@2": 2,
     "src/server/tasks.ts#createTasksHandlers@2>codeAct@22><anonymous>@1": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 3,
@@ -611,11 +613,14 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Passwordless (docs/plans/passwordless.md): reviewed new sites.
     "src/operate.ts#credentialApprover@125": 1,
     "src/scope.ts#proveCredential@41": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>telegramPairAct@78><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>telegramPairAct@82><anonymous>@1": 1,
     // "Approve it to keep it" (fast-start.ts) and a held release's Let it go on (release-next.ts): a person, proved now.
-    "src/operate.ts#keepGrownCommand@225": 1,
+    "src/operate.ts#keepGrownCommand@226": 1,
     "src/server/tasks.ts#createReleaseSheetHandlers@6": 2,
     "src/server/tasks.ts#createReleaseSheetHandlers@6>goOn@6": 1,
+    // `toolroll map`: Check now and a person's door for on/off, each a typed credential proved now, as `models` does.
+    "src/operate.ts#mapCommand@224>runMapCommand(positional,flags,_).approver@4": 1,
+    "src/operate.ts#mapCommand@224>runMapCommand(positional,flags,_).door@5": 1,
   },
   "checkApproverPassword": {
     "src/server/guards.ts#<module>": 1,
@@ -759,7 +764,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/render-people.ts#ssoStepUps@3>swap@2": 1,
     "src/server/request-context.ts#<module>": 1,
     "src/server/runtime.ts#<module>": 2,
-    "src/server/settings.ts#createSettingsHandlers@1>modelsView@97": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modelsView@101": 1,
     "src/server/task-views.ts#createTaskViews@1>taskViewData@14><anonymous>@18": 2,
     "src/server/tasks.ts#createReleaseSheetHandlers@6>sheetScreen@2>remembered@1": 2,
     "src/server/tasks.ts#createTasksHandlers@2>peekFragment@39>work@2": 11,
@@ -779,6 +784,11 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/worktree.ts#WorktreePool.freshen@23": 4,
     "src/worktree.ts#WorktreePool.leaseNow@22": 4,
     "src/worktree.ts#WorktreePool.prune@34": 1,
+    // Not a password: a code map check's "fresh" outcome, and release-carry's set of files added in the change.
+    "src/code-map-build.ts#<module>": 1,
+    "src/code-map-build.ts#checkCodeMap@13": 1,
+    "src/release-carry.ts#changeRefusal@18": 2,
+    "src/release-carry.ts#preflightCarry@21": 3,
   },
   "freshFacts": {
     "src/scope.ts#<module>": 1,
@@ -800,7 +810,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "freshFloor": {
     "src/serve.ts#createDecisionServer@1>freshFactsOf@54>floor@6": 1,
     "src/server/session.ts#<module>": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@39": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@41": 1,
   },
   "freshScope": {
     "src/scope.ts#<module>": 1,
@@ -845,7 +855,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts#createPeopleHandlers@2>passwordSetSend@29": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>signupSend@13": 1,
     "src/server/session.ts#<module>": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@39": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@41": 1,
   },
   "proveAccountNow": {
     "src/scope.ts#authenticateApprover@42": 1,
@@ -885,7 +895,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1>freshFactsOf@54>ssoNow@4": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>ssoFinish@12": 1,
     "src/server/session.ts#<module>": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@39": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@41": 1,
   },
   "ssoNowAvailable": {
     "src/chat-actions.ts#<module>": 2,
@@ -906,7 +916,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1>freshFactsOf@54>ssoReauthAt@3": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>ssoFinish@12": 1,
     "src/server/session.ts#<module>": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@39": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@41": 1,
   },
   "verifyApproverByPassword": {
     "src/flows-cli.ts#<module>": 2,
@@ -924,6 +934,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/principal.ts#verifyApproverByPassword@4": 1,
     "src/server/chat.ts#<module>": 2,
     "src/server/chat.ts#createChatHandlers@1>leadMint@17": 1,
+    // `toolroll flaky`: a read, for the projects this typed login can open.
+    "src/operate.ts#flakyCommand@229": 1,
   },
   "verifyCredential": {
     "src/scope.ts#authenticateAccount@32": 2,
@@ -965,22 +977,22 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts#createPeopleHandlers@2>peopleInvite@5": 1,
     "src/server/runtime.ts#<module>": 1,
     "src/server/settings.ts#createSettingsHandlers@1": 2,
-    "src/server/settings.ts#createSettingsHandlers@1>passwordlessSave@28": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>signInSave@52": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>slackAct@75><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>teamsAct@79><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>discordAct@80><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>modeAct@91><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>passwordlessSave@30": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>signInSave@54": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>slackAct@79><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>teamsAct@83><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>discordAct@84><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modeAct@95><anonymous>@1": 1,
     // Passwordless review round 1: reviewed new sites.
     "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 1,
     // Agent Baseline arc 1: Settings → Project → Network, a password typed now (reviewed new site).
-    "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@47": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectWrites@100": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@101": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@49": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectWrites@104": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@105": 1,
     // Sandbox parity C9: Settings → Project → Home folder, a password typed now (reviewed new site).
-    "src/server/settings.ts#createSettingsHandlers@1>projectSandbox@102": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectSandbox@106": 1,
     // Auto-approve green: Settings → Approval rules → Release approval, a password typed now (reviewed new site).
-    "src/server/settings.ts#createSettingsHandlers@1>releaseApprovalSave@103": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>releaseApprovalSave@107": 1,
   },
   credentialApprover: {
     "src/operate.ts#runnerCommand@22": 2,

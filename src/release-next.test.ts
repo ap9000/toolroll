@@ -12,40 +12,43 @@ import { BEFORE_SWAP } from "./release-gate.js";
 import { FORWARD_ONLY } from "./deploy-rescue.js";
 import { deployActionOf, RELEASE_RESUMED_ACTION, resumeAllowedReleases, settleDeployment, takeReleaseRun, type SettleWorld } from "./release-next.js";
 import { allowAutoPublish, holdAutoPublish } from "./release-auto.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const NOW = new Date("2026-11-06T12:00:00.000Z");
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "so-relnext-")); });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
+const FIRST = fakePid(1), SECOND = fakePid(2), THIRD = fakePid(3);
+
 describe("the run lock", () => {
   test("two coordinators: the second waits, naming the first, and stops at its limit", async () => {
-    const first = await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: 11, alive: () => true });
+    const first = await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: FIRST, alive: () => true });
     expect(first.ok).toBe(true);
     const said: string[] = [];
     let clock = 0;
-    const second = await takeReleaseRun(dir, "rel", line => said.push(line), { host: "one", pid: 22, alive: () => true, sleep: async () => { clock += 10; }, now: () => clock, waitMs: 25 });
-    expect(second).toEqual({ ok: false, holder: { host: "one", pid: 11 } });
-    expect(said).toEqual(["Waiting: another release of rel is running on one (process 11)."]);
+    const second = await takeReleaseRun(dir, "rel", line => said.push(line), { host: "one", pid: SECOND, alive: () => true, sleep: async () => { clock += 10; }, now: () => clock, waitMs: 25 });
+    expect(second).toEqual({ ok: false, holder: { host: "one", pid: FIRST } });
+    expect(said).toEqual([`Waiting: another release of rel is running on one (process ${FIRST}).`]);
   });
 
   test("it goes on when the first finishes, and a process proved gone holds nothing", async () => {
-    const first = await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: 11, alive: () => true });
+    const first = await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: FIRST, alive: () => true });
     if (!first.ok) throw new Error("no lock");
-    const waited = await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: 22, alive: () => true, sleep: async () => { first.release(); } });
+    const waited = await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: SECOND, alive: () => true, sleep: async () => { first.release(); } });
     expect(waited.ok).toBe(true);
-    const taken = await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: 33, alive: () => false });
+    const taken = await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: THIRD, alive: () => false });
     expect(taken.ok).toBe(true);
   });
 
   test("another computer's lock can't be proved gone from here", async () => {
-    await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: 11 });
-    expect(await takeReleaseRun(dir, "rel", () => {}, { host: "two", pid: 22, alive: () => false, waitMs: 0 })).toMatchObject({ ok: false });
+    await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: FIRST });
+    expect(await takeReleaseRun(dir, "rel", () => {}, { host: "two", pid: SECOND, alive: () => false, waitMs: 0 })).toMatchObject({ ok: false });
   });
 
   test("a coordinator gives back only its own lock", async () => {
-    const first = await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: 11, alive: () => false });
-    const second = await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: 22, alive: () => false });
+    const first = await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: FIRST, alive: () => false });
+    const second = await takeReleaseRun(dir, "rel", () => {}, { host: "one", pid: SECOND, alive: () => false });
     if (!first.ok || !second.ok) throw new Error("no lock");
     first.release();
     expect(existsSync(join(dir, "releases", "rel.running"))).toBe(true);

@@ -14,6 +14,7 @@ import { backgroundOff, laptopStop, restartOwnBuilder, type LaptopSeams } from "
 import { laptopServiceDefinition, LAPTOP_LABEL_DARWIN } from "./laptop-service.js";
 import { RUNNER_PROCESS_DIR, runnerProcessFile, sealRunnerProcessRecord, writeRunnerProcessRecord, credentialDigest } from "./runner-process.js";
 import type { SupervisorRunner } from "./daemon.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const NOW = new Date("2026-11-06T12:00:00.000Z");
 const BUILD = "1.2.3";
@@ -26,7 +27,7 @@ let launchd: { loaded: boolean; running: boolean; disabled: boolean; log: string
 const supervisor = (async (name: string, args: readonly string[]) => {
   launchd.log.push([name, ...args].join(" "));
   if (name !== "launchctl") return { ...ok, code: 1 };
-  if (args[0] === "print") return launchd.loaded ? { ...ok, stdout: launchd.running ? "\tstate = running\n\tpid = 4242\n" : "\tstate = not running\n" } : { ...ok, code: 113 };
+  if (args[0] === "print") return launchd.loaded ? { ...ok, stdout: launchd.running ? `\tstate = running\n\tpid = ${fakePid(1)}\n` : "\tstate = not running\n" } : { ...ok, code: 113 };
   if (args[0] === "print-disabled") return { ...ok, stdout: `disabled services = {\n\t"${LAPTOP_LABEL_DARWIN}" => ${launchd.disabled ? "disabled" : "enabled"}\n}\n` };
   return ok;
 }) as unknown as SupervisorRunner;
