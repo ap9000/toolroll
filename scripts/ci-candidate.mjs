@@ -33,7 +33,8 @@ import { fileURLToPath } from "node:url";
 export const CANDIDATE_USER = "so-candidate";
 /** Fixed on macOS, where nothing assigns one: above the hosted image's own users. */
 const MACOS_ID = 5501;
-const FOLDER = { linux: "/opt/so-c", darwin: "/private/var/so-c" };
+// Never under /opt: GitHub's runners leave it writable by every user, and Toolroll then rightly refuses to keep secrets below it.
+const FOLDER = { linux: "/var/so-c", darwin: "/private/var/so-c" };
 /** The only exit codes this script adds to a command's own. */
 export const EXIT = { cleanup: 97, report: 98, usage: 2 };
 /** What a report may weigh: the suite's whole JSON is a few MB. */
