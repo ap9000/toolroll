@@ -4,6 +4,7 @@
  */
 import { resolve } from "node:path";
 import { answerMap, areaRows, codeMapStatus, openMap, type MapAnswer, type MapView } from "./code-map-read.js";
+import { endHoldout, setCodeMapSwitch, type MapDoor } from "./code-map-acts.js";
 import { requestRefresh } from "./code-map-store.js";
 import { canonicalProject } from "./project.js";
 import { envelopeJson } from "./envelope.js";
@@ -19,11 +20,17 @@ export const MAP_DESCRIPTORS = [
   { action: "file", synopsis: "one file's exported names, imports and who imports it: map file <path>", mutation: "none", positional: "the file's exact path", flags: pageFlags },
   { action: "search", synopsis: "search files and exported names: map search <words>", mutation: "none", positional: "words to search for", flags: pageFlags },
   { action: "refresh", synopsis: "ask for a check of main now; it runs on the next pass", mutation: "unkeyed", positional: null, flags: [jsonFlag, repoFlag] },
+  { action: "report", synopsis: "builds with and without the map, by assigned arm", mutation: "none", positional: null, flags: [jsonFlag, repoFlag] },
+  { action: "on", synopsis: "turn a project's code map on (a person, or this computer's owner)", mutation: "unkeyed", positional: null, flags: [jsonFlag, repoFlag], audience: "operator" },
+  { action: "off", synopsis: "turn a project's code map off (a person, or this computer's owner)", mutation: "unkeyed", positional: null, flags: [jsonFlag, repoFlag], audience: "operator" },
+  { action: "holdout end", synopsis: "stop enrolling new builds in the holdout; existing ones keep their arm (a person)", mutation: "unkeyed", positional: null, flags: [jsonFlag, repoFlag], audience: "operator" },
 ] as const;
 
 export type MapCliContext = { store: Store; write: (line: string) => void; json: boolean; now: Date; actor: string | null; repos: readonly string[];
   /** Whether the caller stands as an approver of this project, proved now (a lead token does; a local owner doesn't). */
-  approver: (repo: string) => boolean };
+  approver: (repo: string) => boolean;
+  /** Who may change this project's map, as proved for this command; null when nobody was. */
+  door: (repo: string) => MapDoor | null };
 const printable = (text: string): string => [...text].map(char => (/[\p{C}]/u.test(char) ? `\\u{${char.codePointAt(0)!.toString(16)}}` : char)).join("");
 
 function linesOf(answer: Extract<MapAnswer, { ok: true }>): string[] {
@@ -55,6 +62,15 @@ export async function runMapCommand(positional: readonly string[], options: Map<
     const said = requestRefresh(store, wanted, context.actor, now);
     return ok({ repo: wanted, request: said }, [said === "queued" ? "Queued: main is checked on the next pass." : "Already queued."]);
   }
+  if (action === "on" || action === "off" || action === "holdout") {
+    if (action === "holdout" && (positional[1] !== "end" || positional.length !== 2)) return fail("usage", "Use map holdout end.");
+    const door = context.door(wanted);
+    if (door === null) return fail("unauthenticated", "This takes your own sign-in: --as <you> --token <password>.");
+    const done = action === "holdout" ? endHoldout(store, door, wanted, now) : setCodeMapSwitch(store, door, wanted, action === "on", now);
+    if (!done.ok) return fail("refused", done.problem);
+    return ok({ repo: wanted, ...(action === "holdout" ? { holdout: "ended" } : { codeMap: action }) }, [action === "holdout" ? "The holdout has ended: no new builds are enrolled, and existing ones keep their arm." : `The code map is ${action} for this project.`]);
+  }
+  if (action === "report") return fail("refused", "The report isn't ready yet.");
   const cursor = options.get("cursor");
   if (cursor === true) return fail("usage", "--cursor takes the value the last answer gave.");
   if (action === "") {

@@ -221,6 +221,7 @@ export function projectPage(chrome: Chrome, data: {
     ...(data.checks === null ? [] : [["Checks", html`<a class="k-link" href="${data.checks.href}">${data.checks.level}</a>`] as const]),
     ...(data.pullRequests === null ? [] : [["Pull requests", html`<a class="k-link" href="${data.pullRequests.href}">${data.pullRequests.on ? "On" : "Off"}</a>`] as const]),
     ["Knowledge", html`<a class="k-link" href="${data.knowledgeHref}">Open knowledge</a>`],
+    ["Code map", html`<a class="k-link" href="${`/projects/${encodeURIComponent(data.name)}/map${data.selfHref.includes("?") ? data.selfHref.slice(data.selfHref.indexOf("?")) : ""}`}">Open code map</a>`],
   ]);
   const body = joinHtml([
     phoneHeader(data.name, { back: "/projects" }),

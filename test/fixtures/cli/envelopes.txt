@@ -2207,6 +2207,86 @@ $ contract --commands --json → 0
       "remote": "yes"
     },
     {
+      "invocation": "map report",
+      "synopsis": "builds with and without the map, by assigned arm",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which project"
+        }
+      ],
+      "remote": "no"
+    },
+    {
+      "invocation": "map on",
+      "synopsis": "turn a project's code map on (a person, or this computer's owner)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which project"
+        }
+      ],
+      "remote": "no"
+    },
+    {
+      "invocation": "map off",
+      "synopsis": "turn a project's code map off (a person, or this computer's owner)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which project"
+        }
+      ],
+      "remote": "no"
+    },
+    {
+      "invocation": "map holdout end",
+      "synopsis": "stop enrolling new builds in the holdout; existing ones keep their arm (a person)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "which project"
+        }
+      ],
+      "remote": "no"
+    },
+    {
       "invocation": "models status",
       "synopsis": "installed CLI versions, available updates, new models and the automatic check",
       "audience": "agent",

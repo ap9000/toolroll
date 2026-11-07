@@ -14048,5 +14048,13 @@ async function mapCommand(positional: readonly string[], flags: Map<string, stri
     repos = all.filter(repo => store.accountCanAccess(name, repo) && (remote === null || remote.allows(repo)));
   } else repos = all;
   return runMapCommand(positional, flags, { store, write: context.write, json: context.json, now: context.clock(), actor, repos,
-    approver: repo => local === null && name !== undefined && token !== undefined && authenticateApprover(store, name, token, repo).ok });
+    approver: repo => local === null && name !== undefined && token !== undefined && authenticateApprover(store, name, token, repo).ok,
+    door: repo => {
+      if (local !== null) return { kind: "local-owner", actor: local.account };
+      if (name === undefined || token === undefined) return null;
+      // The credential generation the proof is checked against, read before it, as `models` does.
+      const generation = store.accountOf(name)?.generation ?? -1;
+      const proved = authenticateApprover(store, name, token, repo);
+      return proved.ok ? { kind: "person", person: { actor: name, generation, method: proved.method } } : null;
+    } });
 }

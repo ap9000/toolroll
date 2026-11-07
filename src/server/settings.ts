@@ -101,7 +101,8 @@ import { isWritesMode } from "../writes-mode.js";
 import { isCheckAccess, signInsUnavailableWords, widerThan } from "../check-access.js";
 import { LOCAL_MODE_CONFINES, localModeOn } from "../local-owner.js";
 import { parseMachLookup, parseReadDeny } from "../project-sandbox.js";
-import { projectDeleteConfirmHtml,projectSettingsHtml } from "../project-delete-ui.js";
+import { projectDeleteConfirmHtml,projectSettingsHtml,type ProjectSettingsView } from "../project-delete-ui.js";
+import { endHoldout,setCodeMapSwitch,type MapDoor } from "../code-map-acts.js";
 import { deleteProject,holdingsWords } from "../project-delete.js";
 import { applySavedKnowledge,changeKnowledge,knowledgeVersion,knowledgeView,type KnowledgeDraft } from "../project-knowledge.js";
 import { changeLearning } from "../project-learning.js";
@@ -349,9 +350,29 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
     const selector = projectPicker("/settings/project", projects.map(repo => ({ repo, name: projectName(repo) })), chosen);
     const notice = { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") };
-    const content = chosen === "" ? html`${notice.said ? infoLine(notice.said) : ""}${empty({ title: "No projects yet.", action: btn("Add a project", { sm: true, href: "/projects" }) })}` : (projectSettingsHtml({ ...projectViewOf(chosen, who), remoteUrl: store.projectRemote(chosen) }, notice));
+    const content = chosen === "" ? html`${notice.said ? infoLine(notice.said) : ""}${empty({ title: "No projects yet.", action: btn("Add a project", { sm: true, href: "/projects" }) })}` : (projectSettingsHtml({ ...projectViewOf(chosen, who), remoteUrl: store.projectRemote(chosen), codeMap: codeMapView(chosen, who, ctx.now) }, notice));
     return sendScreen(response, 200, screen("Project", settingsSubPage("projects", "Project", html`${selector}${content}`), { chrome: chromeFor(chosen || null, "settings") }));
   }
+  /** The project's code map section: the switch, and the holdout while new builds are still being enrolled. */
+  function codeMapView(repo: string, who: HandlerContext["who"], now: Date): NonNullable<ProjectSettingsView["codeMap"]> {
+    const row = store.handle.prepare("SELECT code_map, code_map_enroll_until FROM project WHERE path = ?").get(repo);
+    const until = typeof row?.["code_map_enroll_until"] === "string" ? row["code_map_enroll_until"] : null;
+    return { on: row === undefined || Number(row["code_map"]) === 1, enrollUntil: until !== null && Date.parse(until) > now.getTime() ? until : null,
+      canEndHoldout: who.via === "cookie" && who.authority !== "local-owner", href: `/projects/${encodeURIComponent(projectName(repo))}/map` };
+  }
+  function codeMapAct(kind: "switch" | "holdout") { return async (ctx: HandlerContext): Promise<void> => {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const repo = posted.get("repo") ?? "";
+    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/project?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}#code-map`);
+    if (posted.getAll("repo").length !== 1 || posted.getAll("on").length > 1) return back("problem", "That form was sent twice over. Nothing changed.");
+    if (!consoleProjects().includes(repo) || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+    const door: MapDoor = who.authority === "local-owner" ? { kind: "local-owner", actor: who.name } : { kind: "person", person: { actor: who.name, generation: store.accountOf(who.name)?.generation ?? -1, method: "session" } };
+    const on = posted.get("on") === "1";
+    const done = kind === "switch" ? setCodeMapSwitch(store, door, repo, on, now) : endHoldout(store, door, repo, now);
+    if (!done.ok) return back("problem", done.problem);
+    return back("said", kind === "holdout" ? "The holdout has ended. Builds already enrolled keep their arm." : on ? "The code map is on." : "The code map is off.");
+  }; }
   // v102: Settings → Approvals and safety: the defaults for new tasks, a project's separation of duties and release
   // approval, and the way to its operating mode. Anyone who sees the project reads them; each form's own route decides
   // who may change it (an approver for the defaults and releases, an instance operator for the rules).
@@ -2451,6 +2472,8 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.lead-about": leadAbout,
     "settings.lead-promise-cancel": leadPromiseCancel,
     "settings.lead-on": leadOn,
+    "settings.code-map": codeMapAct("switch"),
+    "settings.code-map-holdout": codeMapAct("holdout"),
   }, {
     "edge.google-callback": googleCallback,
     "edge.connect-callback": connectCallback,

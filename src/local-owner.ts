@@ -46,6 +46,9 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   "dismiss-suggestion",
   // Slice 3: stopping a trial of a cheaper model only lowers (proveRuleDoor checks this exact act).
   "trial-stop",
+  // The code map (docs/plans/code-map.md §5): on or off for one project only, the same kind of setting as the default
+  // agent. Never a refresh, and never the end of a holdout (code-map-acts.ts refuses those by name).
+  "code-map-switch",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);
