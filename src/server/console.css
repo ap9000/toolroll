@@ -2805,3 +2805,14 @@ html.so-swap::view-transition-old(*):only-child { animation: so-card-out 160ms e
 .cm-path { overflow-wrap: anywhere; user-select: all; }
 .cm-search { display: flex; gap: var(--so-space-sm); align-items: center; margin: 0 0 var(--so-space-md); }
 .cm-search .k-input, .cm-search input[type="search"] { flex: 1 1 auto; min-width: 0; }
+.cm-search .k-btn { flex: 0 0 auto; white-space: nowrap; }
+/* A test's name is the row: it wraps whole, its facts sit under it, and the one action stays on one line. */
+.flaky-rows .k-row-a .k-btn { white-space: nowrap; }
+@media (min-width: 761px) {
+  .flaky-rows .k-row { grid-template-columns: 96px minmax(0, 1fr) auto auto; padding-block: 10px; }
+  .flaky-rows .k-row-t { grid-column: 2; grid-row: 1; white-space: normal; overflow-wrap: anywhere; }
+  .flaky-rows .k-row-d { grid-column: 2; grid-row: 2; white-space: normal; }
+  .flaky-rows .k-row-m { grid-column: 3; grid-row: 1 / span 2; }
+  .flaky-rows .k-row-a { grid-column: 4; grid-row: 1 / span 2; }
+  .flaky-rows .k-row-c { grid-row: 1 / span 2; }
+}

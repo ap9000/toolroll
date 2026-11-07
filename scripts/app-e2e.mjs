@@ -291,6 +291,13 @@ await journey("pages", SCRIPTED, "Every main page opens without an error, in the
   await phone.goto(`${base}/next`);
   // Home, or Chat while a first run has filed nothing yet (pages.ts homeRedirect).
   if (!["/", "/chat"].includes(new URL(phone.url()).pathname)) broken.push(`an old /next link landed on ${phone.url()}`);
+  // Storage, on both: what the next sweep would free, and the folders kept and why.
+  for (const on of [page, phone]) {
+    await on.goto(`${base}/settings/storage`);
+    if (!(await on.locator("body").innerText()).includes("Storage")) broken.push("Settings → Storage didn't open");
+    if (await on.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)) broken.push("Settings → Storage scrolls sideways");
+    await on.screenshot({ path: join(w.out, `storage-${on === phone ? "phone" : "desktop"}.png`), fullPage: true });
+  }
   // A page that doesn't exist is still a page in the workspace, not bare text.
   const missing = await page.goto(`${base}/no-such-page`);
   await page.locator("[data-workspace-shell]").waitFor({ state: "attached", timeout: 5_000 }).catch(() => undefined);

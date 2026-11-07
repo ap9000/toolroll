@@ -31,7 +31,7 @@ export function flakyPage(chrome: Chrome, data: { name: string; repo: string; ba
   const shortHistory = list.complete ? "" : note(`Not enough recorded history: test results are kept for 180 days, so ${list.days} days can't be counted in full.`);
   const body = list.rows.length === 0
     ? (list.complete ? empty({ title: "No mixed outcomes recorded" }) : "")
-    : joinHtml(rows);
+    : html`<div class="flaky-rows">${joinHtml(rows)}</div>`;
   return screen("Flaky tests", joinHtml([
     phoneHeader("Flaky tests", { back: data.back }),
     doc(
