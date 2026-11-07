@@ -15,7 +15,7 @@ const methodOf = (route: RouteDeclaration): string => route.method === "POST" ? 
 // Hand-kept access decisions, independent of ROUTES. Equality catches additions and policy changes as well as removals;
 // a deny row must not disappear from the HTTP refusal matrix by silently becoming unscoped/collection/resource.
 const LIMITED_ACCESS = {
-  'code.page': 'self', 'projects.page': 'unscoped', 'projects.project': 'unscoped',
+  'code.page': 'self', 'projects.page': 'unscoped', 'projects.project': 'unscoped', 'projects.map': 'unscoped',
   'home': 'collection', 'search': 'collection', 'morning': 'collection', 'activity': 'collection', 'inbox': 'collection', 'work': 'collection', 'next': 'collection',
   'work.put-away': 'collection', 'work.put-away.apply': 'collection', 'task.act.archive': 'resource', 'task.act.restore': 'resource',
   'board': 'collection', 'review': 'collection', 'ledger': 'unscoped', 'done': 'collection',

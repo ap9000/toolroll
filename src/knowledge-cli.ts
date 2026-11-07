@@ -89,7 +89,7 @@ export async function runKnowledgeCommand(positional: readonly string[], options
     admittedToken = token;
   }
   const cacheRoot = context.evidenceRoot ? join(dirname(context.evidenceRoot), 'repository-context') : namedPath(join(homedir(), '.cache'), ['repository-context']);
-  const result = await repositoryContext({ repo: resolve(repo), query, mode: spec.action === 'impact' ? 'impact' : 'search', refresh: spec.action === 'refresh', cacheRoot, ...(typeof base === 'string' ? { baseRevision: base } : {}) });
+  const result = await repositoryContext({ repo: resolve(repo), ...(admittedToken ? { project: resolve(repo) } : {}), query, mode: spec.action === 'impact' ? 'impact' : 'search', refresh: spec.action === 'refresh', cacheRoot, ...(typeof base === 'string' ? { baseRevision: base } : {}) });
   if (admittedToken) {
     const current = authenticateCoordinator(context.store, admittedToken);
     if (!current.ok) return fail('unauthenticated', 'The coordinator credential is invalid or revoked.');

@@ -63,6 +63,10 @@ import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
 import { githubIdentityOf,homePage,startBuilderHtml } from "./render-pages.js";
 import { retiredRedirect } from "./retired-routes.js";
+import { codeMapStatus, openMap } from "../code-map-read.js";
+import { requestRefresh } from "../code-map-store.js";
+import { codeMapReport } from "../code-map-report.js";
+import { codeMapPage, codeMapReportBlock } from "./render-code-map.js";
 import { browsePage,githubReposPage,projectHref,projectPage,projectsPage,unknownProject,type ProblemAt,type ProjectPageTask } from "./render-projects.js";
 import { notFound as kitNotFound } from "./kit.js";
 import { type ProjectPeek } from "./render-pages.js";
@@ -951,6 +955,43 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       activity, now,
     }));
   }
+  /** The named project's code map address, for this account; null when it isn't one they can see. */
+  async function mapProject(ctx: HandlerContext, suffix: string): Promise<{ name: string; path: string; base: string; selfHref: string } | null> {
+    let name = "";
+    try { name = decodeURIComponent(ctx.url.pathname.slice("/projects/".length, -suffix.length)); } catch { return null; }
+    const { recent, candidates } = visibleProjects();
+    const named = [...recent.map(one => ({ path: one.path, name: one.name })), ...candidates.map(path => ({ path, name: projectName(path) }))].filter(one => one.name === name);
+    const asked = ctx.url.searchParams.get("path") ?? ctx.posted.get("repo");
+    const found = asked !== null ? named.find(one => one.path === asked) ?? null : named.length === 1 ? named[0]! : null;
+    if (found === null || !(await authorizedProject(liveCeiling(), found.path))) return null;
+    return { name: found.name, path: found.path, base: `/projects/${encodeURIComponent(found.name)}/map`, selfHref: projectHref(found.name, found.path, named.length > 1) };
+  }
+  async function codeMapHandler(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now } = ctx;
+    const open = who.via === "cookie" ? who.session.project : null;
+    const found = await mapProject(ctx, "/map");
+    if (found === null) return sendScreen(response, 404, screen("Not found", kitNotFound(url.pathname, unknownProject("by that name")), { chrome: chromeFor(open, "projects") }));
+    const asked = url.searchParams.get("v");
+    const pinned = asked !== null && /^[1-9][0-9]{0,14}$/.test(asked) ? Number(asked) : undefined;
+    const status = codeMapStatus(store, found.path, now, iso => new Date(iso).toISOString().slice(11, 16));
+    const opened = status.state === "off" || status.state === "not-available" ? null : openMap(store, found.path, pinned);
+    const held = opened !== null && opened.ok ? opened : null;
+    const repoed = opened !== null && !opened.ok && pinned !== undefined ? openMap(store, found.path) : null;
+    const map = held ?? (repoed !== null && repoed.ok ? repoed : null);
+    const canRefresh = who.via === "cookie" && who.authority !== "local-owner" && store.accountOf(who.name)?.role === "approver" && store.accountCanAccess(who.name, found.path);
+    return sendScreen(response, 200, codeMapPage(chromeFor(open, "projects"), {
+      name: found.name, repo: found.path, base: found.base, selfHref: found.selfHref, status, map: map?.map ?? null, versionId: map?.version.id ?? null, remoteUrl: store.projectRemote(found.path),
+      q: url.searchParams.get("q"), area: url.searchParams.get("area"), file: url.searchParams.get("file"), canRefresh, now, report: codeMapReportBlock(codeMapReport(store, found.path, now)),
+      said: url.searchParams.get("said"), problem: repoed !== null ? "The map changed. Showing the current one." : url.searchParams.get("problem"),
+    }));
+  }
+  async function codeMapRefreshHandler(ctx: HandlerContext): Promise<void> {
+    const { response, who, now } = ctx;
+    const found = await mapProject(ctx, "/map/refresh");
+    if (found === null || !store.accountCanAccess(who.name, found.path)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
+    const said = requestRefresh(store, found.path, who.name, now);
+    return redirect(response, `${found.base}?said=${encodeURIComponent(said === "queued" ? "Queued. Main is checked on the next pass." : "Already queued.")}`);
+  }
   async function instanceEdge(ctx: EdgeContext): Promise<void> {
     const { request, response, url } = ctx;
     const secret = options.instanceSecret?.() ?? null;
@@ -1081,6 +1122,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "projects.github-list": projectsGithubList,
     "projects.page": projectsIndex,
     "projects.project": projectPageHandler,
+    "projects.map": codeMapHandler,
+    "projects.map-refresh": codeMapRefreshHandler,
     "home": homeRedirect,
     "search": searchPage,
     "morning": morningAlias,

@@ -4,6 +4,8 @@
     "get_brief": [{}, { "repo": "r1" }],
     "get_project_activity": [{ "repo": "r1" }, { "repo": "r1", "offset": 10 }],
     "get_project_context": [{ "repo": "r1", "query": "where the footer link is rendered" }, { "repo": "r2", "query": "src/serve.ts", "mode": "impact" }],
+    "get_code_map": [{ "repo": "r1", "view": "overview" }, { "repo": "r1", "view": "file", "id": "src/serve.ts", "version": 3, "cursor": "3.40" }],
+    "refresh_code_map": [{ "repo": "r1" }],
     "get_action_status": [{ "proposal": 3 }],
     "get_actions": [{}],
     "propose_action": [
@@ -105,6 +107,7 @@
   },
   "gateway": {
     "get_project_context": [{ "repo": "/repo/demo", "query": "footer" }, { "repo": "/repo/demo", "query": "src/serve.ts", "mode": "impact" }],
+    "get_code_map": [{ "repo": "/repo/demo", "view": "search", "query": "footer" }],
     "get_assignment": [{ "ref": "t-42" }],
     "list_assignment_updates": [{}, { "after": 120, "limit": 100 }],
     "claim_assignment": [{ "ref": "t-42" }],

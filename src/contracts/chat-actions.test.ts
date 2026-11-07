@@ -62,6 +62,8 @@ const REQUESTS: Record<ChatActionOperation, Record<string, unknown>> = {
   decision_retire: { repo: "/work/app", decision: 9, reason: "Superseded." },
   suggestion_not_now: { repo: "/work/app", suggestion: "small:claude-haiku-5-5:0123456789ab" },
   trial_stop: { repo: "/work/app", trial: 3 },
+  code_map_switch: { repo: "/work/app", on: false },
+  code_map_holdout_end: { repo: "/work/app" },
   lead_about_you: { line: "Prefers short replies.", replaces: 0 },
   scope_approve: { task: "fix-footer" },
   result_accept: { task: "fix-footer", run: 41 },

@@ -67,6 +67,7 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ['template show', args('name')],
   ...['search', 'impact'].map(action => [`knowledge ${action}`, args('query', 'base')] as const),
   ['knowledge refresh', args('', 'base')],
+  ['map', args('', 'cursor')], ...['area', 'file'].map(action => [`map ${action}`, args('target', 'cursor')] as const), ['map search', args('target*', 'cursor')], ['map refresh', args('')],
   // Decision reads are already project-bound in project-memory.ts. Memory writes (decide, retire, apply) are a person's
   // step-up, never a token's act, so none is listed here.
   ...['search', 'decisions', 'show', 'review', 'status'].map(action => [`memory ${action}`,

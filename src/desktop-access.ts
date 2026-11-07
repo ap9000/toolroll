@@ -2,8 +2,8 @@
 import { mkdtempSync, readFileSync, writeFileSync, unlinkSync, rmdirSync, opendirSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
 import { run, type ExecResult } from "./exec.js";
+import { checkoutGitSync, checkoutTop } from "./teardown-git.js";
 
 export type DesktopProjectAccess = { repo: string; state: "ready" | "permission-needed" | "missing" | "unavailable" | "checking"; message: string };
 export type DesktopAccessReport = { version: 1; controllerPid: number; checkedAt: string; request: string; projects: DesktopProjectAccess[] };
@@ -22,7 +22,10 @@ export function probeDesktopProject(repo: string): DesktopProjectAccess {
   let scratch: string | undefined;
   try {
     const directory = opendirSync(repo); directory.readSync(); directory.closeSync();
-    const common = execFileSync("git", ["-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", timeout: 4000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+    // The project's own repository, read through a frozen view: a build's include naming a FIFO can't hang the probe.
+    const top = checkoutTop(repo, 4000);
+    if (top === null) throw Error("Not a readable Git checkout");
+    const common = checkoutGitSync(top, ["rev-parse", "--path-format=absolute", "--git-common-dir"], { timeoutMs: 4000, binding: { repo: top } }).trim();
     scratch = mkdtempSync(join(realpathSync(common), "standing-orders-access-"));
     const file = join(scratch, "check");
     writeFileSync(file, "Toolroll access check\n", { flag: "wx", mode: 0o600 });

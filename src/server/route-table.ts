@@ -185,6 +185,8 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "settings.lead-on": "choose-default-agent",
   // Choosing which open project the pages show: a view filter, never authorization.
   "projects.select": "read",
+  // On or off for one project: it moves no money, permission or approval (code-map-acts.ts re-checks this exact act).
+  "settings.code-map": "code-map-switch",
   // Results routing: lowering only.
   "settings.models-turn-off": "routing-turn-off",
   "settings.models-not-now": "dismiss-suggestion",
@@ -341,6 +343,9 @@ get("pages", "projects.page", "/projects", { limited: "unscoped", ...free });
 // project this account can see and never switches the session's project; its Open project button posts to
 // /projects/select. The handler resolves the name among the account's visible projects; anything else is not found.
 get("pages", "projects.project", "^\\/projects\\/[^/]+$", { limited: "unscoped", ...free, sample: "/projects/payments-api" });
+// One project's code map (docs/plans/code-map.md §6): reads only. The handler resolves the name among the account's
+// visible projects, and looks areas and files up exactly in the stored version.
+get("pages", "projects.map", "^\\/projects\\/[^/]+\\/map$", { limited: "unscoped", ...free, sample: "/projects/payments-api/map" });
 get("pages", "home", "/", { limited: "collection", ...free });
 get("pages", "search", "/search", { limited: "collection", ...free });
 // Retired pages (docs/plans/plain-toolroll.md P1.4): permanent redirects to Home and Tasks, admitted as their target is.
@@ -590,6 +595,8 @@ for (const one of ["agent", "apply"]) post("settings", `settings.models-${one}`,
 for (const one of ["accept", "keep", "suggest-on", "try"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, { scope: "step-up", ...operator("An instance operator changes which models run.", "/settings/models") });
 for (const one of ["turn-off", "not-now", "suggest-off", "stop"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, operator("An instance operator changes which models run.", "/settings/models"));
 // Any other models action answers the models area's own refusal.
+post("settings", "settings.code-map", "/settings/project/code-map", { project: "form", ...approver("An approver turns the code map on or off.", "/settings/project") });
+post("settings", "settings.code-map-holdout", "/settings/project/code-map/holdout", { project: "form", ...approver("A person ends the holdout.", "/settings/project") });
 post("settings", "settings.models-act", "^\\/settings\\/models\\/.*$", { sample: "/settings/models/unknown", ...MODELS });
 post("settings", "settings.knowledge-refresh", "/settings/knowledge/refresh", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to refresh project context.", "/settings/knowledge") });
 post("settings", "settings.knowledge-proposal", "/settings/knowledge/proposal", { project: "form", ...approver("Sign in as an approver to decide memory proposals.", "/settings/knowledge") });
@@ -612,6 +619,7 @@ for (const one of ["messaging", "permission-default", "quality-default", "notifi
 }
 post("pages", "projects.github-list", "/projects/github", { callers: ["cookie"], ...anyApprover("your login can watch — adding projects is an approver's act") });
 post("pages", "projects.select", "/projects/select", { project: "form-path", limited: "unscoped", viewer: true });
+post("pages", "projects.map-refresh", "^\\/projects\\/[^/]+\\/map\\/refresh$", { project: "form", sample: "/projects/payments-api/map/refresh", ...approver("An approver asks for a check of main.", "/projects") });
 post("pages", "projects.remove", "/projects/remove", { project: "form", ...operator("An instance operator removes projects.", "/settings/project") });
 post("pages", "projects.open", "/projects/open", { project: "form-path" });
 post("tasks", "tasks.add", "/tasks/add", { project: "form", limited: "collection", bodyCap: LARGE_FORM });

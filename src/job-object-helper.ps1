@@ -25,7 +25,9 @@ param(
   # a space or a percent sign the controller passed.
   [Parameter(Position = 1)] [string] $Encoded,
   [string] $JobName,
-  [string] $QueryName
+  [string] $QueryName,
+  # A whole-job memory limit in bytes (the code map's bounded reads); 0 is none.
+  [long] $MemoryLimit = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,6 +70,7 @@ public static class SoJob {
   public const int JobObjectBasicAccountingInformation = 1;
   public const int JobObjectExtendedLimitInformation = 9;
   public const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+  public const uint JOB_OBJECT_LIMIT_JOB_MEMORY = 0x200;
   public const uint CREATE_SUSPENDED = 0x4;
   public const uint CREATE_UNICODE_ENVIRONMENT = 0x400;
   public const int STARTF_USESTDHANDLES = 0x100;
@@ -111,7 +114,7 @@ public static class SoJob {
     catch { return "unknown"; }
     finally { CloseHandle(job); }
   }
-  public static IntPtr MakeJob(string name) {
+  public static IntPtr MakeJob(string name, long memoryLimit) {
     IntPtr job = CreateJobObjectW(IntPtr.Zero, name);
     int createdError = Marshal.GetLastWin32Error();
     if (job != IntPtr.Zero && createdError == 183) { CloseHandle(job); throw new Exception("job name already exists"); }
@@ -119,6 +122,10 @@ public static class SoJob {
     var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
     // Kill on close; NO breakaway flags, so nothing inside may leave the job.
     info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (memoryLimit > 0) {
+      info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+      info.JobMemoryLimit = new UIntPtr((ulong)memoryLimit);
+    }
     int size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
     IntPtr buffer = Marshal.AllocHGlobal(size);
     try {
@@ -177,7 +184,7 @@ try {
   [string[]]$targetArguments = ConvertFrom-Json -InputObject ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Encoded)))
   if ($targetArguments.Count -lt 1) { throw "the target argv is empty" }
   # Admission arrives only after the controller durably records this helper.
-  $job = [SoJob]::MakeJob($JobName)
+  $job = [SoJob]::MakeJob($JobName, $MemoryLimit)
   Send "ready"
   $admission = $reader.ReadLineAsync()
   if (-not $admission.Wait(15000) -or $admission.Result -cne "go") { throw "job admission refused" }
