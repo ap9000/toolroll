@@ -514,6 +514,22 @@ git metadata:
 
 The map never reads a checkout, so it doesn't depend on H. H ships first because it is small.
 
+**The audit (step 1), as built.** Each entry point, traced to its git execs and its reads of git metadata:
+
+| Entry point | Reads through | State |
+|---|---|---|
+| Lead tools, MCP (`get_repository_context`), Settings repository search and refresh, coordinator `knowledge` CLI | repository-context.ts, `project` set | Bound to the record |
+| Local `knowledge` CLI with no coordinator token | repository-context.ts, no `project` | Unbound on purpose: a person's local look at a folder Toolroll may not record; still a frozen view |
+| Builder admission (`knowledgeContext`, crew context) | project-knowledge.ts, project-learning.ts, repository-context.ts | Bound; crew context reads `ls-tree` and raw blobs at the base |
+| Page visits (learning identity) | `recordedCommonDir` | Bound, no git run |
+| Release ancestry | release-coverage.ts | Bound |
+| Desktop probe | `checkoutTop` then `checkoutGitSync` | Frozen view, bound to the checkout it found (the probe also accepts a subfolder) |
+| Easy-start folder discovery | `checkoutTop` | Frozen view; the folder is the person's choice, so there is no record yet |
+| task-base.ts, prepared-evidence.ts, commit-extract.ts, coding-handoff.ts | frozen view, no `binding` | Left alone: each runs in a task's own worktree or coding checkout, with no recorded project at that call; the view's own `boundDirs` still proves the pointer and `commondir` agree |
+| flow-triggers.ts, folder-look.ts, release-adapters.ts | read `.git` files directly | Left alone: bounded existence or remote-URL hints shown to a person, no security decision and no git run |
+| agent-fence.ts | `.git`, `commondir` | Already bound (`trustedWorktreeBinding`) |
+| demo.ts, sample-project.ts, eval-world.ts | git on folders Toolroll created | No agent-written input |
+
 ## 9. Phase 3 (later): agent-written area summaries
 
 Prose attaches to the generated areas by id. v4's rules carry over:

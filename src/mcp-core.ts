@@ -123,7 +123,7 @@ const HANDLERS: { [N in GatewayToolName]: Handler<N> } = {
     handle: (ctx, args) => {
       const repo = args.repo;
       if (!ctx.who.repos.includes(repo) || ctx.enrolled !== null && !ctx.enrolled.includes(repo)) return { ok: false, message: 'That project is outside your access.' };
-      return { ok: true, body: repositoryContextRead({ repo, query: args.query, mode: args.mode === 'impact' ? 'impact' : 'search', audience: 'lead',
+      return { ok: true, body: repositoryContextRead({ repo, project: repo, query: args.query, mode: args.mode === 'impact' ? 'impact' : 'search', audience: 'lead',
         ...(ctx.evidenceRoot === undefined ? {} : { cacheRoot: join(dirname(ctx.evidenceRoot), 'repository-context') }) }) as unknown as Json };
     },
   },

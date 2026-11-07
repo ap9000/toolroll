@@ -574,7 +574,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const repo = repoPathOf(ctx.who, args['repo']);
       if (!repo || !ctx.store.accountCanAccess(ctx.who.name, repo)) return { ok: false, message: 'Choose an available project from list_repos.' };
       if (!args['query'].trim()) return { ok: false, message: 'Choose search or impact and a short query.' };
-      return { ok: true, body: repositoryContextRead({ repo, query: args['query'], mode: args['mode'] === 'impact' ? 'impact' : 'search', audience: 'lead', maxBytes: 4000,
+      return { ok: true, body: repositoryContextRead({ repo, project: repo, query: args['query'], mode: args['mode'] === 'impact' ? 'impact' : 'search', audience: 'lead', maxBytes: 4000,
         ...(ctx.evidenceRoot === undefined ? {} : { cacheRoot: join(dirname(ctx.evidenceRoot), 'repository-context') }) }) };
     },
   },

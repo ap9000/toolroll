@@ -568,7 +568,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
           return sendScreen(response,200,screen('Knowledge history',settingsSubPage('agents',`Knowledge · version ${revision}`,html`<p class="k-note"><a class="k-link" href="/settings/knowledge?repo=${encodeURIComponent(chosen)}">Current knowledge</a></p>${knowledgeHtml({...view,knowledge:previous,history:[],stale:null},'',false)}${restore}`),{chrome:chromeFor(chosen,'settings')}));
         }
         const query = (url.searchParams.get('q') ?? '').slice(0, 1000);
-        const result = query.trim() ? repositoryContextRead({ repo: chosen, query, mode: url.searchParams.get('mode') === 'impact' ? 'impact' : 'search', cacheRoot: join(dirname(evidenceRoot), 'repository-context') }) : null;
+        const result = query.trim() ? repositoryContextRead({ repo: chosen, project: chosen, query, mode: url.searchParams.get('mode') === 'impact' ? 'impact' : 'search', cacheRoot: join(dirname(evidenceRoot), 'repository-context') }) : null;
         const memoryQuery = (url.searchParams.get('memory') ?? '').slice(0, 300);
         const hits = memoryQuery.trim() ? searchMemory(store, { actor: who.name, repos: [chosen], query: memoryQuery, limit: 20 }) : null;
         let proposals: Html = html``;
@@ -1511,7 +1511,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const body = readForm(posted, CONSOLE_FORMS.knowledgeRefresh);
     const repo = body.get('repo') ?? '';
     if (!visible(repo) || !store.accountCanAccess(who.name, repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
-    const refreshed = await repositoryContext({ repo, query: '', refresh: true, cacheRoot: join(dirname(evidenceRoot), 'repository-context') });
+    const refreshed = await repositoryContext({ repo, project: repo, query: '', refresh: true, cacheRoot: join(dirname(evidenceRoot), 'repository-context') });
     return sendScreen(response, refreshed.index.status === 'ready' ? 200 : 503, screen('Project context', settingsSubPage("agents", "Project context", html`<p>${refreshed.index.status === 'ready' ? 'Code index refreshed.' : 'The index is unavailable. Source search still works.'}</p><a class="button-link" href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Open knowledge</a>`), { chrome: chromeFor(repo, 'settings') }));
   }
   async function knowledgeProposal(ctx: HandlerContext): Promise<void> {

@@ -1,9 +1,9 @@
 /** Optional, project-local advice. Core review and approval never depend on it. */
 import { inReadOnlyRequest } from "./read-only-request.js";
-import { checkoutGitSync } from './teardown-git.js';
+import { checkoutGitSync, recordedCommonDir } from './teardown-git.js';
 import { createHash } from 'node:crypto';
-import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { realpathSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { Store } from './store.js';
 import { readVerifiedArtifact, scanForSecrets } from './evidence.js';
 import { normalizeStructuredJson } from "./structured-output.js";
@@ -59,7 +59,7 @@ const git = (repo: string, args: string[], seen?: Map<string, string>): string =
   // Bounded, and no hook or fsmonitor program: it also runs from the console's background pass.
   // No lazy fetch either: a partial clone's fetch runs whatever transport command the shared config names.
   // Every git version through a frozen read view, bounded (eval-harness review 1, finding 7).
-  const out = checkoutGitSync(repo, args, { timeoutMs: 10_000, maxBuffer: 2 * 1024 * 1024 }).trimEnd();
+  const out = checkoutGitSync(repo, args, { timeoutMs: 10_000, maxBuffer: 2 * 1024 * 1024, binding: { repo } }).trimEnd();
   seen?.set(key, out);
   return out;
 };
@@ -75,32 +75,8 @@ export const legacyIdentityOf = (repo: string, common: string, st: IdentityFacts
 function identityFacts(repo: string, seen?: Map<string, string>): { common: string; st: IdentityFacts } {
   if (canonicalProject(repo) !== repo) throw new Error('Project identity changed.');
   // A page visit starts no git (docs/plans/get-side-effects.md): it reads the same answer from the folder itself.
-  const common = realpathSync(resolve(repo, inReadOnlyRequest() ? commonDirOnDisk(repo) : git(repo, ['rev-parse', '--git-common-dir'], seen)));
+  const common = realpathSync(resolve(repo, inReadOnlyRequest() ? recordedCommonDir(repo) : git(repo, ['rev-parse', '--git-common-dir'], seen)));
   return { common, st: statSync(common) };
-}
-/** The shared Git folder as git finds it for a checkout: `.git` itself, or the folder a `.git` file names, through its
- * `commondir` when it is a linked worktree. Throws when the folder holds neither. */
-function commonDirOnDisk(repo: string): string {
-  const dotGit = join(repo, '.git');
-  if (lstatSync(dotGit).isDirectory()) return dotGit;
-  const named = /^gitdir: (.+)$/m.exec(smallFile(dotGit))?.[1]?.trim();
-  if (!named) throw new Error('Project identity is unavailable.');
-  const gitDir = resolve(repo, named);
-  if (!lstatSync(gitDir).isDirectory()) throw new Error('Project identity is unavailable.');
-  const commondir = join(gitDir, 'commondir');
-  if (!existsSync(commondir)) return gitDir;
-  return resolve(gitDir, smallFile(commondir).trim());
-}
-/** A small plain file's text, read through one descriptor that follows no link and never waits (a FIFO, a device or a
- * file swapped in between is refused, never read), at most 4 KiB. */
-function smallFile(path: string): string {
-  const fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
-  try {
-    const st = fstatSync(fd);
-    if (!st.isFile() || st.size > 4096) throw new Error('Project identity is unavailable.');
-    const buffer = Buffer.alloc(4096);
-    return buffer.subarray(0, readSync(fd, buffer, 0, 4096, 0)).toString('utf8');
-  } finally { closeSync(fd); }
 }
 export function learningIdentity(repo: string, seen?: Map<string, string>): string {
   const { common, st } = identityFacts(repo, seen);
@@ -457,7 +433,7 @@ export function learningContext(store: Store, root: string, runId: number, phase
       const statusLines = (cwd: string): string[] => {
         status ??= (() => {
           // A build's checkout: status runs filters, so the hardened read (teardown-git.ts checkoutGitSync).
-          try { return { lines: checkoutGitSync(cwd, ['status', '--porcelain', '--untracked-files=all'], { timeoutMs: 10_000, maxBuffer: 2 * 1024 * 1024 }).trimEnd().split('\n') }; }
+          try { return { lines: checkoutGitSync(cwd, ['status', '--porcelain', '--untracked-files=all'], { timeoutMs: 10_000, maxBuffer: 2 * 1024 * 1024, binding: { repo } }).trimEnd().split('\n') }; }
           catch (error) { return { error }; }
         })();
         if ('error' in status) throw status.error;

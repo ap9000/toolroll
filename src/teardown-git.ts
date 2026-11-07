@@ -427,6 +427,13 @@ function boundDirs(checkout: string, binding: GitBinding = {}): BoundDirs {
   return dirs;
 }
 
+/** The shared git folder of a recorded project, read from disk and proven as boundDirs proves it: the project's own
+ * real `.git` folder, holding no `commondir`. No pointer file or `commondir` an agent can write decides it, and no git
+ * runs (a page visit reads this). Throws with the reason otherwise. */
+export function recordedCommonDir(repo: string): string {
+  return boundDirs(repo, { repo }).common;
+}
+
 /**
  * A private view of a checkout's repository for one git command on a checkout an agent writes (security review of
  * 0.9.75, its follow-up for the plane's writes, and the Codex review of e48e9d8d): git reads the repository's config
@@ -1086,4 +1093,22 @@ export function lazyFetchSafeGit(inner: Runner = run): Runner {
   // On every git version (eval-harness review 1, finding 7): with --no-lazy-fetch the direct read still took the
   // repository's config and its includes as git found them, and an include naming a FIFO could hang the plane.
   return checkoutGit(inner, "read");
+}
+
+/**
+ * The checkout a folder sits in, for choosing a folder (easy-start): the nearest parent holding a `.git`, then read
+ * through checkoutGitSync, so a config that includes another file (a FIFO), or sets a command, is refused and the read
+ * is bounded. Null when there is no checkout or it can't be read that way.
+ */
+export function checkoutTop(dir: string, timeoutMs = 10_000): string | null {
+  let at: string;
+  try { at = realpathSync(dir); } catch { return null; }
+  for (;;) {
+    if (existsSync(join(at, ".git"))) {
+      try { return checkoutGitSync(at, ["rev-parse", "--show-toplevel"], { timeoutMs }).trim() || null; } catch { return null; }
+    }
+    const up = dirname(at);
+    if (up === at) return null;
+    at = up;
+  }
 }

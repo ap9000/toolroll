@@ -42,7 +42,7 @@ const EMPTY: Knowledge = { instructions: '', references: [] };
 // Every git version through a frozen read view (eval-harness review 1, finding 7): the repository's config is copied
 // once and inspected (an include, a command or a partial clone refused), so an include pointing at a FIFO can't hang
 // the plane, and every call is bounded.
-const git = (repo: string, args: string[]) => checkoutGitSync(repo, args, { timeoutMs: 10_000, maxBuffer: 200_000 }).trimEnd();
+const git = (repo: string, args: string[]) => checkoutGitSync(repo, args, { timeoutMs: 10_000, maxBuffer: 200_000, binding: { repo } }).trimEnd();
 function clean(value: string, bytes: number): string {
   if (Buffer.byteLength(value) > bytes || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]/u.test(value)) throw Error('This text is too long or is not readable text.');
   if (scanForSecrets(value).length) throw Error('Remove credentials or secrets before saving.');
