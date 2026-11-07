@@ -25,7 +25,7 @@ test.each([145, -145])("v%s databases gain the check and release-step tables, no
     const before = historySnapshot(old);
     old.close();
     const migrated = openStore(file);
-    expect(SCHEMA_VERSION).toBe(151);
+    expect(SCHEMA_VERSION).toBe(153);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(146);
     expect(migrated.getTask("release-0.9.87-aaaaaaa")?.title).toBe("Release 0.9.87");
     expect(migrated.handle.prepare("SELECT COUNT(*) n FROM ci_check").get()?.["n"]).toBe(0);
@@ -33,7 +33,7 @@ test.each([145, -145])("v%s databases gain the check and release-step tables, no
     migrated.close();
     const after = new DatabaseSync(file);
     try {
-      expect(after.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(151);
+      expect(after.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(153);
       expect(changedHistory(after, before)).toEqual([]);
       expect(after.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     } finally { after.close(); }

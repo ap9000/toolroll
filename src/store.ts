@@ -108,6 +108,7 @@ import type { ProgressSnapshot } from "./plan.js";
 import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 
 import { authorityStandsSql } from "./approval-authority.js";
+import { clearRetryEpisode, settleVanished, VANISHED_SCHEMA } from "./vanished-retry.js";
 import { releasePolicyDigest, serializeReleaseCheckPurpose, storedReleaseCheckPurpose, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseCheckPurpose, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
@@ -1184,7 +1185,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // (machine_host_alias, a new table; machine-identity.ts). V150_SCHEMA, V150_ADDED_COLUMNS.
 // v151 adds, and changes no saved row: how long a task stays idle before its clean folder goes
 // (V151_ADDED_COLUMNS: a saved cleanup setting reads NULL, the default).
-export const SCHEMA_VERSION = 151;
+// v153 adds, and changes no saved row (docs/plans/plain-toolroll.md Phase 2): new tables and columns only.
+// V153_SCHEMA, V153_ADDED_COLUMNS.
+export const SCHEMA_VERSION = 153;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1322,7 +1325,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1586,7 +1589,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V153_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -1983,6 +1986,10 @@ export const V150_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 export const V150_STEPS = Object.freeze(["machine-aliases", "witness-machine"] as const);
 /** The v151 migration's steps after v150's, in order (OpenOptions.migrationStep may stop after each). */
 export const V151_STEPS = Object.freeze(["checkout-idle"] as const);
+/** v153 (plain-toolroll.md Phase 2): the tables each slice owns. */
+export const V153_SCHEMA = VANISHED_SCHEMA;
+/** The v153 migration's steps after v151's, in order (OpenOptions.migrationStep may stop after each). */
+export const V153_STEPS = Object.freeze(["plain-tables"] as const);
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6321,6 +6328,9 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   // v151: the idle limit beside the cleanup setting (V151_ADDED_COLUMNS: a saved row reads NULL). Idempotent, as v150's steps are.
   for (const [column, { definition }] of Object.entries(V151_ADDED_COLUMNS["checkout_cleanup_setting"]!)) addColumn(db, "checkout_cleanup_setting", column, definition);
   step("checkout-idle");
+  // v153: Phase 2's tables (new tables only). Idempotent, as v151's step is.
+  db.exec(V153_SCHEMA);
+  step("plain-tables");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -9544,7 +9554,7 @@ export class Store {
           // (setup review): the approval is what was stale, and it is new.
           const ref = this.db.prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, taskId);
           if (ref !== undefined) {
-            if (basis === undefined || basis.kind === "chat") this.noteTaskAct(Number(ref["id"]), "approved", now);
+            if (basis === undefined || basis.kind === "chat") { this.noteTaskAct(Number(ref["id"]), "approved", now); clearRetryEpisode(this, Number(ref["id"])); }
             this.db.prepare("DELETE FROM hold WHERE owner_kind = 'backoff' AND owner_id = ?").run(`stale:${Number(ref["id"])}`);
             // Results routing: this yes closes the task's open exposure (as proposed, or with the model it sealed),
             // and lifts the hold a switched-off rule put on the approval it replaces.
@@ -11233,11 +11243,7 @@ export class Store {
         .prepare("SELECT backend, external_id FROM task_ref WHERE id = ?")
         .get(taskRef);
       if (ref === undefined || String(ref["backend"]) !== BUILT_IN) continue;
-
-      const { changes } = this.db
-        .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'")
-        .run(now.toISOString(), String(ref["external_id"]));
-      if (Number(changes) > 0) requeued?.push(String(ref["external_id"]));
+      if (settleVanished(this, taskRef, now) === "queued") requeued?.push(String(ref["external_id"]));
     }
 
     return held.map(row => String(row["lease_id"]));
@@ -13728,6 +13734,7 @@ export class Store {
       for (const incident of incidents) this.resolveIncidentLocked(incident, by, now);
 
       this.resetStrikes(taskRef);
+      clearRetryEpisode(this, taskRef);
       this.db
         .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state IN ('failed','queued','done')")
         .run(stamp, taskId);
@@ -22053,10 +22060,7 @@ export class Store {
           .prepare("SELECT external_id FROM task_ref WHERE id = ? AND backend = ?")
           .get(taskRef, BUILT_IN);
         if (ref === undefined) return;
-        const { changes } = this.db
-          .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'")
-          .run(stamp, String(ref["external_id"]));
-        if (Number(changes) > 0) requeued.push(String(ref["external_id"]));
+        if (settleVanished(this, taskRef, now) === "queued") requeued.push(String(ref["external_id"]));
       };
       const open = this.db
         .prepare(
@@ -22152,18 +22156,11 @@ export class Store {
           .run(stamp, leaseId);
         this.db
           .prepare(
-            `UPDATE task SET state = 'queued', updated_at = ?
-              WHERE state = 'running' AND id = (
-                SELECT external_id FROM task_ref WHERE id = ? AND backend = ?
-              )`,
-          )
-          .run(stamp, taskRef, BUILT_IN);
-        this.db
-          .prepare(
             `UPDATE run SET outcome = 'failed', reason = 'interrupted', finished_at = ?
               WHERE lease_id = ? AND outcome IS NULL`,
           )
           .run(stamp, leaseId);
+        settleVanished(this, taskRef, now);
         this.db
           .prepare(
             `UPDATE worktree SET released_at = ?, verified = 0
@@ -22189,16 +22186,7 @@ export class Store {
         this.db
           .prepare("UPDATE run SET outcome = 'failed', reason = 'interrupted', finished_at = ? WHERE id = ?")
           .run(stamp, Number(row["run_id"]));
-        if (this.currentLiveLease(taskRef, now) === null) {
-          this.db
-            .prepare(
-              `UPDATE task SET state = 'queued', updated_at = ?
-                WHERE state = 'running' AND id = (
-                  SELECT external_id FROM task_ref WHERE id = ? AND backend = ?
-                )`,
-            )
-            .run(stamp, taskRef, BUILT_IN);
-        }
+        settleVanished(this, taskRef, now);
         this.db
           .prepare("UPDATE worktree SET released_at = ?, verified = 0 WHERE runner = ? AND task_ref = ? AND released_at IS NULL")
           .run(stamp, runner, taskRef);

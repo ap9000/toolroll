@@ -312,6 +312,7 @@ import { resolvePhaseAgent, resolveScopeProfile, resolveRouteCandidates, routeOf
 import { applyModelChoices, stateDigest, type ApplyResult, type ExtraWrite, type ModelChange, type Slot, type SlotPhase } from "./model-choices.js";
 import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RouteOverride, type RouteStamp } from "./phase-routing.js";
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
+import { retryVanishedWhenStopped } from "./vanished-retry.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
 import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, readUpConsoleUrl, saveConsoleUrl, savePrimary, UP_CONSOLE_FILE } from "./webhooks.js";
@@ -3922,6 +3923,8 @@ async function reconcileCommand(
   // asked to confirm a build stopped, so a release waiting on its check moves on by itself.
   await proveFinishedRunsStopped(store, clock);
   store.settleQuiescentStops(clock());
+  // A vanished build whose old process is now proven stopped gets its retry decision (vanished-retry.ts).
+  retryVanishedWhenStopped(store, clock());
   // An update whose updater ended while letting work finish must not leave new work paused.
   try { releaseStalledUpdate(dirname(context.databaseFile), clock()); } catch { /* status and the console say it */ }
   for (const one of recovered) {
