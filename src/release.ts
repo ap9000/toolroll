@@ -223,6 +223,9 @@ export type ReleaseAuthorityAdapter = {
    * and the tag: one bounded read of GitHub (20 s), this candidate's exemptions read again, then the plane's stored
    * debt. A warning never holds; a hold stops the release. Absent: a plane that can't read it. */
   nightly?(input: { taskId: string; candidate: string; pr: number; phase: "deploy" | "merge" | "tag" }): Promise<{ ok: true; warning: string | null } | { ok: false; why: string; warning: string | null }>;
+  /** Whether a sandboxed Full check's skipped cases are covered (fenced-check-coverage.ts, H3). Run `run`'s stamped level
+   * decides: an unsandboxed check answers at once. Absent: a plane that can't say, as for every older one. */
+  fencedCoverage?(taskId: string, run: number, candidate: string): Promise<{ ok: true; covered: number } | { ok: false; why: string }>;
   /** One-tap release approval (docs/plans/trusted-release-reports.md, slice A): what the plane tells a person and
    * keeps for the approval sheet. Best effort: a failure here never changes the release. Absent on an older plane. */
   ready?: ReleaseReadyAdapter;
@@ -1081,6 +1084,13 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
               if (!standing.ok) throw new Stop("check-failed", `Run ${gate.result.run} passed on ${j.candidate.sha.slice(0, 7)}, but ${standing.why}: approve this commit again with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`, or fix the branch and release the new commit the same way.`);
               if (standing.retried === null) say(`  run ${gate.result.run} passed, but its report can't be read, so whether anything passed only on a retry is unknown`);
               else if (standing.retried.length > 0) say(`  run ${gate.result.run} passed, but only on a retry: ${standing.retried.join(", ")}`);
+            }
+            // A sandboxed Full check must show that what it skipped passed elsewhere (trusted-release-reports.md H3). The plane
+            // answers at once for a check that ran unsandboxed, as Toolroll's own do: nothing there skips for this reason.
+            if (rel?.fencedCoverage !== undefined) {
+              const covered = await rel.fencedCoverage(j.task.id, gate.result.run, j.candidate.sha);
+              if (!covered.ok) throw new Stop("check-failed", `Run ${gate.result.run} passed on ${j.candidate.sha.slice(0, 7)}, but ${covered.why}.`);
+              if (covered.covered > 0) say(`  ${covered.covered} cases skipped inside the sandbox passed in this commit's macOS CI`);
             }
             return { run: gate.result.run, receipt: gate.result.receipt, worktree: gate.result.worktree, head };
           };
