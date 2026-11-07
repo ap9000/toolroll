@@ -10,6 +10,19 @@ changes with this document.
 - **Codex round 6** (the last) on v6: GO-WITH-CHANGES. It closed six of the earlier findings and raised eight new
   items, all closed in **v7**. Both ledgers are at the end.
 
+**As built** (slices H and 1–4, branch `nr-codemap`). Schema is **v152**, not v150. Where the build differs from this plan:
+
+- `exactFile` / `FenceGrants.exactFiles` is new. `readable` also reads the grant's folder on the sandbox runtime
+  (`srtTermsOf`), which would let a build read a sibling, so the map file is granted as one exact path.
+- First check follows results-routing as merged: `store.runCheckFor` on the first built run, not
+  `assignmentChecksForRun` (§7). `firstCheckPassedOf` and `personRevisionsOf` in route-results.ts are the one definition.
+- `forgetProject` keeps family arms and delivery rows as well as snapshots: their triggers refuse a delete, and an arm
+  stays frozen if the project comes back. `deleteProject` removes them all.
+- The crash-cleanup record gets the folder before the spawn and the pid straight after it: a pid can't be known sooner.
+- No editor link on the page: the editor-link rule needs a run's checkout, and the map has none. The path is copyable.
+- Refresh on chat is a lead tool, `refresh_code_map`. A remote token with act scope may refresh, as an approver.
+- A shallow fetch of a one-commit history writes no `shallow` file; that is clean too.
+
 **Build order.** After the results-routing arc (`docs/plans/results-routing.md`, branch `results-routing`, schema v148,
 slice 1 being built now) and the learning-loops arc (branch `learning-loops`, expected v149). This plan's schema is
 **v150** and depends on both landing first. It renumbers if either does. Slice H has no schema and can ship at any time.

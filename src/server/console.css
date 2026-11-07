@@ -2803,5 +2803,5 @@ html.so-swap::view-transition-old(*):only-child { animation: so-card-out 160ms e
 .cm-title { font-size: 13px; font-weight: 500; color: var(--so-ink); }
 .cm-meta { font-size: 12.5px; color: var(--so-muted); }
 .cm-path { overflow-wrap: anywhere; user-select: all; }
-.cm-search { display: flex; gap: 8px; align-items: center; margin: 0 0 12px; }
+.cm-search { display: flex; gap: var(--so-space-sm); align-items: center; margin: 0 0 var(--so-space-md); }
 .cm-search .k-input, .cm-search input[type="search"] { flex: 1 1 auto; min-width: 0; }
