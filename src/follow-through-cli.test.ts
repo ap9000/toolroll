@@ -1,8 +1,9 @@
 /** The terminal's follow-through commands: a write takes a verified person, and each answers in the envelope. */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { modeWords, type ModeTerms } from "./modes.js";
 import { runOperate } from "./operate.js";
 import { addApprover } from "./scope.js";
 import { openStore } from "./store.js";
@@ -45,6 +46,23 @@ describe("finding", () => {
   test("a send names exactly one source", async () => {
     expect((await run("finding", "send", "t-1", "--note", "x", "--from-check", "1", ...as())).body).toMatchObject({ ok: false, reason: "usage" });
     expect((await run("finding", "send", "t-1", "--from-check", "99", ...as())).body).toMatchObject({ ok: false, reason: "refused" });
+  });
+});
+
+describe("mode set", () => {
+  test("repairs by themselves take the flag and a limit from 1 to 3; the terms a person signs say so", async () => {
+    const repo = realpathSync(dir);
+    const mode = (...extra: string[]) => run("mode", "set", "--repo", repo, "--days", "1", ...extra, ...as());
+    expect((await mode("--repair-max-attempts", "2")).body).toMatchObject({ ok: false, reason: "invalid" });
+    expect((await mode("--repair-auto", "--repair-max-attempts", "4")).body).toMatchObject({ ok: false, reason: "invalid" });
+    expect((await mode("--review-auto", "on")).body).toMatchObject({ ok: false, reason: "invalid" });
+    const signed = await mode("--repair-auto", "--repair-max-attempts", "3");
+    expect(signed.body).toMatchObject({ ok: true });
+    const store = openStore(db);
+    const terms = JSON.parse(store.activeMode(repo, T0)!.termsJson) as ModeTerms;
+    expect(terms).toMatchObject({ repairAuto: true, repairMaxAttempts: 3 });
+    expect(modeWords(terms).join(" ")).toContain("at most 3 tries");
+    store.close();
   });
 });
 

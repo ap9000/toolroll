@@ -1,6 +1,6 @@
 # Fleet follow-through: what happens to a result after an agent finishes
 
-Status: plan, 2026-11-07. Branch `fleet-loop`, on the pending 0.9.94 head. Schema v155 (new tables only).
+Status: built, 2026-11-07. Branch `fleet-loop`, on the pending 0.9.94 head. Schema v155 (new tables only).
 
 ## Problem
 
@@ -34,8 +34,9 @@ migration has run, as `buildReviewOf` does.
 
 - A `finding` belongs to a task family, so a revision or repair inherits it. Sources: `build-review`, `person`,
   `check-failure`. It holds the text, file and line, revision, evidence pointer, bounded excerpt, requested action.
-- Delivery: a running build gets a `f<NNN>.json` file in its existing mailbox, with its attempt key. It is a separate
-  name from steering notes, labelled data, and has its own reminder. Otherwise the next attempt's brief quotes it.
+- Delivery: a running build gets `findings/finding-<id>.json` in its existing mailbox folder, with its attempt key. It
+  is a separate folder from steering notes, labelled data, with its own reminder. Otherwise the next attempt's brief
+  quotes it.
 - Answer: the agent writes `answers/<id>.json` in the mailbox folder with the attempt key. `accepted` needs words on
   what changed, and only counts if that run moved the head past the finding's revision. `rejected` needs a reason and
   a file that exists at the run's head. An answer that fails either stays open. Moving a file to `handled/` means
@@ -61,7 +62,7 @@ migration has run, as `buildReviewOf` does.
 
 Derived on every read from existing records; nothing is stored, so it can't go stale. Holds current revision, accepted
 decisions, rejected approaches, open findings, verification results with links, next action. A fresh run's brief
-quotes it inside a data block, bounded. `task handover <id>` and a page at `/t/<id>/handover` show it.
+quotes it inside a data block, bounded. `task handover <id>` and a section of the task page show it.
 
 ### 4. Before-and-after evidence (`evidence-pair.ts`)
 
@@ -77,8 +78,15 @@ quotes it inside a data block, bounded. `task handover <id>` and a page at `/t/<
 
 Not re-enabled; there's nothing to re-enable. No recogniser is added and no routing reads captures. When an attempt
 ends in a provider failure, the bounded, secret-scrubbed terminal text is saved automatically, with a `hint` flag when
-it mentions limits. A person can list, read, mark and export them. The handover note reaches the next agent whichever
-provider it is. What's still needed is reported at the end of the arc.
+it mentions limits. A person can list, read, mark and export them (`toolroll captures`). The handover note reaches the
+next agent whichever provider it is.
+
+What fallback still needs, in order:
+
+1. A real used-up subscription response, captured here and marked `exhausted`, for each provider that should fall back.
+2. A person's decision to bring chains back: they were removed in v115, with their tables, CLI and seal fields. This
+   is a feature to rebuild against that history, not a switch.
+3. A recogniser written from those captures in `exhaustion.ts`, pinned to provider and version, under review.
 
 ## Safety
 
