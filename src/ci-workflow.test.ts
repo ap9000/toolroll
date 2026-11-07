@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { parse } from "yaml";
 import { areaLanes, diffEntries, docsPath, parseNameStatus } from "../scripts/ci-scope.mjs";
+import { laneVerdict, NATIVE_JOBS, NATIVE_WORKFLOW, standingRun } from "../scripts/ci-native-wait.mjs";
 import { parseRequired, PROOF_EVENTS, proofProblem } from "../scripts/release-proof.mjs";
 import { ADVISORY_PR_CHECKS, RELEASE_TAG_CHECKS, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW } from "./release.js";
 import { GIT_FLOOR_WORDS } from "./git-floor.js";
@@ -97,6 +98,9 @@ const executed = (event: Event) => reported(event).filter(one => one.runs).map(o
 const pr = (paths: string[], branch = "toolroll/some-change"): Event => ({ kind: "pull_request", paths, branch });
 const AREA = ["linux native containment · delegated cgroup v2", "linux fence · sandbox-runtime", "Windows Job Object containment", "git 2.41 · debian trixie", "git 2.47 · debian trixie"];
 const SCOPE = "area lanes · scope";
+/** native-lanes.yml: the root lanes' own run. Never required names; ci.yml's jobs of those purposes wait for them. */
+const NATIVE_SCOPE = "native lanes · scope";
+const NATIVE = Object.values(NATIVE_JOBS) as string[];
 const REPEAT = "Windows Job Object containment · c2 repeat";
 /** Checks a pull request also runs that no release waits for (youiyoux.yml: it fails a pull request that adds UI
  * drift, but a release never waits for it). */
@@ -147,22 +151,22 @@ describe("the CI workflows", () => {
   test("every pull request reports every required check; Node 24 on Linux and macOS and the area lanes run, Node 22 only on a release-* branch", () => {
     expect(workflow("ci.yml").on["pull_request"]).toBeNull();
     expect(workflow("release-candidate.yml").on["pull_request"]).toBeNull();
-    const all = [...REQUIRED_PR_CHECKS, ...shardNames("24"), ...shardNames("22"), SCOPE, ...ADVISORY].sort();
+    const all = [...REQUIRED_PR_CHECKS, ...shardNames("24"), ...shardNames("22"), SCOPE, NATIVE_SCOPE, ...NATIVE, ...ADVISORY].sort();
     const change = pr(["src/release.ts"]);
     // Skipped, Node 22's shards report once each, unexpanded (GitHub skips a matrix job before expanding it); the
     // required names are written out, so they report exactly.
     const skippedShards = ["node 22 · shard ${{ matrix.shard }}/6", "node 22 · macos shard ${{ matrix.shard }}/3"];
     expect(names(change)).toEqual([...all.filter(name => !shardNames("22").includes(name)), ...skippedShards].sort());
     // An ordinary pull request: Node 22 reports skipped (main's protection reads that as passing a merge; a release never).
-    expect(executed(change)).toEqual([...REQUIRED_PR_CHECKS.filter(name => !name.startsWith("node 22")), ...shardNames("24"), SCOPE, ...ADVISORY].sort());
+    expect(executed(change)).toEqual([...REQUIRED_PR_CHECKS.filter(name => !name.startsWith("node 22")), ...shardNames("24"), SCOPE, NATIVE_SCOPE, ...NATIVE, ...ADVISORY].sort());
     // A release candidate's pull request runs everything.
     expect(executed(pr(["package.json", "CHANGELOG.md"], "release-0.9.80"))).toEqual(all);
     // The macOS suite runs on the candidate before it merges, sharded; its joins run on Linux.
     const macos = reported(change).filter(one => /macos/.test(one.runner));
     expect(macos.map(one => one.name).sort()).toEqual([...shardNames("24").filter(name => name.includes("macos shard")), skippedShards[1]!].sort());
     expect(reported(change).filter(one => /^node \d+ · macos-latest$/.test(one.name)).map(one => one.runner)).toEqual(["ubuntu-24.04", "ubuntu-24.04"]);
-    expect(reported(change).find(one => one.name === "Windows Job Object containment")?.runner).toBe("windows-latest");
-    expect(reported(change).find(one => one.name === "linux native containment · delegated cgroup v2")?.runner).toBe("ubuntu-latest");
+    expect(reported(change).find(one => one.name === "native · windows job object")?.runner).toBe("windows-latest");
+    expect(reported(change).find(one => one.name === "native · linux cgroup")?.runner).toBe("ubuntu-latest");
     // The Windows repeat job only joins pull requests that touch Windows containment; it is never a required check.
     expect(names(pr(["src/containment.ts"])).filter(name => !all.includes(name) && !skippedShards.includes(name))).toEqual([REPEAT]);
   });
@@ -183,7 +187,7 @@ describe("the CI workflows", () => {
   test("test-matrix: a documentation-only pull request skips the area lanes and nothing else; anything more runs them", () => {
     const docs = pr(["docs/plans/test-matrix.md", "CHANGELOG.md", "README.md"]);
     expect(names(docs)).toEqual(names(pr(["src/release.ts"])));
-    expect(executed(docs)).toEqual([...shardNames("24"), "node 24 · ubuntu-latest", "node 24 · macos-latest", SCOPE, ...ADVISORY].sort());
+    expect(executed(docs)).toEqual([...shardNames("24"), "node 24 · ubuntu-latest", "node 24 · macos-latest", SCOPE, NATIVE_SCOPE, ...ADVISORY].sort());
     // One file beyond documentation, or a release branch, runs every lane.
     for (const event of [pr(["docs/a.md", "src/x.ts"]), pr(["docs/a.md"], "release-0.9.80"), pr(["docs/a.json"]), pr(["test/attacks/a.test.ts"])]) {
       expect(executed(event).filter(name => AREA.includes(name)).sort(), JSON.stringify(event)).toEqual([...AREA].sort());
@@ -193,6 +197,11 @@ describe("the CI workflows", () => {
     for (const id of ["linux-native-containment", "linux-fence", "native-windows", "git-floor", "git-247"]) {
       expect(ci.jobs[id]?.needs, id).toBe("scope");
       expect(ci.jobs[id]?.if, id).toBe(LANE);
+    }
+    // The root lanes skip by the same decision in their own run, so a skipped waiter never hides a lane that ran.
+    for (const id of ["linux-native-containment", "linux-fence", "native-windows"]) {
+      expect(workflow("native-lanes.yml").jobs[id]?.needs, id).toBe("scope");
+      expect(workflow("native-lanes.yml").jobs[id]?.if, id).toBe(LANE);
     }
     // The decision is the trusted base revision's classifier over the pull request's own diff, its untrusted inputs
     // passed through the environment (never into the script's text).
@@ -226,7 +235,8 @@ describe("the CI workflows", () => {
     expect(conditional).toEqual([
       `ci.yml: git-247 ${LANE}`, `ci.yml: git-floor ${LANE}`, `ci.yml: linux-fence ${LANE}`, `ci.yml: linux-native-containment ${LANE}`,
       "ci.yml: macos ${{ always() }}", `ci.yml: native-windows ${LANE}`, "ci.yml: test ${{ always() }}",
-      `main-push.yml: full ${UNPROVEN}`,
+      `main-push.yml: full ${UNPROVEN}`, `main-push.yml: native-lanes ${UNPROVEN}`,
+      `native-lanes.yml: linux-fence ${LANE}`, `native-lanes.yml: linux-native-containment ${LANE}`, `native-lanes.yml: native-windows ${LANE}`,
       `release-candidate.yml: macos \${{ always() && (${RELEASE_BRANCH}) }}`, `release-candidate.yml: macos-shard \${{ ${RELEASE_BRANCH} }}`,
       `release-candidate.yml: test \${{ always() && (${RELEASE_BRANCH}) }}`, `release-candidate.yml: test-shard \${{ ${RELEASE_BRANCH} }}`,
     ].sort());
@@ -333,7 +343,7 @@ describe("the CI workflows", () => {
       }
       expect(one.jobs["macos-shard"]?.["runs-on"]).toBe("macos-latest");
     }
-    expect((workflow("ci.yml").jobs["linux-fence"]?.steps ?? []).find(step => step.run === "npm run test:attacks")?.env).toEqual({ CI: "true", TOOLROLL_REQUIRE_NATIVE: "linux" });
+    expect((workflow("native-lanes.yml").jobs["linux-fence"]?.steps ?? []).find(step => step.run === "npm run test:attacks")?.env).toEqual({ CI: "true", TOOLROLL_REQUIRE_NATIVE: "linux" });
   });
 
   test("every pull-request job tests the candidate's head commit, not GitHub's merge commit, and proves it", () => {
@@ -431,6 +441,73 @@ describe("the CI workflows", () => {
   });
 });
 
+describe("H1: the root lanes run in a workflow run of their own", () => {
+  const native = () => workflow("native-lanes.yml");
+  const waiters = ["linux-native-containment", "linux-fence", "native-windows"] as const;
+  test("ci.yml keeps the required names, and those jobs run nothing of the candidate's: the deployed release tool binds each name to ci.yml", () => {
+    // Moving a required name to another file would fail every release until a build that knows the new file is deployed
+    // (release.ts prChecksVerdict: "from native-lanes.yml, not ci.yml").
+    for (const name of Object.keys(NATIVE_JOBS)) expect((REQUIRED_PR_CHECKS_WORKFLOW as Record<string, string>)[name], name).toBe(CI);
+    for (const id of waiters) {
+      const job = workflow("ci.yml").jobs[id]!;
+      expect(Object.keys(NATIVE_JOBS)).toContain(job.name);
+      expect(job["runs-on"]).toBe("ubuntu-24.04");
+      expect(job.permissions).toEqual({ contents: "read", actions: "read" });
+      expect(runsOf(job).filter(run => /\bnpm\b|\bnpx\b|vitest|sudo/.test(run))).toEqual([]);
+      expect(job.steps?.at(-1)?.env?.["CHECK"]).toBe(job.name);
+      expect(job.steps?.at(-1)?.run).toContain("waiter=.trusted-base/scripts/ci-native-wait.mjs");
+      for (const step of job.steps ?? []) if (step.uses?.startsWith("actions/checkout@")) expect(step.with?.["persist-credentials"]).toBe(false);
+    }
+  });
+  test("the lanes are a workflow of their own event, not a reusable one, and neither name nor upload anything a release reads", () => {
+    expect(native().on).toEqual({ pull_request: null, workflow_dispatch: null });
+    expect(workflows.flatMap(one => Object.values(one.jobs).filter(job => job.uses !== undefined).map(job => job.uses))).not.toContain("./.github/workflows/native-lanes.yml");
+    expect(native().permissions).toEqual({ contents: "read" });
+    for (const [id, job] of Object.entries(native().jobs)) {
+      expect((REQUIRED_PR_CHECKS as readonly string[]).includes(job.name ?? ""), id).toBe(false);
+      expect(job.steps?.some(step => step.uses?.includes("artifact")), id).toBe(false);
+    }
+    expect(Object.keys(native().jobs).filter(id => id !== "scope").map(id => native().jobs[id]!.name).sort()).toEqual([...NATIVE].sort());
+    expect(`.github/workflows/${native().file}`).toBe(NATIVE_WORKFLOW);
+  });
+  test("a called ci.yml keeps working: its caller starts the lanes and grants the read its waiters need", () => {
+    for (const [file, id] of [["nightly.yml", "ci"], ["main-push.yml", "full"]] as const) {
+      expect(workflow(file).jobs[id]?.permissions, file).toEqual({ contents: "read", actions: "read" });
+      expect(workflow(file).jobs["native-lanes"]?.permissions, file).toEqual({ actions: "write", contents: "read" });
+      expect(runsOf(workflow(file).jobs["native-lanes"]!).join(), file).toContain("gh workflow run native-lanes.yml");
+    }
+  });
+  const run = (over: Record<string, unknown> = {}) => ({ id: 7, path: NATIVE_WORKFLOW, head_sha: "a".repeat(40), event: "pull_request", repository: { full_name: "o/r" }, created_at: "2026-11-06T00:00:00Z", ...over });
+  const asked = { repo: "o/r", sha: "a".repeat(40), event: "pull_request" };
+  test("the newest run of that workflow on that commit stands", () => {
+    expect(standingRun([run({ id: 7 }), run({ id: 9 }), run({ id: 8 })], asked)?.id).toBe(9);
+    expect(standingRun([run({ path: `${NATIVE_WORKFLOW}@refs/pull/1/merge` })], asked)?.id).toBe(7);
+  });
+  test.each([
+    ["another workflow", { path: ".github/workflows/lookalike.yml" }],
+    ["a ref naming another workflow", { path: `${NATIVE_WORKFLOW}@evil.yml` }],
+    ["another commit", { head_sha: "b".repeat(40) }],
+    ["another repository", { repository: { full_name: "x/y" } }],
+    ["a dispatched run on a pull request", { event: "workflow_dispatch" }],
+    ["no run id", { id: 0 }],
+  ])("%s never stands", (_, over) => { expect(standingRun([run(over)], asked)).toBeUndefined(); });
+  test("a call takes only a dispatch started for it, never last night's on the same commit", () => {
+    const called = { ...asked, event: "schedule", since: "2026-11-06T12:00:00Z" };
+    expect(standingRun([run({ event: "workflow_dispatch", created_at: "2026-11-06T12:00:01Z" })], called)?.id).toBe(7);
+    expect(standingRun([run({ event: "workflow_dispatch", created_at: "2026-11-05T12:00:00Z" })], called)).toBeUndefined();
+    expect(standingRun([run({ event: "pull_request", created_at: "2026-11-06T12:00:01Z" })], called)).toBeUndefined();
+  });
+  test.each([
+    ["success", [{ name: "L", status: "completed", conclusion: "success" }], "passed"],
+    ["still running", [{ name: "L", status: "in_progress", conclusion: null }], "pending"],
+    ["not started", [{ name: "other", status: "completed", conclusion: "success" }], "pending"],
+    ["failed", [{ name: "L", status: "completed", conclusion: "failure" }], "failed"],
+    ["cancelled", [{ name: "L", status: "completed", conclusion: "cancelled" }], "failed"],
+    ["skipped is no pass", [{ name: "L", status: "completed", conclusion: "skipped" }], "failed"],
+    ["two of that name", [{ name: "L", status: "completed", conclusion: "success" }, { name: "L", status: "completed", conclusion: "success" }], "failed"],
+  ])("a lane %s", (_, jobs, state) => { expect(laneVerdict(jobs, "L").state).toBe(state); });
+});
+
 describe("ci-speed: superseded runs, the macOS lane and the scripted journeys", () => {
   type Concurrency = { group?: string; "cancel-in-progress"?: unknown };
   const concurrencyOf = (file: string) => (parse(readFileSync(join(folder, file), "utf8")) as { concurrency?: Concurrency }).concurrency;
@@ -472,7 +549,7 @@ describe("ci-speed: superseded runs, the macOS lane and the scripted journeys", 
     }
     expect(workflow("ci.yml").on["workflow_call"]).toEqual({ inputs: { macos_lane: { type: "string", default: "macos" } } });
     const nightly = workflow("nightly.yml");
-    expect(Object.values(nightly.jobs).map(job => (job as { with?: unknown }).with)).toEqual([{ macos_lane: "all" }, { macos_lane: "all" }]);
+    expect(Object.values(nightly.jobs).filter(job => job.uses !== undefined).map(job => (job as { with?: unknown }).with)).toEqual([{ macos_lane: "all" }, { macos_lane: "all" }]);
     expect((workflow("main-push.yml").jobs["full"] as { with?: unknown }).with).toBeUndefined();
   });
 
