@@ -19,7 +19,7 @@ import { sealedRun } from "./release-recheck.js";
 import { runCheckLevel } from "./check-levels.js";
 import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff, verifiedTreeEntries } from "./commit-extract.js";
 import { EVAL_HOOK_FILES, evalHookProblem, LEARNING_HOOK_FILES, learningHookProblem, storeRewriteProblem } from "./eval-hooks.js";
-import { mightName, testInfrastructure, type TestInfrastructure } from "./test-infra.js";
+import { mightName, testInfrastructure, type TestInfrastructure, testImportProblem } from "./test-infra.js";
 import { chatControlHref } from "./chat-controls.js";
 import { INFRA_RERUNS_PER_CANDIDATE, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, prChecksVerdict, type CheckFailure } from "./release.js";
 import { releaseCheckStanding } from "./check-failure.js";
@@ -338,17 +338,15 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
     if (modes.includes("120000") || modes.includes("160000")) return `${change.path} is a symlink or submodule`;
     // Taking a test away is never automatic, wherever it lives.
     if (change.kind === "deleted" && TEST_FILE.test(rulePath(change.path))) return `${change.path} was deleted (removing a test needs a person)`;
-    if (change.before !== null && TEST_FILE.test(rulePath(change.path))) {
-      // Counts cannot prove that an assertion survived: replacing it, commenting it out, or skipping its case can
-      // leave the counts unchanged. Only append-only additions preserve the existing code without interpretation.
-      // Both copies come from verified trees; no report or candidate-provided file list decides this permission.
-      const was = verifiedBlobs(gitDir, before.value.tree, [change.path]);
-      const now = verifiedBlobs(gitDir, after.value.tree, [change.path]);
-      if (!was.ok || !now.ok) return `${change.path}'s existing test code couldn't be read (a person decides)`;
-      const original = was.value.get(change.path)?.bytes, revised = now.value.get(change.path)?.bytes;
-      if (original === undefined || revised === undefined || !revised.subarray(0, original.length).equals(original)) {
-        return `${change.path} changes existing test code (removing or rewriting tests needs a person)`;
-      }
+    // Counts cannot prove that an assertion survived, and an appended line can disarm what it follows (`vi.mock` hoists,
+    // a top-level hook reaches every case): a test file that was there stays exactly as it was (H4).
+    if (change.before !== null && TEST_FILE.test(rulePath(change.path))) return `${change.path} changes existing test code (new tests go in a new file; rewriting tests needs a person)`;
+    // A new test may not reach into another: it would run that file's code, and its mocks, here. From the verified tree.
+    if (change.kind === "added" && TEST_FILE.test(rulePath(change.path))) {
+      const read = verifiedBlobs(gitDir, after.value.tree, [change.path]);
+      const bytes = read.ok ? read.value.get(change.path)?.bytes : undefined;
+      const why = bytes === undefined ? `${change.path}'s test code couldn't be read` : testImportProblem(change.path, bytes.toString("utf8"));
+      if (why !== null) return `${why} (a person decides)`;
     }
     const why = autoPathProblem(change.path);
     if (why !== null) return `${change.path} changed (${why})`;

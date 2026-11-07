@@ -47,11 +47,36 @@ describe("a carry leans on the check that ran (H2)", () => {
   });
 });
 
+describe("existing tests stay as they are (H4)", () => {
+  test.each([
+    ["an edited test", { "src/index.test.ts": "test('answer', () => {});\ntest('more', () => {});\n" }],
+    ["an edited browser test", { "src/browser/app.test.ts": "test('app', () => {});\ntest('more', () => {});\n" }],
+    ["an edited journey script", { "scripts/app-e2e.mjs": "// journeys, one more\n" }],
+    // The appended rule's hole: this keeps every existing line and still disarms what it follows.
+    ["a hoisted mock appended to a test", { "src/index.test.ts": "test('answer', () => {});\nvi.mock('./index.js', () => ({ answer: () => 42 }));\n" }],
+  ])("%s asks again", (_name, change) => {
+    const f = open();
+    expect(preflight(f, f.commit(change))).toMatchObject({ ok: false, reason: "rules", message: expect.stringContaining("changes an existing test") });
+  });
+  test("a test new since the approval may be fixed by a later carried commit", () => {
+    const f = open();
+    f.commit({ "src/new.test.ts": "test('new', () => {});\n" });
+    expect(preflight(f, f.commit({ "src/new.test.ts": "test('new', () => {});\ntest('fixed', () => {});\n" }))).toMatchObject({ ok: true });
+  });
+  test.each([
+    ["importing another test", "import './index.test.js';\ntest('x', () => {});\n", "imports another test file"],
+    ["requiring another test", "require('./index.test.js');\ntest('x', () => {});\n", "imports another test file"],
+    ["a computed import", "await import(name);\ntest('x', () => {});\n", "computes"],
+  ])("a new test %s asks again", (_name, text, words) => {
+    const f = open();
+    expect(preflight(f, f.commit({ "src/new.test.ts": text }))).toMatchObject({ ok: false, reason: "rules", path: "src/new.test.ts", message: expect.stringContaining(words) });
+  });
+});
+
 describe("which changes carry", () => {
   test.each([
-    ["a unit test", { "src/index.test.ts": "test('answer', () => {});\ntest('more', () => {});\n" }],
-    ["a browser test", { "src/browser/app.test.ts": "test('app', () => {});\ntest('more', () => {});\n" }],
-    ["a journey script", { "scripts/app-e2e.mjs": "// journeys, one more\n" }],
+    ["a new unit test", { "src/new.test.ts": "test('answer', () => {});\ntest('more', () => {});\n" }],
+    ["a new browser test", { "src/browser/new.test.ts": "test('app', () => {});\ntest('more', () => {});\n" }],
     ["a doc", { "docs/guide.md": "# Guide\n\nMore.\n" }],
     ["the changelog", { "CHANGELOG.md": "## 0.9.71\n\n- A fix.\n" }],
     ["the root README", { "README.md": "# App\n" }],
@@ -138,7 +163,8 @@ describe("the policy", () => {
   test("a change refusal names the path and the rule", () => {
     const policy = effectivePolicy(open().store, fixture!.repo);
     const change = (path: string): TreeChange => ({ path, kind: "modified", before: { path, mode: "100644", id: "a" }, after: { path, mode: "100644", id: "b" }, added: 1, deleted: 0, binary: false });
-    expect(changeRefusal(change("src/a.test.ts"), policy)).toBeNull();
+    expect(changeRefusal(change("src/a.test.ts"), policy, new Set(["src/a.test.ts"]))).toBeNull();
+    expect(changeRefusal(change("src/a.test.ts"), policy)).toBe("src/a.test.ts changes an existing test, and new tests go in a new file");
     expect(changeRefusal(change("src/a.ts"), policy)).toBe("src/a.ts isn't a test, a doc or the changelog");
   });
 });

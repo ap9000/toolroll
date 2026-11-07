@@ -272,3 +272,19 @@ export function mightName(open: Unresolved, path: string, found: TestInfrastruct
   const stem = path.replace(/\.[^/.]+$/, "");
   return path === prefix || stem === prefix.replace(/\.(?:[cm]?js|jsx)$/, "") || path.startsWith(`${prefix}/`) || (open.specifier !== null && open.specifier.endsWith("/") === false && path.startsWith(prefix));
 }
+
+/** A specifier that names a test file, whatever it is spelled as: `./a.test.js`, `../b.test`, `@/c.test.ts`. */
+const NAMES_TEST = /\.test(?:\.[cm]?[jt]sx?)?(?:[?#].*)?$/;
+
+/**
+ * Why a new test file can't carry on what it imports, or null (docs/plans/trusted-release-reports.md, H4). A test file is
+ * never infrastructure here, so nothing else looks at an edge between two of them, and importing one runs its top level
+ * (its `vi.mock`s and hooks included) in the importer. A computed import might name one, so it refuses too.
+ */
+export function testImportProblem(path: string, text: string): string | null {
+  const { literal, computed, soft } = specifiersOf(path, text);
+  const named = [...literal, ...soft].find(spec => NAMES_TEST.test(spec));
+  if (named !== undefined) return `${path} imports another test file (${named}), which would run its code here`;
+  if (computed.length > 0) return `${path} imports a path it computes, which might name another test file`;
+  return null;
+}

@@ -10,7 +10,7 @@ import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
 import { reclaimDatabase } from "./database-reclaim.js";
 import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
-import { readStamps, stampDigest, V154_SCHEMA, type CheckStamp, type StampReading } from "./check-stamp.js";
+import { readStamps, stampDigest, stampRefusal, V154_SCHEMA, type CheckStamp, type StampReading } from "./check-stamp.js";
 import { refArchived, taskArchived } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -25677,6 +25677,10 @@ export function carryReleaseApproval(store: Store, w: CarryWrite, now: Date, rec
     if (a.artifactDigest === null || a.artifactDigest !== w.artifactDigest) return { ok: false as const, why: "The production build differs from the approved one." };
     const problem = recheck();
     if (problem !== null) return { ok: false as const, why: problem };
+    // How the release's check ran, read again with the write: a launch since the preflight counts (H2).
+    const ran = taskCheckStamp(store, a.repo, a.tipTask);
+    const unshown = ran === null ? null : stampRefusal(ran.reading, checkAccessOf(a.accessDigest));
+    if (unshown !== null) return { ok: false as const, why: `This release's approval can't carry: ${unshown}.` };
     if (store.getTask(w.taskId) !== null) return { ok: false as const, why: `A task ${w.taskId} already exists.` };
     const anchorRow = store.handle.prepare("SELECT * FROM task_scope WHERE task_id = ?").get(a.anchorTask);
     if (anchorRow === undefined) return { ok: false as const, why: "The approved release task has no scope." };
