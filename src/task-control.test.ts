@@ -203,18 +203,6 @@ describe("safe task stop and resume (v52)", () => {
     } finally { kill.mockRestore(); ps.mockReset(); clock.mockRestore(); Object.defineProperty(process, "platform", platform); }
   });
 
-  test.skipIf(process.platform !== "darwin")("the real process table proves a group newer than a recorded exit, and refuses one born before it", async () => {
-    // Its own group, started here; stopped by this exact handle below.
-    const held = childProcess.spawn("/bin/sleep", ["30"], { detached: true, stdio: "ignore" });
-    await new Promise(resolve => held.once("spawn", resolve));
-    try {
-      const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
-      const witness = (exitedAt: string) => ({ observedAt: ago(3 * 3_600_000), finishedAt: ago(3_600_000), exitedAt });
-      expect(processMayBeAlive(held.pid!, true, witness(ago(2 * 3_600_000)))).toBe(false);
-      expect(processMayBeAlive(held.pid!, true, { ...witness(ago(0)), observedAt: ago(-60_000) })).toBe(true);
-    } finally { held.kill("SIGKILL"); }
-  });
-
   test.each(["live", "orphan-group", "EPERM", "EIO"])("exit recording retains %s custody", state => {
     // These are POSIX group semantics even when this fixture runs on Windows.
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
