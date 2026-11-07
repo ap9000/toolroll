@@ -206,6 +206,9 @@ export const CHAT_ACTION_LOCAL_ACTS: Readonly<Record<ChatAction, LocalOwnerAct |
   suggestion_not_now: "dismiss-suggestion",
   // Stopping a trial only lowers (the rule door checks this exact act).
   trial_stop: "trial-stop",
+  // On or off for one project; never the end of a holdout.
+  code_map_switch: "code-map-switch",
+  code_map_holdout_end: null,
   scope_approve: "approve-plan",
   result_accept: "complete-task",
   task_cancel: "stop-run",

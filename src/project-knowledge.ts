@@ -1,4 +1,5 @@
 /** Project-owned context, independent of provider memory. Never grants authority. */
+import { codeMapAdmission } from './code-map-admission.js';
 import { checkoutGitSync } from './teardown-git.js';
 import { acceptedIdentities, carryProject, learningIdentity, learningSha } from './project-learning.js';
 import { currentActor } from './actor.js';
@@ -215,7 +216,7 @@ export function readKnowledgeSnapshot(store:Store,runId:number): KnowledgeSelect
   return selection;
 }
 /** Freeze at provider admission. Reviewers see the builder's exact project context. */
-export function knowledgeContext(store:Store,runId:number,cacheRoot?:string,validatedBuilderBase?:string):string {
+export function knowledgeContext(store:Store,runId:number,cacheRoot?:string,validatedBuilderBase?:string,now:Date=new Date()):string {
   if (!store.schemaCurrent()) throw Error('Project knowledge needs the current database version.');
   return store.transact(()=>{
     const run = store.getRun(runId), ref = run && store.refForId(run.taskRef), repo = ref?.repo;
@@ -228,6 +229,7 @@ export function knowledgeContext(store:Store,runId:number,cacheRoot?:string,vali
     // Projects without configured knowledge retain artifact-only review: do
     // not require an available checkout merely to supply an empty addition.
     let selection = readKnowledgeSnapshot(store,runId);
+    const firstAdmission = selection === null;
     if (!selection) {
       const parent = run.role==='reviewer' && run.parentRun!==null ? store.getRun(run.parentRun) : null;
       if (parent && parent.taskRef!==run.taskRef) throw Error('Review context belongs to another task.');
@@ -250,6 +252,10 @@ export function knowledgeContext(store:Store,runId:number,cacheRoot?:string,vali
     }
     // JSON escapes ordinary newlines, but not Unicode line separators. Keep
     // every source value inside this one data record in the provider brief.
-    return KNOWLEDGE_GUIDANCE + JSON.stringify(selection).replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029') + '\n';
+    // The code map's selection, fixed in this same transaction. A map problem is a recorded state, never a refused build.
+    const scoped = store.getScope(ref.externalId);
+    const reviewer = run.role==='reviewer' ? run.parentRun : null;
+    const map = codeMapAdmission(store,{run:runId,taskRef:run.taskRef,repo,parent:reviewer,firstAdmission,touches:scoped?.touches??[],words:`${store.getTask(ref.externalId)?.title ?? ''} ${scoped?.goal ?? ''}`,base:contextBase||null},now);
+    return KNOWLEDGE_GUIDANCE + JSON.stringify(selection).replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029') + '\n' + map;
   });
 }

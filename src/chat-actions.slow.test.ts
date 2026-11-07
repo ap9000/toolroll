@@ -199,6 +199,18 @@ describe("shared chat action lifecycle", () => {
         : {}),
     });
   }
+  test("the code map's switch and holdout are cards a person confirms, re-proved in the write", () => {
+    store.upsertProject(repo, "repo", now, { remoteUrl: "https://git.example/repo.git" });
+    store.handle.prepare("UPDATE project SET code_map_enroll_until = '2099-01-01T00:00:00.000Z'").run();
+    const read = () => ({ ...store.handle.prepare("SELECT code_map, code_map_enroll_until AS until FROM project WHERE path = ?").get(repo) });
+    const off = proposal("code_map_switch", { repo, on: false });
+    expect(read().code_map).toBe(1);
+    expect(confirm(off)).toMatchObject({ ok: true });
+    expect(read().code_map).toBe(0);
+    expect(confirm(proposal("code_map_holdout_end", { repo }))).toMatchObject({ ok: true });
+    expect(read().until).toBe(now.toISOString());
+  });
+
   test("the lead proposes a project tool as a card that needs the password screen; removal is an ordinary card", () => {
     const add = proposal("tool_add", { repo, catalog: "github" });
     const saved = store.getLeadProposal(add)!.payload as { title: string; terms: string[] };

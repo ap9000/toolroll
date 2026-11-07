@@ -69,6 +69,7 @@ import { approveReleaseCard, journalMatchesPlane, releaseApprovalCard, releaseCa
 import { journalFile } from "./release.js";
 import { refreshTrustedMains, settleReleaseChecks } from "./nightly-check.js";
 import { refreshCodeMaps } from "./code-map-build.js";
+import { sweepDeliveries } from "./code-map-admission.js";
 import { runMapCommand } from "./code-map-cli.js";
 import { githubNightlyRepos, readGithubNightlies, type GhRead } from "./nightly-github.js";
 import { exec as releaseExec, githubReads } from "./release-adapters.js";
@@ -7017,6 +7018,7 @@ async function runWatchLoop(args: {
     run: async () => {
       if (store.isDemo() || context.agentRunner !== undefined) return;
       await refreshCodeMaps(store, { scratch: join(context.evidenceRoot, ".code-map"), clock: context.clock });
+      sweepDeliveries(store);
     },
   });
 

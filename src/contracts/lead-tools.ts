@@ -50,6 +50,7 @@ export const touches = z.array(text("taskTouch")).max(50);
 export const acceptance = z.array(acceptanceCriterionSchema).min(1).max(ACCEPTANCE_LIMITS.criteria);
 /** A note the operator's own words fill (revise feedback, steering, a flow card's note). */
 const note = z.string().max(LIMITS.note, { error: issue => overBy(LIMITS.note, issue.input) }).describe(`At most ${LIMITS.note} characters; longer is refused with its length, not cut.`);
+export const CODE_MAP_VIEWS = ["overview", "area", "file", "search"] as const;
 /** Task states a list filters by. */
 export const LISTED_TASK_STATES = ["queued", "running", "done", "failed", "cancelled"] as const;
 
@@ -60,6 +61,8 @@ export const LEAD_TOOL_INPUTS = {
   get_brief: z.strictObject({ repo: repoId.optional() }),
   get_project_activity: z.strictObject({ repo: repoId, offset: offset.optional() }),
   get_project_context: z.strictObject({ repo: repoId, query: text("contextQuery").min(1), mode: z.enum(["search", "impact"]).optional() }),
+  get_code_map: z.strictObject({ repo: repoId, version: id.optional(), view: z.enum(CODE_MAP_VIEWS), id: text("projectPath").optional(), query: text("contextQuery").optional(), cursor: z.string().max(40).optional() }),
+  refresh_code_map: z.strictObject({ repo: repoId }),
   get_action_status: z.strictObject({ proposal: id }),
   get_actions: z.strictObject({}),
   propose_action: z.strictObject({
@@ -67,7 +70,7 @@ export const LEAD_TOOL_INPUTS = {
     sample: text("actionSample").optional(), content: text("actionContent").optional(), instructions: text("flowInstructions").optional(),
     title: text("actionTitle").optional(), id: z.string().optional(), run: id.optional(), note: note.optional(), catalog: text("actionName").optional(),
     name: text("actionName").optional(), command: text("actionCommand").optional(), args: z.array(text("actionCommand")).max(40).optional(),
-    url: text("actionUrl").optional(), secrets: z.array(text("actionSecret")).max(12).optional(), about: text("actionAbout").optional(),
+    url: text("actionUrl").optional(), secrets: z.array(text("actionSecret")).max(12).optional(), about: text("actionAbout").optional(), on: z.boolean().optional(),
   }),
   propose_task_action: z.strictObject({ task: taskRef, operation: enumOf(Object.keys(CHAT_TASK_ACTIONS)), dependency: taskRef.optional(), run: id.optional() }),
   get_controls: z.strictObject({}),
@@ -201,6 +204,8 @@ const cardDrafted = z.looseObject({ proposal: int, label: str, awaiting: str, ex
 /** A proposal row drafted by one of the queue, hold, scope and answer tools. */
 const proposed = <K extends string>(kind: K, shape: z.ZodRawShape = {}) => z.looseObject({ proposal: int, kind: z.literal(kind), awaiting: str, ...shape });
 
+/** One bounded answer from the shared code map reader (code-map-read.ts `MapAnswer`). */
+export const codeMapOutput = z.looseObject({ v: z.literal(1), ok: z.boolean() });
 /** A repository-context read (repository-context.ts `RepositoryContext`). */
 export const repositoryContextOutput = z.looseObject({ version: z.literal(1), readOnly: z.boolean(), query: str, mode: z.enum(["search", "impact"]), asOf: str, excerpts: list });
 /** The local catch-up (assignment-brief.ts `AssignmentCatchUp`). */
@@ -218,6 +223,8 @@ export const LEAD_TOOL_OUTPUTS = {
   get_brief: catchUpOutput,
   get_project_activity: z.looseObject({ asOf: str, since: str, days: int, limit: int, truncated: z.boolean(), ready: z.object({ count: int, oldestFinishedAgeMs: nullable(int), dated: int }), completed: z.looseObject({ count: int }), families: list, familiesTotal: int, familiesOffset: int, nextOffset: nullable(int), incompleteHistory: int }),
   get_project_context: repositoryContextOutput,
+  get_code_map: codeMapOutput,
+  refresh_code_map: z.looseObject({ request: z.enum(["queued", "already-queued"]) }),
   get_action_status: z.looseObject({ proposal: int, operation: str, state: str, outcome: z.unknown(), finishedAt: nullable(str) }),
   get_actions: z.looseObject({ actions: rows({ operation: str, label: str, secureReview: z.boolean(), inputs: z.array(str) }), notice: str }),
   propose_action: cardDrafted,

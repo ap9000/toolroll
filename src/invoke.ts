@@ -46,6 +46,7 @@ import { CHECK_ACCESS_DEFAULT, checkAccessHere, localModeCap, narrowestAccess, n
 import { readDenyPath } from "./project-sandbox.js";
 import { sandboxRuntimeWords } from "./sandbox-runtime.js";
 import { canonicalJson } from "./canonical-json.js";
+import { deliveredFile } from "./code-map-admission.js";
 import { buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, serverGrantsOf, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
@@ -1063,6 +1064,8 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
     // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
     const launch = fenceFor(provider === "command" ? "command" : "build", { databaseFile, worktree, ...home, boundary, binding, runFolders: folders, poolRoots,
       extra: allowed?.deny ?? [], linked: linkedFor(store, worktree), writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, policy: sandbox.policy, provider,
+      // This launch's code map file: exactly that file, read-only, inside the denied state folder. Commands don't get it.
+      ...(provider === "command" ? {} : { exactFile: deliveredFile(store, runId) }),
       // The sealed read denies, and whatever the project lists now too (adding a deny only narrows).
       readDeny: [...new Set([...sandbox.readDeny, ...(row === null ? [] : store.projectSandbox(row.repo).readDeny)])].map(one => readDenyPath(one, keyHome ?? homedir())), machLookup: sandbox.machLookup });
     return {

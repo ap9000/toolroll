@@ -12,7 +12,7 @@
 import { z } from "zod";
 import { TEXT_LIMITS, type TextLimitKey } from "../text-limits.js";
 import { envelopeSchema } from "./cli.js";
-import { catchUpOutput, decisionOutput, decisionsOutput, LISTED_TASK_STATES, queueColumnsOutput, recapOutput, repositoryContextOutput, scopeText, touches } from "./lead-tools.js";
+import { catchUpOutput, CODE_MAP_VIEWS, codeMapOutput, decisionOutput, decisionsOutput, LISTED_TASK_STATES, queueColumnsOutput, recapOutput, repositoryContextOutput, scopeText, touches } from "./lead-tools.js";
 
 const text = (key: TextLimitKey) => z.string().max(TEXT_LIMITS[key]);
 const ref = z.string().min(1).max(TEXT_LIMITS.taskRef);
@@ -36,6 +36,7 @@ export type AssignmentInput<O extends AssignmentOperation> = z.infer<(typeof ASS
 
 export const GATEWAY_TOOL_INPUTS = {
   get_project_context: z.strictObject({ repo: projectPath, query: text("contextQuery").min(1), mode: z.enum(["search", "impact"]).optional() }),
+  get_code_map: z.strictObject({ repo: projectPath, version: z.int().min(1).optional(), view: z.enum(CODE_MAP_VIEWS), id: text("projectPath").optional(), query: text("contextQuery").optional(), cursor: z.string().max(40).optional() }),
   get_assignment: ASSIGNMENT_INPUTS.show,
   list_assignment_updates: ASSIGNMENT_INPUTS.updates,
   claim_assignment: ASSIGNMENT_INPUTS.claim,
@@ -81,6 +82,7 @@ const assignmentOutput = z.looseObject({ version: z.literal(1), rootId: str, act
 
 export const GATEWAY_TOOL_OUTPUTS = {
   get_project_context: repositoryContextOutput,
+  get_code_map: codeMapOutput,
   get_assignment: assignmentOutput,
   list_assignment_updates: z.looseObject({ events: list, nextCursor: int, hasMore: z.boolean() }),
   claim_assignment: assignmentOutput,

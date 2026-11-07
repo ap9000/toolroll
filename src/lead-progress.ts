@@ -21,6 +21,8 @@ export type LeadLiveStep = { tools: string[]; toolCalls: LeadLiveTool[]; text: s
 const TOOL_LABELS: Record<string, string> = {
   get_brief: "Catching up on your work",
   get_project_context: "Reading the project",
+  get_code_map: "Reading the code map",
+  refresh_code_map: "Asking for a check of main",
   get_action_status: "Checking an action",
   get_actions: "Checking available actions",
   get_controls: "Checking the controls",
