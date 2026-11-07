@@ -9,10 +9,14 @@ import { readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const login = vi.hoisted(() => ({ codex: "subscription" as "subscription" | "api-key" | null, claude: "subscription" as "subscription" | "api-key" | null, proxies: 0 }));
+const login = vi.hoisted(() => ({ codex: "subscription" as "subscription" | "api-key" | null, claude: "subscription" as "subscription" | "api-key" | null, proxies: 0,
+  read: [] as { omitEnv: readonly string[]; env: Record<string, string | undefined> }[] }));
 vi.mock("./plan-login.js", async original => {
   const real = await original<typeof import("./plan-login.js")>();
-  return { ...real, codexLoginBilling: async () => login.codex, livePlanLogin: async (provider: string) => provider === "codex" ? login.codex : provider === "claude" ? login.claude : null };
+  return { ...real, codexLoginBilling: async () => login.codex, livePlanLogin: async (provider: string, _binary: string, omitEnv: readonly string[], env: Record<string, string | undefined>) => {
+    login.read.push({ omitEnv, env });
+    return provider === "codex" ? login.codex : provider === "claude" ? login.claude : null;
+  } };
 });
 vi.mock("./egress.js", async original => {
   const real = await original<typeof import("./egress.js")>();
@@ -95,7 +99,7 @@ describe("a chain, against real git", () => {
   const walks = () => withStore(store => store.handle.prepare("SELECT cursor, state, closed_reason FROM fallback_walk ORDER BY id").all());
 
   beforeEach(async () => {
-    login.codex = "subscription"; login.claude = "subscription"; login.proxies = 0;
+    login.codex = "subscription"; login.claude = "subscription"; login.proxies = 0; login.read = [];
     base = realpathSync(await mkdtemp(join(tmpdir(), "toolroll-fallback-")));
     repo = join(base, "repo"); db = join(base, "queue.db"); pool = join(base, "pool"); runs = [];
     await mkdir(repo, { recursive: true });
@@ -215,6 +219,31 @@ describe("a chain, against real git", () => {
     await tick(after, later(24 * 60 + 3));
     expect(codexRan).toEqual(["ran"]);
     expect(outcomeOf("t-1").outcome, lines.join("\n")).toBe("built");
+  });
+
+  test("the live plan proof reads exactly the environment the child launches with: routing kept, keys shed, by both", async () => {
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://routing.example.invalid");
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ambient-not-real");
+    vi.stubEnv("OPENAI_API_KEY", "sk-foreign-not-real");
+    vi.stubEnv("CLAUDE_CODE_USE_BEDROCK", "1");
+    try {
+      await setUp("claude:opus:plan");
+      await file("t-1"); await approve("t-1");
+      let child: { env: Record<string, string | undefined>; omitEnv: readonly string[] } | null = null;
+      const opus: Runner = async (file, args, options) => {
+        child = { env: { ...process.env, ...(options?.env ?? {}) }, omitEnv: options?.omitEnv ?? [] };
+        return finishes(file, args, options);
+      };
+      await tick(byModel({ sonnet: exhausted(false), opus }), T0);
+      await tick(byModel({ sonnet: exhausted(false), opus }), later(1));
+      expect(login.read).toHaveLength(1);
+      expect(child).not.toBeNull();
+      const seen = (side: { env: Record<string, string | undefined>; omitEnv: readonly string[] }) =>
+        Object.fromEntries(["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CLAUDE_CODE_USE_BEDROCK"].map(name => [name, side.omitEnv.includes(name) ? null : side.env[name] ?? null]));
+      expect(seen(login.read[0]!)).toEqual(seen(child!));
+      expect(seen(child!)).toMatchObject({ ANTHROPIC_BASE_URL: "https://routing.example.invalid", ANTHROPIC_API_KEY: null, OPENAI_API_KEY: null, CLAUDE_CODE_USE_BEDROCK: "1" });
+      expect([...login.read[0]!.omitEnv].sort()).toEqual([...child!.omitEnv].sort());
+    } finally { vi.unstubAllEnvs(); }
   });
 
   test("a Claude plan entry runs only when Claude's live sign-in says it's that plan", async () => {

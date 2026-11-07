@@ -405,13 +405,16 @@ export async function invokeAgent(
   if (pinned !== null && authMode === "api-key" && managedKey === null) {
     return { kind: "refused", reason: "auth-mode", providerVersion: attested === null ? null : attested.version, diagnostic: `this fallback agent is approved on an API key, and ${spec.provider} has none here` };
   }
+  // What decides the child's credential, computed once: the environment it starts from and every variable it sheds. The
+  // live plan proof below reads with exactly these, and the child launches with exactly these (childOmitEnv).
+  const childAuth = childAuthEnv({ provider: spec.provider, phase: invocation.phase, authMode, keyEnvName, ownKeyEnv,
+    extraOmitEnv: adapter.extraOmitEnv, runEnv: runOptions.env, runOmitEnv: runOptions.omitEnv });
   // A fallback agent approved on its plan runs only on a login its CLI proves, live, is that plan: read with the run's
   // own environment, before anything is started for it (no proxy, tools or homes to leave behind). A provider with no
   // live proof never gets here (filing refuses it); if one does, it's refused too. A key is never read as paid.
   if (pinned !== null && pinned.index > 0 && authMode === "subscription") {
     const live = PLAN_LOGIN_PROVABLE.has(spec.provider)
-      ? await livePlanLogin(spec.provider, attested !== null ? attested.executable : adapter.binary,
-        [...(runOptions.omitEnv ?? []), ...adapter.extraOmitEnv, ...ownKeyEnv, ...ALL_CREDENTIAL_ENV], { ...process.env, ...(runOptions.env ?? {}) })
+      ? await livePlanLogin(spec.provider, attested !== null ? attested.executable : adapter.binary, childAuth.omitEnv, childAuth.env)
       : null;
     if (live !== "subscription") {
       closeWalkSignedOut(store, runId, clock());
@@ -625,20 +628,8 @@ export async function invokeAgent(
     // the live control database through a generic RunOptions override.
     ...childDatabaseEnv(isolatedDb.file),
   };
-  const childOmitEnv = [
-    ...(runOptions.omitEnv ?? []),
-    ...adapter.extraOmitEnv,
-    // A Claude build loads no plugin, from settings or the environment (a review's safe mode already loads none).
-    ...(spec.provider === "claude" && invocation.phase !== "review" ? claudePluginEnv({ ...process.env, ...(runOptions.env ?? {}) }) : []),
-    // Subscription mode: shed this provider's OWN key too, so an ambient
-    // one cannot force API billing over the login the operator prefers.
-    // Api-key mode: shed every OTHER own-key alias (finding 1) — gemini
-    // reads GOOGLE_API_KEY as well as GEMINI_API_KEY, and a stray alias
-    // must not override the ONE canonical key this mode injected.
-    ...(authMode === "subscription"
-      ? ownKeyEnv
-      : ownKeyEnv.filter(name => name !== keyEnvName)),
-  ];
+  // The one omit list (childAuthEnv): the live plan proof read with this same list.
+  const childOmitEnv = childAuth.omitEnv;
   const launchOptions: RunOptions = {
     ...(fenced.wrap.length === 0 ? {} : { fence: fenced.wrap, fenceGrants: grants, confinement: "required" as const }),
     ...runOptions,
@@ -1480,4 +1471,25 @@ export function observeClaudeBilling(seen: ClaudeBillingSeen, event: Record<stri
   } else if (primaryResultEvent(event) && event["is_error"] !== true && event["subtype"] === "success") {
     seen.answered = true;
   }
+}
+
+/**
+ * What decides a child's credential: the environment it starts from (the plane's, then the caller's) and every variable
+ * it sheds. Subscription: this provider's own keys too, so an ambient key can't force API billing over the login.
+ * API key: every other own-key alias, so a stray one can't override the one key injected. Foreign keys and (for a
+ * Claude build) plugin variables always. The live plan proof and the launch both use this one answer.
+ */
+export function childAuthEnv(args: { provider: string; phase: string; authMode: string; keyEnvName: string | null; ownKeyEnv: readonly string[];
+  extraOmitEnv: readonly string[]; runEnv: Record<string, string> | undefined; runOmitEnv: readonly string[] | undefined }): { env: Record<string, string | undefined>; omitEnv: string[] } {
+  const env = { ...process.env, ...(args.runEnv ?? {}) };
+  return {
+    env,
+    omitEnv: [
+      ...(args.runOmitEnv ?? []),
+      ...args.extraOmitEnv,
+      // A Claude build loads no plugin, from settings or the environment (a review's safe mode already loads none).
+      ...(args.provider === "claude" && args.phase !== "review" ? claudePluginEnv(env) : []),
+      ...(args.authMode === "subscription" ? args.ownKeyEnv : args.ownKeyEnv.filter(name => name !== args.keyEnvName)),
+    ],
+  };
 }

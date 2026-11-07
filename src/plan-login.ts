@@ -8,11 +8,15 @@ import type { Billing } from "./spend.js";
 
 /** How Codex says it's signed in (`codex login status`): a ChatGPT sign-in is its plan; a key or Bedrock is a key;
  * null when it says neither (not signed in, or it didn't answer). */
-export async function codexLoginBilling(binary: string, omitEnv: readonly string[]): Promise<Billing | null> {
+export async function codexLoginBilling(binary: string, omitEnv: readonly string[], env?: Record<string, string | undefined>): Promise<Billing | null> {
   try {
-    const status = await runCommand(binary, ["login", "status"], { timeoutMs: 15_000, omitEnv, processGroup: true });
+    const status = await runCommand(binary, ["login", "status"], { timeoutMs: 15_000, omitEnv, processGroup: true,
+      ...(env === undefined ? {} : { env: Object.fromEntries(Object.entries(env).filter((one): one is [string, string] => one[1] !== undefined)) }) });
     const said = `${status.stdout}\n${status.stderr}`;
-    return /using chatgpt/i.test(said) ? "subscription" : /api key|bedrock/i.test(said) ? "api-key" : null;
+    // Strict: the status line itself, at the start of a line. A line naming both is never read as a plan.
+    if (/^Logged in using ChatGPT\s*$/m.test(said) && !/api key|bedrock/i.test(said)) return "subscription";
+    // Anything naming a key or Bedrock is read as a key (never a plan): that only ever narrows.
+    return /api key|bedrock/i.test(said) ? "api-key" : null;
   } catch {
     return null;
   }
@@ -44,7 +48,7 @@ export async function claudeLoginBilling(binary: string, omitEnv: readonly strin
 
 /** The live plan proof for a provider, or null where none exists (the caller refuses). */
 export async function livePlanLogin(provider: string, binary: string, omitEnv: readonly string[], env: Record<string, string | undefined>): Promise<Billing | null> {
-  if (provider === "codex") return codexLoginBilling(binary, omitEnv);
+  if (provider === "codex") return codexLoginBilling(binary, omitEnv, env);
   if (provider === "claude") return claudeLoginBilling(binary, omitEnv, env);
   return null;
 }
