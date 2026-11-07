@@ -18,7 +18,7 @@ import { DEPRECATED_PAGE } from "../deprecations.js";
 /** tasks handlers, moved without changing their route bodies. */
 import { html, htmlString, joinHtml, postForm, textHtml, type Html } from "../html.js";
 import { createHash,randomBytes,randomUUID } from "node:crypto";
-import { lstatSync,realpathSync } from "node:fs";
+import { existsSync,lstatSync,realpathSync } from "node:fs";
 import { type ServerResponse } from "node:http";
 import { withActor } from "../actor.js";
 import { gateWords } from "../approval-policy.js";
@@ -667,7 +667,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         who.via === "cookie" &&
         who.session.editorLinks === true &&
         // A reviewer run (v29) never had a checkout — no files to open.
-        found.worktree !== null
+        found.worktree !== null &&
+        // Idle cleanup removes the folder and a later run makes it again: no link to a folder that isn't there.
+        existsSync(found.worktree)
           ? { worktree: found.worktree }
           : null,
         options.editorLinks !== undefined &&

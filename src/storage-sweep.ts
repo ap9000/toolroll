@@ -2,7 +2,7 @@
  * The storage sweep: the plane cleans up after itself without anyone running a command. About once a day, when nothing
  * is running or waiting (storage-sweep-schedule.ts: one service takes it, the cursor moves in the same transaction),
  * it removes test temp folders nothing touched for a day (test-temp.ts), stops orphans Toolroll left running (orphan-sweep.ts), removes finished checkouts the cleanup
- * setting lets go (checkout-cleanup.ts), keeps the current, previous and newest staged runtimes (staged-runtimes.ts)
+ * setting lets go and idle ones past the idle limit (checkout-cleanup.ts), keeps the current, previous and newest staged runtimes (staged-runtimes.ts)
  * and removes shared dependency installs no checkout has used for a week (shared-deps.ts).
  *
  * Nothing live work uses goes (`liveWork`): while a run is open, a lease current or a checkout in use, each removal
@@ -30,6 +30,7 @@ import { linkedKey, pruneUnusedShared, sharedDepsRoot, sharedUse, SHARED_UNUSED_
 import { pruneStagedRuntimes, runtimesInUse, runtimeScriptPaths, stagePlan } from "./staged-runtimes.js";
 import { bytesWords, diskBytes } from "./storage.js";
 import { localWitnessSql, storeMachine, type Store } from "./store.js";
+import { processesInStrict } from "./stop-proof.js";
 import { removeStaleTestTemp } from "./test-temp.js";
 import { worktreeProcessOccupancy, type WorktreePool } from "./worktree.js";
 import { runSweepChild, type SweepCompletion, type SweepExecutor } from "./storage-sweep-process.js";
@@ -61,6 +62,8 @@ export type SweepDeps = {
   inUse?: () => string[];
   scripts?: (pids: readonly number[]) => string[];
   graceMs?: number;
+  /** Which processes run from inside each path. */
+  cwds?: (paths: readonly string[]) => Map<string, number[]>;
 };
 
 export function storageSweepOff(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -218,8 +221,10 @@ export async function executeSweep(store: Store, deps: SweepDeps, now: () => Dat
   if (deps.pool !== null) {
     const pool = deps.pool;
     await part("checkouts", async () => {
-      const done = await cleanCheckouts(store, pool, now, { manual: false, actor, spare });
-      return { count: done.removed.length, bytes: done.freed, failed: done.kept.filter(one => one.why === "git refused").length, items: capped(done.removed.map(one => one.path)) };
+      // Idle folders go here only: nothing records a person's shell or editor in one, so the OS is asked. Unreadable keeps it.
+      const occupied = (path: string) => { try { return (deps.cwds ?? processesInStrict)([path]).size > 0; } catch { return true; } };
+      const done = await cleanCheckouts(store, pool, now, { manual: false, actor, spare, idle: { occupied } });
+      return { count: done.removed.length, bytes: done.freed, failed: done.kept.filter(one => one.why === "git refused").length, ...(done.more ? { more: true } : {}), items: capped(done.removed.map(one => one.path)) };
     });
   }
 
@@ -285,13 +290,13 @@ export function nextSweepAt(store: Store): string | null {
 const NOUNS: Record<SweepKind, [string, string]> = {
   "test temp": ["test temp folder", "test temp folders"],
   orphans: ["leftover process", "leftover processes"],
-  checkouts: ["finished checkout", "finished checkouts"],
+  checkouts: ["task folder", "task folders"],
   runtimes: ["staged runtime", "staged runtimes"],
   dependencies: ["unused dependency install", "unused dependency installs"],
 };
 
 /** What a part looks at, for "Couldn't check …". */
-const CHECKED: Record<SweepKind, string> = { "test temp": "test temp folders", orphans: "processes", checkouts: "checkouts", runtimes: "staged runtimes", dependencies: "dependency installs" };
+const CHECKED: Record<SweepKind, string> = { "test temp": "test temp folders", orphans: "processes", checkouts: "task folders", runtimes: "staged runtimes", dependencies: "dependency installs" };
 
 export function partWords(one: Pick<SweepPart, "kind" | "count">): string {
   return `${one.count.toLocaleString("en-US")} ${NOUNS[one.kind][one.count === 1 ? 0 : 1]}`;
@@ -301,7 +306,7 @@ function list(items: readonly string[]): string {
   return items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 }
 
-/** "Removed 120 test temp folders and 2 finished checkouts, about 1.2 GB. Stopped 1 leftover process. 3 couldn't be removed." */
+/** "Removed 120 test temp folders and 2 task folders, about 1.2 GB. Stopped 1 leftover process. 3 couldn't be removed." */
 export function sweepWords(parts: readonly SweepPart[]): string {
   const removed = parts.filter(one => one.kind !== "orphans" && one.count > 0);
   const stopped = parts.find(one => one.kind === "orphans" && one.count > 0);

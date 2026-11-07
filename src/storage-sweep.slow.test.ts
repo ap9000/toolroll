@@ -361,7 +361,7 @@ test("the runtime the CLI links point to stays, on PATH or not; another extra ru
   expect(readdirSync(staged).sort()).toEqual(["browser-a", "browser-b", "browser-c", "browser-cli"]);
 });
 
-const plan = (more: Partial<CheckoutPlan> = {}): CheckoutPlan => ({ at: new Date().toISOString(), cleanup: "finished", manual: true, go: [], stay: [], count: 0, totalBytes: 0, freeBytes: 0, waitingReview: 0, withChanges: 0, ...more });
+const plan = (more: Partial<CheckoutPlan> = {}): CheckoutPlan => ({ at: new Date().toISOString(), cleanup: "finished", idle: "14d", idleCount: 0, idleBytes: 0, manual: true, go: [], stay: [], count: 0, totalBytes: 0, freeBytes: 0, waitingReview: 0, withChanges: 0, ...more });
 const part = (kind: SweepPart["kind"], count: number, more: Partial<SweepPart> = {}): SweepPart => ({ kind, count, bytes: 0, failed: 0, items: [], ...more });
 
 test("Settings → Storage renders its sweep state hook, the swept paths, and honest failure text", () => {

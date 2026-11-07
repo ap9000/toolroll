@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { resultRecordWordsOf } from "../route-results.js";
 import { selectionEvidenceWords } from "../route-rules.js";
 import { feedbackImageProblem } from "../result-actions.js";
@@ -1187,7 +1188,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       // runner owning the run, the session's own device-side yes, and a
       // checkout to open — or nothing renders.
       editor:
-        runtime.options.editorLinks !== undefined && runtime.options.localRunner !== undefined && run.runner === runtime.options.localRunner && who.via === "cookie" && who.session.editorLinks === true && run.worktree !== null
+        runtime.options.editorLinks !== undefined && runtime.options.localRunner !== undefined && run.runner === runtime.options.localRunner && who.via === "cookie" && who.session.editorLinks === true && run.worktree !== null && existsSync(run.worktree)
           ? { worktree: run.worktree }
           : null,
       signedCriteria: scope?.acceptance.length ?? 0,

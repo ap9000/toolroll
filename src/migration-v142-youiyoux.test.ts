@@ -29,9 +29,9 @@ test.each([141, -141])("v%s: youiyoux's intake and request tables are added; no 
 
   expect(updateSafeSchema(141)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(142);
-  expect(SCHEMA_VERSION).toBe(150);
+  expect(SCHEMA_VERSION).toBe(151);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(150);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(151);
   for (const table of ["youiyoux_intake", "youiyoux_request"]) expect(store.handle.prepare(`SELECT count(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
   // A choice is on, off or automatic; a request id is youiyoux's shape; a status is one of youiyoux's words; a task is one request's.
   const intake = (enabled: number | null) => store!.handle.prepare("INSERT OR REPLACE INTO youiyoux_intake (repo, enabled) VALUES ('/projects/shop', ?)").run(enabled);

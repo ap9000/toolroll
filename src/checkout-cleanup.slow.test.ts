@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore, type Store } from "./store.js";
+import { checkoutIdle, openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
@@ -181,7 +181,7 @@ test("toolroll storage clean previews without removing anything, and --yes remov
   try {
     const preview = await cli(["clean"]);
     expect(preview.code).toBe(0);
-    expect(preview.out).toContain("Would remove 2 checkouts");
+    expect(preview.out).toContain("Would remove 2 task folders");
     expect(preview.out).toContain(first);
     expect(preview.out).toContain(second);
     expect(preview.out).toContain(`${kept}  (has changes)`);
@@ -274,7 +274,7 @@ test("Settings → Storage shows checkout space and what a clean-up frees; Clean
       .headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
     // Opening the page measures nothing (docs/plans/get-side-effects.md); Check now measures, then the page shows it.
     const unmeasured = await (await fetch(`${base}/settings/storage`, { headers: { cookie } })).text();
-    expect(unmeasured).toContain("Checkouts not measured yet");
+    expect(unmeasured).toContain("Task folders not measured yet");
     const measured = await fetch(`${base}/settings/storage/check`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf: /name="csrf" value="([0-9a-f]{64})"/.exec(unmeasured)![1]! }), redirect: "manual" });
     expect(measured.headers.get("location")).toBe("/settings/storage");
     const page = await (await fetch(`${base}/settings/storage`, { headers: { cookie } })).text();
@@ -286,12 +286,17 @@ test("Settings → Storage shows checkout space and what a clean-up frees; Clean
     expect((await post("/settings/storage/clean", { preview, password: "wrong" })).headers.get("location")).toContain("problem=");
     expect(existsSync(goes)).toBe(true);
     expect((await post("/settings/storage/clean", { preview: "0".repeat(32), password: alex.token })).headers.get("location")).toContain("problem=");
-    expect((await post("/settings/storage/clean", { preview, password: alex.token })).headers.get("location")).toContain("said=Removed%201%20checkout");
+    expect((await post("/settings/storage/clean", { preview, password: alex.token })).headers.get("location")).toContain("said=Removed%201%20task%20folder");
     expect(existsSync(goes)).toBe(false);
     expect(existsSync(stays)).toBe(true);
     expect(removals()).toMatchObject([{ actor: "alex", taskId: "gone" }]);
     expect((await post("/settings/storage", { cleanup: "never", password: alex.token })).headers.get("location")).toContain("said=");
     expect(store.checkoutCleanup()).toBe("never");
+    expect((await post("/settings/storage", { cleanup: "never", idle: "1d", password: alex.token })).headers.get("location")).toContain("problem=");
+    expect((await post("/settings/storage", { cleanup: "finished", idle: "30d", password: "wrong" })).headers.get("location")).toContain("problem=");
+    expect(checkoutIdle(store)).toBe("14d");
+    expect((await post("/settings/storage", { cleanup: "finished", idle: "30d", password: alex.token })).headers.get("location")).toContain("said=");
+    expect(checkoutIdle(store)).toBe("30d");
     expect((await post("/settings/storage/discard", { path: stays, password: alex.token })).headers.get("location")).toContain("said=Discarded");
     expect(existsSync(stays)).toBe(false);
   } finally {

@@ -20,6 +20,7 @@
  * module only names the door and the fence.
  */
 
+import { existsSync } from "node:fs";
 import { ownedProcessCount, runOwnerTag, terminateOwnedProcesses } from "./exec.js";
 import { diagnoseTaskDispatch, type DispatchDiagnosis } from "./dispatch.js";
 import type { Run, RunStop, Store } from "./store.js";
@@ -248,7 +249,9 @@ export function taskControlOf(store: Store, taskRef: number, now: Date): TaskCon
   if (newest !== null) {
     const stop = store.stopOf(newest.id);
     if (stop !== null && stop.settledAt !== null && stop.resumedAt === null) {
-      return { kind: "paused", run: newest.id, role: newest.role, stop, outcome: newest.outcome, committed: newest.committed === true, worktree: newest.worktree };
+      return { kind: "paused", run: newest.id, role: newest.role, stop, outcome: newest.outcome, committed: newest.committed === true,
+        // A folder idle cleanup removed held nothing uncommitted: a later run makes it again from the branch.
+        worktree: newest.worktree !== null && existsSync(newest.worktree) ? newest.worktree : null };
     }
   }
   const newestReview = runs.find(run => run.role === "reviewer" && isAttemptRoot(store, run)) ?? null;
