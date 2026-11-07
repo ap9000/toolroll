@@ -210,6 +210,7 @@ export const CHAT_ACTION_LOCAL_ACTS: Readonly<Record<ChatAction, LocalOwnerAct |
   // Chat and console parity: decided one by one, and none is a local owner's act yet. A password opens them.
   mode_revoke: null, flow_unattended_off: null, flow_archive: null, provider_resume: null, worker_note: null, lead_identity: null,
   task_archive: null, task_restore: null, incident_resolve: null, memory_decide: null,
+  finding_send: null, finding_resend: null,
   task_reopen: null, revision_accept: null, revision_reject: null, flow_unattended: null,
   // Results routing: Not now only lowers (the rule door checks this exact act).
   suggestion_not_now: "dismiss-suggestion",

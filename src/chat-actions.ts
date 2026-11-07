@@ -17,6 +17,7 @@ import { checkLeadIdentity } from "./lead-identity.js";
 import { hasForbiddenControls } from "./decision.js";
 import { activeUnattendedGrant, candidatesDigestOf, FLOW_ACCEPTANCE, parseUnattendedAsk, revokeUnattended, sealUnattended, unattendedCandidates, unattendedSignProblem, untilWords, workReposOf, type UnattendedAsk } from "./flow-unattended.js";
 import { UNATTENDED_RULE_WORDS, unattendedCoverWords, unattendedHeadWords, unattendedLimitWords } from "./flow-unattended-words.js";
+import { CHECK_ACTION, checkFindingAt, cleanFindingText, FINDING_EXCERPT_LIMIT, FINDING_ROUND_LIMIT, FINDING_TEXT_LIMIT, findingLine, findingStandingWords, getFinding, resendFinding, REVIEW_ACTION, reviewFindingAt, sendCheckFinding, sendFinding, sendReviewFinding } from "./findings.js";
 import { lessonNoteOf } from "./lesson-notes.js";
 import { decideProposal, listProposals } from "./memory-pass.js";
 import { authPauseOf, liftAuthPause } from "./provider-auth.js";
@@ -194,6 +195,9 @@ export const CHAT_ACTIONS = {
   task_restore: { label: "Restore task", protected: false, password: false },
   incident_resolve: { label: "Resolve incident", protected: false, password: false },
   memory_decide: { label: "Decide memory proposal", protected: false, password: false },
+  // Follow-through (findings.ts): not an approval. A person's yes to words shown on the card sends them to the agent.
+  finding_send: { label: "Send finding", protected: false, password: false },
+  finding_resend: { label: "Send finding back", protected: false, password: false },
   // The rest of the approvals: a person's own yes on a card that shows every term.
   task_reopen: { label: "Reopen task", protected: true, password: false },
   revision_accept: { label: "Accept plan revision", protected: true, password: false },
@@ -381,7 +385,7 @@ export function prepareSharedAction(
     return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
   }
   const task =
-    operation === "mode_revoke" || operation === "memory_decide" || operation === "incident_resolve" || operation.startsWith("code_map_") || operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_") || operation.startsWith("suggestion_") || operation.startsWith("trial_")
+    operation === "mode_revoke" || operation === "memory_decide" || operation === "incident_resolve" || operation === "finding_resend" || operation.startsWith("code_map_") || operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_") || operation.startsWith("suggestion_") || operation.startsWith("trial_")
       ? null
       : text(input, "task", 64);
   const flowTarget = operation.startsWith("flow_") && operation !== "flow_create" && operation !== "flow_script_save" && operation !== "flow_starter" ? flowTargetOf(store, input) : null;
@@ -394,6 +398,7 @@ export function prepareSharedAction(
   const repo =
     operation === "sweep_cancel_rest" ? store.getSweep(integer(input, "sweep"))?.repo
       : operation === "incident_resolve" ? incidentRepoOf(store, integer(input, "incident"))
+      : operation === "finding_resend" ? getFinding(store, integer(input, "finding"))?.repo
       : flowTarget !== null ? flowTarget.flow.repo : subagentTarget !== null ? subagentTarget.repo : questionFlow !== null ? questionFlow.repo : task === null ? text(input, "repo", 4096) : store.lookupRef(task)?.repo;
   if (!repo) throw Error("Choose an available project.");
   requireActor(store, who, repo);
@@ -1342,7 +1347,7 @@ export function executeSharedAction(
         actor = who.name;
       let taskId = task;
       if (LATE_APPROVALS.has(payload.operation)) return runLateApproval(store, who, payload, repo => approvalBy(store, who, repo, now, options, drafted), approvalRoad(options), now);
-      if (PARITY_ACTIONS.has(payload.operation) || OWNER_PARITY.has(payload.operation)) return runParityAction(store, who, payload, now);
+      if (PARITY_ACTIONS.has(payload.operation) || OWNER_PARITY.has(payload.operation)) return runParityAction(store, who, payload, now, options.root);
       if (payload.operation === "lead_about_you") {
         const next = withAboutYouLine(aboutYouOf(store, actor), String(req["line"]), Number(req["replaces"] ?? 0));
         if (!next.ok) throw Error(next.message);
@@ -1825,7 +1830,7 @@ function runFlowAction(store: Store, payload: SharedAction, actor: string, repos
 // ---- chat and console parity (docs/plans/toolroll-cards.md) ------------------------------------------------------------
 
 const LATE_APPROVALS: ReadonlySet<ChatAction> = new Set<ChatAction>(["task_reopen", "revision_accept", "revision_reject", "flow_unattended"]);
-const PARITY_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["mode_revoke", "flow_unattended_off", "flow_archive", "task_archive", "task_restore", "incident_resolve", "memory_decide", ...LATE_APPROVALS]);
+const PARITY_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["mode_revoke", "flow_unattended_off", "flow_archive", "task_archive", "task_restore", "incident_resolve", "memory_decide", "finding_send", "finding_resend", ...LATE_APPROVALS]);
 const OWNER_PARITY: ReadonlySet<ChatAction> = new Set<ChatAction>(["provider_resume", "worker_note", "lead_identity"]);
 
 function incidentRepoOf(store: Store, id: number): string | null {
@@ -1873,8 +1878,56 @@ function waitingRevision(store: Store, task: string, asked: unknown) {
   return found;
 }
 
+/** Every project a task's family reaches must be in this person's reach: a finding follows the family. */
+function familyWithin(store: Store, who: VerifiedApprover, task: string): void {
+  const family = store.taskFamilyOf(task, null, true);
+  for (const id of family?.versions.map(one => one.id) ?? [task]) {
+    const repo = store.lookupRef(id)?.repo;
+    if (repo != null && (!who.repos.includes(repo) || !store.accountCanAccess(who.name, repo))) throw Error("This task's work reaches a project outside your access here.");
+  }
+}
+
 function parityAction(store: Store, who: VerifiedApprover, operation: ChatAction, input: Record<string, unknown>, repo: string, flow: FlowRow | null, now: Date, request: Record<string, unknown>, root?: string): { state: Record<string, unknown>; title: string; terms: string[] } {
   switch (operation) {
+    case "finding_send": {
+      const task = String(input["task"]), row = store.getTask(task);
+      if (row === null) throw Error("No such task.");
+      familyWithin(store, who, task);
+      const given = ["summary", "pointer", "run"].filter(key => input[key] !== undefined);
+      if (given.length !== 1) throw Error("Send one thing: words in summary, a review finding's pointer, or a failed check's run.");
+      const head = `Sends this to the agent on ${row.title}. It reaches a running build now, or the next attempt's brief, as data to check. The agent must accept it or reject it with a reason; a repeat counts as another round.`;
+      if (input["pointer"] !== undefined) {
+        const read = reviewFindingAt(store, task, text(input, "pointer", 40));
+        if (!read.ok) throw Error(read.message);
+        const place = read.finding.file === null ? [] : [`Where: ${read.finding.file}${read.finding.line === null ? "" : `:${read.finding.line}`}`];
+        return { state: { task, pointer: input["pointer"], finding: read.finding }, title: "Send a review finding", terms: [head, `Finding: ${cleanFindingText(read.finding.scenario, FINDING_TEXT_LIMIT)}`, ...place, `Severity: ${read.finding.severity}`, `Asks: ${REVIEW_ACTION}`] };
+      }
+      if (input["run"] !== undefined) {
+        if (root === undefined) throw Error("The check's log can't be read here.");
+        const read = checkFindingAt(store, root, task, integer(input, "run"));
+        if (!read.ok) throw Error(read.message);
+        return { state: { task, run: input["run"], excerpt: read.excerpt, head: read.head }, title: "Send a failed check", terms: [head, `Finding: ${read.summary}`, `Log: ${cleanFindingText(read.excerpt, FINDING_EXCERPT_LIMIT)}`, `Asks: ${CHECK_ACTION}`] };
+      }
+      const summary = cleanFindingText(text(input, "summary", FINDING_TEXT_LIMIT), FINDING_TEXT_LIMIT);
+      if (summary === "") throw Error("Say what the finding is.");
+      const file = input["file"] === undefined ? null : cleanFindingText(text(input, "file", 300), 300) || null;
+      const line = file === null || input["line"] === undefined ? null : integer(input, "line");
+      for (const key of ["file", "line"]) delete request[key];
+      request["summary"] = summary;
+      if (file !== null) request["file"] = file;
+      if (line !== null) request["line"] = line;
+      return { state: { task, updatedAt: row.updatedAt }, title: "Send a finding", terms: [head, `Finding: ${summary}`, ...(file === null ? [] : [`Where: ${file}${line === null ? "" : `:${line}`}`]), `Asks: ${REVIEW_ACTION}`] };
+    }
+    case "finding_resend": {
+      const finding = getFinding(store, integer(input, "finding"));
+      if (finding === null) throw Error("No such finding.");
+      familyWithin(store, who, finding.taskId);
+      if (finding.state === "open") throw Error("That finding is already with the agent.");
+      if (finding.state === "closed") throw Error("That finding is closed.");
+      if (finding.state === "with-person") throw Error("That finding has used its rounds: it needs your decision on the task.");
+      const next = finding.rounds >= FINDING_ROUND_LIMIT ? "Its rounds are used, so this hands it to a person on the task." : `This is round ${finding.rounds + 1} of ${FINDING_ROUND_LIMIT}.`;
+      return { state: { finding: finding.id, state: finding.state, rounds: finding.rounds, answer: finding.answer?.detail ?? null }, title: `Send finding #${finding.id} back`, terms: [`Finding: ${findingLine(finding)}`, `How it stands: ${findingStandingWords(finding)}`, next] };
+    }
     case "task_reopen": {
       const task = String(input["task"]), row = store.getTask(task);
       if (row === null) throw Error("No such task.");
@@ -1980,10 +2033,21 @@ function runLateApproval(store: Store, who: VerifiedApprover, payload: SharedAct
 }
 
 /** Each runs the write the console's own handler calls, as this person, inside the confirm door's transaction. */
-function runParityAction(store: Store, who: VerifiedApprover, payload: SharedAction, now: Date): { ok: true; taskId: string | null; said: string; href?: string } {
+function runParityAction(store: Store, who: VerifiedApprover, payload: SharedAction, now: Date, root?: string): { ok: true; taskId: string | null; said: string; href?: string } {
   const req = payload.request, actor = who.name, repo = payload.repo;
   const done = (said: string, href?: string, taskId: string | null = null) => ({ ok: true as const, taskId, said, ...(href === undefined ? {} : { href }) });
   switch (payload.operation) {
+    case "finding_send": case "finding_resend": {
+      const task = payload.operation === "finding_send" ? String(req["task"]) : getFinding(store, Number(req["finding"]))?.taskId ?? null;
+      const sent = payload.operation === "finding_resend" ? resendFinding(store, Number(req["finding"]), now)
+        : req["pointer"] !== undefined ? sendReviewFinding(store, task!, String(req["pointer"]), actor, now)
+        : req["run"] !== undefined ? sendCheckFinding(store, root ?? "", task!, Number(req["run"]), actor, now)
+        : sendFinding(store, { taskId: task!, source: "person", by: actor, summary: String(req["summary"]), file: typeof req["file"] === "string" ? req["file"] : null, line: typeof req["line"] === "number" ? req["line"] : null }, now);
+      if (!sent.ok) throw Error(sent.message);
+      const said = sent.standing === "with-person" ? `Finding #${sent.id} needs a person's decision on the task.` : sent.standing === "already-sent" ? `Finding #${sent.id} was already sent.`
+        : sent.standing === "running" ? `Finding #${sent.id} sent to the running build.` : `Finding #${sent.id} goes to the next attempt.`;
+      return done(said, task === null ? undefined : `/t/${encodeURIComponent(task)}#findings`, task);
+    }
     case "mode_revoke":
       if (!store.revokeMode(repo, actor, "operator", now)) throw Error("That mode already ended.");
       return done("Automatic approvals are off. Every act goes back to its own approval.", "/mode");

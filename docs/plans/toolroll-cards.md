@@ -79,6 +79,12 @@ From the route table's 273 console POST rows. **Chat**: already in chat. **Add**
 
 Reads the console shows and chat only linked to now come back as cards: `projects`, `workers`, `mode`, `integrations`, `providers`, `spend`.
 
+## Follow-through in chat (docs/plans/fleet-follow-through.md)
+
+- Reads: the `findings` and `handover` card sources (a new Notes part shows their words whole, marked as the agent's report), and `get_findings` for the lead.
+- Sending: `finding_send` (a person's words, a review finding, or a failed check) and `finding_resend`, each through the shared door, every value on the card. Not approvals. Every project the task's family reaches must be in reach.
+- Labelled link, not a chat act: closing a finding and starting a repair stay on the task (`show_control findings`), as do rerunning evidence, failing test first and marking captures. Automatic repair stays a signed mode only.
+
 ## Build order
 
 1. Card format, catalog and sources; the `show_card` lead tool.

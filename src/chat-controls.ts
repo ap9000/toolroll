@@ -8,6 +8,8 @@ export const CHAT_CONTROLS = {
   recovery: { label: "Review recovery options", target: "task" },
   cancel: { label: "Cancel task", target: "task" },
   result: { label: "Open result", target: "task" },
+  // A task's findings, failed checks and evidence: closing a finding and starting a repair happen there.
+  findings: { label: "Open findings", target: "task" },
   acceptance: { label: "Inspect result", target: "task" },
   publish: { label: "Review publication", target: "task" },
   projects: { label: "Manage projects", href: "/projects" },
@@ -50,5 +52,6 @@ export function chatControlHref(control: ChatControl, task: string, run?: unknow
   const base = "/chat?task=" + encodeURIComponent(task);
   // Task details owns cancel, retry, publication and other dedicated ceremonies.
   if (control === "cancel" || control === "recovery" || control === "publish") return "/t/" + encodeURIComponent(task);
+  if (control === "findings") return `/t/${encodeURIComponent(task)}#findings`;
   return base + (control === "approval" || control === "planning" ? "#task-chat-action" : "");
 }

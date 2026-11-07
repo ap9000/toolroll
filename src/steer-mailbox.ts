@@ -34,7 +34,7 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdi
 import { join } from "node:path";
 import { fence } from "./brief-fence.js";
 import { ANSWER_FILE_BYTES, findingAnswerSchema, findingLine, findingSourceWords, FINDING_ROUND_LIMIT, markFindingDelivered, markFindingRead, saveFindingAnswer, undeliveredFindings } from "./findings.js";
-import { FAILING_FIRST_FILE, failingFirstReportSchema, saveFailingFirstReport } from "./evidence-pair.js";
+import { FAILING_FIRST_FILE, failingFirstReportSchema, saveFailingFirstReport } from "./failing-first.js";
 import type { Store } from "./store.js";
 
 export const STEER_HANDLED = "handled";

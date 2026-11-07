@@ -352,21 +352,36 @@ export function runOnTask(store: Store, runId: number, taskId: string): boolean 
 
 /** Send one of a result's review findings: `<run>:<number>`, counted from 1 as the result lists them. */
 export function sendReviewFinding(store: Store, taskId: string, pointer: string, by: string, now: Date): SendAnswer {
+  const read = reviewFindingAt(store, taskId, pointer);
+  if (!read.ok) return { ok: false, reason: "invalid", message: read.message };
+  const { finding, run } = read;
+  return sendFinding(store, { taskId, source: "build-review", by, summary: finding.scenario, file: finding.file, line: finding.line, severity: finding.severity, run, key: `review-send:${pointer}` }, now);
+}
+
+/** The review finding `<run>:<number>` names, on this task's family: what a send would quote, read once for both. */
+export function reviewFindingAt(store: Store, taskId: string, pointer: string): { ok: true; run: number; finding: BuildFinding } | { ok: false; message: string } {
   const match = /^([1-9][0-9]{0,14}):([1-9][0-9]{0,3})$/.exec(pointer);
-  if (match !== null && !runOnTask(store, Number(match[1]), taskId)) return { ok: false, reason: "invalid", message: NOT_ON_TASK };
+  if (match !== null && !runOnTask(store, Number(match[1]), taskId)) return { ok: false, message: NOT_ON_TASK };
   const view = match === null ? null : buildReviewOf(store, Number(match[1]));
   const finding = view === null ? undefined : [...view.high, ...view.followUps][Number(match![2]) - 1];
-  if (finding === undefined) return { ok: false, reason: "invalid", message: `That result has no review finding ${pointer}.` };
-  return sendFinding(store, { taskId, source: "build-review", by, summary: finding.scenario, file: finding.file, line: finding.line, severity: finding.severity, run: Number(match![1]), key: `review-send:${pointer}` }, now);
+  return finding === undefined ? { ok: false, message: `That result has no review finding ${pointer}.` } : { ok: true, run: Number(match![1]), finding };
 }
 
 /** Send a result's failed check, with the end of its sealed log as the evidence. The summary is Toolroll's own words. */
 export function sendCheckFinding(store: Store, root: string, taskId: string, runId: number, by: string, now: Date): SendAnswer {
-  if (!runOnTask(store, runId, taskId)) return { ok: false, reason: "invalid", message: NOT_ON_TASK };
+  const read = checkFindingAt(store, root, taskId, runId);
+  if (!read.ok) return { ok: false, reason: "invalid", message: read.message };
+  const { summary, head, excerpt } = read;
+  return sendFinding(store, { taskId, source: "check-failure", by, summary, run: runId, revision: head, excerpt, key: `check-send:${runId}` }, now);
+}
+
+/** A failed check as a send would quote it. */
+export function checkFindingAt(store: Store, root: string, taskId: string, runId: number): { ok: true; summary: string; head: string | null; excerpt: string } | { ok: false; message: string } {
+  if (!runOnTask(store, runId, taskId)) return { ok: false, message: NOT_ON_TASK };
   const failure = Number.isSafeInteger(runId) ? failedVerificationEvidence(store, root, runId) : { kind: "none" as const };
-  if (failure.kind !== "failed") return { ok: false, reason: "invalid", message: `Attempt #${runId} has no failed check to send.` };
+  if (failure.kind !== "failed") return { ok: false, message: `Attempt #${runId} has no failed check to send.` };
   const head = store.getRun(runId)?.headRevision ?? null;
-  return sendFinding(store, { taskId, source: "check-failure", by, summary: `The approved check failed on ${head?.slice(0, 7) ?? "this result"}.`, run: runId, revision: head, excerpt: failure.log.slice(-FINDING_EXCERPT_LIMIT), key: `check-send:${runId}` }, now);
+  return { ok: true, summary: `The approved check failed on ${head?.slice(0, 7) ?? "this result"}.`, head, excerpt: failure.log.slice(-FINDING_EXCERPT_LIMIT) };
 }
 
 /** The folder an attempt's answers go in, and what the brief says about writing one. Trusted words: nothing here is quoted. */

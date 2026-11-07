@@ -53,6 +53,7 @@ const TOOL_LABELS: Record<string, string> = {
   queue: "Checking the queue",
   show_control: "Finding the right control",
   show_card: "Putting a card together",
+  get_findings: "Reading the findings",
   commit_to: "Noting what I promised",
   release_commitment: "Updating what I promised",
   remember: "Preparing a card for you to confirm",

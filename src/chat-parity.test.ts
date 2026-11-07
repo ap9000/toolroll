@@ -10,7 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquire, finalize } from "./claim.js";
 import { withActor } from "./actor.js";
-import { APPROVAL_ACTIONS, mintSharedActionReview, prepareSharedAction, type ChatAction } from "./chat-actions.js";
+import { readCardSource } from "./card-sources.js";
+import { APPROVAL_ACTIONS, CHAT_ACTIONS, mintSharedActionReview, prepareSharedAction, type ChatAction } from "./chat-actions.js";
+import { chatControlHref } from "./chat-controls.js";
+import { findingsOfTask, getFinding, sendFinding } from "./findings.js";
 import { setChatApproval } from "./chat-approval.js";
 import { chatTaskStamp } from "./chat-task-actions.js";
 import { storeEvidence } from "./evidence.js";
@@ -18,7 +21,7 @@ import { addFlowTriggerTo } from "./flow-triggers.js";
 import { saveScript } from "./flow-scripts.js";
 import { activeUnattendedGrant, prepareUnattendedCandidates, sealUnattended, unattendedCandidates } from "./flow-unattended.js";
 import { leadIdentityOf } from "./lead-identity.js";
-import { LEAD_TOOL_SCHEMAS } from "./lead-tools.js";
+import { executeLeadTool, LEAD_TOOL_SCHEMAS } from "./lead-tools.js";
 import { listProposals, memorySurface } from "./memory-pass.js";
 import { authPauseOf, pauseForAuth } from "./provider-auth.js";
 import { requestTaskStop } from "./task-control.js";
@@ -180,6 +183,14 @@ describe("the new chat actions", () => {
     store.observeMirrorOpen("t-1", 3);
   }
 
+  /** A finding the agent has rejected: one a person may send back. */
+  function answered(): number {
+    const sent = sendFinding(store, { taskId: "t-1", source: "person", by: "operator", summary: "The total rounds down." }, now);
+    if (!sent.ok) throw Error(sent.message);
+    store.handle.prepare("UPDATE finding SET state = 'rejected' WHERE id = ?").run(sent.id);
+    return sent.id;
+  }
+
   /** Each new act: what it asks for, and how to read whether it has happened. */
   const ACTS: [ChatAction, () => { input: Record<string, unknown>; done: () => boolean }][] = [
     ["provider_resume", () => { const { run, ref } = stopped(); pauseForAuth(store, { provider: "claude", authMode: null, runId: run, taskRef: ref.id, now }); return { input: { provider: "claude" }, done: () => authPauseOf(store, "claude") === null }; }],
@@ -190,6 +201,8 @@ describe("the new chat actions", () => {
     ["task_reopen", () => { latched(); return { input: { task: "t-1" }, done: () => store.mirrorByTask("t-1")?.dispatchOk === true }; }],
     ["revision_accept", () => { const { id } = blockedRevision(); return { input: { task: "t-1" }, done: () => store.getPlanRevision(id)?.status === "applied" }; }],
     ["revision_reject", () => { const { id } = blockedRevision(); return { input: { task: "t-1", revision: id }, done: () => store.getPlanRevision(id)?.status === "rejected" }; }],
+    ["finding_send", () => ({ input: { task: "t-1", summary: "The total rounds down.", file: "src/total.ts", line: 12 }, done: () => findingsOfTask(store, "t-1").length === 1 })],
+    ["finding_resend", () => { const id = answered(); return { input: { finding: id }, done: () => getFinding(store, id)?.state === "open" }; }],
     ["mode_revoke", () => { signMode(); return { input: { repo }, done: () => store.activeMode(repo, now) === null }; }],
     ["task_archive", () => ({ input: { task: "t-1" }, done: () => refArchived(store, store.lookupRef("t-1")!.id) })],
     ["flow_archive", () => { const flow = scheduled(); return { input: { flow }, done: () => store.getFlow(flow)?.state !== "active" }; }],
@@ -249,6 +262,76 @@ describe("the new chat actions", () => {
     expect(confirmLeadProposal(store, who, clicked, now, { authority: "full", via: "web", person: true, confirm: true, evidenceRoot: root, actionReview: { nonce: review.nonce, password: "" } })).toMatchObject({ ok: true });
     expect(line(web)[0]!.detail).toContain(`grant #${activeUnattendedGrant(store, web, now)!.id} · via web`);
     expect(line(web)[0]!.detail).not.toContain("chat binding");
+  });
+
+  describe("follow-through in chat", () => {
+    const termsOf = (id: number) => (store.getLeadProposal(id)!.payload as { terms: string[] }).terms.join("\n");
+
+    test("a finding's card shows every value it will send, and a person's yes records them as sent", () => {
+      const id = draft("finding_send", { task: "t-1", summary: "The total rounds down.", file: "src/total.ts", line: 12 });
+      for (const words of ["Finding: The total rounds down.", "Where: src/total.ts:12", "Asks: ", "Tidy the footer"]) expect(termsOf(id)).toContain(words);
+      expect(yes(id)).toMatchObject({ ok: true, said: expect.stringContaining("goes to the next attempt") });
+      expect(findingsOfTask(store, "t-1")[0]).toMatchObject({ summary: "The total rounds down.", file: "src/total.ts", line: 12, sentBy: "operator", source: "person", state: "open" });
+    });
+
+    test.each<[string, Record<string, unknown>, string]>([
+      ["nothing to send", { task: "t-1" }, "Send one thing"],
+      ["two things at once", { task: "t-1", summary: "x", run: 1 }, "Send one thing"],
+      ["empty words", { task: "t-1", summary: "   " }, "Check the summary field"],
+      ["a pointer into another task", { task: "t-1", pointer: "999:1" }, "isn't on this task"],
+      ["a run from another task", { task: "t-1", run: 999 }, "isn't on this task"],
+      ["a field the card has no line for", { task: "t-1", summary: "x", action: "Delete everything" }, "can't be read"],
+    ])("a finding is refused for %s", (_name, input, words) => {
+      expect(() => prepareSharedAction(store, who, "finding_send", input, root, now)).toThrow(words);
+    });
+
+    test("a card made before the agent answered again is stale; a closed or waiting finding has no card", () => {
+      const id = answered();
+      const card = draft("finding_resend", { finding: id });
+      expect(termsOf(card)).toContain("round 2 of 2");
+      store.handle.prepare("UPDATE finding SET rounds = 2 WHERE id = ?").run(id);
+      expect(yes(card)).toMatchObject({ ok: false, reason: "stale" });
+      store.handle.prepare("UPDATE finding SET state = 'closed' WHERE id = ?").run(id);
+      expect(() => prepareSharedAction(store, who, "finding_resend", { finding: id }, root, now)).toThrow("closed");
+      store.handle.prepare("UPDATE finding SET state = 'with-person' WHERE id = ?").run(id);
+      expect(() => prepareSharedAction(store, who, "finding_resend", { finding: id }, root, now)).toThrow("needs your decision");
+    });
+
+    test("every project a finding touches must be in reach", () => {
+      const id = answered();
+      store.handle.prepare("UPDATE finding SET repo = ? WHERE id = ?").run(join(root, "bank"), id);
+      expect(() => prepareSharedAction(store, who, "finding_resend", { finding: id }, root, now)).toThrow("outside your current access");
+      // A task whose family reaches another project: nothing on it is sent from here.
+      store.handle.prepare("UPDATE task_ref SET repo = ? WHERE external_id = 't-1'").run(join(root, "bank"));
+      expect(() => prepareSharedAction(store, who, "finding_send", { task: "t-1", summary: "x" }, root, now)).toThrow();
+      expect(readCardSource({ store, now, who, evidenceRoot: root }, "handover", { repo: null, task: "t-1" })).toEqual({ problem: "No such task in your projects." });
+      expect(readCardSource({ store, now, who }, "findings", { repo: null, task: "t-1" })).toEqual({ problem: "No such task in your projects." });
+      expect(readCardSource({ store, now, who }, "findings", { repo: null })).toMatchObject({ rows: [] });
+    });
+
+    test("findings and the handover note read as cards, marked as the agent's words", () => {
+      answered();
+      const seen = readCardSource({ store, now, who }, "findings", { repo: null, task: "t-1" });
+      expect(seen).toMatchObject({ origin: "report", repos: [repo], rows: [{ state: "rejected" }] });
+      expect(JSON.stringify(seen)).toContain("The total rounds down.");
+      expect(readCardSource({ store, now, who }, "handover", { repo: null })).toEqual({ problem: "Name the task: handover needs task." });
+      expect(readCardSource({ store, now, who }, "handover", { repo: null, task: "t-1" })).toHaveProperty("problem");
+      const note = readCardSource({ store, now, who, evidenceRoot: root }, "handover", { repo: null, task: "t-1" });
+      expect(note).toMatchObject({ origin: "report", repos: [repo] });
+      expect(JSON.stringify(note)).toContain("Next action");
+    });
+
+    test("the lead reads findings by number, and only in reach", () => {
+      answered();
+      const call = (args: Record<string, unknown>) => executeLeadTool({ store, who, now, step: 1, readDecisions: new Map(), draft: () => null }, "get_findings", args);
+      expect(call({ task: "t-1" })).toMatchObject({ ok: true, body: { findings: [{ state: "rejected" }] } });
+      expect(call({ task: "not-a-task" })).toMatchObject({ ok: false });
+    });
+
+    test("closing a finding and starting a repair stay a person's on the task, and automatic repair has no chat road", () => {
+      expect(Object.keys(CHAT_ACTIONS).filter(one => /repair|close|mode_sign|auto/.test(one))).toEqual([]);
+      expect(chatControlHref("findings", "t-1")).toBe("/t/t-1#findings");
+    });
   });
 
   describe("what takes effect is on the card, and every project it touches is checked", () => {

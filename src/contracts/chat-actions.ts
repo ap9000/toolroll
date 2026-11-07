@@ -99,6 +99,9 @@ export const chatActionRequestSchemas = {
   flow_archive: z.strictObject({ flow: id }),
   flow_unattended_off: z.strictObject({ flow: id }),
   incident_resolve: z.strictObject({ incident: id }),
+  // Follow-through: send a finding to the task that owns the code. Text is checked and cleaned when the card is made.
+  finding_send: z.strictObject({ task: words, summary: words.optional(), file: words.optional(), line: z.int().min(1).optional(), pointer: words.optional(), run: id.optional() }),
+  finding_resend: z.strictObject({ finding: id }),
   task_reopen: z.strictObject({ task: words }),
   revision_accept: z.strictObject({ task: words, revision: id.optional() }),
   revision_reject: z.strictObject({ task: words, revision: id.optional() }),

@@ -13,7 +13,7 @@ export type CardButtons = (props: Record<string, unknown>) => { ok: true; button
 const queryOf = (props: Record<string, unknown>, repoOf: (id: unknown) => string | null): CardQuery | null => {
   const repo = props["repo"] === undefined ? null : repoOf(props["repo"]);
   if (props["repo"] !== undefined && repo === null) return null;
-  return { repo, ...(props["state"] === undefined ? {} : { state: String(props["state"]) }), ...(props["limit"] === undefined ? {} : { limit: Number(props["limit"]) }),
+  return { repo, ...(props["task"] === undefined ? {} : { task: String(props["task"]) }), ...(props["state"] === undefined ? {} : { state: String(props["state"]) }), ...(props["limit"] === undefined ? {} : { limit: Number(props["limit"]) }),
     ...(props["flow"] === undefined ? {} : { flow: Number(props["flow"]) }), ...(props["days"] === undefined ? {} : { days: Number(props["days"]) }) };
 };
 
@@ -22,7 +22,7 @@ function tableOf(data: CardData, wanted: unknown): ChatCardBlock | string {
   const columns = ids.map(id => data.columns.find(one => one.id === id));
   const missing = ids.filter((_, index) => columns[index] === undefined);
   if (missing.length > 0) return `No column ${missing.join(", ")}. This source has: ${data.columns.map(one => one.id).join(", ")}.`;
-  return { kind: "table", heading: data.heading, origin: "records", columns: columns.map(one => ({ label: one!.label, numeric: one!.numeric === true })), rows: data.rows.map(row => ids.map(id => row[id] ?? "")), more: data.more };
+  return { kind: "table", heading: data.heading, origin: data.origin ?? "records", columns: columns.map(one => ({ label: one!.label, numeric: one!.numeric === true })), rows: data.rows.map(row => ids.map(id => row[id] ?? "")), more: data.more };
 }
 
 function factsOf(data: CardData, wanted: unknown): ChatCardBlock | string {
@@ -51,6 +51,12 @@ export function buildChatCard(reader: CardReader, plan: CardPlan, repoOf: (id: u
     if ("problem" in data) return { ok: false, message: data.problem };
     title ??= data.heading;
     for (const repo of data.repos) repos.add(repo);
+    if (part.type === "Notes") {
+      if (data.notes === undefined || data.notes.length === 0) return { ok: false, message: "There are no saved words to show here. Try a Table." };
+      const items = data.notes.slice(0, CARD_LIMITS.notes);
+      blocks.push({ kind: "notes", heading: data.heading, origin: data.origin ?? "records", items, more: data.notes.length - items.length });
+      continue;
+    }
     if (part.type === "Chart") {
       if (data.points.length === 0) return { ok: false, message: "There are no numbers to chart yet: show a Table or Fields instead." };
       blocks.push({ kind: "chart", heading: data.heading, chart: part.props["chart"] as "bar", points: [...data.points] });

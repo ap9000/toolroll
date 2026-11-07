@@ -844,6 +844,7 @@ export const CHAT_ACTION_PARITY: Record<
     how: "Pushes the plan's or flow card's own decision card to the owner's paired chat: Approve arms Yes and Cancel, and only the owner's Yes decides, through sealScopeApproval (as a chat-origin approval) or decideFlowCard. Outside the owner's chat-approval setting or a decision's rules it answers why, and the lead opens the console control.",
     gap: "A flow card's Send back, Edit and a Person chooses step act from the pushed card; a plan's Send back stays in the console. Fixture proof only, no physical-phone rendering.",
   },
+  get_findings: { support: "direct", how: "Read during a turn; a finding's words are shown as untrusted text.", gap: null },
   show_card: {
     support: "direct",
     how: "A card of Toolroll's own records. Telegram shows it as one message: key facts as lines, tables and charts as monospaced text, its links as url buttons.",

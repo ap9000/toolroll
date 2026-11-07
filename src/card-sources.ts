@@ -8,7 +8,9 @@ import { basename } from "node:path";
 import type { CardSourceName } from "./card-catalog.js";
 import { publicChatText } from "./chat-display.js";
 import { CARD_LIMITS } from "./contracts/chat-card.js";
+import { findingLine, findingsOfTask, findingSourceWords, findingStandingWords, waitingFindings } from "./findings.js";
 import { flowInsights } from "./flow-insights.js";
+import { handoverLines, handoverNoteOf } from "./handover-note.js";
 import type { Integration } from "./integrations.js";
 import { projectOutcomes } from "./project-outcomes.js";
 import { monthOf } from "./spend.js";
@@ -18,16 +20,18 @@ import { refArchived, type Store } from "./store.js";
 export type CardReader = {
   store: Store; now: Date;
   who: { name: string; repos: readonly string[] };
+  /** Where saved evidence lives; absent, the handover note can't be read here. */
+  evidenceRoot?: string;
   /** Reads a chat turn already has; absent, the source says it can't be read here. */
   integrations?: () => readonly Integration[];
   providers?: (repos: readonly string[]) => readonly { project: string; provider: string; model: string; roles: readonly string[]; state: string }[];
   workers?: (repos: readonly string[]) => readonly { name: string; state: string; capacity: number; running: number }[];
 };
-export type CardQuery = { repo: string | null; state?: string; limit?: number; flow?: number; days?: number };
+export type CardQuery = { repo: string | null; task?: string; state?: string; limit?: number; flow?: number; days?: number };
 export type CardColumn = { id: string; label: string; numeric?: true };
 export type CardFact = { id: string; label: string; value: string };
 export type CardPoint = { label: string; value: number; shown: string };
-export type CardData = { heading: string; repos: readonly string[]; columns: readonly CardColumn[]; rows: readonly Record<string, string>[]; more: number; facts: readonly CardFact[]; points: readonly CardPoint[] };
+export type CardData = { heading: string; /** `report`: saved model or repository words, shown as such. */ origin?: "records" | "report"; notes?: readonly string[]; repos: readonly string[]; columns: readonly CardColumn[]; rows: readonly Record<string, string>[]; more: number; facts: readonly CardFact[]; points: readonly CardPoint[] };
 type Read = CardData | { problem: string };
 
 const clean = (value: string | number, cap: number = CARD_LIMITS.cell): string => publicChatText(String(value), cap);
@@ -200,7 +204,50 @@ function providers(reader: CardReader, query: CardQuery): Read {
   };
 }
 
-const READERS: Record<CardSourceName, (reader: CardReader, query: CardQuery) => Read> = { tasks, results, flows, flow_zones: flowZones, spend, projects, workers, mode, integrations, providers };
+/** Every project a task's family reaches, or null when one is out of this person's reach. */
+function familyInReach(reader: CardReader, task: string): readonly string[] | null {
+  const { store, who } = reader, family = store.taskFamilyOf(task, null, true);
+  const repos = [...new Set((family?.versions.map(one => one.id) ?? [task]).flatMap(id => { const repo = store.lookupRef(id)?.repo; return repo == null ? [] : [repo]; }))];
+  return repos.length > 0 && repos.every(one => who.repos.includes(one) && store.accountCanAccess(who.name, one)) ? repos : null;
+}
+
+function findings(reader: CardReader, query: CardQuery): Read {
+  const { store, who } = reader, limit = query.limit ?? 10;
+  if (query.task !== undefined && familyInReach(reader, query.task) === null) return { problem: "No such task in your projects." };
+  const reach = reposOf(reader, query).filter(one => store.accountCanAccess(who.name, one));
+  const list = query.task !== undefined ? findingsOfTask(store, query.task) : waitingFindings(store, reach);
+  const counts = new Map<string, number>();
+  for (const one of list) counts.set(one.state, (counts.get(one.state) ?? 0) + 1);
+  return {
+    heading: query.task === undefined ? "Findings waiting" : "Findings", origin: "report", repos: [...new Set(list.flatMap(one => one.repo === null ? [] : [one.repo]))],
+    columns: [{ id: "id", label: "Finding", numeric: true }, { id: "where", label: "Where" }, { id: "state", label: "State" }, { id: "from", label: "From" }, { id: "task", label: "Task" }],
+    rows: list.slice(0, limit).map(one => ({ id: String(one.id), where: clean(one.file === null ? "" : `${one.file}${one.line === null ? "" : `:${one.line}`}`), state: clean(one.state), from: clean(findingSourceWords(one.source)), task: clean(one.taskId) })),
+    more: Math.max(0, list.length - limit),
+    notes: list.map(one => clean(`${findingLine(one)} (${findingStandingWords(one)})`, CARD_LIMITS.note)),
+    facts: [{ id: "total", label: "Findings", value: String(list.length) }, ...[...counts].map(([state, value]) => ({ id: state, label: clean(state, CARD_LIMITS.label), value: String(value) }))],
+    points: count([...counts]),
+  };
+}
+
+function handover(reader: CardReader, query: CardQuery): Read {
+  if (query.task === undefined) return { problem: "Name the task: handover needs task." };
+  const repos = familyInReach(reader, query.task);
+  if (repos === null) return { problem: "No such task in your projects." };
+  if (reader.evidenceRoot === undefined) return { problem: "The handover note can't be read here. Use toolroll task handover." };
+  const note = handoverNoteOf(reader.store, reader.evidenceRoot, query.task, reader.now);
+  if (note === null) return { problem: "No such task in your projects." };
+  return {
+    heading: clean(`Handover: ${query.task}`, CARD_LIMITS.heading), origin: "report", repos,
+    columns: [{ id: "what", label: "Part" }, { id: "count", label: "Count", numeric: true }],
+    rows: [["Accepted decisions", note.acceptedDecisions.length], ["Rejected approaches", note.rejectedApproaches.length], ["Open findings", note.openFindings.length], ["Checks", note.verification.length]].map(([what, value]) => ({ what: String(what), count: String(value) })),
+    more: 0,
+    notes: handoverLines(note).map(one => clean(one, CARD_LIMITS.note)).filter(one => one !== ""),
+    facts: [{ id: "revision", label: "Revision", value: note.revision === null ? "none yet" : clean(note.revision.head.slice(0, 12)) }, { id: "next", label: "Next", value: clean(note.nextAction) }],
+    points: [],
+  };
+}
+
+const READERS: Record<CardSourceName, (reader: CardReader, query: CardQuery) => Read> = { tasks, results, flows, flow_zones: flowZones, spend, projects, workers, mode, integrations, providers, findings, handover };
 
 /** One source, read now as this person. */
 export function readCardSource(reader: CardReader, name: CardSourceName, query: CardQuery): Read {

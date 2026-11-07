@@ -8,6 +8,8 @@ import { html, joinHtml, type Html } from "./html.js";
 
 type Table = Extract<ChatCardBlock, { kind: "table" }>;
 type Chart = Extract<ChatCardBlock, { kind: "chart" }>;
+type Notes = Extract<ChatCardBlock, { kind: "notes" }>;
+const noteLines = (block: Notes): string[] => [...block.items.map(one => `• ${one}`), ...(block.more > 0 ? [moreWords(block.more)] : [])];
 
 const fit = (text: string, width: number): string => text.length <= width ? text : `${text.slice(0, Math.max(1, width - 1))}…`;
 const asOfWords = (card: ChatCard): string => `From Toolroll's records · ${card.asOf.slice(0, 16).replace("T", " ")} UTC`;
@@ -43,6 +45,7 @@ export function cardPlainText(card: ChatCard): string {
       case "divider": return [];
       case "facts": return [block.items.map(one => `${one.label}: ${one.value}`).join("\n")];
       case "table": return [[...headOf(card, block.heading), ...(block.origin === "report" ? [reportWords] : []), ...tableLines(block)].join("\n")];
+      case "notes": return [[...headOf(card, block.heading), ...(block.origin === "report" ? [reportWords] : []), ...noteLines(block)].join("\n")];
       case "chart": return [[...headOf(card, block.heading), ...chartLines(block)].join("\n")];
     }
   });
@@ -75,6 +78,10 @@ export function slackCardBlocks(card: ChatCard, buttons: readonly Record<string,
   for (const block of card.blocks) {
     if (block.kind === "text") out.push({ type: "section", text: { type: "plain_text", text: block.text, emoji: false } });
     else if (block.kind === "divider") out.push({ type: "divider" });
+    else if (block.kind === "notes") {
+      if (block.origin === "report") out.push({ type: "context", elements: [{ type: "plain_text", text: reportWords, emoji: false }] });
+      out.push({ type: "section", text: { type: "plain_text", text: noteLines(block).join("\n").slice(0, 2900), emoji: false } });
+    }
     else if (block.kind === "facts") out.push({ type: "section", fields: block.items.map(one => ({ type: "plain_text", text: `${one.label}: ${one.value || " "}`, emoji: false })) });
     else if (block.kind === "table") {
       if (block.origin === "report") out.push({ type: "context", elements: [{ type: "plain_text", text: reportWords, emoji: false }] });
@@ -106,6 +113,7 @@ export function discordCardEmbed(card: ChatCard, plain: (text: string) => string
   for (const block of card.blocks) {
     if (block.kind === "text") text.push(plain(block.text));
     else if (block.kind === "facts") fields.push(...block.items.map(one => ({ name: plain(one.label), value: plain(one.value) || "​", inline: true })));
+    else if (block.kind === "notes") fields.push({ name: plain(block.heading), value: `${block.origin === "report" ? `${reportWords}\n` : ""}${plain(noteLines(block).join("\n")).slice(0, 960)}` });
     else if (block.kind === "table" || block.kind === "chart") {
       const lines = block.kind === "table" ? tableLines(block, 50) : chartLines(block);
       const origin = block.kind === "table" && block.origin === "report" ? `${reportWords}\n` : "";
@@ -131,6 +139,7 @@ export function telegramCardMessage(card: ChatCard): { text: string; entities: {
   for (const block of card.blocks) {
     if (block.kind === "text") add(block.text);
     else if (block.kind === "facts") add(block.items.map(one => `${one.label}: ${one.value}`).join("\n"));
+    else if (block.kind === "notes") { for (const one of headOf(card, block.heading)) add(one, "bold"); if (block.origin === "report") add(reportWords); add(noteLines(block).join("\n")); }
     else if (block.kind === "table") { for (const one of headOf(card, block.heading)) add(one, "bold"); if (block.origin === "report") add(reportWords); add(tableLines(block, 40).join("\n"), "pre"); }
     else if (block.kind === "chart") { for (const one of headOf(card, block.heading)) add(one, "bold"); add(chartLines(block).join("\n"), "pre"); }
   }
@@ -176,6 +185,7 @@ export function webCardHtml(card: ChatCard): Html {
       case "divider": return html`<hr class="tc-rule">`;
       case "facts": return html`<dl class="tc-facts">${joinHtml(block.items.map(one => html`<div><dt>${one.label}</dt><dd>${one.value}</dd></div>`))}</dl>`;
       case "table": return html`<div class="tc-part">${partHead(card, block.heading)}${block.origin === "report" ? html`<p class="tc-note">${reportWords}</p>` : ""}<div class="tc-scroll"><table class="tc-table"><thead><tr>${joinHtml(block.columns.map(one => html`<th scope="col" class="${one.numeric ? "tc-num" : ""}">${one.label}</th>`))}</tr></thead><tbody>${joinHtml(block.rows.map(row => html`<tr>${joinHtml(row.map((one, at) => html`<td class="${block.columns[at]!.numeric ? "tc-num" : ""}">${one}</td>`))}</tr>`))}</tbody></table></div>${block.more > 0 ? html`<p class="tc-note">${moreWords(block.more)}</p>` : ""}</div>`;
+      case "notes": return html`<div class="tc-part">${partHead(card, block.heading)}${block.origin === "report" ? html`<p class="tc-note">${reportWords}</p>` : ""}<ul class="tc-notes">${joinHtml(block.items.map(one => html`<li>${one}</li>`))}</ul>${block.more > 0 ? html`<p class="tc-note">${moreWords(block.more)}</p>` : ""}</div>`;
       case "chart": return html`<div class="tc-part">${partHead(card, block.heading)}${webChart(block)}</div>`;
     }
   });

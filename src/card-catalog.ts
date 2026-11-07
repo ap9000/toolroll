@@ -12,7 +12,7 @@ import { z } from "zod";
 import { CHAT_CONTROLS } from "./chat-controls.js";
 import { CARD_CHART_TYPES, CARD_LIMITS } from "./contracts/chat-card.js";
 
-export const CARD_SOURCES = ["tasks", "results", "flows", "flow_zones", "spend", "projects", "workers", "mode", "integrations", "providers"] as const;
+export const CARD_SOURCES = ["tasks", "results", "flows", "flow_zones", "spend", "projects", "workers", "mode", "integrations", "providers", "findings", "handover"] as const;
 export type CardSourceName = (typeof CARD_SOURCES)[number];
 export const CARD_TASK_STATES = ["queued", "running", "done", "failed", "cancelled"] as const;
 
@@ -20,7 +20,7 @@ const source = z.enum(CARD_SOURCES);
 const repo = z.string().regex(/^r[0-9]{1,3}$/);
 const pick = z.array(z.string().max(40)).min(1).max(CARD_LIMITS.columns);
 /** What narrows a source: read by the sources, which check each against who is asking. */
-const narrowing = { repo: repo.optional(), state: z.enum(CARD_TASK_STATES).optional(), limit: z.int().min(1).max(CARD_LIMITS.rows).optional(), flow: z.int().min(1).optional(), days: z.int().min(1).max(90).optional() };
+const narrowing = { repo: repo.optional(), task: z.string().max(200).optional(), state: z.enum(CARD_TASK_STATES).optional(), limit: z.int().min(1).max(CARD_LIMITS.rows).optional(), flow: z.int().min(1).optional(), days: z.int().min(1).max(90).optional() };
 
 const schema = defineSchema(s => ({
   spec: s.object({
@@ -36,6 +36,7 @@ export const CARD_CATALOG = defineCatalog(schema, {
     Text: { props: z.strictObject({ text: z.string().min(1).max(CARD_LIMITS.text) }), description: "Your own words, shown as a plain paragraph. Never a place for figures you want read as records." },
     Fields: { props: z.strictObject({ source, facts: z.array(z.string().max(40)).min(1).max(CARD_LIMITS.facts).optional(), ...narrowing }), description: "Key facts from a source, filled by Toolroll. facts picks which." },
     Table: { props: z.strictObject({ source, columns: pick.optional(), ...narrowing }), description: "Rows from a source, filled by Toolroll. columns picks which." },
+    Notes: { props: z.strictObject({ source, ...narrowing }), description: "Saved words from a source, whole, one to a line: findings or handover (with task)." },
     Chart: { props: z.strictObject({ source, chart: z.enum(CARD_CHART_TYPES), ...narrowing }), description: "A chart of a source's numbers, filled by Toolroll: bar, pie, line or area." },
     Divider: { props: z.strictObject({}), description: "A line between parts." },
     Actions: { props: z.strictObject({}), description: "Holds the card's Buttons." },
@@ -104,7 +105,7 @@ export function readCardSpec(raw: unknown): { ok: true; plan: CardPlan } | { ok:
   if (seen.size !== parsed.size) refused.push("every element must be reached from the root");
   if (plan.parts.length > CARD_LIMITS.blocks) refused.push(`a card has at most ${CARD_LIMITS.blocks} parts`);
   if (plan.buttons.length > CARD_LIMITS.buttons + CARD_LIMITS.actions) refused.push("too many Buttons");
-  if (!plan.parts.some(one => one.type === "Fields" || one.type === "Table" || one.type === "Chart")) refused.push("a card shows data: give it Fields, a Table or a Chart. For words alone, just reply");
+  if (!plan.parts.some(one => one.type === "Fields" || one.type === "Table" || one.type === "Notes" || one.type === "Chart")) refused.push("a card shows data: give it Fields, a Table, Notes or a Chart. For words alone, just reply");
   return refused.length > 0 ? issues(refused) : { ok: true, plan };
 }
 

@@ -4,7 +4,7 @@
  * A problem here costs the brief these lines, never the build.
  */
 import { attachFindings, findingAnswerRule, findingsBriefLines } from "./findings.js";
-import { FAILING_FIRST_FILE, failingFirstOf } from "./evidence-pair.js";
+import { FAILING_FIRST_FILE, failingFirstOf } from "./failing-first.js";
 import { handoverBriefLines, handoverNoteOf } from "./handover-note.js";
 import { STEER_FINDINGS, STEER_HANDLED } from "./steer-mailbox.js";
 import type { Store } from "./store.js";

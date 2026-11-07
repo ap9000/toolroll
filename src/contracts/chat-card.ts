@@ -5,7 +5,7 @@
  */
 import { z } from "zod";
 
-export const CARD_LIMITS = { blocks: 8, columns: 6, rows: 20, points: 12, facts: 10, buttons: 4, actions: 4, cell: 80, label: 40, heading: 80, text: 600 } as const;
+export const CARD_LIMITS = { blocks: 8, columns: 6, rows: 20, points: 12, facts: 10, buttons: 4, actions: 4, cell: 80, label: 40, heading: 80, text: 600, note: 400, notes: 12 } as const;
 
 const label = z.string().min(1).max(CARD_LIMITS.label);
 const heading = z.string().min(1).max(CARD_LIMITS.heading);
@@ -26,6 +26,8 @@ const tableBlock = z.strictObject({
   /** Rows the records hold beyond the ones shown. */
   more: z.int().min(0),
 });
+/** Lines of saved words, whole: findings and a handover note. `report` as a table's: not Toolroll's figures. */
+const notesBlock = z.strictObject({ kind: z.literal("notes"), heading, origin: z.enum(["records", "report"]), items: z.array(z.string().min(1).max(CARD_LIMITS.note)).min(1).max(CARD_LIMITS.notes), more: z.int().min(0) });
 const chartBlock = z.strictObject({
   kind: z.literal("chart"), heading, chart: z.enum(CARD_CHART_TYPES),
   points: z.array(z.strictObject({ label, value: z.number().finite().min(0), shown: cell })).min(1).max(CARD_LIMITS.points),
@@ -38,7 +40,7 @@ export const chatCardSchema = z.strictObject({
   asOf: z.string().regex(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/),
   /** The projects the values came from: a card goes only where all of them are reachable. */
   repos: z.array(z.string()).max(200),
-  blocks: z.array(z.discriminatedUnion("kind", [textBlock, dividerBlock, factsBlock, tableBlock, chartBlock])).min(1).max(CARD_LIMITS.blocks),
+  blocks: z.array(z.discriminatedUnion("kind", [textBlock, dividerBlock, factsBlock, tableBlock, notesBlock, chartBlock])).min(1).max(CARD_LIMITS.blocks),
   /** Fixed destinations in Toolroll: a path made by chat-controls.ts, never a model's address. */
   buttons: z.array(z.strictObject({ label, path: z.string().max(400).regex(/^\/(?![/\\])/) })).max(CARD_LIMITS.buttons),
   /** Proposals this card leads to: each keeps its own Confirm message directly under the card. */
