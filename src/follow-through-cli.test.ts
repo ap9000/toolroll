@@ -74,6 +74,14 @@ describe("a project-limited person at the terminal", () => {
     expect((await run_("finding", "list", "--task", "t-a")).body["findings"]).toEqual([]);
   });
 
+  test("saving another task's run as this task's before side is refused, for anyone", async () => {
+    const { lim, run } = world();
+    for (const who of [["--as", "lim", "--token", lim], as()]) {
+      expect((await run_("task", "before-after", "t-a", "save", "--run", String(run), ...who)).body).toMatchObject({ ok: false, reason: "refused", message: "That result isn't on this task." });
+    }
+    expect((await run_("task", "before-after", "t-a")).body).toMatchObject({ ok: true, pairs: [] });
+  });
+
   test("every write needs access to the record's own project", async () => {
     const { lim } = world();
     const who = ["--as", "lim", "--token", lim];

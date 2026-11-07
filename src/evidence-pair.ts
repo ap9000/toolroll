@@ -12,7 +12,7 @@ import { z } from "zod";
 import { readVerificationView } from "./contracts/verification-view.js";
 import { followUpChecksOf, requestFollowUpChecks, type RunLevel } from "./result-follow-ups.js";
 import { readingFleet } from "./fleet-schema.js";
-import { cleanFindingText, familyRootOf } from "./findings.js";
+import { cleanFindingText, familyRootOf, NOT_ON_TASK, runOnTask } from "./findings.js";
 import { runCheckLevel } from "./check-levels.js";
 import { failedVerificationEvidence, verificationEvidence } from "./verification-evidence.js";
 import type { Run, Store } from "./store.js";
@@ -91,17 +91,18 @@ export function evidencePairsOf(store: Store, root: string, taskId: string, now:
   return readingFleet(() => store.handle.prepare("SELECT * FROM evidence_pair WHERE family_root = ? ORDER BY id DESC").all(familyRootOf(store, taskId)).map(row => pairOf(store, root, row, taskId, now)), []);
 }
 
-export type SavePair = { ok: true; id: number; existing: boolean } | { ok: false; reason: "unknown" | "no-failed-check"; message: string };
+export type SavePair = { ok: true; id: number; existing: boolean } | { ok: false; reason: "unknown" | "not-on-task" | "no-failed-check"; message: string };
 
 /** Save a run's failed check as the before side. Only a sealed failure can be saved: there's nothing else to compare. */
 export function saveEvidencePair(store: Store, root: string, input: { taskId: string; runId?: number; by: string }, now: Date): SavePair {
   const ref = store.lookupRef(input.taskId);
   if (ref === null) return { ok: false, reason: "unknown", message: `no task \`${input.taskId}\`` };
+  // A run named by a caller is checked first, and said plainly: every road (the CLI's --run, the console's form) comes here.
+  if (input.runId !== undefined && !runOnTask(store, input.runId, input.taskId)) return { ok: false, reason: "not-on-task", message: NOT_ON_TASK };
   const runId = input.runId ?? familyRuns(store, input.taskId)[0]?.id;
   const run = runId === undefined ? null : store.getRun(runId);
   const root1 = familyRootOf(store, input.taskId);
-  const owner = run === null ? null : store.externalIdFor(run.taskRef);
-  if (run === null || run.headRevision === null || owner === null || familyRootOf(store, owner) !== root1) return { ok: false, reason: "no-failed-check", message: `${input.taskId} has no finished attempt to save.` };
+  if (run === null || run.headRevision === null) return { ok: false, reason: "no-failed-check", message: `${input.taskId} has no finished attempt to save.` };
   const failure = failedVerificationEvidence(store, root, run.id);
   if (failure.kind !== "failed") return { ok: false, reason: "no-failed-check", message: `Attempt #${run.id} has no failed check to save.` };
   const view = readVerificationView(failure.receipt);
