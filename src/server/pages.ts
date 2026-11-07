@@ -75,7 +75,7 @@ import { type ProjectPeek } from "./render-pages.js";
 import { type ProjectOutcomes } from "../project-outcomes.js";
 import { CHECK_LEVEL_WORDS } from "../check-levels.js";
 import { capsPage } from "./render-settings.js";
-import { decisionAnswerScript,taskBody } from "./render-tasks.js";
+import { consentDoorOf,decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { rereadBrowser } from "./live.js";
 import { homeView } from "./home.js";
@@ -211,7 +211,12 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // One scope for the page and the chrome around it: the project its address names (proved by the router), else all.
     const chrome = chromeFor(project, "none");
     const projects = chrome.projects ?? [];
-    const view = { ...homeView({ store, now, access: workAccess(), evidenceRoot, project, projects, chat: chrome.chat === true, canAnswer: who.role === "approver" }),
+    const closedDoor = (taskId: string) => {
+      const scope = store.getScope(taskId);
+      const door = consentDoorOf(scope, runtime.routeViewOf(taskId, store.lookupRef(taskId), scope, now, who));
+      return door.open ? null : door;
+    };
+    const view = { ...homeView({ store, now, access: workAccess(), evidenceRoot, project, projects, chat: chrome.chat === true, canAnswer: who.role === "approver", closedDoor }),
       // Until the first result: the welcome's three steps stay one link away.
       setup: firstRunStepsNow(now) !== null ? "/welcome" : null };
     return sendScreen(response, 200, screen("Home", html`<div data-kit-page><h1>Home</h1><p>${view.say}</p><p><a href="/tasks">Tasks</a></p></div>`, { chrome, workspace: { view } }));
