@@ -210,6 +210,8 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
   /** Exact cases asked about for learning only (docs/plans/learning-loops.md): a separate handshake field, at most 200,
    * that never joins `watch`, the inventory or anything the check owes. */
   learn?: readonly string[];
+  /** The limit the check runs under when the plane gave it more than the approved one (check-load.ts checkLimitFor). */
+  limitMs?: number | undefined;
 }, now: Date): PreparedAttempt | null {
   if (checkAttemptOf(store, input.runId) !== null) return null;
   const gitDir = projectGitDir(input.repo);
@@ -248,7 +250,7 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
   // `reportBytes`: the largest report this plane reads back once sealed. A plane that doesn't say (0.9.77 and older) reads
   // only 64 KiB, so the check gives it no larger report rather than one that poisons the receipt (scripts/release-check.mjs).
   const learn = learnRequest(input.learn ?? []);
-  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])], limitMs: input.command.timeoutMs, reportBytes: CHECK_ARTIFACT_CAP, ...(plan === null ? { owed, ciSubstitute } : {}), ...(learn.length > 0 ? { learn } : {}) });
+  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])], limitMs: Number.isSafeInteger(input.limitMs) && input.limitMs! >= input.command.timeoutMs ? input.limitMs! : input.command.timeoutMs, reportBytes: CHECK_ARTIFACT_CAP, ...(plan === null ? { owed, ciSubstitute } : {}), ...(learn.length > 0 ? { learn } : {}) });
   return { runId: input.runId, nonce, stdin, mode, inventory, context, plan, snapshot, watch: [...(input.watch ?? [])], learn };
 }
 

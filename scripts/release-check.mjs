@@ -396,6 +396,20 @@ export const machineLoad = (platform = process.platform, read = loadavg) => plat
 /** Busy: the load is past 85% of the cores. Unmeasured is never busy. */
 export const machineBusy = (load, cores) => Number.isFinite(load) && load / cores > 0.85;
 
+/** Swamped: the load leaves the check a quarter of its normal budget or less (it would start on one or two lanes). */
+export const machineSwamped = (load, cores) => Number.isFinite(load) && checkBudget(cores, load).free * 4 <= checkBudget(cores, 0).free;
+
+/**
+ * How long the check may still wait for the load to drop before it starts, `waited` ms in: up to five minutes on a busy
+ * machine, up to ten on a swamped one (runs 3311 and 3315 started on one or two lanes and ran out of time), 0 to start.
+ * The plane reads its own load in the check's first eleven minutes (src/check-load.ts CUT_WINDOW_MS) to judge the budget
+ * it started with, so the wait never runs past that.
+ */
+export function quietWaitLeft(load, cores, waited) {
+  const most = machineSwamped(load, cores) ? 10 * 60_000 : machineBusy(load, cores) ? 5 * 60_000 : 0;
+  return Math.max(0, most - waited);
+}
+
 /** The load the check ran under, in one line: what it started at, its peak and mean, and the budget it chose. */
 export function loadWords(samples, cores, budget) {
   const measured = samples.filter(Number.isFinite);
@@ -588,14 +602,18 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       `${targeted.groups.reduce((n, one) => n + one.groups.length, 0)} journey groups, ${targeted.versions.length} upgrade versions${targeted.parts.length > 0 ? `; whole parts: ${targeted.parts.join(", ")}` : ""}.`);
   }
 
-  // A busy machine first gets up to five minutes to quieten (said, never silently): the check's own load comes on top.
-  // TOOLROLL_CHECK_CORES / TOOLROLL_CHECK_LOAD stand in for the machine (tests make the budget exact with them).
+  // A busy machine first gets up to five minutes to quieten, a swamped one ten (said, never silently): the check's own
+  // load comes on top. TOOLROLL_CHECK_CORES / TOOLROLL_CHECK_LOAD stand in for the machine (tests make the budget exact).
   const cores = Number(process.env.TOOLROLL_CHECK_CORES) > 0 ? Number(process.env.TOOLROLL_CHECK_CORES) : availableParallelism();
   const loadNow = () => process.env.TOOLROLL_CHECK_LOAD !== undefined && process.env.TOOLROLL_CHECK_LOAD !== "" ? Number(process.env.TOOLROLL_CHECK_LOAD) : machineLoad();
-  for (const waitStarted = Date.now(); machineBusy(loadNow(), cores) && Date.now() - waitStarted < 5 * 60_000;) {
-    console.log(`The machine is busy (load ${loadNow().toFixed(1)} on ${cores} cores); waiting for it to quieten before starting (up to 5 min).`);
-    await new Promise(resolve => setTimeout(resolve, 30_000));
+  const waitStarted = Date.now();
+  for (let load = loadNow(), left = quietWaitLeft(load, cores, 0); left > 0; load = loadNow(), left = quietWaitLeft(load, cores, Date.now() - waitStarted)) {
+    console.log(`The machine is ${machineSwamped(load, cores) ? "swamped" : "busy"} (load ${load.toFixed(1)} on ${cores} cores); waiting for it to quieten before starting (up to ${took(left)} more).`);
+    await new Promise(resolve => setTimeout(resolve, Math.min(30_000, left)));
   }
+  if (Date.now() - waitStarted >= 1_000) console.log(`Waited ${took(Date.now() - waitStarted)} for the load to drop before starting.`);
+  // The limit it runs under, as the plane gave it (more than the approved one when the plane measured a cut budget).
+  if (releaseRun) console.log(`time limit: ${took(handshake.limitMs ?? RELEASE_LIMIT_MS)} from the plane; the check stops itself ${took(checkDeadline(0, handshake.limitMs))} after it started.`);
   const explicitUpgrade = Number(process.env.TOOLROLL_UPGRADE_WORKERS);
   const budget = checkBudget(cores, loadNow(), Number.isInteger(explicitUpgrade) && explicitUpgrade > 0 ? explicitUpgrade : Number.POSITIVE_INFINITY);
   const samples = [loadNow()];
@@ -705,7 +723,8 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   if (held) console.log(`browser journeys not run: ${parts.stopped() !== null ? `the check stopped first (${parts.stopped()})` : "the typecheck or build failed"}`);
   if (upgradeHeld) console.log("upgrade path not run: the build failed");
   if (results.length === 0 && first.every(one => one.code === 0)) console.log("typecheck and build passed; nothing else to run");
-  // The load it ran under, so a failure on a busy machine can be judged — never used to excuse one.
+  // The load it ran under, so a failure on a busy machine can be judged — never used to excuse one (only the plane's own
+  // load record can: src/check-load.ts).
   clearInterval(sampler);
   if (limiter !== null) clearTimeout(limiter);
   console.log(loadWords(samples, cores, budget));

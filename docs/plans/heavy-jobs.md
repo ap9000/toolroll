@@ -1,6 +1,6 @@
 # Heavy jobs off the busy machine — plan
 
-Status: **v2** (2026-10-21). v1 NO-GO (4 High, 2 Medium). v2 builds only layer 1, rewritten so it can never hide a
+Status: **v2** (2026-10-21); layer 1b added 2026-11-06. v1 NO-GO (4 High, 2 Medium). v2 builds only layer 1, rewritten so it can never hide a
 failure; layers 2 and 3 are deferred to designs of their own (what Codex required of each is kept below).
 
 ## What and why
@@ -28,6 +28,32 @@ times locally on a quieter machine.
   a reset doesn't prove load. The keep-alive change is dropped too until the reuse failure is reproduced (Node's
   keep-alive governs idle time after a response; Tailscale Serve's backend idle timeout is 90 s).
 - Load is advisory everywhere: unmeasured on Windows (it reports 0), budgeted from the cores alone there.
+
+## Layer 1b (built, 2026-11-06): a busy machine gets time, and its timeout is the machine's fault
+
+Runs 3311 (load 18.9 of 24: a budget of 2, one unit worker) and 3315 (load 15.6: a budget of 3) ran out of the approved
+hour on the owner's machine and read as unexplained failures a person had to re-approve. The check's own load line
+(above) still excuses nothing: it is the candidate's output. What the plane measures itself does (`src/check-load.ts`).
+
+- **The limit scales with the budget left.** For every prepared Full check the plane reads the load as it starts the
+  command. When that cuts the check's budget (the plane's copy of `checkBudget`'s arithmetic, held equal by a test) to
+  half its normal size or less, the command's limit is the approved one times normal/granted, at most twice the approved
+  limit and never past two hours (an approved limit already there is never extended). The handshake's `limitMs` says it,
+  so the check still ends itself before it; a run note says why. The approved grant itself is unchanged: the receipt
+  names it exactly.
+- **The plane's load record** (`check-load.json`, capture "release check load v1") is sealed beside the receipt: the
+  load at the start and every 15 s, the limit given and why, and how long the last attempt ran by the plane's clock.
+- **A timeout under a cut budget is infrastructure** (`check-failure.ts`): the least load in the record's first eleven
+  minutes (the check's own load later never counts; a check that found a quiet moment is never excused) cut the budget to
+  half or less, and the check ran into its own limit by the plane's clock (or the plane stopped it at its limit). The
+  report can only withhold this — any failing test, typecheck, upgrade, journey, signal or unowned unit error wins, and
+  no report is unknown. Then the release's existing same-commit rerun handles it: at most once per incident and twice per
+  candidate, under the same approval, and only a pass of the rerun itself stands.
+- **A real hang stays a failure.** A timeout with a normal budget (or with no record: every older run) is unexplained, as
+  before — on the first attempt or on a rerun the machine left room for; a later pass doesn't erase it.
+- **A swamped machine waits longer.** The check waits up to ten minutes (five when merely busy) when the load would leave
+  it a quarter of its budget or less, says how long it waited, and prints the limit the plane gave it.
+- The release's wait for the check step is six hours (three attempts of up to two hours each).
 
 ## Deferred: layer 2, heavy checks never stack (its own design)
 

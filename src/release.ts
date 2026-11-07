@@ -114,8 +114,10 @@ export const RELEASE_TAG_WORKFLOW = ".github/workflows/publish.yml";
 export const RELEASE_STEPS = ["gate", "approval", "check", "complete", "quiet", "deploy", "link", "ci", "merge", "tree", "tag", "publish", "homebrew", "done"] as const;
 export type ReleaseStep = typeof RELEASE_STEPS[number];
 type WaitingStep = "gate" | "approval" | "check" | "quiet" | "deploy" | "ci" | "publish" | "homebrew";
-/** How long each waiting step may take, in minutes, before the release stops there (rerunning continues from it). */
-export const RELEASE_LIMITS: Readonly<Record<WaitingStep, number>> = { gate: 60, approval: 24 * 60, check: 120, quiet: 60, deploy: 30, ci: 60, publish: 45, homebrew: 45 };
+/** How long each waiting step may take, in minutes, before the release stops there (rerunning continues from it). The
+ * check's covers the first attempt and the two same-commit reruns the plane may give it, each of which a busy machine
+ * may stretch to two hours (check-load.ts). */
+export const RELEASE_LIMITS: Readonly<Record<WaitingStep, number>> = { gate: 60, approval: 24 * 60, check: 360, quiet: 60, deploy: 30, ci: 60, publish: 45, homebrew: 45 };
 const POLL_MS = 15_000;
 
 /** One check attempt; `app` is the GitHub App that made it (github-actions for a workflow), when known; `id` its check
