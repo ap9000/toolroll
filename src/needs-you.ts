@@ -10,7 +10,7 @@
 export type NeedKey =
   | "approval" | "card" | "answer" | "questions" | "sign-in" | "stop-unproven" | "hold"
   | "choose-project" | "define-task" | "fix-request" | "choose-agent" | "fix-dependency" | "add-requirement"
-  | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "replan" | "earlier-version" | "history" | "other";
+  | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "replan" | "earlier-version" | "history" | "finding" | "other";
 /** What the work waits for when no person can act. */
 export type WaitKey = "build-stopping" | "build-finishing" | "build-checking" | "other-computer" | "card-reply" | "card-time" | "card-ci"
   | "plan-next" | "research-next" | "builders-busy" | "retry-later" | "app-update" | "other-task";
@@ -19,7 +19,7 @@ export type WaitKey = "build-stopping" | "build-finishing" | "build-checking" | 
 export type NeedActionCode =
   | "approve-scope" | "approve-card" | "answer-decision" | "inspect-decisions" | "sign-in" | "recheck-stopped" | "inspect-hold"
   | "place-task" | "write-scope" | "select-agent" | "repair-dependency" | "repair-capability" | "start-worker" | "reconcile-run"
-  | "open-result" | "retry-task" | "inspect-task";
+  | "open-result" | "retry-task" | "inspect-task" | "inspect-findings";
 export type NeedAction = { code: NeedActionCode; label: string };
 /** Where "Connect a builder" and "Start the builder" lead (code `start-worker`): the Start a builder page, which shows
  * the one command to run and the open project's builder state. Every signed-in person can open it, a project-limited
@@ -80,6 +80,8 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
     action: { code: "inspect-task", label: "Open earlier version" } },
   // An actionable need, never a quiet Waiting: a person opens it to retry or archive it.
   history: { sentence: () => "Toolroll can't read this task's history. Open it to retry or archive it.", action: { code: "inspect-task", label: "Open the task" } },
+  // A finding the reviewer and the agent couldn't settle (findings.ts): only a person closes it.
+  finding: { sentence: () => "A finding has used its rounds. Read both sides and decide.", action: { code: "inspect-findings", label: "Open finding" } },
   other: { sentence: () => "Open the task to see what it needs from you.", action: { code: "inspect-task", label: "Open the task" }, useReason: always },
 };
 
@@ -125,7 +127,7 @@ export function resultHoldUpSentence(facts: Partial<ResultHoldUp>): string {
 }
 
 export const NEED_ASK: Readonly<Record<NeedKey, Ask>> = {
-  approval: "decide", card: "decide", answer: "decide", questions: "decide", "choose-project": "decide", "define-task": "decide",
+  finding: "decide", approval: "decide", card: "decide", answer: "decide", questions: "decide", "choose-project": "decide", "define-task": "decide",
   "fix-request": "decide", "choose-agent": "decide",
   "review-result": "review", rebuild: "review", replan: "decide",
   "sign-in": "unblock", "stop-unproven": "unblock", hold: "unblock", "fix-dependency": "unblock",
@@ -214,6 +216,7 @@ export const CODE_READING: Readonly<Record<string, CodeReading>> = {
   "history-problem": { stage: "needs-you", need: "history", act: "inspect-task" },
   "earlier-active": { stage: "needs-you", need: "earlier-version", act: "inspect-task" },
   "waiting-decision": { stage: "needs-you", need: "answer", act: "answer-decision" },
+  "finding-held": { stage: "needs-you", need: "finding", act: "inspect-findings" },
   "decision-queue": { stage: "needs-you", need: "questions", act: "inspect-decisions" },
   // A saved result that can't simply be accepted yet: its own reason (resultHoldUpSentence) is the sentence.
   "result-needs-attention": { stage: "needs-you", need: "other", act: "inspect-run" },

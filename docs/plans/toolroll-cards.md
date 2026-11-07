@@ -26,6 +26,13 @@ What keeps it safe:
 
 Approving from chat is now on unless the person turned it off: their explicit off (and their own limits, if they set any) still holds. Still not chat acts: typing or showing secrets, passwords, keys and tokens, and changing who can approve (people's roles, approval policy, raising automatic approvals).
 
+### The owner's decisions on what stays as it is (2026-11-07)
+
+- No recent sign-in is required to approve from chat.
+- No default limits: with no saved setting, a person's chat approves up to what they may approve anywhere.
+- Long terms link to the review page in the signed-in console, with no password.
+- Automatic repair stays opt-in, through a signed mode only.
+
 ## Every console act
 
 From the route table's 273 console POST rows. **Chat**: already in chat. **Add**: added in this arc. **Secure**: stays on the secure screen, chat offers a card or link. **Browser**: belongs to one browser session, so it has no meaning in chat (kept on the screen).

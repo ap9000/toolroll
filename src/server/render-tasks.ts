@@ -1178,6 +1178,7 @@ export function statusActionHref(status: DisplayStatus, taskId: string, runId: n
     case "open-review": return repo === undefined ? reviewHref(taskId) : reviewHref(taskId, runId);
     case "open-run": return runId === null ? taskHref(taskId) : `/r/${runId}`;
     case "open-pr": return safePrUrl(prUrl) ?? (repo === undefined ? reviewHref(taskId) : reviewHref(taskId, runId));
+    case "open-findings": return `${taskHref(taskId)}#findings`;
     case "open-task":
     default: return taskHref(taskId);
   }

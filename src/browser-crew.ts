@@ -10,6 +10,7 @@ export function browserWorkActionHref(item: WorkIndexItem): string | null {
   const action = item.primaryAction;
   if (action === null) return null;
   const { taskId, runId, decisionId } = action.target;
+  if (action.code === 'inspect-findings') return `/t/${encodeURIComponent(taskId)}#findings`;
   if (decisionId !== null) return `/d/${decisionId}`;
   if (action.code === 'inspect-decisions') return '/';
   if (action.code === 'sign-in') return '/settings/agents#providers';

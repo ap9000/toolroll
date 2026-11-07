@@ -1,3 +1,4 @@
+import { heldFindingCount } from "../findings.js";
 import { existsSync } from "node:fs";
 import { resultRecordWordsOf } from "../route-results.js";
 import { selectionEvidenceWords } from "../route-rules.js";
@@ -185,6 +186,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const live = runs.find(one => runIsLive(one)) ?? null;
     const facts: WorkFacts = {
       id: task.id,
+      heldFindings: heldFindingCount(runtime.store, task.id),
       title: task.title,
       repo: task.repo,
       state: task.state,

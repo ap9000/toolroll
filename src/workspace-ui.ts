@@ -148,7 +148,7 @@ export type NextAction = {
   label: string;
   /** Where the act lives — the page, not a URL, so every surface can
    * build its own link (a task page anchors, a row links out). */
-  kind: "open-result" | "open-review" | "open-task" | "open-run" | "open-pr";
+  kind: "open-result" | "open-review" | "open-task" | "open-findings" | "open-run" | "open-pr";
 };
 
 export type DisplayStatus = {
@@ -403,6 +403,8 @@ export type WorkFacts = {
   /** An unanswered question on this exact task, read from the decision
    * owner. An elapsed attention deadline does not close a question. */
   openDecision?: { id: number; runId: number; question: string; overdue: boolean } | null;
+  /** Findings of this task's family that used their rounds and wait on a person (findings.ts). */
+  heldFindings?: number;
 };
 
 export type WorkStatus = DisplayStatus & {
@@ -622,13 +624,18 @@ function workStatusWordsOf(facts: WorkFacts, resultDisplay?: DisplayStatus): Wor
   const result = facts.state === "done" ? resultDisplay ?? resultStatusOf(facts.result, facts.publication) : null;
   const running = facts.liveRunId !== null || (dispatch?.condition === "running" && !REVIEW_TOKENS.has(dispatch.code));
   const question = (facts.state === "queued" || facts.state === "running" || facts.state === "done") ? facts.openDecision ?? null : null;
-  const needs = (dispatch !== null && !REVIEW_TOKENS.has(dispatch.code) && needsPerson(dispatch)) || question !== null;
+  const held = (facts.heldFindings ?? 0) > 0 && facts.state !== "cancelled";
+  const needs = (dispatch !== null && !REVIEW_TOKENS.has(dispatch.code) && needsPerson(dispatch)) || question !== null || held;
   const views: WorkView[] = ["all"];
   if (needs) views.push("needs-you");
   if (running) views.push("running");
   if (!needs && !running && facts.state === "queued") views.push("queued");
   if (facts.state === "done") views.push("completed");
 
+  const findingWords = (behind: Pick<DisplayStatus, "token" | "label" | "detail" | "tone"> | null): WorkStatus => ({
+    token: "finding-held", label: "Needs you", detail: NEEDS.finding.sentence({}), tone: "attention", action: { label: NEEDS.finding.action.label, kind: "open-findings" }, views, rank: 0,
+    ...(behind === null ? {} : { diagnostics: [behind] }),
+  });
   const dispatchWords = (tone: StatusTone, rank: number, action: NextAction | null): WorkStatus => ({
     token: dispatch?.code ?? "unknown",
     label: dispatch?.summary ?? "Status unknown",
@@ -656,6 +663,7 @@ function workStatusWordsOf(facts: WorkFacts, resultDisplay?: DisplayStatus): Wor
         tone: "attention", action: { label: "Answer question", kind: "open-task" }, views, rank: 0,
         diagnostics: [{ token: result.token, label: result.label, detail: result.detail, tone: result.tone }] };
     }
+    if (held && result.tone !== "problem") return findingWords({ token: result.token, label: result.label, detail: result.detail, tone: result.tone });
     return { ...result, views, rank: needs ? 0 : 3 };
   }
   if (facts.state === "cancelled") {
@@ -670,6 +678,7 @@ function workStatusWordsOf(facts: WorkFacts, resultDisplay?: DisplayStatus): Wor
       }),
     };
   }
+  if (held && facts.state !== "failed") return findingWords(dispatch === null ? null : { token: dispatch.code, label: dispatch.summary, detail: dispatch.detail, tone: running ? "live" : "attention" });
   if (running) {
     return dispatchWords("live", 1, { label: "Watch the build", kind: facts.liveRunId === null ? "open-task" : "open-run" });
   }

@@ -98,6 +98,9 @@ export function findingsOfTask(store: Store, taskId: string): Finding[] {
   }, []);
 }
 
+/** How many of this task's family's findings used their rounds and wait on a person; none on a database not yet migrated. */
+export const heldFindingCount = (store: Store, taskId: string): number => findingsOfTask(store, taskId).filter(one => one.state === "with-person").length;
+
 /** The findings still waiting on someone, across a project or everywhere. */
 export function waitingFindings(store: Store, repos: readonly string[] | null): Finding[] {
   return readingFleet(() => store.handle.prepare("SELECT * FROM finding WHERE state IN ('open', 'with-person') ORDER BY id DESC LIMIT 500").all()

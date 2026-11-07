@@ -96,9 +96,11 @@ type StopFact = NonNullable<ReturnType<Store['stopQuiescenceFact']>>;
 const INDEX_NEED: Readonly<Record<string, NeedKey>> = Object.fromEntries(['earlier-active', 'process-needs-attention', 'invalid-scope', 'decision-queue', 'history-problem']
   .map(code => [code, CODE_READING[code]!.need!] as const));
 /** Every index code that can wait on a person. A wait (stopping, waiting its turn, a retry later) is never one. */
-const PERSON_CODES = ['history-problem', 'earlier-active', 'ready-to-check', 'waiting-decision', 'decision-queue', 'result-needs-attention',
+const PERSON_CODES = ['finding-held', 'history-problem', 'earlier-active', 'ready-to-check', 'waiting-decision', 'decision-queue', 'result-needs-attention',
   'process-needs-attention', 'failed', 'vanished-run', 'stopped', 'held', 'waiting-incident', 'terminal-dependency', 'needs-project',
   'needs-scope', 'invalid-scope', 'needs-agent-profile', 'needs-approval', 'missing-requirement', 'no-worker-registered', 'no-worker-online', 'signed-out'];
+/** A family's findings held for a person (findings.ts). A database not yet at v155 has no such table: see registerValidators. */
+const HELD_FINDINGS = `(SELECT COUNT(*) FROM finding fd WHERE fd.family_root=root.id AND fd.state='with-person')`;
 /** The index codes that wait on nobody: finished or running work, and every wait (needs-you.ts CODE_READING). */
 export const WAITING_CODES: readonly string[] = ['cancelled', 'complete', 'running', 'queued',
   ...['stopping', 'updating', 'retry-scheduled', 'waiting-dependency', 'worker-at-capacity', 'planning-ready', 'scouting-ready'].filter(code => isWaitCode(code))];
@@ -228,6 +230,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     (SELECT run FROM run_stop WHERE task_ref=c.ref_id AND resumed_at IS NULL ORDER BY requested_at DESC LIMIT 1) stop_run,
     (SELECT settled_at FROM run_stop WHERE task_ref=c.ref_id AND resumed_at IS NULL ORDER BY requested_at DESC LIMIT 1) stop_settled,
     COALESCE((SELECT substr(actor,13) FROM action_ledger WHERE task_id=root.id AND action='assignment claimed' AND source='work' ORDER BY id DESC LIMIT 1),root.coordinator_cid) owner_id,
+    ${HELD_FINDINGS} held_findings,
     pub.pr_url publication_url
   FROM ordered c JOIN families f USING(root_ref) JOIN admitted root ON root.ref_id=c.root_ref
   LEFT JOIN run result INDEXED BY work_result ON result.task_ref=c.ref_id AND result.id=c.result_id
@@ -265,6 +268,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     WHEN state='cancelled' THEN 'cancelled'
     WHEN earlier_active>0 AND state='done' THEN 'earlier-active'
     WHEN stop_run IS NOT NULL THEN CASE WHEN stop_settled IS NULL THEN 'stopping' ELSE 'stopped' END
+    WHEN held_findings>0 AND state<>'failed' THEN 'finding-held'
     WHEN ready THEN CASE WHEN checked_id IS NULL THEN 'ready-to-check' ELSE 'complete' END
     WHEN state='done' AND question_id IS NOT NULL AND hold_id IS NULL THEN 'waiting-decision'
     WHEN state='done' THEN 'result-needs-attention'
@@ -348,8 +352,11 @@ function registerValidators(store: Store): string {
   const asks = db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type='table' AND name='agent_question'").get() !== undefined;
   const projection = asks ? indexed : indexed.replace(AGENT_ASK, 'NULL')
     .replace(`'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),`, '');
-  registered.set(db, projection);
-  return projection;
+  // Nor, before v155, any held findings: readingFleet's rule for a list read.
+  const findings = db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type='table' AND name='finding'").get() !== undefined;
+  const read = findings ? projection : projection.replace(HELD_FINDINGS, '0');
+  registered.set(db, read);
+  return read;
 }
 
 /** The list can't see processes: each task whose build Toolroll can't yet
@@ -701,7 +708,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   if (process !== null && 'need' in process) { actionCode = 'recheck-stopped'; actionLabel = NEEDS[process.need].action.label; }
   if (code === 'signed-out') { actionCode = 'sign-in'; actionLabel = NEEDS['sign-in'].action.label; }
   if (actionCode === null) { actionCode = code === 'running' ? 'inspect-run' : 'inspect-task'; actionLabel = code === 'running' ? 'Watch the build' : 'View task details'; }
-  const read = actionCode !== null && ['inspect-task', 'inspect-run', 'inspect-stop', 'inspect-decisions', 'open-result'].includes(actionCode);
+  const read = actionCode !== null && ['inspect-task', 'inspect-findings', 'inspect-run', 'inspect-stop', 'inspect-decisions', 'open-result'].includes(actionCode);
   const primaryAction: WorkAction | null = actionCode === null ? null : { code: actionCode, label: actionLabel,
     target: { taskId: successor ?? (code === 'earlier-active' ? s(row, 'earlier_id') ?? id : actionCode === 'answer-decision' ? s(row, 'question_task') ?? id : id),
       runId: actionCode === 'answer-decision' ? n(row, 'question_run') || null : actionCode === 'answer-agent' ? n(row, 'agent_ask_run') || null : actionCode === 'inspect-run' && code === 'running' ? n(row, 'live_run') || null : actionCode === 'open-result' || actionCode === 'inspect-run' ? n(row, 'result_id') || null
