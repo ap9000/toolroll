@@ -336,9 +336,10 @@ describe("the CI workflows", () => {
     for (const file of ["ci.yml", "release-candidate.yml"]) {
       const one = workflow(file);
       for (const [shard, join, platform] of [["test-shard", "test", "linux"], ["macos-shard", "macos", "darwin"]] as const) {
-        const suite = (one.jobs[shard]?.steps ?? []).find(step => (step.run ?? "").startsWith("npm run test:all"));
+        const suite = (one.jobs[shard]?.steps ?? []).find(step => (step.run ?? "").includes("npm run test:all"));
         // macOS runs its lane (the nightly every file), and its join judges that lane.
-        expect(suite?.env, `${file} ${shard}`).toEqual({ CI: "true", TOOLROLL_REQUIRE_NATIVE: platform, ...(platform === "darwin" ? { TOOLROLL_TEST_LANE: "${{ inputs.macos_lane || 'macos' }}" } : {}) });
+        expect(suite?.run, `${file} ${shard}`).toContain(`--env CI=true --env TOOLROLL_REQUIRE_NATIVE=${platform}${platform === "darwin" ? ' --env TOOLROLL_TEST_LANE="$LANE"' : ""} --report`);
+        expect(suite?.env, `${file} ${shard}`).toEqual(platform === "darwin" ? { LANE: "${{ inputs.macos_lane || 'macos' }}" } : undefined);
         expect(runsOf(one.jobs[join]!).at(-1)?.trimEnd(), `${file} ${join}`).toMatch(new RegExp(`--shards ${SHARDS[platform]} --native ${platform}${platform === "darwin" ? ` --lane "\\$LANE" --linux-reports "\\$RUNNER_TEMP/linux-shards" --linux-shards ${SHARDS.linux}` : ""}$`));
       }
       expect(one.jobs["macos-shard"]?.["runs-on"]).toBe("macos-latest");
@@ -383,14 +384,16 @@ describe("the CI workflows", () => {
     const job = lanes["git-floor"]!;
     expect(job.container).toEqual({ image: "node:22-trixie", options: "--init" });
     const runs = runsOf(job);
-    expect(runs).toContain(`scripts/ci-git.sh ${GIT_FLOOR_WORDS}`);
-    expect(runs.filter(run => /\bnpm (ci|run)\b|\bnode scripts\//.test(run)).every(run => run.startsWith("runuser -u node -- "))).toBe(true);
+    expect(runs).toContain(`.trusted-base/scripts/ci-git.sh ${GIT_FLOOR_WORDS}`);
+    expect(runs.filter(run => /\bnpm (ci|run)\b|\bnpx\b/.test(run)).every(run => run.startsWith('"$RUNNER_TEMP/candidate" run '))).toBe(true);
     expect(runs.some(run => run.includes("npm run test:git"))).toBe(true);
-    expect(runs).toContain("runuser -u node -- node scripts/ci-no-skips.mjs git-lane.json");
+    // Judged on the trusted side, by the base revision's script.
+    expect(runs).toContain('node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/git-lane.json"');
+    expect(runs.find(run => run.includes(" prepare "))).toContain("--user node");
     // The floor's git has no --no-lazy-fetch: its lane proves, by name, that a partial clone is refused there.
     const floor = (job.steps ?? []).find(step => (step.run ?? "").includes("checkout-git-partial-clone.test.ts"));
     expect(floor?.if).toBeUndefined();
-    expect(floor?.run).toMatch(/^runuser -u node -- /);
+    expect(floor?.run).toMatch(/^"\$RUNNER_TEMP\/candidate" run /);
   });
 
   test("pipeline-speed A: each required unit check joins every shard of its suite and fails unless all of them passed on the tested commit", () => {
@@ -415,10 +418,11 @@ describe("the CI workflows", () => {
         }
         // Each shard runs the whole suite's command on its slice and uploads Vitest's own report, written outside the
         // checkout: no candidate script summarizes it (Codex review round 1, finding 1).
-        expect(runsOf(shard)).toContain(`npm run test:all -- --shard=\${{ matrix.shard }}/${count} --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"`);
-        expect(runsOf(shard)).toEqual(expect.arrayContaining(["npm ci", "npm run typecheck", "npm run build"]));
+        const suiteRun = runsOf(shard).find(run => run.includes("npm run test:all"));
+        expect(suiteRun).toContain(`--report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=\${{ matrix.shard }}/${count}`);
+        expect(runsOf(shard)).toEqual(expect.arrayContaining(['"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts', '"$RUNNER_TEMP/candidate" run -- npm run typecheck', '"$RUNNER_TEMP/candidate" run -- npm run build']));
         expect(runsOf(shard).filter(run => run.includes("ci-shards"))).toEqual([]);
-        expect(shard.steps?.find(step => step.uses?.startsWith("actions/upload-artifact@"))?.with).toMatchObject({ name: `${artifact}-${nodeRef}-\${{ matrix.shard }}`, path: "${{ runner.temp }}/shard-report.json", "if-no-files-found": "error" });
+        expect(shard.steps?.find(step => step.uses?.startsWith("actions/upload-artifact@"))?.with).toMatchObject({ name: `${artifact}-${nodeRef}-\${{ matrix.shard }}-a\${{ github.run_attempt }}`, path: "${{ runner.temp }}/shard-report.json", "if-no-files-found": "error" });
         expect(shard.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with?.["fetch-depth"]).toBe(0);
         // The join: the shards' own result first, then their reports against the include policy, by the trusted base
         // revision's verifier. It installs and runs nothing of the candidate's.
@@ -435,8 +439,8 @@ describe("the CI workflows", () => {
         expect(verify).toContain(`node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${nodeRef} --shards ${count} --native`);
       }
       // macOS runs the same suite command as Linux, on its own shard count (its lane picks the files).
-      const suite = (job: Job) => runsOf(job).find(run => run.startsWith("npm run test:all"));
-      expect(suite(one.jobs["macos-shard"]!)).toBe(suite(one.jobs["test-shard"]!)!.replace(`/${SHARDS.linux} `, `/${SHARDS.darwin} `));
+      const suite = (job: Job) => runsOf(job).find(run => run.includes("npm run test:all"))!.replace(/^.* -- npm run test:all/, "npm run test:all");
+      expect(suite(one.jobs["macos-shard"]!)).toBe(suite(one.jobs["test-shard"]!).replace(`/${SHARDS.linux}`, `/${SHARDS.darwin}`));
     }
   });
 });
@@ -508,6 +512,50 @@ describe("H1: the root lanes run in a workflow run of their own", () => {
   ])("a lane %s", (_, jobs, state) => { expect(laneVerdict(jobs, "L").state).toBe(state); });
 });
 
+describe("H1: every phase that loads a candidate's code runs as its own user", () => {
+  const HARDENED = [["ci.yml", "test-shard"], ["ci.yml", "macos-shard"], ["ci.yml", "git-floor"], ["ci.yml", "git-247"], ["release-candidate.yml", "test-shard"], ["release-candidate.yml", "macos-shard"]] as const;
+  const LOADS_CANDIDATE = /\bnpm (ci|run|test|install)\b|\bnpx\b|\bvitest\b|\btsc\b|\bnode scripts\/|^scripts\//;
+  test.each(HARDENED)("%s %s: nothing of the candidate's runs outside the harness, the canary runs inside the job, and no token is left to find", (file, id) => {
+    const job = workflow(file).jobs[id]!;
+    const runs = runsOf(job);
+    expect(runs.filter(run => LOADS_CANDIDATE.test(run) && !run.startsWith('"$RUNNER_TEMP/candidate" run ')), id).toEqual([]);
+    expect(runs.filter(run => /\bchown\b/.test(run)), id).toEqual([]);
+    for (const step of job.steps ?? []) if (step.uses?.startsWith("actions/checkout@")) expect(step.with?.["persist-credentials"], id).toBe(false);
+    // The harness is the base revision's; a base without one bootstraps on the change's own, and says so.
+    const prepare = runs.find(run => run.includes(" prepare "))!;
+    expect(prepare).toContain("harness=.trusted-base/scripts");
+    expect(prepare).toContain("::warning::the base revision has no candidate harness yet");
+    expect(job.steps?.findIndex(step => step.with?.["path"] === ".trusted-base")).toBeLessThan(runs.indexOf(prepare));
+    // Install scripts off; the canary after the install it needs and before anything else loads the candidate's code.
+    const install = runs.findIndex(run => run.includes("npm ci"));
+    expect(runs[install]).toContain("--ignore-scripts");
+    expect(runs.indexOf('"$RUNNER_TEMP/candidate" canary')).toBe(install + 1);
+    // sudo only for the machine's own setup and to start the harness; never around a candidate's command.
+    expect(runs.filter(run => /\bsudo\b/.test(run) && !/apt-get|sysctl|ci-candidate\.mjs" prepare/.test(run)), id).toEqual([]);
+  });
+  test("reports are attempt-named, and nothing overwrites one", () => {
+    for (const file of ["ci.yml", "release-candidate.yml"]) {
+      for (const [id, job] of Object.entries(workflow(file).jobs)) {
+        for (const step of job.steps ?? []) {
+          if (!step.uses?.startsWith("actions/upload-artifact@")) continue;
+          expect(step.with?.["overwrite"], `${file} ${id}`).toBeUndefined();
+          expect(String(step.with?.["name"]), `${file} ${id}`).toContain("${{ github.run_attempt }}");
+        }
+      }
+    }
+  });
+  test("every join lays the newest attempts out by the base revision's harness before its verifier reads them", () => {
+    for (const file of ["ci.yml", "release-candidate.yml"]) {
+      for (const id of ["test", "macos"]) {
+        const runs = runsOf(workflow(file).jobs[id]!);
+        const lay = runs.findIndex(run => run.includes('" join --from '));
+        expect(runs[lay], `${file} ${id}`).toContain("harness=.trusted-base/scripts/ci-candidate.mjs");
+        expect(lay, `${file} ${id}`).toBeLessThan(runs.findIndex(run => run.includes("verifier=.trusted-base/scripts/ci-shards.mjs")));
+      }
+    }
+  });
+});
+
 describe("ci-speed: superseded runs, the macOS lane and the scripted journeys", () => {
   type Concurrency = { group?: string; "cancel-in-progress"?: unknown };
   const concurrencyOf = (file: string) => (parse(readFileSync(join(folder, file), "utf8")) as { concurrency?: Concurrency }).concurrency;
@@ -545,7 +593,7 @@ describe("ci-speed: superseded runs, the macOS lane and the scripted journeys", 
       // The lane's file list is the trusted base's verifier's; a base without one bootstraps on the candidate's, and says so.
       expect(verify?.run).toContain(`if ! grep -q "export function linuxSkipsProblem" "$verifier"; then echo "::warning::`);
       // The Linux shards' own reports, downloaded apart from the macOS ones.
-      expect(join.steps?.filter(step => step.uses?.startsWith("actions/download-artifact@")).map(step => step.with?.["path"])).toEqual(["${{ runner.temp }}/macos-downloads", "${{ runner.temp }}/linux-shards"]);
+      expect(join.steps?.filter(step => step.uses?.startsWith("actions/download-artifact@")).map(step => step.with?.["path"])).toEqual(["${{ runner.temp }}/macos-downloads", "${{ runner.temp }}/linux-downloads"]);
     }
     expect(workflow("ci.yml").on["workflow_call"]).toEqual({ inputs: { macos_lane: { type: "string", default: "macos" } } });
     const nightly = workflow("nightly.yml");
