@@ -1,6 +1,6 @@
 // The rubric's vocabulary loads before anything that reaches the plan contract (see contracts/acceptance-terms.ts).
 export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
-import { shownTermsDigest } from "./chat-terms.js";
+import { cardShowsScope, cardTermsDigest } from "./chat-terms.js";
 import { mintSecret } from "./secret-mint.js";
 import { passwordlessOn } from "./passwordless.js";
 import { routeChangeProblem } from "./route-change-check.js";
@@ -1529,8 +1529,9 @@ export function approve(
   fastStart?: { rule: string; at: string },
   /** A person's own yes in chat (owner's decision, docs/plans/toolroll-cards.md): their tap or signed-in click stands in
    * for a password, so `token` is unused. Every rule below still applies. The caller has proved the person is the one
-   * tapping; `shown` says the card showed these exact terms, and binds the seal to them. */
-  chat?: { modeDigest: string; shown: boolean },
+   * tapping. `shown` is what a card that showed its terms whole showed: those words, and the digest kept when it was
+   * made. Null when the card showed less: the seal then opens none of the walls a person's reading opens. */
+  chat?: { modeDigest: string; shown: { expect: string; terms: string } | null },
 ): ApproveResult {
   // Read and write in one transaction, re-reading inside it — the credential
   // check included, so a token rotated between authentication and the write
@@ -1567,6 +1568,9 @@ export function approve(
     // rewrites it, and an approval that did not name what it saw would agree to
     // the new one in silence — which is the whole failure this guards.
     if (sawDigest !== scope.digest) return { ok: false as const, reason: "changed" as const };
+    // What the card showed when it was made is what this yes is to: other words, or words leaving out a widening, aren't.
+    const shown = chat?.shown ?? null;
+    if (shown !== null && (cardTermsDigest(shown.terms) !== shown.expect || !cardShowsScope(scope, shown.terms))) return { ok: false as const, reason: "changed" as const };
     // The "what changed" line a person read describes this exact route, or this yes isn't to what they read (route-change.ts).
     if (routeChangeProblem(store, taskId, scope)) return { ok: false as const, reason: "changed" as const };
     // A fast start is never a task from outside (github-import.ts): that takes the ordinary ceremony.
@@ -1627,7 +1631,7 @@ export function approve(
         // to. Routing saveScope here would re-run resolution and could sign a
         // profile nobody saw.
         const sealed = chat === undefined ? store.sealScopeApproval(taskId, by, now, mutation)
-          : store.sealScopeApproval(taskId, by, now, mutation, { kind: "chat", modeDigest: chat.modeDigest, ...(chat.shown ? { card: "terms" as const, cardDigest: shownTermsDigest(scope) } : {}) }, "person");
+          : store.sealScopeApproval(taskId, by, now, mutation, { kind: "chat", modeDigest: chat.modeDigest, ...(shown === null ? {} : { card: "shown" as const, cardDigest: shown.expect, shownTerms: shown.terms }) }, "person");
         const approved = sealed ? store.getScope(taskId) : null;
         if (!sealed || approved === null) { refused.result = { ok: false as const, reason: sealed ? "no-scope" as const : "changed" as const }; throw refused; }
         proved();

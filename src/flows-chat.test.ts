@@ -18,6 +18,7 @@ import { saveScript } from "./flow-scripts.js";
 import { confirmLeadProposal } from "./lead-doors.js";
 import { executeLeadTool } from "./lead-tools.js";
 import { confirmedLink } from "./chat-channel.js";
+import { setChatApproval } from "./chat-approval.js";
 
 describe("steps into a drawing", () => {
   const steps = [
@@ -330,7 +331,7 @@ describe("the lead builds and runs a flow", () => {
     const fresh = proposalOf(lead("propose_flow", { operation: "allow_browser", flow }));
     const review = mintSharedActionReview(store, who, fresh, root, now);
     expect(confirmLeadProposal(store, who, fresh, now, { authority: "full", via: "web", person: true, confirm: true, evidenceRoot: root, actionReview: { nonce: review.nonce, password: "" } })).toMatchObject({ ok: true, said: "Browser allowed. Its browser zones can start Chromium now.", href: `/flows/${flow}` });
-    expect(live()).toEqual([{ signed_by: "operator", proof: "chat" }]);
+    expect(live()).toEqual([{ signed_by: "operator", proof: "session" }]);
     expect((lead("get_flows", { flow }) as { body: { browser: string } }).body.browser).toMatch(/^allowed/);
     expect(lead("propose_flow", { operation: "allow_browser", flow })).toMatchObject({ ok: false });
     // Turning it off lowers authority: an ordinary card.
@@ -338,6 +339,22 @@ describe("the lead builds and runs a flow", () => {
     expect(sharedActionNeedsReview(sharedActionPayload(store.getLeadProposal(off)!.payload)!)).toBe(false);
     expect(confirm(off)).toMatchObject({ ok: true });
     expect(live()).toEqual([]);
+  });
+
+  test("browser use from a linked chat: a person's own off refuses it, and a yes is recorded as a chat yes", () => {
+    const saved = saveScript(store, repo, { name: "journeys", about: "Runs the journeys", body: "node journeys.mjs", timeoutMinutes: 2 }, "operator", now);
+    if (!saved.ok) throw Error(saved.message);
+    const flow = store.createFlow({ repo, name: "Nightly", by: "operator", definitionJson: JSON.stringify(flowFromSteps([{ id: "run", title: "Run journeys", kind: "check", script: "journeys", browser: true }], null)) }, now);
+    const live = () => store.handle.prepare("SELECT signed_by, proof FROM flow_browser_grant WHERE revoked_at IS NULL").all();
+    const tap = (id: number) => confirmLeadProposal(store, who, id, now, { authority: "full", via: "slack", confirm: true, evidenceRoot: root });
+    const asked = proposalOf(lead("propose_flow", { operation: "allow_browser", flow }));
+    expect(setChatApproval(store, { approver: "operator", scope: repo, enabled: false, via: "test" }, now).ok).toBe(true);
+    expect(tap(asked)).toMatchObject({ ok: false });
+    expect(live()).toEqual([]);
+    expect(setChatApproval(store, { approver: "operator", scope: repo, enabled: true, via: "test" }, now).ok).toBe(true);
+    const again = proposalOf(lead("propose_flow", { operation: "allow_browser", flow }));
+    expect(tap(again)).toMatchObject({ ok: true });
+    expect(live()).toEqual([{ signed_by: "operator", proof: "chat" }]);
   });
 
   test("browser use: a project-limited account can't allow it from chat, as on the flow page", () => {

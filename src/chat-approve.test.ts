@@ -7,8 +7,10 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withActor } from "./actor.js";
-import { CHAT_ACTIONS, prepareSharedAction, sharedActionAllowsChallenge, sharedActionPayload, APPROVAL_ACTIONS } from "./chat-actions.js";
+import { CHAT_ACTIONS, mintSharedActionReview, prepareSharedAction, sharedActionAllowsChallenge, sharedActionPayload, APPROVAL_ACTIONS } from "./chat-actions.js";
 import { ALL_PROJECTS, setChatApproval } from "./chat-approval.js";
+import { cardShowsScope, cardTermsDigest, chatLimitProblem, shownTermsDigest } from "./chat-terms.js";
+import { checkAccessWords } from "./check-access.js";
 import { confirmLeadProposal } from "./lead-doors.js";
 import { executeLeadTool, LEAD_TOOL_SCHEMAS } from "./lead-tools.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
@@ -17,6 +19,7 @@ import { addApprover, approve, approvalProofOf, propose } from "./scope.js";
 import { openStore, type Store } from "./store.js";
 
 const now = new Date("2026-11-07T09:00:00Z");
+const words = (terms: string) => ({ expect: cardTermsDigest(terms), terms });
 
 describe("approving from chat", () => {
   let root: string, repo: string, store: Store, who: VerifiedApprover, thread: number, session: number;
@@ -94,14 +97,14 @@ describe("approving from chat", () => {
 
   test("a machine acting can't use the chat road, whatever it holds", () => {
     const scope = store.getScope("fix-1")!;
-    const result = withActor({ account: "operator", lead: true }, () => approve(store, "fix-1", "operator", now, scope.digest, "", {}, undefined, { modeDigest: "x", shown: true }));
+    const result = withActor({ account: "operator", lead: true }, () => approve(store, "fix-1", "operator", now, scope.digest, "", {}, undefined, { modeDigest: "x", shown: words("anything") }));
     expect(result).toMatchObject({ ok: false, reason: "machine-proof" });
     expect(sealed()).toBeNull();
   });
 
   test("the chat road proves the person's role and reach itself", () => {
     const scope = store.getScope("fix-1")!;
-    expect(approve(store, "fix-1", "stranger", now, scope.digest, "", {}, undefined, { modeDigest: "x", shown: true })).toMatchObject({ ok: false, reason: "not-an-approver" });
+    expect(approve(store, "fix-1", "stranger", now, scope.digest, "", {}, undefined, { modeDigest: "x", shown: words("anything") })).toMatchObject({ ok: false, reason: "not-an-approver" });
     expect(sealed()).toBeNull();
   });
 
@@ -112,12 +115,52 @@ describe("approving from chat", () => {
     expect(sealed()).toBeNull();
   });
 
-  test("terms a machine wrote seal only on a chat yes naming every word shown; nothing automatic gets through", () => {
+  test("terms a machine wrote seal only on a chat yes carrying the words a card showed; nothing automatic gets through", () => {
     store.handle.prepare("UPDATE task_scope SET proposed_via = 'mate' WHERE task_id = 'fix-1'").run();
     const digest = store.getScope("fix-1")!.digest;
-    for (const basis of [{ kind: "chat" as const, modeDigest: "x" }, { kind: "chat" as const, modeDigest: "x", card: "terms" as const, cardDigest: "0".repeat(64) }, { kind: "mode" as const, modeDigest: "x" }])
+    const shown = words("Work: Fix the login page.");
+    for (const basis of [{ kind: "chat" as const, modeDigest: "x" }, { kind: "chat" as const, modeDigest: "x", card: "shown" as const, cardDigest: "0".repeat(64), shownTerms: shown.terms },
+      { kind: "chat" as const, modeDigest: "x", card: "terms" as const, cardDigest: shownTermsDigest(store.getScope("fix-1")!) }, { kind: "mode" as const, modeDigest: "x" }])
       expect(store.sealScopeApproval("fix-1", "operator", now, {}, basis, "person")).toBe(false);
     expect(sealed()).toBeNull();
-    expect(approve(store, "fix-1", "operator", now, digest, "", {}, undefined, { modeDigest: "x", shown: true })).toMatchObject({ ok: true });
+    // A plain chat yes (the card showed less) doesn't open the wall either.
+    expect(approve(store, "fix-1", "operator", now, digest, "", {}, undefined, { modeDigest: "x", shown: null })).toMatchObject({ ok: false });
+    expect(sealed()).toBeNull();
+    expect(approve(store, "fix-1", "operator", now, digest, "", {}, undefined, { modeDigest: "x", shown })).toMatchObject({ ok: true });
+  });
+
+  test("the digest is the one kept when the card was made: other words refuse, and so do words that drop a widening", () => {
+    const scope = store.getScope("fix-1")!;
+    const shown = words("Work: Fix the login page.");
+    expect(approve(store, "fix-1", "operator", now, scope.digest, "", {}, undefined, { modeDigest: "x", shown: { expect: shown.expect, terms: "Work: Something else." } })).toMatchObject({ ok: false, reason: "changed" });
+    expect(sealed()).toBeNull();
+    // Check access and extra services on the scope: words that leave them out prove nothing.
+    expect(cardShowsScope({ profile: { ...scope.profile!, checkAccess: "sign-ins" } as never }, "Work: Fix the login page.")).toBe(false);
+    expect(cardShowsScope({ profile: { ...scope.profile!, machLookup: ["com.apple.example"] } as never }, "Work: Fix the login page.")).toBe(false);
+    expect(cardShowsScope({ profile: { ...scope.profile!, checkAccess: "sign-ins" } as never }, `checks ${checkAccessWords("sign-ins")}`)).toBe(true);
+  });
+
+  test("the card keeps the digest of its own words, and a card made before the scope changed can't reach the new one", () => {
+    const id = draft();
+    const saved = sharedActionPayload(store.getLeadProposal(id)!.payload)!;
+    expect(saved.state["shown"]).toBe(cardTermsDigest(saved.terms.join("\n")));
+    expect(saved.terms.join("\n")).toContain("Fix the login page.");
+  });
+
+  test("a person's saved limits hold on the card road, not only on the plan road", () => {
+    const id = draft();
+    expect(setChatApproval(store, { approver: "operator", scope: repo, enabled: true, limits: { fullAccess: false, capMicrousd: 1_000_000 }, via: "test" }, now).ok).toBe(true);
+    expect(tap(id)).toMatchObject({ ok: false });
+    expect(sealed()).toBeNull();
+    expect(chatLimitProblem({ profile: null, budgetMicrousd: null }, { fullAccess: true, capMicrousd: 1 }, "your chat approval setting")).toContain("no attempt limit");
+    expect(chatLimitProblem({ profile: { provider: "claude", permissionArgv: "bypassPermissions" } as never, budgetMicrousd: 1 }, { fullAccess: false, capMicrousd: null }, "your mode")).toContain("more access");
+  });
+
+  test("a person's off holds in web chat too, and each of the other approvals asks the same question", () => {
+    const id = draft();
+    expect(setChatApproval(store, { approver: "operator", scope: ALL_PROJECTS, enabled: false, via: "test" }, now).ok).toBe(true);
+    const review = mintSharedActionReview(store, who, id, root, now);
+    expect(confirmLeadProposal(store, who, id, now, { authority: "full", via: "web", person: true, confirm: true, evidenceRoot: root, actionReview: { nonce: review.nonce, password: "" } })).toMatchObject({ ok: false });
+    expect(sealed()).toBeNull();
   });
 });

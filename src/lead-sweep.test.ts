@@ -2,6 +2,7 @@
  * Lead fan-out (docs/plans/lead-fan-out.md): one sweep card files N ordinary tasks under one shared brief and approves
  * each one's scope with one ceremony — all filed or none; a child the approval refuses stays filed and unapproved.
  */
+import { setChatApproval } from "./chat-approval.js";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -198,6 +199,13 @@ describe("lead sweeps", () => {
   test("all or none: a child that can't be filed files nothing — refused already at the card (the dry run)", () => {
     expect(() => sweepCard({ acceptance: [{ id: "", statement: "", evidence: [] }] })).toThrow(/can't be filed/);
     expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()!["n"])).toBe(0);
+  });
+
+  test("a person's own limits hold for each item: over them, it is filed and waits for its own approval", () => {
+    setChatApproval(store, { approver: who.name, scope: repo, enabled: true, limits: { fullAccess: false, capMicrousd: 1 }, via: "test" }, now);
+    const id = sweepCard();
+    expect(confirm(id, true)).toMatchObject({ ok: true });
+    for (const child of store.sweepTasks(store.sweepOfProposal(id)!)) expect(store.scopeSealed(child.rootTask)).toBe(false);
   });
 
   test("a project that keeps work from its requester: every child is filed and waits for its own approval", () => {

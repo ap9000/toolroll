@@ -6,6 +6,8 @@
  */
 import { createHash } from "node:crypto";
 import { isAcpProfile } from "./acp-agents.js";
+import { checkAccessWords } from "./check-access.js";
+import { sandboxTermsWords } from "./project-sandbox.js";
 import type { Scope } from "./scope.js";
 
 /** What a plan's yes allows an agent to do, in a few plain words (the approval sheet's "You're allowing"). */
@@ -47,4 +49,33 @@ export function scopeTermsText(scope: ShownScope): string {
 /** The digest of the terms shown, bound to the scope's own digest: a changed word, limit or route is another digest. */
 export function shownTermsDigest(scope: ShownScope & Pick<Scope, "digest">): string {
   return createHash("sha256").update(JSON.stringify({ v: 1, scope: scope.digest, shown: scopeTermsText(scope) })).digest("hex");
+}
+
+/** The digest of the exact words a card showed, taken when the card was made and kept with it. */
+export function cardTermsDigest(terms: string): string {
+  return createHash("sha256").update(JSON.stringify({ v: 2, shown: terms })).digest("hex");
+}
+
+/** Whether these words show what only a person's own yes may agree to: checks past the sandbox and extra services. */
+export function cardShowsScope(scope: Pick<Scope, "profile">, terms: string): boolean {
+  const profile = scope.profile;
+  if (profile === null || profile === undefined) return true;
+  const access = profile.checkAccess, mach = sandboxTermsWords(profile).mach;
+  return (access === undefined || terms.includes(checkAccessWords(access))) && (mach === null || terms.includes(mach));
+}
+
+/** Whether a scope lets its agent do anything, nothing asking first. */
+export function scopeFullAccess(profile: Scope["profile"] | null | undefined): boolean {
+  if (profile === null || profile === undefined) return false;
+  return profile.provider === "claude" ? profile.permissionArgv === "bypassPermissions"
+    : profile.provider === "gemini" ? profile.approvalArgv === "yolo" : isAcpProfile(profile) ? true : profile.sandboxMode === "danger-full-access";
+}
+
+/** Why a person's own limits refuse this scope, or null. */
+export function chatLimitProblem(scope: Pick<Scope, "profile" | "budgetMicrousd">, limits: { fullAccess: boolean; capMicrousd: number | null }, yours: string): string | null {
+  if (scopeFullAccess(scope.profile) && !limits.fullAccess) return `This plan asks for more access than ${yours} allows.`;
+  const cap = limits.capMicrousd;
+  if (cap !== null && (scope.budgetMicrousd === null || scope.budgetMicrousd > cap))
+    return `This plan has ${scope.budgetMicrousd === null ? "no attempt limit" : `a ${money(scope.budgetMicrousd)} attempt limit`}, more than ${yours === "your mode" ? "your mode's" : "your chat approval limit of"} ${money(cap)}.`;
+  return null;
 }

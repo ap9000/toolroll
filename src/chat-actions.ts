@@ -20,7 +20,8 @@ import { decideProposal, listProposals } from "./memory-pass.js";
 import { authPauseOf, liftAuthPause } from "./provider-auth.js";
 import { isProviderId } from "./provider.js";
 import { approverStandsNow, familyRepoOf } from "./tidy.js";
-import { chatApproveMode } from "./chat-approval.js";
+import { chatApproveMode, effectiveChatApproval, type ChatApprovalLimits } from "./chat-approval.js";
+import { cardTermsDigest, chatLimitProblem } from "./chat-terms.js";
 import { createHash, randomBytes } from "node:crypto";
 import { archiveTaskFamily, leadTurnKeepsProposals, restoreTaskFamily, verifiedAuthor, type Store } from "./store.js";
 import {
@@ -1074,6 +1075,8 @@ export function prepareSharedAction(
         if (!assignment.attention.includes(caveat)) terms.push(`Limitation: ${caveat}`);
     }
   }
+  // An approval keeps the digest of the exact words its card shows, from now on: the yes is to these (scope.ts approve).
+  if (APPROVAL_ACTIONS.has(operation)) state["shown"] = cardTermsDigest(terms.join("\n"));
   const stamp = hash({
     operation,
     request,
@@ -1248,8 +1251,10 @@ export function executeSharedAction(
   if ((options.authority === "local-owner" || currentLocalOwner() !== null) && (!isChatAction(payload.operation) || CHAT_ACTION_LOCAL_ACTS[payload.operation] === null))
     return refuse("refused", "Set a password to do this.");
   let live: SharedAction;
+  let drafted: SharedAction;
   try {
     const saved = savedActionContext(store, who, id, "confirming");
+    drafted = saved;
     if (hash(saved) !== hash(payload))
       return refuse(
         "refused",
@@ -1373,7 +1378,9 @@ export function executeSharedAction(
         // re-reads the flow, its zones and scripts in this transaction and refuses unless they are what the card showed.
         const flow = Number(payload.state["flow"]);
         // signFlowBrowser re-reads the account's generation and reach in its transaction (it may have narrowed since).
-        const signed = signFlowBrowser(store, { flow, signer: actor, proof: "chat", sawDigest: String(payload.state["digest"] ?? ""), console: { generation: who.generation } }, now);
+        const by = approvalBy(store, who, repo, now, options, drafted);
+        if (by.ok === false) throw Error(by.why);
+        const signed = signFlowBrowser(store, { flow, signer: actor, proof: options.via === "web" ? "session" : "chat", sawDigest: String(payload.state["digest"] ?? ""), console: { generation: who.generation } }, now);
         if (!signed.ok) throw Error(signed.message);
         return { ok: true as const, taskId: null, said: "Browser allowed. Its browser zones can start Chromium now.", href: `/flows/${flow}` };
       }
@@ -1391,7 +1398,7 @@ export function executeSharedAction(
         return { ok: true as const, taskId: null, said, href: `/sweeps/${Number(req["sweep"])}` };
       }
       else if (payload.operation === "sweep_file") {
-        const done = fileSweep(store, who, id, payload, approvalBy(store, who, payload.repo, now, options), now);
+        const done = fileSweep(store, who, id, payload, approvalBy(store, who, payload.repo, now, options, drafted), now);
         return { ok: true as const, taskId: null, said: done.said, href: done.href };
       }
       else if (payload.operation === "kit_setup") {
@@ -1461,10 +1468,14 @@ export function executeSharedAction(
       else if (payload.operation === "scope_approve") {
         const scope = store.getScope(task!)!;
         // Cockpit B2: classified by the act, not the road — the same standard-approval freshness as /t/:id/approve.
-        const by = approvalBy(store, who, repo, now, options);
+        const by = approvalBy(store, who, repo, now, options, drafted);
         if (by.ok === false) throw Error(by.why);
-        // A local owner keeps its own road (approve proves it again in the seal); everyone else, their own yes from chat.
-        const result = withFreshness("approve-standard", () => approve(store, task!, actor, now, scope.digest, options.review?.password ?? "", {}, undefined, by.chat));
+        const limited = chatLimitProblem(scope, by.limits, "your chat approval setting");
+        if (limited !== null) throw Error(limited);
+        // A local owner keeps its own road (approve proves it again in the seal); everyone else, their own yes from chat,
+        // to the scope and the words the card was made with.
+        const sawDigest = String((drafted.state["scope"] as { digest?: unknown } | null | undefined)?.digest ?? "");
+        const result = withFreshness("approve-standard", () => approve(store, task!, actor, now, sawDigest, options.review?.password ?? "", {}, undefined, by.chat));
         if (!result.ok) {
           // A first yes on protected work is kept, with how its person was proved: committed, never rolled back.
           // The card stays open (`awaiting`) for the second approver; the same person again changes nothing.
@@ -1484,6 +1495,8 @@ export function executeSharedAction(
         if (!result.ok)
           throw Error(`Task was not cancelled: ${result.reason}.`);
       } else if (payload.operation === "task_resume") {
+        const by = approvalBy(store, who, repo, now, options, drafted);
+        if (by.ok === false) throw Error(by.why);
         const result = resumeTaskStop(
           store,
           {
@@ -1597,13 +1610,19 @@ function sweepChildScopes(store: Store, who: VerifiedApprover, repo: string, bri
   return found;
 }
 
-/** How this yes stands: a person's own from chat, under their own chat setting; a local owner's own road has none. */
-function approvalBy(store: Store, who: VerifiedApprover, repo: string, now: Date, options: SharedActionOptions): { ok: true; chat?: { modeDigest: string; shown: true } } | { ok: false; why: string } {
-  if (options.authority === "local-owner") return { ok: true };
-  if (options.via === "web") return { ok: true, chat: { modeDigest: hash({ web: who.name, generation: who.generation }), shown: true } };
+/** How this yes stands, and under whose limits: a person's own from chat, by their own chat setting, with the words and
+ * digest the card was made with. A local owner's road has none: approve() proves it itself. */
+function approvalBy(store: Store, who: VerifiedApprover, repo: string, now: Date, options: SharedActionOptions, drafted: SharedAction):
+  { ok: true; limits: ChatApprovalLimits; chat?: { modeDigest: string; shown: { expect: string; terms: string } } } | { ok: false; why: string } {
+  if (options.authority === "local-owner") return { ok: true, limits: { fullAccess: true, capMicrousd: null } };
   if (options.via === "cli") return { ok: false, why: "Approve this in chat or in Toolroll." };
+  const shown = { expect: String(drafted.state["shown"] ?? ""), terms: drafted.terms.join("\n") };
+  if (options.via === "web") {
+    const allowed = effectiveChatApproval(store, repo, who.name);
+    return allowed.ok ? { ok: true, limits: allowed.limits, chat: { modeDigest: allowed.setting.digest, shown } } : { ok: false, why: allowed.why };
+  }
   const allowed = chatApproveMode(store, repo, who.name, now, options.via);
-  return allowed.ok ? { ok: true, chat: { modeDigest: allowed.digest, shown: true } } : allowed;
+  return allowed.ok ? { ok: true, limits: allowed.limits, chat: { modeDigest: allowed.digest, shown } } : allowed;
 }
 
 function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payload: SharedAction, by: ReturnType<typeof approvalBy>, now: Date): { said: string; href: string } {
@@ -1628,7 +1647,9 @@ function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payloa
   const waiting: string[] = [];
   for (const one of filed) {
     const scope = store.getScope(one.id);
-    const approved = scope === null ? null : withFreshness("approve-standard", () => approve(store, one.id, who.name, now, scope.digest, "", {}, undefined, by.chat));
+    // A person's own limits hold for each item: one past them is filed and waits for its own approval.
+    const approved = scope === null || chatLimitProblem(scope, by.limits, "your chat approval setting") !== null ? null
+      : withFreshness("approve-standard", () => approve(store, one.id, who.name, now, scope.digest, "", {}, undefined, by.chat));
     if (approved === null || !approved.ok) waiting.push(one.title);
   }
   const said = waiting.length === 0

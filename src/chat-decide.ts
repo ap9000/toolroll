@@ -36,7 +36,7 @@ import { releaseCardOf, type ReleaseCard } from "./release-card.js";
 import type { Store } from "./store.js";
 import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
 import { phoneText, projectLabel } from "./telegram-status.js";
-import { permissionPlainWords, scopeTermsText, shownTermsDigest } from "./chat-terms.js";
+import { cardTermsDigest, chatLimitProblem, permissionPlainWords, scopeTermsText, shownTermsDigest } from "./chat-terms.js";
 import { YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH } from "./contracts/youiyoux-request.js";
 import { FILED_PER_PASS, requestKindWord, requestPassOf } from "./youiyoux-intake.js";
 import { discordPlain } from "./reply-shape.js";
@@ -99,12 +99,6 @@ const title = (store: Store, taskId: string): string => phoneText(chatTitle(stor
 
 export { chatApproveMode };
 
-function fullAccess(profile: Scope["profile"] | null | undefined): boolean {
-  if (profile === null || profile === undefined) return false;
-  return profile.provider === "claude" ? profile.permissionArgv === "bypassPermissions"
-    : profile.provider === "gemini" ? profile.approvalArgv === "yolo" : isAcpProfile(profile) ? true : profile.sandboxMode === "danger-full-access";
-}
-
 const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(2)}`;
 
 /** A plan this person's chat may approve now: the term, the plan's exact bytes, and none of the reasons it must open
@@ -130,10 +124,8 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
   // Terms a machine wrote, or checks that reach past the sandbox: a person reads every word before a yes, so the card shows them whole.
   const whole = ref.coordinatorCid !== null || quarantinedAuthor(scope.proposedVia ?? null);
   if (scope.profileState === "unresolved" || scope.routeEra == null || (scope.termsProblem ?? null) !== null) return { ok: false, why: "This plan can't say exactly which agents run, so you approve it in Toolroll." };
-  const yours = mode.source === "setting" ? "your chat approval setting" : "your mode";
-  if (fullAccess(scope.profile) && !mode.limits.fullAccess) return { ok: false, why: `This plan asks for more access than ${yours} allows.` };
-  const cap = mode.limits.capMicrousd;
-  if (cap !== null && (scope.budgetMicrousd === null || scope.budgetMicrousd > cap)) return { ok: false, why: `This plan has ${scope.budgetMicrousd === null ? "no attempt limit" : `a ${money(scope.budgetMicrousd)} attempt limit`}, more than ${yours === "your mode" ? "your mode's" : "your chat approval limit of"} ${money(cap)}.` };
+  const limited = chatLimitProblem(scope, mode.limits, mode.source === "setting" ? "your chat approval setting" : "your mode");
+  if (limited !== null) return { ok: false, why: limited };
   const gate = store.approvalGate(taskId, approver, "person");
   if (gate.verdict === "refuse") return { ok: false, why: gateWords(gate) };
   if (store.scopePolicyRefusal(taskId) !== null) return { ok: false, why: "Your organisation's policy needs this plan approved in Toolroll." };
@@ -151,7 +143,8 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
     try { verified = root !== undefined && readVerifiedArtifact(root, plan).ok; } catch { verified = false; }
     if (!verified) return { ok: false, why: "The saved plan can't be verified here, so you approve it in Toolroll." };
   }
-  return { ok: true, modeDigest: mode.digest, source: mode.source, scope, whole, digest: sha(`${scope.digest}:${plan?.sha256 ?? ""}`) };
+  // Terms shown whole are part of what the card is bound to, so the digest kept on its buttons covers those words.
+  return { ok: true, modeDigest: mode.digest, source: mode.source, scope, whole, digest: sha(`${scope.digest}:${plan?.sha256 ?? ""}${whole ? `:${cardTermsDigest(scopeTermsText(scope))}` : ""}`) };
 }
 
 /** A ready pull request this person's chat may merge now, bound to the exact commit. */
@@ -894,7 +887,10 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       if (deployGateScope(plan.scope)) return notDone("This is a release: approve it from its release card.");
       if (passwordOnlySeal(plan.scope)) return notDone(needsFullCard(plan.scope));
       // The one approval every road shares (scope.ts approve): the rules, two-person votes and the proof, as this person.
-      const approved = approve(store, row.taskId, who.name, now, plan.scope.digest, "", {}, undefined, { modeDigest: plan.modeDigest, shown: plan.whole });
+      // plan.digest matched this button's kept digest above (staleWhy), so these are the words its card showed.
+      const words = scopeTermsText(plan.scope);
+      if (plan.whole && (plan.digest !== row.digest || words.length > PLATFORM_LIMITS[seat.channel] - ROOM)) return notDone("this plan changed. Open it in Toolroll.");
+      const approved = approve(store, row.taskId, who.name, now, plan.scope.digest, "", {}, undefined, { modeDigest: plan.modeDigest, shown: plan.whole ? { expect: cardTermsDigest(words), terms: words } : null });
       if (!approved.ok && approved.reason === "second-approver") return done(gateWords({ verdict: "vote", have: approved.have, need: 2, already: approved.already }));
       if (!approved.ok) return notDone("the plan couldn't be approved from chat. Open it in Toolroll.");
       store.recordAction({ at: now.toISOString(), actor: who.name, repo: ref.repo, taskId: row.taskId, runId: null, action: "plan approved in chat", outcome: "approved",

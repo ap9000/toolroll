@@ -139,7 +139,7 @@ import { PULL_REQUEST_SCHEMA } from "./pull-request-schema.js";
 import { chatTurnAmountOf, combineReportedModels, providerTurnsOf, reportedCostUsdOf, reportedModelOf, runAmountOf, type ReportedAmount } from "./reported-usage.js";
 import { usageOf } from "./run-efficiency.js";
 import { YOUIYOUX_FILED_VIA } from "./contracts/youiyoux-request.js";
-import { shownTermsDigest } from "./chat-terms.js";
+import { cardShowsScope, cardTermsDigest, shownTermsDigest } from "./chat-terms.js";
 
 // PR #263 follow-up: the built-ins the Store money seal uses, captured as this module is evaluated, so code that later
 // replaces `Object.defineProperty` and the like can't fool the seal or the lock (lockStoreMoneyMethods refuses when
@@ -9439,7 +9439,9 @@ export class Store {
   sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat" | "grant" | "schedule" | "auto-check" | "auto-green"; modeDigest: string;
     /** A chat seal of a deploy gate: the release card it came from (chat-management.md §0a.5). A chat seal of a task
      * filed from outside text: `terms`, and the digest of every word the card showed (chat-terms.ts). */
-    card?: "release" | "terms"; cardDigest?: string }, approverKind?: ApproverKind): boolean {
+    card?: "release" | "terms" | "shown"; cardDigest?: string;
+    /** `shown`: the exact words a card showed whole, whose digest (kept when it was made) is `cardDigest`. */
+    shownTerms?: string }, approverKind?: ApproverKind): boolean {
     return (
       this.once(mutation, "sealScopeApproval", () => {
         // ONLY A PERSON'S SEAL HAS NO BASIS (approval policy, phase 1): with none given this is the person's
@@ -9458,12 +9460,13 @@ export class Store {
         // task — console, CLI `task scope`, and direct callers alike hit
         // this wall. The promise to the operator is a fresh password
         // ceremony that shows WHO asked; only `basis: password` seals it.
+        let personReadTerms = false;
         if (basis !== undefined) {
-          // A PERSON'S YES IN CHAT TO EVERY WORD (owner's decision, docs/plans/toolroll-cards.md): a chat seal naming the
-          // digest of the terms its card showed, recomputed here from the live scope, is a person who read them, as the
+          // A PERSON'S YES IN CHAT TO EVERY WORD (owner's decision, docs/plans/toolroll-cards.md): a chat seal carrying the
+          // words its card showed, with the digest kept when the card was made, is a person who read them, as the
           // ceremony is. Nothing automatic (a mode, a grant, a schedule) ever gets through the walls below.
-          const liveScope = basis.kind === "chat" && basis.card === "terms" ? this.getScope(taskId) : null;
-          const personReadTerms = liveScope !== null && typeof basis.cardDigest === "string" && basis.cardDigest === shownTermsDigest(liveScope);
+          const liveScope = basis.kind === "chat" && basis.card === "shown" ? this.getScope(taskId) : null;
+          personReadTerms = liveScope !== null && typeof basis.shownTerms === "string" && basis.cardDigest === cardTermsDigest(basis.shownTerms) && cardShowsScope(liveScope, basis.shownTerms);
           const filedByCoordinator = this.db
             .prepare("SELECT 1 AS hit FROM task_ref WHERE backend = ? AND external_id = ? AND coordinator_cid IS NOT NULL")
             .get(BUILT_IN, taskId);
@@ -9551,7 +9554,7 @@ export class Store {
         if (purpose.purpose !== null && basis !== undefined && basis.kind !== "chat") return false;
         if (deployGate && basis?.kind === "chat" && !(basis.card === "release" && typeof basis.cardDigest === "string" && /^[0-9a-f]{64}$/.test(basis.cardDigest))) return false;
         // The outside-request quarantine's chat road (above): the card showed every word of these live terms.
-        if (basis?.kind === "chat" && (this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA || issueImported(this, taskId))
+        if (basis?.kind === "chat" && !personReadTerms && (this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA || issueImported(this, taskId))
           && !(basis.card === "terms" && typeof basis.cardDigest === "string" && basis.cardDigest === shownTermsDigest(readScope(working)))) return false;
         // AUTOMATIC RELEASE SEALS (auto-approve-green.md): only on a release task (a candidate and release terms signed
         // in), only naming the evidence row the plane wrote for exactly this task, kind, digest and candidate.

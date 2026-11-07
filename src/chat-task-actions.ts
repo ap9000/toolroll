@@ -1,5 +1,6 @@
 import { verifiedAuthor, type Store } from "./store.js";
 import type { VerifiedApprover } from "./principal.js";
+import { chatApproveMode, effectiveChatApproval } from "./chat-approval.js";
 import { requestTaskStop, resumeTaskStop, taskControlOf, type StopRequest } from "./task-control.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { fileAddTestsTask, requestFollowUpChecks } from "./result-follow-ups.js";
@@ -52,6 +53,10 @@ export function applyChatTaskAction(store: Store, who: VerifiedApprover, payload
     // Resuming is an approval: a person's own tap or signed-in click lifts the stop; any other road only asks for it.
     if (operation === "resume") {
       if (controls.person !== true) return { ok: true, taskId: task, said: `Resume requested for ${task}. Finish it in your chat or on the task.` };
+      // Resuming is an approval: a person's own off holds here as on every other one.
+      const allowed = effectiveChatApproval(store, ref.repo!, who.name);
+      if (!allowed.ok && controls.via !== "web") { const mode = controls.via === undefined || controls.via === "cli" ? allowed : chatApproveMode(store, ref.repo!, who.name, now, controls.via); if (!mode.ok) return { ok: false, message: mode.why }; }
+      if (!allowed.ok && controls.via === "web") return { ok: false, message: allowed.why };
       const resumed = resumeTaskStop(store, { taskId: task, runId: run, by: verifiedAuthor(who.name), via: "web" }, now);
       return resumed.ok ? { ok: true, taskId: task, said: `Stop released. ${resumed.gate ? "Other requirements still prevent the next attempt." : "The next attempt may start."}` } : { ok: false, message: resumed.detail };
     }
