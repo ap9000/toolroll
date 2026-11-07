@@ -374,7 +374,7 @@ describe("where freshness may be honoured", () => {
     // Lead sweeps: each child's approval is the ordinary standard approval (chat-actions.ts fileSweep), the same freshness class.
     // One-tap release approval: the release sheet's remembered-password preview (display only, task-views' rule) and its
     // Approve release (the task approval door's own standard-approval freshness and refund), both in tasks.ts.
-    expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 3, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 6 });
+    expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 2, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 6 });
     expect(hits["consumeSsoNow()"]).toEqual({ "src/scope.ts": 1 });
     expect(hits["spendingOnlyOnSuccess()"]).toEqual({ "src/chat-actions.ts": 1, "src/server/chat.ts": 2, "src/server/tasks.ts": 3 });
     // Refunds only where one transaction holds every effect: never console-wide (a refused answer proves nothing).
@@ -708,8 +708,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/browser/views/flow-view.tsx#StepUp@45": 1,
     "src/browser/views/flow-view.tsx#stepUpReady@46": 1,
     "src/budget-alerts.ts#budgetAlertPass@1": 2,
-    "src/chat-decide.ts#decideOffer@19": 5,
-    "src/chat-decide.ts#staleWhy@42": 6,
+    "src/chat-decide.ts#decideOffer@17": 5,
+    "src/chat-decide.ts#staleWhy@40": 6,
     "src/chat-flow.ts#answerChatFlowPrompt@18>store.transact(_)@1": 2,
     "src/checkout-cleanup.ts#cleanCheckouts@18>wanted@4": 3,
     "src/checkout-cleanup.ts#slimKeptCheckouts@19>wanted@3": 2,
@@ -819,7 +819,6 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "freshnessFor": {
     "src/chat-actions.ts#<module>": 2,
-    "src/chat-actions.ts#executeSharedAction@25>withFreshness(approve-standard,_)@2": 1,
     "src/scope.ts#freshnessFor@36": 1,
     "src/scope.ts#proveAccountNow@38": 1,
     "src/server/chat.ts#<module>": 2,
@@ -899,7 +898,6 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "ssoNowAvailable": {
     "src/chat-actions.ts#<module>": 2,
-    "src/chat-actions.ts#executeSharedAction@25": 1,
     "src/scope.ts#proveAccountNow@38": 1,
     "src/scope.ts#ssoNowAvailable@37": 1,
     "src/serve.ts#<module>": 2,
@@ -919,6 +917,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@41": 1,
   },
   "verifyApproverByPassword": {
+    // toolroll card: a read, signed in as flaky is.
+    "src/operate.ts#cardCommand@231": 1,
     "src/flows-cli.ts#<module>": 2,
     "src/flows-cli.ts#runFlowsCommand@3": 1,
     "src/lead-cli.ts#<module>": 2,
@@ -943,8 +943,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "withFreshness": {
     "src/chat-actions.ts#<module>": 2,
-    "src/chat-actions.ts#executeSharedAction@25": 1,
-    "src/chat-actions.ts#executeSharedAction@25>act@3>store.savepoint(_)@1": 1,
+    "src/chat-actions.ts#executeSharedAction@25>act@2>store.savepoint(_)@1": 1,
     "src/scope.ts#withFreshness@34": 1,
     "src/server/chat.ts#<module>": 2,
     "src/server/chat.ts#createChatHandlers@1>chatSend@24>opened:spendingOnlyOnSuccess(_,_)@9": 1,
@@ -959,7 +958,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>approved:spendingOnlyOnSuccess(_,_)@11": 1,
     // Lead sweeps (docs/plans/lead-fan-out.md): reviewed new sites — one approval per child, as the ordinary approval.
-    "src/chat-actions.ts#fileSweep@29": 1,
+    "src/chat-actions.ts#fileSweep@30": 1,
   },
   // Passwordless (docs/plans/passwordless.md): the credential checks and the session reading, each site reviewed.
   authenticateCredential: {
@@ -1022,7 +1021,6 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   passwordlessSessionFor: {
     "src/chat-actions.ts#<module>": 2,
-    "src/chat-actions.ts#executeSharedAction@25": 1,
     "src/scope.ts#passwordlessSessionFor@39": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61": 1,
