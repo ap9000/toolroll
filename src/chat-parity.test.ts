@@ -15,7 +15,8 @@ import { setChatApproval } from "./chat-approval.js";
 import { chatTaskStamp } from "./chat-task-actions.js";
 import { storeEvidence } from "./evidence.js";
 import { addFlowTriggerTo } from "./flow-triggers.js";
-import { activeUnattendedGrant, sealUnattended } from "./flow-unattended.js";
+import { saveScript } from "./flow-scripts.js";
+import { activeUnattendedGrant, prepareUnattendedCandidates, sealUnattended, unattendedCandidates } from "./flow-unattended.js";
 import { leadIdentityOf } from "./lead-identity.js";
 import { LEAD_TOOL_SCHEMAS } from "./lead-tools.js";
 import { listProposals, memorySurface } from "./memory-pass.js";
@@ -248,6 +249,82 @@ describe("the new chat actions", () => {
     expect(confirmLeadProposal(store, who, clicked, now, { authority: "full", via: "web", person: true, confirm: true, evidenceRoot: root, actionReview: { nonce: review.nonce, password: "" } })).toMatchObject({ ok: true });
     expect(line(web)[0]!.detail).toContain(`grant #${activeUnattendedGrant(store, web, now)!.id} · via web`);
     expect(line(web)[0]!.detail).not.toContain("chat binding");
+  });
+
+  describe("what takes effect is on the card, and every project it touches is checked", () => {
+    /** This person's chat, reaching `repos`. */
+    function reaching(repos: string[]): void {
+      const verified = verifyApproverStanding(store, "operator", store.accountOf("operator")!.generation, repos);
+      if (!verified.ok) throw Error("identity");
+      who = verified.who;
+      session = store.mintLeadSession({ approver: who.name, approverGeneration: who.generation, credentialKey: "parity", ceilingMicrousd: 10_000_000, ceilingDigest: who.ceilingDigest, termsDigest: "fixture" }, now);
+      thread = store.openLeadThread(who.name, who.ceilingDigest, now).thread.id;
+    }
+    function crossProject(): { flow: number; elsewhere: string } {
+      const elsewhere = join(root, "bank");
+      mkdirSync(elsewhere);
+      const definition = flowFromSteps([{ title: "Update", kind: "task" }], null);
+      definition.stages[0] = { ...definition.stages[0]!, repo: elsewhere } as never;
+      const flow = store.createFlow({ repo, name: "Across", by: "operator", definitionJson: JSON.stringify(definition) }, now);
+      const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "schedule", schedule: "daily 09:00", title: "Across", description: null, zone: null }, "operator", now, null);
+      if (!made.ok) throw Error(made.message);
+      return { flow, elsewhere };
+    }
+    const termsOf = (id: number) => (store.getLeadProposal(id)!.payload as { terms: string[] }).terms.join("\n");
+
+    test("memory_decide takes no claim, shows why, and a lesson note is never accepted from a card", () => {
+      const proposal = memoryProposal();
+      expect(() => prepareSharedAction(store, who, "memory_decide", { repo, proposal, decision: "accept", claim: "Words the person never saw." }, root, now)).toThrow("can't be read");
+      expect(termsOf(draft("memory_decide", { repo, proposal, decision: "accept" }))).toContain("Why: Two sessions asked.");
+      const { run } = stopped();
+      store.handle.exec("PRAGMA foreign_keys = OFF");
+      store.handle.prepare("INSERT INTO lesson_note (proposal, repo, failed_run, passing_run, identities_json, changed_paths_json, test_files_changed_json, facts_digest, created_at) VALUES (?, ?, ?, ?, '[]', '[]', '[]', 'd', ?)").run(proposal, repo, run, run + 1, now.toISOString());
+      store.handle.exec("PRAGMA foreign_keys = ON");
+      expect(() => prepareSharedAction(store, who, "memory_decide", { repo, proposal, decision: "accept" }, root, now)).toThrow("in your own words");
+      expect(prepareSharedAction(store, who, "memory_decide", { repo, proposal, decision: "reject" }, root, now).title).toContain("Reject");
+    });
+
+    test("task_archive shows the reason it will save", () => {
+      expect(termsOf(draft("task_archive", { task: "t-1", reason: "Done another way" }))).toContain("Reason: Done another way");
+      expect(() => prepareSharedAction(store, who, "task_archive", { task: "t-1", reason: "bad\u0007" }, root, now)).toThrow();
+    });
+
+    test("provider_resume names the projects with work waiting, and refuses one out of reach", () => {
+      const { run, ref } = stopped();
+      pauseForAuth(store, { provider: "claude", authMode: null, runId: run, taskRef: ref.id, now });
+      store.handle.prepare("UPDATE task_ref SET auth_wait_pause = (SELECT id FROM provider_auth_pause WHERE lifted_at IS NULL) WHERE id = ?").run(ref.id);
+      expect(termsOf(draft("provider_resume", { provider: "claude" }))).toContain("Waiting work in: shop");
+      store.handle.prepare("UPDATE task_ref SET repo = ? WHERE id = ?").run(join(root, "bank"), ref.id);
+      expect(() => prepareSharedAction(store, who, "provider_resume", { provider: "claude" }, root, now)).toThrow("outside your access here");
+    });
+
+    test("flow_unattended names every project it files in, and refuses one out of reach", () => {
+      const { flow } = crossProject();
+      expect(() => prepareSharedAction(store, who, "flow_unattended", { flow, days: 3 }, root, now)).toThrow("outside your access here");
+    });
+
+    test("flow_unattended: a person's off or cap in the other project holds too", () => {
+      const { flow, elsewhere } = crossProject();
+      reaching([repo, elsewhere]);
+      const off = draft("flow_unattended", { flow, days: 3 });
+      expect(termsOf(off)).toContain("Works in: shop, bank");
+      expect(setChatApproval(store, { approver: "operator", scope: elsewhere, enabled: false, via: "test" }, now).ok).toBe(true);
+      expect(yes(off)).toMatchObject({ ok: false });
+      expect(setChatApproval(store, { approver: "operator", scope: elsewhere, enabled: true, limits: { fullAccess: true, capMicrousd: 1_000_000 }, via: "test" }, now).ok).toBe(true);
+      expect(yes(draft("flow_unattended", { flow, days: 3 }))).toMatchObject({ ok: false });
+      expect(activeUnattendedGrant(store, flow, now)).toBeNull();
+    });
+
+    test("flow_unattended: an included schedule's outside-content warning is on the card", async () => {
+      execFileSync("git", ["init", "-q", repo]);
+      expect(saveScript(store, repo, { name: "issues", about: "Reads issues", body: "true", timeoutMinutes: 2 }, "operator", now).ok).toBe(true);
+      const flow = store.createFlow({ repo, name: "Issues", by: "operator", definitionJson: JSON.stringify(flowFromSteps([{ title: "Update", kind: "task" }], null)) }, now);
+      const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "schedule", schedule: "daily 09:00", script: "issues" }, "operator", now, null);
+      if (!made.ok) throw Error(made.message);
+      await prepareUnattendedCandidates(store, flow);
+      const optional = unattendedCandidates(store, flow).find(one => one.id === made.id)!.optional!;
+      expect(termsOf(draft("flow_unattended", { flow, days: 3, include: [made.id] }))).toContain(optional);
+    });
   });
 
   test("a project-limited person can't sign a flow to run on its own, as the console refuses them", () => {

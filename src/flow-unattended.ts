@@ -285,7 +285,7 @@ function coverageProblem(store: Store, flow: FlowRow, owner: string, workRepos: 
 }
 
 /** The projects a flow's work zones file in (a build zone may name another). */
-function workReposOf(flow: FlowRow): string[] {
+export function workReposOf(flow: FlowRow): string[] {
   try {
     const drawn = JSON.parse(flow.definitionJson) as { stages?: { kind?: unknown; repo?: unknown }[] };
     return (drawn.stages ?? []).filter(one => one.kind === "task" && typeof one.repo === "string").map(one => one.repo as string);

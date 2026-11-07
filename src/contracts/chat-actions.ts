@@ -103,7 +103,7 @@ export const chatActionRequestSchemas = {
   revision_accept: z.strictObject({ task: words, revision: id.optional() }),
   revision_reject: z.strictObject({ task: words, revision: id.optional() }),
   flow_unattended: z.strictObject({ flow: id, days: z.int().min(1), budget: words.optional(), runs: words.optional(), include: z.array(id).optional() }),
-  memory_decide: z.strictObject({ repo: words, proposal: id, decision: z.enum(["accept", "reject"]), claim: words.optional() }),
+  memory_decide: z.strictObject({ repo: words, proposal: id, decision: z.enum(["accept", "reject"]) }),
   code_map_holdout_end: z.strictObject({ repo: words }),
   /** The line, and (from 1) the line it replaces; 0 or none adds it. */
   lead_about_you: z.strictObject({ line: words, replaces: z.int().min(0).optional() }),

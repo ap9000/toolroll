@@ -15,8 +15,9 @@ import { publicChatText } from "./chat-display.js";
 import { gateWords } from "./approval-policy.js";
 import { checkLeadIdentity } from "./lead-identity.js";
 import { hasForbiddenControls } from "./decision.js";
-import { activeUnattendedGrant, candidatesDigestOf, FLOW_ACCEPTANCE, parseUnattendedAsk, revokeUnattended, sealUnattended, unattendedCandidates, unattendedSignProblem, untilWords, type UnattendedAsk } from "./flow-unattended.js";
+import { activeUnattendedGrant, candidatesDigestOf, FLOW_ACCEPTANCE, parseUnattendedAsk, revokeUnattended, sealUnattended, unattendedCandidates, unattendedSignProblem, untilWords, workReposOf, type UnattendedAsk } from "./flow-unattended.js";
 import { UNATTENDED_RULE_WORDS, unattendedCoverWords, unattendedHeadWords, unattendedLimitWords } from "./flow-unattended-words.js";
+import { lessonNoteOf } from "./lesson-notes.js";
 import { decideProposal, listProposals } from "./memory-pass.js";
 import { authPauseOf, liftAuthPause } from "./provider-auth.js";
 import { isProviderId } from "./provider.js";
@@ -73,7 +74,7 @@ import { assignFlowCard, commentOnFlowCard, flowPeople, mentionsIn, watchFlowCar
 import { browserViewOf, liveBrowserGrant, revokeFlowBrowser, signFlowBrowser } from "./flow-browser.js";
 import { addFlowTriggerTo, describeTrigger, readLinearKey, removeFlowTrigger, takesDeliveries, triggerConfigOf, validateTriggerConfig } from "./flow-triggers.js";
 import { describeSchedule, parseSchedule } from "./flow-schedule.js";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { handleOf, parseSoul, SOUL_CHARS, SUBAGENT_TEMPLATES, subagentLabel } from "./subagents.js";
 import { createSubagentFrom, labelOf, nameOf, renamedSoul, saveSoul, setSubagentState } from "./subagent-admin.js";
 import { cleanMemory, editMemory, forgetMemory, tellSubagent } from "./subagent-memory.js";
@@ -355,7 +356,7 @@ export function prepareSharedAction(
   if (INSTANCE_ACTIONS.has(operation) && store.accountOf(who.name)?.projects !== null) throw Error("That needs an account with access to every project, as in the console.");
   if (operation === "provider_resume" || operation === "worker_note" || operation === "lead_identity") {
     requireActor(store, who, "", operation);
-    const { request, terms, state, title } = instanceAction(store, operation, input);
+    const { request, terms, state, title } = instanceAction(store, who, operation, input);
     const stamp = hash({ operation, request, repo: "", state, terms, actor: who.name, generation: who.generation, ceiling: who.ceilingDigest });
     return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
   }
@@ -1340,7 +1341,7 @@ export function executeSharedAction(
         repo = payload.repo,
         actor = who.name;
       let taskId = task;
-      if (LATE_APPROVALS.has(payload.operation)) return runLateApproval(store, who, payload, approvalBy(store, who, payload.repo, now, options, drafted), approvalRoad(options), now);
+      if (LATE_APPROVALS.has(payload.operation)) return runLateApproval(store, who, payload, repo => approvalBy(store, who, repo, now, options, drafted), approvalRoad(options), now);
       if (PARITY_ACTIONS.has(payload.operation) || OWNER_PARITY.has(payload.operation)) return runParityAction(store, who, payload, now);
       if (payload.operation === "lead_about_you") {
         const next = withAboutYouLine(aboutYouOf(store, actor), String(req["line"]), Number(req["replaces"] ?? 0));
@@ -1832,13 +1833,17 @@ function incidentRepoOf(store: Store, id: number): string | null {
   return open === undefined ? null : store.lookupRef(open.taskId)?.repo ?? null;
 }
 
-function instanceAction(store: Store, operation: "provider_resume" | "worker_note" | "lead_identity", input: Record<string, unknown>): { request: Record<string, unknown>; terms: string[]; state: Record<string, unknown>; title: string } {
+function instanceAction(store: Store, who: VerifiedApprover, operation: "provider_resume" | "worker_note" | "lead_identity", input: Record<string, unknown>): { request: Record<string, unknown>; terms: string[]; state: Record<string, unknown>; title: string } {
   if (operation === "provider_resume") {
     const provider = text(input, "provider", 40);
     if (!isProviderId(provider)) throw Error("Choose an agent provider.");
     const pause = authPauseOf(store, provider);
     if (pause === null) throw Error("That agent isn't paused.");
-    return { request: { provider }, title: `Resume ${provider}`, state: { pause: pause.id }, terms: [`Lifts the sign-in pause on ${provider} and sends its waiting tasks back to the queue. Existing approvals and holds still apply.`] };
+    // The pause is the whole installation's: every project with work waiting on it is named, and must be in reach here.
+    const repos = [...new Set(store.handle.prepare(`SELECT t.repo AS repo FROM run r JOIN task_ref t ON t.id = r.task_ref WHERE r.provider = ? AND r.reason = 'auth-expired' AND r.finished_at >= ?
+      UNION SELECT repo FROM task_ref WHERE auth_wait_pause = ?`).all(provider, pause.openedAt, pause.id).flatMap(row => row["repo"] === null ? [] : [String(row["repo"])]))].sort();
+    if (repos.some(one => !who.repos.includes(one))) throw Error("That agent has work waiting in a project outside your access here.");
+    return { request: { provider }, title: `Resume ${provider}`, state: { pause: pause.id, repos }, terms: [`Lifts the sign-in pause on ${provider} and sends its waiting tasks back to the queue. Existing approvals and holds still apply.`, ...(repos.length === 0 ? [] : [`Waiting work in: ${repos.map(one => basename(one)).join(", ")}`])] };
   }
   if (operation === "worker_note") {
     const runner = text(input, "runner", 120), note = String(input["note"] ?? "").trim();
@@ -1895,8 +1900,11 @@ function parityAction(store: Store, who: VerifiedApprover, operation: ChatAction
       const covered = candidates.filter(one => one.optional === null || include.includes(one.id));
       if (include.some(id => !candidates.some(one => one.id === id))) throw Error("Name schedules from this flow's own list.");
       if (covered.length === 0) throw Error("Choose a schedule to include: this flow's schedules bring in outside content, so none is covered unless you pick it.");
-      return { state: { flow: flow!.id, revision: flow!.revision, schedules: candidatesDigestOf(candidates), ask: asked.ask }, title: `Let ${flow!.name} run on its own`,
-        terms: [...unattendedHeadWords(who.name, FLOW_ACCEPTANCE), unattendedCoverWords(covered), ...unattendedLimitWords(asked.ask.budgetMicrousd, asked.ask.dailyRunCap), ...UNATTENDED_RULE_WORDS, `It ends after ${asked.ask.days} ${asked.ask.days === 1 ? "day" : "days"}.`] };
+      // Every project its work files in: the person must reach each, and each is named and checked at the yes.
+      const repos = [...new Set([flow!.repo, ...workReposOf(flow!)])];
+      if (repos.some(one => !who.repos.includes(one) || !store.accountCanAccess(who.name, one))) throw Error("This flow files work in a project outside your access here.");
+      return { state: { flow: flow!.id, revision: flow!.revision, schedules: candidatesDigestOf(candidates), ask: asked.ask, repos }, title: `Let ${flow!.name} run on its own`,
+        terms: [...unattendedHeadWords(who.name, FLOW_ACCEPTANCE), `Works in: ${repos.map(one => basename(one)).join(", ")}`, unattendedCoverWords(covered), ...covered.flatMap(one => one.optional === null ? [] : [`${one.words}: ${one.optional}`]), ...unattendedLimitWords(asked.ask.budgetMicrousd, asked.ask.dailyRunCap), ...UNATTENDED_RULE_WORDS, `It ends after ${asked.ask.days} ${asked.ask.days === 1 ? "day" : "days"}.`] };
     }
     case "mode_revoke": {
       const mode = store.activeMode(repo, now);
@@ -1911,9 +1919,10 @@ function parityAction(store: Store, who: VerifiedApprover, operation: ChatAction
     case "flow_archive":
       return { state: { flow: flow!.id, revision: flow!.revision }, title: `Archive ${flow!.name}`, terms: ["Takes this flow off the list. Its triggers stop starting cards."] };
     case "task_archive": {
-      const task = String(input["task"]), row = store.getTask(task);
+      const task = String(input["task"]), row = store.getTask(task), reason = text(input, "reason", 500, true).trim();
       if (row === null) throw Error("No such task.");
-      return { state: { task, updatedAt: row.updatedAt, state: row.state }, title: `Put away ${row.title}`, terms: ["Takes this task out of every list. It stays saved and can be restored."] };
+      if (reason === "") delete request["reason"]; else request["reason"] = reason;
+      return { state: { task, updatedAt: row.updatedAt, state: row.state }, title: `Put away ${row.title}`, terms: ["Takes this task out of every list. It stays saved and can be restored.", ...(reason === "" ? [] : [`Reason: ${reason}`])] };
     }
     case "task_restore": {
       const task = String(input["task"]), row = store.getTask(task);
@@ -1928,7 +1937,9 @@ function parityAction(store: Store, who: VerifiedApprover, operation: ChatAction
       const id = integer(input, "proposal"), decision = input["decision"] === "accept" ? "accept" : "reject";
       const proposal = listProposals(store, repo).find(one => one.id === id);
       if (proposal === undefined) throw Error("That proposal isn't waiting any more.");
-      return { state: { proposal: id }, title: `${decision === "accept" ? "Accept" : "Reject"} a memory proposal`, terms: [proposal.title, ...(proposal.beforeText === null ? [] : [`Was: ${proposal.beforeText}`]), `Becomes: ${proposal.afterText}`, decision === "accept" ? "Later agent sessions in this project read this." : "Nothing is added to project memory."] };
+      // A lesson note is accepted in the person's own words (memory-pass.ts): never a model's, so never from a card.
+      if (decision === "accept" && lessonNoteOf(store, id) !== null) throw Error("A lesson note is accepted in your own words: write it on the Knowledge page.");
+      return { state: { proposal: id }, title: `${decision === "accept" ? "Accept" : "Reject"} a memory proposal`, terms: [proposal.title, ...(proposal.beforeText === null ? [] : [`Was: ${proposal.beforeText}`]), `Becomes: ${proposal.afterText}`, `Why: ${proposal.rationale}`, decision === "accept" ? "Later agent sessions in this project read this." : "Nothing is added to project memory."] };
     }
     default:
       throw Error("Choose an available action.");
@@ -1939,8 +1950,8 @@ function parityAction(store: Store, who: VerifiedApprover, operation: ChatAction
 const approvalRoad = (options: SharedActionOptions): string => `via ${options.via}${options.binding === undefined ? "" : ` · chat binding #${options.binding}`}`;
 
 /** The approvals added last: the console's own write, after the same question every approval asks. */
-function runLateApproval(store: Store, who: VerifiedApprover, payload: SharedAction, by: ReturnType<typeof approvalBy>, road: string, now: Date): { ok: true; taskId: string | null; said: string; href?: string } {
-  const req = payload.request, actor = who.name;
+function runLateApproval(store: Store, who: VerifiedApprover, payload: SharedAction, byFor: (repo: string) => ReturnType<typeof approvalBy>, road: string, now: Date): { ok: true; taskId: string | null; said: string; href?: string } {
+  const req = payload.request, actor = who.name, by = byFor(payload.repo);
   // Rejecting lowers: it takes a person's yes, not their approving setting.
   if (by.ok === false && payload.operation !== "revision_reject") throw Error(by.why);
   if (payload.operation === "task_reopen") {
@@ -1950,7 +1961,12 @@ function runLateApproval(store: Store, who: VerifiedApprover, payload: SharedAct
   }
   if (payload.operation === "flow_unattended") {
     const ask = payload.state["ask"] as UnattendedAsk;
-    if (by.ok && by.limits.capMicrousd !== null && (ask.budgetMicrousd === null || ask.budgetMicrousd > by.limits.capMicrousd)) throw Error("This has a higher attempt limit than your chat approval setting allows.");
+    // The person's own setting holds in every project this flow's work files in, not only its own.
+    for (const repo of payload.state["repos"] as string[]) {
+      const here = byFor(repo);
+      if (here.ok === false) throw Error(here.why);
+      if (here.limits.capMicrousd !== null && (ask.budgetMicrousd === null || ask.budgetMicrousd > here.limits.capMicrousd)) throw Error("This has a higher attempt limit than your chat approval setting allows.");
+    }
     const signed = sealUnattended(store, { flow: Number(req["flow"]), signer: actor, ask, sawRevision: Number(payload.state["revision"]), sawSchedules: String(payload.state["schedules"]), road }, now);
     if (!signed.ok) throw Error(signed.message);
     return { ok: true, taskId: null, said: `Runs on its own until ${untilWords(signed.grant.absoluteExpiry)}.`, href: `/flows/${Number(req["flow"])}` };
@@ -1991,7 +2007,7 @@ function runParityAction(store: Store, who: VerifiedApprover, payload: SharedAct
       return done("Incident resolved.");
     case "memory_decide": {
       const decision = req["decision"] === "accept" ? "accept" : "reject";
-      decideProposal(store, { repo, actor, id: Number(req["proposal"]), decision, ...(typeof req["claim"] === "string" ? { claim: req["claim"] } : {}) }, now);
+      decideProposal(store, { repo, actor, id: Number(req["proposal"]), decision }, now);
       return done(decision === "accept" ? "Added to project memory." : "Rejected.", `/settings/knowledge?repo=${encodeURIComponent(repo)}`);
     }
     case "provider_resume": {

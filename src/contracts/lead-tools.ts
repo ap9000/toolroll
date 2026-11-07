@@ -81,7 +81,7 @@ export const LEAD_TOOL_INPUTS = {
     title: text("actionTitle").optional(), id: z.string().optional(), run: id.optional(), note: note.optional(), catalog: text("actionName").optional(),
     name: text("actionName").optional(), command: text("actionCommand").optional(), args: z.array(text("actionCommand")).max(40).optional(),
     url: text("actionUrl").optional(), secrets: z.array(text("actionSecret")).max(12).optional(), about: text("actionAbout").optional(), on: z.boolean().optional(),
-    claim: text("actionAbout").optional(), revision: id.optional(), incident: id.optional(), provider: z.string().max(40).optional(), runner: text("actionName").optional(), persona: note.optional(), proposal: id.optional(), decision: z.enum(["accept", "reject"]).optional(), reason: text("actionAbout").optional(),
+    revision: id.optional(), incident: id.optional(), provider: z.string().max(40).optional(), runner: text("actionName").optional(), persona: note.optional(), proposal: id.optional(), decision: z.enum(["accept", "reject"]).optional(), reason: text("actionAbout").optional(),
   }),
   propose_task_action: z.strictObject({ task: taskRef, operation: enumOf(Object.keys(CHAT_TASK_ACTIONS)), dependency: taskRef.optional(), run: id.optional() }),
   get_controls: z.strictObject({}),
