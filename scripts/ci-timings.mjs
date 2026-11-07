@@ -86,7 +86,7 @@ export function timesFromReports(reports) {
 function reportsIn(folder) {
   const found = { linux: [], darwin: [] };
   for (const entry of readdirSync(folder, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^(macos-)?shard-\d+-\d+$/.test(entry.name)) continue;
+    if (!entry.isDirectory() || !/^(macos-)?shard-\d+-\d+(-a[1-9]\d*)?$/.test(entry.name)) continue;
     const file = join(folder, entry.name, "shard-report.json");
     if (!existsSync(file)) continue;
     found[entry.name.startsWith("macos-") ? "darwin" : "linux"].push(JSON.parse(readFileSync(file, "utf8")));
