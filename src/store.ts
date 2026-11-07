@@ -108,7 +108,8 @@ import type { ProgressSnapshot } from "./plan.js";
 import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 
 import { authorityStandsSql } from "./approval-authority.js";
-import { clearRetryEpisode, settleVanished, VANISHED_SCHEMA } from "./vanished-retry.js";
+import { clearRetryEpisode, settleVanished } from "./vanished-retry.js";
+import { CHECK_ONLY_SCHEMA, VANISHED_SCHEMA } from "./plain-schema.js";
 import { releasePolicyDigest, serializeReleaseCheckPurpose, storedReleaseCheckPurpose, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseCheckPurpose, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
@@ -1987,7 +1988,7 @@ export const V150_STEPS = Object.freeze(["machine-aliases", "witness-machine"] a
 /** The v151 migration's steps after v150's, in order (OpenOptions.migrationStep may stop after each). */
 export const V151_STEPS = Object.freeze(["checkout-idle"] as const);
 /** v153 (plain-toolroll.md Phase 2): the tables each slice owns. */
-export const V153_SCHEMA = VANISHED_SCHEMA;
+export const V153_SCHEMA = VANISHED_SCHEMA + CHECK_ONLY_SCHEMA;
 /** The v153 migration's steps after v151's, in order (OpenOptions.migrationStep may stop after each). */
 export const V153_STEPS = Object.freeze(["plain-tables"] as const);
 /**

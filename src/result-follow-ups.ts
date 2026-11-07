@@ -10,7 +10,9 @@
  * Add tests files a small task, unapproved like any other filing, to write
  * tests for that change. */
 import type { CheckAccess } from "./check-access.js";
-import { checkoutRunner, ranAtLine, widestRan } from "./invoke.js";
+import { widerThan } from "./check-access.js";
+import { recheckStanding } from "./check-only-standing.js";
+import { actualCheckAccess, checkoutLaunchOf, checkoutRunner, ranAtLine, widestRan } from "./invoke.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,7 +44,7 @@ export type RunLevel = Exclude<CheckLevel, "off">;
  * with the others, so it was checked on its own; `alone`: nothing joined it within the window. */
 export type BatchFacts = { mode: "together" | "split" | "conflict" | "alone"; tested: string; base: string | null; members: { task: string; run: number; head: string }[] };
 export type FollowUpCheck = {
-  request: number; runId: number; level: RunLevel; head: string; actor: string; at: string; why: "person" | "pull-request" | "batch";
+  request: number; runId: number; level: RunLevel; head: string; actor: string; at: string; why: "person" | "pull-request" | "batch" | "recheck";
   /** The approved command's digest when checks were asked for: only that exact command runs. */
   digest: string;
   state: "waiting" | "running" | "passed" | "failed" | "not-run"; exitCode: number | null; logArtifactId: number | null; note: string | null;
@@ -100,7 +102,7 @@ export function followUpChecksOf(store: Store, runId: number, now: Date = new Da
     const started = rows.find(row => row.action === CHECKS_STARTED && row.outcome === String(request.id)) ?? null;
     const finished = rows.find(row => row.action === CHECKS_FINISHED && row.outcome.startsWith(`${request.id}:`)) ?? null;
     const base = { request: request.id, runId, level: request.outcome as RunLevel, head, digest, actor: request.actor, at: request.at,
-      why: why === "pull-request" ? "pull-request" as const : why === "batch" ? "batch" as const : "person" as const, exitCode: null, logArtifactId: null, note: null,
+      why: why === "pull-request" ? "pull-request" as const : why === "batch" ? "batch" as const : why === "recheck" ? "recheck" as const : "person" as const, exitCode: null, logArtifactId: null, note: null,
       ...(why === "batch" ? { base: /^[a-f0-9]{40}$/.test(recordedBase) ? recordedBase : null } : {}) };
     if (finished !== null) {
       const status = finished.outcome.slice(String(request.id).length + 1);
@@ -158,7 +160,7 @@ function checkTarget(store: Store, runId: number, level: RunLevel): { ok: true; 
 
 /** Ask for checks on a result's exact commit. Asking twice while one is waiting
  * or running returns the same request; a worker runs it once. */
-export function requestFollowUpChecks(store: Store, input: { runId: number; level: RunLevel; actor: string; why?: "person" | "pull-request" }, now: Date):
+export function requestFollowUpChecks(store: Store, input: { runId: number; level: RunLevel; actor: string; why?: "person" | "pull-request" | "recheck" }, now: Date):
   { ok: true; request: number; level: RunLevel; existing: boolean } | Refusal {
   return store.transact(() => {
     const target = checkTarget(store, input.runId, input.level);
@@ -215,6 +217,14 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
   if (!target.ok) { finish("not-run", target.message); return followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
   // The commit asked about is the one checked, even if the result changed since.
   if (target.head !== wanted.head) { finish("not-run", "The result's commit changed after checks were asked for."); return followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
+  // An automatic recheck runs only on its check-only authorization, read again now (check-only.ts): no record, no run.
+  const authorized = wanted.why === "recheck" ? recheckStanding(store, { request, runId, head: target.head, digest: wanted.digest }) : null;
+  if (wanted.why === "recheck" && !authorized?.ok) { finish("not-run", authorized?.problem ?? "Its authorization couldn't be read."); return followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
+  /** Every command of an automatic recheck, refused at the moment it would run wider than the build's own access. */
+  const launched = (inner: Runner): Runner => !authorized?.ok ? inner : (file, args, options) => {
+    if (widerThan(actualCheckAccess(store, checkoutLaunchOf(store, target.repo, [runId]).access), authorized.access)) return Promise.resolve({ code: 126, stdout: "", stderr: "", notFound: true, timedOut: false });
+    return inner(file, args, options);
+  };
 
   const folder = mkdtempSync(join(deps.scratch ?? tmpdir(), "toolroll-checks-"));
   const checkout = join(folder, "checkout");
@@ -236,7 +246,7 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
       let ready = true;
       if (setup !== null) {
         const shell = approvedCommandShell(setup.command);
-        const prepared = await runWithIsolatedDatabase(checkoutRunner(store, target.repo, checkout, runner, [runId], level => ranAt.push(level)), shell.file, shell.args, { cwd: checkout, timeoutMs: setup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+        const prepared = await runWithIsolatedDatabase(launched(checkoutRunner(store, target.repo, checkout, runner, [runId], level => ranAt.push(level))), shell.file, shell.args, { cwd: checkout, timeoutMs: setup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
         note("Approved project setup", setup.command, prepared);
         if (prepared.code !== 0 || prepared.timedOut || prepared.notFound) { ready = false; result = { ran: false, failure: "The project's setup failed, so the check didn't run." }; }
       }
@@ -247,7 +257,7 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
           result = { ran: false, failure: "The approved check changed before it started." };
         } else {
           const shell = approvedCommandShell(live.command);
-          const ran = await runWithIsolatedDatabase(checkoutRunner(store, target.repo, checkout, runner, [runId], level => ranAt.push(level)), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+          const ran = await runWithIsolatedDatabase(launched(checkoutRunner(store, target.repo, checkout, runner, [runId], level => ranAt.push(level))), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
           note(`${CHECK_LEVEL_WORDS[target.level]} check`, live.command, ran);
           result = ran.timedOut ? { ran: false, failure: "The check ran out of time." } : ran.notFound ? { ran: false, failure: "The check couldn't start." } : { ran: true, exitCode: ran.code };
         }

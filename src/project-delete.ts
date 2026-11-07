@@ -300,7 +300,7 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("workflow_preview", "repo = ?", repo);
   del("coding_handoff_scope", `id IN (SELECT id FROM coding_handoff WHERE json_extract(payload, '$.repo') = ?)`, repo);
   del("coding_handoff", "json_extract(payload, '$.repo') = ?", repo);
-  for (const table of ["task_act", "task_replacement", "task_archive", "vanished_charge", "retry_episode"]) del(table, IN("task_ref"), T);
+  for (const table of ["task_act", "task_replacement", "task_archive", "vanished_charge", "retry_episode", "check_authorization"]) del(table, IN("task_ref"), T);
   del("task_ref", IN("id"), T);
   del("task_scope", IN("task_id"), K);
   del("task_edge", `${IN("blocked")} OR ${IN("blocker")}`, K, K);

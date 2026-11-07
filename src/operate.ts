@@ -313,6 +313,7 @@ import { applyModelChoices, stateDigest, type ApplyResult, type ExtraWrite, type
 import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RouteOverride, type RouteStamp } from "./phase-routing.js";
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { retryVanishedWhenStopped } from "./vanished-retry.js";
+import { requestMissingRechecks } from "./check-only.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
 import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, readUpConsoleUrl, saveConsoleUrl, savePrimary, UP_CONSOLE_FILE } from "./webhooks.js";
@@ -6989,6 +6990,8 @@ async function runWatchLoop(args: {
       // Batch checks first: a cohort that is ready runs one check for all its results.
       const batched = await runBatchChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
       if (batched > 0) progress(`watch: settled ${batched} batch-checked result(s)`);
+      // A result whose verdict went missing asks for its one automatic recheck (check-only.ts).
+      requestMissingRechecks(store, context.evidenceRoot, context.clock());
       const ran = await runWaitingChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
       if (ran > 0) progress(`watch: ran ${ran} follow-up check(s)`);
       // The nightly check of main and the release checks that clear its failures (release-once.md, part 3).

@@ -1,4 +1,5 @@
 // Assignment tracking grants no repair authority or attempts.
+import { authorizeCheckOnly } from "./check-only.js";
 import { originalTaskBase, focusedTestCommandSupported } from "./observations.js";
 /**
  * The build disposition service (Parity II Phase 2, v4 Q2 / v6 W1): the
@@ -231,6 +232,8 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
       });
       // A stated no-change publishes nothing.
       if (result.noChange !== true && result.committed) {
+        // The approval that built this commit allows one automatic recheck of it, should its verdict go missing.
+        authorizeCheckOnly(store, runId, clock());
         const grant = store.publicationGrantFor(repo);
         const headSha = store.getRun(runId)?.headRevision ?? null;
         if (

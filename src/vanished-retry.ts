@@ -26,27 +26,6 @@ export const RETRY_SPEND_TIMES = 2;
 /** claim.ts MAX_STRIKES (store.ts loads this file, so the claim road isn't imported here; a test pins them equal). */
 export const VANISHED_MAX_STRIKES = 3;
 
-/** v153: the two tables this file owns. New tables only. */
-export const VANISHED_SCHEMA = `
-CREATE TABLE IF NOT EXISTS vanished_charge (
-  run        INTEGER PRIMARY KEY REFERENCES run(id),
-  task_ref   INTEGER NOT NULL REFERENCES task_ref(id),
-  charged_at TEXT NOT NULL,
-  settled_at TEXT
-);
-CREATE INDEX IF NOT EXISTS vanished_charge_open ON vanished_charge (task_ref) WHERE settled_at IS NULL;
-CREATE TABLE IF NOT EXISTS retry_episode (
-  task_ref          INTEGER PRIMARY KEY REFERENCES task_ref(id),
-  retries           INTEGER NOT NULL DEFAULT 0 CHECK (retries >= 0),
-  reserved_microusd INTEGER NOT NULL DEFAULT 0 CHECK (reserved_microusd >= 0),
-  stopped           TEXT CHECK (stopped IS NULL OR stopped IN ('no-budget', 'attempts', 'spend')),
-  stopped_run       INTEGER,
-  started_at        TEXT NOT NULL,
-  updated_at        TEXT NOT NULL
-);
-`;
-export const VANISHED_TABLES = Object.freeze(["vanished_charge", "retry_episode"] as const);
-
 /** What recovery did with a task: back in the queue, waiting for its old process to be proven stopped, stopped for a
  * person, or nothing at all (not a task of ours to move). */
 export type VanishedAnswer = "queued" | "waiting" | "stopped" | "none";
