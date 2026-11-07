@@ -82,6 +82,10 @@ import { followTeams } from "./teams.js";
 import { followSlack } from "./slack.js";
 import { validateScopeText } from "./task-text.js";
 import { runMemoryCommand } from "./memory-cli.js";
+import { runFlakyCommand } from "./flaky-cli.js";
+import { backfillMemoryUse } from "./memory-use.js";
+import { scheduledTidy } from "./memory-tidy.js";
+import { CI_READ_EVERY_MS, ciCursorKey, ciRepositoriesOf, observeCiAttempts } from "./flaky-ci.js";
 import { runKnowledgeApply, runKnowledgeCommand } from "./knowledge-cli.js";
 import { FLOWS_VALUE_FLAGS, runFlowsCommand } from "./flows-cli.js";
 import type { FetchLike } from "./flow-share.js";
@@ -897,7 +901,7 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "allow", "selector", "paths", "credentials", "repo", "token", "capacity",
   "goal", "not", "touches", "acceptance", "candidate", "by", "digest", "as", "branch", "pool", "base", "model", "turns",
   "max", "cap", "probe", "kind", "expires", "cmd", "since", "repair-model",
-  "choose", "note", "max-open-decisions", "name", "days", "publication", "auto-approve", "review-auto", "port", "host", "allow-host",
+  "choose", "choice", "claim", "revision", "note", "max-open-decisions", "name", "days", "publication", "auto-approve", "review-auto", "port", "host", "allow-host",
   "for", "tick-every", "bridge-every", "reconcile-every", "incarnation",
   "say", "ceiling-usd", "cap-usd",
   // evals: the cases a diagnostic campaign runs, its k, an attempt's world and what its builds may not read, and the
@@ -1608,10 +1612,13 @@ async function dispatch(
       if (memoryWriteVerb(positional) && currentActor()?.lead === true) return fail(context.write, context.json, `memory ${positional[0]}`, "unauthenticated", MEMORY_WRITE_REFUSAL, EXIT.refused);
       const acting = await askCredentials(flags, context);
       if (memoryWriteVerb(positional) && acting !== null && parseLeadToken(acting.token) !== null) return fail(context.write, context.json, `memory ${positional[0]}`, "unauthenticated", MEMORY_WRITE_REFUSAL, EXIT.refused);
-      const verified = acting === null ? null : verifyApproverByPassword(context.store, acting.name, acting.token, context.store.knownRepos().filter(repo => context.store.accountCanAccess(acting.name, repo)));
-      const who = verified !== null && verified.ok ? verified.who : null;
+      // The laptop's local owner: only the rows LOCAL_ALLOW names reach here, and each writer checks the exact act.
+      const verified = acting === null || currentLocalOwner() !== null ? null : verifyApproverByPassword(context.store, acting.name, acting.token, context.store.knownRepos().filter(repo => context.store.accountCanAccess(acting.name, repo)));
+      const who = currentLocalOwner() !== null ? localReader(context) : verified !== null && verified.ok ? verified.who : null;
       return runMemoryCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: who?.name ?? null, repos: who?.repos ?? [], configDir: dirname(context.databaseFile), ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }) });
     }
+    case "flaky":
+      return flakyCommand(positional, flags, context);
     case "claim":
       return claimCommand(positional, flags, context);
     case "heartbeat":
@@ -7027,6 +7034,8 @@ async function runWatchLoop(args: {
       // GitHub's nightly as release debt (nightly-github.ts): each opted-in project at most every 30 minutes, 60 s in
       // all. A test's injected agent runner means a test: no real gh.
       if (context.agentRunner === undefined) await refreshGithubNightlies(store, context.clock);
+      // The flaky tests list's GitHub rows (flaky-ci.ts): read-only, each project at most every 30 minutes.
+      if (context.agentRunner === undefined) await refreshLearning(store, context.clock);
       // A finished check may send a build's card down its failure path: now, not on the next beat.
       if (ran + batched > 0) moveCards(store, repo, context.clock(), context.evidenceRoot);
     },
@@ -13953,7 +13962,7 @@ export function upLaptopPortCandidates(store: Store, fromSeam?: readonly number[
 
 /** The memory verbs that change project memory (memory-cli.ts), and `propose`, which files the proposals a person then
  * applies: a person's act, never the lead's. The reads stay as they are. */
-const MEMORY_WRITE_VERBS: ReadonlySet<string> = new Set(["decide", "retire", "apply", "propose"]);
+const MEMORY_WRITE_VERBS: ReadonlySet<string> = new Set(["decide", "retire", "apply", "propose", "tidy", "restore", "unmerge"]);
 function memoryWriteVerb(positional: readonly string[]): boolean {
   return MEMORY_WRITE_VERBS.has(positional[0] ?? "");
 }
@@ -14196,4 +14205,34 @@ async function importTaskCommand(url: string, flags: Map<string, string | true>,
   const filed = await fileGithubItem(store, { url, repo: placed, actor: actor ?? "cli", shownHead: read.item.head }, clock(), context.easySeams?.github ?? {});
   if (!filed.ok) return fail(write, json, command, filed.reason, filed.message, EXIT.refused);
   return succeed(write, json, command, { task: filed.taskId }, () => [`Filed ${filed.taskId}. Its plan is ready for you to approve.`]);
+}
+
+/** `toolroll flaky list|show`: reads only, for the remembered local login (or --as/--token) and its projects. */
+async function flakyCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null || currentLocalOwner() !== null ? null : verifyApproverByPassword(context.store, acting.name, acting.token, context.store.knownRepos().filter(repo => context.store.accountCanAccess(acting.name, repo)));
+  const who = currentLocalOwner() !== null ? localReader(context) : verified !== null && verified.ok ? verified.who : null;
+  return runFlakyCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: who?.name ?? null, repos: who?.repos ?? [] });
+}
+
+/** The watch loop's background learning pass (docs/plans/learning-loops.md): advisory reads, each project at most every
+ * 30 minutes through the plane's own gh. A failure here never reaches the loop: it is tried on the next pass. */
+export async function refreshLearning(store: Store, now: () => Date, reads?: GhRead): Promise<void> {
+  try { backfillMemoryUse(store, now()); } catch { /* advisory: the next pass tries again */ }
+  // Project memory's clean-up proposals: deterministic, a quiet project at most weekly. Nothing changes until a person accepts.
+  for (const repo of store.knownRepos()) { try { scheduledTidy(store, repo, now()); } catch { /* the next pass tries again */ } }
+  for (const repo of store.knownRepos()) {
+    try {
+      const key = ciCursorKey(repo), at = now();
+      if (at.getTime() - store.serviceCursor(key) < CI_READ_EVERY_MS || ciRepositoriesOf(store, repo).length === 0) continue;
+      store.setServiceCursor(key, at.getTime(), at);
+      await observeCiAttempts(store, repo, reads ?? githubReads(releaseExec, releaseTools().gh, { retry: true }), at);
+    } catch { /* advisory: the next pass tries again */ }
+  }
+}
+
+/** The laptop's local owner as a reader: its name and its projects. Never a proof: every write proves its own act. */
+function localReader(context: Context): { name: string; repos: string[] } | null {
+  const local = currentLocalOwner();
+  return local === null ? null : { name: local.account, repos: context.store.knownRepos().filter(repo => context.store.accountCanAccess(local.account, repo)) };
 }

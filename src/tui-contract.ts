@@ -50,6 +50,8 @@ export type TuiSnapshot = {
   readonly projects: readonly string[];
   /** Whether the local owner has set a password (decides where a refusal leads). */
   readonly passwordSet: boolean;
+  /** One line about flaky tests and project memory waiting, and the commands that show them; null when there's nothing. */
+  readonly learning?: string | null;
 };
 
 export type TuiAct =

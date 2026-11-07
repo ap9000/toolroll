@@ -3,7 +3,7 @@ import { learningSha } from "../project-learning.js";
 import { TEXT_LIMITS } from "../text-limits.js";
 import { parseContract, toModelSchema } from "./contract.js";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
-import { knowledgeSchema, knowledgeSelectionSchema, readKnowledge, readKnowledgeSelection } from "./project-knowledge.js";
+import { knowledgeSchema, knowledgeSelectionSchema, readKnowledge, readKnowledgeSelection, savedKnowledgeSelectionV1Schema } from "./project-knowledge.js";
 import { savedRows } from "../../test/context-fixture.js";
 
 const verdict = (read: { ok: true } | { ok: false; issues: { line: string }[] }): SampleVerdict => (read.ok ? { ok: true } : { ok: false, lines: read.issues.map(issue => issue.line) });
@@ -71,11 +71,11 @@ describe("the knowledge selection contract", () => {
   it("holds: every frozen selection reads, malformed ones are refused by path", () => {
     expect(savedRows.knowledge.snapshots).toHaveLength(4);
     assertContract({
-      schema: knowledgeSelectionSchema,
+      schema: savedKnowledgeSelectionV1Schema,
       read: input => verdict(readKnowledgeSelection(input)),
       valid: savedRows.knowledge.snapshots.map((row, index) => ({ name: `frozen selection ${index}`, input: JSON.parse(row.payload) as unknown })),
       invalid: [
-        { name: "newer version", input: { ...selection, version: 2 }, paths: ["version"] },
+        { name: "newer version", input: { ...selection, version: 3 }, paths: ["version"] },
         { name: "unversioned", input: { ...selection, version: undefined }, paths: ["version"] },
         { name: "an unknown key", input: { ...selection, skills: [] }, paths: ["payload"] },
         { name: "an omission without its reason", input: { ...selection, omitted: [{ title: "Finance" }] }, paths: ["omitted[0].reason"] },
@@ -96,10 +96,10 @@ describe("the knowledge selection contract", () => {
   it("holds the selection's budgets from TEXT_LIMITS when written", () => {
     assertContract({
       read: written(knowledgeSelectionSchema),
-      valid: [{ name: "a frozen selection", input: selection }],
+      valid: [{ name: "a frozen selection", input: { ...selection, version: 2, capturedAt: "2026-11-05T12:00:00.000Z" } }],
       invalid: [
-        { name: "instructions over the limit", input: { ...selection, instructions: "i".repeat(TEXT_LIMITS.knowledgeInstructionsBytes + 1) }, paths: ["instructions"] },
-        { name: "more than 8 decision lines", input: { ...selection, decisions: Array.from({ length: 9 }, (_, id) => ({ id, claim: "x", decidedAt: "2026-09-20T12:00:00.000Z" })) }, paths: ["decisions"] },
+        { name: "instructions over the limit", input: { ...selection, version: 2, capturedAt: "2026-11-05T12:00:00.000Z", instructions: "i".repeat(TEXT_LIMITS.knowledgeInstructionsBytes + 1) }, paths: ["instructions"] },
+        { name: "more than 8 decision lines", input: { ...selection, version: 2, capturedAt: "2026-11-05T12:00:00.000Z", decisions: Array.from({ length: 9 }, (_, id) => ({ id, claim: "x", decidedAt: "2026-09-20T12:00:00.000Z" })) }, paths: ["decisions"] },
       ],
     });
   });

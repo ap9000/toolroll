@@ -194,6 +194,9 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "settings.models-not-now": "dismiss-suggestion",
   "settings.models-suggest-off": "dismiss-suggestion",
   "settings.models-stop": "trial-stop",
+  // Learning loops (D3): a person at the laptop decides lesson notes and clean-ups of project memory.
+  "settings.knowledge-note": "memory-review",
+  "settings.knowledge-tidy": "memory-review",
   "agents.seen": "mark-seen",
   "agents.watch": "watch-agent",
 });
@@ -348,6 +351,9 @@ get("pages", "projects.project", "^\\/projects\\/[^/]+$", { limited: "unscoped",
 // One project's code map (docs/plans/code-map.md §6): reads only. The handler resolves the name among the account's
 // visible projects, and looks areas and files up exactly in the stored version.
 get("pages", "projects.map", "^\\/projects\\/[^/]+\\/map$", { limited: "unscoped", ...free, sample: "/projects/payments-api/map" });
+// A project's flaky tests list (docs/plans/learning-loops.md): reads only, found as the project's page finds its project.
+// Its one action, "Make a task to fix it", posts the ordinary /tasks/add form.
+get("pages", "projects.flaky", "^\\/projects\\/[^/]+\\/flaky$", { limited: "unscoped", ...free, sample: "/projects/payments-api/flaky" });
 get("pages", "home", "/", { limited: "collection", ...free });
 get("pages", "search", "/search", { limited: "collection", ...free });
 // Retired pages (docs/plans/plain-toolroll.md P1.4): permanent redirects to Home and Tasks, admitted as their target is.
@@ -602,6 +608,8 @@ post("settings", "settings.code-map-holdout", "/settings/project/code-map/holdou
 post("settings", "settings.models-act", "^\\/settings\\/models\\/.*$", { sample: "/settings/models/unknown", ...MODELS });
 post("settings", "settings.knowledge-refresh", "/settings/knowledge/refresh", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to refresh project context.", "/settings/knowledge") });
 post("settings", "settings.knowledge-proposal", "/settings/knowledge/proposal", { project: "form", ...approver("Sign in as an approver to decide memory proposals.", "/settings/knowledge") });
+post("settings", "settings.knowledge-note", "/settings/knowledge/note", { project: "form", ...approver("Sign in as an approver to decide lesson notes.", "/settings/knowledge") });
+post("settings", "settings.knowledge-tidy", "/settings/knowledge/tidy", { project: "form", ...approver("Sign in as an approver to clean up project memory.", "/settings/knowledge") });
 post("settings", "settings.knowledge-decision", "/settings/knowledge/decision", { project: "form", ...approver("Sign in as an approver to change project decisions.", "/settings/knowledge") });
 post("settings", "settings.knowledge-change", "/settings/knowledge/change", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to change project knowledge.", "/settings/knowledge") });
 post("settings", "settings.learning-change", "/settings/learning/change", { project: "form", limited: "unscoped" });

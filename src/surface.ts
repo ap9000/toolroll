@@ -1,5 +1,6 @@
 import { KNOWLEDGE_DESCRIPTORS } from "./knowledge-cli.js";
 import { MEMORY_DESCRIPTORS } from "./memory-cli.js";
+import { FLAKY_DESCRIPTORS } from "./flaky-cli.js";
 import { MODELS_DESCRIPTORS } from "./models-cli.js";
 import { MAP_DESCRIPTORS } from "./code-map-cli.js";
 import { FLOWS_DESCRIPTORS } from "./flows-cli.js";
@@ -132,6 +133,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
 
   ...KNOWLEDGE_DESCRIPTORS.map(spec => ({ invocation: `knowledge ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text or source file for impact" }] } : {}) })),
   ...MEMORY_DESCRIPTORS.map(spec => ({ invocation: `memory ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text, a decision id, or the decision sentence" }] } : {}) })),
+  ...FLAKY_DESCRIPTORS.map(spec => ({ invocation: `flaky ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "identity", required: true, meaning: "a row's key from flaky list" }] } : {}) })),
   // Flow writes carry an approver's credential: an agent runs them only as the person asked, after showing the preview.
   // Letting a flow run on its own raises authority: the owner's own password ceremony, never an agent's act.
   ...FLOWS_DESCRIPTORS.map(spec => ({ invocation: `flows ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags,
@@ -532,7 +534,7 @@ const REMOTE_STEP_UP: readonly string[] = [
   // Putting tasks away and restoring them: a person's act, in the console or on the server's machine.
   "task archive", "task restore", "task tidy", "knowledge apply",
   // Changing project memory: a person's own password, never a token (the lead only proposes it in chat).
-  "memory decide", "memory retire", "memory apply",
+  "memory decide", "memory retire", "memory apply", "memory tidy", "memory restore", "memory unmerge",
   "flows card approve", "flows card send-back", "flows script approve", "flows unattended",
   "approver list", "approver add", "people list", "people invite", "people projects", "people revoke",
   // A person's own API tokens: a password step-up on the server's machine, or the console. Never with a token.
@@ -551,6 +553,7 @@ const REMOTE_YES: readonly string[] = [
   "knowledge search", "knowledge impact", "knowledge refresh",
   "map", "map area", "map file", "map search", "map refresh",
   "memory search", "memory decisions", "memory show", "memory review", "memory status",
+  "flaky list", "flaky show",
   "flows list", "flows show", "flows export", "flows create", "flows edit", "flows trigger add", "flows trigger pause", "flows trigger resume",
   "flows trigger remove", "flows card add", "flows archive",
   "models status", "models list",
@@ -573,6 +576,9 @@ export const REMOTE_POLICY_COUNT: number = REMOTE_NO.length + REMOTE_STEP_UP.len
 const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   // Reads.
   pulls: "read", graph: "read", repos: "read", map: "read", "map area": "read", "map file": "read", "map search": "read", status: "read", ready: "read", gaps: "read", contract: "read", "skills list": "read", "skills get": "read",
+  "flaky list": "read", "flaky show": "read", "memory review": "read", "memory status": "read", "memory decisions": "read", "memory show": "read",
+  // Learning loops (D3): a lesson note or a clean-up, decided by a person at the laptop (the writers check the act).
+  "memory apply": "memory-review", "memory tidy": "memory-review", "memory restore": "memory-review", "memory unmerge": "memory-review",
   "task list": "read", "task show": "read", "task state": "read", "task wait": "read", "check-progress": "read", "review show": "read", welcome: "read",
   // Acts (plan C1's list).
   "task add": "file-task",

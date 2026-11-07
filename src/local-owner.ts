@@ -51,6 +51,9 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // The code map (docs/plans/code-map.md §5): on or off for one project only, the same kind of setting as the default
   // agent. Never a refresh, and never the end of a holdout (code-map-acts.ts refuses those by name).
   "code-map-switch",
+  // Learning loops (D3): deciding a lesson note or a clean-up of project memory. The writers (memory-pass.ts decideProposal,
+  // memory-tidy.ts) check this exact act; instruction proposals stay with full authority.
+  "memory-review",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);

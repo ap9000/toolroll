@@ -23,6 +23,10 @@ import { composeLeadRequest, performLeadRequest, isDirectChatProvider, CHAT_KEY_
 import { performSubscriptionLeadRequest } from './subscription-chat.js';
 import type { DirectChatProviderId, SubscriptionChatProviderId } from './store.js';
 import { TEXT_LIMITS } from './text-limits.js';
+import { lastIncludedWords, memoryUseOf } from './memory-use.js';
+import { lessonNoteOf, lessonNoteSourceRef, NOTE_SURFACE, watchNote } from './lesson-notes.js';
+import { currentLocalOwner } from './local-owner.js';
+import { CONTRADICTION_SCHEMA, type TidyAnalyzer } from './memory-tidy.js';
 import { contractError, parseContract } from './contracts/contract.js';
 import { MEMORY_VERDICT_MODEL_SCHEMA, MEMORY_VERDICT_VERSION, memoryEvidenceSchema, memoryProposalSchema, memoryVerdictReadSchema, readSavedVerdict, savedVerdictSchema, type MemoryProposal, type Verdict } from './contracts/memory-pass.js';
 
@@ -200,6 +204,27 @@ export function defaultAnalyzer(store: Store, options: { configDir?: string; env
   };
 }
 
+/** The clean-up's question to the chat model, asked only on a person's request (memory-tidy.ts proposeTidy). */
+export function defaultTidyAnalyzer(store: Store, options: { env?: NodeJS.ProcessEnv; configDir?: string; fetcher?: typeof fetch; runner?: Parameters<typeof performSubscriptionLeadRequest>[1]; timeoutMs?: number } = {}): TidyAnalyzer {
+  return async input => {
+    if (inEvalWorld()) return { ok: false, problem: 'Clean up makes no provider call in an eval world.' };
+    const config = store.getChatConfig();
+    if (config === null) return { ok: false, problem: 'Chat is not configured, so contradictions were not looked for.' };
+    const history = [{ role: 'operator' as const, text: 'Read the decisions above and return the JSON object.' }];
+    if (isDirectChatProvider(config.provider)) {
+      const env = options.env ?? process.env;
+      let key = env[CHAT_KEY_ENV[config.provider as DirectChatProviderId]] ?? '';
+      if (!key && options.configDir !== undefined) { try { key = readFileSync(join(options.configDir, `chat-key-${config.provider}`), 'utf8').trim(); } catch { key = ''; } }
+      if (!key) return { ok: false, problem: `No ${config.provider} key is available, so contradictions were not looked for.` };
+      const request = composeLeadRequest({ provider: config.provider as DirectChatProviderId, model: config.model, key, system: input.system, dataDocument: input.data, history, tools: [] });
+      const answer = await performLeadRequest(request, config.provider as DirectChatProviderId, AbortSignal.timeout(options.timeoutMs ?? 120_000), options.fetcher);
+      return answer.ok ? { ok: true, text: answer.answer.text } : { ok: false, problem: answer.problem };
+    }
+    const answer = await performSubscriptionLeadRequest({ provider: config.provider as SubscriptionChatProviderId, model: config.model, system: input.system, dataDocument: input.data, history, tools: [], outputSchema: CONTRADICTION_SCHEMA, timeoutMs: options.timeoutMs ?? 180_000 }, options.runner);
+    return answer.ok ? { ok: true, text: answer.answer.text } : { ok: false, problem: answer.problem };
+  };
+}
+
 const UNREADABLE = 'The analysis was not a readable verdict.';
 
 /**
@@ -304,7 +329,8 @@ export function synthesizeProposals(store: Store, repo: string, actor: string, s
   const budgetLeft = INSTRUCTION_BUDGET_BYTES - Buffer.byteLength(view.knowledge.instructions);
   let made = 0;
   store.transact(() => {
-    store.handle.prepare("UPDATE memory_proposal SET status='stale' WHERE repo=? AND status='pending' AND surface<>?").run(repo, surface.version);
+    // A lesson note is bound to its own recorded facts, not to the surface.
+    store.handle.prepare("UPDATE memory_proposal SET status='stale' WHERE repo=? AND status='pending' AND surface<>? AND surface<>?").run(repo, surface.version, NOTE_SURFACE);
     const pendingFingerprints = new Set(store.handle.prepare("SELECT fingerprint FROM memory_proposal WHERE repo=? AND status='pending'").all(repo).map(row => String(row['fingerprint'])));
     const rejected = new Map(store.handle.prepare('SELECT fingerprint, sessions FROM memory_rejection WHERE repo=?').all(repo).map(row => [String(row['fingerprint']), Number(row['sessions'])]));
     const consider = (kind: MemoryProposal['kind'], fingerprint: string, title: string, rationale: string, beforeText: string | null, afterText: string, evidence: { session: string; quote: string }[]): void => {
@@ -349,20 +375,31 @@ export function listProposals(store: Store, repo: string, status: 'pending' | 'a
 }
 
 /** The one writer: accept applies the edit through the knowledge or decision store as the person; reject remembers the fingerprint and its corroboration. */
-export function decideProposal(store: Store, args: { repo: string; actor: string; id: number; decision: 'accept' | 'reject' }, now = new Date()): MemoryProposal {
+export function decideProposal(store: Store, args: { repo: string; actor: string; id: number; decision: 'accept' | 'reject'; claim?: string }, now = new Date()): MemoryProposal {
   refuseLeadMemoryWrite();
   return store.transact(() => {
+    refuseLeadMemoryWrite();
     // A person who may change this project's memory, read inside the write (a revoked account or lost access refuses).
     if (!store.accountCanAccess(args.actor, args.repo) || store.accountOf(args.actor)?.role !== 'approver') throw Error('Project memory is outside your access.');
     const row = store.handle.prepare('SELECT * FROM memory_proposal WHERE id=? AND repo=?').get(args.id, args.repo) as Record<string, unknown> | undefined;
     if (!row) throw Error('That proposal is unavailable.');
     const proposal = proposalOf(row);
     if (proposal.status !== 'pending') throw Error('That proposal was already decided.');
+    const note = lessonNoteOf(store, proposal.id);
+    // The laptop's local owner may decide lesson notes and clean-ups, nothing else here (D3): the act says which.
+    const local = currentLocalOwner();
+    if (local !== null && (note === null || local.act !== 'memory-review')) throw Error('Sign in with your password to do this.');
     const surface = memorySurface(store, args.repo, args.actor);
-    if (surface.version !== proposal.surface) { store.handle.prepare("UPDATE memory_proposal SET status='stale' WHERE id=?").run(proposal.id); throw Error('Project memory changed since this was proposed. Run the pass again.'); }
+    if (note === null && surface.version !== proposal.surface) { store.handle.prepare("UPDATE memory_proposal SET status='stale' WHERE id=?").run(proposal.id); throw Error('Project memory changed since this was proposed. Run the pass again.'); }
     if (args.decision === 'reject') {
       store.handle.prepare('INSERT INTO memory_rejection(repo,fingerprint,rejected_at,rejected_by,sessions) VALUES (?,?,?,?,?) ON CONFLICT(repo,fingerprint) DO UPDATE SET rejected_at=excluded.rejected_at, rejected_by=excluded.rejected_by, sessions=excluded.sessions')
         .run(args.repo, proposal.fingerprint, now.toISOString(), args.actor, proposal.sessions);
+    } else if (note !== null) {
+      // A person's words, not the draft: "failed then passed" is what Toolroll recorded; what it means is theirs to say.
+      const claim = (args.claim ?? '').trim();
+      if (claim === '' || claim === proposal.afterText.trim()) throw Error('Write the note in your own words before accepting it.');
+      recordDecision(store, { repo: args.repo, actor: args.actor, draft: { claim, why: clip(proposal.rationale, 1500), sourceKind: 'result', sourceRef: lessonNoteSourceRef(proposal.id) } }, now);
+      watchNote(store, { repo: args.repo, proposal: proposal.id, identities: note.identities, now });
     } else {
       const view = knowledgeView(store, args.repo, args.actor);
       if (proposal.kind === 'instruction-add') changeKnowledge(store, { repo: args.repo, actor: args.actor, identity: view.identity, revision: view.revision, action: 'instructions', draft: { instructions: `${view.knowledge.instructions.trimEnd()}\n${proposal.afterText}`.trim() } }, now);
@@ -376,12 +413,23 @@ export function decideProposal(store: Store, args: { repo: string; actor: string
   });
 }
 
-export function memoryStatus(store: Store, repo: string, actor: string): { surface: string; instructionBytes: number; budgetBytes: number; sessions: { total: number; analyzed: number; failed: number }; openGaps: number; pending: number } {
+export function memoryStatus(store: Store, repo: string, actor: string): { surface: string; instructionBytes: number; budgetBytes: number; sessions: { total: number; analyzed: number; failed: number }; openGaps: number; pending: number; included: { kind: string; item: string; title: string; words: string }[] } {
   const surface = memorySurface(store, repo, actor);
   const view = knowledgeView(store, repo, actor);
   const counts = store.handle.prepare('SELECT COUNT(*) AS total, SUM(CASE WHEN analyzed_at IS NOT NULL THEN 1 ELSE 0 END) AS analyzed, SUM(CASE WHEN problem IS NOT NULL THEN 1 ELSE 0 END) AS failed FROM memory_session WHERE repo=?').get(repo)!;
   return { surface: surface.version, instructionBytes: Buffer.byteLength(view.knowledge.instructions), budgetBytes: INSTRUCTION_BUDGET_BYTES,
     sessions: { total: Number(counts['total'] ?? 0), analyzed: Number(counts['analyzed'] ?? 0), failed: Number(counts['failed'] ?? 0) },
     openGaps: Number(store.handle.prepare('SELECT COUNT(*) AS n FROM memory_gap WHERE repo=? AND retired_at IS NULL').get(repo)?.['n'] ?? 0),
-    pending: Number(store.handle.prepare("SELECT COUNT(*) AS n FROM memory_proposal WHERE repo=? AND status='pending'").get(repo)?.['n'] ?? 0) };
+    pending: Number(store.handle.prepare("SELECT COUNT(*) AS n FROM memory_proposal WHERE repo=? AND status='pending'").get(repo)?.['n'] ?? 0),
+    included: includedLines(store, repo, actor, view.knowledge.references) };
+}
+
+/** "Last included" for every decision, reference and adopted lesson, in the order they're listed elsewhere. */
+function includedLines(store: Store, repo: string, actor: string, references: readonly { id: string; title: string }[]): { kind: string; item: string; title: string; words: string }[] {
+  const use = memoryUseOf(store, repo);
+  const line = (kind: string, item: string, title: string) => ({ kind, item, title, words: lastIncludedWords(use.get(`${kind}:${item}`)) });
+  const lessons = store.handle.prepare("SELECT id, payload FROM project_lesson WHERE repo=? AND status='adopted' ORDER BY id DESC LIMIT 50").all(repo).flatMap(row => {
+    try { return [line('lesson', String(row['id']), clip(String((JSON.parse(String(row['payload'])) as { observation?: unknown }).observation ?? ''), 80))]; } catch { return []; }
+  });
+  return [...listDecisions(store, repo, actor, { limit: 50 }).map(d => line('decision', String(d.id), clip(d.claim, 80))), ...references.map(ref => line('reference', ref.id, clip(ref.title, 80))), ...lessons];
 }

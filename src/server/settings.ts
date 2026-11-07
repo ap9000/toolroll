@@ -7,6 +7,9 @@ import { finishGoogleConsent,GOOGLE_CALLBACK } from "../google-mail.js";
 import { kitInstalled,kitOf } from "../kits.js";
 import { CONNECT_CALLBACK,connectionsOf,finishConnect,localConnectOf,oneClickOf } from "../mcp-connect.js";
 import { learningView } from "../project-learning.js";
+import { memoryUseOf } from "../memory-use.js";
+import { afterwardsWords, lessonNoteOf, noteAfterwards } from "../lesson-notes.js";
+import { decideTidy, disabledLessons, listTidy, proposeTidy, restoreDecision, restoreLesson, restoreReference, undoableMerges, unmergeDecisions } from "../memory-tidy.js";
 import { skillTestResult } from "../project-skills.js";
 import { discoverTools,projectToolsOf } from "../project-tools.js";
 import { lookProjectMcp } from "../folder-look.js";
@@ -76,13 +79,13 @@ import { disconnectGoogle,googleConnected,googleConsent,readGoogleMail,saveGoogl
 import { integrationsHtml } from "../integrations-ui.js";
 import { setYouiyouxIntake } from "../youiyoux-intake.js";
 import { clearProviderKey, keyStatus, plausibleKey, PROVIDER_KEY_ENV, readAuthMode, readProviderKey, saveProviderKey, setAuthMode, SUBSCRIPTION_CAPABLE, verdictWords, verifyProviderKey } from "../keys.js";
-import { decisionsHtml,framedSection,knowledgeHtml,MEMORY_INTRO,memorySearchHtml,proposalsHtml } from "../knowledge-ui.js";
+import { cleanUpHtml,decisionsHtml,framedSection,knowledgeHtml,MEMORY_INTRO,memorySearchHtml,proposalsHtml,referenceRestoreHtml,restoreHtml } from "../knowledge-ui.js";
 import { aboutYouOf,checkAboutYou,saveAboutYou } from "../lead-about.js";
 import { cancelCommitment,conditionWords,openCommitments } from '../lead-commitments.js';
 import { checkLeadIdentity,leadIdentityOf } from "../lead-identity.js";
 import { mailboxAccess,readThroughImap } from "../mailbox.js";
 import { startConnect } from "../mcp-connect.js";
-import { decideProposal,listProposals,memoryStatus } from "../memory-pass.js";
+import { decideProposal,defaultTidyAnalyzer,listProposals,memoryStatus } from "../memory-pass.js";
 import { checkModels,isNewModel,modelOptions,modelWords,RUNTIME_TOOLS,runtimeStates,seenModels,setWatch,updateRuntime,watchState,type RuntimeTool } from "../model-catalog.js";
 import { modelsHtml,modelsScript,type RoleView,type SuggestedView } from "../models-ui.js";
 import { acceptSuggestion, dismissSuggestion, grantWords, keepRule, modelName, ruleWords, rulesOf, setSuggestModels, startTrial, stopTrial, suggestionsFor, suggestionWords, suggestModelsOn, trialOffersFor, trialOfferWords, trialsOf, trialWords, turnOffRule } from "../route-rules.js";
@@ -587,16 +590,20 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
           const revision=Number(url.searchParams.get('version'));
           const previous=knowledgeVersion(store,chosen,who.name,revision);
           const restore=csrf&&who.role==='approver'&&revision!==view.revision?postForm('/settings/knowledge/change',html`<p>Replaces knowledge for future tasks. Existing runs keep their saved context.</p><button>Restore version ${revision}</button>`,{attrs:{class:'knowledge'},hidden:{repo:chosen,identity:view.identity,revision:String(view.revision),action:'restore',restore:String(revision)}}):'';
-          return sendScreen(response,200,screen('Knowledge history',settingsSubPage('agents',`Knowledge · version ${revision}`,html`<p class="k-note"><a class="k-link" href="/settings/knowledge?repo=${encodeURIComponent(chosen)}">Current knowledge</a></p>${knowledgeHtml({...view,knowledge:previous,history:[],stale:null},'',false)}${restore}`),{chrome:chromeFor(chosen,'settings')}));
+          return sendScreen(response,200,screen('Knowledge history',settingsSubPage('agents',`Knowledge · version ${revision}`,html`<p class="k-note"><a class="k-link" href="/settings/knowledge?repo=${encodeURIComponent(chosen)}">Current knowledge</a></p>${knowledgeHtml({...view,knowledge:previous,history:[],stale:null},'',false)}${restore}${referenceRestoreHtml(chosen,revision,previous.references.filter(ref=>!view.knowledge.references.some(now=>now.id===ref.id)),!!csrf&&who.role==='approver')}`),{chrome:chromeFor(chosen,'settings')}));
         }
         const query = (url.searchParams.get('q') ?? '').slice(0, 1000);
         const result = query.trim() ? repositoryContextRead({ repo: chosen, project: chosen, query, mode: url.searchParams.get('mode') === 'impact' ? 'impact' : 'search', cacheRoot: join(dirname(evidenceRoot), 'repository-context') }) : null;
         const memoryQuery = (url.searchParams.get('memory') ?? '').slice(0, 300);
         const hits = memoryQuery.trim() ? searchMemory(store, { actor: who.name, repos: [chosen], query: memoryQuery, limit: 20 }) : null;
         let proposals: Html = html``;
-        try { proposals = (proposalsHtml(chosen, listProposals(store, chosen), memoryStatus(store, chosen, who.name), csrf, who.role === 'approver')); } catch { proposals = html``; }
-        content = html`<p class="meta">${MEMORY_INTRO}</p>${memorySearchHtml(chosen, memoryQuery, hits)}${proposals}${(decisionsHtml(chosen, listDecisions(store, chosen, who.name, { limit: 50 }), csrf, who.role === 'approver'))}\
-${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : '')}${knowledgeHtml(view,csrf,who.role==='approver')}\
+        try { proposals = (proposalsHtml(chosen, listProposals(store, chosen), memoryStatus(store, chosen, who.name), csrf, who.role === 'approver', who.name)); } catch { proposals = html``; }
+        const use = memoryUseOf(store, chosen);
+        const manageMemory = who.role === 'approver' && csrf !== '';
+        const retired = listDecisions(store, chosen, who.name, { status: 'all', limit: 100 }).filter(d => d.status !== 'active');
+        content = html`<p class="meta">${MEMORY_INTRO}</p>${memorySearchHtml(chosen, memoryQuery, hits)}${proposals}${cleanUpHtml(chosen, listTidy(store, chosen), manageMemory)}${(decisionsHtml(chosen, listDecisions(store, chosen, who.name, { limit: 50 }), csrf, who.role === 'approver', undefined, undefined, use, d => { const after = noteAfterwards(store, d); return after === null ? null : afterwardsWords(after); }))}\
+${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : '')}${knowledgeHtml(view,csrf,who.role==='approver',undefined,undefined,use)}\
+${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(store, chosen), manageMemory)}\
 <details class="knowledge frame"><summary class="frame-head">Learned lessons</summary><div class="frame-panel">${(learningHtml(learningView(store,evidenceRoot,chosen,who.name),csrf,who.role==='approver'))}</div></details>`;
       } catch { content = html`<p class="problem" role="alert">Project knowledge is unavailable. Reload to retry.</p>`; }
     }
@@ -1553,6 +1560,46 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     catch (error) { return sendScreen(response, 409, screen('Knowledge', settingsSubPage("agents", "Knowledge", html`<p role="alert">${error instanceof Error ? error.message : 'That proposal could not be decided.'}</p><p><a href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Back to knowledge</a></p>`), { chrome: chromeFor(repo, 'settings') })); }
     return redirect(response, `/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
   }
+  /** A lesson note: a person's own words, accepted as a decision through the one proposal writer, or rejected. */
+  async function knowledgeNote(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.knowledgeNote);
+    const repo = body.get('repo') ?? '', decision = body.get('decision') ?? '';
+    if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
+    if (!['accept', 'reject'].includes(decision) || !/^[0-9]{1,12}$/.test(body.get('proposal') ?? '')) return refuse(response, who, 400, 'Choose accept or reject for one note.', '/settings/knowledge');
+    const id = Number(body.get('proposal'));
+    try {
+      if (lessonNoteOf(store, id) === null) throw Error('That note is unavailable.');
+      decideProposal(store, { repo, actor: who.name, id, decision: decision as 'accept' | 'reject', claim: body.get('claim') ?? '' }, now);
+    } catch (error) { return sendScreen(response, 409, screen('Knowledge', settingsSubPage("agents", "Knowledge", html`<p role="alert">${error instanceof Error ? error.message : 'That note could not be decided.'}</p><p><a class="k-link" href="/settings/knowledge?repo=${encodeURIComponent(repo)}">Back to Knowledge</a></p>`), { chrome: chromeFor(repo, 'settings') })); }
+    return redirect(response, `/settings/knowledge?repo=${encodeURIComponent(repo)}&saved=1`);
+  }
+  /** Project memory's clean-up: a person's request, accepting or rejecting one proposal, and restores. Every writer
+   * proves the person inside its own transaction. */
+  async function knowledgeTidy(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.knowledgeTidy);
+    const repo = body.get('repo') ?? '', action = body.get('action') ?? '', target = body.get('target') ?? '';
+    if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, 'That project is outside your access.', '/settings/knowledge');
+    const back = `/settings/knowledge?repo=${encodeURIComponent(repo)}`;
+    const said = (id: string) => /^[0-9]{1,12}$/.test(id) ? Number(id) : null;
+    // Only a browser session is a person's proof here; the writers refuse anything else.
+    const proof = who.via === 'cookie' ? 'session' : 'remote-token';
+    try {
+      if (action === 'propose') await proposeTidy(store, { repo, actor: who.name, analyzer: defaultTidyAnalyzer(store, store.databaseFile() === null ? {} : { configDir: dirname(store.databaseFile()!) }) }, now);
+      else if (action === 'accept' || action === 'reject') {
+        const id = said(body.get('proposal') ?? '');
+        if (id === null) throw Error('Choose one proposal.');
+        const choice = body.get('choice'), claim = body.get('claim'), why = body.get('why');
+        decideTidy(store, evidenceRoot, { repo, actor: who.name, id, decision: action, proof, ...(choice === null ? {} : { choice }), ...(claim === null ? {} : { claim }), ...(why === null ? {} : { why }) }, now);
+      } else if (action === 'restore' && said(target) !== null) restoreDecision(store, { repo, actor: who.name, id: said(target)!, proof }, now);
+      else if (action === 'unmerge' && said(target) !== null) unmergeDecisions(store, { repo, actor: who.name, merge: said(target)!, proof }, now);
+      else if (action === 'readopt' && said(target) !== null) restoreLesson(store, evidenceRoot, { repo, actor: who.name, id: said(target)!, proof }, now);
+      else if (action === 'reference' && /^[a-f0-9]{20}$/.test(target) && said(body.get('revision') ?? '') !== null) restoreReference(store, { repo, actor: who.name, id: target, fromRevision: said(body.get('revision') ?? '')!, proof }, now);
+      else return refuse(response, who, 400, 'Choose one clean-up action.', back);
+    } catch (error) { return sendScreen(response, 409, screen('Knowledge', settingsSubPage("agents", "Knowledge", html`<p role="alert">${error instanceof Error ? error.message : 'That could not be done.'}</p><p><a class="k-link" href="${back}">Back to Knowledge</a></p>`), { chrome: chromeFor(repo, 'settings') })); }
+    return redirect(response, `${back}&saved=1`);
+  }
   async function knowledgeDecision(ctx: HandlerContext): Promise<void> {
     const { response, now, posted } = ctx;
     const who = browserCaller(ctx.who);
@@ -2431,6 +2478,8 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.models-stop": modelsRuleAct("stop"),
     "settings.knowledge-refresh": knowledgeRefresh,
     "settings.knowledge-proposal": knowledgeProposal,
+    "settings.knowledge-note": knowledgeNote,
+    "settings.knowledge-tidy": knowledgeTidy,
     "settings.knowledge-decision": knowledgeDecision,
     "settings.knowledge-change": knowledgeChange,
     "settings.learning-change": learningChange,

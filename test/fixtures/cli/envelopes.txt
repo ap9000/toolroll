@@ -633,6 +633,21 @@ $ contract --commands --json → 0
           "meaning": "accept or reject, for memory apply"
         },
         {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note or a clean-up, for memory apply"
+        },
+        {
+          "name": "choice",
+          "takesValue": true,
+          "meaning": "what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "the saved knowledge version a reference comes back from, for memory restore"
+        },
+        {
           "name": "sessions",
           "takesValue": true,
           "meaning": "at most this many newest sessions for one pass (default 100)"
@@ -705,6 +720,21 @@ $ contract --commands --json → 0
           "meaning": "accept or reject, for memory apply"
         },
         {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note or a clean-up, for memory apply"
+        },
+        {
+          "name": "choice",
+          "takesValue": true,
+          "meaning": "what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "the saved knowledge version a reference comes back from, for memory restore"
+        },
+        {
           "name": "sessions",
           "takesValue": true,
           "meaning": "at most this many newest sessions for one pass (default 100)"
@@ -768,6 +798,21 @@ $ contract --commands --json → 0
           "name": "decision",
           "takesValue": true,
           "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note or a clean-up, for memory apply"
+        },
+        {
+          "name": "choice",
+          "takesValue": true,
+          "meaning": "what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "the saved knowledge version a reference comes back from, for memory restore"
         },
         {
           "name": "sessions",
@@ -842,6 +887,21 @@ $ contract --commands --json → 0
           "meaning": "accept or reject, for memory apply"
         },
         {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note or a clean-up, for memory apply"
+        },
+        {
+          "name": "choice",
+          "takesValue": true,
+          "meaning": "what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "the saved knowledge version a reference comes back from, for memory restore"
+        },
+        {
           "name": "sessions",
           "takesValue": true,
           "meaning": "at most this many newest sessions for one pass (default 100)"
@@ -912,6 +972,21 @@ $ contract --commands --json → 0
           "name": "decision",
           "takesValue": true,
           "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note or a clean-up, for memory apply"
+        },
+        {
+          "name": "choice",
+          "takesValue": true,
+          "meaning": "what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "the saved knowledge version a reference comes back from, for memory restore"
         },
         {
           "name": "sessions",
@@ -986,6 +1061,21 @@ $ contract --commands --json → 0
           "meaning": "accept or reject, for memory apply"
         },
         {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note or a clean-up, for memory apply"
+        },
+        {
+          "name": "choice",
+          "takesValue": true,
+          "meaning": "what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "the saved knowledge version a reference comes back from, for memory restore"
+        },
+        {
           "name": "sessions",
           "takesValue": true,
           "meaning": "at most this many newest sessions for one pass (default 100)"
@@ -1051,6 +1141,21 @@ $ contract --commands --json → 0
           "meaning": "accept or reject, for memory apply"
         },
         {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note or a clean-up, for memory apply"
+        },
+        {
+          "name": "choice",
+          "takesValue": true,
+          "meaning": "what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "the saved knowledge version a reference comes back from, for memory restore"
+        },
+        {
           "name": "sessions",
           "takesValue": true,
           "meaning": "at most this many newest sessions for one pass (default 100)"
@@ -1065,7 +1170,7 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "memory apply",
-      "synopsis": "decide one proposal: memory apply <id> --decision accept|reject — the only writer",
+      "synopsis": "decide one proposal: memory apply <id> --decision accept|reject [--claim \"<your words>\"] — the only writer",
       "audience": "operator",
       "agentMayInvoke": false,
       "mutation": "unkeyed",
@@ -1114,6 +1219,275 @@ $ contract --commands --json → 0
           "name": "decision",
           "takesValue": true,
           "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note or a clean-up, for memory apply"
+        },
+        {
+          "name": "choice",
+          "takesValue": true,
+          "meaning": "what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "the saved knowledge version a reference comes back from, for memory restore"
+        },
+        {
+          "name": "sessions",
+          "takesValue": true,
+          "meaning": "at most this many newest sessions for one pass (default 100)"
+        },
+        {
+          "name": "no-local",
+          "takesValue": false,
+          "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "query",
+          "required": true,
+          "meaning": "search text, a decision id, or the decision sentence"
+        }
+      ],
+      "remote": "step-up"
+    },
+    {
+      "invocation": "memory tidy",
+      "synopsis": "propose retiring, merging or settling memory entries; a person accepts each (writes nothing to memory)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "the reason behind a decision"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why a decision no longer holds"
+        },
+        {
+          "name": "supersedes",
+          "takesValue": true,
+          "meaning": "the decision id this one replaces"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "where the decision came from (conversation, task, result)"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include superseded and retired decisions"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "decision",
+          "takesValue": true,
+          "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note or a clean-up, for memory apply"
+        },
+        {
+          "name": "choice",
+          "takesValue": true,
+          "meaning": "what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "the saved knowledge version a reference comes back from, for memory restore"
+        },
+        {
+          "name": "sessions",
+          "takesValue": true,
+          "meaning": "at most this many newest sessions for one pass (default 100)"
+        },
+        {
+          "name": "no-local",
+          "takesValue": false,
+          "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ],
+      "remote": "step-up"
+    },
+    {
+      "invocation": "memory restore",
+      "synopsis": "bring back a decision: memory restore <id>, lesson:<id>, or reference:<id> --revision <version>",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "the reason behind a decision"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why a decision no longer holds"
+        },
+        {
+          "name": "supersedes",
+          "takesValue": true,
+          "meaning": "the decision id this one replaces"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "where the decision came from (conversation, task, result)"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include superseded and retired decisions"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "decision",
+          "takesValue": true,
+          "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note or a clean-up, for memory apply"
+        },
+        {
+          "name": "choice",
+          "takesValue": true,
+          "meaning": "what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "the saved knowledge version a reference comes back from, for memory restore"
+        },
+        {
+          "name": "sessions",
+          "takesValue": true,
+          "meaning": "at most this many newest sessions for one pass (default 100)"
+        },
+        {
+          "name": "no-local",
+          "takesValue": false,
+          "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "query",
+          "required": true,
+          "meaning": "search text, a decision id, or the decision sentence"
+        }
+      ],
+      "remote": "step-up"
+    },
+    {
+      "invocation": "memory unmerge",
+      "synopsis": "undo a merge of decisions: memory unmerge <merge>",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "why",
+          "takesValue": true,
+          "meaning": "the reason behind a decision"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "why a decision no longer holds"
+        },
+        {
+          "name": "supersedes",
+          "takesValue": true,
+          "meaning": "the decision id this one replaces"
+        },
+        {
+          "name": "source",
+          "takesValue": true,
+          "meaning": "where the decision came from (conversation, task, result)"
+        },
+        {
+          "name": "all",
+          "takesValue": false,
+          "meaning": "include superseded and retired decisions"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        },
+        {
+          "name": "decision",
+          "takesValue": true,
+          "meaning": "accept or reject, for memory apply"
+        },
+        {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note or a clean-up, for memory apply"
+        },
+        {
+          "name": "choice",
+          "takesValue": true,
+          "meaning": "what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "the saved knowledge version a reference comes back from, for memory restore"
         },
         {
           "name": "sessions",
@@ -1188,6 +1562,21 @@ $ contract --commands --json → 0
           "meaning": "accept or reject, for memory apply"
         },
         {
+          "name": "claim",
+          "takesValue": true,
+          "meaning": "your own words for a lesson note or a clean-up, for memory apply"
+        },
+        {
+          "name": "choice",
+          "takesValue": true,
+          "meaning": "what a clean-up does: keep:<id>, both or new; rewrite or retire; for a restore, retire or keep"
+        },
+        {
+          "name": "revision",
+          "takesValue": true,
+          "meaning": "the saved knowledge version a reference comes back from, for memory restore"
+        },
+        {
           "name": "sessions",
           "takesValue": true,
           "meaning": "at most this many newest sessions for one pass (default 100)"
@@ -1196,6 +1585,73 @@ $ contract --commands --json → 0
           "name": "no-local",
           "takesValue": false,
           "meaning": "read only the plane's own transcripts, not local Claude Code or Codex session files"
+        }
+      ],
+      "remote": "yes"
+    },
+    {
+      "invocation": "flaky list",
+      "synopsis": "tests with mixed outcomes under recorded conditions (read only)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "days",
+          "takesValue": true,
+          "meaning": "how far back to look (default 90)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "remote": "yes"
+    },
+    {
+      "invocation": "flaky show",
+      "synopsis": "one row's history, and the task that would fix it: flaky show <identity> (read only)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "admitted project checkout root"
+        },
+        {
+          "name": "days",
+          "takesValue": true,
+          "meaning": "how far back to look (default 90)"
+        },
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "versioned structured response"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "local Toolroll database"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "identity",
+          "required": true,
+          "meaning": "a row's key from flaky list"
         }
       ],
       "remote": "yes"

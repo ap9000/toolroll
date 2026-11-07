@@ -24,8 +24,8 @@ export function shortPathOf(path: string): string {
 }
 
 /** A project's page address. Names are folder names, so two projects can share one: then the path picks. */
-export function projectHref(name: string, path: string, ambiguous: boolean): string {
-  return `/projects/${encodeURIComponent(name)}${ambiguous ? `?path=${encodeURIComponent(path)}` : ""}`;
+export function projectHref(name: string, path: string, ambiguous: boolean, page = ""): string {
+  return `/projects/${encodeURIComponent(name)}${page === "" ? "" : `/${page}`}${ambiguous ? `?path=${encodeURIComponent(path)}` : ""}`;
 }
 
 /** What a project's counts say on one line ("2 need you · 1 running"); null when it wasn't scanned. */
@@ -188,6 +188,7 @@ export function projectPage(chrome: Chrome, data: {
   checks: { href: string; level: string } | null;
   pullRequests: { href: string; on: boolean } | null;
   knowledgeHref: string;
+  flakyHref: string;
   settingsHref: string | null;
   activity: { report: ProjectOutcomes | null } | null;
   now: Date;
@@ -222,6 +223,7 @@ export function projectPage(chrome: Chrome, data: {
     ...(data.pullRequests === null ? [] : [["Pull requests", html`<a class="k-link" href="${data.pullRequests.href}">${data.pullRequests.on ? "On" : "Off"}</a>`] as const]),
     ["Knowledge", html`<a class="k-link" href="${data.knowledgeHref}">Open knowledge</a>`],
     ["Code map", html`<a class="k-link" href="${`/projects/${encodeURIComponent(data.name)}/map${data.selfHref.includes("?") ? data.selfHref.slice(data.selfHref.indexOf("?")) : ""}`}">Open code map</a>`],
+    ["Flaky tests", html`<a class="k-link" href="${data.flakyHref}">Open flaky tests</a>`],
   ]);
   const body = joinHtml([
     phoneHeader(data.name, { back: "/projects" }),

@@ -252,6 +252,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
       <Box justifyContent="space-between">
         <Text bold>Toolroll</Text>
         {snapshot?.needsYou ? <SafeText color="yellow">{snapshot.needsYou}</SafeText> : <Text dimColor>Nothing needs you</Text>}
+        {snapshot?.learning ? <SafeText dimColor>{snapshot.learning}</SafeText> : null}
       </Box>
       {body()}
       {footer === null ? null : <SafeText>{footer}</SafeText>}

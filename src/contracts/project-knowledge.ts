@@ -106,16 +106,21 @@ const selectionShape = (text: Text) => ({
   repository: z.looseObject({}).optional(),
 });
 
-export const KNOWLEDGE_SELECTION_VERSION = 1;
+/** Version 2 (docs/plans/learning-loops.md, "Versioned snapshots"): a selection says when it was frozen, and its decision
+ * lines their revision. Version 1 stays readable exactly as it was frozen, its fields as they are. */
+export const KNOWLEDGE_SELECTION_VERSION = 2;
 
 /** The selection a run is given, as it is frozen. The keys are in the order a selection has always been written. */
-export const knowledgeSelectionSchema = versioned(KNOWLEDGE_SELECTION_VERSION, selectionShape(written));
-/** A frozen selection as it is read back. */
-export const savedKnowledgeSelectionSchema = versioned(KNOWLEDGE_SELECTION_VERSION, selectionShape(saved));
+export const knowledgeSelectionSchema = versioned(KNOWLEDGE_SELECTION_VERSION, { ...selectionShape(written), capturedAt: z.string() });
+/** A frozen selection as it is read back: the version it was frozen under. */
+export const savedKnowledgeSelectionSchema = versioned(KNOWLEDGE_SELECTION_VERSION, { ...selectionShape(saved), capturedAt: z.string() });
+export const savedKnowledgeSelectionV1Schema = versioned(1, selectionShape(saved));
 
-export type KnowledgeSelection = Omit<z.infer<typeof knowledgeSelectionSchema>, "repository"> & { repository?: RepositoryContext };
+export type KnowledgeSelection = Omit<z.infer<typeof knowledgeSelectionSchema>, "repository" | "version" | "capturedAt"> & { version: 1 | 2; capturedAt?: string; repository?: RepositoryContext };
 
-/** Read a frozen selection: version 1 (every selection ever frozen) as itself, a newer one refused plainly. */
+/** Read a frozen selection: version 1 and 2 each as themselves, a newer one refused plainly. */
 export function readKnowledgeSelection(input: unknown): ContractResult<KnowledgeSelection> {
+  const version = input !== null && typeof input === "object" ? (input as { version?: unknown }).version : undefined;
+  if (version === 1) return readVersioned(savedKnowledgeSelectionV1Schema, input) as ContractResult<KnowledgeSelection>;
   return readVersioned(savedKnowledgeSelectionSchema, input) as ContractResult<KnowledgeSelection>;
 }

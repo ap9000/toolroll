@@ -54,8 +54,9 @@ export const decisionDraftSchema = z.strictObject({
 
 export type DecisionDraft = z.infer<typeof decisionDraftSchema>;
 
-/** One decision in a brief: its id, the choice and when; the why loads on demand by id. */
-export const decisionLineSchema = z.strictObject({ id: z.int(), claim: z.string(), decidedAt: z.string() });
+/** One decision in a brief: its id, the choice and when (the revision on snapshots from version 2 on); the why loads on
+ * demand by id. */
+export const decisionLineSchema = z.strictObject({ id: z.int(), claim: z.string(), decidedAt: z.string(), revision: z.int().min(1).optional() });
 
 export type DecisionLine = z.infer<typeof decisionLineSchema>;
 
