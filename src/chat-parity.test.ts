@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquire, finalize } from "./claim.js";
 import { withActor } from "./actor.js";
-import { APPROVAL_ACTIONS, prepareSharedAction, type ChatAction } from "./chat-actions.js";
+import { APPROVAL_ACTIONS, mintSharedActionReview, prepareSharedAction, type ChatAction } from "./chat-actions.js";
 import { setChatApproval } from "./chat-approval.js";
 import { chatTaskStamp } from "./chat-task-actions.js";
 import { storeEvidence } from "./evidence.js";
@@ -232,6 +232,22 @@ describe("the new chat actions", () => {
     expect(setChatApproval(store, { approver: "operator", scope: repo, enabled: true, limits: { fullAccess: true, capMicrousd: 1_000_000 }, via: "test" }, now).ok).toBe(true);
     expect(yes(fresh)).toMatchObject({ ok: false });
     expect(activeUnattendedGrant(store, flow, now)).toBeNull();
+  });
+
+  test("flow_unattended: the ledger says which road and which chat, naming the grant", () => {
+    const line = (flow: number) => store.actionLedger({ repos: [repo] }).filter(one => one.action === "flow runs on its own: signed" && String(one.detail).includes(`flow #${flow}`));
+    const slack = scheduled();
+    const tapped = draft("flow_unattended", { flow: slack, days: 3 });
+    expect(confirmLeadProposal(store, who, tapped, now, { authority: "full", via: "slack", binding: 7, confirm: true, evidenceRoot: root })).toMatchObject({ ok: true });
+    const grant = activeUnattendedGrant(store, slack, now)!;
+    expect(line(slack)).toHaveLength(1);
+    expect(line(slack)[0]!.detail).toContain(`grant #${grant.id} · via slack · chat binding #7`);
+    const web = scheduled();
+    const clicked = draft("flow_unattended", { flow: web, days: 3 });
+    const review = mintSharedActionReview(store, who, clicked, root, now);
+    expect(confirmLeadProposal(store, who, clicked, now, { authority: "full", via: "web", person: true, confirm: true, evidenceRoot: root, actionReview: { nonce: review.nonce, password: "" } })).toMatchObject({ ok: true });
+    expect(line(web)[0]!.detail).toContain(`grant #${activeUnattendedGrant(store, web, now)!.id} · via web`);
+    expect(line(web)[0]!.detail).not.toContain("chat binding");
   });
 
   test("a project-limited person can't sign a flow to run on its own, as the console refuses them", () => {

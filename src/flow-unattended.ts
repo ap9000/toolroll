@@ -597,7 +597,7 @@ export async function signUnattended(store: Store, input: { flow: number; signer
  * and the schedules its card showed (`sawSchedules`). A snapshot older than the files fails closed: a firing runs a
  * signed script only if it is still the very code signed.
  */
-export function sealUnattended(store: Store, input: { flow: number; signer: string; ask: UnattendedAsk; sawRevision?: number; sawSchedules?: string }, now: Date, before?: { revision: number | undefined; schedules: string; prepared: string }): { ok: true; grant: UnattendedGrant } | { ok: false; message: string } {
+export function sealUnattended(store: Store, input: { flow: number; signer: string; ask: UnattendedAsk; sawRevision?: number; sawSchedules?: string; /** Where the yes came from, for the ledger: "via slack · chat binding #3". */ road?: string }, now: Date, before?: { revision: number | undefined; schedules: string; prepared: string }): { ok: true; grant: UnattendedGrant } | { ok: false; message: string } {
   return store.transact(() => {
     const flow = store.getFlow(input.flow);
     if (flow === null) return { ok: false as const, message: "No such flow." };
@@ -621,7 +621,7 @@ export function sealUnattended(store: Store, input: { flow: number; signer: stri
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(flow.id, flow.repo, flow.revision, unattendedTermsJson(terms), digest, input.signer, now.toISOString(), terms.absoluteExpiry).lastInsertRowid);
     store.recordAction({ at: now.toISOString(), actor: input.signer, repo: flow.repo, taskId: null, runId: null, source: "policy",
       action: `flow runs on its own: ${previous === undefined ? "signed" : "renewed"}`, outcome: previous === undefined ? "signed" : "renewed",
-      detail: `${flow.name} (flow #${flow.id}) · until ${terms.absoluteExpiry.slice(0, 16).replace("T", " ")} UTC${terms.perAttemptBudgetMicrousd === null ? "" : ` · ${dollars(terms.perAttemptBudgetMicrousd)} per attempt`}${terms.dailyRunCap === null ? "" : ` · ${terms.dailyRunCap} runs a day`}` });
+      detail: `${flow.name} (flow #${flow.id}) · until ${terms.absoluteExpiry.slice(0, 16).replace("T", " ")} UTC${terms.perAttemptBudgetMicrousd === null ? "" : ` · ${dollars(terms.perAttemptBudgetMicrousd)} per attempt`}${terms.dailyRunCap === null ? "" : ` · ${terms.dailyRunCap} runs a day`}${input.road === undefined ? "" : ` · grant #${id} · ${input.road}`}` });
     return { ok: true as const, grant: { id, flow: flow.id, repo: flow.repo, terms, digest, signedBy: input.signer, signedAt: now.toISOString(), absoluteExpiry: terms.absoluteExpiry } };
   });
 }

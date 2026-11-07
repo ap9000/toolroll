@@ -83,6 +83,8 @@ export type DoorOptions = {
   confirm?: boolean;
   /** The web door only: a person's signed-in browser session, never a token. An approval from the web needs it. */
   person?: boolean;
+  /** A linked chat's own binding: which chat the yes came from, for the ledger. */
+  binding?: number;
   /** Which surface answered — recorded on the decision, the stop and the
    * proposal's outcome. Named by the caller, never defaulted (v3 review,
    * finding 1); `telegram` is the paired phone, never relabelled as the CLI. */
@@ -232,7 +234,7 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
     // Both executors run as the card's own act: the prover answers "local-owner" only for it.
     const execute = <T,>(body: () => T): T => localAct === null ? body() : withLocalAct(localAct, body);
     const outcome: DoorOutcome = proposal.kind === "action"
-      ? { ...execute(() => executeSharedAction(store, who, proposal.id, sharedActionPayload(proposal.payload)!, now, {via:options.via, ...(options.person === undefined ? {} : { person: options.person }), authority: localAct === null ? "full" : "local-owner", ...(options.evidenceRoot===undefined?{}:{root:options.evidenceRoot}), ...(options.actionReview===undefined?{}:{review:options.actionReview}), ...(options.confirm===undefined?{}:{confirm:options.confirm})})), kind: proposal.kind }
+      ? { ...execute(() => executeSharedAction(store, who, proposal.id, sharedActionPayload(proposal.payload)!, now, {via:options.via, ...(options.person === undefined ? {} : { person: options.person }), ...(options.binding === undefined ? {} : { binding: options.binding }), authority: localAct === null ? "full" : "local-owner", ...(options.evidenceRoot===undefined?{}:{root:options.evidenceRoot}), ...(options.actionReview===undefined?{}:{review:options.actionReview}), ...(options.confirm===undefined?{}:{confirm:options.confirm})})), kind: proposal.kind }
       : execute(() => executeProposal(store, who, proposal.kind, proposal.payload, now, { ...options, deferSignal: defer }));
     if (!outcome.ok && outcome.reason === "needs-confirm") {
       store.casLeadProposal(proposalId, "confirming", "pending", null, null, now);

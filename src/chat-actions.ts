@@ -1240,6 +1240,8 @@ export type SharedActionOptions = {
   confirm?: boolean;
   /** The web door only: a person's signed-in browser session, never a token. */
   person?: boolean;
+  /** A linked chat's own binding: which chat the yes came from, for the ledger. */
+  binding?: number;
 };
 /** Called inside the proposal door's transaction, after ownership and session
  * checks. No password or review receipt is ever part of a saved proposal. */
@@ -1338,7 +1340,7 @@ export function executeSharedAction(
         repo = payload.repo,
         actor = who.name;
       let taskId = task;
-      if (LATE_APPROVALS.has(payload.operation)) return runLateApproval(store, who, payload, approvalBy(store, who, payload.repo, now, options, drafted), now);
+      if (LATE_APPROVALS.has(payload.operation)) return runLateApproval(store, who, payload, approvalBy(store, who, payload.repo, now, options, drafted), approvalRoad(options), now);
       if (PARITY_ACTIONS.has(payload.operation) || OWNER_PARITY.has(payload.operation)) return runParityAction(store, who, payload, now);
       if (payload.operation === "lead_about_you") {
         const next = withAboutYouLine(aboutYouOf(store, actor), String(req["line"]), Number(req["replaces"] ?? 0));
@@ -1933,8 +1935,11 @@ function parityAction(store: Store, who: VerifiedApprover, operation: ChatAction
   }
 }
 
+/** Where a yes came from, in the words the other chat approvals' ledger lines use. */
+const approvalRoad = (options: SharedActionOptions): string => `via ${options.via}${options.binding === undefined ? "" : ` · chat binding #${options.binding}`}`;
+
 /** The approvals added last: the console's own write, after the same question every approval asks. */
-function runLateApproval(store: Store, who: VerifiedApprover, payload: SharedAction, by: ReturnType<typeof approvalBy>, now: Date): { ok: true; taskId: string | null; said: string; href?: string } {
+function runLateApproval(store: Store, who: VerifiedApprover, payload: SharedAction, by: ReturnType<typeof approvalBy>, road: string, now: Date): { ok: true; taskId: string | null; said: string; href?: string } {
   const req = payload.request, actor = who.name;
   // Rejecting lowers: it takes a person's yes, not their approving setting.
   if (by.ok === false && payload.operation !== "revision_reject") throw Error(by.why);
@@ -1946,7 +1951,7 @@ function runLateApproval(store: Store, who: VerifiedApprover, payload: SharedAct
   if (payload.operation === "flow_unattended") {
     const ask = payload.state["ask"] as UnattendedAsk;
     if (by.ok && by.limits.capMicrousd !== null && (ask.budgetMicrousd === null || ask.budgetMicrousd > by.limits.capMicrousd)) throw Error("This has a higher attempt limit than your chat approval setting allows.");
-    const signed = sealUnattended(store, { flow: Number(req["flow"]), signer: actor, ask, sawRevision: Number(payload.state["revision"]), sawSchedules: String(payload.state["schedules"]) }, now);
+    const signed = sealUnattended(store, { flow: Number(req["flow"]), signer: actor, ask, sawRevision: Number(payload.state["revision"]), sawSchedules: String(payload.state["schedules"]), road }, now);
     if (!signed.ok) throw Error(signed.message);
     return { ok: true, taskId: null, said: `Runs on its own until ${untilWords(signed.grant.absoluteExpiry)}.`, href: `/flows/${Number(req["flow"])}` };
   }

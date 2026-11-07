@@ -827,6 +827,7 @@ export function applyChatAction(
           // A paired chat seat speaks for its account's full authority (pairing is a full session's act).
           authority: "full",
           via: options.state.provider,
+          binding: binding.id,
           evidenceRoot: options.evidenceRoot,
           confirm: phase === "yes",
           deferSignal: (signal) => signals.push(signal),

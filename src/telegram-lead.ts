@@ -334,6 +334,7 @@ export function applyProposalTap(
     // The paired phone speaks for its account's full authority (pairing is a full session's act).
     authority: "full",
     via: "telegram",
+    binding: binding.id,
     evidenceRoot: options.evidenceRoot,
     confirm: action.phase === "yes",
     deferSignal: signal => effects.push({ kind: "signal", run: signal }),
