@@ -1,7 +1,8 @@
 /**
  * A Toolroll card as it is kept and shown (docs/plans/toolroll-cards.md): what a card's spec became once Toolroll filled
  * it from its own records. Every value here was written by Toolroll; the one exception is a `text` block, which a person
- * reads as a plain paragraph, never as data. A saved card is read back through this schema before any renderer sees it.
+ * reads as a plain paragraph labelled as the lead's note, never as data. A saved card is read back through this
+ * schema before any renderer sees it.
  */
 import { z } from "zod";
 

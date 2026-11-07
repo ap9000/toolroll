@@ -1,6 +1,7 @@
 /**
  * From a checked spec to a card (docs/plans/toolroll-cards.md): Toolroll fills every data part from its records and every
- * button from its own tables. Nothing the model wrote reaches a card except a Text part, and that as a plain paragraph.
+ * button from its own tables. Nothing the model wrote reaches a card except a Text part, and every app labels that as
+ * the lead's note, never as one of Toolroll's records (card-render.ts).
  */
 import type { CardPlan, CardSourceName } from "./card-catalog.js";
 import { readCardSource, type CardData, type CardQuery, type CardReader } from "./card-sources.js";

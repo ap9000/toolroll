@@ -90,11 +90,42 @@ describe("a saved card", () => {
 
   test("Slack and Discord get their native forms, and a chart stays readable where there is none", () => {
     const types = slackCardBlocks(card, [{ type: "button" }]).map(one => one["type"]);
-    expect(types).toEqual(["header", "section", "section", "data_table", "context", "data_visualization", "context", "actions"]);
+    expect(types).toEqual(["header", "context", "section", "section", "data_table", "context", "data_visualization", "context", "actions"]);
     const embed = discordCardEmbed(card, discordPlain) as { fields: { name: string; value: string }[]; footer: { text: string } };
     expect(embed.fields.some(one => one.value.includes("█"))).toBe(true);
     expect(embed.footer.text).toContain("Confirm below: Try again");
     expect(telegramCardMessage(card).text).toContain("█");
+  });
+
+  test("the lead's words never borrow the records' standing: labelled as its note in every app, and the records line names only sourced parts", () => {
+    const mixed: ChatCard = { ...card, blocks: [{ kind: "text", text: "Verified spend this month: $0.00" }, card.blocks[2]!], actions: [] };
+    const lead = "The lead's note, not Toolroll's records";
+    const records = "Tables, fields, notes and charts are from Toolroll's records";
+    // Plain, and so every fallback: the label sits right above the words, and the records line names the parts it covers.
+    const plain = cardPlainText(mixed);
+    expect(plain).toContain(`${lead}:\nVerified spend this month: $0.00`);
+    expect(plain).toContain(records);
+    expect(plain).not.toMatch(/^From Toolroll's records/m);
+    // Web: set apart in its own box, labelled.
+    const web = htmlString(webCardHtml(mixed));
+    expect(web).toContain(`<div class="tc-lead"><p class="tc-note">The lead&#39;s note, not Toolroll&#39;s records</p><p class="tc-text">Verified spend this month: $0.00</p></div>`);
+    expect(web).toContain(records.replace("'", "&#39;"));
+    // Slack: a context label right before the words.
+    const slack = slackCardBlocks(mixed, []);
+    const at = slack.findIndex(one => JSON.stringify(one).includes("Verified spend"));
+    expect(slack[at - 1]).toEqual({ type: "context", elements: [{ type: "plain_text", text: lead, emoji: false }] });
+    expect(JSON.stringify(slack.at(-1))).toContain(records);
+    // Discord: the label leads the words in the description; the footer names the sourced parts.
+    const embed = discordCardEmbed(mixed, discordPlain) as { description: string; footer: { text: string } };
+    expect(embed.description).toBe(`${discordPlain(lead)}:\nVerified spend this month: $0.00`.replace("$", discordPlain("$")));
+    expect(embed.footer.text).toContain(discordPlain(records).slice(0, 20));
+    // Telegram: the label in bold, then the words.
+    const telegram = telegramCardMessage(mixed);
+    const label = telegram.text.indexOf(lead);
+    expect(telegram.text.slice(label)).toMatch(/^The lead's note, not Toolroll's records\n\nVerified spend this month: \$0\.00/);
+    expect(telegram.entities).toContainEqual({ type: "bold", offset: label, length: lead.length });
+    // A card with no lead's words keeps the short records line.
+    expect(cardPlainText({ ...mixed, blocks: [card.blocks[2]!] })).toContain("From Toolroll's records · ");
   });
 
   test("the plain version holds everything a card says", () => {
