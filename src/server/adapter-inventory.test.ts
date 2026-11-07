@@ -33,9 +33,9 @@ test("every route row is marked for the local owner; an allow names one of its a
     "projects.open=add-project", "projects.select=read", "run.act.comment=request-revision", "run.act.note=request-revision", "run.act.revise=request-revision", "settings.lead-on=choose-default-agent",
     // Results routing: lowering only, each in its exact act (route-store.ts proveRuleDoor re-checks it in the write).
     "settings.models-not-now=dismiss-suggestion", "settings.models-stop=trial-stop", "settings.models-suggest-off=dismiss-suggestion", "settings.models-turn-off=routing-turn-off",
-    "task.act.approve=approve-plan", "task.act.archive=archive-task", "task.act.cancel=stop-run", "task.act.complete=complete-task", "task.act.hold=pause-run",
+    "task.act.approve=approve-plan", "task.act.archive=archive-task", "task.act.cancel=stop-run", "task.act.complete=complete-task", "task.act.hold=pause-run", "task.act.keep-grown=approve-plan",
     "task.act.pause=pause-run", "task.act.reply=answer-question", "task.act.restore=archive-task", "task.act.resume-arm=resume-run", "task.act.resume=resume-run",
-    "task.act.steer=lead-send", "task.act.stop=stop-run", "task.act.unhold=resume-run", "tasks.add=file-task", "welcome.sample=add-project",
+    "task.act.steer=lead-send", "task.act.stop=stop-run", "task.act.unhold=resume-run", "tasks.add=file-task", "tasks.fast=build-now", "welcome.sample=add-project",
   ]);
   // Every console GET is a read.
   for (const row of ROUTES.filter(one => one.stage === "console" && one.method !== "POST")) expect([row.local, row.localAct], row.id).toEqual(["allow", "read"]);

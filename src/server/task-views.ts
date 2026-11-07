@@ -11,6 +11,7 @@ import { releaseCiRunningOf } from "../release-ci-hold.js";
 import { releaseObligationsOf } from "../release-recheck.js";
 import { approvalProofOf, freshnessFor, withFreshness } from "../scope.js";
 import { approvalPasswordField } from "../approval-password.js";
+import { fastChangeProblem, fastStarted } from "../fast-start.js";
 import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
 import { recentGitReads, taskBaseOf } from "../task-base.js";
@@ -574,6 +575,11 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
           return { approvalFresh: field.field === "remembered" ? field.since : null,
             approvalLocal: field.field === "none" && field.why === "local-owner" ? { eligible: true as const }
               : field.field === "local-refused" ? { eligible: false as const, message: field.message, href: field.href, action: field.action } : null };
+        })(),
+        fastGrown: (() => {
+          if (ref === null || runtime.store.getTask(ref.externalId)?.state !== "done" || !fastStarted(runtime.store, ref.externalId)) return null;
+          const last = runtime.store.lastBuilderRun(ref.id);
+          return last === null ? null : fastChangeProblem(runtime.store, ref.externalId, last.id);
         })(),
         steerRecent: ref === null ? [] : runtime.store.runsFor(ref.id).filter(one => one.outcome !== null).map(one => one.id).sort((a, b) => b - a).slice(0, 5),
         // The running attempt's composer, for an approver on a browser session (steer-controls.ts).

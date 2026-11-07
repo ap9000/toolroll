@@ -33,7 +33,8 @@ import { checkResponse, CONSOLE_FORMS, readForm } from "../contracts/console-api
 import { hasForbiddenControls,validateNote } from "../decision.js";
 import { builderReadyFor,diagnoseTaskDispatch,firstRunBuilderRepo } from "../dispatch.js";
 import { firstTaskSuggestions,withBuilderStep } from "../first-run.js";
-import { newTaskPage,type TaskComposerPrefill } from "./render-new-task.js";
+import { fastStartPage, fastTermsRows, newTaskPage,type TaskComposerPrefill } from "./render-new-task.js";
+import { fastStartBuild, keepGrownChange, prepareFastStart, type PasswordFacts } from "../fast-start.js";
 import { evidencePack } from "../evidence-pack.js";
 import { decisionPage, evidenceRecordPage, runPage } from "./render-history.js";
 import { readVerifiedArtifact,readVerifiedReport,writeEvidenceFile } from "../evidence.js";
@@ -866,6 +867,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
     // One filing door for every surface (Codex adoption review, finding 7).
     const after = (body.get("after") ?? "").trim();
+    // Small work a person starts themselves: their words become the exact terms, and Build is their yes (fast-start.ts).
+    // Anything else, or any doubt, is the ordinary filing below. `plain` is "Plan it first" from that form.
+    if (who.via === "cookie" && body.get("plain") !== "1" && repo !== "" && goal === "" && notThis === "" && touchesGiven.length === 0 && !scout && id === "" && after === ""
+      && (qualityMode === null || qualityMode === "default") && (permissionMode === null || permissionMode === "auto")) {
+      const fast = await prepareFastStart(store, { actor: who.name, repo, title: typed.trim(), via: "console", ...(permissionMode === null ? {} : { permissionMode }), password: fastPasswordFacts(who) }, now);
+      if (fast.eligible) return sendScreen(response, 200, fastStartPage(chromeFor(project ?? null, "tasks"), { title: typed.trim(), repo, preview: fast.preview, digest: fast.digest, terms: fastTermsRows(store, fast.scope, repo) }));
+    }
     let chainProblem: string | null = null;
     const made = store.transact(() => {
       // A project folder's identity changed while this request waited (a root or link now leads elsewhere): what was
@@ -2879,6 +2887,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "code.answer-send": codeAct("answer"),
     "code.act-other": codeAct("unknown"),
     "tasks.add": addTask,
+    "tasks.fast": buildNow,
+    "task.act.keep-grown": keepGrown,
     "queue.move": queueMove,
     "queue.note": queueNote,
     "decision.answer": answerDecision,
@@ -2941,6 +2951,40 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const ideas = found ?? (runtime.firstRunStepsNow(ctx.now) !== null && !store.hasAnyWork() ? firstTaskSuggestions({ issues: [], todos: [] }) : []);
     return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft, text, ideas));
   }
+  /** What the password rule reads for this request (approval-password.ts), the same facts the approve forms read. */
+  function fastPasswordFacts(who: Who): PasswordFacts {
+    return { passwordless: passwordlessSessionFor(store, who.name), localOwner: who.via === "cookie" && who.authority === "local-owner",
+      freshAt: withFreshness("approve-standard", () => freshnessFor(who.name, Date.now(), true))?.at ?? null, returnTo: "/tasks/new" };
+  }
+
+  /** Build: the fast start's one write. Every check is made again inside fastStartBuild's transaction. */
+  async function buildNow(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.tasksFast);
+    if (who.via !== "cookie") return refuse(response, who, 403, "Only a person starts a build this way.", "/tasks/new");
+    const preview = body.get("preview") ?? "";
+    const row = store.handle.prepare("SELECT repo, title FROM fast_preview WHERE id = ?").get(preview);
+    const title = row === undefined ? "" : String(row["title"]);
+    if (row !== undefined && !visible(String(row["repo"]))) return refuse(response, who, 403, "That project is outside your access.", "/projects");
+    const built = spendingOnlyOnSuccess(() => withFreshness("approve-standard", () => fastStartBuild(store, { preview, digest: body.get("digest") ?? "", actor: who.name, via: "console", password: fastPasswordFacts(who),
+      approveNow: (taskId, sawDigest, fast) => approveScope(store, taskId, who.name, now, sawDigest, "", {}, fast) }, now)), result => !result.ok);
+    if (!built.ok) return newTaskScreen(ctx, built.reason === "changed" ? 409 : 403, built.message, { title, goal: "", not: "", touches: "", acceptance: "" });
+    const actionContext = requestContext.getStore();
+    if (actionContext !== undefined) actionContext.createdTask = built.taskId;
+    return redirect(response, taskHref(built.taskId));
+  }
+
+  /** "Approve it to keep it": a fast start that grew gets a plan for its exact commit, on the ordinary approval. It seals nothing. */
+  async function keepGrown(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, posted } = ctx;
+    readForm(posted, CONSOLE_FORMS.keepGrown);
+    const act = matchTaskPath(url.pathname, "/keep-grown$");
+    if (act === null) return noPage(who, response);
+    const kept = keepGrownChange(store, act.taskId, now);
+    if (!kept.ok) return taskScreen(response, who, act.taskId, kept.message, 409);
+    return redirect(response, taskHref(act.taskId));
+  }
+
   return { registrations, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, peekGuards, liveRunIds };
 }
 

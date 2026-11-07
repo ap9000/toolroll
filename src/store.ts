@@ -109,7 +109,8 @@ import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-
 
 import { authorityStandsSql } from "./approval-authority.js";
 import { clearRetryEpisode, settleVanished } from "./vanished-retry.js";
-import { BUILDER_SERVICE_SCHEMA, CHECK_ONLY_SCHEMA, VANISHED_SCHEMA } from "./plain-schema.js";
+import { BUILDER_SERVICE_SCHEMA, CHECK_ONLY_SCHEMA, FAST_PREVIEW_SCHEMA, V153_ADDED_COLUMNS, VANISHED_SCHEMA } from "./plain-schema.js";
+export { V153_ADDED_COLUMNS } from "./plain-schema.js";
 import { releasePolicyDigest, serializeReleaseCheckPurpose, storedReleaseCheckPurpose, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseCheckPurpose, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
@@ -1988,9 +1989,9 @@ export const V150_STEPS = Object.freeze(["machine-aliases", "witness-machine"] a
 /** The v151 migration's steps after v150's, in order (OpenOptions.migrationStep may stop after each). */
 export const V151_STEPS = Object.freeze(["checkout-idle"] as const);
 /** v153 (plain-toolroll.md Phase 2): the tables each slice owns. */
-export const V153_SCHEMA = VANISHED_SCHEMA + CHECK_ONLY_SCHEMA + BUILDER_SERVICE_SCHEMA;
+export const V153_SCHEMA = VANISHED_SCHEMA + CHECK_ONLY_SCHEMA + BUILDER_SERVICE_SCHEMA + FAST_PREVIEW_SCHEMA;
 /** The v153 migration's steps after v151's, in order (OpenOptions.migrationStep may stop after each). */
-export const V153_STEPS = Object.freeze(["plain-tables"] as const);
+export const V153_STEPS = Object.freeze(["plain-tables", "plain-columns"] as const);
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6332,6 +6333,8 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   // v153: Phase 2's tables (new tables only). Idempotent, as v151's step is.
   db.exec(V153_SCHEMA);
   step("plain-tables");
+  for (const [table, columns] of Object.entries(V153_ADDED_COLUMNS)) for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  step("plain-columns");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -9520,12 +9523,16 @@ export class Store {
         // AUTOMATIC RELEASE SEALS (auto-approve-green.md): only on a release task (a candidate and release terms signed
         // in), only naming the evidence row the plane wrote for exactly this task, kind, digest and candidate.
         const automatic = basis?.kind === "auto-check" || basis?.kind === "auto-green";
+        // A FAST START (fast-start.ts) stays a person's: no automatic release seal ever lands on one.
+        if (automatic && this.db.prepare("SELECT 1 AS hit FROM task_ref WHERE backend = ? AND external_id = ? AND fast_start_at IS NOT NULL").get(BUILT_IN, taskId) !== undefined) return false;
         if (automatic) {
           if (terms.terms === null || typeof working["candidate"] !== "string" || working["candidate"] === "") return false;
           const evidence = autoEvidenceOf(this, taskId, basis!.modeDigest, basis!.kind as "auto-check" | "auto-green");
           if (evidence === null || evidence.digest !== String(working["digest"]) || evidence.candidate !== working["candidate"] || evidence.by !== by) return false;
         }
         if (terms.terms !== null && basis !== undefined && basis.kind !== "chat" && !automatic) return false;
+        // Nor does a fast start ever anchor a release, whoever approves it.
+        if (terms.terms !== null && this.db.prepare("SELECT 1 AS hit FROM task_ref WHERE backend = ? AND external_id = ? AND fast_start_at IS NOT NULL").get(BUILT_IN, taskId) !== undefined) return false;
         if (terms.terms !== null && releaseSealProblem(this, terms.terms) !== null) return false;
         const changed = this.db
           .prepare(
@@ -9555,7 +9562,12 @@ export class Store {
           // (setup review): the approval is what was stale, and it is new.
           const ref = this.db.prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, taskId);
           if (ref !== undefined) {
-            if (basis === undefined || basis.kind === "chat") { this.noteTaskAct(Number(ref["id"]), "approved", now); clearRetryEpisode(this, Number(ref["id"])); }
+            if (basis === undefined || basis.kind === "chat") {
+              this.noteTaskAct(Number(ref["id"]), "approved", now);
+              clearRetryEpisode(this, Number(ref["id"]));
+              // An ordinary yes stands on its own: a fast start's window is over (its Accept backstop stays).
+              this.db.prepare("UPDATE task_ref SET fast_start_until = NULL WHERE id = ? AND fast_start_until IS NOT NULL").run(Number(ref["id"]));
+            }
             this.db.prepare("DELETE FROM hold WHERE owner_kind = 'backoff' AND owner_id = ?").run(`stale:${Number(ref["id"])}`);
             // Results routing: this yes closes the task's open exposure (as proposed, or with the model it sealed),
             // and lifts the hold a switched-off rule put on the approval it replaces.
@@ -9639,7 +9651,7 @@ export class Store {
          WHERE task_scope.approved_at IS NOT NULL
            AND NOT ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`,
       )
-      .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString());
+      .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString(), now.toISOString());
     if (dead !== undefined) return false;
     // A release task (release-once.md): the whole live-release predicate, beyond what the SQL can say.
     const external = this.db.prepare("SELECT external_id FROM task_ref WHERE id = ? AND backend = 'built-in'").get(taskRef);
@@ -13736,6 +13748,8 @@ export class Store {
 
       this.resetStrikes(taskRef);
       clearRetryEpisode(this, taskRef);
+      // A person's Retry is a new person act: a fast start gets a new start window. A machine's never does.
+      if (!machineActing()) this.db.prepare("UPDATE task_ref SET fast_start_until = ? WHERE id = ? AND fast_start_until IS NOT NULL").run(new Date(now.getTime() + 30 * 60_000).toISOString(), taskRef);
       this.db
         .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state IN ('failed','queued','done')")
         .run(stamp, taskId);

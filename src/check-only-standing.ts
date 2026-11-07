@@ -19,7 +19,7 @@ export function approvedScopeStands(store: Store, taskRef: number, scopeDigest: 
   const stamp = now.toISOString();
   return store.handle.prepare(`SELECT 1 AS hit FROM task_scope JOIN task_ref ON task_ref.id = ? AND task_scope.task_id = task_ref.external_id
     WHERE task_scope.digest = ? AND task_scope.approved_digest = task_scope.digest AND task_scope.approved_at IS NOT NULL
-      AND ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`).get(taskRef, scopeDigest, stamp, stamp, stamp) !== undefined;
+      AND ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`).get(taskRef, scopeDigest, stamp, stamp, stamp, stamp) !== undefined;
 }
 
 /** The plain reason an authorization doesn't stand, or null: this exact commit and command, on the result it was

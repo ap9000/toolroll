@@ -195,6 +195,8 @@ export function installFilingSizer(sizer: Sizer, budgetMs = SIZING_BUDGET_MS): (
   return () => { installed = previous; budget = previousBudget; };
 }
 let budget = SIZING_BUDGET_MS;
+/** The classifier this process filed with, and its budget (fast-start.ts waits for it; null: no answer will come). */
+export const filingSizer = (): { sizer: Sizer | null; budget: number } => ({ sizer: installed, budget });
 
 /**
  * After a filing: ask the classifier (within the budget) and apply its size

@@ -56,6 +56,7 @@ import { releaseApprovalSetting, setReleaseApproval } from "../release-auto.js";
 import { backupHtml } from "../backup-ui.js";
 import { BACKUP_EVERY_HOURS,backupFolderOf,backupNow,checkBackupFolder,defaultBackupFolder,MAX_KEEP } from "../backup.js";
 import { projectBatchChecks,setProjectBatchChecks } from '../batch-policy.js';
+import { fastStartOn,setFastStart } from '../fast-start.js';
 import { ALL_PROJECTS as CHAT_APPROVAL_ALL,chatApprovalWords,setChatApproval } from "../chat-approval.js";
 import { ChatState } from "../chat-delivery-state.js";
 import { checkSettingsHtml } from '../check-levels-ui.js';
@@ -489,7 +490,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const quick = liveQuickCommand(store, repo);
     const body = (checkSettingsHtml({ repo, name: projectName(repo), csrf: who.session.csrf, canChange: who.role === "approver" && !store.isDemo(),
       level: projectCheckLevel(store, repo).level, full: store.liveVerifyCommand(repo), quick, suggestion: quick === null ? suggestQuickCommand(repo) : null,
-      review: (({ on, source }) => ({ on, source }))(store.reviewSwitch(repo, clock())), batch: { on: projectBatchChecks(store, repo).on },
+      review: (({ on, source }) => ({ on, source }))(store.reviewSwitch(repo, clock())), batch: { on: projectBatchChecks(store, repo).on }, fast: { on: fastStartOn(store, repo) },
       said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }));
     return sendScreen(response, 200, screen("Checks", settingsSubPage("projects", "Checks", html`${body}`), { chrome: chromeFor(project, "projects") }));
   }
@@ -1166,6 +1167,13 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const on = body.get("on") === "1";
       const changed = setProjectBatchChecks(store, repo, on, who.name, now);
       return back("said", !changed.changed ? "Saved." : on ? "Batch checks are on." : "Batch checks are off.");
+    }
+    // Small tasks start right away: a person's own logged settings act, behind this form's password.
+    if (act === "small-tasks") {
+      const on = body.get("on") === "1";
+      store.upsertProject(repo, projectName(repo), now);
+      setFastStart(store, repo, on, who.name, now);
+      return back("said", on ? "Small tasks start right away." : "Small tasks wait for a plan.");
     }
     if (act === "level") {
       const level = body.get("level");

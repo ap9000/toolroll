@@ -24,6 +24,8 @@ export type CheckSettingsView = {
   review?: { on: boolean; source: "project" | "hands-off" | "default" };
   /** Batch checks (batch-checks.ts): off by default. */
   batch?: { on: boolean };
+  /** Small tasks start right away (fast-start.ts). */
+  fast?: { on: boolean };
   said: string | null;
   problem: string | null;
 };
@@ -72,7 +74,16 @@ export function checkSettingsHtml(view: CheckSettingsView): Html {
     body: view.full === null
       ? joinHtml([note("Approve one from the command line:"), codeLine(`toolroll verify set --repo … --command "…"`)])
       : command(view.full) });
-  return joinHtml([head, level, batchHtml(view), reviewHtml(view), quick, full]);
+  return joinHtml([head, level, fastHtml(view), batchHtml(view), reviewHtml(view), quick, full]);
+
+  /** Small tasks: one state, one sentence, and its one change behind a disclosure (the password). */
+  function fastHtml(view: CheckSettingsView): Html | "" {
+    if (view.fast === undefined) return "";
+    const act = view.fast.on ? "Turn off" : "Turn on";
+    return settingsSection({ id: "small-tasks", title: "Small tasks start right away", state: html`<span data-small-tasks="${view.fast.on ? "on" : "off"}"> · ${view.fast.on ? "On" : "Off"}</span>`,
+      lead: "New task shows the exact terms and Build approves them, with no plan step. It takes a person, and only small, ordinary changes.",
+      body: view.canChange ? disclose(act, form("small-tasks-form", "small-tasks", html``, { label: act, variant: "outline" }, { on: view.fast.on ? "0" : "1" })) : "" });
+  }
 
   /** Batch checks: one state and one sentence; turning it on restates exactly what happens before the password. */
   function batchHtml(view: CheckSettingsView): Html | "" {

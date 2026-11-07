@@ -27,6 +27,8 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   "file-task",
   "lead-send",
   "approve-plan",
+  // A fast start: file and approve in one step (fast-start.ts). Everything else this act could reach is refused.
+  "build-now",
   "answer-question",
   "stop-run",
   "pause-run",

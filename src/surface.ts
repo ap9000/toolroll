@@ -169,6 +169,20 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "token", takesValue: true, meaning: "a lead token: filed as the lead, so it pings nobody" },
       { name: "checks", takesValue: true, meaning: "quick|full|off: this task's checks, overriding the project's level (\"skip the tests\" is off)" }],
     notableReasons: ["duplicate", "usage", "unknown-task", "unauthenticated"] },
+  { invocation: "task new", synopsis: "start a small task at a terminal: shows the exact terms, then Build now? is your approval", audience: "operator", agentMayInvoke: false, mutation: "unkeyed",
+    positionals: [{ name: "words", required: false, meaning: "what should change" }],
+    flags: [dbFlag,
+      { name: "repo", takesValue: true, meaning: "the project" },
+      { name: "as", takesValue: true, meaning: "the approver" },
+      { name: "token", takesValue: true, meaning: "their password" },
+      { name: "preview", takesValue: false, meaning: "the terminal UI's own: the exact terms, nothing started" },
+      { name: "build", takesValue: true, meaning: "the terminal UI's own: Build on those terms" },
+      { name: "digest", takesValue: true, meaning: "the terms the person read" }],
+    notableReasons: ["person-only", "usage"] },
+  { invocation: "task keep", synopsis: "a fast start that grew: propose a plan for its exact commit, for you to approve", audience: "operator", agentMayInvoke: false, mutation: "unkeyed",
+    positionals: [{ name: "id", required: true, meaning: "the task" }],
+    flags: [jsonFlag, dbFlag, { name: "as", takesValue: true, meaning: "the approver" }, { name: "token", takesValue: true, meaning: "their password" }],
+    notableReasons: ["usage", "refused"] },
   { invocation: "task ask", synopsis: "hand a task to a person: one message saying why, and the task is theirs", audience: "agent", agentMayInvoke: true, mutation: "unkeyed",
     positionals: [{ name: "id", required: true, meaning: "the task" }],
     flags: [jsonFlag, dbFlag,
@@ -477,6 +491,8 @@ const GUIDE_ROWS: readonly GuideRow[] = [
  * project access. A row missing here fails the contract test, and runs nowhere remotely meanwhile.
  */
 const REMOTE_NO: readonly string[] = [
+  // A fast start is a person at this computer (fast-start.ts).
+  "task new", "task keep",
   // Answered by the local CLI, or a client of a central server itself.
   "", "pulls", "graph", "repos", "repos add", "repos remove", "repos add-from-github", "contract", "skills list", "skills get", "skills install",
   "link", "unlink", "update", "release", "demo", "chat",
@@ -553,6 +569,7 @@ const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   "task list": "read", "task show": "read", "task state": "read", "task wait": "read", "check-progress": "read", "review show": "read", welcome: "read",
   // Acts (plan C1's list).
   "task add": "file-task",
+  "task new": "build-now",
   chat: "lead-send",
   "task steer": "lead-send",
   "task approve": "approve-plan",

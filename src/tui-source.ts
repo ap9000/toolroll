@@ -17,7 +17,7 @@ import type { ConnectionChecker } from "./provider-connection.js";
 import { loadProjectRegistry } from "./repos.js";
 import { describeScope } from "./scope.js";
 import { localModeOf, openStoreReadOnly, type Store } from "./store.js";
-import type { TuiAct, TuiActResult, TuiDecision, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
+import type { TuiAct, TuiActResult, TuiDecision, TuiFastTerms, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
 import { terminalText } from "./terminal-text.js";
 import { welcomeHere, welcomeLines } from "./welcome-facts.js";
 
@@ -128,6 +128,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       let done: string;
       switch (act.kind) {
         case "new": argv = ["task", "add", act.text, ...(act.repo === null ? [] : ["--repo", act.repo])]; done = "Filed. Its plan will be ready for you to approve."; break;
+        case "build": argv = ["task", "new", "--build", act.preview, "--digest", act.digest]; done = "Building. A builder starts it next."; break;
         case "approve": argv = ["task", "approve", act.id, "--yes", "--digest", act.digest]; done = "Approved. An agent starts on it."; break;
         case "stop": argv = ["task", "stop", act.id, "--run", String(act.runId)]; done = "Stopping. Its work so far is kept."; break;
         case "revise": argv = ["task", "revise", act.id, "--feedback", act.text]; done = "Sent back with your note."; break;
@@ -144,8 +145,16 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       }
       const answer = await command(argv);
       if (answer.ok !== true) return refusalOf(answer);
-      const filed = act.kind === "new" ? words(record(answer["task"])["id"], words(answer["id"])) : "";
+      const filed = act.kind === "new" ? words(record(answer["task"])["id"], words(answer["id"])) : act.kind === "build" ? words(answer["task"]) : "";
       return { ok: true, message: done, ...(filed === "" ? {} : { id: filed }) };
+    },
+
+    async fastTerms(text: string, repo: string | null): Promise<TuiFastTerms | null> {
+      if (repo === null) return null;
+      const answer = await command(["task", "new", text, "--repo", repo, "--preview"]);
+      if (answer.ok !== true || answer["eligible"] !== true) return null;
+      const terms = Array.isArray(answer["terms"]) ? answer["terms"].map(one => ({ label: words(record(one)["label"]), words: words(record(one)["words"]) })) : [];
+      return { preview: words(answer["preview"]), digest: words(answer["digest"]), terms };
     },
 
     async setup(): Promise<TuiSetup | null> {

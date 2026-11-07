@@ -9,7 +9,10 @@ import { projectName } from "../project.js";
 import type { QualityMode } from "../quality.js";
 import type { UnattendedPermissionMode } from "../scope.js";
 import { type Chrome, screen, type Screen } from "./chrome.js";
-import { btn, composer, disclose, doc, docHeader, dock, field, ideas, input, note, phoneHeader, radios, select, sendButton, textarea, toggleChip } from "./kit.js";
+import { btn, composer, disclose, doc, docHeader, dock, facts, field, ideas, input, note, phoneHeader, radios, select, sendButton, textarea, toggleChip } from "./kit.js";
+import { fastTermsLines } from "../fast-terms.js";
+import type { Scope } from "../scope.js";
+import type { Store } from "../store.js";
 import { TASK_TEXT_LIMITS } from "../task-text.js";
 
 export type TaskComposerPrefill = { title: string; goal: string; not: string; touches: string; acceptance: string; values?: URLSearchParams };
@@ -112,4 +115,19 @@ ${field({ id: "nt-id", label: "Task id (optional)", control: input({ id: "nt-id"
   });
   const recipes = note(html`Work you do often? <a class="k-link" href="/recipes">Use a saved recipe</a>.`);
   return screen("New task", html`${head}${doc(header, form, ideaList, recipes)}${dock(btn("File task", { variant: "primary", type: "submit", attrs: { form: FORM_ID } }))}`, { chrome });
+}
+
+/** The terms as label and words: the lines every approval surface reads (fast-terms.ts), with nothing hidden. */
+export function fastTermsRows(store: Store, scope: Scope, repo: string): ReadonlyArray<readonly [string, string]> {
+  return fastTermsLines(store, scope, repo).map(line => [line.label, line.words] as const);
+}
+
+/** Build (docs/plans/plain-toolroll.md P2.4): the exact terms this small task would be approved on, and the one button
+ * that approves them. The fields of "Plan it first" are the person's own words, on the ordinary road. */
+export function fastStartPage(chrome: Chrome, input: { title: string; repo: string; preview: string; digest: string; terms: ReadonlyArray<readonly [string, string]> }): Screen {
+  const head = html`${phoneHeader("Build this?", { back: "/tasks/new" })}`;
+  const header = docHeader({ title: "Build this?", back: ["/tasks/new", "New task"], meta: "Build approves exactly these terms.", same: true });
+  const build = postForm("/tasks/fast", btn("Build", { variant: "primary", type: "submit" }), { attrs: { class: "k-form", id: "fast-build" }, hidden: { preview: input.preview, digest: input.digest } });
+  const plan = postForm("/tasks/add", btn("Plan it first", { type: "submit" }), { attrs: { class: "k-form" }, hidden: { plain: "1", title: input.title, repo: input.repo, "planning-policy": "choice", "plan-first": "1" } });
+  return screen("Build this?", html`${head}${doc(header, facts(input.terms), html`<div class="k-acts">${build}${plan}</div>`)}`, { chrome });
 }

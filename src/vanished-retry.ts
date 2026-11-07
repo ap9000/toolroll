@@ -52,7 +52,7 @@ function processUnsettled(store: Store, taskRef: number): boolean {
 function approvalStands(store: Store, taskRef: number, now: Date): boolean {
   const stamp = now.toISOString();
   return store.handle.prepare(`SELECT 1 AS hit FROM task_scope JOIN task_ref ON task_ref.id = ? AND task_scope.task_id = task_ref.external_id
-    WHERE task_scope.approved_digest = task_scope.digest AND task_scope.approved_at IS NOT NULL AND ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`).get(taskRef, stamp, stamp, stamp) !== undefined;
+    WHERE task_scope.approved_digest = task_scope.digest AND task_scope.approved_at IS NOT NULL AND ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`).get(taskRef, stamp, stamp, stamp, stamp) !== undefined;
 }
 
 function requeue(store: Store, taskId: string, now: Date): boolean {

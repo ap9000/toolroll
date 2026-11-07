@@ -315,6 +315,9 @@ import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runne
 import { retryVanishedWhenStopped } from "./vanished-retry.js";
 import { requestMissingRechecks } from "./check-only.js";
 import { recordBuilderWish } from "./builder-restart.js";
+import { expireFastStarts, fastRefusalWords, fastStartBuild, keepGrownChange, prepareFastStart, type FastBuild, type PasswordFacts } from "./fast-start.js";
+import { fastTermsLines } from "./fast-terms.js";
+import { passwordlessOn } from "./passwordless.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
 import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, readUpConsoleUrl, saveConsoleUrl, savePrimary, UP_CONSOLE_FILE } from "./webhooks.js";
@@ -858,7 +861,7 @@ type Args = {
  * (surface.ts) is tested for exact equality against them.
  */
 export const TASK_ACTIONS = [
-  "add", "list", "show", "wait", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign",
+  "add", "new", "keep", "list", "show", "wait", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign",
   "reopen", "scope", "approve", "hold", "unhold", "require", "requeue", "regate", "plan",
   "review", "accept", "repair", "route", "stop", "resume", "complete", "revise", "merge", "ask",
   "checks", "add-tests", "archive", "restore", "tidy", "ship", "ready",
@@ -878,7 +881,7 @@ export const KEYS_ACTIONS = ["status", "set", "clear", "verify", "auth"] as cons
 export const SECRET_VALUE_FLAGS: ReadonlySet<string> = new Set(["token", "password"]);
 
 export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
-  "key", "db", "runner", "ttl", "state", "on", "reason", "until", "id", "backend",
+  "key", "db", "runner", "ttl", "state", "on", "reason", "until", "id", "backend", "build",
   "allow", "selector", "paths", "credentials", "repo", "token", "capacity",
   "goal", "not", "touches", "acceptance", "candidate", "by", "digest", "as", "branch", "pool", "base", "model", "turns",
   "max", "cap", "probe", "kind", "expires", "cmd", "since", "repair-model",
@@ -932,6 +935,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   // task accept --finish: the person's Accept, exactly task complete's exact-receipt completion.
   "finish",
+  // task new --preview: the terminal UI's own, the exact terms with nothing started.
+  "preview",
   // evals run: a report-only campaign; keep each attempt's world for a look afterwards.
   "diagnostic", "keep",
   // task scope --release ... --no-carry: every later commit asks again.
@@ -3927,6 +3932,8 @@ async function reconcileCommand(
   store.settleQuiescentStops(clock());
   // A vanished build whose old process is now proven stopped gets its retry decision (vanished-retry.ts).
   retryVanishedWhenStopped(store, clock());
+  // A fast start that didn't start in time goes back to the ordinary Approve plan (fast-start.ts).
+  expireFastStarts(store, clock());
   // An update whose updater ended while letting work finish must not leave new work paused.
   try { releaseStalledUpdate(dirname(context.databaseFile), clock()); } catch { /* status and the console say it */ }
   for (const one of recovered) {
@@ -9293,6 +9300,10 @@ function taskAction(
         demo: context.store.isDemo(), credentials: () => askCredentials(flags, context), ...(context.publishExec === undefined ? {} : { exec: context.publishExec }) });
     case "add":
       return addTask(rest, flags, context);
+    case "new":
+      return newTaskCommand(rest, flags, context);
+    case "keep":
+      return keepGrownCommand(rest, flags, context);
     case "checks":
       return runTaskChecks(rest, flags, context);
     case "ship":
@@ -13795,6 +13806,7 @@ export type EasyCommandSeams = {
   check?: import("./provider-connection.js").ConnectionChecker;
   ask?: (question: string) => Promise<string>;
   askHidden?: (question: string) => Promise<string>;
+  confirm?: (question: string) => Promise<boolean>;
 };
 
 /** A person at this terminal: stdin and stdout a TTY, not --json, not under a coding agent (a UX guard, plan F1). */
@@ -14020,4 +14032,71 @@ function uncommittedLines(plan: CheckoutPlan): string[] {
   if (changed.length === 0) return [];
   return [`${changed.length === 1 ? "This folder has" : "These folders have"} uncommitted changes and stay${changed.length === 1 ? "s" : ""} until you decide (toolroll storage discard <path> --yes throws one away):`,
     ...changed.map(one => `  ${bytesWords(one.bytes).padStart(8)}  ${one.path}${one.taskId === null ? "" : `  (${one.taskId})`}`)];
+}
+
+// ---- `toolroll task new` (docs/plans/plain-toolroll.md P2.4) -----------------------------------------------------------
+
+/**
+ * Start a task from a person's own terminal: their words become the exact terms, printed; "Build now?" is their yes.
+ * Filing and approving are one step (fast-start.ts), for small work a person approves without typing a password here;
+ * anything else is the ordinary `task add`, then Approve plan. Never for a script or an agent: `--json`, no terminal, a
+ * token or a remote run all refuse. The terminal UI drives it as the local owner, with --preview and --build.
+ */
+async function newTaskCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json } = context;
+  const clock = context.clock ?? (() => new Date());
+  const command = "task new";
+  const local = currentLocalOwner();
+  if (context.principal !== undefined || machineActing()) return fail(write, json, command, "person-only", "Only a person starts a build this way. File it with `task add`.", EXIT.refused);
+  if (local === null && (json || !personAtTerminal(context))) return fail(write, json, command, "person-only", "`task new` asks a person at a terminal. Use `task add` from a script or an agent.", EXIT.refused);
+  const { name, token } = credentialsFrom(flags, context);
+  const passwordFree = token !== undefined && (local !== null || passwordlessOn(store));
+  const facts: PasswordFacts = { passwordless: local === null && passwordFree, localOwner: local !== null, freshAt: null, returnTo: "/" };
+  const buildNow = (preview: string, digest: string): FastBuild => fastStartBuild(store, { preview, digest, actor: name ?? "", via: local === null ? "cli" : "terminal-ui", password: facts,
+    approveNow: (taskId, sawDigest, fast) => approve(store, taskId, name ?? "", clock(), sawDigest, token ?? "", {}, fast) }, clock());
+  const answerBuild = (built: FastBuild): number => built.ok
+    ? succeed(write, json, command, { task: built.taskId }, () => [`Building ${built.taskId}. A builder starts it next.`])
+    : fail(write, json, command, built.reason, built.message, EXIT.refused);
+  const pressed = text(flags, "build");
+  if (pressed !== undefined) {
+    if (local === null) return fail(write, json, command, "person-only", "--build is the terminal UI's own.", EXIT.refused);
+    return answerBuild(buildNow(pressed, text(flags, "digest") ?? ""));
+  }
+  const words = positional.join(" ").trim();
+  const repo = text(flags, "repo");
+  if (words === "" || repo === undefined) return fail(write, json, command, "usage", "`toolroll task new \"<what should change>\" --repo <project>`", EXIT.usage);
+  const placed = canonicalProject(repo) ?? resolve(repo);
+  const prepared = name === undefined || token === undefined ? { eligible: false as const, reason: "password" as const }
+    : await prepareFastStart(store, { actor: name, repo: placed, title: words, via: local === null ? "cli" : "terminal-ui", password: facts }, clock());
+  const terms = prepared.eligible ? fastTermsLines(store, prepared.scope, placed) : [];
+  if (flags.has("preview")) {
+    if (local === null) return fail(write, json, command, "person-only", "--preview is the terminal UI's own.", EXIT.refused);
+    return succeed(write, json, command, prepared.eligible ? { eligible: true, preview: prepared.preview, digest: prepared.digest, terms } : { eligible: false, reason: prepared.reason, message: fastRefusalWords(prepared.reason) }, () => []);
+  }
+  if (!prepared.eligible) {
+    write(`${fastRefusalWords(prepared.reason)} Filing it for a plan.`);
+    return addTask([words], flags, context);
+  }
+  write("Build approves exactly this:");
+  write("");
+  for (const line of terms) write(`  ${line.label}: ${line.words}`);
+  write("");
+  if (!(await (context.easySeams?.confirm ?? confirm)("Build now?"))) {
+    write("Nothing started. File it for a plan with `toolroll task add`.");
+    return EXIT.refused;
+  }
+  return answerBuild(buildNow(prepared.preview, prepared.digest));
+}
+
+/** `toolroll task keep <id>`: "Approve it to keep it", a plan for the exact commit a fast start grew into. Approve it with `task approve`. */
+async function keepGrownCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const id = positional[0];
+  if (id === undefined) return fail(write, json, "task keep", "usage", "`toolroll task keep <id> --as <you> --token <t>`", EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, "task keep", verified, "keeping a change takes `--as <you> --token <t>`", id);
+  const kept = keepGrownChange(store, id, clock());
+  if (!kept.ok) return fail(write, json, "task keep", "refused", kept.message, EXIT.refused);
+  return succeed(write, json, "task keep", { id, digest: kept.digest }, () => [`Its plan now names the exact commit. Approve it with \`toolroll task approve ${id}\`.`]);
 }

@@ -1522,6 +1522,8 @@ export function approve(
   sawDigest: string,
   token: string,
   mutation: Mutation = {},
+  /** A fast start (fast-start.ts): Build is this same yes, with its marker in the proof. Only that road passes it. */
+  fastStart?: { rule: string; at: string },
 ): ApproveResult {
   // Read and write in one transaction, re-reading inside it — the credential
   // check included, so a token rotated between authentication and the write
@@ -1539,7 +1541,7 @@ export function approve(
     // localApprovalEligible, read again here inside the seal's transaction).
     const local = authenticated.method === "local-owner" ? currentLocalOwner() : null;
     if (authenticated.method === "local-owner") {
-      if (local === null || local.act !== "approve-plan") return { ok: false as const, reason: "policy" as const, message: localOwnerRefusal(store.accountOf(by)?.passwordSet === true, "/").message };
+      if (local === null || (local.act !== "approve-plan" && !(local.act === "build-now" && fastStart !== undefined))) return { ok: false as const, reason: "policy" as const, message: localOwnerRefusal(store.accountOf(by)?.passwordSet === true, "/").message };
       const eligible = localApprovalEligible(store, by, taskId);
       if (!eligible.ok) return { ok: false as const, reason: "policy" as const, message: eligible.message };
     }
@@ -1589,7 +1591,7 @@ export function approve(
     // How the person was proved, beside every yes they give (a vote kept for protected work, or the seal): a password
     // typed now, a re-check now, or a remembered one — with when, the credential generation and the exact digest.
     const proved = () => store.recordAction({ at: now.toISOString(), actor: by, repo: store.lookupRef(taskId)?.repo ?? null, taskId, runId: null, action: APPROVAL_PROOF,
-      outcome: authenticated.method, source: "work", detail: approvalProofDetail(authenticated.at, store.accountOf(by)?.generation ?? 0, scope.digest,
+      outcome: authenticated.method, source: "work", detail: (fastStart === undefined ? approvalProofDetail : fastProofDetail(fastStart))(authenticated.at, store.accountOf(by)?.generation ?? 0, scope.digest,
         local === null ? undefined : { generation: local.localGeneration, transport: local.transport }) });
     if (gate.verdict === "vote") {
       // The same person again adds nothing: no new vote, no proof row (and the approval roads refund a re-check).
@@ -1626,6 +1628,10 @@ export const APPROVAL_PROOF = "approval proved";
 /** The proof row's detail: when the person was proved, the generation, and the exact digest they said yes to. */
 export const approvalProofDetail = (at: number, generation: number, digest: string, local?: { generation: number; transport: LocalTransport }): string =>
   `${new Date(at).toISOString()} · generation ${generation}${local === undefined ? "" : ` · local ${local.generation} ${local.transport}`} · digest ${digest}`;
+/** A fast start's proof: the v1 record proofDetailOf reads, with the marker. `local` keeps the legacy words
+ * localSealStandsSql reads, so a local owner's seal stands on the same rule. */
+const fastProofDetail = (fastStart: { rule: string; at: string }) => (at: number, generation: number, digest: string, local?: { generation: number; transport: LocalTransport }): string =>
+  JSON.stringify({ v: 1, at: new Date(at).toISOString(), generation, digest, fastStart, ...(local === undefined ? {} : { local: `proof · local ${local.generation} ${local.transport} · seal` }) });
 /** The proof of THIS approval: the approver's own row for these exact bytes (never another approval's words). */
 export function approvalProofOf(store: Store, taskId: string, by: string, digest: string): { method: string; at: string } | null {
   const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? AND actor = ? ORDER BY id DESC LIMIT 50").all(taskId, APPROVAL_PROOF, by);

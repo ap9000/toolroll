@@ -54,12 +54,17 @@ export type TuiSnapshot = {
 
 export type TuiAct =
   | { readonly kind: "new"; readonly text: string; readonly repo: string | null }
+  /** Build: the terms the person just read (fast-start.ts). */
+  | { readonly kind: "build"; readonly preview: string; readonly digest: string }
   | { readonly kind: "approve"; readonly id: string; readonly digest: string }
   | { readonly kind: "stop"; readonly id: string; readonly runId: number }
   | { readonly kind: "revise"; readonly id: string; readonly text: string }
   | { readonly kind: "complete"; readonly id: string }
   | { readonly kind: "retry"; readonly id: string }
   | { readonly kind: "answer"; readonly decision: number; readonly option: string };
+
+/** What Build would approve: the same lines every approval surface reads. */
+export type TuiFastTerms = { readonly preview: string; readonly digest: string; readonly terms: readonly { readonly label: string; readonly words: string }[] };
 
 /** A write's answer: its words. `needsPassword`: refused because the local owner may not do it. */
 export type TuiActResult = { readonly ok: true; readonly message: string; readonly id?: string } | { readonly ok: false; readonly message: string; readonly needsPassword: boolean };
@@ -73,6 +78,8 @@ export interface TuiSource {
   /** A counter that moves when the plane's work changes (the store's wake sequence). */
   changed(): number;
   act(act: TuiAct): Promise<TuiActResult>;
+  /** A small task's exact terms, or null when it takes the ordinary road (New task then files it). */
+  fastTerms(text: string, repo: string | null): Promise<TuiFastTerms | null>;
   /** The welcome's steps, or null once setup is done. */
   setup(): Promise<TuiSetup | null>;
 }

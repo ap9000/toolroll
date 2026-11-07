@@ -1,6 +1,7 @@
 /** One assignment follows the existing task family. It owns no execution,
  * approval or proof state. Lead ownership and exact receipt acknowledgments
  * are append-only actions; handoffs use the existing durable outbox. */
+import { fastCompletionProblem } from "./fast-start.js";
 import { createHash } from "node:crypto";
 import { currentActor, withActor } from "./actor.js";
 import { replacedWords } from "./task-status.js";
@@ -515,6 +516,9 @@ function acknowledgeCurrent(store: Store, current: AssignmentSnapshot, receiptDi
   // token, a remote API run) that may complete ordinary work but is never the second person on protected work.
   const person = actor.startsWith("operator:") && !machineActing() ? actor.slice("operator:".length) : null;
   const marked = actor.startsWith("operator:") ? (person === null ? COMPLETION_BY_MACHINE : COMPLETION_BY_PERSON) : null;
+  // A fast start's Accept backstop (fast-start.ts): a person only, and only a change that stayed small.
+  const grown = fastCompletionProblem(store, receipt.taskId, receipt.runId, person);
+  if (grown !== null) return { ok: false, reason: "not-ready", message: grown };
   if (current.state !== "complete") {
     // The one readiness guard: a failed or missing required check, an unresolved requirement or HIGH finding refuses.
     const blockers = current.readiness?.blockers ?? [];

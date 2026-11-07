@@ -374,9 +374,9 @@ describe("where freshness may be honoured", () => {
     // Lead sweeps: each child's approval is the ordinary standard approval (chat-actions.ts fileSweep), the same freshness class.
     // One-tap release approval: the release sheet's remembered-password preview (display only, task-views' rule) and its
     // Approve release (the task approval door's own standard-approval freshness and refund), both in tasks.ts.
-    expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 3, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 4 });
+    expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 3, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 6 });
     expect(hits["consumeSsoNow()"]).toEqual({ "src/scope.ts": 1 });
-    expect(hits["spendingOnlyOnSuccess()"]).toEqual({ "src/chat-actions.ts": 1, "src/server/chat.ts": 2, "src/server/tasks.ts": 2 });
+    expect(hits["spendingOnlyOnSuccess()"]).toEqual({ "src/chat-actions.ts": 1, "src/server/chat.ts": 2, "src/server/tasks.ts": 3 });
     // Refunds only where one transaction holds every effect: never console-wide (a refused answer proves nothing).
     expect(hits["spendingOnlyIfDone()"]).toBeUndefined();
     // Every approver step-up goes through authenticateApprover (scope.ts, or the console guard's wrapper of it via
@@ -814,6 +814,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/task-views.ts#createTaskViews@1>taskViewData@14><anonymous>@18>fresh:withFreshness(approve-standard,_)@1": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createReleaseSheetHandlers@6>sheetScreen@2>remembered@1>fresh:withFreshness(approve-standard,_)@1": 1,
+    // Build's password rule (fast-start.ts) reads what the approve forms read.
+    "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61>freshAt:withFreshness(approve-standard,_)@1": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>withFreshness(approve-standard,_)@10": 1,
   },
   "mergeAsPerson": {
@@ -863,6 +865,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#createChatHandlers@1>chatSend@24": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createReleaseSheetHandlers@6>approveFromSheet@5": 1,
+    // Build is the fast path's approval door (fast-start.ts): the same refund as the task page's.
+    "src/server/tasks.ts#createTasksHandlers@2>buildNow@62": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
   },
   "ssoNow": {
@@ -934,6 +938,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createReleaseSheetHandlers@6>approveFromSheet@5>answer:spendingOnlyOnSuccess(_,_)@1": 1,
     "src/server/tasks.ts#createReleaseSheetHandlers@6>sheetScreen@2>remembered@1": 1,
+    "src/server/tasks.ts#createTasksHandlers@2>buildNow@62>built:spendingOnlyOnSuccess(_,_)@1": 1,
+    "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>approved:spendingOnlyOnSuccess(_,_)@11": 1,
     // Lead sweeps (docs/plans/lead-fan-out.md): reviewed new sites — one approval per child, as the ordinary approval.
@@ -1003,6 +1009,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/chat-actions.ts#executeSharedAction@25": 1,
     "src/scope.ts#passwordlessSessionFor@39": 1,
     "src/server/tasks.ts#<module>": 2,
+    "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
   },
 };

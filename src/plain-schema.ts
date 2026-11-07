@@ -60,3 +60,28 @@ CREATE TABLE IF NOT EXISTS builder_restart (
   at TEXT NOT NULL
 );
 `;
+
+/** A fast start's form as it was rendered (fast-start.ts): what the person typed and what the classifier said, kept here
+ * so Build files exactly that, whatever a form posts. Used once. */
+export const FAST_PREVIEW_SCHEMA = `
+CREATE TABLE IF NOT EXISTS fast_preview (
+  id          TEXT PRIMARY KEY,
+  actor       TEXT NOT NULL,
+  via         TEXT NOT NULL,
+  task_id     TEXT NOT NULL,
+  repo        TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  permission  TEXT,
+  sizing_json TEXT NOT NULL,
+  digest      TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  consumed_at TEXT
+);
+`;
+/** v153's columns: a fast start's marker and start window on the task (both NULL on saved rows) and the project setting
+ * Small tasks start right away (NULL: the default). */
+export const V153_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  task_ref: { fast_start_at: { definition: "TEXT", saved: "NULL" }, fast_start_until: { definition: "TEXT", saved: "NULL" } },
+  project: { fast_start: { definition: "INTEGER CHECK (fast_start IS NULL OR fast_start IN (0, 1))", saved: "NULL" } },
+});
