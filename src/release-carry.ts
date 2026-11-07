@@ -26,15 +26,18 @@ import { join, sep } from "node:path";
 import { execFileSync } from "node:child_process";
 import { checkLaunchRoot, fenceFor, linuxFenceAvailable, macosFenceAvailable, runFolders, type NetworkFence } from "./agent-fence.js";
 import { touchesProtected } from "./approval-policy.js";
-import { extractCommit, readVerifiedCommit, verifiedFirstParentWalk, verifiedTreeDiff, type TreeChange, type VerifiedCommit } from "./commit-extract.js";
+import { extractCommit, readVerifiedCommit, verifiedBlobs, verifiedFirstParentWalk, verifiedTreeDiff, type TreeChange, type VerifiedCommit } from "./commit-extract.js";
+import { testImportProblem } from "./test-infra.js";
 import { projectGitDir } from "./check-report.js";
+import { checkAccessOf } from "./check-access.js";
+import { stampRefusal } from "./check-stamp.js";
 import { CARRY_RULES_VERSION, readReleasePolicy, releasePolicyDigest, type ReleaseCheckPurpose, type ReleasePolicy, type ReleaseTerms } from "./contracts/release-terms.js";
 import { run, type ExecResult } from "./exec.js";
 import { proxyEnv, startEgressProxy } from "./egress.js";
 import { liveReleaseOf } from "./scope.js";
 import { UNSANDBOXED_CARRY_ACTION, carriesUnsandboxed } from "./release-authority.js";
 import {
-  carryReleaseApproval, releaseAuthority, releaseCarryTo, sealAnchorArtifact,
+  carryReleaseApproval, releaseAuthority, releaseCarryTo, sealAnchorArtifact, taskCheckStamp,
   type ReleaseAuthority, type ReleaseCarry, type Store,
 } from "./store.js";
 
@@ -122,8 +125,16 @@ export function rulePath(path: string): string {
   return path.toLowerCase().split("/").map(part => part.replace(/[. ]+$/, "")).filter(part => part !== "" && part !== ".").join("/");
 }
 
-/** Why one changed path doesn't carry, in words, or null when it does. Every rule reads the normalized path. */
-export function changeRefusal(change: TreeChange, policy: ReleasePolicy): string | null {
+/** Tests by the rules' classes: what the existing-test rule holds still. */
+const carriedTest = (normal: string): boolean => CARRY_RULES.classes.some(one => (one.name === "unit tests" || one.name === "journey scripts") && one.matches(normal));
+
+/**
+ * Why one changed path doesn't carry, in words, or null when it does. Every rule reads the normalized path. `fresh`: the
+ * paths that didn't exist at the approved commit. A test that was there stays exactly as it was (H4): new tests go in new
+ * files. Only "unchanged" holds up, since `vi.mock` hoists and a top-level hook reaches every case above it, so an
+ * appended line can disarm what it follows.
+ */
+export function changeRefusal(change: TreeChange, policy: ReleasePolicy, fresh: ReadonlySet<string> = new Set()): string | null {
   const path = change.path;
   const normal = rulePath(path);
   if (change.kind === "deleted") return `${path} was deleted or renamed`;
@@ -136,6 +147,7 @@ export function changeRefusal(change: TreeChange, policy: ReleasePolicy): string
   if (never !== undefined) return `${path} doesn't carry: ${never.why}`;
   if (policy.protectProject || policy.protectedPaths.some(glob => touchesProtected(path, glob) || touchesProtected(normal, glob.toLowerCase()))) return `${path} is protected in this project`;
   if (!CARRY_RULES.classes.some(one => one.matches(normal))) return `${path} isn't a test, a doc or the changelog`;
+  if (change.kind === "modified" && carriedTest(normal) && !fresh.has(path)) return `${path} changes an existing test, and new tests go in a new file`;
   return null;
 }
 
@@ -229,6 +241,10 @@ export function preflightCarry(store: Store, input: { authority: number; to: str
   if ((a.accessDigest !== "sandboxed" || store.projectCheckAccess(a.repo) !== "sandboxed") && policy.unsandboxedCarry !== true) {
     return refuse("rules", "This project's checks run outside the sandbox, and carrying release approvals then wasn't on when this release was approved, or is off now.");
   }
+  // A carry leans on the check the release already had: it must be shown to have stayed within what was approved (H2).
+  const ran = taskCheckStamp(store, a.repo, a.tipTask);
+  const unshown = ran === null ? null : stampRefusal(ran.reading, checkAccessOf(a.accessDigest));
+  if (unshown !== null) return refuse("rules", `This release's approval can't carry: ${unshown}.`);
   if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(input.to)) return refuse("ancestry", `${input.to} isn't a full commit id.`);
   if (input.to === a.tipSha) return refuse("ancestry", `${input.to.slice(0, 7)} is already the release's commit.`);
   const gitDir = projectGitDir(a.repo);
@@ -245,23 +261,34 @@ export function preflightCarry(store: Store, input: { authority: number; to: str
   for (const commit of ordered) treeOf.set(commit.id, commit.tree);
   const commits: LandedCommit[] = [];
   let churn = 0;
+  const whole = verifiedTreeDiff(gitDir, a.approvedTree, chain[0]!.tree);
+  if (!whole.ok) return refuse("shape", `The change since the approval couldn't be read: ${whole.message}`);
+  const fresh = new Set(whole.value.filter(one => one.kind === "added").map(one => one.path));
   for (const commit of ordered) {
     const parentTree = treeOf.get(commit.parents[0]!);
     if (parentTree === undefined) return refuse("ancestry", `${commit.id.slice(0, 7)}'s parent couldn't be read.`);
     const diff = verifiedTreeDiff(gitDir, parentTree, commit.tree);
     if (!diff.ok) return refuse("shape", `${commit.id.slice(0, 7)} couldn't be read: ${diff.message}`);
     for (const change of diff.value) {
-      const why = changeRefusal(change, policy);
+      const why = changeRefusal(change, policy, fresh);
       if (why !== null) return refuse("rules", `${commit.id.slice(0, 7)}: ${why}.`, change.path);
     }
     churn += diff.value.reduce((n, one) => n + one.added + one.deleted, 0);
     commits.push({ sha: commit.id, files: diff.value.map(one => ({ path: one.path, added: one.added, deleted: one.deleted })) });
   }
-  const whole = verifiedTreeDiff(gitDir, a.approvedTree, chain[0]!.tree);
-  if (!whole.ok) return refuse("shape", `The change since the approval couldn't be read: ${whole.message}`);
   for (const change of whole.value) {
-    const why = changeRefusal(change, policy);
+    const why = changeRefusal(change, policy, fresh);
     if (why !== null) return refuse("rules", `Since the approval: ${why}.`, change.path);
+  }
+  // No new test may reach into another (H4). Read from the verified tree, never from a checkout.
+  // By the rules' own classifier, so everything that carries as a test is read (a new journey script too).
+  const newTests = whole.value.filter(one => one.kind === "added" && carriedTest(rulePath(one.path))).map(one => one.path);
+  const added = newTests.length === 0 ? null : verifiedBlobs(gitDir, chain[0]!.tree, newTests);
+  if (added !== null && !added.ok) return refuse("shape", `The new tests couldn't be read: ${added.message}`);
+  for (const path of newTests) {
+    const bytes = added !== null && added.ok ? added.value.get(path)?.bytes : undefined;
+    const why = bytes === undefined ? `${path} couldn't be read` : testImportProblem(path, bytes.toString("utf8"));
+    if (why !== null) return refuse("rules", `Since the approval: ${why}.`, path);
   }
   const changedLines = whole.value.reduce((n, one) => n + one.added + one.deleted, 0);
   if (changedLines > policy.limits.lines) return refuse("limits", `${changedLines} lines changed since the approval; at most ${policy.limits.lines} carry.`);

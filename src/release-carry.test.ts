@@ -6,7 +6,10 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { chmodSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { releaseFixture, RELEASE_NOW, type ReleaseFixture } from "../test/release-fixture.js";
+import { builtRun, releaseFixture, RELEASE_NOW, type ReleaseFixture } from "../test/release-fixture.js";
+import { CHECK_STAMP_VERSION, unfencedStamp } from "./check-stamp.js";
+import { storeEvidence } from "./evidence.js";
+import { recordCheckStamp } from "./store.js";
 import { changeRefusal, effectivePolicy, preflightCarry, stricterOf } from "./release-carry.js";
 import type { TreeChange } from "./commit-extract.js";
 
@@ -15,11 +18,74 @@ afterEach(() => { fixture?.close(); fixture = null; });
 const open = (options: Parameters<typeof releaseFixture>[0] = {}) => (fixture = releaseFixture(options));
 const preflight = (f: ReleaseFixture, to: string) => preflightCarry(f.store, { authority: f.authority().id, to, now: RELEASE_NOW });
 
+describe("a carry leans on the check that ran (H2)", () => {
+  const checked = (f: ReleaseFixture) => {
+    const run = builtRun(f.store, f.taskId, f.approved);
+    storeEvidence(f.store, join(f.dir, "evidence"), run, "check-log", "check-log.txt", Buffer.from("ok"), "check", RELEASE_NOW);
+    return run;
+  };
+  const stamp = { version: CHECK_STAMP_VERSION, level: "sandboxed", policyDigest: "a".repeat(32), writable: ["/w"], readable: [], network: { mode: "machine" } } as const;
+  test("no check yet: nothing to lean on, and it carries", () => {
+    const f = open();
+    expect(preflight(f, f.commit({ "docs/guide.md": "# More\n" }))).toMatchObject({ ok: true });
+  });
+  test("a stamped sandboxed check carries", () => {
+    const f = open();
+    recordCheckStamp(f.store, checked(f), stamp, RELEASE_NOW);
+    expect(preflight(f, f.commit({ "docs/guide.md": "# More\n" }))).toMatchObject({ ok: true });
+  });
+  test.each([
+    ["no stamp", (_f: ReleaseFixture, _run: number) => {}, /wasn't recorded/],
+    ["a damaged stamp", (f: ReleaseFixture, run: number) => { f.store.handle.prepare("INSERT INTO check_stamp (run_id, digest, stamp, at) VALUES (?, 'x', 'sandboxed', 'now')").run(run); }, /wasn't recorded/],
+    ["an older version's stamp", (f: ReleaseFixture, run: number) => { f.store.handle.prepare("INSERT INTO check_stamp (run_id, digest, stamp, at) VALUES (?, 'x', ?, 'now')").run(run, JSON.stringify({ ...stamp, version: 0 })); }, /older Toolroll/],
+    ["a check that ran wider than approved", (f: ReleaseFixture, run: number) => recordCheckStamp(f.store, run, unfencedStamp(), RELEASE_NOW), /wider/],
+    ["one launch of two ran wider", (f: ReleaseFixture, run: number) => { recordCheckStamp(f.store, run, stamp, RELEASE_NOW); recordCheckStamp(f.store, run, unfencedStamp(), RELEASE_NOW); }, /wider/],
+  ])("%s refuses, and the later commit asks again", (_name, plant, words) => {
+    const f = open();
+    plant(f, checked(f));
+    expect(preflight(f, f.commit({ "docs/guide.md": "# More\n" }))).toMatchObject({ ok: false, reason: "rules", message: expect.stringMatching(words) });
+  });
+});
+
+describe("existing tests stay as they are (H4)", () => {
+  test.each([
+    ["an edited test", { "src/index.test.ts": "test('answer', () => {});\ntest('more', () => {});\n" }],
+    ["an edited browser test", { "src/browser/app.test.ts": "test('app', () => {});\ntest('more', () => {});\n" }],
+    ["an edited journey script", { "scripts/app-e2e.mjs": "// journeys, one more\n" }],
+    // The appended rule's hole: this keeps every existing line and still disarms what it follows.
+    ["a hoisted mock appended to a test", { "src/index.test.ts": "test('answer', () => {});\nvi.mock('./index.js', () => ({ answer: () => 42 }));\n" }],
+  ])("%s asks again", (_name, change) => {
+    const f = open();
+    expect(preflight(f, f.commit(change))).toMatchObject({ ok: false, reason: "rules", message: expect.stringContaining("changes an existing test") });
+  });
+  test("a new journey script is read like a new test: the classifier is the carry rules' own", () => {
+    const f = open();
+    const to = f.commit({ "scripts/flows-e2e.mjs": "import '../src/index.test.js';\n" });
+    expect(preflight(f, to)).toMatchObject({ ok: false, reason: "rules", path: "scripts/flows-e2e.mjs", message: expect.stringContaining("imports another test file") });
+  });
+  test.each(["src/new.test.js", "src/new.test.mjs", "src/new.test.tsx"])("%s never carries, whatever it imports", path => {
+    const f = open();
+    expect(preflight(f, f.commit({ [path]: "import './index.test.js';\n" }))).toMatchObject({ ok: false, reason: "rules", path, message: expect.stringContaining("isn't a test, a doc or the changelog") });
+  });
+  test("a test new since the approval may be fixed by a later carried commit", () => {
+    const f = open();
+    f.commit({ "src/new.test.ts": "test('new', () => {});\n" });
+    expect(preflight(f, f.commit({ "src/new.test.ts": "test('new', () => {});\ntest('fixed', () => {});\n" }))).toMatchObject({ ok: true });
+  });
+  test.each([
+    ["importing another test", "import './index.test.js';\ntest('x', () => {});\n", "imports another test file"],
+    ["requiring another test", "require('./index.test.js');\ntest('x', () => {});\n", "imports another test file"],
+    ["a computed import", "await import(name);\ntest('x', () => {});\n", "computes"],
+  ])("a new test %s asks again", (_name, text, words) => {
+    const f = open();
+    expect(preflight(f, f.commit({ "src/new.test.ts": text }))).toMatchObject({ ok: false, reason: "rules", path: "src/new.test.ts", message: expect.stringContaining(words) });
+  });
+});
+
 describe("which changes carry", () => {
   test.each([
-    ["a unit test", { "src/index.test.ts": "test('answer', () => {});\ntest('more', () => {});\n" }],
-    ["a browser test", { "src/browser/app.test.ts": "test('app', () => {});\ntest('more', () => {});\n" }],
-    ["a journey script", { "scripts/app-e2e.mjs": "// journeys, one more\n" }],
+    ["a new unit test", { "src/new.test.ts": "test('answer', () => {});\ntest('more', () => {});\n" }],
+    ["a new browser test", { "src/browser/new.test.ts": "test('app', () => {});\ntest('more', () => {});\n" }],
     ["a doc", { "docs/guide.md": "# Guide\n\nMore.\n" }],
     ["the changelog", { "CHANGELOG.md": "## 0.9.71\n\n- A fix.\n" }],
     ["the root README", { "README.md": "# App\n" }],
@@ -106,7 +172,8 @@ describe("the policy", () => {
   test("a change refusal names the path and the rule", () => {
     const policy = effectivePolicy(open().store, fixture!.repo);
     const change = (path: string): TreeChange => ({ path, kind: "modified", before: { path, mode: "100644", id: "a" }, after: { path, mode: "100644", id: "b" }, added: 1, deleted: 0, binary: false });
-    expect(changeRefusal(change("src/a.test.ts"), policy)).toBeNull();
+    expect(changeRefusal(change("src/a.test.ts"), policy, new Set(["src/a.test.ts"]))).toBeNull();
+    expect(changeRefusal(change("src/a.test.ts"), policy)).toBe("src/a.test.ts changes an existing test, and new tests go in a new file");
     expect(changeRefusal(change("src/a.ts"), policy)).toBe("src/a.ts isn't a test, a doc or the changelog");
   });
 });

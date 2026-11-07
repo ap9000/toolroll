@@ -111,6 +111,9 @@ release waits for comes from here.
 
 ## Nightly
 
+The root lanes (cgroup, Linux fence, Windows Job Object) run in `native-lanes.yml`, a workflow run of their own; `ci.yml`'s
+jobs of those names wait for its verdict (trusted-release-reports.md, H1).
+
 `nightly.yml` (formerly `macos.yml`) calls `ci.yml` and `release-candidate.yml` on main every night: both Node versions,
 Linux and macOS, every area lane. Its checks are named `nightly / …`, so none stands in for a pull request's.
 

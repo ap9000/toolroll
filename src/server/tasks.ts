@@ -1,6 +1,7 @@
 import { titleWithin } from "../task-text.js";
 import { parseFeedbackImage, sameFeedbackImage } from "../result-review.js";
-import { archiveTaskFamily, dropFeedbackImage, releaseAuthorityOfTask, restoreTaskFamily, revokeRelease, runLiveCommands } from "../store.js";
+import { archiveTaskFamily, dropFeedbackImage, releaseAuthorityOfTask, restoreTaskFamily, revokeRelease, runCheckStamp, runLiveCommands } from "../store.js";
+import { ranWords } from "../check-stamp.js";
 import { applyTidy, approverStandsNow, familyRepoOf, releaseFactsOf, tidyDays, tidyDigest, tidyPreview, TIDY_DEFAULT_DAYS } from "../tidy.js";
 import { steerCapabilityOf } from "../steer-capabilities.js";
 import { canReveal, localCheckoutOf, revealInFinder } from "../checkout-proof.js";
@@ -2715,6 +2716,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       timing: timingFor(store, run.id, row.taskId),
       // How far its checks reached (check-access.ts), display only.
       checkAccess: store.runCheckAccess(run.id),
+      // How its checks actually ran, by what was stamped at launch: said only for a result whose checks ran.
+      checkRan: store.artifactsFor(run.id).some(one => one.kind === "check-log") ? ranWords(runCheckStamp(store, run.id)) : null,
       reviewRetry: store.reviewRetryStateOf(run.id),
       review: reviewFactsFor(run.id),
       notes: store.notesForRun(run.id),

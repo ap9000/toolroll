@@ -12,7 +12,7 @@ import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { run } from "./exec.js";
 import { fencedCheckoutCommands, fencedCommands } from "./invoke.js";
 import { register } from "./runner.js";
-import { openStore, type Store } from "./store.js";
+import { openStore, runCheckStamp, type Store } from "./store.js";
 import { WorktreePool } from "./worktree.js";
 import { outsideTempDir } from "../test/short-temp.js";
 
@@ -68,6 +68,11 @@ describe.skipIf(!FENCED)("a build's setup and check commands", () => {
     expect(result.stdout.trim().split("\n"), result.stderr).toEqual(["state-refused", "outside-refused", "worktree-ok", "temp-ok", "cache-ok"]);
     expect(existsSync(outside)).toBe(false);
     expect(readFileSync(join(worktree, "made.txt"), "utf8")).toBe("y\n");
+    // Stamped at the launch, from the grants it took: writes as allowed, the fence's digest, never "everywhere".
+    const stamped = runCheckStamp(store, runId);
+    expect(stamped).toMatchObject({ state: "current", stamp: { level: "sandboxed", policyDigest: expect.stringMatching(/^[0-9a-f]{32}$/) } });
+    expect(stamped.state === "current" && stamped.stamp.writable).toEqual(expect.arrayContaining([realpathSync(worktree)]));
+    expect(stamped.state === "current" && stamped.stamp.writable).not.toContain("*");
   });
 
   test("anywhere: still no state; its writes go where they always did", async () => {

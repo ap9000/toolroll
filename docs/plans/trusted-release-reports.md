@@ -261,6 +261,75 @@ keyboard.
   - the v1 tamper scan stays as a heuristic over changed expressions (arguments and bindings, not just counts).
     First measure its false-positive rate over the last 30 releases.
 
+## As built: H1 to H4 (branch `nr-hardening`)
+
+Automatic approval stays off: `reportsProtected` is unchanged. Toolroll's own project setting is unchanged, and its release
+check stays unsandboxed until a measured run says otherwise.
+
+**H1.**
+- `scripts/ci-candidate.mjs` is the base-revision harness, with the probe `scripts/ci-candidate-probe.cjs`. The user gets a
+  *copy* of the checkout, so nothing changes owner on the runner's side. That copy is the one ownership exception; the git
+  lanes no longer `chown` the workspace.
+- **Changed from item 8.** The required names did **not** move. `prChecksVerdict` binds each name to its workflow file
+  (release.ts, `workflowIs`), and the tool judging a release is the one already deployed, so moving a name would fail every
+  release until a build knowing the new file shipped. The root lanes run in `native-lanes.yml` (an independent run, under
+  names that are never required), and ci.yml's three jobs keep the names and wait for the verdict
+  (`scripts/ci-native-wait.mjs`). So `REQUIRED_PR_CHECKS_WORKFLOW`, `release-proof.mjs`, publish.yml and main-push's list
+  need no change. nightly.yml and main-push.yml start the lanes by `workflow_dispatch`.
+- Left as they are: publish.yml and main-push's `build` job (merged code, not a candidate), and journeys.yml and
+  youiyoux.yml (their own runs, advisory, sharing nothing with a required job).
+
+**Verify on the first CI run** (none of this has run on GitHub):
+1. Linux shard: `prepare` makes the user, copies the checkout and the node toolchain; `npm ci --ignore-scripts` works as
+   that user from the copied cache; the build's Tailwind and esbuild work without install scripts.
+2. The canary passes on all three roads in all six hardened jobs. Look hard at "no scheduled job" (cron.deny) and "no
+   token in the checkout's Git config".
+3. Cleanup ends cleanly: exit 97 means `kill(-1)` couldn't clear the user. On macOS, watch for launchd's per-user agents
+   (`cfprefsd`, `distnoted`) respawning under the new uid.
+4. macOS shards as a `dscl` user with no login session: keychain tests (tool-secret-store), Seatbelt attacks, PTYs. These
+   are the likeliest to fail.
+5. Linux fence tests in shards as an unprivileged user (`TOOLROLL_REQUIRE_NATIVE=linux`).
+6. Git lanes in the container: root's `safe.directory`, `.trusted-base/scripts/ci-git.sh`, `--user node`, the report over
+   fd 3, and `ci-no-skips.mjs` run from `$RUNNER_TEMP` with paths relative to the workspace.
+7. Joins: `join` lays attempt-named artifacts out under the verifier's names; the macOS `sed` still maps its prefix. Rerun
+   one failed shard and confirm the newest attempt stands.
+8. Native lanes: each waiter finds its run and passes; a docs-only pull request skips both sides; the waiters' extra three
+   Ubuntu jobs don't push the job past GitHub's concurrency.
+9. A push that main-push can't prove, and Nightly by hand: the dispatch starts `native-lanes.yml`, and a called job's
+   `actions: read` is accepted.
+10. Timing: shards shouldn't grow by more than the copy (seconds).
+
+If it can't be made green in time, the two workflow commits revert alone: each restores what it replaced.
+
+**H2.** `src/check-stamp.ts`, schema v154 (`check_stamp`). Written by `fencedCommands` and `fencedCheckoutCommands` at each
+launch, from the grants the launch takes. Read by carrying, the result page and the release card. `runCheckAccess` still
+reads missing as sandboxed, for one job only: choosing how a later check may run (narrowest).
+
+**H3.** `scripts/fenced-run.mjs` (`measure`, `cover`, `verdict`), `src/fenced-check-coverage.ts`, and `fencedCoverage` on the
+release adapter, which answers at once for a run that ran unsandboxed. **A measured run needs:**
+1. A person, on a quiet Mac with no release running, from a clean build: `node scripts/fenced-run.mjs measure --level
+   sandboxed --out <file>`, then again with `--level sign-ins` (this one reads the real sign-in files, as that level does).
+   Allow hours: the Full check takes about 40 minutes unfenced, and fenced time is unknown.
+2. `gh run download <ci.yml run> --pattern 'macos-shard-*' --dir <folder>` for that commit (after H1, whose attempt-named
+   artifacts it expects), then `cover` for each and `verdict`.
+3. **A known gap to settle first.** The harness runs the `check` fence kind, the one saved results use. A release's check
+   goes through `fencedCommands`, whose kind is `command`, and only `check` gets the Chromium allowance (`fenceFor`).
+   Journeys that pass in the harness could fail there. Giving `command` that allowance is a widening, so it is its own
+   reviewed change.
+4. Only then does a person narrow the project with `toolroll project check-access`. Any exemption goes in
+   `FENCED_SKIP_EXEMPTIONS` with its reason.
+
+The macOS lane runs a subset of files, so a skipped case outside the lane can't be covered yet: `cover` will show how many.
+
+**H4.** Carrying and the automatic road refuse any change to a test file that existed at the approved commit (journey scripts
+too); a test new since the approval may still be fixed. A new test may not import another test or a computed path. The carry
+rules' version stays 1: this only tightens, and a bump would refuse every sealed policy.
+
+The tamper scan (`src/tamper-scan.ts`) compares whole expressions, arguments and bindings included, and is wired to nothing.
+Measured over the last 30 releases (`scripts/tamper-measure.mjs`, v0.9.64 to v0.9.93, each reviewed and shipped): **18 of 30
+releases flagged** (16 in product code, 13 in tests), 85 of 2,834 changed files, 176 findings. So it can't gate; at most it
+is a note on a card.
+
 ## Later: a separate release gate (preconditions only)
 
 Automatic approval can be considered only once the thing that grants approvals is outside what a product release can
@@ -309,7 +378,7 @@ Preconditions:
 
 **Slice A** comes first, on its own. It is product code only (plane, console, CLI), with no change to proofs or to the
 automatic road, and its release takes a person's yes as usual. After it: **H1**, **H2**, **H3** (measurement first),
-**H4**, in that order; each one stands alone. The gate is later and unplanned.
+**H4**, in that order; each one stands alone (see "As built"). The gate is later and unplanned.
 
 ## Open decisions
 
