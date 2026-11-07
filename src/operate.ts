@@ -317,6 +317,7 @@ import { requestMissingRechecks } from "./check-only.js";
 import { recordBuilderWish } from "./builder-restart.js";
 import { expireFastStarts, fastRefusalWords, fastStartBuild, keepGrownChange, prepareFastStart, type FastBuild, type PasswordFacts } from "./fast-start.js";
 import { fastTermsLines } from "./fast-terms.js";
+import { routeChangeOf, routeLegacyPlans } from "./route-change.js";
 import { passwordlessOn } from "./passwordless.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
@@ -3934,6 +3935,8 @@ async function reconcileCommand(
   retryVanishedWhenStopped(store, clock());
   // A fast start that didn't start in time goes back to the ordinary Approve plan (fast-start.ts).
   expireFastStarts(store, clock());
+  // A plan from before agent routing gets its route and one Approve (route-change.ts).
+  routeLegacyPlans(store, clock());
   // An update whose updater ended while letting work finish must not leave new work paused.
   try { releaseStalledUpdate(dirname(context.databaseFile), clock()); } catch { /* status and the console say it */ }
   for (const one of recovered) {
@@ -10923,6 +10926,8 @@ async function approveTask(
       interactive() && !json) {
     write(`Approving lets a builder work on ${id}, within exactly this:`);
     write("");
+    const changed = routeChangeOf(store, id);
+    if (changed !== null) { write(changed); write(""); }
     for (const line of describeScope(scope)) write(line);
     for (const line of planContractLines(store, context.evidenceRoot, id)) write(line);
     write("");
@@ -10949,6 +10954,8 @@ async function approveTask(
     }
     write(`Would approve this, and let a builder work on ${id}:`);
     write("");
+    const changed = routeChangeOf(store, id);
+    if (changed !== null) { write(changed); write(""); }
     for (const line of describeScope(scope)) write(line);
     for (const line of planContractLines(store, context.evidenceRoot, id)) write(line);
     write("");

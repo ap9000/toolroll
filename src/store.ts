@@ -109,7 +109,7 @@ import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-
 
 import { authorityStandsSql } from "./approval-authority.js";
 import { clearRetryEpisode, settleVanished } from "./vanished-retry.js";
-import { BUILDER_SERVICE_SCHEMA, CHECK_ONLY_SCHEMA, FAST_PREVIEW_SCHEMA, V153_ADDED_COLUMNS, VANISHED_SCHEMA } from "./plain-schema.js";
+import { BUILDER_SERVICE_SCHEMA, CHECK_ONLY_SCHEMA, FAST_PREVIEW_SCHEMA, ROUTE_CHANGE_SCHEMA, V153_ADDED_COLUMNS, VANISHED_SCHEMA } from "./plain-schema.js";
 export { V153_ADDED_COLUMNS } from "./plain-schema.js";
 import { releasePolicyDigest, serializeReleaseCheckPurpose, storedReleaseCheckPurpose, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseCheckPurpose, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
@@ -1989,7 +1989,7 @@ export const V150_STEPS = Object.freeze(["machine-aliases", "witness-machine"] a
 /** The v151 migration's steps after v150's, in order (OpenOptions.migrationStep may stop after each). */
 export const V151_STEPS = Object.freeze(["checkout-idle"] as const);
 /** v153 (plain-toolroll.md Phase 2): the tables each slice owns. */
-export const V153_SCHEMA = VANISHED_SCHEMA + CHECK_ONLY_SCHEMA + BUILDER_SERVICE_SCHEMA + FAST_PREVIEW_SCHEMA;
+export const V153_SCHEMA = VANISHED_SCHEMA + CHECK_ONLY_SCHEMA + BUILDER_SERVICE_SCHEMA + FAST_PREVIEW_SCHEMA + ROUTE_CHANGE_SCHEMA;
 /** The v153 migration's steps after v151's, in order (OpenOptions.migrationStep may stop after each). */
 export const V153_STEPS = Object.freeze(["plain-tables", "plain-columns"] as const);
 /**

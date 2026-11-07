@@ -2,6 +2,7 @@
 export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { mintSecret } from "./secret-mint.js";
 import { passwordlessOn } from "./passwordless.js";
+import { routeChangeProblem } from "./route-change.js";
 import { currentPasswordSource, passwordGuardOf, provenPasswordAccount } from "./sign-in-guard.js";
 import { validateScopeText } from "./task-text.js";
 import { contractChangesOf } from "./contract-changes.js";
@@ -1555,6 +1556,8 @@ export function approve(
     // rewrites it, and an approval that did not name what it saw would agree to
     // the new one in silence — which is the whole failure this guards.
     if (sawDigest !== scope.digest) return { ok: false as const, reason: "changed" as const };
+    // The "what changed" line a person read describes this exact route, or this yes isn't to what they read (route-change.ts).
+    if (routeChangeProblem(store, taskId, scope)) return { ok: false as const, reason: "changed" as const };
 
     // An unresolved scope cannot say exactly what would run, so nobody can
     // agree to it (foundations finding 16) — restatement is the road.

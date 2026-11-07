@@ -17,6 +17,7 @@ import type { ConnectionChecker } from "./provider-connection.js";
 import { loadProjectRegistry } from "./repos.js";
 import { describeScope } from "./scope.js";
 import { localModeOf, openStoreReadOnly, type Store } from "./store.js";
+import { routeChangeOf } from "./route-change.js";
 import type { TuiAct, TuiActResult, TuiDecision, TuiFastTerms, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
 import { terminalText } from "./terminal-text.js";
 import { welcomeHere, welcomeLines } from "./welcome-facts.js";
@@ -42,6 +43,8 @@ function refusalOf(envelope: Envelope): TuiActResult {
   const message = shown(envelope.message, "That was refused.");
   return { ok: false, message, needsPassword: envelope.reason === "refused" || envelope.reason === "machine-proof" || envelope.reason === "person-required" || /password/i.test(message) };
 }
+
+const routeLines = (store: Store, id: string): string[] => { const words = routeChangeOf(store, id); return words === null ? [] : [words]; };
 
 export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(): void } {
   const file = options.databaseFile;
@@ -96,7 +99,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       const task = record(answer["task"]), work = record(answer["work"]), status = record(work["status"]);
       const store = read();
       const scope = store === null ? null : store.getScope(id);
-      const plan = scope === null || scope.approvedDigest === scope.digest ? null : { digest: scope.digest, lines: describeScope(scope).map(line => terminalText(line)) };
+      const plan = scope === null || scope.approvedDigest === scope.digest ? null : { digest: scope.digest, lines: [...(store === null ? [] : routeLines(store, id)), ...describeScope(scope)].map(line => terminalText(line)) };
       let hasResult = false;
       try { hasResult = store !== null && assignmentOf(store, id, clock(), { principal: "operator", repos: null })?.receipt != null; } catch { hasResult = false; }
       const decisions: TuiDecision[] = store === null ? [] : store.listDecisions("unanswered").filter(one => one.taskId === id)

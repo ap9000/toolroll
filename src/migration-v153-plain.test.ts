@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, UPDATE_SAFE_MIGRATIONS, updateSafeSchema, V153_ADDED_COLUMNS, V153_STEPS, type MigrationStep, type Store } from "./store.js";
 
 const NOW = new Date("2026-11-06T12:00:00.000Z");
-const TABLES = ["vanished_charge", "retry_episode", "check_authorization", "builder_service", "builder_restart", "fast_preview"];
+const TABLES = ["vanished_charge", "retry_episode", "check_authorization", "builder_service", "builder_restart", "fast_preview", "route_change"];
 let dir: string | undefined;
 const open: Store[] = [];
 afterEach(() => { for (const one of open.splice(0)) { try { one.close(); } catch { /* closed */ } } if (dir) rmSync(dir, { recursive: true, force: true }); dir = undefined; });

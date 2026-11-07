@@ -461,7 +461,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'archived_kind',(SELECT by_kind FROM task_archive WHERE task_ref=page.ref_id),'archived_reason',(SELECT reason FROM task_archive WHERE task_ref=page.ref_id),
     'archived_at',(SELECT at FROM task_archive WHERE task_ref=page.ref_id),'root_ref',root_ref,'root_id',root_id,'id',id,'root_title',root_title,'repo',repo,
     'state',state,'created_at',created_at,'family_updated',family_updated,'version_count',version_count,'earlier_active',earlier_active,
-    'earlier_id',earlier_id,'retry_stopped',(SELECT stopped FROM retry_episode WHERE task_ref=page.ref_id),'retry_stopped_run',(SELECT stopped_run FROM retry_episode WHERE task_ref=page.ref_id),'broken',broken,'live_run',live_run,'result_id',page_result_id,'result_outcome',(SELECT outcome FROM run WHERE id=page_result_id),'attempt_reason',(SELECT substr(reason,1,1000) FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),
+    'earlier_id',earlier_id,'route_change',(SELECT rc.words FROM route_change rc JOIN task_scope rs ON rs.task_id=page.id AND rs.digest=rc.scope_digest AND rs.approved_digest IS NOT rs.digest WHERE rc.task_ref=page.ref_id),'retry_stopped',(SELECT stopped FROM retry_episode WHERE task_ref=page.ref_id),'retry_stopped_run',(SELECT stopped_run FROM retry_episode WHERE task_ref=page.ref_id),'broken',broken,'live_run',live_run,'result_id',page_result_id,'result_outcome',(SELECT outcome FROM run WHERE id=page_result_id),'attempt_reason',(SELECT substr(reason,1,1000) FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),
     'publication_url',(SELECT pr_url FROM publication WHERE run=page_result_id),
     'result_role',(SELECT role FROM run WHERE id=page_result_id),'result_head',(SELECT head_revision FROM run WHERE id=page_result_id),'live_role',(SELECT role FROM run WHERE id=page.live_run),
     'check_status',(SELECT status FROM run_check WHERE run=page_result_id),
@@ -687,6 +687,8 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   // A failed task says the latest finished attempt across its whole family, whatever its outcome: its recorded reason, or that none was recorded.
   if (code === 'failed') detail = s(row, 'retry_stopped') === null ? failedAttemptSentence(s(row, 'attempt_reason'))
     : vanishedStopSentence({ why: s(row, 'retry_stopped') as RetryStop, run: n(row, 'retry_stopped_run') || null });
+  // A new route waiting for its one Approve says what changed (route-change.ts).
+  if (code === 'needs-approval' && s(row, 'route_change') !== null) detail = s(row, 'route_change')!;
   // A saved result that can't be accepted yet says its own reason, never one line for every such row.
   const planChanged = code === 'result-needs-attention' && n(row, 'plan_changed') === 1;
   if (code === 'result-needs-attention') detail = resultHoldUpSentence({ hold: s(row, 'hold_id') === null ? null : s(row, 'hold_reason') ?? '', planChanged,

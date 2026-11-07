@@ -18,6 +18,7 @@ import { replacedWords } from "./task-status.js";
 import { failedAttemptSentence, latestFinishedAttempt } from "./needs-you.js";
 import { buildReviewOf } from "./review-switch.js";
 import { vanishedStopOf, vanishedStopSentence } from "./vanished-retry.js";
+import { routeChangeOf } from "./route-change.js";
 import { BUILT_IN, refArchived, parseCapabilityKey, type ChatSnapshot, type ReviewRequestOrigin, type ReviewRetryState, type Store, type TaskState } from "./store.js";
 import { shortWhen } from "./when-html.js";
 
@@ -411,7 +412,7 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
     if (scope === null) return answer("needs-scope", "waiting", "Needs a plan", "Write the plan, or ask the planner to draft it.", { action: "write-scope", role });
     if (scope.profileState === "unresolved") return answer("needs-agent-profile", "waiting", "Needs an agent profile", scope.unresolvedReason ?? "Choose an available provider and model.", { action: "select-agent", role });
     if (!scopeApprovedForDispatch(store, ref.id, now) || !approvalOf(scope).approved) {
-      return answer("needs-approval", "waiting", "Needs your approval", "Review the plan and approve it so a builder can start.", { action: "approve-scope", role });
+      return answer("needs-approval", "waiting", "Needs your approval", routeChangeOf(store, taskId) ?? "Review the plan and approve it so a builder can start.", { action: "approve-scope", role });
     }
   }
 

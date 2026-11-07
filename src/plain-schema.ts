@@ -79,6 +79,17 @@ CREATE TABLE IF NOT EXISTS fast_preview (
   consumed_at TEXT
 );
 `;
+/** The one new route Toolroll proposed for a task whose sealed one no longer matches (route-change.ts): the line a person
+ * reads, bound to the exact route digest it describes. */
+export const ROUTE_CHANGE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS route_change (
+  task_ref        INTEGER PRIMARY KEY REFERENCES task_ref(id),
+  scope_digest    TEXT NOT NULL,
+  to_route_digest TEXT NOT NULL,
+  words           TEXT NOT NULL,
+  created_at      TEXT NOT NULL
+);
+`;
 /** v153's columns: a fast start's marker and start window on the task (both NULL on saved rows) and the project setting
  * Small tasks start right away (NULL: the default). */
 export const V153_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({

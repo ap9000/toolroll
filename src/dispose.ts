@@ -1,5 +1,6 @@
 // Assignment tracking grants no repair authority or attempts.
 import { authorizeCheckOnly } from "./check-only.js";
+import { proposeNewRoute } from "./route-change.js";
 import { originalTaskBase, focusedTestCommandSupported } from "./observations.js";
 /**
  * The build disposition service (Parity II Phase 2, v4 Q2 / v6 W1): the
@@ -447,6 +448,8 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
  */
 export function holdStaleApproval(store: Store, args: { taskRef: number; taskId: string; message: string }, now: Date): void {
   const scope = store.getScope(args.taskId);
+  // Toolroll proposes the new exact route itself (route-change.ts): the person's one act is Approve, on one line.
+  const proposed = proposeNewRoute(store, args.taskRef, args.taskId, now);
   store.holdOwned(
     {
       taskRef: args.taskRef,
@@ -464,8 +467,8 @@ export function holdStaleApproval(store: Store, args: { taskRef: number; taskId:
       kind: "stale-approval",
       pushClass: "attention",
       link: `/t/${encodeURIComponent(args.taskId)}`,
-      subject: `${args.taskId}: its approval no longer matches the build routing — approve it again`,
-      body: `${args.message}\nNothing runs on it until the scope is approved again; the hold lifts with the yes.`,
+      subject: `${args.taskId}: its agents changed — approve it again`,
+      body: `${proposed?.words ?? args.message}\nNothing runs on it until it's approved again.`,
     },
     now,
   );

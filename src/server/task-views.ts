@@ -12,6 +12,7 @@ import { releaseObligationsOf } from "../release-recheck.js";
 import { approvalProofOf, freshnessFor, withFreshness } from "../scope.js";
 import { approvalPasswordField } from "../approval-password.js";
 import { fastChangeProblem, fastStarted } from "../fast-start.js";
+import { routeChangeOf } from "../route-change.js";
 import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
 import { recentGitReads, taskBaseOf } from "../task-base.js";
@@ -576,6 +577,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
             approvalLocal: field.field === "none" && field.why === "local-owner" ? { eligible: true as const }
               : field.field === "local-refused" ? { eligible: false as const, message: field.message, href: field.href, action: field.action } : null };
         })(),
+        routeChange: ref === null ? null : routeChangeOf(runtime.store, ref.externalId),
         fastGrown: (() => {
           if (ref === null || runtime.store.getTask(ref.externalId)?.state !== "done" || !fastStarted(runtime.store, ref.externalId)) return null;
           const last = runtime.store.lastBuilderRun(ref.id);
