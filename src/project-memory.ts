@@ -189,10 +189,10 @@ const tokens = (s: string) => new Set((s.toLowerCase().match(/[\p{L}\p{N}_-]{3,}
  * so a brief never repeats what the store already holds.
  */
 export function decisionLines(store: Store, repo: string, query: string, options: { limit?: number; bytes?: number } = {}): DecisionLine[] {
-  const rows = store.handle.prepare("SELECT id,claim,why,decided_at FROM project_decision WHERE repo=? AND status='active' ORDER BY id DESC LIMIT 200").all(repo);
+  const rows = store.handle.prepare("SELECT id,claim,why,decided_at,revision FROM project_decision WHERE repo=? AND status='active' ORDER BY id DESC LIMIT 200").all(repo);
   const q = tokens(query);
   const ranked = rows.map(row => { const claim = String(row['claim']); const score = [...tokens(claim)].reduce((n, t) => n + (q.has(t) ? 3 : 0), 0) + [...tokens(String(row['why']))].reduce((n, t) => n + (q.has(t) ? 1 : 0), 0);
-    return { line: { id: Number(row['id']), claim, decidedAt: String(row['decided_at']) }, score }; })
+    return { line: { id: Number(row['id']), claim, decidedAt: String(row['decided_at']), revision: Number(row['revision']) }, score }; })
     .sort((a, b) => b.score - a.score || b.line.id - a.line.id);
   const limit = options.limit ?? 8, bytes = options.bytes ?? TEXT_LIMITS.knowledgeDecisionsBytes, out: DecisionLine[] = [];
   for (const { line } of ranked) {

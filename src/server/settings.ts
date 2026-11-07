@@ -7,6 +7,7 @@ import { finishGoogleConsent,GOOGLE_CALLBACK } from "../google-mail.js";
 import { kitInstalled,kitOf } from "../kits.js";
 import { CONNECT_CALLBACK,connectionsOf,finishConnect,localConnectOf,oneClickOf } from "../mcp-connect.js";
 import { learningView } from "../project-learning.js";
+import { memoryUseOf } from "../memory-use.js";
 import { skillTestResult } from "../project-skills.js";
 import { discoverTools,projectToolsOf } from "../project-tools.js";
 import { lookProjectMcp } from "../folder-look.js";
@@ -573,8 +574,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
         const hits = memoryQuery.trim() ? searchMemory(store, { actor: who.name, repos: [chosen], query: memoryQuery, limit: 20 }) : null;
         let proposals: Html = html``;
         try { proposals = (proposalsHtml(chosen, listProposals(store, chosen), memoryStatus(store, chosen, who.name), csrf, who.role === 'approver')); } catch { proposals = html``; }
-        content = html`<p class="meta">${MEMORY_INTRO}</p>${memorySearchHtml(chosen, memoryQuery, hits)}${proposals}${(decisionsHtml(chosen, listDecisions(store, chosen, who.name, { limit: 50 }), csrf, who.role === 'approver'))}\
-${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : '')}${knowledgeHtml(view,csrf,who.role==='approver')}\
+        const use = memoryUseOf(store, chosen);
+        content = html`<p class="meta">${MEMORY_INTRO}</p>${memorySearchHtml(chosen, memoryQuery, hits)}${proposals}${(decisionsHtml(chosen, listDecisions(store, chosen, who.name, { limit: 50 }), csrf, who.role === 'approver', undefined, undefined, use))}\
+${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : '')}${knowledgeHtml(view,csrf,who.role==='approver',undefined,undefined,use)}\
 <details class="knowledge frame"><summary class="frame-head">Learned lessons</summary><div class="frame-panel">${(learningHtml(learningView(store,evidenceRoot,chosen,who.name),csrf,who.role==='approver'))}</div></details>`;
       } catch { content = html`<p class="problem" role="alert">Project knowledge is unavailable. Reload to retry.</p>`; }
     }

@@ -1,5 +1,6 @@
 import { STALE_KNOWLEDGE, type KnowledgeDraft, type KnowledgeSelection, type KnowledgeView } from './project-knowledge.js';
 import { html, joinHtml, postForm, type Html } from './html.js';
+import { lastIncludedWords, type MemoryUse } from './memory-use.js';
 import { acts, btn, codeLine, disclose, formRow, input, note, notice, settingsLink, settingsRecord, settingsSection, textarea } from './server/kit.js';
 // Hidden fields as they always were: a missing value is an empty field.
 const fields = (data:Record<string,unknown>):Record<string,string> => Object.fromEntries(Object.entries(data).map(([k,v])=>[k,String(v ?? '')]));
@@ -9,7 +10,7 @@ export function framedSection(heading: string, body: Html | string, extra = ''):
   return html`<section class="${`knowledge frame${extra ? ` ${extra}` : ''}`}"><div class="frame-head"><h2>${heading}</h2></div><div class="frame-panel">${body}</div></section>`;
 }
 export const KNOWLEDGE_CSS = `.knowledge{max-width:780px;min-width:0;overflow-wrap:anywhere}.knowledge .card{padding:20px;min-width:0;margin:16px 0}.knowledge h2{margin:0 0 12px}.knowledge form{display:grid;gap:12px;margin:0}.knowledge label{display:grid;gap:6px}.knowledge textarea,.knowledge input,.knowledge select{box-sizing:border-box;width:100%;min-width:0;max-width:100%}.knowledge textarea{resize:vertical;min-height:110px}.knowledge button,.knowledge summary,.knowledge .button-link{min-height:44px}.knowledge button{justify-self:start;white-space:nowrap}.knowledge summary{padding:12px 0;cursor:pointer}.knowledge pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}.knowledge .knowledge-actions{display:flex;gap:12px;flex-wrap:wrap}.knowledge .meta{font-size:.86rem}.knowledge .knowledge-source{display:block}.knowledge details+details{border-top:1px solid var(--so-line)}.memory-stats{display:flex;flex-wrap:wrap;gap:.4rem}.memory-stats span+span::before{content:"·";margin-right:.4rem}.knowledge.frame{margin:0 0 16px}.knowledge.frame>.frame-head h2,.knowledge.frame>summary.frame-head{margin:0;font-size:13px;font-weight:600;line-height:1.4}.knowledge.frame>summary.frame-head{min-height:44px;padding:4px 10px}.knowledge.frame>.frame-panel{min-width:0}.knowledge.frame>.frame-panel>:first-child{margin-top:0}.knowledge.frame>.frame-panel>:last-child{margin-bottom:0}.knowledge .frame-panel>details.card,.knowledge .frame-panel .learning .card{margin:0;padding:0;border:0;border-radius:0;background:none;box-shadow:none}.knowledge .frame-panel>details.card+details.card,.knowledge .frame-panel .learning .card+.card{border-top:1px solid var(--so-line);padding-top:4px}.knowledge.frame>summary.frame-head{justify-content:flex-start}.knowledge form.field-row{grid-template-columns:minmax(0,1fr) auto;align-items:end}.knowledge form.field-row>label,.knowledge form.field-row :is(input,select,button){margin:0}@media(max-width:600px){.knowledge .card{padding:16px}.knowledge h2{font-size:1.1rem}}`;
-export function knowledgeHtml(view:KnowledgeView,csrf:string,canManage:boolean,draft?:KnowledgeDraft,error?:string):Html {
+export function knowledgeHtml(view:KnowledgeView,csrf:string,canManage:boolean,draft?:KnowledgeDraft,error?:string,use:ReadonlyMap<string,MemoryUse>=new Map()):Html {
   const manage=canManage && !!csrf;
   const base={repo:view.repo,identity:view.identity,revision:view.revision};
   const form=(action:string,body:Html,extra:Record<string,unknown>={})=>postForm('/settings/knowledge/change',body,{hidden:fields({...base,action,...extra})});
@@ -23,6 +24,7 @@ export function knowledgeHtml(view:KnowledgeView,csrf:string,canManage:boolean,d
   const refs=view.knowledge.references.map(ref=>settingsRecord({
     title:ref.title,
     sub:ref.path?html`<span class="k-mono">${ref.path} · ${ref.sourceRevision?.slice(0,7)}</span>`:'',
+    when:lastIncludedWords(use.get(`reference:${ref.id}`)),
     more:joinHtml([
       disclose('Read reference',html`<pre class="k-scode">${ref.content}</pre>`,draft?.id===ref.id),
       manage?disclose('Edit reference',joinHtml([
@@ -62,14 +64,15 @@ export function knowledgeContextHtml(snapshot:KnowledgeSelection|null):Html|'' {
 
 // ---- project memory: decisions and search (2026-09-21) ----------------------------
 import type { Decision, MemoryHit } from './project-memory.js';
-export const MEMORY_INTRO = 'What the lead and crew read before they work. Every change keeps its history.';
-export function decisionsHtml(repo: string, decisions: Decision[], csrf: string, canManage: boolean, draft?: { claim?: string; why?: string }, error?: string): Html {
+export const MEMORY_INTRO = 'What the lead and crew read before they work. Every change keeps its history. Last included is counted in runs.';
+export function decisionsHtml(repo: string, decisions: Decision[], csrf: string, canManage: boolean, draft?: { claim?: string; why?: string }, error?: string, use: ReadonlyMap<string, MemoryUse> = new Map()): Html {
   const manage = canManage && !!csrf;
   const base = { repo };
   const form = (action: string, body: Html, extra: Record<string, unknown> = {}) => postForm('/settings/knowledge/decision', body, { hidden: fields({ ...base, action, ...extra }) });
   const rows = decisions.map(d => settingsRecord({
     title: d.claim, sub: d.why, when: html`<span class="k-num">#${d.id}</span> · ${d.decidedBy} · ${d.decidedAt.slice(0, 10)}`, attrs: { id: `decision-${d.id}` },
     more: joinHtml([
+      note(lastIncludedWords(use.get(`decision:${d.id}`))),
       note(`${d.sourceKind}${d.sourceRef ? ` · ${d.sourceRef}` : ''}${d.supersedes === null ? '' : ` · replaces #${d.supersedes}`}`),
       manage ? disclose('Retire', form('retire', joinHtml([
         formRow('Why it no longer holds', null, input({ id: `decision-${d.id}-reason`, name: 'reason', attrs: { maxlength: 500, required: true, 'aria-label': 'Why it no longer holds' } }), 'wide'),

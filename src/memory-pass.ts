@@ -23,6 +23,7 @@ import { composeLeadRequest, performLeadRequest, isDirectChatProvider, CHAT_KEY_
 import { performSubscriptionLeadRequest } from './subscription-chat.js';
 import type { DirectChatProviderId, SubscriptionChatProviderId } from './store.js';
 import { TEXT_LIMITS } from './text-limits.js';
+import { lastIncludedWords, memoryUseOf } from './memory-use.js';
 import { contractError, parseContract } from './contracts/contract.js';
 import { MEMORY_VERDICT_MODEL_SCHEMA, MEMORY_VERDICT_VERSION, memoryEvidenceSchema, memoryProposalSchema, memoryVerdictReadSchema, readSavedVerdict, savedVerdictSchema, type MemoryProposal, type Verdict } from './contracts/memory-pass.js';
 
@@ -376,12 +377,23 @@ export function decideProposal(store: Store, args: { repo: string; actor: string
   });
 }
 
-export function memoryStatus(store: Store, repo: string, actor: string): { surface: string; instructionBytes: number; budgetBytes: number; sessions: { total: number; analyzed: number; failed: number }; openGaps: number; pending: number } {
+export function memoryStatus(store: Store, repo: string, actor: string): { surface: string; instructionBytes: number; budgetBytes: number; sessions: { total: number; analyzed: number; failed: number }; openGaps: number; pending: number; included: { kind: string; item: string; title: string; words: string }[] } {
   const surface = memorySurface(store, repo, actor);
   const view = knowledgeView(store, repo, actor);
   const counts = store.handle.prepare('SELECT COUNT(*) AS total, SUM(CASE WHEN analyzed_at IS NOT NULL THEN 1 ELSE 0 END) AS analyzed, SUM(CASE WHEN problem IS NOT NULL THEN 1 ELSE 0 END) AS failed FROM memory_session WHERE repo=?').get(repo)!;
   return { surface: surface.version, instructionBytes: Buffer.byteLength(view.knowledge.instructions), budgetBytes: INSTRUCTION_BUDGET_BYTES,
     sessions: { total: Number(counts['total'] ?? 0), analyzed: Number(counts['analyzed'] ?? 0), failed: Number(counts['failed'] ?? 0) },
     openGaps: Number(store.handle.prepare('SELECT COUNT(*) AS n FROM memory_gap WHERE repo=? AND retired_at IS NULL').get(repo)?.['n'] ?? 0),
-    pending: Number(store.handle.prepare("SELECT COUNT(*) AS n FROM memory_proposal WHERE repo=? AND status='pending'").get(repo)?.['n'] ?? 0) };
+    pending: Number(store.handle.prepare("SELECT COUNT(*) AS n FROM memory_proposal WHERE repo=? AND status='pending'").get(repo)?.['n'] ?? 0),
+    included: includedLines(store, repo, actor, view.knowledge.references) };
+}
+
+/** "Last included" for every decision, reference and adopted lesson, in the order they're listed elsewhere. */
+function includedLines(store: Store, repo: string, actor: string, references: readonly { id: string; title: string }[]): { kind: string; item: string; title: string; words: string }[] {
+  const use = memoryUseOf(store, repo);
+  const line = (kind: string, item: string, title: string) => ({ kind, item, title, words: lastIncludedWords(use.get(`${kind}:${item}`)) });
+  const lessons = store.handle.prepare("SELECT id, payload FROM project_lesson WHERE repo=? AND status='adopted' ORDER BY id DESC LIMIT 50").all(repo).flatMap(row => {
+    try { return [line('lesson', String(row['id']), clip(String((JSON.parse(String(row['payload'])) as { observation?: unknown }).observation ?? ''), 80))]; } catch { return []; }
+  });
+  return [...listDecisions(store, repo, actor, { limit: 50 }).map(d => line('decision', String(d.id), clip(d.claim, 80))), ...references.map(ref => line('reference', ref.id, clip(ref.title, 80))), ...lessons];
 }

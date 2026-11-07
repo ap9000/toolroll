@@ -9,6 +9,7 @@ import { readVerifiedArtifact, scanForSecrets } from './evidence.js';
 import { normalizeStructuredJson } from "./structured-output.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { canonicalProject } from './project.js';
+import { memoryUseOf, recordLessonUse } from './memory-use.js';
 
 export const LEARNING_SCHEMA = `
 CREATE TABLE IF NOT EXISTS learning_capture (
@@ -388,7 +389,7 @@ export function learningView(store: Store, root: string, repo: string, actor: st
   let damaged = false;
   const lessons = store.handle.prepare('SELECT * FROM project_lesson WHERE repo=? ORDER BY id DESC LIMIT 50').all(repo).flatMap(row => { try { return [lessonOf(row)]; } catch { damaged = true; return []; } });
   const events = store.handle.prepare('SELECT * FROM learning_event WHERE repo=? AND (?=0 OR id<?) ORDER BY id DESC LIMIT 21').all(repo, before, before).map(row => ({ snapshot: row['action'] === 'reuse' ? String(store.handle.prepare('SELECT payload FROM learning_snapshot WHERE run=?').get(Number(row['run']))?.['payload'] ?? 'Snapshot unavailable') : null, outcome: row['run'] === null ? null : store.getRun(Number(row['run']))?.outcome ?? null, id: Number(row['id']), actor: String(row['actor']), at: String(row['at']), action: String(row['action']), before: String(row['before_state']), after: String(row['after_state']), reason: String(row['reason']), lesson: row['lesson'] === null ? null : Number(row['lesson']), run: row['run'] === null ? null : Number(row['run']), evidence: JSON.parse(String(row['evidence'])) as LearningEvidence[] }));
-  return { repo, identity, revision, enabled, lessons, damaged, events: events.slice(0, 20), next: events.length > 20 ? events[19]!.id : null };
+  return { repo, identity, revision, enabled, lessons, damaged, use: memoryUseOf(store, repo), events: events.slice(0, 20), next: events.length > 20 ? events[19]!.id : null };
 }
 export type LearningView = ReturnType<typeof learningView>;
 export function changeLearning(store: Store, root: string, args: { repo: string; actor: string; identity: string; revision: number; action: 'adopt' | 'disable' | 'reset' | 'enable' | 'pause'; lesson?: number; version?: number; sha?: string }, now = new Date()): void {
@@ -482,6 +483,7 @@ export function learningContext(store: Store, root: string, runId: number, phase
       while (selected.length && Buffer.byteLength(serialize()) > 16000) selected.pop();
       const payload = serialize();
       store.handle.prepare('INSERT INTO learning_snapshot VALUES (?,?,?,?,?,?)').run(runId, repo, identity, payload, learningSha(payload), now.toISOString());
+      recordLessonUse(store, { run: runId, repo, payload, at: now.toISOString() });
       event(store, repo, `${run.role}:${run.provider}`, 'reuse', 'unselected', `${selected.length} lesson${selected.length === 1 ? '' : 's'} selected`, 'Advisory context frozen for this run; usage is not a quality claim.', null, runId, selected.flatMap(l => l.payload.evidence), now, `usage:${runId}`);
       return payload;
     });

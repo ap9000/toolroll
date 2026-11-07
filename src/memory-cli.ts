@@ -73,7 +73,7 @@ export async function runMemoryCommand(positional: readonly string[], options: M
     }
     if (action === 'status') {
       const status = memoryStatus(context.store, repo, context.actor);
-      return ok({ status }, [`Surface ${status.surface} · instructions ${status.instructionBytes}/${status.budgetBytes} bytes`, `Sessions: ${status.sessions.total} seen, ${status.sessions.analyzed} analysed, ${status.sessions.failed} failed`, `Open gaps: ${status.openGaps} · pending proposals: ${status.pending}`]);
+      return ok({ status }, [`Surface ${status.surface} · instructions ${status.instructionBytes}/${status.budgetBytes} bytes`, `Sessions: ${status.sessions.total} seen, ${status.sessions.analyzed} analysed, ${status.sessions.failed} failed`, `Open gaps: ${status.openGaps} · pending proposals: ${status.pending}`, ...status.included.map(one => `${one.kind} ${one.title}: ${one.words}`), ...(status.included.length === 0 ? [] : ['Last included is counted in runs; lead chats aren\'t counted.'])]);
     }
     const proposalLine = (p: MemoryProposal) => `#${p.id} ${p.kind} · ${p.title} (${p.sessions} sessions${p.status === 'pending' ? '' : `, ${p.status}`})\n  ${p.rationale}${p.afterText ? `\n  → ${p.afterText}` : ''}${p.beforeText ? `\n  ← ${p.beforeText}` : ''}${p.evidence.map(e => `\n  "${e.quote.slice(0, 160)}" — ${e.session.split(':')[0]}`).join('')}`;
     if (action === 'review') {

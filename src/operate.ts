@@ -80,6 +80,7 @@ import { followSlack } from "./slack.js";
 import { validateScopeText } from "./task-text.js";
 import { runMemoryCommand } from "./memory-cli.js";
 import { runFlakyCommand } from "./flaky-cli.js";
+import { backfillMemoryUse } from "./memory-use.js";
 import { CI_READ_EVERY_MS, ciRepositoriesOf, observeCiAttempts } from "./flaky-ci.js";
 import { runKnowledgeApply, runKnowledgeCommand } from "./knowledge-cli.js";
 import { FLOWS_VALUE_FLAGS, runFlowsCommand } from "./flows-cli.js";
@@ -14027,6 +14028,7 @@ async function flakyCommand(positional: readonly string[], flags: Map<string, st
 /** The watch loop's background learning pass (docs/plans/learning-loops.md): advisory reads, each project at most every
  * 30 minutes through the plane's own gh. A failure here never reaches the loop: it is tried on the next pass. */
 export async function refreshLearning(store: Store, now: () => Date, reads?: GhRead): Promise<void> {
+  try { backfillMemoryUse(store, now()); } catch { /* advisory: the next pass tries again */ }
   for (const repo of store.knownRepos()) {
     try {
       const key = `flaky-ci:${repo}`, at = now();
