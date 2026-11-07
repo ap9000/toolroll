@@ -180,16 +180,22 @@ describe("the other roads into the same writes", () => {
     expect(proposalStatus(at.proposal)).toBe("pending");
   });
 
-  test("the easy-start local owner: memory is not one of its acts, so every memory command is refused before it runs", async () => {
+  test("the easy-start local owner: only reads and lesson notes or clean-ups (D3); decisions and instruction proposals are refused", async () => {
     const laptop = join(root, "laptop.db");
     const store = openStore(laptop, { createdBy: "laptop" });
-    try { if (!initLocalMode(store, { owner: "lee", fenceAvailable: true, now: NOW }).ok) throw Error("local mode"); } finally { store.close(); }
-    for (const argv of [["decide", "x", "--why", "y", "--repo", repo], ["retire", "1", "--reason", "r", "--repo", repo], ["apply", "1", "--decision", "accept", "--repo", repo], ["decisions", "--repo", repo]]) {
+    let instruction = 0;
+    try {
+      if (!initLocalMode(store, { owner: "lee", fenceAvailable: true, now: NOW }).ok) throw Error("local mode");
+      instruction = Number(store.handle.prepare("INSERT INTO memory_proposal(repo,kind,fingerprint,title,rationale,before_text,after_text,evidence,sessions,status,created_at,surface) VALUES (?,'instruction-add','add:x','t','r',NULL,'a','[]',2,'pending',?,'s')").run(repo, NOW.toISOString()).lastInsertRowid);
+    } finally { store.close(); }
+    for (const argv of [["decide", "x", "--why", "y", "--repo", repo], ["retire", "1", "--reason", "r", "--repo", repo], ["apply", String(instruction), "--decision", "accept", "--repo", repo]]) {
       let out = "";
       const code = await runAsLocalOwner(() => runOperate("memory", [...argv, "--json", "--db", laptop], text => { out += text; }, { now: NOW }));
       expect(code, argv[0]).not.toBe(0);
-      expect(JSON.parse(out), argv[0]).toMatchObject({ ok: false, reason: "refused" });
+      expect(JSON.parse(out), argv[0]).toMatchObject({ ok: false });
     }
+    const after = openStore(laptop);
+    try { expect(after.handle.prepare("SELECT status FROM memory_proposal WHERE id = ?").get(instruction)?.["status"]).toBe("pending"); } finally { after.close(); }
   });
 
   test("the console's memory routes take a browser sign-in as an approver: no token, no lead, no local owner", () => {

@@ -196,7 +196,7 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
   });
 
   test("a version bump of package.json and the lockfile, product code, its tests and docs ship", () => {
-    const f = open({ candidate: { "package.json": pkg("0.9.72"), "package-lock.json": lock("0.9.72"), "src/index.js": "export const answer = 44;\n", "src/index.test.ts": "test('answer', () => {});\ntest('more', () => {});\n", "docs/guide.md": "# Guide 3\n", "CHANGELOG.md": "## 0.9.72\n" } });
+    const f = open({ candidate: { "package.json": pkg("0.9.72"), "package-lock.json": lock("0.9.72"), "src/index.js": "export const answer = 44;\n", "src/more.test.ts": "test('answer', () => {});\ntest('more', () => {});\n", "docs/guide.md": "# Guide 3\n", "CHANGELOG.md": "## 0.9.72\n" } });
     authorize(f);
     const sealed = seal(f, check(f));
     expect(sealed.ok ? "" : sealed.why).toBe("");
