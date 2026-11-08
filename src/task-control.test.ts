@@ -17,6 +17,8 @@ import { acquire, interruptIfStopped, release, finalize } from "./claim.js";
 import { disposeBuildOutcome } from "./dispose.js";
 import { requestTaskStop, resumeTaskStop, taskControlOf, stopRequestedFor } from "./task-control.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
+import { CODE_READING, NEEDS, needSentence } from "./needs-you.js";
+import { storageRefusalWords } from "./protected-storage.js";
 import { taskReadinessBlocker } from "./dispatch.js";
 import { workIndexPage } from "./work-index.js";
 import { repairStaleStatuses } from "./lead-status.js";
@@ -311,6 +313,32 @@ describe("safe task stop and resume (v52)", () => {
     // The stopped task reads as stopping — never "stopped" — until settlement.
     expect(taskControlOf(store, a.taskRef, T0)).toMatchObject({ kind: "stopping", run: a.runId, unsettledRun: true });
     expect(store.activeHolds(a.taskRef, T0)).toMatchObject([{ ownerKind: "stop", ownerId: String(a.runId) }]);
+  });
+
+  // Codex round 2, finding 4: the storage check's words reached nobody ("The build fence could not be prepared"), and a
+  // plane without permission retried silently. Now they are kept on the run, the task holds and asks for Try again.
+  test("a launch the storage check refused: no strike, its words on the run and the task, a message, and Try again lifts the hold", () => {
+    const a = runningAttempt(store, "t-storage");
+    const words = storageRefusalWords(["Slack"], "timed-out", "the program that keeps Toolroll running (/opt/node)");
+    const disposition = disposeBuildOutcome(disposeContext(store, a, "t-storage", later(1_000)), { ok: false, reason: "protected-storage", message: words });
+    expect(disposition).toMatchObject({ kind: "skipped" });
+    expect(store.getRun(a.runId)).toMatchObject({ outcome: "refused", reason: "protected-storage" });
+    expect(store.getTask("t-storage")?.state).toBe("queued");
+    expect(store.activeHolds(a.taskRef, later(1_000))).toMatchObject([{ ownerKind: "backoff", ownerId: `storage:${a.taskRef}` }]);
+    // The task page, CLI and chat read the dispatch answer: the check's own words, when it tries again, and Try again.
+    const read = diagnoseTaskDispatch(store, "t-storage", later(2_000));
+    expect(read).toMatchObject({ code: "storage-blocked", condition: "waiting", action: "unhold" });
+    expect(read?.detail).toContain(words);
+    expect(read?.detail).toMatch(/It tries again on its own/);
+    // Needs you: its own item, the words as its sentence, Try again as its one action.
+    expect(CODE_READING["storage-blocked"]).toMatchObject({ stage: "needs-you", need: "storage", act: "unhold" });
+    expect(needSentence("storage", words)).toBe(words);
+    expect(NEEDS.storage.action).toEqual({ code: "unhold", label: "Try again" });
+    // A message (chat, phone) carries the words.
+    expect(store.handle.prepare("SELECT body FROM notification WHERE kind = 'protected-storage'").get()?.["body"]).toContain("Full Disk Access");
+    // Try again: the hold goes, and the task is free to start.
+    expect(store.unhold(a.taskRef, {}, later(3_000))).toBe(true);
+    expect(store.activeHolds(a.taskRef, later(3_000))).toEqual([]);
   });
 
   test("c1: a finished attempt refuses a stop and its earlier completion is never rewritten; a superseded lease is not the live attempt", () => {

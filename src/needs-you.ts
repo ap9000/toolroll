@@ -8,7 +8,7 @@
 
 /** What a person is asked for. */
 export type NeedKey =
-  | "approval" | "card" | "answer" | "questions" | "sign-in" | "stop-unproven" | "hold"
+  | "approval" | "card" | "answer" | "questions" | "sign-in" | "stop-unproven" | "hold" | "storage"
   | "choose-project" | "define-task" | "fix-request" | "choose-agent" | "fix-dependency" | "add-requirement"
   | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "replan" | "earlier-version" | "history" | "finding" | "other";
 /** What the work waits for when no person can act. */
@@ -19,7 +19,7 @@ export type WaitKey = "build-stopping" | "build-finishing" | "build-checking" | 
 export type NeedActionCode =
   | "approve-scope" | "approve-card" | "answer-decision" | "inspect-decisions" | "sign-in" | "recheck-stopped" | "inspect-hold"
   | "place-task" | "write-scope" | "select-agent" | "repair-dependency" | "repair-capability" | "start-worker" | "reconcile-run"
-  | "open-result" | "retry-task" | "inspect-task" | "inspect-findings";
+  | "open-result" | "retry-task" | "inspect-task" | "inspect-findings" | "unhold";
 export type NeedAction = { code: NeedActionCode; label: string };
 /** Where "Connect a builder" and "Start the builder" lead (code `start-worker`): the Start a builder page, which shows
  * the one command to run and the open project's builder state. Every signed-in person can open it, a project-limited
@@ -54,6 +54,8 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
   // what's theirs and have it look again, nothing more.
   "stop-unproven": { sentence: context => `Toolroll can't prove ${build(context)} stopped from this computer, so the work is held. Close anything of yours that is using its folder, then check again.`, action: { code: "recheck-stopped", label: "Check again" } },
   hold: { sentence: () => "A hold is keeping this task from starting. Review it to release it.", action: { code: "inspect-hold", label: "Review hold" } },
+  // The storage check couldn't finish (protected-storage.ts): its own words say which program macOS may need to allow.
+  storage: { sentence: () => "Toolroll couldn't finish checking other apps' data before starting. Allow it in Privacy & Security, then try again.", action: { code: "unhold", label: "Try again" }, useReason: always },
   "choose-project": { sentence: () => "Choose a project so a builder can start.", action: { code: "place-task", label: "Choose a project" } },
   "define-task": { sentence: () => "Say what the task should do so it can be planned.", action: { code: "write-scope", label: "Define the task" } },
   "fix-request": { sentence: () => "The request can't be planned as written. Edit it so the planner can start.", action: { code: "write-scope", label: "Edit the request" },
@@ -130,7 +132,7 @@ export const NEED_ASK: Readonly<Record<NeedKey, Ask>> = {
   finding: "decide", approval: "decide", card: "decide", answer: "decide", questions: "decide", "choose-project": "decide", "define-task": "decide",
   "fix-request": "decide", "choose-agent": "decide",
   "review-result": "review", rebuild: "review", replan: "decide",
-  "sign-in": "unblock", "stop-unproven": "unblock", hold: "unblock", "fix-dependency": "unblock",
+  "sign-in": "unblock", "stop-unproven": "unblock", hold: "unblock", storage: "unblock", "fix-dependency": "unblock",
   "add-requirement": "unblock", "connect-builder": "unblock", "start-builder": "unblock", vanished: "unblock", "earlier-version": "unblock", history: "unblock", other: "unblock",
 };
 
@@ -223,6 +225,7 @@ export const CODE_READING: Readonly<Record<string, CodeReading>> = {
   "process-needs-attention": { stage: "needs-you", need: "stop-unproven", act: "inspect-run" },
   "vanished-run": { stage: "needs-you", need: "vanished", act: "reconcile-run" },
   held: { stage: "needs-you", need: "hold", act: "inspect-hold" },
+  "storage-blocked": { stage: "needs-you", need: "storage", act: "unhold" },
   "terminal-dependency": { stage: "needs-you", need: "fix-dependency", act: "repair-dependency" },
   "needs-project": { stage: "needs-you", need: "choose-project", act: "place-task" },
   "needs-scope": { stage: "needs-you", need: "define-task", act: "write-scope" },

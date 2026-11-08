@@ -2519,7 +2519,9 @@ export function taskBodyParts(data: {
     // to "plan first" adds a second, unnecessary decision at the exact
     // moment the page should have one obvious action.
     stopControlsActive || canPlan || !canHold ? "" : holdAct,
-    data.holds.some(hold => hold.ownerKind === "operator") ? act("unhold", "Remove hold") : "",
+    data.holds.some(hold => hold.ownerKind === "operator") ? act("unhold", "Remove hold")
+      // The storage check couldn't finish (dispose.ts holdForStorage): one tap tries again now.
+      : data.holds.some(hold => hold.ownerKind === "backoff" && hold.ownerId === `storage:${hold.taskRef}`) ? act("unhold", "Try again") : "",
     html`</div>`,
     primaryAct === null ? "" : html`<p class="meta acts-why acts-why-${primaryAct.whyClass}">${primaryAct.why}</p>`,
     data.claimed && !stopControlsActive

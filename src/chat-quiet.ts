@@ -24,7 +24,7 @@ export type QuietView = { text: string; entities: ProgressEntity[]; link: PhoneT
  * (a sign-in or plan-limit pause, an evening digest). */
 const NEEDED_KINDS = new Set([
   "acceptance-ready", "acceptance-evidence", "flow-decision", "flow-card", "plan-ready", "report-ready",
-  "stale-approval", "security-release", "secret-detected",
+  "stale-approval", "security-release", "secret-detected", "protected-storage",
 ]);
 
 /** What still wants a person who pairs after it landed, in every chat app: an open decision or an unresolved attention

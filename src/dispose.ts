@@ -420,6 +420,17 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
     };
   }
 
+  if (result.reason === "protected-storage") {
+    // The storage check couldn't finish (protected-storage.ts): nothing spent,
+    // no strike. The words are kept on the run, the task holds and tries
+    // again on its own, and a person reads why and which program to allow.
+    if (leaseId !== undefined) release(store, leaseId, clock());
+    if (result.message.trim() !== "") store.recordOutcomeFacts(runId, { handoff: result.message });
+    store.finishRun(runId, { outcome: "refused", reason: "protected-storage", now: clock() });
+    holdForStorage(store, { taskRef, taskId, message: result.message }, clock());
+    return { kind: "skipped", reason: "protected-storage" as never };
+  }
+
   // no-claim, not-yours, not-leased, protected-branch, wrong-branch:
   // invariants the dispatcher was supposed to uphold.
   if (leaseId !== undefined) release(store, leaseId, clock());
@@ -438,6 +449,33 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
   }
 
   return { kind: "invariant", reason: result.reason };
+}
+
+/** How long a task waits after the storage check couldn't finish before it tries again on its own. */
+export const STORAGE_RETRY_MS = 10 * 60_000;
+/** The reason a storage hold carries, before the check's own words (dispatch.ts reads it back). */
+export const STORAGE_HOLD_PREFIX = "protected-storage — ";
+
+/**
+ * The storage HOLD: the check couldn't finish, so no launch can be fenced
+ * now. The task waits STORAGE_RETRY_MS and tries again on its own (a person
+ * who allowed access in Privacy & Security needn't do more), and "Try again"
+ * (unhold) lifts it at once. One message per task an hour, with the words.
+ */
+export function holdForStorage(store: Store, args: { taskRef: number; taskId: string; message: string }, now: Date): void {
+  store.holdOwned({ taskRef: args.taskRef, ownerKind: "backoff", ownerId: `storage:${args.taskRef}`, reason: `${STORAGE_HOLD_PREFIX}${args.message}`, until: new Date(now.getTime() + STORAGE_RETRY_MS) }, now);
+  store.enqueueNotification(
+    {
+      source: { taskRef: args.taskRef },
+      dedupeKey: `protected-storage:${args.taskRef}:${now.toISOString().slice(0, 13)}`,
+      kind: "protected-storage",
+      pushClass: "attention",
+      link: `/t/${encodeURIComponent(args.taskId)}`,
+      subject: `${args.taskId}: waiting for macOS permission`,
+      body: `${args.message}\nIt tries again on its own in ${STORAGE_RETRY_MS / 60_000} minutes.`,
+    },
+    now,
+  );
 }
 
 /**

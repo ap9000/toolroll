@@ -8601,8 +8601,9 @@ export class Store {
       mutation,
       "unhold",
       () => this.transact(() => {
+        // The operator's own hold, and the storage check's (dispose.ts holdForStorage): a person's "Try again".
         const { changes } = this.db
-          .prepare("DELETE FROM hold WHERE task_ref = ? AND owner_kind = 'operator'")
+          .prepare("DELETE FROM hold WHERE task_ref = ? AND (owner_kind = 'operator' OR (owner_kind = 'backoff' AND owner_id = 'storage:' || task_ref))")
           .run(taskRef);
         if (Number(changes) === 0) return false;
         this.bumpWake();

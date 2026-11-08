@@ -7,6 +7,7 @@
  * diagnosis can go stale; it can never grant a lease.
  */
 
+import { STORAGE_HOLD_PREFIX } from "./dispose.js";
 import { authorityStandsSql } from "./approval-authority.js";
 import { isAlive, type Runner } from "./runner.js";
 import { updateAdmissionPaused, UPDATE_PAUSED } from "./desktop-update-gate.js";
@@ -69,6 +70,7 @@ export type DispatchDiagnosisCode =
   | "waiting-decision"
   | "waiting-incident"
   | "held"
+  | "storage-blocked"
   /** v52: an operator stopped one exact attempt; only resuming it lifts the pause. */
   | "stopped"
   | "waiting-dependency"
@@ -381,6 +383,11 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
 
   const local = taskReadinessBlocker(store, ref.id, now);
   if (local?.code === "hold") {
+    // The storage check couldn't finish (dispose.ts holdForStorage): its own words, and Try again.
+    if (local.ownerKind === "backoff" && local.message.startsWith(`held: ${STORAGE_HOLD_PREFIX}`)) {
+      const when = local.until === null ? "" : ` It tries again on its own ${retryWhenWords(local.until, now)}.`;
+      return answer("storage-blocked", "waiting", "Needs macOS permission", `${local.message.slice(`held: ${STORAGE_HOLD_PREFIX}`.length)}${when}`, { action: "unhold", nextAt: local.until });
+    }
     if (local.ownerKind === "backoff") {
       // Run 2085: an attempt that stopped before its handoff says so plainly.
       const last = store.runsFor(ref.id).find(one => one.role === "builder" && one.finishedAt !== null);
