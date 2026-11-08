@@ -48,7 +48,7 @@ export type PersonalQueueRuntimeOptions = {
   contextStands: (account: string, context: LeadQueueContext) => boolean;
   names: { project: (path: string) => string; modes: ComposerModes };
   /** The console's live reply display: started per turn, ended with the progress handle it returned. */
-  live?: { begin: (thread: number) => (event: LeadProgress) => void; end: (thread: number, ok: boolean, progress: (event: LeadProgress) => void) => void };
+  live?: { begin: (thread: number, asked: string) => (event: LeadProgress) => void; end: (thread: number, ok: boolean, progress: (event: LeadProgress) => void) => void };
   subscriptionRunner?: LeadTurnInput["subscriptionRunner"];
   fetcher?: typeof fetch;
   clock?: () => Date;
@@ -115,7 +115,7 @@ export function createPersonalQueueRuntime(options: PersonalQueueRuntimeOptions)
         // of a turn that is still running in the same conversation.
         onAdmitted: turn => {
           if (!queue.bindTurn(claim, turn)) throw new Error("The queued message changed before admission.");
-          progress = options.live?.begin(claim.thread);
+          progress = options.live?.begin(claim.thread, claim.text);
         },
         ...(context === undefined ? {} : { context }), channel: "console", clock, evidenceRoot: options.evidenceRoot,
         ...(options.live === undefined ? {} : { onProgress: (event: LeadProgress) => progress?.(event) }),

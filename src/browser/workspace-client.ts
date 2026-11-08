@@ -168,7 +168,8 @@ export function isWorkspace(value: unknown): value is BrowserWorkspace {
     && (chat.project === undefined || chat.project === null || typeof chat.project === "string")
     && (chat.pendingTurnId === null || typeof chat.pendingTurnId === "number")
     && Array.isArray(chat.messages) && chat.messages.every(isMessage)
-    && (chat.previous === undefined || chat.previous === null || (record(chat.previous) && Array.isArray(chat.previous.messages) && chat.previous.messages.every(isMessage))));
+    && (chat.previous === undefined || chat.previous === null || (record(chat.previous) && Array.isArray(chat.previous.messages) && chat.previous.messages.every(isMessage)))
+    && (chat.failure === undefined || chat.failure === null || typeof chat.failure === "string"));
 }
 
 function isMessage(item: unknown): boolean {

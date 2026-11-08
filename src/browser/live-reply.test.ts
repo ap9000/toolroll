@@ -27,8 +27,8 @@ beforeEach(async () => {
   await act(async () => root.render(createElement(WatchedReply)));
 });
 afterEach(async () => { await act(async () => root.unmount()); vi.unstubAllGlobals(); });
-const emit = async (steps: unknown[], ended = false) => act(async () => {
-  Events.latest.dispatchEvent(new MessageEvent("turn", { data: JSON.stringify({ room: "chat", steps, done: ended, ok: ended }) }));
+const emit = async (steps: unknown[], ended = false, extra: Record<string, unknown> = {}) => act(async () => {
+  Events.latest.dispatchEvent(new MessageEvent("turn", { data: JSON.stringify({ room: "chat", steps, done: ended, ok: ended, ...extra }) }));
 });
 const step = (calls: unknown[], text = "") => ({ tools: calls.map(() => "Reading the flows"), toolCalls: calls, text });
 const call = (id: string, state: string, reason?: string) => ({ id, label: "Reading the flows", state, ...(reason === undefined ? {} : { reason }) });
@@ -69,21 +69,34 @@ test("old snapshots and invalid outcomes never imply success from text, position
   expect(rows().every(row => row.textContent!.includes("Outcome not reported"))).toBe(true);
 });
 
-test.each(["ended", "disconnected"])("an unresolved call becomes unknown when the stream is %s", async how => {
+// Before the disconnect cases: a stream the hub gave up on stays given up for the rest of this file.
+test("a lost connection dims what was written and asks for the saved state", async () => {
+  await emit([step([call("pending", "running"), call("done", "succeeded")])], false, { status: "Writing…", text: "Partway there" });
+  await act(async () => { Events.latest.readyState = Events.CLOSED; Events.latest.dispatchEvent(new Event("error")); });
+  // An unresolved call becomes unknown; the line says so and reloads, never reading as working or finished.
+  expect(rows().map(row => row.dataset.state)).toEqual(["unknown", "succeeded"]);
+  expect(document.querySelector("[data-live-status]")!.textContent).toBe("Connection lost — reloading");
+  expect(document.querySelector("[data-live-reply]")!.hasAttribute("data-live-lost")).toBe(true);
+  expect(document.querySelector("[data-live-text]")!.textContent).toBe("Partway there");
+  expect(done).toHaveBeenCalledOnce();
+});
+
+test.each(["ended"])("an unresolved call becomes unknown when the stream is %s", async how => {
   const steps = [step([call("pending", "running"), call("done", "succeeded")])];
   await emit(steps);
   if (how === "ended") await emit(steps, true);
   else await act(async () => { Events.latest.readyState = Events.CLOSED; Events.latest.dispatchEvent(new Event("error")); });
   expect(rows().map(row => row.dataset.state)).toEqual(["unknown", "succeeded"]);
-  expect(document.querySelector(".so-working")).toBeNull();
+  // A lost stream says so and reloads; it never reads as still working or as finished.
+  expect(document.querySelector("[data-live-status]")?.textContent ?? null).toBe(how === "ended" ? null : "Connection lost — reloading");
 });
 
 test("running, done and failed steps render together with the full long reason", async () => {
   const reason = "The saved changes could not be verified. The result is still available for you to inspect, but this step could not read its saved changes. Open the result to see which files and checks were saved before deciding what to do next.";
   await emit([
     step([call("pending", "running"), call("finished", "succeeded"), call("failed", "failed", reason)]),
-    { tools: [], text: "I am still checking the remaining work." },
-  ]);
+    { tools: [] },
+  ], false, { status: "Writing…", text: "I am still checking the remaining work." });
   expect(document.querySelector("ul[aria-label='Tool steps']")).not.toBeNull();
   expect(rows().map(row => row.dataset.state)).toEqual(["running", "succeeded", "failed"]);
   expect(rows().map(row => row.dataset.done)).toEqual(["false", "true", "false"]);
@@ -91,4 +104,31 @@ test("running, done and failed steps render together with the full long reason",
   expect(document.querySelectorAll(".so-tool-reason")).toHaveLength(1);
   expect(rows()[2]!.querySelector(".so-tool-reason")!.textContent).toBe(reason);
   expect(document.querySelector(".so-live-text")!.textContent).toBe("I am still checking the remaining work.");
+});
+
+test("one status line, the steps behind a closed disclosure, and shaped partial text drawn as React text", async () => {
+  await emit([step([call("one", "running")])], false, { status: "Reading the flows…", text: "" });
+  expect(document.querySelectorAll("[data-live-status]")).toHaveLength(1);
+  expect(document.querySelector("[data-live-status]")!.textContent).toBe("Reading the flows…");
+  const steps = document.querySelector<HTMLDetailsElement>("details.k-disclose")!;
+  expect(steps.open).toBe(false);
+  expect(steps.querySelector("summary")!.textContent).toBe("Steps (1)");
+  await emit([step([call("one", "succeeded")])], false, { status: "Writing…", text: "Two are **ready**, see [example.com](https://example.com/x) and <b>this</b>" });
+  const text = document.querySelector("[data-live-text]")!;
+  expect(text.querySelector("strong")!.textContent).toBe("ready");
+  expect(text.querySelector("a")!.getAttribute("href")).toBe("https://example.com/x");
+  expect(text.querySelector("b")).toBeNull();
+  expect(text.textContent).toContain("<b>this</b>");
+  expect(document.querySelector(".so-live-caret")).not.toBeNull();
+});
+
+test("a reply that ends failed drops its partial text at once; one that answered keeps it until the saved message", async () => {
+  await emit([step([])], false, { status: "Writing…", text: "Half of an answer" });
+  await emit([step([])], true, { ok: false, text: "" });
+  expect(document.querySelector("[data-live-text]")).toBeNull();
+  expect(done).toHaveBeenCalledOnce();
+  await act(async () => root.render(createElement(WatchedReply, { key: "again" })));
+  await emit([step([])], false, { status: "Writing…", text: "The whole answer" });
+  await emit([step([])], true, { ok: true, text: "" });
+  expect(document.querySelector("[data-live-text]")!.textContent).toBe("The whole answer");
 });

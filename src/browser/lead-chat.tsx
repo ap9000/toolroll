@@ -261,6 +261,7 @@ export function LeadChat({ controller, docked = null }: { controller: Controller
           retry={asked === null ? null : () => controller.steer(asked)} />;
       })}
         {(busy || live !== null) && <LiveReplyBubble look="lead" live={live} leadName={leadName} />}
+        {!busy && live === null && chat.failure && <p className="so-live-failed" role="alert" data-lead-failed>{chat.failure}</p>}
       </div>
     </ConversationContent><JumpToLatest /></Conversation>
     <div className="so-composer-area lc-dock">

@@ -27019,3 +27019,10 @@ function widenFindingSources(db: Database): void {
   const columns = db.prepare("PRAGMA table_info(finding)").all().map(one => String(one["name"]));
   rebuildExact(db, "finding", named(stored), named(stored.replace(FINDING_SOURCES_BEFORE_LEAD, FINDING_SOURCES)), columns);
 }
+
+/** A thread's newest lead turn, whatever its state; null before its first. What a surface reads back to say how the
+ * last reply ended after a restart (docs/plans/responsive-chat.md §3.4): the saved row, never process memory. */
+export function latestLeadTurnOfThread(store: Store, thread: number): LeadTurn | null {
+  const row = store.handle.prepare("SELECT * FROM mate_turn WHERE thread = ? ORDER BY id DESC LIMIT 1").get(thread);
+  return row === undefined ? null : readLeadTurn(row);
+}

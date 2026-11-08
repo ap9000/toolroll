@@ -583,6 +583,7 @@ function useTaskThreadChat(controller: ReturnType<typeof useWorkspace>): ThreadC
       </li> })),
     footer: <div className="so-task-composer flex flex-col gap-2">
       {(busy || live !== null) && <LiveReplyBubble live={live} leadName={workspace.leadName ?? "Lead"} />}
+      {!busy && live === null && chat.failure && <p className="so-live-failed" role="alert" data-lead-failed>{chat.failure}</p>}
       {delivery && <div className="so-connection" role={stale ? "alert" : "status"}><span>{delivery}</span>
         {stale ? <ViewButton variant="outline" size="sm" onClick={controller.reconnect}>Reconnect</ViewButton> : !sending && !offline && <ViewButton variant="ghost" size="sm" onClick={() => { void controller.check(); }}>Check again</ViewButton>}
       </div>}

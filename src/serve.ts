@@ -135,7 +135,7 @@ import { findFirstTasks,firstRunSteps,signInCommandFor,type FirstRunStep,type Fi
 import { installMethod } from "./install-method.js";
 import { createIntegrationMonitor } from "./integrations.js";
 import { logEvent } from "./log.js";
-import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
+import { LEAD_MESSAGE_MAX_CHARS, leadFailureText } from "./lead.js";
 import { type CatalogSeams } from "./model-catalog.js";
 import { modeTermsFromJson } from "./modes.js";
 import { envValue } from "./names.js";
@@ -204,6 +204,7 @@ import { readSsoSettings } from "./sso-settings.js";
 import type { ChatConfig,CoordinatorProposal,DirectChatProviderId,LeadMessage,LeadProposal,LeadTurn,SubscriptionChatProviderId } from "./store.js";
 import {
 LEAD_THREAD,
+latestLeadTurnOfThread,
 localOwnerBinding,
 type Decision,
 type LeadAsk,type LeadThreadScope
@@ -630,7 +631,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return run !== null && family.versions.some(one => one.refId === run.taskRef);
     }),
     names: { project: projectName, modes: TASK_COMPOSER_MODES },
-    live: { begin: thread => chatHandlers.beginLiveTurn(thread), end: (thread, ok, progress) => chatHandlers.endLiveTurn(thread, ok, progress) },
+    // A queued message's partials are shaped as its final reply will be: for its words, with this console's own addresses.
+    live: { begin: (thread, asked) => chatHandlers.beginLiveTurn(thread, { asked, appOrigin: [publicOrigin?.origin ?? null, options.configDir === undefined ? null : loadConsoleUrl(process.env, options.configDir)] }), end: (thread, ok, progress) => chatHandlers.endLiveTurn(thread, ok, progress) },
     ...(options.chatFetcher ? { fetcher: options.chatFetcher } : {}),
     ...(options.subscriptionChatRunner ? { subscriptionRunner: options.subscriptionChatRunner } : {}),
   });
@@ -1264,7 +1266,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * thread regardless of lens. */
   function leadConversationRows(who: Who & { via: "cookie" }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject: string | null = null): {
     messages: LeadMessage[]; proposals: LeadProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: LeadTurn | null; recent: LeadTurn[]; ask: LeadAsk | null; staleAsk: number | null; asks: Map<number, LeadAsk>; queue: Map<number, LeadQueueRow>;
-    previous: ReplacedThread | null;
+    previous: ReplacedThread | null; failure: string | null;
   } {
     const allCoordinatorRows = store.listCoordinatorProposals({ repos: managedRepos(), states: ["pending", "confirmed", "refused"], limit: 30 });
     const coordinatorProposals = focusTask !== null ? allCoordinatorRows.filter(one => focusTask.family.versions.some(version => version.id === one.payload["task"]))
@@ -1293,7 +1295,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const replaced = thread !== null ? store.replacedLeadThread(thread)
       : found !== null && found.scope.kind === "lead" && store.listLeadMessages(found.id, 1).length > 0 ? found : null;
     const previousProposals = replaced === null ? [] : store.listLeadProposals(replaced.id);
+    // How this thread's last reply ended, read from its saved turn (never process memory, which a restart loses): a
+    // failed turn that saved no message of its own says why in the thread, until the next reply starts.
+    const lastTurn = thread === null ? null : latestLeadTurnOfThread(store, thread.id);
+    const failure = lastTurn !== null && lastTurn.state === "failed" && !messages.some(one => one.role === "assistant" && one.turn === lastTurn.id)
+      ? leadFailureText(lastTurn.failureReason, store.leadTurnCostUnconfirmed(lastTurn.id)) : null;
     return {
+      failure,
       previous: replaced === null ? null : { messages: store.listLeadMessages(replaced.id, 40), proposals: previousProposals, decisions: decisionsFor(store, previousProposals) },
       messages,
       ask,
@@ -1334,7 +1342,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       sessionId: session?.id ?? NOT_STARTED_SESSION, user: session?.approver ?? who.name, version: leadChatVersion({ ...rows, focusTask }),
       messages: leadBrowserMessages(rows, back, { task: focusTask?.id ?? null, project: chatProject }),
       pendingTurnId: rows.pending?.id ?? null, requestId: randomBytes(16).toString("hex"), maxChars: LEAD_MESSAGE_MAX_CHARS,
-      taskId: focusTask?.id ?? null, resultRunId, project: focusTask === null ? chatProject : null,
+      taskId: focusTask?.id ?? null, resultRunId, project: focusTask === null ? chatProject : null, failure: rows.pending === null ? rows.failure : null,
     };
   }
   /** The session-layer principal (ruling 3): cookie, csrf, and role were
