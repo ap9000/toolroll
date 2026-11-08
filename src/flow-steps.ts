@@ -401,7 +401,7 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
     rmSync(path, { recursive: true, force: true });
     return { state: "failed", said: standing.said };
   }
-  const launch = flowLaunch(store, { repo: flow.repo, folder: path, scratch: io.scratch, copy, policy: store.flowFencePolicy(flow.id), ...(standing?.allowed === true ? { browser: true as const } : {}), ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }), ...(io.home === undefined ? {} : { home: io.home }) });
+  const launch = await flowLaunch(store, { repo: flow.repo, folder: path, scratch: io.scratch, copy, policy: store.flowFencePolicy(flow.id), ...(standing?.allowed === true ? { browser: true as const } : {}), ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }), ...(io.home === undefined ? {} : { home: io.home }) });
   try {
     if (launch !== null && "problem" in launch) return { state: "failed", said: launch.problem };
     // The project's setup never gets the browser rule: only the zone's script asked for it.

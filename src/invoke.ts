@@ -41,6 +41,7 @@ import { homedir, tmpdir } from "node:os";
 import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
+import { prepareProtectedStorage, storageRefusalOf, type ProtectedStorage } from "./protected-storage.js";
 import { checkLaunchRoot, signInGrants, signInIsItself, type NetworkFence, type SignInGrants } from "./agent-fence.js";
 import { localModeOn } from "./local-owner.js";
 import { CHECK_STAMP_VERSION, EVERYWHERE, unfencedStamp, type CheckStamp } from "./check-stamp.js";
@@ -173,7 +174,7 @@ export type InvokeResult =
   | { kind: "ran"; outcome: AgentOutcome }
   | {
       kind: "refused";
-      reason: "provider-unattested" | "provider-protocol" | "runner-custody" | "auth-mode" | "route-authority" | "stopped" | "containment";
+      reason: "provider-unattested" | "provider-protocol" | "runner-custody" | "auth-mode" | "route-authority" | "stopped" | "containment" | "protected-storage";
       providerVersion: string | null;
       diagnostic: string | null;
       /** Bounded agent reply when a spawned turn later failed a protocol
@@ -472,12 +473,12 @@ export async function invokeAgent(
   // tool servers outside its command sandbox, so its own launch folder is
   // fenced too; Claude reads its config from there, inside the sandbox.
   const ownTools = tools?.privateDir === undefined ? null : realpathSync(tools.privateDir);
-  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], cache: undefined, problem: undefined } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools, launchWrites ?? WRITES_DEFAULT, launchSandbox ?? LEGACY_SANDBOX);
+  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], cache: undefined, problem: undefined } : await runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools, launchWrites ?? WRITES_DEFAULT, launchSandbox ?? LEGACY_SANDBOX);
   if (fenceOf.problem !== undefined) {
     tools?.cleanup();
     codexHome?.cleanup();
     removeAgentDatabase(isolatedDb.dir);
-    return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null, diagnostic: fenceOf.problem };
+    return { kind: "refused", reason: "storageRefused" in fenceOf && fenceOf.storageRefused === true ? "protected-storage" : "containment", providerVersion: attested?.version ?? null, diagnostic: fenceOf.problem };
   }
   const fence = [...fenceOf.fence, ...(fenceOf.fence.length > 0 && codexHarness ? [ownTools, codexHome === null ? null : realpathSync(codexHome.dir)].filter((path): path is string => path !== null) : [])];
   const grants: FenceGrants = { ...fenceOf.grants };
@@ -1049,7 +1050,7 @@ function linkedFor(store: Store, worktree: string | null): { repo: string; setup
 /** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree),
  * ~/.toolroll (or its older name), its task boundary and other launches' private folders; what the fence gives back
  * (FenceGrants); and what only Claude's file tools refuse. */
-function runFence(store: Store, runId: number, provider: AgentSpec["provider"] | "command", keyHome: string | undefined, ownTools: string | null, writes: WritesMode = WRITES_DEFAULT, sandbox: LaunchSandbox = LEGACY_SANDBOX): { fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; cache?: string; problem?: string } {
+async function runFence(store: Store, runId: number, provider: AgentSpec["provider"] | "command", keyHome: string | undefined, ownTools: string | null, writes: WritesMode = WRITES_DEFAULT, sandbox: LaunchSandbox = LEGACY_SANDBOX): Promise<{ fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; cache?: string; problem?: string; storageRefused?: true }> {
   try {
     // A plane always has a database file; an in-memory store (a test) has nothing to fence.
     const databaseFile = store.databaseFile();
@@ -1060,7 +1061,9 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
     if (worktree !== null && row === null) throw new CheckoutBindingError("The checkout's Git pointer was changed or its trusted binding could not be verified.");
     const poolRoots = [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
     const binding = worktree === null || row === null ? null : trustedWorktreeBinding(row.repo, worktree, poolRoots);
-    const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home, binding, policy: sandbox.policy });
+    // The storage check, awaited off this thread (protected-storage.ts): a privacy prompt holds up only its child.
+    const storage = await prepareProtectedStorage(keyHome ?? homedir());
+    const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home, binding, policy: sandbox.policy, storage });
     const folders = runFolders(ownTools);
     // A build with a checkout writes only its workspace unless its approval said anywhere (arc 2): its checkout and
     // Git data, its launch folder, its project's caches and the provider state its CLI must write.
@@ -1069,7 +1072,7 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
     // The shared install is granted only as the plane linked it: this checkout's project and stamped setup.
     // Every plane checkout pool is denied around this one: the plane's own beside the database, and the one this
     // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
-    const launch = fenceFor(provider === "command" ? "command" : "build", { databaseFile, worktree, ...home, boundary, binding, runFolders: folders, poolRoots,
+    const launch = fenceFor(provider === "command" ? "command" : "build", { databaseFile, worktree, ...home, boundary, binding, runFolders: folders, poolRoots, storage,
       extra: allowed?.deny ?? [], linked: linkedFor(store, worktree), writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, policy: sandbox.policy, provider,
       // This launch's code map file: exactly that file, read-only, inside the denied state folder. Commands don't get it.
       ...(provider === "command" ? {} : { exactFile: deliveredFile(store, runId) }),
@@ -1084,6 +1087,9 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
       ...(allowed === null || row === null ? {} : { cache: buildCacheFolder(row.repo, keyHome ?? homedir()) }),
     };
   } catch (error) {
+    // The storage check's own words: what didn't finish, and which program macOS may need to allow.
+    const refused = storageRefusalOf(error);
+    if (refused !== null) return { fence: [], fileTools: [], grants: NO_GRANTS, problem: refused.message, storageRefused: true };
     return { fence: [], fileTools: [], grants: NO_GRANTS, problem: error instanceof CheckoutBindingError ? error.message : "The build fence could not be prepared." };
   }
 }
@@ -1116,7 +1122,7 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
         stampLaunch(store, [runId], unfencedStamp());
         return await inner(file, args, { ...options, env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp } });
       }
-      const fenced = runFence(store, runId, "command", undefined, own, writes, sandbox);
+      const fenced = await runFence(store, runId, "command", undefined, own, writes, sandbox);
       if (fenced.problem !== undefined) return { code: 1, stdout: "", stderr: `${fenced.problem}\n`, timedOut: false, notFound: false };
       if (fenced.fence.length === 0) { stampLaunch(store, [runId], unfencedStamp()); return inner(file, args, options); }
       // A self-hosted check's own database (child-database.ts) is the command's to write too.
@@ -1181,13 +1187,17 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
         return { code: 1, stdout: "", stderr: "The check's checkout couldn't be bound to its project, so nothing ran.\n", timedOut: false, notFound: false };
       }
       const poolRoots = [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
-      const boundary = taskBoundary({ worktree: checkout, provider: "command", binding, policy: sandbox.policy });
+      let storage: ProtectedStorage;
+      try { storage = await prepareProtectedStorage(homedir()); } catch (error) {
+        return { code: 1, stdout: "", stderr: `${storageRefusalOf(error)?.message ?? "The check's fence could not be prepared, so nothing ran."}\n`, timedOut: false, notFound: false };
+      }
+      const boundary = taskBoundary({ worktree: checkout, provider: "command", binding, policy: sandbox.policy, storage });
       const folders = runFolders(own);
       const cache = buildCacheFolder(repo);
       const allowed = store.projectWrites(repo) !== "workspace" ? null : writeAllowlist({ provider: "command", home: homedir(), worktree: checkout, binding, launchFolder: own, cache });
       const database = options?.env?.["TOOLROLL_DB"];
       const checkData = allowed === null || database === undefined ? null : grantFolder(dirname(database), false);
-      const launch = fenceFor("check", { databaseFile, worktree: checkout, boundary, binding, runFolders: folders, poolRoots, extra: allowed?.deny ?? [], linked: linkedFor(store, checkout),
+      const launch = fenceFor("check", { databaseFile, worktree: checkout, boundary, binding, runFolders: folders, poolRoots, storage, extra: allowed?.deny ?? [], linked: linkedFor(store, checkout),
         readDeny: sandbox.readDeny.map(one => readDenyPath(one, homedir())), machLookup: sandbox.machLookup, policy: sandbox.policy,
         writes: allowed === null ? null : { writes: { ...allowed.writes, subpaths: [...allowed.writes.subpaths, ...(checkData === null ? [] : [checkData])] }, readOnly: allowed.readOnly } });
       const grants = launch.fenceGrants;

@@ -401,7 +401,11 @@ export type BuildRefusal =
   // Required native containment this runner cannot provide (OS
   // containment plan): refused before any target executes — no spend, no
   // strike, the words name the missing facility and the route to it.
-  | "containment";
+  | "containment"
+  // The protected-storage check (protected-storage.ts) couldn't finish: no
+  // spend, no strike; the task holds and tries again on its own, and the
+  // words say which program macOS may need to allow.
+  | "protected-storage";
 
 /** Long enough for real work; short enough that a stuck build ends the same night. */
 export const DEFAULT_BUILD_TIMEOUT_MS = 30 * 60_000;

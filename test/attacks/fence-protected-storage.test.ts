@@ -17,17 +17,12 @@ import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { codexFenceArgv, fenceFor, runFolders, srtTermsOf, taskBoundary, trustedWorktreeBinding, type FenceGrants, type FencePolicy } from "../../src/agent-fence.js";
 import { run } from "../../src/exec.js";
-import { CONTAINER_LOOK_MS, containersListable, LINK_CACHE_FRESH_MS, linkCacheFile, lookOutcome, protectedStorageDenies, readLinkCache, readLinkCacheRoots, rootsAnsweringLate, storageBlockedWords, rootsAnswering } from "../../src/protected-storage.js";
+import { prepareProtectedStorage, ProtectedStorageRefusal, protectedStorageDenies, protectedStorageHere, readLook, spawnLook, storageAccessHolder, storageLookScript, storageRefusalOf, type ProtectedStorage, type StorageLook } from "../../src/protected-storage.js";
 import { readDenyPath } from "../../src/project-sandbox.js";
 import { codexSandbox, git, lines, marker, needs, osFence, repository, underCodex, underSandbox, useScratch, write } from "./harness.js";
 
 const scratch = useScratch("protected-storage");
 const mac = process.platform === "darwin";
-/** A look held at `stuck`: it finishes what comes before, and then runs out of time. */
-const rootsLookAt = (stuck: string) => (roots: readonly string[]) => {
-  const at = roots.indexOf(stuck);
-  return at < 0 ? { finished: [...roots], outcome: "listable" as const } : { finished: roots.slice(0, at), outcome: "waiting" as const };
-};
 /** Where each app keeps its data on this platform, relative to home. */
 const AT = mac
   ? { slack: "Library/Application Support/Slack", discord: "Library/Application Support/discord", chrome: "Library/Application Support/Google/Chrome",
@@ -68,8 +63,8 @@ function plane() {
   // An alias: a link the build made in its own checkout, into a protected root.
   symlinkSync(join(home, AT.slack), join(worktree, "alias"), "dir");
   const binding = trustedWorktreeBinding(main, worktree, [pool]);
-  const fence = (policy: FencePolicy, readDeny: string[] = []) => fenceFor("build", { databaseFile: join(state, "orders.db"), worktree, home, binding, runFolders: runFolders(null), poolRoots: [pool],
-    boundary: taskBoundary({ worktree, provider: "command", home, binding, policy }), readDeny: readDeny.map(one => readDenyPath(one, home)) });
+  const fence = (policy: FencePolicy, readDeny: string[] = [], storage?: ProtectedStorage) => fenceFor("build", { databaseFile: join(state, "orders.db"), worktree, home, binding, runFolders: runFolders(null), poolRoots: [pool],
+    boundary: taskBoundary({ worktree, provider: "command", home, binding, policy, ...(storage === undefined ? {} : { storage }) }), readDeny: readDeny.map(one => readDenyPath(one, home)), ...(storage === undefined ? {} : { storage }) });
   return { root, state, home, worktree, canary, fence };
 }
 
@@ -109,10 +104,10 @@ describe("protected storage: chat apps, browser profiles and password managers, 
     for (const denied of ["Stash", "Library/Application Scripts/com.other.app", "Desktop-moved", "Elsewhere/Pictures"]) expect(denies, denied).toContain(join(home, denied));
   });
 
-  // Release check 3249: under launchd, listing inside another app's container waited on macOS's "access data from other
-  // apps" prompt, so every launch (and the console's event loop) hung. The containers are walked only after a look that
-  // can't hang the caller says they can be listed. When macOS is waiting, the roots stay denied and so do the outward
-  // links the last complete walk kept; a look that fails any other way refuses the launch.
+  // Release check 3249 and the 0.9.94 deploy: a listing (or open) inside another app's data waited on a macOS privacy
+  // prompt, on the thread that serves everything. Codex round 2: an earlier walk is no proof (a link can move deeper
+  // inside a root without changing the root), and a look run with spawnSync still stalled that thread. So every launch
+  // awaits its own complete check, run in a child process, and refuses when it can't finish.
   const containerHome = () => {
     const { root, home, worktree, fence } = plane();
     const slack = join(home, "Library/Containers/com.tinyspeck.slackmacgap"), teams = join(home, "Library/Group Containers/UBF8T346G9.com.microsoft.teams");
@@ -121,202 +116,151 @@ describe("protected storage: chat apps, browser profiles and password managers, 
       mkdirSync(join(container, at, ".."), { recursive: true });
       symlinkSync(join(home, name), join(container, at), "dir");
     }
-    // The plane's own state folder, where the kept links live.
-    mkdirSync(join(home, ".config", "toolroll"), { recursive: true });
-    return { root, home, slack, teams, worktree, fence, cache: linkCacheFile(home, {}) };
+    return { root, home, slack, teams, worktree, fence };
+  };
+  /** The check's child, run in this process: what protected-storage-look.js answers. */
+  const lookHere = (list?: (path: string) => import("node:fs").Dirent[]): StorageLook => async request => {
+    const here = protectedStorageHere(request.home, request.env, request.platform, () => {}, list);
+    return { kind: "done", storage: { names: here.names, denies: here.denies }, unfinished: here.unfinished };
+  };
+  const refusalOf = async (pending: Promise<unknown>): Promise<ProtectedStorageRefusal> => {
+    try { await pending; } catch (error) { if (error instanceof ProtectedStorageRefusal) return error; throw error; }
+    throw new Error("the check didn't refuse");
   };
 
-  // Codex round 1: a root that timed out with no recent record of its links left where it leads readable. It refuses now.
-  test("macOS waiting with nothing kept: the launch is refused, saying how to allow it, and nothing inside is opened", () => {
-    const { home, slack, teams } = containerHome();
-    const asked: string[][] = [], late: string[][] = [];
-    const run = () => protectedStorageDenies(home, {}, "darwin", () => {}, roots => { asked.push([...roots].sort()); return false; }, undefined, undefined, roots => { late.push([...roots].sort()); return new Set(); });
-    expect(run).toThrow(/Nothing was started: macOS is asking whether Toolroll may look inside .*Slack.* Privacy & Security/);
-    expect(asked).toEqual([[slack, teams].sort()]);
-    // The longer look was asked about exactly the roots with no record.
-    expect(late).toEqual([[slack, teams].sort()]);
-    // Not a Mac: nothing to ask.
-    protectedStorageDenies(home, {}, "linux", () => {}, () => { throw new Error("asked"); });
+  test("a nested link moved since an earlier launch is found by this launch's own walk: nothing earlier stands in for it", async () => {
+    const { root, home, slack } = containerHome();
+    const first = await prepareProtectedStorage(home, {}, "darwin", lookHere(), "the program");
+    expect(first.denies).toContain(join(home, "Stash"));
+    // Codex's probe: the link deep in the container now leads to another folder; the container itself looks unchanged.
+    const elsewhere = join(root, "stash-b");
+    mkdirSync(elsewhere);
+    rmSync(join(slack, "Data", "Stash"));
+    symlinkSync(elsewhere, join(slack, "Data", "Stash"), "dir");
+    const second = await prepareProtectedStorage(home, {}, "darwin", lookHere(), "the program");
+    expect(second.denies).toContain(realpathSync(elsewhere));
+    expect(second.denies).not.toContain(join(home, "Stash"));
   });
 
-  test("a slow first look on a Mac that doesn't ask: the longer look answers, the roots are walked and the launch goes on", () => {
-    const { home, cache } = containerHome();
-    const denies = protectedStorageDenies(home, {}, "darwin", () => {}, () => false, undefined, undefined, roots => new Set(roots));
-    for (const path of ["Stash", "Moved"]) expect(denies, path).toContain(join(home, path));
-    expect(readLinkCache(cache, home)).toEqual(expect.arrayContaining([join(home, "Moved"), join(home, "Stash")]));
+  test("a check that doesn't finish refuses the launch, naming the app it was on and the program to allow; it never claims macOS is asking", async () => {
+    const { home, slack } = containerHome();
+    const refused = await refusalOf(prepareProtectedStorage(home, {}, "darwin", async () => ({ kind: "timed-out", at: realpathSync(slack) }), "the program that keeps Toolroll running (/opt/node)"));
+    expect(refused.why).toBe("timed-out");
+    expect(refused.apps).toEqual(["Slack"]);
+    expect(refused.message).toBe("Nothing was started: Toolroll couldn't finish checking Slack's data for links to keep out of the build (the check didn't finish within 10 seconds). "
+      + "macOS may need to let the program that keeps Toolroll running (/opt/node) read it: in System Settings → Privacy & Security → Full Disk Access, turn it on for the program that keeps Toolroll running (/opt/node), then try again.");
+    expect(refused.message).not.toMatch(/macOS is asking/);
+    expect(storageRefusalOf(refused)).toBe(refused);
+    // Timed out before any root: "other apps". A failed check refuses too.
+    expect((await refusalOf(prepareProtectedStorage(home, {}, "darwin", async () => ({ kind: "timed-out", at: null }), "x"))).message).toContain("checking other apps' data");
+    expect((await refusalOf(prepareProtectedStorage(home, {}, "darwin", async () => ({ kind: "failed", detail: "boom" }), "x"))).why).toBe("failed");
   });
 
-  test("a record is proof only while recent and while its root is unchanged", () => {
-    const { home, teams, cache } = containerHome();
-    let clock = Date.parse("2026-11-07T09:00:00Z");
-    const now = () => clock;
-    protectedStorageDenies(home, {}, "darwin", () => {}, () => true, undefined, undefined, () => new Set(), now);
-    const waiting = () => protectedStorageDenies(home, {}, "darwin", () => {}, () => false, undefined, undefined, () => new Set(), now);
-    expect(waiting()).toContain(join(home, "Moved"));
-    clock += LINK_CACHE_FRESH_MS + 1;
-    expect(waiting).toThrow(/Nothing was started/);
-    clock -= 2;
-    expect(waiting()).toContain(join(home, "Moved"));
-    // The root changed since it was walked (an entry added at its top): its record no longer stands.
-    mkdirSync(join(teams, "New"));
-    utimesSync(teams, new Date(), new Date(Date.now() + 5_000));
-    expect(waiting).toThrow(/Nothing was started/);
-    // An older record's shape is no record at all.
-    writeFileSync(cache, JSON.stringify({ version: 1, home, targets: [join(home, "Moved")] }));
-    expect(readLinkCache(cache, home)).toBeNull();
-  });
-
-  test("a refused launch looks again only after a minute, so a run of launches doesn't each wait", () => {
-    let clock = 0, looks = 0;
-    const roots = [join(scratch(), "waits")];
-    const look = () => { looks++; return { finished: [], outcome: "waiting" as const }; };
-    expect([...rootsAnsweringLate(roots, look, () => clock)]).toEqual([]);
-    clock += 30_000;
-    expect([...rootsAnsweringLate(roots, look, () => clock)]).toEqual([]);
-    expect(looks).toBe(1);
-    clock += 31_000;
-    rootsAnsweringLate(roots, look, () => clock);
-    expect(looks).toBe(2);
-    expect(() => rootsAnsweringLate([join(scratch(), "fails")], () => ({ finished: [], outcome: "failed" }))).toThrow(/nothing was launched/);
-    expect(storageBlockedWords([join(scratch(), "Chrome")], scratch())).toContain("Privacy & Security");
-  });
-
-  // The 0.9.94 deploy: an open() of a root outside the containers waited on the prompt, on the console's own thread.
-  test("a root outside the containers that doesn't answer is never opened here, and stays denied; the others are walked", () => {
-    const { home } = containerHome();
-    const opened: string[] = [];
-    const list = (path: string) => { opened.push(path); return readdirSync(path, { withFileTypes: true }); };
-    const safari = join(home, "Library/Safari"), cookies = join(home, "Library/Cookies");
-    for (const path of [safari, cookies]) mkdirSync(path, { recursive: true });
-    const silentSafari = (roots: readonly string[]) => new Set(roots.filter(root => root !== safari));
-    // With no record of what Safari's folder links to, nothing launches, and it is never opened here.
-    expect(() => protectedStorageDenies(home, {}, "darwin", () => {}, () => true, list, silentSafari, () => new Set())).toThrow(/Safari/);
-    expect(opened.filter(path => path === safari || path.startsWith(`${safari}/`))).toEqual([]);
-    // After a complete look at every root, a later silence stands on that record: the others are walked, Safari isn't.
-    protectedStorageDenies(home, {}, "darwin", () => {}, () => true, undefined, roots => new Set(roots), () => new Set());
-    opened.length = 0;
-    const denies = protectedStorageDenies(home, {}, "darwin", () => {}, () => true, list, silentSafari, () => new Set());
-    expect(opened).toContain(cookies);
-    expect(opened.filter(path => path === safari || path.startsWith(`${safari}/`))).toEqual([]);
-    expect(denies).toContain(safari);
-  });
-
-  test("one root that waits costs only itself, a failed look refuses, and a waiting root is looked at again later", () => {
-    const [a, b, c, d] = ["/l/a", "/l/b", "/l/c", "/l/d"].map(one => `${one}-${Math.random()}`) as [string, string, string, string];
-    let clock = 1_000;
-    const asked: string[][] = [];
-    const look = (roots: readonly string[]) => { asked.push([...roots]); return roots[0] === b ? { finished: [], outcome: "waiting" as const } : { finished: roots.filter(root => root !== b), outcome: "listable" as const }; };
-    expect([...rootsAnswering([a, b, c], rootsLookAt(b), () => clock)].sort()).toEqual([a, c].sort());
-    expect(asked).toEqual([]);
-    expect([...rootsAnswering([a, b, c], look, () => clock)].sort()).toEqual([a, c].sort());
-    expect(asked).toEqual([]);
-    clock += 11 * 60_000;
-    rootsAnswering([a, b, c], look, () => clock);
-    expect(asked).toEqual([[b]]);
-    expect(() => rootsAnswering([d], () => ({ finished: [], outcome: "failed" }))).toThrow(/nothing was launched/);
-  });
-
-  test("a complete walk is kept (owner-only), and macOS waiting later still denies what it found", () => {
-    const { home, cache } = containerHome();
-    const walked = protectedStorageDenies(home, {}, "darwin", () => {}, () => true);
-    for (const path of ["Stash", "Moved"]) expect(walked, path).toContain(join(home, path));
-    expect(statSync(cache).mode & 0o777).toBe(0o600);
-    // Every root's links are kept, a browser profile's too: a root that stops answering later keeps its denies.
-    expect(readLinkCache(cache, home)).toEqual(expect.arrayContaining([join(home, "Moved"), join(home, "Stash")]));
-    const waiting = protectedStorageDenies(home, {}, "darwin", () => {}, () => false, undefined, undefined, () => new Set());
-    for (const path of ["Stash", "Moved"]) expect(waiting, path).toContain(join(home, path));
-    // Kept for this home only, as a plain file of the right shape: anything else is no cache.
-    expect(readLinkCache(cache, join(home, "other"))).toBeNull();
-    const planted = join(home, "planted.json");
-    writeFileSync(planted, readFileSync(cache));
-    rmSync(cache); symlinkSync(planted, cache);
-    expect(readLinkCache(cache, home)).toBeNull();
-    rmSync(cache); writeFileSync(cache, JSON.stringify({ version: 2, home, roots: { [home]: { at: "2026-11-07T09:00:00Z", stamp: null, targets: ["relative/path"] } } }));
-    expect(readLinkCache(cache, home)).toBeNull();
-    rmSync(cache); writeFileSync(cache, " ".repeat(300 * 1024));
-    expect(readLinkCache(cache, home)).toBeNull();
-  });
-
-  test("a walk that met an error is never kept", () => {
-    const { home, slack, cache } = containerHome();
+  test("a walk that met an error (not \"not there\" or \"not allowed\") refuses; an unreadable folder is an answer", async () => {
+    const { home, slack } = containerHome();
     mkdirSync(join(slack, "Data", "Deep"), { recursive: true });
     if (process.getuid?.() !== 0) {
-      // Unreadable is EACCES: an answer, so the walk is still complete and kept.
       chmodSync(join(slack, "Data", "Deep"), 0o000);
-      try { protectedStorageDenies(home, {}, "darwin", () => {}, () => true); } finally { chmodSync(join(slack, "Data", "Deep"), 0o755); }
-      expect(readLinkCache(cache, home)).not.toBeNull();
+      try { expect((await prepareProtectedStorage(home, {}, "darwin", lookHere(), "x")).denies).toContain(join(home, "Stash")); }
+      finally { chmodSync(join(slack, "Data", "Deep"), 0o755); }
     }
-    rmSync(cache, { force: true });
-    // An error that isn't an answer (EMFILE here): the links found are still denied, but nothing is kept.
     const list = (path: string) => {
       if (path.endsWith(join("Data", "Deep"))) throw Object.assign(new Error("too many open files"), { code: "EMFILE" });
       return readdirSync(path, { withFileTypes: true });
     };
-    const denies = protectedStorageDenies(home, {}, "darwin", () => {}, () => true, list);
-    expect(denies).toContain(join(home, "Stash"));
-    // Kept by root: the root that met it isn't kept; the others are.
-    expect(readLinkCacheRoots(cache, realpathSync(home))?.has(realpathSync(slack))).toBe(false);
+    const refused = await refusalOf(prepareProtectedStorage(home, {}, "darwin", lookHere(list), "x"));
+    expect(refused).toMatchObject({ why: "unfinished", apps: ["Slack"] });
   });
 
-  test("the container look: only its own limit is macOS waiting; any other failure is tried once more, then refuses the launch", () => {
-    expect(lookOutcome({ error: Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" }), signal: "SIGKILL", status: null })).toBe("waiting");
-    expect(lookOutcome({ error: Object.assign(new Error("spawnSync node ENOENT"), { code: "ENOENT" }), signal: null, status: null })).toBe("failed");
-    expect(lookOutcome({ signal: "SIGSEGV", status: null })).toBe("failed");
-    expect(lookOutcome({ signal: null, status: 1 })).toBe("failed");
-    expect(lookOutcome({ signal: null, status: 0 })).toBe("listable");
-    let made = 0;
-    const roots = () => [join(scratch(), `look-${made++}`)];
-    // A failure, then a good look: listed.
-    const answers = ["failed", "listable"] as const;
-    let at = 0;
-    expect(containersListable(roots(), () => answers[at++]!)).toBe(true);
-    // Failing twice: the launch is refused (and a failed look is never kept as a no).
-    const twice = roots();
-    expect(() => containersListable(twice, () => "failed")).toThrow(/nothing was launched/);
-    expect(containersListable(twice, () => "listable")).toBe(true);
-    // Through the fence: a failed look never skips the walk; it refuses.
+  test("checks asked for at once share one child; not on a Mac, the check runs as it is and asks no child", async () => {
     const { home } = containerHome();
-    expect(() => protectedStorageDenies(home, {}, "darwin", () => {}, () => { throw new Error("look failed"); })).toThrow(/look failed/);
+    let looks = 0;
+    let open!: () => void;
+    const gate = new Promise<void>(resolve => { open = resolve; });
+    const look: StorageLook = async request => { looks++; await gate; return lookHere()(request); };
+    const both = Promise.all([prepareProtectedStorage(home, {}, "darwin", look, "x"), prepareProtectedStorage(home, {}, "darwin", look, "x")]);
+    open();
+    const [one, two] = await both;
+    expect(looks).toBe(1);
+    expect(one).toEqual(two);
+    // The next launch looks again: a finished check is never kept.
+    await prepareProtectedStorage(home, {}, "darwin", look, "x");
+    expect(looks).toBe(2);
+    await prepareProtectedStorage(home, {}, "linux", async () => { throw new Error("asked"); }, "x");
   });
 
-  test("the container look: a yes is kept, a no is looked at again after ten minutes, and the real look lists plain folders", () => {
-    let clock = 0, looks = 0;
-    let answer: "listable" | "waiting" = "waiting";
-    const look = () => { looks++; return answer; };
-    const roots = [join(scratch(), "a")];
-    expect(containersListable(roots, look, () => clock)).toBe(false);
-    clock += 9 * 60_000;
-    expect(containersListable(roots, look, () => clock)).toBe(false);
-    expect(looks).toBe(1);
-    clock += 2 * 60_000; answer = "listable";
-    expect(containersListable(roots, look, () => clock)).toBe(true);
-    clock += 60 * 60_000; answer = "waiting";
-    expect(containersListable(roots, look, () => clock)).toBe(true);
-    expect(looks).toBe(2);
-    // The child-process look itself finishes within its limit on folders that list.
-    const plain = scratch();
-    mkdirSync(join(plain, "one", "two"), { recursive: true });
-    const started = Date.now();
-    expect(containersListable([plain])).toBe(true);
-    expect(Date.now() - started).toBeLessThan(CONTAINER_LOOK_MS);
+  test("the program to allow: the background service's program, the terminal app, or the program itself", () => {
+    expect(storageAccessHolder({ XPC_SERVICE_NAME: "com.toolroll.plane" }, "/opt/node", {} as NodeJS.ProcessVersions)).toBe("the program that keeps Toolroll running (/opt/node)");
+    expect(storageAccessHolder({ XPC_SERVICE_NAME: "0", TERM_PROGRAM: "iTerm.app" }, "/opt/node", {} as NodeJS.ProcessVersions)).toBe("the terminal app Toolroll was started from (iTerm)");
+    expect(storageAccessHolder({}, "/opt/node", {} as NodeJS.ProcessVersions)).toBe("the program Toolroll runs as (/opt/node)");
+    expect(storageAccessHolder({}, "/x", { electron: "1" } as unknown as NodeJS.ProcessVersions)).toBe("the Toolroll app");
+  });
+
+  // Codex round 2, finding 2: the look must never hold this thread. A real child that waits: timers here keep firing.
+  test("a real child that waits: this thread's timers keep firing, its limit kills it, and the launch is refused naming the app", async () => {
+    const { home, slack } = containerHome();
+    let ticks = 0;
+    const timer = setInterval(() => { ticks++; }, 25);
+    try {
+      const waits = `process.stdout.write("at\\t"+JSON.stringify(${JSON.stringify(realpathSync(slack))})+"\\n");setTimeout(()=>{},60000);`;
+      const started = Date.now();
+      const refused = await refusalOf(prepareProtectedStorage(home, {}, "darwin", async () => readLook(await spawnLook(process.execPath, ["-e", waits], 700)), "x"));
+      expect(Date.now() - started).toBeGreaterThanOrEqual(650);
+      expect(ticks).toBeGreaterThanOrEqual(10);
+      expect(refused).toMatchObject({ why: "timed-out", apps: ["Slack"] });
+    } finally { clearInterval(timer); }
+    // A child that fails, or answers nothing readable, is a failed check.
+    expect(readLook(await spawnLook(process.execPath, ["-e", "process.exit(3)"], 5_000))).toEqual({ kind: "failed", detail: "the check exited with 3" });
+    expect(readLook(await spawnLook(process.execPath, ["-e", "process.stdout.write('done\\t{}\\n')"], 5_000))).toMatchObject({ kind: "failed" });
+  });
+
+  test.runIf(existsSync(storageLookScript()))("the built child script answers what the check run here answers", async () => {
+    const { home } = containerHome();
+    const env = { OP_CONFIG_DIR: join(home, "op") };
+    const here = protectedStorageHere(realpathSync(home), env, "darwin");
+    const ran = readLook(await spawnLook(process.execPath, [storageLookScript(), JSON.stringify({ home: realpathSync(home), env, platform: "darwin" })], 10_000));
+    expect(ran).toEqual({ kind: "done", storage: { names: here.names, denies: here.denies }, unfinished: [] });
+  });
+
+  // Every road that makes a fence awaits the check first and hands it over; none runs the walk itself.
+  test("every launch road hands fenceFor and taskBoundary an awaited check, and nothing in the check waits on this thread", () => {
+    const sources = readdirSync("src", { recursive: true, encoding: "utf8" }).filter(path => path.endsWith(".ts") && !path.includes(".test.") && !path.endsWith(".d.ts")).map(path => join("src", path));
+    const roads: string[] = [];
+    for (const file of sources) {
+      const text = readFileSync(file, "utf8");
+      for (const call of text.matchAll(/\b(fenceFor|taskBoundary)\(/g)) {
+        if (/function\s+$/.test(text.slice(Math.max(0, call.index - 20), call.index))) continue;
+        let depth = 0, at = call.index + call[0].length - 1;
+        for (; at < text.length; at++) { if (text[at] === "(") depth++; else if (text[at] === ")" && --depth === 0) break; }
+        const args = text.slice(call.index, at);
+        roads.push(file);
+        expect(/\bstorage\b/.test(args), `${file}: ${args.slice(0, 80)}`).toBe(true);
+      }
+    }
+    expect([...new Set(roads)].sort()).toEqual(["src/coding-provider.ts", "src/eval-oracle.ts", "src/flow-code.ts", "src/invoke.ts", "src/project-tools.ts", "src/release-carry.ts"]);
+    const check = readFileSync("src/protected-storage.ts", "utf8");
+    expect(check).not.toMatch(/spawnSync|execFileSync|execSync/);
+    // The walk run here is only ever the child's, a fallback no launch road takes, or a test's.
+    for (const file of sources) {
+      if (file === "src/protected-storage.ts" || file === "src/protected-storage-look.ts") continue;
+      const text = readFileSync(file, "utf8");
+      if (file === "src/agent-fence.ts") { expect(text.match(/protectedStorageDenies\(|protectedStorageNames\(/g)?.length ?? 0, file).toBeLessThanOrEqual(3); continue; }
+      expect(/protectedStorage(Here|Denies|Names)\(/.test(text), file).toBe(false);
+    }
   });
 
   // App containers are a macOS idea: elsewhere there is nothing to walk, and the platform-pure tests above cover the logic.
-  test.runIf(mac)("native: a link inside a container that leads outward stays denied while macOS keeps Toolroll waiting", async ctx => {
+  test.runIf(mac)("native: a link inside a container that leads outward is denied by the launch's own check", async ctx => {
     vi.stubEnv("XDG_CONFIG_HOME", "");
     try {
-      const { home, slack, teams, worktree, fence } = containerHome();
+      const { home, worktree, fence } = containerHome();
       const secret = write(join(home, "Stash", "session"), marker("stash"));
-      const launch = () => fence(2);
-      // A complete walk once (macOS answered), then macOS waiting on the person for every look after.
-      const first = launch();
-      expect(first.fence).toContain(join(home, "Stash"));
-      containersListable([slack, teams].sort(), () => "waiting");
-      const waiting = launch();
-      expect(waiting.fence).toContain(join(home, "Stash"));
+      const storage = await prepareProtectedStorage(home, {}, "darwin", lookHere(), "x");
+      const launch = fence(2, [], storage);
+      expect(launch.fence).toContain(join(home, "Stash"));
       needs(ctx, osFence());
       expect(execFileSync("cat", [secret], { encoding: "utf8" })).toMatch(/^synthetic-attack-/);
-      expect(lines(underSandbox(readScript([secret]), waiting.fence, waiting.fenceGrants, { cwd: worktree }))).toEqual(["denied"]);
+      expect(lines(underSandbox(readScript([secret]), launch.fence, launch.fenceGrants, { cwd: worktree }))).toEqual(["denied"]);
     } finally { vi.unstubAllEnvs(); }
   });
 

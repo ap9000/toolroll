@@ -15,6 +15,7 @@
  *   keys are out of reach), under a time limit, with the setup's plain
  *   environment rather than this process's.
  */
+import { prepareProtectedStorage, storageRefusalOf } from "./protected-storage.js";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
@@ -176,7 +177,7 @@ export function cardsFromOutput(stdout: string): { key: string; title: string; d
  */
 export type FlowLaunch = { folder: string; env: Record<string, string>; fence?: LaunchFence; dispose(): void };
 
-export function flowLaunch(store: Store, options: { repo: string; folder: string; scratch: string; copy: boolean; available?: () => boolean; policy?: FencePolicy; home?: string; browser?: true }): FlowLaunch | null | { problem: string } {
+export async function flowLaunch(store: Store, options: { repo: string; folder: string; scratch: string; copy: boolean; available?: () => boolean; policy?: FencePolicy; home?: string; browser?: true }): Promise<FlowLaunch | null | { problem: string }> {
   const databaseFile = store.databaseFile();
   if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return null;
   const available = options.available ?? (() => macosFenceAvailable() || linuxFenceAvailable());
@@ -201,18 +202,21 @@ export function flowLaunch(store: Store, options: { repo: string; folder: string
     const binding = options.copy ? trustedWorktreeBinding(options.repo, options.folder, poolRoots) : null;
     // The policy its flow sealed; nothing sealed is v1 (the home configuration denied), never a wider one implicitly.
     const home = options.home ?? homedir();
-    const boundary = taskBoundary({ worktree: options.folder, provider: "command", home, binding, policy: options.policy ?? 1 });
+    // The storage check, awaited off this thread (protected-storage.ts).
+    const storage = await prepareProtectedStorage(home);
+    const boundary = taskBoundary({ worktree: options.folder, provider: "command", home, binding, policy: options.policy ?? 1, storage });
     const cache = buildCacheFolder(options.repo, home);
     const allowed = store.projectWrites(options.repo) !== "workspace" ? null : writeAllowlist({ provider: "command", home, worktree: options.folder, binding, launchFolder: own, cache });
     // The project's read denies apply to flows as to builds (read live: a flow seals no list, and these only narrow).
     const readDeny = store.projectSandbox(options.repo).readDeny.map(one => readDenyPath(one, home));
-    const fence = fenceFor("flow", { databaseFile, worktree: options.folder, home, boundary, readDeny, policy: options.policy ?? 1, scratchRoots: [options.scratch], binding, runFolders: runFolders(own), poolRoots, extra: allowed?.deny ?? [],
+    const fence = fenceFor("flow", { databaseFile, worktree: options.folder, home, boundary, readDeny, storage, policy: options.policy ?? 1, scratchRoots: [options.scratch], binding, runFolders: runFolders(own), poolRoots, extra: allowed?.deny ?? [],
       writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, network: { mode: "open" },
       // Chromium's one service, only for a script zone whose browser use a person approved, proved by the caller now.
       ...(options.browser === true ? { browser: true as const } : {}) });
     return { folder: own, env: { ...env, ...(allowed === null ? {} : buildCacheEnv(cache)) }, fence, dispose };
-  } catch {
+  } catch (error) {
     dispose();
-    return { problem: "The flow's copy couldn't be bound to its project, so nothing ran." };
+    // The storage check's own words survive: what didn't finish, and which program macOS may need to allow.
+    return { problem: storageRefusalOf(error)?.message ?? "The flow's copy couldn't be bound to its project, so nothing ran." };
   }
 }

@@ -19,6 +19,7 @@
  * read only Toolroll's records and verified objects. (Coverage, in release-recheck.ts, trusts test code by Alex's
  * explicit decision; nothing here does.)
  */
+import { prepareProtectedStorage, storageRefusalOf, type ProtectedStorage } from "./protected-storage.js";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -310,11 +311,16 @@ export function fencedBuildRunner(store: Store): BuildRunner {
     if (!macosFenceAvailable() && !linuxFenceAvailable()) {
       return { code: 1, stdout: "", stderr: "This machine can't confine the build (no macOS sandbox, no working bubblewrap), so it didn't run.\n", timedOut: false, notFound: false };
     }
+    // The storage check, awaited off this thread (protected-storage.ts); its words are the build's when it can't finish.
+    let storage: ProtectedStorage;
+    try { storage = await prepareProtectedStorage(); } catch (error) {
+      return { code: 1, stdout: "", stderr: `${storageRefusalOf(error)?.message ?? "The build's fence could not be prepared, so it didn't run."}\n`, timedOut: false, notFound: false };
+    }
     const egress = await startEgressProxy({ hosts: [] });
     try {
       const network: NetworkFence = { mode: "allowlist", proxyPort: egress.port, brokerPorts: [], loopback: "proxy-only", socketRoots: [...options.writable], token: egress.secret };
       const launch = fenceFor("check", {
-        databaseFile: store.databaseFile(), worktree: options.cwd, boundary: null, binding: null, runFolders: runFolders(null), poolRoots: [],
+        databaseFile: store.databaseFile(), worktree: options.cwd, boundary: null, binding: null, runFolders: runFolders(null), poolRoots: [], storage,
         writes: { writes: { subpaths: [...options.writable], prefixes: [] }, readOnly: [] }, network,
       });
       return await run(file, args, { cwd: options.cwd, env: { ...options.env, ...proxyEnv(egress, "proxy-only") }, timeoutMs: options.timeoutMs, processGroup: true,

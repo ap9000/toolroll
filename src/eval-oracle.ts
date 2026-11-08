@@ -19,6 +19,7 @@
  * The build's code never runs in the oracle's own process, and nothing the build wrote (a result file, a verdict) is
  * ever read as one: the verdict travels from the oracle to the runner over the oracle's own pipe.
  */
+import { prepareProtectedStorage } from "./protected-storage.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, lstatSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeSync } from "node:fs";
@@ -66,10 +67,12 @@ export type GradeRunner = (input: { cwd: string; stdin: string; timeoutMs: numbe
  * fence on this machine: nothing is graded (the attempt is an error, never a pass). */
 export const fencedGradeRunner: GradeRunner = async ({ cwd, stdin, timeoutMs, deny }) => {
   if (!macosFenceAvailable() && !linuxFenceAvailable()) throw new Error("this machine can't fence the graded program");
+  // The storage check, awaited off this thread (protected-storage.ts); a refusal keeps its words.
+  const storage = await prepareProtectedStorage();
   const egress = await startEgressProxy({ hosts: [] });
   try {
     const network: NetworkFence = { mode: "allowlist", proxyPort: egress.port, brokerPorts: [], loopback: "proxy-only", socketRoots: [cwd], token: egress.secret };
-    const launch = fenceFor("check", { databaseFile: null, worktree: cwd, boundary: null, binding: null, runFolders: runFolders(null), poolRoots: [], extra: [...deny],
+    const launch = fenceFor("check", { databaseFile: null, worktree: cwd, boundary: null, binding: null, runFolders: runFolders(null), poolRoots: [], storage, extra: [...deny],
       writes: { writes: { subpaths: [cwd], prefixes: [] }, readOnly: [] }, network });
     const result = await run(process.execPath, ["probe.mjs"], { cwd, stdin, timeoutMs, maxBuffer: ORACLE_OUTPUT_BYTES, processGroup: true, envAllowlist: ["PATH"],
       env: { ...proxyEnv(egress, "proxy-only"), HOME: cwd, TMPDIR: cwd }, fence: launch.fence, fenceGrants: launch.fenceGrants, confinement: "required" });
