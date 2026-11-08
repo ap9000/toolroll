@@ -345,7 +345,10 @@ describe("bearer step-up and in-flight revocation", () => {
     expect(checked).toHaveBeenCalledExactlyOnceWith(store, 'alex', 'incorrect-control-password', undefined, { credential: true });
     checked.mockClear();
     const before = snapshot();
-    for (const row of browserOnly) {
+    for (const [at, row] of browserOnly.entries()) {
+      // A password bearer is held to 120 requests a minute per source, a throttle this matrix must not loosen: over
+      // 100 browser-only rows, it moves the request-budget clock a minute on rather than tripping it.
+      if (at > 0 && at % 100 === 0) now += 61_000;
       const response = await formPost(bearer, row.sample, { token: password, password, digest: scope.digest, name: "alex", role: "approver", access: "all", repo: A });
       expect([row.id, row.sample, response.status]).toEqual([row.id, row.sample, 403]);
       await response.arrayBuffer();
