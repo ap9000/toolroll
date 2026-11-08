@@ -141,6 +141,16 @@ export function discordCardEmbed(card: ChatCard, plain: (text: string) => string
 
 /** The card as one Telegram message: plain words, tables and charts as `pre` entities, so nothing in a value is parsed. */
 export function telegramCardMessage(card: ChatCard): { text: string; entities: { type: "pre" | "bold"; offset: number; length: number }[] } {
+  // A phone can't fit a table's columns side by side, so each row is a short list item. Past Telegram's limit, rows are
+  // cut from the end (counted in "and N more") before falling back to the plain version.
+  for (let keep = TELEGRAM_ROWS; keep >= 1; keep = Math.floor(keep / 2)) {
+    const message = telegramCardWith(card, block => Math.min(block.rows.length, keep));
+    if (message.text.length <= 4000) return message;
+  }
+  return { text: cardPlainText(card).slice(0, 4000), entities: [] };
+}
+
+function telegramCardWith(card: ChatCard, rowsFor: (block: Table) => number): { text: string; entities: { type: "pre" | "bold"; offset: number; length: number }[] } {
   const entities: { type: "pre" | "bold"; offset: number; length: number }[] = [];
   let text = "";
   const add = (words: string, type?: "pre" | "bold") => {
@@ -153,13 +163,22 @@ export function telegramCardMessage(card: ChatCard): { text: string; entities: {
     if (block.kind === "text") { add(LEAD_NOTE_WORDS, "bold"); add(block.text); }
     else if (block.kind === "facts") add(block.items.map(one => `${one.label}: ${one.value}`).join("\n"));
     else if (block.kind === "notes") { for (const one of headOf(card, block.heading)) add(one, "bold"); if (block.origin === "report") add(reportWords); add(noteLines(block).join("\n")); }
-    else if (block.kind === "table") { for (const one of headOf(card, block.heading)) add(one, "bold"); if (block.origin === "report") add(reportWords); add(tableLines(block, 40).join("\n"), "pre"); }
+    else if (block.kind === "table") {
+      for (const one of headOf(card, block.heading)) add(one, "bold");
+      if (block.origin === "report") add(reportWords);
+      const listed = telegramTableRows(block, rowsFor(block));
+      if (listed.same !== "") add(listed.same);
+      for (const row of listed.rows) {
+        add(row.name, "bold");
+        if (row.rest !== "") text += `\n${row.rest}`;
+      }
+      if (listed.more > 0) add(moreWords(listed.more));
+    }
     else if (block.kind === "chart") { for (const one of headOf(card, block.heading)) add(one, "bold"); add(chartLines(block).join("\n"), "pre"); }
   }
   for (const one of footWords(card)) add(one);
   if (card.actions.length > 0) add(`Confirm below: ${card.actions.map(one => one.label).join(", ")}`);
-  // Telegram's own limit: past it, the whole plain version, cut, with no entities that could point past the end.
-  return text.length <= 4000 ? { text, entities } : { text: cardPlainText(card).slice(0, 4000), entities: [] };
+  return { text, entities };
 }
 
 // ---- web chat ------------------------------------------------------------------------------------------------------
@@ -205,4 +224,23 @@ export function webCardHtml(card: ChatCard): Html {
   return html`<div class="tc-card">${joinHtml(blocks)}${joinHtml(footWords(card).map(one => html`<p class="tc-note">${one}</p>`))}</div>`;
 }
 
+/** How many rows of a table a Telegram card shows before "and N more". */
+const TELEGRAM_ROWS = 20;
 
+/**
+ * A table's rows for a phone: each row's first value in full as its name, then its other values on one line ("queued ·
+ * standing-orders · 3h ago"; a number keeps its column's label: "Failed attempts 2"). A column with the same value in
+ * every shown row is said once above the rows instead ("All: queued · Failed attempts 0").
+ */
+export function telegramTableRows(block: Table, keep: number): { same: string; rows: { name: string; rest: string }[]; more: number } {
+  const shown = block.rows.slice(0, Math.max(0, keep));
+  const more = block.more + block.rows.length - shown.length;
+  const cell = (at: number, value: string): string => block.columns[at]!.numeric ? `${block.columns[at]!.label} ${value}` : value;
+  const constant = block.columns.map((_, at) => at > 0 && shown.length > 1 && shown.every(row => row[at] === shown[0]![at]));
+  const same = constant.flatMap((yes, at) => yes && shown[0]![at] !== "" ? [cell(at, shown[0]![at]!)] : []);
+  const rows = shown.map(row => ({
+    name: row[0] === "" ? "(untitled)" : row[0]!,
+    rest: row.flatMap((value, at) => at === 0 || constant[at] || value === "" ? [] : [cell(at, value)]).join(" · "),
+  }));
+  return { same: same.length === 0 ? "" : `All: ${same.join(" · ")}`, rows, more };
+}
