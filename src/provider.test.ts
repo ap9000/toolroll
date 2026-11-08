@@ -183,7 +183,12 @@ describe("argv dialects", () => {
     const both = settingsOf(adapterFor("claude").argv({ ...ASK, fence: ["/home/me/.toolroll"], steerFolder }));
     expect(both.autoMemoryEnabled).toBe(false);
     expect(both.permissions.deny).toContain("Read(//home/me/.toolroll)");
-    expect(both.hooks.PostToolUse[0]).toMatchObject({ matcher: "*", hooks: [{ type: "command", command: expect.stringContaining(`'${steerFolder.dir}'/[0-9]*.json`) }] });
+    // Two doorbells, both inside the steer folder: a person's steer, and a finding sent back (fleet follow-through).
+    expect(both.hooks.PostToolUse[0]).toMatchObject({ matcher: "*", hooks: [
+      { type: "command", command: expect.stringContaining(`'${steerFolder.dir}'/[0-9]*.json`) },
+      { type: "command", command: expect.stringContaining(`'${steerFolder.dir}/findings'/finding-*.json`) },
+    ] });
+    expect(both.hooks.PostToolUse[0].hooks).toHaveLength(2);
     expect(settingsOf(adapterFor("claude").argv({ ...ASK, steerFolder }))).not.toHaveProperty("permissions");
     // Always exactly one --settings: personal auto-memory is disabled even without a fence.
     expect(settingsOf(adapterFor("claude").argv({ ...ASK }))).toEqual({ autoMemoryEnabled: false });
