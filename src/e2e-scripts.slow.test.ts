@@ -8,6 +8,7 @@ import { runGroups } from "../scripts/e2e-parallel.mjs";
 import { catalogueProblems, GiveUp, groupAlive, processesIn, REAL_MODEL, SCRIPTED, selectJourneys, spawnOwned, stopGroups, until, waitFor } from "../scripts/e2e-kit.mjs";
 import { countingProvider, readJournal, scriptedProvider, turnsOf } from "../scripts/fixtures/scripted-provider.mjs";
 import { parseDecision, parseHandoff } from "./decision.js";
+import { claudeStreamReader } from "./lead-progress.js";
 import { parsePlan } from "./plan.js";
 import { LiveInput, type LiveCloseReason } from "./live-input.js";
 
@@ -344,9 +345,17 @@ describe("the scripted provider", () => {
     expect(answer).toMatchObject({ type: "result", subtype: "success", is_error: false });
     expect(answer!["structured_output"]).toEqual({ action: "route", answer: "Just a question", text: "It ships today.", note: "", question: "", options: [], reason: "Scripted for this journey.", tool: "", input: '{"order":"1201"}', remember: "" });
     const first = lines(call(provider.shims.claude, ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--json-schema", LEAD_SCHEMA], { input: conversation({ role: "operator", text: "File a task for this" }) }).stdout);
-    expect(first.map(one => one["type"])).toEqual(["system", "assistant", "result"]);
-    expect(first[0]!["session_id"]).toBe(first[2]!["session_id"]);
-    expect(first[2]!["structured_output"]).toEqual({ text: "Filing it.", calls: [{ id: "call-1-1", name: "propose_task", argumentsJson: '{"repo":"r1"}' }] });
+    // With --include-partial-messages the answer streams first, as Claude Code's StructuredOutput input_json_delta frames,
+    // and the live reader (lead-progress.ts) rebuilds its words from them; then the whole message and the result.
+    const kinds = first.map(one => one["type"]);
+    expect([kinds[0], ...new Set(kinds.slice(1, -2)), ...kinds.slice(-2)]).toEqual(["system", "stream_event", "assistant", "result"]);
+    let streamed = "";
+    const read = claudeStreamReader(text => { streamed = text; });
+    for (const one of first) read(`${JSON.stringify(one)}\n`);
+    expect(streamed).toBe("Filing it.");
+    const done = first.at(-1)!;
+    expect(first[0]!["session_id"]).toBe(done["session_id"]);
+    expect(done["structured_output"]).toEqual({ text: "Filing it.", calls: [{ id: "call-1-1", name: "propose_task", argumentsJson: '{"repo":"r1"}' }] });
     // Its next step (a new process, the tool's result in the conversation) is the same answer's next step, though `times` is spent.
     const second = lines(call(provider.shims.claude, ["-p", "--output-format", "json", "--json-schema", LEAD_SCHEMA], { input: conversation({ role: "operator", text: "File a task for this" }, { role: "assistant", text: "Filing it.", calls: [] }, { role: "tool", callId: "call-1-1", name: "propose_task", result: "{}" }) }).stdout);
     expect(second[0]!["structured_output"]).toEqual({ text: "Filed.", calls: [] });
