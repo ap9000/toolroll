@@ -1,4 +1,5 @@
 import { heldFindingCount } from "../findings.js";
+import { familyInWebReach } from "../findings.js";
 import { existsSync } from "node:fs";
 import { resultRecordWordsOf } from "../route-results.js";
 import { selectionEvidenceWords } from "../route-rules.js";
@@ -581,7 +582,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
               : field.field === "local-refused" ? { eligible: false as const, message: field.message, href: field.href, action: field.action } : null };
         })(),
         routeChange: ref === null ? null : routeChangeOf(runtime.store, ref.externalId),
-        followThrough: followThroughView(runtime.store, runtime.evidenceRoot, taskId, taskHref(taskId), who.role === "approver" && who.via === "cookie" && !runtime.store.isDemo(), runtime.clock()),
+        followThrough: who === undefined || familyInWebReach(runtime.store, who, taskId, runtime.visible) === null ? null : followThroughView(runtime.store, runtime.evidenceRoot, taskId, taskHref(taskId), who.role === "approver" && who.via === "cookie" && !runtime.store.isDemo(), runtime.clock()),
         fastGrown: (() => {
           if (ref === null || runtime.store.getTask(ref.externalId)?.state !== "done" || !fastStarted(runtime.store, ref.externalId)) return null;
           const last = runtime.store.lastBuilderRun(ref.id);

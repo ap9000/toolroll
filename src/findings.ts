@@ -466,3 +466,11 @@ export function findingLine(finding: Finding): string {
   const where = finding.file === null ? "" : ` ${finding.file}${finding.line === null ? "" : `:${finding.line}`}`;
   return `#${finding.id}${finding.severity === null ? "" : ` ${finding.severity}`}${where} — ${finding.summary}`;
 }
+
+/** The web's door to the same gate as chat (familyInReach): the projects this person reaches are those the page can
+ * see and their account may access, and every project in the task's family must be one of them. Null: out of reach. */
+export function familyInWebReach(store: Store, who: { name: string }, task: string, visible: (repo: string | null) => boolean): readonly string[] | null {
+  const family = store.taskFamilyOf(task, null, true);
+  const repos = (family?.versions.map(one => one.id) ?? [task]).map(id => store.lookupRef(id)?.repo ?? null).filter((one): one is string => one !== null && visible(one));
+  return familyInReach(store, { name: who.name, repos }, task);
+}
