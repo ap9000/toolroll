@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.96 — 2026-11-08
+
+- **Tables in Telegram are readable on a phone.** Each row is a short list item with its name in full, and anything shared by every row is said once at the top, instead of a squeezed grid of cut-off words.
+- **No more false git alerts while you use Claude Code beside Toolroll.** A Claude Code plugin briefly links a checkout's index while it looks at changes; Toolroll counted that as tampering in other checkouts of the same repository and stopped releases and builds. Real tampering is still caught.
+
 ## 0.9.95 — 2026-11-07
 
 - **Cards in chat, and approving from chat.** Slack, Discord and Telegram show tasks, plans and results as proper cards. Anything that needs approval can be approved there by a person with authority, the same as on the web; long terms link to the review page.

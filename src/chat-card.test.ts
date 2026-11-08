@@ -89,6 +89,27 @@ describe("a saved card", () => {
     expect(telegram.entities.every(one => one.offset + one.length <= telegram.text.length)).toBe(true);
   });
 
+  test("Telegram shows a table as a list a phone can read: full names, the rest on one line, the shared values once", () => {
+    const wide: ChatCard = { version: 1, title: "Queued tasks", asOf: now.toISOString(), repos: ["/p/a"], blocks: [
+      { kind: "table", heading: "Queued tasks", origin: "records", columns: [{ label: "Task", numeric: false }, { label: "State", numeric: false }, { label: "Project", numeric: false }, { label: "Updated", numeric: false }, { label: "Failed attempts", numeric: true }],
+        rows: [["Find why the storage sweep test is flaky on macOS", "queued", "standing-orders", "3h ago", "0"], ["Check the nightly upgrade lane", "queued", "standing-orders", "2d ago", "0"]], more: 9 },
+    ], buttons: [], actions: [] };
+    const telegram = telegramCardMessage(wide);
+    expect(telegram.text).toContain("All: queued · standing-orders · Failed attempts 0");
+    expect(telegram.text).toContain("Find why the storage sweep test is flaky on macOS\n3h ago");
+    expect(telegram.text).toContain("and 9 more");
+    expect(telegram.text).not.toContain("…");
+    expect(telegram.entities.some(one => one.type === "pre")).toBe(false);
+    const name = telegram.text.indexOf("Check the nightly");
+    expect(telegram.entities).toContainEqual({ type: "bold", offset: name, length: "Check the nightly upgrade lane".length });
+    // Over Telegram's limit, rows are cut from the end and counted, not the whole card dropped to plain text.
+    const long: ChatCard = { ...wide, blocks: [{ ...wide.blocks[0] as Extract<ChatCard["blocks"][number], { kind: "table" }>, rows: Array.from({ length: 20 }, (_, at) => [`Task ${at} ${"x".repeat(240)}`, "queued", "p", `${at}h ago`, "0"]), more: 0 }] };
+    const cut = telegramCardMessage(long);
+    expect(cut.text.length).toBeLessThanOrEqual(4000);
+    expect(cut.entities.length).toBeGreaterThan(1);
+    expect(cut.text).toMatch(/and \d+ more/);
+  });
+
   test("Slack and Discord get their native forms, and a chart stays readable where there is none", () => {
     const types = slackCardBlocks(card, [{ type: "button" }]).map(one => one["type"]);
     expect(types).toEqual(["header", "context", "section", "section", "data_table", "context", "data_visualization", "context", "actions"]);
