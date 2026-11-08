@@ -196,6 +196,15 @@ export function shapeReply(text: string, options: ShapeOptions = {}): string {
   return shapeWith(text, options, stateFor(text, options));
 }
 
+/**
+ * A reply still being written, shaped with the final reply's presentation policy (docs/plans/responsive-chat.md §2.2),
+ * except that ids are dropped unless the owner asked for them: whether a reply names several of a kind isn't known
+ * until it ends, so a prefix never keeps them on that ground. Presentation, not redaction.
+ */
+export function shapeReplyPrefix(text: string, options: ShapeOptions = {}): string {
+  return shapeWith(text, options, { boldLeft: BOLD_ANCHORS, keepIds: askedForIds(options.asked) ? "all" : new Set() });
+}
+
 /** Where a long reply may be cut: never inside code, a link, a URL or a bold anchor; best at a paragraph, then a line,
  * then a space. Always past `from`, and never between the two halves of an emoji. */
 function cutAt(text: string, from: number, size: number): number {

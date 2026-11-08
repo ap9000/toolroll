@@ -6,11 +6,15 @@ import { topLevelEvent } from "./stream-scope.js";
 
 export type LeadProgress =
   | { kind: "started"; turn: number }
-  | { kind: "step"; turn: number; step: number }
+  /** `reason`: the step re-asks the model about its own reply (a repair of a claim it can't back, or a shorten). */
+  | { kind: "step"; turn: number; step: number; reason?: "repair" | "shorten" }
   | { kind: "tool"; turn: number; step: number; id: string; label: string }
   | { kind: "tool-result"; turn: number; step: number; id: string; outcome: LeadToolOutcome }
   /** `final`: the provider's finished answer for this step, sent once and secret-checked whole. */
-  | { kind: "text"; turn: number; step: number; text: string; final?: true };
+  | { kind: "text"; turn: number; step: number; text: string; final?: true }
+  /** Text was held back because it looked like a password or key (mid-stream, or the finished reply refused): every
+   * live preview of this turn closes and clears at once (docs/plans/responsive-chat.md §2.1). */
+  | { kind: "blocked"; turn: number };
 
 export type LeadToolOutcome = { state: "succeeded" } | { state: "failed"; reason: string };
 export type LeadLiveTool = { id: string; label: string } & ({ state: "running" } | LeadToolOutcome);
@@ -63,7 +67,7 @@ const TOOL_LABELS: Record<string, string> = {
 
 export function leadToolLabel(name: string): string {
   if (name in TOOL_LABELS) return TOOL_LABELS[name]!;
-  return name.startsWith("propose_") ? "Preparing a card for you to confirm" : "Working";
+  return name.startsWith("propose_") ? "Preparing a card for you to confirm" : "Working on it";
 }
 
 /** Tool errors instruct the model how to retry. Only known, fixed copy belongs

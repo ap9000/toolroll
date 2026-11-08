@@ -421,6 +421,9 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   const turnStartedAt = now.getTime();
   const progress = (event: LeadProgress): void => { try { input.onProgress?.(event); } catch { /* a watcher never breaks the turn */ } };
   progress({ kind: "started", turn: turnId });
+  /** Text that looked like a secret was held back: every preview closes, once (responsive-chat.md §2.1). */
+  let blockedSaid = false;
+  const blockPreview = (): void => { if (!blockedSaid) { blockedSaid = true; progress({ kind: "blocked", turn: turnId }); } };
 
   let proposals = 0;
   let reads = 0;
@@ -498,6 +501,8 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   let repaired = false;
   /** The turn's one shorten step for a reply over its channel's message limit (LEAD_REPLY_LIMITS); still over, it is split. */
   let shortened = false;
+  /** Why the next step runs, when it re-asks about the reply itself (repair or shorten): the live status says so. */
+  let nextReason: "repair" | "shorten" | undefined;
   const replyLimit = input.channel === undefined ? null : LEAD_REPLY_LIMITS[input.channel];
   const unbacked = (text: string): string | null => {
     const claim = deliverableClaim(text);
@@ -530,7 +535,8 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     const stepStarted = store.startChatTurn(step.id, now);
     if (!stepStarted.ok) return fail("provider-error", LEAD_FAILURE_COPY.notStarted, false);
     steps++;
-    progress({ kind: "step", turn: turnId, step: steps });
+    progress({ kind: "step", turn: turnId, step: steps, ...(nextReason === undefined ? {} : { reason: nextReason }) });
+    nextReason = undefined;
     const requestBytes = Buffer.byteLength(outbound, "utf8");
     let result: Awaited<ReturnType<typeof performLeadRequest>>;
     // The turn owns its deadline (lead-stall, release check 2438): at the deadline the request is aborted, which ends a
@@ -557,7 +563,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
           signal: controller.signal,
           // The reply as it is written; text that looks like a secret is
           // never shown (the finished reply is scanned again before saving).
-          ...(input.onProgress === undefined ? {} : { onText: (text: string) => { if (!controller.signal.aborted && scanForSecrets(text).length === 0) progress({ kind: "text", turn: turnId, step: steps, text }); } }),
+          ...(input.onProgress === undefined ? {} : { onText: (text: string) => { if (controller.signal.aborted) return; if (scanForSecrets(text).length === 0) progress({ kind: "text", turn: turnId, step: steps, text }); else blockPreview(); } }),
         }))().catch(() => ({ ok: false as const, problem: "provider-error" })));
     }
     now = clock();
@@ -594,8 +600,9 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     }
     const answer = result.answer;
     // The streamed reply's finished text, once, secret-checked whole: only now may its last word show live.
-    if (!direct && input.onProgress !== undefined && !controller.signal.aborted && answer.text !== "" && scanForSecrets(answer.text).length === 0) {
-      progress({ kind: "text", turn: turnId, step: steps, text: answer.text, final: true });
+    if (!direct && input.onProgress !== undefined && !controller.signal.aborted && answer.text !== "") {
+      if (scanForSecrets(answer.text).length === 0) progress({ kind: "text", turn: turnId, step: steps, text: answer.text, final: true });
+      else blockPreview();
     }
     // Usage that cannot be true — more input tokens than bytes sent — is a
     // malformed reply with unknown cost, never a number to settle by.
@@ -638,6 +645,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       const claim = unbacked(answer.text);
       if (claim !== null && !repaired && steps < maxSteps) {
         repaired = true;
+        nextReason = "repair";
         history.push({ role: "assistant", text: answer.text, calls: [] });
         history.push({ role: "operator", text: deliverableRepair(claim) });
         continue;
@@ -645,6 +653,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       const candidate = claim === null ? answer.text : dropDeliverableClaims(answer.text);
       if (replyLimit !== null && candidate.length > replyLimit && !shortened && steps < maxSteps) {
         shortened = true;
+        nextReason = "shorten";
         history.push({ role: "assistant", text: answer.text, calls: [] });
         history.push({ role: "operator", text: shortenAsk([{ field: "Your reply", limit: replyLimit, length: candidate.length }]) });
         continue;
@@ -697,7 +706,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     reply = `${last === "" ? "" : `${last}\n\n`}(I stopped here: this answer needed more steps than ${maxSteps < LEAD_MAX_STEPS ? "this conversation's remaining spending allows" : "one reply allows"}. Ask me to carry on.)`;
   }
   // Ruling 11: model text is scanned before it becomes durable.
-  if (scanForSecrets(reply).length > 0) return fail("secret-refused", LEAD_FAILURE_COPY.secretReply, false);
+  if (scanForSecrets(reply).length > 0) { blockPreview(); return fail("secret-refused", LEAD_FAILURE_COPY.secretReply, false); }
 
   now = clock();
   const activity = activitySummary(reads, proposals, steps, cacheKnown && tokensIn > 0 ? Math.min(1, cacheRead / tokensIn) : null);
