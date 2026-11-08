@@ -7,7 +7,7 @@
  * diagnosis can go stale; it can never grant a lease.
  */
 
-import { STORAGE_HOLD_PREFIX } from "./dispose.js";
+import { STORAGE_HOLD_PREFIX } from "./needs-you.js";
 import { authorityStandsSql } from "./approval-authority.js";
 import { isAlive, type Runner } from "./runner.js";
 import { updateAdmissionPaused, UPDATE_PAUSED } from "./desktop-update-gate.js";

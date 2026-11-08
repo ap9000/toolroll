@@ -31,7 +31,7 @@ import { starterForWork } from "../flow-starters.js";
 import { type Gap } from "../gaps.js";
 import { readAuthModeStrict } from "../keys.js";
 import type { FollowThroughView } from "./render-follow-through.js";
-import { failedAttemptSentence,type FailureExplanation,retryNoteOf,START_BUILDER_COMMAND,startBuilderHref } from "../needs-you.js";
+import { failedAttemptSentence,type FailureExplanation,retryNoteOf,START_BUILDER_COMMAND,startBuilderHref,STORAGE_HOLD_PREFIX } from "../needs-you.js";
 import { planVersionWords } from "../plain-words.js";
 import { chosenWords, makesNoPlan, PHASES as ROUTE_PHASES, type RouteOverride, type RouteProjection, TASK_SIZES } from "../phase-routing.js";
 import { type MilestoneState,parseExecutionPlanDocument } from "../plan.js";
@@ -1778,7 +1778,7 @@ export function taskBodyParts(data: {
           case "select-agent": return html` <a href="#scope">Choose an available provider and model</a>.`;
           case "approve-scope": return html` <a href="#approve">Review the plan and approve it</a>.`;
           case "answer-decision": return html` <a href="#decisions">Answer the waiting question</a>.`;
-          case "unhold": return html` Use <strong>Remove hold</strong> when it can continue.`;
+          case "unhold": return diagnosis.code === "storage-blocked" ? html` Use <strong>Try again</strong> once it's allowed.` : html` Use <strong>Remove hold</strong> when it can continue.`;
           // The reason is the detail itself; Retry is the status card's own act, said once.
           case "retry-task": return "";
           case "repair-capability": return html` <a href="/caps">Repair the requirement</a>.`;
@@ -1999,7 +1999,8 @@ export function taskBodyParts(data: {
       : joinHtml([
         html`<h2>Holds</h2>`,
         joinHtml(data.holds.map(
-          hold => html`<p class="row">${holdOwnerWords(hold.ownerKind)} — ${hold.reason}${hold.until === null ? "" : html` <span class="meta">until ${whenTime(hold.until)}</span>`}</p>`,
+          // The storage check's hold (dispose.ts holdForStorage) says what it waits for, in the check's own words.
+          hold => html`<p class="row">${hold.ownerKind === "backoff" && hold.reason.startsWith(STORAGE_HOLD_PREFIX) ? `waiting for macOS permission — ${hold.reason.slice(STORAGE_HOLD_PREFIX.length)}` : `${holdOwnerWords(hold.ownerKind)} — ${hold.reason}`}${hold.until === null ? "" : html` <span class="meta">until ${whenTime(hold.until)}</span>`}</p>`,
         ), "\n"),
         html`<p class="meta">Only your hold can be lifted here. Waits for a question, repeated failures or a retry clear on their own.</p>`,
       ]);

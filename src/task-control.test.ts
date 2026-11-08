@@ -336,6 +336,11 @@ describe("safe task stop and resume (v52)", () => {
     expect(NEEDS.storage.action).toEqual({ code: "unhold", label: "Try again" });
     // A message (chat, phone) carries the words.
     expect(store.handle.prepare("SELECT body FROM notification WHERE kind = 'protected-storage'").get()?.["body"]).toContain("Full Disk Access");
+    // The board and Needs you (the work index): its own item, the words, when it retries, and Try again.
+    const row = workIndexPage(store, later(2_000), { principal: "operator", repos: [REPO] }).items.find(one => one.rootId === "t-storage")!;
+    expect(row.status).toMatchObject({ label: "Needs you", views: expect.arrayContaining(["needs-you"]) });
+    expect(row.status.detail).toContain(words);
+    expect(row.primaryAction).toMatchObject({ code: "unhold", label: "Try again" });
     // Try again: the hold goes, and the task is free to start.
     expect(store.unhold(a.taskRef, {}, later(3_000))).toBe(true);
     expect(store.activeHolds(a.taskRef, later(3_000))).toEqual([]);

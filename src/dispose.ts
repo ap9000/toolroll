@@ -1,4 +1,5 @@
 // Assignment tracking grants no repair authority or attempts.
+import { STORAGE_HOLD_PREFIX } from "./needs-you.js";
 import { blockAfterSignedOut } from "./fallback.js";
 import { authorizeCheckOnly } from "./check-only.js";
 import { proposeNewRoute } from "./route-change.js";
@@ -456,8 +457,7 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
 
 /** How long a task waits after the storage check couldn't finish before it tries again on its own. */
 export const STORAGE_RETRY_MS = 10 * 60_000;
-/** The reason a storage hold carries, before the check's own words (dispatch.ts reads it back). */
-export const STORAGE_HOLD_PREFIX = "protected-storage — ";
+export { STORAGE_HOLD_PREFIX };
 
 /**
  * The storage HOLD: the check couldn't finish, so no launch can be fenced

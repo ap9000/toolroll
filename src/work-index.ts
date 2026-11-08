@@ -22,7 +22,7 @@ import { isCheckLevel, requiredCheckCommandFor } from './check-levels.js';
 import { MARKER } from './worktree.js';
 import { withFollowUps } from './result-follow-ups.js';
 import { LANDED_ACTOR, landedReasonOf } from './result-completion.js';
-import { ASKS, CODE_READING, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, isWaitCode, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedContext, type NeedKey, type WaitKey } from './needs-you.js';
+import { ASKS, CODE_READING, STORAGE_HOLD_PREFIX, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, isWaitCode, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedContext, type NeedKey, type WaitKey } from './needs-you.js';
 import { retryWhenWords } from './dispatch.js';
 import { LEAD_CLAIM_SQL, LEAD_IDLE_MS } from './lead-voice.js';
 
@@ -98,7 +98,7 @@ const INDEX_NEED: Readonly<Record<string, NeedKey>> = Object.fromEntries(['earli
 /** Every index code that can wait on a person. A wait (stopping, waiting its turn, a retry later) is never one. */
 const PERSON_CODES = ['finding-held', 'history-problem', 'earlier-active', 'ready-to-check', 'waiting-decision', 'decision-queue', 'result-needs-attention',
   'process-needs-attention', 'failed', 'vanished-run', 'stopped', 'held', 'waiting-incident', 'terminal-dependency', 'needs-project',
-  'needs-scope', 'invalid-scope', 'needs-agent-profile', 'needs-approval', 'missing-requirement', 'no-worker-registered', 'no-worker-online', 'signed-out'];
+  'needs-scope', 'invalid-scope', 'needs-agent-profile', 'needs-approval', 'missing-requirement', 'no-worker-registered', 'no-worker-online', 'signed-out', 'storage-blocked'];
 /** A family's findings held for a person (findings.ts). A database not yet at v155 has no such table: see registerValidators. */
 const HELD_FINDINGS = `(SELECT COUNT(*) FROM finding fd WHERE fd.family_root=root.id AND fd.state='with-person')`;
 /** The index codes that wait on nobody: finished or running work, and every wait (needs-you.ts CODE_READING). */
@@ -277,6 +277,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     WHEN live_lease IS NOT NULL THEN CASE WHEN question_id IS NOT NULL OR agent_ask IS NOT NULL THEN 'waiting-decision' ELSE 'running' END
     WHEN state='running' OR unfinished IS NOT NULL THEN 'vanished-run'
     WHEN EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name GLOB 'so_desktop_update_*') THEN 'updating'
+    WHEN hold_kind='backoff' AND substr(hold_reason,1,${STORAGE_HOLD_PREFIX.length})='${STORAGE_HOLD_PREFIX}' THEN 'storage-blocked'
     WHEN hold_kind='backoff' THEN 'retry-scheduled'
     WHEN hold_kind='decision' THEN 'waiting-decision'
     WHEN hold_kind='incident' THEN 'waiting-incident'
@@ -478,7 +479,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'proof_verdict',(SELECT COALESCE(machine_verdict,verdict) FROM proof_verdict WHERE run=page_result_id),
     'proof_failed_check',(SELECT verdict='refuted' AND reasons_json LIKE '%approved verification command exited%' FROM proof_verdict WHERE run=page_result_id),'code',code,'needs',needs,'person_need',person_need,'lead_claim',lead_claim,'family_running',family_running,'rank',rank,'ask_rank',ask_rank,'list_order',${ORDER},'sort_at',sort_at,
     'checked_actor',checked_actor,'checked_at',checked_at,'checked_digest',checked_digest,'checked_detail',checked_detail,'question_id',question_id,
-    'dependency_id',dependency_id,'dependency_state',dependency_state,'hold_until',hold_until,'attempt_run',(SELECT id FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,300),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
+    'dependency_id',dependency_id,'dependency_state',dependency_state,'hold_until',hold_until,'attempt_run',(SELECT id FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,600),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
     'plan_changed',scope_digest IS NOT NULL AND digest IS NOT scope_digest,'head_ok',length(head_revision)=40 AND head_revision NOT GLOB '*[^a-f0-9]*','stop_run',stop_run,'unfinished',unfinished,'signed_out',signed_out,
     'question_run',(SELECT run FROM decision WHERE id=page.question_id),'agent_ask',page.agent_ask,
     'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
@@ -672,6 +673,12 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   if (code === 'held') { actionCode = s(row, 'hold_kind') === 'operator' ? 'unhold' : 'inspect-hold'; detail = s(row, 'hold_reason') ?? 'This task is on hold.'; }
   if (code === 'stopping') { actionCode = 'inspect-stop'; actionLabel = 'View stop details'; }
   if (code === 'stopped') detail = 'Paused by a person. The work so far is kept.';
+  // The storage check couldn't finish (dispose.ts holdForStorage): its own words, when it retries, and Try again.
+  if (code === 'storage-blocked') {
+    const until = s(row, 'hold_until');
+    detail = `${(s(row, 'hold_reason') ?? '').slice(STORAGE_HOLD_PREFIX.length)}${until === null ? '' : ` It tries again on its own ${retryWhenWords(until, now)}.`}`;
+    actionCode = 'unhold'; actionLabel = NEEDS.storage.action.label;
+  }
   if (code === 'cancelled') detail = 'This task was cancelled.';
   // The same failure again and again: what failed, and the two ways on.
   if (code === 'waiting-incident') detail = `The last attempts failed the same way (${failedAttemptSentence(s(row, 'attempt_reason')).replace(/[.\s]+$/, '').replace(/^./, first => first.toLowerCase())}). Retry, or change the plan.`;

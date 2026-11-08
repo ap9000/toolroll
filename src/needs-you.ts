@@ -16,6 +16,10 @@ export type WaitKey = "build-stopping" | "build-finishing" | "build-checking" | 
   | "plan-next" | "research-next" | "builders-busy" | "retry-later" | "app-update" | "other-task";
 
 /** The action's code: the WorkAction that owns the act, or one of the acts a surface renders itself. */
+/** The reason a storage hold carries before the check's own words (dispose.ts holdForStorage; dispatch.ts and
+ * work-index.ts read it back). */
+export const STORAGE_HOLD_PREFIX = "protected-storage — ";
+
 export type NeedActionCode =
   | "approve-scope" | "approve-card" | "answer-decision" | "inspect-decisions" | "sign-in" | "recheck-stopped" | "inspect-hold"
   | "place-task" | "write-scope" | "select-agent" | "repair-dependency" | "repair-capability" | "start-worker" | "reconcile-run"
