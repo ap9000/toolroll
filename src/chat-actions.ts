@@ -793,8 +793,9 @@ export function prepareSharedAction(
         state = { flow: flow.id, revision: flow.revision, digest: view.digest };
         title = `Allow browser use in ${flow.name}`;
         terms.push(`Flow: ${flow.name} · project ${project}`,
-          ...view.zones.map(zone => `${zone.title} runs ${zone.script} v${zone.version}\nScript digest ${zone.digest}`),
-          "Each run of these zones starts a headless Chromium.", ...view.terms, `Approval digest ${view.digest}`);
+          // Each script by its short digest: the whole approval, every script's full digest included, is bound in the state.
+          ...view.zones.map(zone => `${zone.title} runs ${zone.script} v${zone.version}\nScript ${zone.digest.slice(0, 12)}`),
+          "Each run of these zones starts a headless Chromium.", ...view.terms);
       }
     } else if (operation === "flow_trigger_pause" || operation === "flow_trigger_resume" || operation === "flow_trigger_remove") {
       const { flow, trigger } = flowTarget!;
@@ -1114,16 +1115,14 @@ export function sharedActionPayload(value: unknown): SharedAction | null {
 /** A shortened or redacted preview is not complete consent. This rule lives
  * in the shared door, so a forged transport callback cannot bypass it. */
 function sharedActionContentNeedsReview(action: SharedAction): boolean {
-  // An approval's card has room for longer terms, and shows a digest as a word: the digest itself is bound in the state.
+  // An approval's card has room for longer terms. Its words are compared exactly: anything the card would hide or
+  // rewrite (a long hex value, a path, a secret) sends the person to the review page. Toolroll's own digest is bound in
+  // the state, never in the terms, and a commit is written short, so an ordinary approval shows every word as stored.
   const approval = APPROVAL_ACTIONS.has(action.operation), cap = approval ? APPROVAL_TERM_CHARS : 1200;
   const content = [action.title, ...action.terms];
   return (
     action.terms.join("\n").length > cap ||
-    content.some(
-      (value, index) =>
-        publicChatText(value, index === 0 ? 200 : cap) !==
-        (approval ? value.replace(/\b[0-9a-f]{32,}\b/gi, "[digest]") : value).replace(/\s+/g, " ").trim(),
-    )
+    content.some((value, index) => publicChatText(value, index === 0 ? 200 : cap) !== value.replace(/\s+/g, " ").trim())
   );
 }
 export function sharedActionNeedsReview(action: SharedAction): boolean {

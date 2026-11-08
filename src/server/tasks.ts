@@ -39,7 +39,7 @@ import { fileGithubItem, readGithubItem } from "../github-import.js";
 import { allowAutoPublish, autoPublishHeld } from "../release-auto.js";
 import { startCheckRepair } from "../check-repair.js";
 import { askFailingFirst, dropFailingFirst, rerunEvidence, saveEvidencePair } from "../evidence-pair.js";
-import { closeFinding, familyRootOf, getFinding, NOT_ON_TASK, resendFinding, runOnTask, sendFinding, sendReviewFinding } from "../findings.js";
+import { closeFinding, familyInWebReach, familyRootOf, getFinding, NOT_ON_TASK, resendFinding, runOnTask, sendFinding, sendReviewFinding } from "../findings.js";
 import { labelProviderCapture, providerCapture } from "../provider-capture.js";
 import { fastStartBuild, keepGrownChange, prepareFastStart, type PasswordFacts } from "../fast-start.js";
 import { evidencePack } from "../evidence-pack.js";
@@ -3016,6 +3016,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const act = matchTaskPath(url.pathname, "/follow-through$");
     if (act === null) return noPage(who, response);
     const { taskId } = act;
+    // Chat's gate, here too (findings.ts familyInReach): every project in this task's family, not only this page's.
+    if (familyInWebReach(store, who, taskId, visible) === null) return refuse(response, who, 403, "That task is outside your access.", "/tasks");
     const number = (name: "finding" | "run" | "capture") => Number(body.get(name) ?? "");
     const back = () => redirect(response, `${taskHref(taskId)}#findings`);
     const refused = (message: string) => taskScreen(response, who, taskId, message, 409);

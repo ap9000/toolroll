@@ -2,6 +2,7 @@
  * Toolroll cards (docs/plans/toolroll-cards.md), against a real store: what a lead can and can't put on a card, what each
  * app receives, and that the message survives anything going wrong.
  */
+import { envelopeJson, ENVELOPE_VERSION } from "./envelope.js";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -282,7 +283,10 @@ describe("toolroll card", () => {
   afterEach(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   const run = (positional: string[], options: [string, string][] = [], actor: string | null = "operator", json = false) => {
     const lines: string[] = [];
-    return { code: runCardCommand(positional, new Map(options), { store, write: line => lines.push(line), json, now, actor, repos: [repo] }), lines };
+    // The CLI's own envelope, as operate.ts wires it: one JSON document under --json, exit 2 for usage and 3 for a refusal.
+    const ok = (result: Record<string, unknown>, words: () => string[]) => { lines.push(json ? envelopeJson({ ok: true, command: "card", ...result }) : words().join("\n")); return 0; };
+    const no = (reason: string, message: string) => { lines.push(json ? envelopeJson({ ok: false, command: "card", reason, message }) : message); return reason === "usage" ? 2 : 3; };
+    return { code: runCardCommand(positional, new Map(options), { store, write: line => lines.push(line), json, now, actor, repos: [repo], ok, no }), lines };
   };
 
   test("shows the same card chat does, and refuses what the person can't see", () => {
@@ -290,7 +294,8 @@ describe("toolroll card", () => {
     expect(run(["projects"]).lines.join("\n")).toContain("Projects: 1");
     expect(JSON.parse(run(["projects"], [], "operator", true).lines[0]!).card.repos).toEqual([repo]);
     expect(run(["nothing"]).code).toBe(2);
-    expect(run(["projects"], [], null).code).toBe(2);
+    expect(run(["projects"], [], null).code).toBe(3);
+    expect(JSON.parse(run(["projects"], [], "operator", true).lines[0]!)).toMatchObject({ envelopeVersion: ENVELOPE_VERSION, ok: true, command: "card" });
     expect(run(["projects"], [["repo", "/projects/bank"]]).lines.join("")).toContain("outside your access");
   });
 });

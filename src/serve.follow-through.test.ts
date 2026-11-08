@@ -1,6 +1,6 @@
 /** Follow-through through the console: the task page shows it, an approver's forms act on it, and a form can't reach
  * another task's finding. Starting a repair lands on its draft, whose plan still needs approving. */
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,6 +44,7 @@ beforeEach(async () => {
   task("t-2");
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   server.closeAllConnections?.();
   await new Promise<void>(resolve => server.close(() => resolve()));
   store.close();
@@ -90,6 +91,41 @@ test("a project-limited person can't pull another project's review or failed che
     expect(refused.status).toBe(409);
     expect(await refused.text()).toContain("on this task");
     expect(findingsOfTask(store, "t-1")).toEqual([]);
+  } finally { rmSync(hidden, { recursive: true, force: true }); }
+});
+
+test("a family that spans a project the person can't reach: no follow-through section, and every act is refused", async () => {
+  const hidden = realpathSync(mkdtempSync(join(tmpdir(), "so-ft-family-")));
+  try {
+    const lim = addApprover(store, "lim", T0, { name: "alex", token });
+    if (!lim.ok) throw new Error("lim");
+    // The family reader keeps a family in one project today (store.ts taskFamilyOf), so a family spanning two is
+    // modelled here: t-1 (in the person's project) with a version in a project they can't reach. The gate must not
+    // lean on that invariant.
+    store.createTask({ id: "t-root", title: "Root" }, T0);
+    store.placeTask(store.refFor("built-in", "t-root", "ours").id, hidden);
+    const real = store.taskFamilyOf.bind(store);
+    vi.spyOn(store, "taskFamilyOf").mockImplementation((id, admitted, unplaced) => {
+      const family = real(id, admitted, unplaced);
+      if (family === null || id !== "t-1") return family;
+      return { ...family, versions: [...family.versions, { ...family.versions[0]!, id: "t-root" }] };
+    });
+    expect(store.taskFamilyOf("t-1", null, true)?.versions.map(one => one.id).sort()).toEqual(["t-1", "t-root"]);
+    const finding = sendFinding(store, { taskId: "t-1", source: "person", by: "alex", summary: "the cache never clears" }, T0);
+    if (!finding.ok) throw new Error(finding.message);
+    expect(store.setAccountProjects("lim", [repo], "alex", T0)).toEqual({ ok: true });
+    const response = await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name: "lim", token: lim.token }), redirect: "manual" });
+    cookie = (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
+    const view = (await page("/t/t-1")).view as BrowserTaskView;
+    expect(view.sections.find(one => one.id === "findings")).toBeUndefined();
+    const acts: Record<string, string>[] = [
+      { act: "send", note: "x" }, { act: "resend", finding: String(finding.id) }, { act: "close", finding: String(finding.id), note: "x" },
+      { act: "repair", run: "1" }, { act: "save-evidence", run: "1" }, { act: "rerun-evidence" },
+      { act: "failing-first-on" }, { act: "failing-first-off" }, { act: "mark", capture: "1", label: "exhausted" },
+    ];
+    for (const fields of acts) expect((await post("/t/t-1/follow-through", fields)).status, fields.act).toBe(403);
+    expect(findingsOfTask(store, "t-1")).toMatchObject([{ state: "open" }]);
+    expect(findingsOfTask(store, "t-1")).toHaveLength(1);
   } finally { rmSync(hidden, { recursive: true, force: true }); }
 });
 

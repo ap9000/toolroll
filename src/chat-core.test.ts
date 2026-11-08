@@ -18,6 +18,7 @@ import { verifyApproverStanding } from "./principal.js";
 import { assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
 import { ChatCore } from "./chat-core.js";
 import { chatApproveMode } from "./chat-decide.js";
+import { ALL_PROJECTS, setChatApproval } from "./chat-approval.js";
 import { CHAT_APPROVE_ALL, modeDigestOf, modeTermsFromJson, modeTermsJson, modeWords, presetTerms, type ModeTerms } from "./modes.js";
 import { CHAT_PROVIDERS, type ChatProvider } from "./contracts/chat-tables.js";
 import { CHAT_HARNESSES, type ChatCard, type ChatHarness, type ChatWorld } from "../test/chat-providers.js";
@@ -489,7 +490,10 @@ describe("c1: approving from chat follows the chat apps the signed mode names", 
   const approveButtons = (h: ChatHarness) => h.cards(h.member(0)).filter(card => card.buttons.some(button => button.label === "Review plan" && button.token !== undefined));
   const approved = (id: string) => { const scope = store.getScope(id)!; return scope.approvedDigest === scope.digest; };
 
-  test("an existing Telegram-only grant approves on Telegram, and never on Slack, Discord or Teams until a new signature names them", async () => {
+  // Owner's decision (56922b51): approving from chat is on for a person with the authority, unless they turn it off; a
+  // mode no longer narrows which paired apps may approve. What still holds: the person's own "off" refuses on every app,
+  // under any mode (3003a96a), and a yes armed before it does nothing after it.
+  test("a mode naming only Telegram doesn't narrow chat: every paired app approves as the person, and their own off refuses on all of them", async () => {
     const harnesses = CHAT_PROVIDERS.map(provider => CHAT_HARNESSES[provider](world()));
     const [telegram, ...others] = harnesses;
     for (const h of harnesses) await pair(h, "alex", h.member(0));
@@ -497,55 +501,36 @@ describe("c1: approving from chat follows the chat apps the signed mode names", 
     const legacy: ModeTerms = { ...presetTerms("standard", new Date(now.getTime() + 86_400_000).toISOString()), chatApprove: true };
     expect(JSON.parse(modeTermsJson(legacy))).not.toHaveProperty("chatApproveChats");
     expect(modeWords(legacy).join("\n")).toContain("your paired Telegram chat may approve this repository's plans");
-    const legacyMode = sign(legacy);
-    expect(modeTermsFromJson(store.activeMode(REPO, now)!.termsJson)).toEqual(legacy);
-    expect(Object.fromEntries(CHAT_PROVIDERS.map(provider => [provider, chatApproveMode(store, REPO, "alex", now, provider)]))).toEqual({
-      telegram: { ok: true, digest: store.activeMode(REPO, now)!.digest, limits: { fullAccess: false, capMicrousd: null }, source: "mode" },
-      slack: { ok: false, why: "Your mode approves from Telegram only. Sign it again to approve from Slack." },
-      discord: { ok: false, why: "Your mode approves from Telegram only. Sign it again to approve from Discord." },
-      teams: { ok: false, why: "Your mode approves from Telegram only. Sign it again to approve from Teams." },
-    });
-    expect(legacyMode).toBeGreaterThan(0);
+    expect(sign(legacy)).toBeGreaterThan(0);
+    const authority = Object.fromEntries(CHAT_PROVIDERS.map(provider => [provider, chatApproveMode(store, REPO, "alex", now, provider)]));
+    // Telegram under the mode's own limits; the others under the person's standing as an approver.
+    expect(authority["telegram"]).toEqual({ ok: true, digest: store.activeMode(REPO, now)!.digest, limits: { fullAccess: false, capMicrousd: null }, source: "mode" });
+    for (const provider of CHAT_PROVIDERS.filter(one => one !== "telegram")) expect(authority[provider], provider).toMatchObject({ ok: true, source: "setting" });
 
-    // Offered: only Telegram's card carries Review plan (and Approve & start under its terms); the others keep their link to the console.
     planWaiting("plan-1", "Refuse over-limit payouts");
     for (const h of harnesses) await h.pass();
-    expect(Object.fromEntries(harnesses.map(h => [h.provider, approveButtons(h).length]))).toEqual({ telegram: 1, slack: 0, discord: 0, teams: 0 });
-    for (const h of others) expect(h.cards(h.member(0)).some(card => card.text.includes("Refuse over-limit payouts"))).toBe(true);
+    expect(Object.fromEntries(harnesses.map(h => [h.provider, approveButtons(h).length]))).toEqual({ telegram: 1, slack: 1, discord: 1, teams: 1 });
 
-    // Executed: a Yes armed on Slack, Discord or Teams under a broader signature does nothing once the grant is Telegram-only again.
-    sign({ ...legacy, chatApproveChats: CHAT_APPROVE_ALL });
-    later(3 * 60_000);
-    planWaiting("plan-2", "Log refused payouts");
-    for (const h of harnesses) await h.pass();
-    const armed = others.map(h => {
-      const card = approveButtons(h).find(one => one.text.includes("Log refused payouts"))!;
+    // Armed on every app, then the person turns approving from chat off: no armed yes approves, Telegram's mode included.
+    const armed = harnesses.map(h => {
+      const card = approveButtons(h).find(one => one.text.includes("Refuse over-limit payouts"))!;
       h.tap(card, /^Review plan$/, h.member(0));
       return { h, message: card.message };
     });
     for (const { h } of armed) await h.pass();
-    sign(legacy);
+    expect(setChatApproval(store, { approver: "alex", scope: ALL_PROJECTS, enabled: false, via: "test" }, now).ok).toBe(true);
     for (const { h, message } of armed) {
       h.tap(current(h, h.member(0), message), /^Approve & start$/, h.member(0));
       await h.pass();
-      expect(approved("plan-2"), h.provider).toBe(false);
-      expect(current(h, h.member(0), message).text, h.provider).toContain("Your mode approves from Telegram only. Sign it again to approve from");
+      expect(approved("plan-1"), h.provider).toBe(false);
     }
-    // Telegram's own two taps still approve under that same grant.
-    const card = approveButtons(telegram!).find(one => one.text.includes("Refuse over-limit payouts"))!;
-    telegram!.tap(card, /^Review plan$/, telegram!.member(0));
-    await telegram!.pass();
-    telegram!.tap(current(telegram!, telegram!.member(0), card.message), /^Approve & start$/, telegram!.member(0));
-    await telegram!.pass();
-    expect(approved("plan-1")).toBe(true);
+    for (const provider of CHAT_PROVIDERS) expect(chatApproveMode(store, REPO, "alex", now, provider), provider).toMatchObject({ ok: false });
 
-    // Renewed consent: a signature naming the apps (and saying so) approves on each of them, two taps each.
-    const renewed: ModeTerms = { ...legacy, chatApproveChats: CHAT_APPROVE_ALL };
-    expect(modeWords(renewed).join("\n")).toContain("your paired Telegram, Slack, Discord or Teams chat may approve this repository's plans");
-    sign(renewed);
-    for (const [index, h] of others.entries()) {
+    // On again: each app approves with the person's own two taps.
+    expect(setChatApproval(store, { approver: "alex", scope: ALL_PROJECTS, enabled: true, limits: { fullAccess: true, capMicrousd: null }, via: "test" }, now).ok).toBe(true);
+    for (const [index, h] of [telegram!, ...others].entries()) {
       later(3 * 60_000);
-      const id = `plan-${3 + index}`;
+      const id = `plan-${2 + index}`;
       planWaiting(id, `Guard payouts ${index}`);
       for (const one of harnesses) await one.pass();
       const offer = approveButtons(h).find(one => one.text.includes(`Guard payouts ${index}`))!;

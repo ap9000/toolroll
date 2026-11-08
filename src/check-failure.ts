@@ -201,7 +201,7 @@ export function ranNoCheck(store: Store, row: { id: number; outcome: unknown; re
 export const NOTHING_STARTED_ACTION = "attempt refused before anything ran";
 /** Every table a process, an agent or a check of this run writes. */
 const RUN_TRACES: readonly (readonly [table: string, column: string])[] = [["artifact", "run"], ["run_process", "run"], ["run_process_summary", "run"], ["run_tool", "run"], ["run_activity", "run"],
-  ["check_fact", "run"], ["check_stamp", "run_id"], ["release_check_attempt", "run"], ["run_note", "run"], ["agent_turn", "run"], ["run_checkpoint", "run"], ["run_decision", "run"]];
+  ["check_stamp", "run_id"], ["release_check_attempt", "run"], ["run_note", "run"], ["agent_turn", "run"], ["run_checkpoint", "run"], ["run_decision", "run"]];
 
 /**
  * An attempt the build refused before anything ran (run 3332: Git couldn't read HEAD while it proved the candidate; the
@@ -216,6 +216,9 @@ function refusedBeforeAnything(store: Store, runId: number): boolean {
     if (Number(said) !== 1) return false;
     const run = store.handle.prepare("SELECT base_revision, head_revision, provider_started_at, session_id, tokens_in, tokens_out, cost_usd, committed FROM run WHERE id = ?").get(runId);
     if (run === undefined || Object.values(run).some(value => value !== null)) return false;
+    // check_fact is a learning-loops table (eval-hooks.ts): read here in its own literal statement, never through the
+    // table list, so no SQL text that could name it is assembled outside its sole writer.
+    if (store.handle.prepare("SELECT 1 FROM check_fact WHERE run = ? LIMIT 1").get(runId) !== undefined) return false;
     return RUN_TRACES.every(([table, column]) => store.handle.prepare(`SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`).get(runId) === undefined);
   } catch { return false; }
 }

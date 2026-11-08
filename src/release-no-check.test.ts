@@ -56,6 +56,9 @@ describe("what the gate exempts", () => {
     ["a process was witnessed", run => { store.handle.exec("PRAGMA ignore_check_constraints = ON"); const columns = store.handle.prepare("SELECT name, \"notnull\" AS required FROM pragma_table_info('run_process')").all().filter(one => Number(one["required"]) === 1).map(one => String(one["name"])).filter(name => name !== "run" && name !== "id"); insert(`INSERT INTO run_process (run${columns.map(one => `, ${one}`).join("")}) VALUES (?${columns.map(() => ", 'x'").join("")})`, run); }],
     ["a note was written: a run that spoke did something", run => store.addRunNote(run, "Toolroll", "Prepared candidate checked out; no agent ran.", T0)],
     ["a check launch was stamped", run => insert("INSERT INTO check_stamp (run_id, digest, stamp, at) VALUES (?, 'x', '{}', ?)", run, T0.toISOString())],
+    ["its check's facts were recorded", run => { const columns = store.handle.prepare("SELECT name, type FROM pragma_table_info('check_fact') WHERE \"notnull\" = 1 AND name <> 'run'").all();
+      const fixed: Record<string, string> = { purpose: "ordinary", learn_state: "recorded" };
+      insert(`INSERT INTO check_fact (run, ${columns.map(one => String(one["name"])).join(", ")}) VALUES (?${", ?".repeat(columns.length)})`, run, ...columns.map(one => fixed[String(one["name"])] ?? (/INT|REAL/i.test(String(one["type"])) ? 0 : "x"))); }],
     ["a release check attempt was sealed", run => { const columns = store.handle.prepare("SELECT name FROM pragma_table_info('release_check_attempt') WHERE \"notnull\" = 1 AND name <> 'run'").all().map(one => String(one["name"])); insert(`INSERT INTO release_check_attempt (run${columns.map(one => `, ${one}`).join("")}) VALUES (?${columns.map(one => one === "mode" ? ", 'full'" : ", 'x'").join("")})`, run); }],
   ])("%s: not exempt", (_what, tamper) => {
     const run = refused();

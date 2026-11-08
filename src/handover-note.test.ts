@@ -1,5 +1,6 @@
 /** The handover note (docs/plans/fleet-follow-through.md, part 3), before-and-after evidence (part 4) and provider captures
  * (part 5). Rules only: it is derived, so it is current; its text is data; and a capture routes nothing. */
+import { limitRecognised } from "./exhaustion.js";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -138,9 +139,11 @@ describe("provider captures", () => {
     expect(saved.text).toContain("[redacted");
     expect(labelProviderCapture(store, saved.id, "exhausted", "alex")).toBe(true);
     expect(captureFixture(providerCaptures(store, null)[0]!)).toMatchObject({ version: 1, provider: "codex", label: "exhausted" });
-    // Fail-closed: the classifier still knows only a dead sign-in, and no routing code names a capture.
+    // Fail-closed: a capture is never evidence. No classifying or routing code names one, and a plan limit is read only
+    // from the reviewed recognisers (exhaustion.ts, fallback chains), which are armed for Claude on a plan alone.
     const root = join(import.meta.dirname);
-    for (const file of ["exhaustion.ts", "claim.ts", "route-store.ts", "dispatch.ts"]) expect(readFileSync(join(root, file), "utf8"), file).not.toMatch(/provider_capture|provider-capture/);
-    expect(readFileSync(join(root, "exhaustion.ts"), "utf8")).not.toMatch(/return "usage-exhausted"|return "credits-depleted"/);
+    for (const file of ["exhaustion.ts", "fallback.ts", "claim.ts", "route-store.ts", "dispatch.ts"]) expect(readFileSync(join(root, file), "utf8"), file).not.toMatch(/provider_capture|provider-capture/);
+    expect(readFileSync(join(root, "exhaustion.ts"), "utf8")).not.toMatch(/return "credits-depleted"/);
+    expect((["claude", "codex", "openrouter", "gemini"] as const).flatMap(provider => (["subscription", "api-key"] as const).filter(mode => limitRecognised(provider, mode)).map(mode => `${provider}:${mode}`))).toEqual(["claude:subscription"]);
   });
 });
