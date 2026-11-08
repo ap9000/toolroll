@@ -24,6 +24,8 @@ import { projectName } from "./project.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { CHAT_CONTROLS, chatControlHref, isChatControl } from "./chat-controls.js";
 import { CHAT_TASK_ACTIONS, isChatTaskAction } from "./chat-task-actions.js";
+import { terminalText } from "./terminal-text.js";
+import { startTerminalLive, type TerminalLiveOutput } from "./lead-cli-live.js";
 
 export type LeadCliSeams = {
   fetcher?: typeof fetch;
@@ -52,6 +54,8 @@ export type LeadCliInput = {
   evidenceRoot?: string;
   /** The console's address(es): a reply's links there are named as its pages ("the task"), not by host. */
   appOrigin?: ShapeOptions["appOrigin"];
+  /** A real terminal (never piped, never `--json`): each turn shows a live status line and the answer as it is written. */
+  liveTerminal?: TerminalLiveOutput;
 };
 
 export type LeadCliResult = { code: number; reason?: string; message?: string };
@@ -171,8 +175,10 @@ export async function runLeadCli(input: LeadCliInput): Promise<LeadCliResult> {
   const seams = input.seams ?? {};
   const clock = seams.clock ?? (() => new Date());
   const env = seams.env ?? process.env;
+  // Everything said to a person's terminal passes the terminal filter: replies, cards and asks carry model-written
+  // text, and only Toolroll's own renderer may move the cursor. (`--json` escapes control characters itself.)
   const say = (line: string): void => {
-    if (!json) write(line);
+    if (!json) write(terminalText(line));
   };
   const emit = (envelope: Record<string, unknown>): void => {
     if (json) write(JSON.stringify({ command: "chat", ...envelope }));
@@ -277,7 +283,13 @@ export async function runLeadCli(input: LeadCliInput): Promise<LeadCliResult> {
       const outcome: LeadTurnOutcome = { ok: false, refused: "session-ended", message: "This conversation has ended. Run chat again to start a new one." };
       return outcome;
     }
-    return runLeadTurn({ store, who, session: live, thread, config, key, message, channel: "terminal", ...(seams.fetcher === undefined ? {} : { fetcher: seams.fetcher }), ...(seams.subscriptionRunner === undefined ? {} : { subscriptionRunner: seams.subscriptionRunner }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), clock });
+    // The live block draws only on a real terminal; its last draw is erased before the answer or failure is printed.
+    const watch = input.liveTerminal === undefined || json ? null : startTerminalLive(input.liveTerminal, { appOrigin: input.appOrigin ?? null, asked: message });
+    try {
+      return await runLeadTurn({ store, who, session: live, thread, config, key, message, channel: "terminal", ...(watch === null ? {} : { onProgress: watch.progress }), ...(seams.fetcher === undefined ? {} : { fetcher: seams.fetcher }), ...(seams.subscriptionRunner === undefined ? {} : { subscriptionRunner: seams.subscriptionRunner }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), clock });
+    } finally {
+      await watch?.finish();
+    }
   };
   const report = (outcome: LeadTurnOutcome, message?: string): void => {
     if (outcome.ok && outcome.replayed) {
@@ -290,7 +302,7 @@ export async function runLeadCli(input: LeadCliInput): Promise<LeadCliResult> {
       emit({ ok: true, turn: outcome.turn, reply: outcome.reply, activity: outcome.activity, steps: outcome.steps, settledMicrousd: outcome.settledMicrousd, proposals: pendingProposals().map(one => ({ id: one.id, ordinal: ordinalOf(one), kind: one.kind, payload: one.payload })),
         ...(ask === null ? {} : { ask: { question: ask.question, options: [...ask.options, LEAD_ASK_OTHER] } }) });
       say(`  ${outcome.activity}`);
-      say(voiceReply(outcome.reply, "terminal", { appOrigin: input.appOrigin ?? null, ...(message === undefined ? {} : { asked: message }) }));
+      say(voiceReply(terminalText(outcome.reply), "terminal", { appOrigin: input.appOrigin ?? null, ...(message === undefined ? {} : { asked: message }) }));
       // The lead's question: the terminal has no buttons, so the options are listed to type back.
       if (ask !== null) say(`${ask.question}\n${ask.options.map(one => `  · ${one}`).join("\n")}\n  · ${LEAD_ASK_OTHER} (type your answer)`);
       printProposals();

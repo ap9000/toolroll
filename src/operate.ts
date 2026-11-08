@@ -243,6 +243,7 @@ import { scanRepo } from "./capscan.js";
 import { computeGaps, describeCapability, type Gap } from "./gaps.js";
 import { ask as promptAsk, askHidden as promptHidden, confirm as promptConfirm, interactive as promptInteractive, underAgent } from "./prompt.js";
 import { runLeadCli, answerContextLines, type LeadCliSeams } from "./lead-cli.js";
+import { liveTerminalWanted, processTerminal } from "./lead-cli-live.js";
 import { confirmCoordinatorProposal, dismissCoordinatorProposal } from "./lead-doors.js";
 import { verifyApproverByPassword as approverByPassword } from "./principal.js";
 import { activeRemote, REMOTE_MESSAGES, REMOTE_REFUSED_FLAGS, REMOTE_SCOPES, RemoteRefusal, remoteAllows, remoteLensOf, remoteProjectOf, remoteRowOf, remoteSecret, reproveRemote, withRemote, type Principal, type RemoteRun, type RemoteSource } from "./operate-remote.js";
@@ -11220,6 +11221,8 @@ async function chatCommand(flags: Map<string, string | true>, context: Context):
     ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }),
     // The console's own address (and its public one): links there read as "the task", "the result", "Settings → Lead".
     appOrigin: [loadConsoleUrl(process.env, dirname(context.databaseFile)), phoneOrigin(process.env, dirname(context.databaseFile))],
+    // A live status line and the answer as it is written, on a real terminal only (tests drive runLeadCli directly).
+    ...(context.leadSeams === undefined && liveTerminalWanted(json, process.env, process.stdout.isTTY === true, () => underAgent(process.env)) ? { liveTerminal: processTerminal() } : {}),
   });
   return result.code;
 }
