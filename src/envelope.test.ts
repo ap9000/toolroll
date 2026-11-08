@@ -170,6 +170,8 @@ describe("the machine envelope", () => {
       chat: ["--json"],
       proposals: ["list", "--json"],
       card: ["tasks", "--json"],
+      finding: ["list", "--json"],
+      captures: ["list", "--json"],
       // mcp is the stdio protocol server: its --json story is the protocol
       // itself; with no credential configured it refuses on stderr before
       // any store opens, and the exit code is the envelope.
