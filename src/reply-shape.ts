@@ -232,6 +232,12 @@ function cutAt(text: string, from: number, size: number): number {
   return end;
 }
 
+/** The first window of a shaped text of at most `size` characters, cut where a part would be (never inside code, a link,
+ * a bold anchor or an emoji's two halves). A single link longer than the window stays whole, so the caller measures. */
+export function shapedWindow(shaped: string, size: number): string {
+  return shaped.slice(0, cutAt(shaped, 0, size));
+}
+
 /**
  * A long reply split into parts of at most `size` characters, then each part shaped: the cut is made on the reply as
  * written, at a paragraph or line where possible and never inside code, a link or a bold anchor, so no part carries

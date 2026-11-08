@@ -224,16 +224,17 @@ export type LiveSender<V> = {
 
 /**
  * The serialized sender for one live surface message (§2.4). `standing` re-proves the viewer's right to see this turn
- * before every send (it may await; the close is re-checked after it). `spacingMs` is the least time between two sends.
- * A failed send drops that view: previews are best effort.
+ * before every send (it may await; the close is re-checked after it). `spacingMs` is the least time between two sends,
+ * read before each one (a surface widens it after the platform asks for a pause). A failed send drops that view:
+ * previews are best effort.
  */
 export function createLiveSender<V>(options: {
   send: (view: V, generation: number) => unknown;
   standing?: () => boolean | Promise<boolean>;
-  spacingMs?: number;
+  spacingMs?: number | (() => number);
   now?: () => number;
 }): LiveSender<V> {
-  const spacing = options.spacingMs ?? 0;
+  const spacing = (): number => typeof options.spacingMs === "function" ? options.spacingMs() : options.spacingMs ?? 0;
   const now = options.now ?? Date.now;
   let generation = 0;
   let closed = false;
@@ -243,7 +244,7 @@ export function createLiveSender<V>(options: {
   let lastSent = Number.NEGATIVE_INFINITY;
   const pump = (): void => {
     if (closed || inflight !== null || timer !== null || pending === null) return;
-    const wait = lastSent + spacing - now();
+    const wait = lastSent + spacing() - now();
     if (wait > 0) {
       timer = setTimeout(() => { timer = null; pump(); }, wait);
       (timer as { unref?: () => void }).unref?.();

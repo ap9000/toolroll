@@ -1159,6 +1159,40 @@ describe("the follower — on the wire until told to stop", () => {
     } finally { warning.mockRestore(); }
   });
 
+  test("a push kept in this process wakes the bridge from its push idle, so the tap applies at once (responsive-chat.md §3.1)", async () => {
+    const script = scriptedTransport();
+    await pairDirectly(script);
+    const decision = parkedDecision();
+    let hookUrl = "";
+    const transport: TelegramTransport = async (method, params, signal, upload) => {
+      if (method === "getWebhookInfo") return { ok: true, result: { url: hookUrl, pending_update_count: 0 } };
+      if (method === "setWebhook") { hookUrl = String(params["url"]); return { ok: true, result: true }; }
+      return script.transport(method, params, signal, upload);
+    };
+    const controller = new AbortController();
+    const giveUp = setTimeout(() => controller.abort(), 5_000);
+    // The idle never ends by itself: only the wake (or the stop) can end it.
+    const sleep = () => new Promise<void>(resolve => controller.signal.addEventListener("abort", () => resolve(), { once: true }));
+    let pushed = false;
+    try {
+      const report = await followBridge(store, {
+        readProjects, botId: BOT, transport, signal: controller.signal, clock: () => later(5_000), sleep, push: { url: "https://example.ts.net/hooks/telegram", secret: "s".repeat(43) },
+        onCycle: cycle => {
+          if (cycle.sent > 0 && !pushed) {
+            pushed = true;
+            const token = keyboardTokensOf(script)[0] ?? "";
+            const pushedTap = tap(10, token, Number(store.getTelegramAction(token)?.messageId ?? 0));
+            // Kept a moment later, while the bridge idles.
+            setTimeout(() => keepPushedUpdate(store, BOT, Buffer.from(JSON.stringify(pushedTap)), later(5_000)), 20);
+          }
+          if (cycle.answered > 0) controller.abort();
+        },
+      });
+      expect(report.answered).toBe(1);
+      expect(store.getDecision(decision)?.state).toBe("answered");
+    } finally { clearTimeout(giveUp); }
+  });
+
   test("another program asking for the bot's updates is no problem to report: nothing is logged, and the next ask gets the tap (v98)", async () => {
     const script = scriptedTransport();
     await pairDirectly(script);
