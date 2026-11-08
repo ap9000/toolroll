@@ -316,7 +316,8 @@ describe("the new chat actions", () => {
     test("findings and the handover note read as cards, marked as the agent's words", () => {
       answered();
       const seen = readCardSource({ store, now, who }, "findings", { repo: null, task: "t-1" });
-      expect(seen).toMatchObject({ origin: "report", repos: [repo], rows: [{ state: "rejected" }] });
+      // Still marked as the agent's words; the state reads in words (card-sources.ts FINDING_STATE_WORDS).
+      expect(seen).toMatchObject({ origin: "report", repos: [repo], rows: [{ state: "Rejected" }] });
       expect(JSON.stringify(seen)).toContain("The total rounds down.");
       expect(readCardSource({ store, now, who }, "handover", { repo: null })).toEqual({ problem: "Name the task: handover needs task." });
       expect(readCardSource({ store, now, who }, "handover", { repo: null, task: "t-1" })).toHaveProperty("problem");
