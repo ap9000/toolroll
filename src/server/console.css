@@ -2863,3 +2863,6 @@ html.so-swap::view-transition-old(*):only-child { animation: so-card-out 160ms e
 .tc-stroke { stroke: var(--so-ink); stroke-width: 1.5; }
 .tc-area { fill: var(--so-raised); }
 .tc-notes { display: grid; gap: var(--so-space-xs); margin: 0; padding-left: var(--so-space-md); overflow-wrap: anywhere; }
+
+/* The handover note wraps on a narrow screen rather than scrolling sideways. */
+.handover-note { white-space: pre-wrap; }

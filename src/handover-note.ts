@@ -60,16 +60,16 @@ export function handoverNoteOf(store: Store, root: string, taskId: string, now: 
       const option = one.options.find(candidate => candidate.id === one.choice);
       return `${one.question} Chosen: ${option?.label ?? one.choice}${one.note === null ? "" : ` (${one.note})`}`;
     }),
-    ...findings.filter(one => one.state === "accepted").map(one => `${findingLine(one)}. ${findingStandingWords(one)}`),
+    ...findings.filter(one => one.state === "accepted").map(one => `${sentenceOf(findingLine(one))} ${findingStandingWords(one)}`),
     ...finished.flatMap(one => { const taken = store.proofAcceptance(one.id); return taken === null ? [] : [`Build #${one.id} was accepted by ${taken.approver}${taken.note === null ? "" : `: ${taken.note}`}`]; }),
   ];
   const rejected = [
-    ...findings.filter(one => one.state === "rejected").map(one => `${findingLine(one)}. ${findingStandingWords(one)}`),
+    ...findings.filter(one => one.state === "rejected").map(one => `${sentenceOf(findingLine(one))} ${findingStandingWords(one)}`),
     ...finished.filter(one => one.outcome === "failed").map(one => `Build #${one.id} failed: ${failedAttemptSentence(one.reason)}`),
   ];
   const repairs = checkRepairsOfTask(store, taskId).filter(one => one.state !== "fixed" && one.state !== "closed");
   const open = [
-    ...findings.filter(one => one.state === "open" || one.state === "with-person").map(one => `${findingLine(one)}. ${findingStandingWords(one)}`),
+    ...findings.filter(one => one.state === "open" || one.state === "with-person").map(one => `${sentenceOf(findingLine(one))} ${findingStandingWords(one)}`),
     ...repairs.map(checkRepairWords),
   ];
   const verification = finished.filter(one => one.headRevision !== null).slice(0, LIST_LIMIT).map(run => ({ run: run.id, revision: run.headRevision, words: checkWords(store, run, now), href: `/r/${run.id}` }));
@@ -90,6 +90,9 @@ export function handoverNoteOf(store: Store, root: string, taskId: string, now: 
     beforeAfter: capped([...pairs, ...(failingFirst === null ? [] : [failingFirst])], count), nextAction: shortLine(nextAction), more: count.more,
   };
 }
+
+/** A line that reads as one sentence: its own ending kept, a period added only when it has none. */
+const sentenceOf = (line: string): string => /[.!?]$/.test(line.trim()) ? line.trim() : `${line.trim()}.`;
 
 /** Plain lines: the CLI's answer, and what the task page shows. */
 export function handoverLines(note: HandoverNote): string[] {
