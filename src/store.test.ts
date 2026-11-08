@@ -1568,8 +1568,8 @@ describe("run admission proves route provenance before any row exists (v48)", ()
     expect(() => admit({ route: { ...build, routeDigest: "0".repeat(32) } })).toThrow(/is not the governing route/);
     expect(() => admit({ route: { ...build, provider: "codex", model: "gpt-5-codex" }, provider: "codex", model: "gpt-5-codex" })).toThrow(/build leg is claude · sonnet \[recommended\], not codex · gpt-5-codex \[recommended\]/);
     expect(() => admit({ route: { ...build, chosen: "override" } })).toThrow(/\[recommended\], not claude · sonnet \[override\]/);
-    // `fallback` never enters the generic admission (approved or not); legacy under a sealed route
-    expect(() => admit({ route: { ...build, chosen: "fallback" } })).toThrow(/nothing opens as `fallback`/);
+    // `fallback` opens only on an approval that names fallback agents (fallback.ts); legacy under a sealed route
+    expect(() => admit({ route: { ...build, chosen: "fallback" } })).toThrow(/names no fallback agents/);
     expect(() => admit({ route: { ...build, routeDigest: "legacy", chosen: "legacy" } })).toThrow(/a sealed agent route governs this task — nothing spends as legacy/);
     // a parent that does not exist
     expect(() => admit({ role: "reviewer", parentRun: 1, branch: undefined, worktree: undefined, route: build })).toThrow(/run #1 does not exist — nothing continues it/);
