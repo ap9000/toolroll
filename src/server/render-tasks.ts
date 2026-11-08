@@ -379,8 +379,8 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   const fallbacks = liveChainFromJson(scope.proposedChainJson ?? null)?.slice(1) ?? [];
   if (fallbacks.length > 0) {
     const paid = fallbacks.filter(one => one.authMode === "api-key" || (SUBSCRIPTION_CAPABLE as Record<string, boolean>)[one.profile.provider] !== true);
-    allowing.push(`if it runs out of its plan, the work moves to ${fallbacks.map(one => agentNameWords(one.profile.provider, one.profile.model)).join(", then ")}`);
-    if (paid.length > 0) allowing.push(`${paid.map(one => agentNameWords(one.profile.provider, one.profile.model)).join(" and ")} on an API key, which spends money`);
+    // Each agent named once, the paid one said where it stands in the order.
+    allowing.push(`if it runs out of its plan, the work moves to ${fallbacks.map(one => `${agentNameWords(one.profile.provider, one.profile.model)}${paid.includes(one) ? " on an API key, which spends money" : ""}`).join(", then ")}`);
   }
   const earlier = earlierVersionsWords(input.earlier.active, input.earlier.running);
   if (earlier !== null) allowing.push(earlier);
