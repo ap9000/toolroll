@@ -497,7 +497,10 @@ describe("c3: Slack and Discord upload in the result's thread; Teams links", () 
     const ts = wire.calls.filter(one => one.method === "chat.postMessage").indexOf(notice);
     const shared = wire.calls.filter(one => one.method === "files.completeUploadExternal");
     expect(shared).toHaveLength(3);
-    expect(new Set(shared.map(one => one.args.thread_ts))).toEqual(new Set([`1789700000.${String(100 + ts).padStart(6, "0")}`]));
+    // The result card follows the notice (dbd88a6a); the screenshots thread under that card, the send's last message.
+    const posts = wire.calls.filter(one => one.method === "chat.postMessage");
+    expect(JSON.stringify(posts[ts + 1]!.args.blocks)).toContain("Steps");
+    expect(new Set(shared.map(one => one.args.thread_ts))).toEqual(new Set([`1789700000.${String(100 + ts + 1).padStart(6, "0")}`]));
 
     const d = discord();
     await planDiscordNotifications(d.options);

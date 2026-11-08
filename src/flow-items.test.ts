@@ -151,7 +151,7 @@ describe("c1: the items' words are cleaned and the message is never over a limit
     }
   });
 
-  test("Telegram: the same, as several messages each within 4096, each with its own bold and links, the buttons on the last", async () => {
+  test("Telegram: the same, as several messages each within 4096, each with its own bold and links, the buttons on the words' last, the result card after", async () => {
     pair();
     const { run } = research("look-10", ITEMS);
     const { card } = cardAfterResearch("look-10");
@@ -168,8 +168,11 @@ describe("c1: the items' words are cleaned and the message is never over a limit
     const links = sends.flatMap(one => ((one.params["entities"] ?? []) as Array<{ type: string; offset: number; length: number; url?: string }>)
       .filter(entity => entity.type === "text_link").map(entity => [String(one.params["text"]).slice(entity.offset, entity.offset + entity.length), entity.url]));
     expect(links).toEqual([["Mobbin", ITEMS[0]!.url], ["Notion", ITEMS[1]!.url], ["Apple", ITEMS[2]!.url]]);
-    expect(sends.slice(0, -1).every(one => one.params["reply_markup"] === undefined)).toBe(true);
-    expect(sends.at(-1)!.params["reply_markup"]).toBeDefined();
+    // The flow's result card follows the words as one more message (dbd88a6a); the buttons stay on the words' last.
+    expect(String(sends.at(-1)!.params["text"])).toContain("Steps");
+    expect(sends.at(-1)!.params["reply_markup"]).toBeUndefined();
+    expect(sends.slice(0, -2).every(one => one.params["reply_markup"] === undefined)).toBe(true);
+    expect(sends.at(-2)!.params["reply_markup"]).toBeDefined();
   });
 
 });
