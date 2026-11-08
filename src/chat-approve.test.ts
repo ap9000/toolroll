@@ -63,6 +63,17 @@ describe("approving from chat", () => {
     expect(sharedActionAllowsChallenge(sharedActionPayload(store.getLeadProposal(draft())!.payload)!)).toBe(true);
   });
 
+  test("a term the card would show rewritten (a 40-hex value shown as [digest]) is never complete consent", () => {
+    const card = sharedActionPayload(store.getLeadProposal(draft())!.payload)!;
+    expect(sharedActionAllowsChallenge(card)).toBe(true);
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    // The same card with a term that carries a full commit or a key-like value: the card can't show it verbatim.
+    expect(sharedActionAllowsChallenge({ ...card, terms: [...card.terms, `Deploy commit ${sha}`] })).toBe(false);
+    expect(sharedActionAllowsChallenge({ ...card, terms: [...card.terms, `Token ${"ab".repeat(20)}`] })).toBe(false);
+    // Written short, as Toolroll writes a commit, it shows exactly and stays a card the person can confirm.
+    expect(sharedActionAllowsChallenge({ ...card, terms: [...card.terms, `Deploy commit ${sha.slice(0, 7)}`] })).toBe(true);
+  });
+
   test("a person's own second tap approves, recorded as that person, bound to these exact terms", () => {
     const id = draft();
     expect(tap(id, false)).toMatchObject({ ok: false, reason: "needs-confirm" });

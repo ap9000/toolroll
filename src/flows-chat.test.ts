@@ -315,7 +315,10 @@ describe("the lead builds and runs a flow", () => {
     expect(card.title).toBe("Allow browser use in Nightly");
     expect(card.terms.join("\n")).toContain("Run journeys runs journeys v1");
     expect(card.terms.join("\n")).toContain("headless Chromium");
-    expect(card.terms.join("\n")).toContain(`Approval digest ${digest}`);
+    // Toolroll's own approval digest is bound in the card's state, never shown as a term; each script by its short id.
+    expect(card.terms.join("\n")).not.toContain(digest);
+    expect(card.state).toMatchObject({ digest });
+    expect(card.terms.join("\n")).toMatch(/Script [0-9a-f]{12}\b/);
     expect(sharedActionNeedsReview(card)).toBe(true);
     const live = () => store.handle.prepare("SELECT signed_by, proof FROM flow_browser_grant WHERE revoked_at IS NULL").all();
     // A first tap only asks; a token on the web door never approves, whatever it holds. A person's yes is below.
