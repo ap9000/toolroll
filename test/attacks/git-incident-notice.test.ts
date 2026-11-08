@@ -24,7 +24,7 @@ describe("git incidents in the console's outbox", () => {
       gitIncident({ checkout: "/p/worktrees/t1", repository: join(project, ".git"), swapped: [{ path: join(project, ".git", "refs"), leadsTo: "/elsewhere/refs" }], record: "/dev/null" });
       const rows = store.listNotifications("pending").filter(row => row.kind === "git-incident");
       expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ pushClass: "attention", subject: "Git incident in Shop: a folder of its repository changed while Toolroll's git ran" });
+      expect(rows[0]).toMatchObject({ pushClass: "attention", subject: "Git incident in Shop: a folder of its repository changed while Toolroll was running git" });
       expect(rows[0]!.body).toContain("git-incidents.jsonl");
       expect(rows[0]!.body).not.toContain("/elsewhere");
     } finally { stop(); rmSync(project, { recursive: true, force: true }); }
@@ -40,7 +40,29 @@ describe("git incidents in the console's outbox", () => {
       for (const text of [row.subject, row.body]) {
         expect(text).not.toMatch(/APPROVED|curl|\n\n|\u202e/);
       }
-      expect(row.subject).toBe("Git incident in a project: a folder of its repository changed while Toolroll's git ran");
+      expect(row.subject).toBe("Git incident in a project: a folder of its repository changed while Toolroll was running git");
     } finally { stop(); }
+  });
+
+  test("one notice per checkout, per cause, per day, saying what Toolroll was doing", () => {
+    store = openStore(":memory:");
+    const project = realpathSync(mkdtempSync(join(tmpdir(), "so-incident-")));
+    store.upsertProject(project, "Shop", new Date());
+    let at = new Date("2026-11-08T02:03:30.000Z");
+    const stop = noticeGitIncidents(store, () => at);
+    try {
+      const tell = (checkout: string, cause: "swapped" | "rebound") => gitIncident({ checkout, repository: join(project, ".git"), swapped: [{ path: `${checkout}/.git`, leadsTo: null }], cause, doing: "tidying an old checkout", record: "/dev/null" });
+      // The same checkout every half hour, and twice within one command (its view and its target's): one notice.
+      for (const minutes of [0, 0, 32, 65]) { at = new Date(Date.parse("2026-11-08T02:03:30.000Z") + minutes * 60_000); tell("/p/worktrees/t1", "rebound"); }
+      const rows = () => store!.listNotifications("pending").filter(row => row.kind === "git-incident");
+      expect(rows()).toHaveLength(1);
+      expect(rows()[0]!.subject).toBe("Git incident in Shop: a folder of its repository changed while Toolroll was tidying an old checkout");
+      // Another checkout, or another cause, is told; so is the same one the next day.
+      tell("/p/worktrees/t2", "rebound");
+      tell("/p/worktrees/t1", "swapped");
+      at = new Date("2026-11-09T02:03:30.000Z");
+      tell("/p/worktrees/t1", "rebound");
+      expect(rows()).toHaveLength(4);
+    } finally { stop(); rmSync(project, { recursive: true, force: true }); }
   });
 });
