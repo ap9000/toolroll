@@ -185,3 +185,7 @@ a.lc-card-row:focus-visible { outline: 2px solid var(--so-ring); outline-offset:
   .lc .lc-live .so-live-caret { animation: none; }
   .lc .k-btn.lc-jump, .lc .lc-meta, .lc .lc-card, .lc .lc-card-row, .lc .lc-codecopy { transition: none; }
 }
+
+/* A Toolroll card in the lead chat. */
+.lc .lc-data { display: grid; gap: var(--so-space-sm); padding: var(--so-space-sm) var(--so-space-md) var(--so-space-md); }
+.lc .lc-data-title { margin: 0; font: 600 13px/1.35 var(--so-font-sans); color: var(--so-ink); }

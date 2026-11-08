@@ -189,6 +189,10 @@ export const OPERATE_COMMANDS = new Set([
   "map",
   "memory",
   "flaky",
+  "card",
+  // Follow-through (follow-through-cli.ts): findings and saved provider failures.
+  "finding",
+  "captures",
   "models",
   "claim",
   "heartbeat",

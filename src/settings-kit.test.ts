@@ -75,7 +75,7 @@ describe("the proof inventory agrees with the handlers' contracts", () => {
   // Each variant's proof and required terms, pinned at the line its handler decides them (as passwordless-credentials
   // does for the credential acts): an edit that changes what a handler needs fails here and the inventory follows.
   const HANDLER_PINS: Record<string, { file: string; pins: RegExp[] }> = {
-    "mode-sign": { file: "server/settings.ts", pins: [/if \(!\(body\.get\("chat-approve"\) === "1" \? authenticateCredential\(who, token\) : authenticateApprover\(who, token\)\)\.ok\)/, /const fixedExpiry = body\.get\("expiry"\)/, /consumeApprovalNonce\(nonce, who\.name, "mode-sign", `\$\{project\}:\$\{body\.get\("digest"\) \?\? ""\}`\)/] },
+    "mode-sign": { file: "server/settings.ts", pins: [/if \(!\(body\.get\("chat-approve"\) === "1" \|\| body\.get\("repair-auto"\) === "1" \? authenticateCredential\(who, token\) : authenticateApprover\(who, token\)\)\.ok\)/, /const fixedExpiry = body\.get\("expiry"\)/, /consumeApprovalNonce\(nonce, who\.name, "mode-sign", `\$\{project\}:\$\{body\.get\("digest"\) \?\? ""\}`\)/] },
     "project-check-access-widen": { file: "server/settings.ts", pins: [/if \(widening && \(proved\.method !== "password-now" \|\| !store\.isInstanceOperator\(who\.name\)\)\)/] },
     "storage-clean": { file: "server/settings.ts", pins: [/if \(body\.get\("preview"\) !== previewDigest\(plan\)\)/] },
     "pull-requests-on": { file: "server/settings.ts", pins: [/if \(checked\.plan\.githubRepo !== body\.get\("github"\) \|\| checked\.plan\.base !== body\.get\("base"\)\)/] },
@@ -162,6 +162,10 @@ describe("the kit renders each action's own proof", () => {
     // The exact variant: a mode that lets chat approve can't be drawn as the ordinary one, nor the other way round.
     expect(() => render(true, () => stepUpForm({ proof: "mode-sign", action: "/mode/sign", id: "x", body: "", hidden: { "chat-approve": "1" } }))).toThrow(/mode-sign-chat-approve/);
     expect(() => render(true, () => stepUpForm({ proof: "mode-sign-chat-approve", action: "/mode/sign", id: "x", body: "" }))).toThrow();
+    // Repairs that start by themselves are a credential act too: the ordinary form can't sign them.
+    expect(() => render(true, () => stepUpForm({ proof: "mode-sign", action: "/mode/sign", id: "x", body: "", hidden: { "repair-auto": "1" } }))).toThrow(/mode-sign-repair/);
+    expect(proofRow("mode-sign-repair").passwordless).toBe("refused");
+    expect(htmlString(render(true, () => stepUpForm({ proof: "mode-sign-repair", action: "/mode/sign", id: "x", body: "", hidden: { "chat-approve": "1", "repair-auto": "1" } })))).toContain('name="token"');
     expect(() => render(false, () => stepUpForm({ proof: "pull-requests", action: "/settings/pull-requests", id: "x", body: "", hidden: { act: "on" } }))).toThrow(/pull-requests-on/);
     // Under Passwordless the ordinary mode asks nothing; the chat-approve one and check-access widening still ask.
     expect(htmlString(render(true, () => stepUpForm({ proof: "mode-sign", action: "/mode/sign", id: "x", body: "" })))).not.toContain('name="token"');

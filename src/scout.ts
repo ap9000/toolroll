@@ -40,7 +40,7 @@ import {
   validateScreenshotBytes,
   writeEvidenceFile,
 } from "./evidence.js";
-import type { Runner } from "./builder.js";
+import { gitFailureWords, type Runner } from "./builder.js";
 import { MARKER as LEASE_MARKER } from "./worktree.js";
 import { liveLogContext } from "./live-detail.js";
 import { openLiveLog } from "./live.js";
@@ -359,7 +359,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
 
   const revision = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
   if (revision.code !== 0) {
-    return { ok: false, kind: "failure", reason: "git", message: `could not read the base revision in ${worktree}` };
+    return { ok: false, kind: "failure", reason: "git", message: `could not read the base revision in ${worktree} (${gitFailureWords(revision)})` };
   }
   const baseRevision = revision.stdout.trim();
   store.stampRun(request.runId, { baseRevision });

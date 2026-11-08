@@ -23,6 +23,7 @@
  * over `.git` internals corrupts both.
  */
 
+import { INCIDENT_QUIET_MS, recentGitIncident } from "./git-incident.js";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, writeFileSync, rmSync, realpathSync, mkdirSync, readdirSync, renameSync } from "node:fs";
 import { hostname } from "node:os";
@@ -35,7 +36,7 @@ import { HANDOFF_PREFIX, MAILBOX_SUFFIX, looksLikeProtocolFile, readMailbox } fr
 import { parseHandoff } from "./decision.js";
 import { diskBytes } from "./storage.js";
 import { markNeverIndex } from "./never-index.js";
-import { checkoutGit, teardownGit, type Git } from "./teardown-git.js";
+import { checkoutGit, gitIncidentRecord, teardownGit, type Git } from "./teardown-git.js";
 
 export type Runner = (
   file: string,
@@ -888,6 +889,8 @@ export class WorktreePool {
    * or remote. Reads only, through `git` when given (teardown's hardened git).
    */
   async inspect(path: string, git: Git = this.teardown): Promise<"clean" | KeptWhy> {
+    // A checkout that had a git incident lately is left alone (git-incident.ts): nothing re-runs git there each pass.
+    if (quietAfterIncident(path)) return "unreadable";
     const dirty = await this.isDirty(path, true, git);
     if (dirty !== false) return dirty === null ? "unreadable" : "has changes";
     // Commits only this checkout's HEAD reaches (a detached HEAD moved on) exist nowhere else.
@@ -904,6 +907,7 @@ export class WorktreePool {
    * `heads` commit is on a branch, and no ref lives only in this worktree. Reads only; anything unreadable keeps it.
    */
   async proveRecreatable(row: WorktreeRow, heads: readonly string[]): Promise<"clean" | KeptWhy> {
+    if (quietAfterIncident(row.path)) return "unreadable";
     if (row.branch === "unknown" || !insidePool(this.options.root, row.path) || heads.some(one => !/^[0-9a-f]{40,64}$/.test(one))) return "unreadable";
     const git = teardownGit(this.runner, { repo: row.repo });
     const head = await git(row.path, [...READ_ONLY, "symbolic-ref", "-q", "HEAD"]);
@@ -1102,4 +1106,11 @@ export class WorktreePool {
 function firstLine(text: string): string {
   const [line = ""] = text.trim().split("\n");
   return line;
+}
+
+/** Whether a checkout had a git incident within INCIDENT_QUIET_MS (by its real path, as incidents record it). */
+function quietAfterIncident(path: string): boolean {
+  let real: string;
+  try { real = realpathSync(path); } catch { return false; }
+  try { return recentGitIncident(gitIncidentRecord(), real, new Date(Date.now() - INCIDENT_QUIET_MS)); } catch { return false; }
 }

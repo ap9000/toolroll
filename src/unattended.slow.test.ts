@@ -456,8 +456,8 @@ describe("v40: a drafted, unapproved repair moves the idle-spend invariant not a
   });
 
   // Synthetic providers, real CLI dispatch, Git worktrees, verification command,
-  // receipts and lead handoff. Historical automatic mode terms must not revive
-  // the retired review/repair loop, even when another gate might pass.
+  // receipts and lead handoff. Without a mode a person signed for repairs, a
+  // failed check waits for a person, even when another gate might pass.
   test.each(["fix", "no-change", "changed-evidence", "no-proof-fix", "no-proof-no-change", "evidence-missing", "goal-fails"])("failed checks reach the lead once without automatic repair or review (%s)", scenario => {
     const direct = ["no-proof-fix", "no-proof-no-change", "evidence-missing", "goal-fails"].includes(scenario);
     const noChange = ["no-change", "no-proof-no-change", "evidence-missing", "goal-fails"].includes(scenario);
@@ -489,7 +489,7 @@ if (!passed) { console.error('balance probe timed out; 163 passed, 1 failed'); p
       propose(store, { taskId: "t-check", goal: "Fix value.txt and verify it", touches: ["value.txt"], acceptance: [{ id: "c1", statement, how: null, evidence: scenario === "evidence-missing" ? ["check", "screenshot"] : ["check"] }], now: T0 });
       expect(approve(store, "t-check", "alex", T0, store.getScope("t-check")!.digest, who.token).ok).toBe(true);
       store.setVerifyCommand({ repo, command: "node check.cjs", timeoutMs: 5000, approvedBy: "alex" }, T0);
-      const terms = { ...presetTerms("standard", at(60).toISOString()), repairAuto: true, repairMaxAttempts: 3, reviewAuto: true };
+      const terms = { ...presetTerms("standard", at(60).toISOString()), reviewAuto: true };
       store.signMode({ repo, name: "standard", termsJson: modeTermsJson(terms), digest: modeDigestOf(terms), signedBy: "alex", absoluteExpiry: terms.absoluteExpiry, publication: terms.publication }, T0);
       store.close();
       let builds = 0, reviews = 0;
@@ -559,4 +559,58 @@ if (!passed) { console.error('balance probe timed out; 163 passed, 1 failed'); p
     })();
   });
 
+  // The same real dispatch, under a mode a person signed for repairs: one failed check, one repair under that signature,
+  // and the fresh agent starts from the handover note.
+  test("a signed mode repairs a failed check, once, and the row reads fixed", async () => {
+    const { addApprover, propose, approve } = await import("./scope.js");
+    const { presetTerms, modeTermsJson, modeDigestOf } = await import("./modes.js");
+    const { checkRepairsOfTask } = await import("./check-repair.js");
+    const { evidencePairsOf } = await import("./evidence-pair.js");
+    await writeFile(join(repo, "value.txt"), "initial");
+    await writeFile(join(repo, "check.cjs"), "const fs = require('node:fs'); if (fs.readFileSync('value.txt','utf8') !== 'fixed') { console.error('value is wrong'); process.exitCode = 1; }\n");
+    await git(["add", "."]);
+    await git(["commit", "-qm", "synthetic verification fixture"]);
+    const store = allowWhereUnfenced(openStore(db));
+    const who = addApprover(store, "alex", T0);
+    if (!who.ok) throw Error("approver");
+    for (const phase of ["plan", "build", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "alex", T0);
+    register(store, { name: "builder-1", host: "test", capacity: 4, repos: [repo], now: T0, newToken: () => "tok-builder-1" });
+    store.createTask({ id: "t-check", title: "Repair saved state" }, T0);
+    const ref = store.refFor("built-in", "t-check");
+    store.placeTask(ref.id, repo);
+    propose(store, { taskId: "t-check", goal: "Fix value.txt and verify it", touches: ["value.txt"], acceptance: [{ id: "c1", statement: "The project check succeeds", how: null, evidence: ["check"] }], now: T0 });
+    expect(approve(store, "t-check", "alex", T0, store.getScope("t-check")!.digest, who.token).ok).toBe(true);
+    store.setVerifyCommand({ repo, command: "node check.cjs", timeoutMs: 5000, approvedBy: "alex" }, T0);
+    const terms = { ...presetTerms("standard", at(60).toISOString()), repairAuto: true, repairMaxAttempts: 2 };
+    store.signMode({ repo, name: "standard", termsJson: modeTermsJson(terms), digest: modeDigestOf(terms), signedBy: "alex", absoluteExpiry: terms.absoluteExpiry, publication: terms.publication }, T0);
+    store.close();
+    const prompts: string[] = [];
+    const provider: Runner = async (_file, args, options) => {
+      const cwd = options!.cwd!, prompt = args[args.indexOf("-p") + 1]!;
+      prompts.push(prompt);
+      await writeFile(join(cwd, "value.txt"), prompts.length === 1 ? "broken" : "fixed");
+      const done = /STANDING-ORDERS-DONE-[0-9a-f]{16}\.json/.exec(prompt)![0];
+      await writeFile(join(cwd, done), JSON.stringify({ version: 1, status: "completed", conclusion: "Synthetic saved result" }));
+      return { ...OK, stdout: JSON.stringify({ result: "Synthetic result" }) };
+    };
+    const tick = async (now: Date) => {
+      const output: string[] = [];
+      await runOperate("tick", ["--runner", "builder-1", "--token", "tok-builder-1", "--repo", repo, "--pool", pool, "--max", "1", "--json"], line => output.push(line), { databaseFile: db, now, evidenceRoot, agentRunner: provider });
+      return output.join("\n");
+    };
+    await tick(at(1));
+    const between = allowWhereUnfenced(openStore(db));
+    const [row] = checkRepairsOfTask(between, "t-check");
+    expect(row).toMatchObject({ state: "repairing", ownerTask: "t-check" });
+    expect(between.getScope(row!.repairTask!)?.approvedAt).not.toBeNull();
+    between.close();
+    await tick(at(2));
+    const after = allowWhereUnfenced(openStore(db));
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("--- BEGIN HANDOVER NOTE ---");
+    expect(checkRepairsOfTask(after, "t-check")).toMatchObject([{ state: "fixed", repairTask: row!.repairTask }]);
+    expect(evidencePairsOf(after, evidenceRoot, "t-check", at(3))).toMatchObject([{ reading: "fixed" }]);
+    expect(after.repairChainForRoot("t-check")).toMatchObject([{ attempt: 1 }]);
+    after.close();
+  });
 });

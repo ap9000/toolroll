@@ -22,7 +22,7 @@ import { isCheckLevel, requiredCheckCommandFor } from './check-levels.js';
 import { MARKER } from './worktree.js';
 import { withFollowUps } from './result-follow-ups.js';
 import { LANDED_ACTOR, landedReasonOf } from './result-completion.js';
-import { ASKS, CODE_READING, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, isWaitCode, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedContext, type NeedKey, type WaitKey } from './needs-you.js';
+import { ASKS, CODE_READING, STORAGE_HOLD_PREFIX, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, isWaitCode, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedContext, type NeedKey, type WaitKey } from './needs-you.js';
 import { retryWhenWords } from './dispatch.js';
 import { LEAD_CLAIM_SQL, LEAD_IDLE_MS } from './lead-voice.js';
 
@@ -96,9 +96,11 @@ type StopFact = NonNullable<ReturnType<Store['stopQuiescenceFact']>>;
 const INDEX_NEED: Readonly<Record<string, NeedKey>> = Object.fromEntries(['earlier-active', 'process-needs-attention', 'invalid-scope', 'decision-queue', 'history-problem']
   .map(code => [code, CODE_READING[code]!.need!] as const));
 /** Every index code that can wait on a person. A wait (stopping, waiting its turn, a retry later) is never one. */
-const PERSON_CODES = ['history-problem', 'earlier-active', 'ready-to-check', 'waiting-decision', 'decision-queue', 'result-needs-attention',
+const PERSON_CODES = ['finding-held', 'history-problem', 'earlier-active', 'ready-to-check', 'waiting-decision', 'decision-queue', 'result-needs-attention',
   'process-needs-attention', 'failed', 'vanished-run', 'stopped', 'held', 'waiting-incident', 'terminal-dependency', 'needs-project',
-  'needs-scope', 'invalid-scope', 'needs-agent-profile', 'needs-approval', 'missing-requirement', 'no-worker-registered', 'no-worker-online', 'signed-out'];
+  'needs-scope', 'invalid-scope', 'needs-agent-profile', 'needs-approval', 'missing-requirement', 'no-worker-registered', 'no-worker-online', 'signed-out', 'storage-blocked'];
+/** A family's findings held for a person (findings.ts). A database not yet at v155 has no such table: see registerValidators. */
+const HELD_FINDINGS = `(SELECT COUNT(*) FROM finding fd WHERE fd.family_root=root.id AND fd.state='with-person')`;
 /** The index codes that wait on nobody: finished or running work, and every wait (needs-you.ts CODE_READING). */
 export const WAITING_CODES: readonly string[] = ['cancelled', 'complete', 'running', 'queued',
   ...['stopping', 'updating', 'retry-scheduled', 'waiting-dependency', 'worker-at-capacity', 'planning-ready', 'scouting-ready'].filter(code => isWaitCode(code))];
@@ -228,6 +230,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     (SELECT run FROM run_stop WHERE task_ref=c.ref_id AND resumed_at IS NULL ORDER BY requested_at DESC LIMIT 1) stop_run,
     (SELECT settled_at FROM run_stop WHERE task_ref=c.ref_id AND resumed_at IS NULL ORDER BY requested_at DESC LIMIT 1) stop_settled,
     COALESCE((SELECT substr(actor,13) FROM action_ledger WHERE task_id=root.id AND action='assignment claimed' AND source='work' ORDER BY id DESC LIMIT 1),root.coordinator_cid) owner_id,
+    ${HELD_FINDINGS} held_findings,
     pub.pr_url publication_url
   FROM ordered c JOIN families f USING(root_ref) JOIN admitted root ON root.ref_id=c.root_ref
   LEFT JOIN run result INDEXED BY work_result ON result.task_ref=c.ref_id AND result.id=c.result_id
@@ -265,6 +268,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     WHEN state='cancelled' THEN 'cancelled'
     WHEN earlier_active>0 AND state='done' THEN 'earlier-active'
     WHEN stop_run IS NOT NULL THEN CASE WHEN stop_settled IS NULL THEN 'stopping' ELSE 'stopped' END
+    WHEN held_findings>0 AND state<>'failed' THEN 'finding-held'
     WHEN ready THEN CASE WHEN checked_id IS NULL THEN 'ready-to-check' ELSE 'complete' END
     WHEN state='done' AND question_id IS NOT NULL AND hold_id IS NULL THEN 'waiting-decision'
     WHEN state='done' THEN 'result-needs-attention'
@@ -273,6 +277,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     WHEN live_lease IS NOT NULL THEN CASE WHEN question_id IS NOT NULL OR agent_ask IS NOT NULL THEN 'waiting-decision' ELSE 'running' END
     WHEN state='running' OR unfinished IS NOT NULL THEN 'vanished-run'
     WHEN EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name GLOB 'so_desktop_update_*') THEN 'updating'
+    WHEN hold_kind='backoff' AND substr(hold_reason,1,${STORAGE_HOLD_PREFIX.length})='${STORAGE_HOLD_PREFIX}' THEN 'storage-blocked'
     WHEN hold_kind='backoff' THEN 'retry-scheduled'
     WHEN hold_kind='decision' THEN 'waiting-decision'
     WHEN hold_kind='incident' THEN 'waiting-incident'
@@ -348,8 +353,11 @@ function registerValidators(store: Store): string {
   const asks = db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type='table' AND name='agent_question'").get() !== undefined;
   const projection = asks ? indexed : indexed.replace(AGENT_ASK, 'NULL')
     .replace(`'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),`, '');
-  registered.set(db, projection);
-  return projection;
+  // Nor, before v155, any held findings: readingFleet's rule for a list read.
+  const findings = db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type='table' AND name='finding'").get() !== undefined;
+  const read = findings ? projection : projection.replace(HELD_FINDINGS, '0');
+  registered.set(db, read);
+  return read;
 }
 
 /** The list can't see processes: each task whose build Toolroll can't yet
@@ -471,7 +479,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'proof_verdict',(SELECT COALESCE(machine_verdict,verdict) FROM proof_verdict WHERE run=page_result_id),
     'proof_failed_check',(SELECT verdict='refuted' AND reasons_json LIKE '%approved verification command exited%' FROM proof_verdict WHERE run=page_result_id),'code',code,'needs',needs,'person_need',person_need,'lead_claim',lead_claim,'family_running',family_running,'rank',rank,'ask_rank',ask_rank,'list_order',${ORDER},'sort_at',sort_at,
     'checked_actor',checked_actor,'checked_at',checked_at,'checked_digest',checked_digest,'checked_detail',checked_detail,'question_id',question_id,
-    'dependency_id',dependency_id,'dependency_state',dependency_state,'hold_until',hold_until,'attempt_run',(SELECT id FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,300),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
+    'dependency_id',dependency_id,'dependency_state',dependency_state,'hold_until',hold_until,'attempt_run',(SELECT id FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,600),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
     'plan_changed',scope_digest IS NOT NULL AND digest IS NOT scope_digest,'head_ok',length(head_revision)=40 AND head_revision NOT GLOB '*[^a-f0-9]*','stop_run',stop_run,'unfinished',unfinished,'signed_out',signed_out,
     'question_run',(SELECT run FROM decision WHERE id=page.question_id),'agent_ask',page.agent_ask,
     'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
@@ -665,6 +673,12 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   if (code === 'held') { actionCode = s(row, 'hold_kind') === 'operator' ? 'unhold' : 'inspect-hold'; detail = s(row, 'hold_reason') ?? 'This task is on hold.'; }
   if (code === 'stopping') { actionCode = 'inspect-stop'; actionLabel = 'View stop details'; }
   if (code === 'stopped') detail = 'Paused by a person. The work so far is kept.';
+  // The storage check couldn't finish (dispose.ts holdForStorage): its own words, when it retries, and Try again.
+  if (code === 'storage-blocked') {
+    const until = s(row, 'hold_until');
+    detail = `${(s(row, 'hold_reason') ?? '').slice(STORAGE_HOLD_PREFIX.length)}${until === null ? '' : ` It tries again on its own ${retryWhenWords(until, now)}.`}`;
+    actionCode = 'unhold'; actionLabel = NEEDS.storage.action.label;
+  }
   if (code === 'cancelled') detail = 'This task was cancelled.';
   // The same failure again and again: what failed, and the two ways on.
   if (code === 'waiting-incident') detail = `The last attempts failed the same way (${failedAttemptSentence(s(row, 'attempt_reason')).replace(/[.\s]+$/, '').replace(/^./, first => first.toLowerCase())}). Retry, or change the plan.`;
@@ -701,7 +715,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   if (process !== null && 'need' in process) { actionCode = 'recheck-stopped'; actionLabel = NEEDS[process.need].action.label; }
   if (code === 'signed-out') { actionCode = 'sign-in'; actionLabel = NEEDS['sign-in'].action.label; }
   if (actionCode === null) { actionCode = code === 'running' ? 'inspect-run' : 'inspect-task'; actionLabel = code === 'running' ? 'Watch the build' : 'View task details'; }
-  const read = actionCode !== null && ['inspect-task', 'inspect-run', 'inspect-stop', 'inspect-decisions', 'open-result'].includes(actionCode);
+  const read = actionCode !== null && ['inspect-task', 'inspect-findings', 'inspect-run', 'inspect-stop', 'inspect-decisions', 'open-result'].includes(actionCode);
   const primaryAction: WorkAction | null = actionCode === null ? null : { code: actionCode, label: actionLabel,
     target: { taskId: successor ?? (code === 'earlier-active' ? s(row, 'earlier_id') ?? id : actionCode === 'answer-decision' ? s(row, 'question_task') ?? id : id),
       runId: actionCode === 'answer-decision' ? n(row, 'question_run') || null : actionCode === 'answer-agent' ? n(row, 'agent_ask_run') || null : actionCode === 'inspect-run' && code === 'running' ? n(row, 'live_run') || null : actionCode === 'open-result' || actionCode === 'inspect-run' ? n(row, 'result_id') || null

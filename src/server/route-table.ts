@@ -547,6 +547,7 @@ post("settings", "spend.budget", "/spend/budget", { scope: "step-up", ...operato
 post("settings", "settings.project-concurrency", "/settings/project/concurrency");
 post("settings", "settings.project-live-view", "/settings/project/live-view", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-network", "/settings/project/network", { scope: "step-up", callers: ["cookie"] });
+post("settings", "settings.project-fallback", "/settings/project/fallback", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-writes", "/settings/project/writes", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-check-access", "/settings/project/check-access", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-sandbox", "/settings/project/sandbox", { scope: "step-up", callers: ["cookie"] });
@@ -651,6 +652,8 @@ post("tasks", "decision.answer", `^\\/d\\/${ID}\\/answer$`, { project: "decision
 // A held automatic release goes on: a person, with their password typed now (release-auto.ts allowAutoPublish).
 post("tasks", "task.release.go-on", `^\\/t\\/${TASK}\\/release\\/go-on$`, { project: "task", limited: "resource", scope: "step-up", sample: "/t/one/release/go-on", ...approver("An approver lets a release go on.", "/tasks") });
 post("tasks", "task.act.keep-grown", `^\\/t\\/${TASK}\\/keep-grown$`, { project: "task", limited: "resource", sample: "/t/one/keep-grown", callers: ["cookie"], ...approver("An approver keeps a change.", "/tasks") });
+// Findings, a failed check's repair, before-and-after evidence: a person's acts from a browser, none of them an approval.
+post("tasks", "task.act.follow-through", `^\\/t\\/${TASK}\\/follow-through$`, { project: "task", limited: "resource", sample: "/t/one/follow-through", callers: ["cookie"], ...approver("An approver acts on a finding.", "/tasks") });
 post("tasks", "task.act.hold", `^\\/t\\/${TASK}\\/hold$`, { project: "task", limited: "resource", sample: "/t/one/hold" });
 post("tasks", "task.act.unhold", `^\\/t\\/${TASK}\\/unhold$`, { project: "task", limited: "resource", sample: "/t/one/unhold" });
 post("tasks", "task.act.requeue", `^\\/t\\/${TASK}\\/requeue$`, { project: "task", limited: "resource", sample: "/t/one/requeue" });

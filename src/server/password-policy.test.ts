@@ -5,7 +5,7 @@ import { matchRoute, ROUTES } from './route-table.js';
 const COOKIE_ONLY_POSTS = [
   'edge.oauth-consent', 'code.act-other', 'code.answer-send', 'code.continue-send', 'code.recover-send', 'code.resume-send',
   'code.send-send', 'code.ship-send', 'code.start', 'code.stop-send', 'flow.hooks-address', 'flow.linear-key', 'flow.secrets', 'flow.trigger.secret', 'flow.trigger.scope', 'flow.trigger.sender', 'flow.trigger.setup', 'flow.unattended', 'flow.browser', 'flow.browser-off',
-  'spend.budget', 'settings.models-agent', 'settings.models-apply', 'settings.models-accept', 'settings.models-keep', 'settings.models-suggest-on', 'settings.models-try', 'settings.project-delete', 'settings.project-live-view', 'settings.project-network', 'settings.project-sandbox', 'settings.project-writes', 'settings.project-check-access', 'settings.policy-send', 'settings.approval-send',
+  'spend.budget', 'settings.models-agent', 'settings.models-apply', 'settings.models-accept', 'settings.models-keep', 'settings.models-suggest-on', 'settings.models-try', 'settings.project-delete', 'settings.project-fallback', 'settings.project-live-view', 'settings.project-network', 'settings.project-sandbox', 'settings.project-writes', 'settings.project-check-access', 'settings.policy-send', 'settings.approval-send',
   'settings.request-limits-send', 'settings.sessions-send', 'settings.sign-in-send', 'settings.updates-send',
   'settings.updates-seen-send', 'settings.updates-cancel-send', 'settings.retention-send',
   'settings.storage-send', 'settings.storage-clean-send', 'settings.storage-discard-send',
@@ -20,6 +20,8 @@ const COOKIE_ONLY_POSTS = [
   'task.act.resume', 'projects.onboard-confirm', 'push.subscribe',
   // A person's own yes from a browser: Build (fast-start.ts), Approve it to keep it, a held release's Let it go on.
   'tasks.fast', 'task.act.keep-grown', 'task.release.go-on',
+  // Findings, a repair's draft and evidence from a browser: a person's act, and none of them an approval.
+  'task.act.follow-through',
   'chat.config', 'chat.mate-mint', 'chat.mate-follow', 'chat.mate-end', 'chat.mate-stop',
   // The lead queue: removing your own waiting message, from a browser.
   'chat.queued-remove',
@@ -62,7 +64,7 @@ const PASSWORD_CEREMONIES = [
   '/settings/updates', '/settings/retention', '/settings/storage', '/settings/storage/clean', '/settings/storage/discard',
   '/settings/pull-requests', '/settings/checks', '/settings/backups', '/settings/data', '/settings/monitoring',
   '/settings/tools/connect', '/settings/tools/change', '/settings/slack/connect', '/settings/teams/connect', '/settings/discord/connect',
-  '/settings/chat-approval/confirm', '/settings/chat-approval/save', '/settings/project/live-view',
+  '/settings/chat-approval/confirm', '/settings/chat-approval/save', '/settings/project/live-view', '/settings/project/fallback',
   '/control/instructions-approve', '/control/setup-approve', '/fleet/runner/register', '/fleet/runner/retire',
   '/mode/sign', '/mode/confirm', '/people/projects', '/people/invite', '/people/invite-revoke', '/people/revoke',
   '/projects/onboard-confirm', '/push/subscribe', '/settings/local-mode/off',

@@ -2,6 +2,7 @@
  * State, decisions, approval, process custody and proof still belong to
  * their existing owners. Action hints are navigation/proposal guidance,
  * never credentials or permission to bypass an owning operation. */
+import { heldFindingCount } from "./findings.js";
 import { machineChecked } from "./machine-check.js";
 import { resultCheckLevel } from "./result-follow-ups.js";
 import { diagnoseTaskDispatch, type DispatchAction } from "./dispatch.js";
@@ -16,7 +17,7 @@ export type WorkTarget = { taskId: string; runId: number | null; decisionId: num
 export type WorkAction = {
   /** `recheck-stopped`: Toolroll looks again whether a finished build stopped (nobody vouches for it);
    * `sign-in`: the agent's sign-in, in Settings; `answer-agent`: Reply to a running agent's question on the Agents board. */
-  code: DispatchAction | "inspect-task" | "inspect-run" | "inspect-stop" | "inspect-decisions" | "reconcile-run" | "open-pr" | "recheck-stopped" | "sign-in" | "answer-agent";
+  code: DispatchAction | "inspect-task" | "inspect-findings" | "inspect-run" | "inspect-stop" | "inspect-decisions" | "reconcile-run" | "open-pr" | "recheck-stopped" | "sign-in" | "answer-agent";
   label: string;
   target: WorkTarget;
   access: "read" | "operator-control" | "proposal-only" | "operator-handoff";
@@ -58,7 +59,7 @@ export function workDecisionAction(taskId: string, decision: NonNullable<WorkFac
 }
 
 const PROPOSABLE = new Set<WorkAction["code"]>(["answer-decision", "write-scope", "unhold"]);
-const READ_ACTIONS = new Set<WorkAction["code"]>(["open-result", "open-pr", "inspect-task", "inspect-run", "inspect-stop", "inspect-decisions"]);
+const READ_ACTIONS = new Set<WorkAction["code"]>(["open-result", "open-pr", "inspect-task", "inspect-findings", "inspect-run", "inspect-stop", "inspect-decisions"]);
 
 /** Pure counterpart for callers already holding the same facts. */
 export function workSummaryOf(facts: WorkFacts, principal: WorkPrincipal, resultDisplay?: DisplayStatus): WorkSummary {
@@ -76,6 +77,7 @@ export function workSummaryOf(facts: WorkFacts, principal: WorkPrincipal, result
     if (facts.control?.kind === "stopping") primary = make("inspect-stop", status.action.label, { runId: facts.control.run });
     else if (facts.control?.kind === "paused") primary = make("resume-run", status.action.label, { runId: facts.control.run });
     else if (status.token === "waiting-decision" && questionAction !== null) primary = questionAction;
+    else if (status.token === "finding-held") primary = make("inspect-findings", status.action.label);
     else if (facts.dispatch?.code === "vanished-run") primary = make("reconcile-run", "Check the unfinished attempt", { runId: facts.unfinishedRunId ?? null });
     else if (status.action.kind === "open-result" || status.action.kind === "open-review") primary = make("open-result", status.action.label, { runId: facts.result?.runId ?? null });
     else if (status.action.kind === "open-pr") primary = make("open-pr", status.action.label, { runId: facts.result?.runId ?? null });
@@ -127,7 +129,7 @@ export function taskWorkSummaryOf(store: Store, taskId: string, now: Date, acces
     ...(machineChecked(store, task.id) ? { machine: true } : {}),
     dispatch: diagnoseTaskDispatch(store, taskId, now, access.dependencyRepos ?? null), liveRunId: live?.id ?? null,
     unfinishedRunId: runs.find(one => one.outcome === null && one.role !== "reviewer")?.id ?? null,
-    control: taskControlOf(store, ref.id, now), openDecision: openWorkDecisionOf(store, ref.id, now),
+    control: taskControlOf(store, ref.id, now), openDecision: openWorkDecisionOf(store, ref.id, now), heldFindings: heldFindingCount(store, taskId),
     result: result === null ? null : {
       runId: result.id, role: result.role, outcome: result.outcome,
       verdict: proof?.verdict ?? null, reasons: proof?.reasons ?? [], accepted: store.proofAcceptance(result.id) !== null,

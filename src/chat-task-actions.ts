@@ -1,6 +1,7 @@
 import { verifiedAuthor, type Store } from "./store.js";
 import type { VerifiedApprover } from "./principal.js";
-import { requestTaskStop, taskControlOf, type StopRequest } from "./task-control.js";
+import { chatApproveMode, effectiveChatApproval } from "./chat-approval.js";
+import { requestTaskStop, resumeTaskStop, taskControlOf, type StopRequest } from "./task-control.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { fileAddTestsTask, requestFollowUpChecks } from "./result-follow-ups.js";
 
@@ -8,7 +9,7 @@ export const CHAT_TASK_ACTIONS = {
   // Build #1604 feedback: one short consequence that still says saved work
   // remains, other tasks continue, and the pause waits for acknowledgement.
   stop: { label: "Stop task", detail: "Pauses this task once the run acknowledges the stop. Saved work remains; other tasks continue." },
-  resume: { label: "Review resume", detail: "Opens password confirmation to lift this stop’s hold and continue from saved work. Other holds and approval requirements still apply." },
+  resume: { label: "Resume task", detail: "Lifts this stop’s hold and continues from saved work. Other holds and approval requirements still apply." },
   retry: { label: "Try again", detail: "Queues another attempt. Existing approvals and holds still apply." },
   plan: { label: "Plan first", detail: "Requests a plan. Building still requires approval." },
   wait_for: { label: "Add dependency", detail: "Waits for the selected task to finish." },
@@ -38,7 +39,7 @@ export function chatTaskRun(store: Store, task: string, operation: "stop" | "res
   const control = taskControlOf(store, ref.id, now);
   return (operation === "stop" && control.kind === "stop") || (operation === "resume" && control.kind === "paused") ? control.run : null;
 }
-export function applyChatTaskAction(store: Store, who: VerifiedApprover, payload: Record<string, unknown>, now: Date, web: boolean, controls: Pick<StopRequest, "deferSignal"> & { via?: StopRequest["via"]; evidenceRoot?: string } = {}):
+export function applyChatTaskAction(store: Store, who: VerifiedApprover, payload: Record<string, unknown>, now: Date, web: boolean, controls: Pick<StopRequest, "deferSignal"> & { via?: StopRequest["via"]; evidenceRoot?: string; person?: boolean } = {}):
   { ok: true; taskId: string; said: string } | { ok: false; message: string } {
   const task = payload["task"], operation = payload["operation"];
   if (typeof task !== "string" || !isChatTaskAction(operation)) return { ok: false, message: "This task action is incomplete." };
@@ -49,8 +50,16 @@ export function applyChatTaskAction(store: Store, who: VerifiedApprover, payload
     if (store.isDemo()) return { ok: false, message: "The demo authorizes nothing." };
     const run = chatTaskRun(store, task, operation, now);
     if (run === null || run !== payload["run"]) return { ok: false, message: "This attempt changed. Review the current task before confirming." };
-    // Resume remains the existing nonce + password ceremony. A proposal only opens it.
-    if (operation === "resume") return { ok: true, taskId: task, said: `Resume review requested for ${task}. Complete the password confirmation on the task to resume.` };
+    // Resuming is an approval: a person's own tap or signed-in click lifts the stop; any other road only asks for it.
+    if (operation === "resume") {
+      if (controls.person !== true) return { ok: true, taskId: task, said: `Resume requested for ${task}. Finish it in your chat or on the task.` };
+      // Resuming is an approval: a person's own off holds here as on every other one.
+      const allowed = effectiveChatApproval(store, ref.repo!, who.name);
+      if (!allowed.ok && controls.via !== "web") { const mode = controls.via === undefined || controls.via === "cli" ? allowed : chatApproveMode(store, ref.repo!, who.name, now, controls.via); if (!mode.ok) return { ok: false, message: mode.why }; }
+      if (!allowed.ok && controls.via === "web") return { ok: false, message: allowed.why };
+      const resumed = resumeTaskStop(store, { taskId: task, runId: run, by: verifiedAuthor(who.name), via: controls.via ?? "web" }, now);
+      return resumed.ok ? { ok: true, taskId: task, said: `Stop released. ${resumed.gate ? "Other requirements still prevent the next attempt." : "The next attempt may start."}` } : { ok: false, message: resumed.detail };
+    }
     const { via, evidenceRoot: _root, ...rest } = controls;
     const result = requestTaskStop(store, { taskId: task, runId: run, by: verifiedAuthor(who.name), via: via ?? (web ? "web" : "cli"), ...rest }, now);
     return result.ok ? { ok: true, taskId: task, said: `Stop requested for ${task}, run #${run}.` }

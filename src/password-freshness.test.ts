@@ -374,7 +374,7 @@ describe("where freshness may be honoured", () => {
     // Lead sweeps: each child's approval is the ordinary standard approval (chat-actions.ts fileSweep), the same freshness class.
     // One-tap release approval: the release sheet's remembered-password preview (display only, task-views' rule) and its
     // Approve release (the task approval door's own standard-approval freshness and refund), both in tasks.ts.
-    expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 3, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 6 });
+    expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 2, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 6 });
     expect(hits["consumeSsoNow()"]).toEqual({ "src/scope.ts": 1 });
     expect(hits["spendingOnlyOnSuccess()"]).toEqual({ "src/chat-actions.ts": 1, "src/server/chat.ts": 2, "src/server/tasks.ts": 3 });
     // Refunds only where one transaction holds every effect: never console-wide (a refused answer proves nothing).
@@ -387,7 +387,7 @@ describe("where freshness may be honoured", () => {
     // person proves each inside its own transaction.
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
-      "src/nightly-github.ts": 1, "src/operate.ts": 64, "src/pull-request-flow.ts": 1,
+      "src/nightly-github.ts": 1, "src/operate.ts": 65, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
@@ -483,6 +483,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/nightly-github.ts#provePerson@11": 1,
     "src/operate.ts#<module>": 1,
     "src/operate.ts#acceptTaskProof@99": 1,
+    // finding, task before-after, task failing-first, captures mark: an ordinary credentialed operator act.
+    "src/operate.ts#followThroughContext@233>prove@3": 1,
     // task archive / restore / tidy --apply: an ordinary credentialed operator act (task-tidy.md), a person's only.
     "src/operate.ts#archiveTasksCommand@201": 1,
     "src/operate.ts#restoreTasksCommand@202": 1,
@@ -708,8 +710,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/browser/views/flow-view.tsx#StepUp@45": 1,
     "src/browser/views/flow-view.tsx#stepUpReady@46": 1,
     "src/budget-alerts.ts#budgetAlertPass@1": 2,
-    "src/chat-decide.ts#decideOffer@19": 5,
-    "src/chat-decide.ts#staleWhy@42": 6,
+    "src/chat-decide.ts#decideOffer@17": 5,
+    "src/chat-decide.ts#staleWhy@40": 6,
     "src/chat-flow.ts#answerChatFlowPrompt@18>store.transact(_)@1": 2,
     "src/checkout-cleanup.ts#cleanCheckouts@18>wanted@4": 3,
     "src/checkout-cleanup.ts#slimKeptCheckouts@19>wanted@3": 2,
@@ -819,7 +821,6 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "freshnessFor": {
     "src/chat-actions.ts#<module>": 2,
-    "src/chat-actions.ts#executeSharedAction@25>withFreshness(approve-standard,_)@2": 1,
     "src/scope.ts#freshnessFor@36": 1,
     "src/scope.ts#proveAccountNow@38": 1,
     "src/server/chat.ts#<module>": 2,
@@ -899,7 +900,6 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "ssoNowAvailable": {
     "src/chat-actions.ts#<module>": 2,
-    "src/chat-actions.ts#executeSharedAction@25": 1,
     "src/scope.ts#proveAccountNow@38": 1,
     "src/scope.ts#ssoNowAvailable@37": 1,
     "src/serve.ts#<module>": 2,
@@ -919,6 +919,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@41": 1,
   },
   "verifyApproverByPassword": {
+    // toolroll card: a read, signed in as flaky is.
+    "src/operate.ts#cardCommand@231": 1,
     "src/flows-cli.ts#<module>": 2,
     "src/flows-cli.ts#runFlowsCommand@3": 1,
     "src/lead-cli.ts#<module>": 2,
@@ -943,8 +945,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "withFreshness": {
     "src/chat-actions.ts#<module>": 2,
-    "src/chat-actions.ts#executeSharedAction@25": 1,
-    "src/chat-actions.ts#executeSharedAction@25>act@3>store.savepoint(_)@1": 1,
+    "src/chat-actions.ts#executeSharedAction@25>act@2>store.savepoint(_)@1": 1,
     "src/scope.ts#withFreshness@34": 1,
     "src/server/chat.ts#<module>": 2,
     "src/server/chat.ts#createChatHandlers@1>chatSend@24>opened:spendingOnlyOnSuccess(_,_)@9": 1,
@@ -959,7 +960,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>approved:spendingOnlyOnSuccess(_,_)@11": 1,
     // Lead sweeps (docs/plans/lead-fan-out.md): reviewed new sites — one approval per child, as the ordinary approval.
-    "src/chat-actions.ts#fileSweep@29": 1,
+    "src/chat-actions.ts#fileSweep@30": 1,
   },
   // Passwordless (docs/plans/passwordless.md): the credential checks and the session reading, each site reviewed.
   authenticateCredential: {
@@ -987,6 +988,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 1,
     // Agent Baseline arc 1: Settings → Project → Network, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@49": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectFallback@117": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectWrites@104": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@105": 1,
     // Sandbox parity C9: Settings → Project → Home folder, a password typed now (reviewed new site).
@@ -1005,6 +1007,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#credentialApprover@125": 1,
     // Agent Baseline arc 1: a project's network and unconfined agents change with a password typed now.
     "src/operate.ts#projectNetworkCommand@142": 1,
+    "src/operate.ts#projectFallbackCommand@234": 1,
     "src/operate.ts#projectWritesCommand@143": 1,
     "src/operate.ts#unconfinedAgentsCommand@144": 1,
     // Sandbox parity C9: a project's sandbox changes with a password typed now (reviewed new site).
@@ -1022,7 +1025,6 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   passwordlessSessionFor: {
     "src/chat-actions.ts#<module>": 2,
-    "src/chat-actions.ts#executeSharedAction@25": 1,
     "src/scope.ts#passwordlessSessionFor@39": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61": 1,

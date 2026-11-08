@@ -24,7 +24,7 @@ describe("git incidents in the console's outbox", () => {
       gitIncident({ checkout: "/p/worktrees/t1", repository: join(project, ".git"), swapped: [{ path: join(project, ".git", "refs"), leadsTo: "/elsewhere/refs" }], record: "/dev/null" });
       const rows = store.listNotifications("pending").filter(row => row.kind === "git-incident");
       expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ pushClass: "attention", subject: "Git incident in Shop: a folder of its repository changed while Toolroll's git ran" });
+      expect(rows[0]).toMatchObject({ pushClass: "attention", subject: "Git incident in Shop: a folder of its repository changed while Toolroll was running git" });
       expect(rows[0]!.body).toContain("git-incidents.jsonl");
       expect(rows[0]!.body).not.toContain("/elsewhere");
     } finally { stop(); rmSync(project, { recursive: true, force: true }); }
@@ -40,7 +40,67 @@ describe("git incidents in the console's outbox", () => {
       for (const text of [row.subject, row.body]) {
         expect(text).not.toMatch(/APPROVED|curl|\n\n|\u202e/);
       }
-      expect(row.subject).toBe("Git incident in a project: a folder of its repository changed while Toolroll's git ran");
+      expect(row.subject).toBe("Git incident in a project: a folder of its repository changed while Toolroll was running git");
+    } finally { stop(); }
+  });
+
+  test("one notice per checkout, per cause, per day, saying what Toolroll was doing", () => {
+    store = openStore(":memory:");
+    const project = realpathSync(mkdtempSync(join(tmpdir(), "so-incident-")));
+    store.upsertProject(project, "Shop", new Date());
+    let at = new Date("2026-11-08T02:03:30.000Z");
+    const stop = noticeGitIncidents(store, () => at);
+    try {
+      const tell = (checkout: string, cause: "swapped" | "rebound") => gitIncident({ checkout, repository: join(project, ".git"), swapped: [{ path: `${checkout}/.git`, leadsTo: null }], cause, doing: "tidying an old checkout", record: "/dev/null" });
+      // The same checkout every half hour, and twice within one command (its view and its target's): one notice.
+      for (const minutes of [0, 0, 32, 65]) { at = new Date(Date.parse("2026-11-08T02:03:30.000Z") + minutes * 60_000); tell("/p/worktrees/t1", "rebound"); }
+      const rows = () => store!.listNotifications("pending").filter(row => row.kind === "git-incident");
+      expect(rows()).toHaveLength(1);
+      expect(rows()[0]!.subject).toBe("Git incident in Shop: a folder of its repository changed while Toolroll was tidying an old checkout");
+      // Another checkout, or another cause, is told; so is the same one the next day.
+      tell("/p/worktrees/t2", "rebound");
+      tell("/p/worktrees/t1", "swapped");
+      at = new Date("2026-11-09T02:03:30.000Z");
+      tell("/p/worktrees/t1", "rebound");
+      expect(rows()).toHaveLength(4);
+    } finally { stop(); rmSync(project, { recursive: true, force: true }); }
+  });
+
+  test("a new swap on a checkout already told about today is still told", () => {
+    store = openStore(":memory:");
+    let at = new Date("2026-11-08T02:03:30.000Z");
+    const stop = noticeGitIncidents(store, () => at);
+    try {
+      const rows = () => store!.listNotifications("pending").filter(row => row.kind === "git-incident");
+      const swap = (path: string, leadsTo: string | null) => gitIncident({ checkout: "/p/worktrees/t1", repository: "/p/.git", swapped: [{ path, leadsTo }], cause: "swapped", record: "/dev/null" });
+      swap("/p/.git/refs", "/elsewhere/a");
+      at = new Date("2026-11-08T02:35:00.000Z");
+      swap("/p/.git/refs", "/elsewhere/a");
+      expect(rows()).toHaveLength(1);
+      // The same folder now leading somewhere else, or another folder swapped: told, the same day.
+      swap("/p/.git/refs", "/elsewhere/b");
+      swap("/p/.git/objects", "/elsewhere/a");
+      expect(rows()).toHaveLength(3);
+    } finally { stop(); }
+  });
+
+  test("an agent can't flood a person by swapping to ever-new places: three a checkout a day, then one last notice", () => {
+    store = openStore(":memory:");
+    let at = new Date("2026-11-08T02:03:30.000Z");
+    const stop = noticeGitIncidents(store, () => at);
+    try {
+      const rows = () => store!.listNotifications("pending").filter(row => row.kind === "git-incident");
+      const swap = (checkout: string, n: number) => gitIncident({ checkout, repository: "/p/.git", swapped: [{ path: "/p/.git/refs", leadsTo: `/elsewhere/${n}` }], cause: "swapped", record: "/dev/null" });
+      for (let n = 0; n < 50; n++) swap("/p/worktrees/t1", n);
+      expect(rows()).toHaveLength(4);
+      // An earlier change met again stays its own (quiet) notice; another checkout has its own allowance.
+      swap("/p/worktrees/t1", 1);
+      swap("/p/worktrees/t2", 99);
+      expect(rows()).toHaveLength(5);
+      // The next day starts over.
+      at = new Date("2026-11-09T02:03:30.000Z");
+      swap("/p/worktrees/t1", 100);
+      expect(rows()).toHaveLength(6);
     } finally { stop(); }
   });
 });

@@ -77,7 +77,7 @@ export function categoryOf(table: string): string {
     [/^(flow|workflow_)/, "flows"],
     [/^(chat_|lead_|team_|notification|push_)/, "chats"],
     [/^(approver|credential$|invite|sso_identity|coordinator_|oauth_)/, "people"],
-    [/^(run|artifact|claim|worktree$|execution_slot|criterion_review|diff_comment|proof_|review_request|repair_chain|incident|publication$|merge_|side_spend|knowledge_snapshot|learning_snapshot|skill_snapshot)/, "runs"],
+    [/^(run|artifact|claim|worktree$|execution_slot|criterion_review|diff_comment|proof_|review_request|repair_chain|check_repair|evidence_pair|failing_first|finding|provider_capture|incident|publication$|merge_|side_spend|knowledge_snapshot|learning_snapshot|skill_snapshot)/, "runs"],
     [/^(task|hold$|plan_|scope_|tool_seal|decision|external_|skill_test)/, "tasks"],
     [/^(project|approval_policy|capability|verify_command|worktree_setup|backend_grant|intake_grant|publication_grant|operating_mode|knowledge_|learning_|memory_|skill_)/, "projects"],
     [/(_config|_default|_defaults)$|^(budget|model_|provider_|installation_fact|runtime_check|monitoring_status|integration_check|quota|mode_rail|schema_version)/, "settings"],

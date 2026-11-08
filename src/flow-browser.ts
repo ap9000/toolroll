@@ -4,7 +4,7 @@
  *
  * Two halves, both needed. The flow's drawing says which "Run a script" zones start a browser (`browser: true`, part of
  * the flow's digest and said when the flow is confirmed); anyone who may change the flow can say it. Then a person, with
- * their password or sign-in (never a lead's or remote run's token: person-proof.ts), approves browser use for the flow
+ * their password, sign-in or own yes in chat (never a lead's or remote run's token: person-proof.ts), approves browser use for the flow
  * as it stands. The approval seals the flow's digest and, for each browser zone, its script's name and content digest.
  * At launch (flow-steps.ts) the zone gets the rule only while all of that still holds: the same drawing, the same
  * scripts, a person's proof, a signer who still reaches the project. Anything else gets nothing, and the card waits with
@@ -138,7 +138,7 @@ export function browserTerms(zones: readonly BrowserZone[]): string[] {
 export function signFlowBrowser(store: Store, input: { flow: number; signer: string; proof: string | null; sawDigest: string;
   /** The console and chat: the signer's account must still be this generation (the session that proved it) and reach every project. */
   console?: { generation: number } }, now: Date): { ok: true; grant: FlowBrowserGrant } | { ok: false; message: string } {
-  if (!personProof(input.proof)) return { ok: false, message: "Browser use needs a person's own approval: sign in with your password (a lead's or remote run's token can't give it)." };
+  if (!personProof(input.proof)) return { ok: false, message: "Browser use needs a person's own approval (a lead's or remote run's token can't give it)." };
   return store.transact(() => {
     const flow = store.getFlow(input.flow);
     if (flow === null || flow.state !== "active") return { ok: false as const, message: "No such flow." };

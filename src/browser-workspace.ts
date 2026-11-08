@@ -130,6 +130,8 @@ export type BrowserActionCard = {
   primary: { kind: 'confirm'; label: string; irreversible: boolean; native: boolean } | { kind: 'link'; label: string; href: string } | null;
   dismissable: boolean;
   note: string | null;
+  /** A Toolroll card: `body` is its data, and it confirms nothing. */
+  data?: true;
 };
 export type BrowserConversation = {
   sessionId: number; user: string; version: string; messages: BrowserMessage[];
@@ -533,7 +535,9 @@ export type BrowserFlowCard = {
   /** Waiting at a "Person chooses" zone: what was sent, its options and whether the viewer is the one who chooses. */
   choose?: { entry: number; title: string; summary: string; links: { label: string; href: string }[]; items?: BrowserFlowSentItem[]; person: string; mine: boolean; options: { choice: number; label: string }[]; reply: boolean } | null;
   /** What a "Send to me" (or an earlier choice) last sent the card's person. */
-  sent?: { title: string; summary: string; links: { label: string; href: string }[]; items?: BrowserFlowSentItem[]; person: string; at: string } | null;
+  sent?: { title: string; summary: string; links: { label: string; href: string }[]; items?: BrowserFlowSentItem[]; person: string; at: string; cardHtml?: string } | null;
+  /** A finished card's steps as a Toolroll card (flow-result-card.ts), when no "Send to me" already showed them. */
+  resultHtml?: string;
   /** v94: every tool call subagents made or asked to make on this card, oldest first: the receipts. */
   calls?: { id: number; who: string; words: string; state: string; outcome: string; why: string; result: string | null; at: string;
     /** v97: the subagent's id and the action that undoes this call, when a person can press Undo. */

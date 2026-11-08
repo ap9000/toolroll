@@ -1,3 +1,6 @@
+import { checkRepairOfRun, routeFailedCheck } from "./check-repair.js";
+import { evidencePairsOf } from "./evidence-pair.js";
+import { NOTHING_STARTED_ACTION } from "./check-failure.js";
 import { allowWhereUnfenced } from "./unfenced-test-support.js";
 import * as projectSkills from "./project-skills.js";
 import { disposeBuildOutcome } from "./dispose.js";
@@ -432,6 +435,8 @@ describe("the builder's gates", () => {
     claimIt();
     const strangerGit: Runner = async (file, args, options) => args.includes("cat-file") ? { ...OK, code: 1, stderr: "fatal: Not a valid object name" } : git(file, args, options);
     expect(await build(store, request({ git: strangerGit }))).toMatchObject({ ok: false, reason: "no-op", message: expect.stringContaining("is not a commit in this repository") });
+    // The refusal says nothing ran, in the ledger the release's gate reads (check-failure.ts ranNoCheck).
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = ? AND outcome = 'refused'").get(NOTHING_STARTED_ACTION)?.["n"]).toBe(1);
     expect(agentCalls).toHaveLength(0);
   });
 
@@ -2918,14 +2923,14 @@ describe("bounded repair", () => {
     const repair = store.runsFor(taskRef).find(r => r.role === "repair")!;
     expect(store.runRoute(repair.id)).toMatchObject({ phase: "repair", provider: "claude", model: "sonnet", chosen: "recommended", routeDigest: routeDigestOf(sealed) });
 
-    // A `fallback` stamp (fallback chains were removed in v115) opens no
+    // A `fallback` stamp on an approval with no fallback agents opens no
     // run row and no repair.
     expect(() =>
       store.startRun({
         taskRef, leaseId: currentClaim(store, taskRef, T0)!.leaseId, runner: "builder-1", branch: "feat/a", worktree, now: T0,
         route: { routeDigest: routeDigestOf(sealed), phase: "build", provider: "claude", model: "sonnet", chosen: "fallback" },
       }),
-    ).toThrow(/nothing opens as `fallback`/);
+    ).toThrow(/names no fallback agents/);
 
     // The route removed from the routed row while the build runs: the
     // repair refuses — no mending under agents nobody can read.
@@ -3729,8 +3734,20 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     const context = { store, policy: "tick" as const, leaseId: "test-lease", runId: req.runId!, taskId: "t-1", taskRef, runner: "builder-1", repo: REPO, branch: "feat/a", origin: "ours", provider: "claude", model: "sonnet", worktreePath: wt, evidenceRoot: join2(wt, ".evidence"), clock: () => T0 };
     const disposition = disposeBuildOutcome(context, { ok: true, committed: true, branch: "feat/a", summary: "Built" });
     expect(disposition.kind).toBe("built");
-    expect(store.repairChainFor(req.runId!)).toBeNull();
-    expect(store.getTask("t-1-v2")).toBeNull();
+    // A passing check needs nothing. A failed one, under a mode a person signed for repairs, drafts exactly one, approved
+    // by that signature (check-repair.ts), and seeing the same failure again starts nothing more.
+    const repair = store.repairChainFor(req.runId!);
+    if (exitCode === 0) {
+      expect(repair).toBeNull();
+      expect(checkRepairOfRun(store, req.runId!)).toBeNull();
+    } else {
+      expect(repair).toMatchObject({ attempt: 1, basis: "mode", outcome: "drafted" });
+      expect(store.getScope(repair!.draftTask!)?.approvedAt).not.toBeNull();
+      expect(checkRepairOfRun(store, req.runId!)).toMatchObject({ state: "repairing", repairTask: repair!.draftTask, attempt: 1 });
+      routeFailedCheck(store, REPO, join2(wt, ".evidence"), req.runId!, T0);
+      expect(store.repairChainForRoot("t-1")).toHaveLength(1);
+      expect(evidencePairsOf(store, join2(wt, ".evidence"), "t-1", T0)).toMatchObject([{ before: { run: req.runId! }, reading: "failing" }]);
+    }
     expect(store.openReviewRequests().filter(one => one.run === req.runId)).toHaveLength(0);
     expect(checks).toBe(1); // disposition never repeats the full gate
   });

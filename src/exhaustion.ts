@@ -6,9 +6,11 @@
  * someone signs in, instead of burning attempts. Everything else is the
  * ordinary failure road.
  *
- * `usage-exhausted`, `credits-depleted` and `transient-throttle` are only
- * ever read from older runs' records (they were stamped by a removed
- * feature); this build never produces them.
+ * `usage-exhausted` moves the work to the next agent a person approved
+ * (fallback.ts), so it comes only from a recogniser below, and a recogniser
+ * comes only from a real run (docs/plans/fallback-chains.md). A provider with
+ * none never reads as exhausted. `credits-depleted` and `transient-throttle`
+ * are only ever read from older runs' records.
  */
 
 export type TerminalClass =
@@ -37,10 +39,13 @@ export type StructuralTerminal = {
 };
 
 /** Classify a finished attempt: a sign-in that no longer works first, for
- * any provider or version; then a structural failure terminal is
+ * any provider or version; then a recognised plan limit, on the exact provider,
+ * auth mode and CLI line it was seen on; then a structural failure terminal is
  * `not-exhausted`, and anything else `unknown`. */
 export function classifyTerminal(args: {
   terminal: StructuralTerminal | null;
+  /** The run's own provider, its auth mode, and the version the installed CLI reports to the gateway: never the checkout's word. */
+  run?: { provider: string; authMode: string; version: string | null };
   /** What a run that failed within seconds, having produced nothing, said
    * on its way out (stderr and unstructured stdout) — read ONLY for the
    * sign-in signal: a CLI that is not logged in often exits before its
@@ -51,7 +56,62 @@ export function classifyTerminal(args: {
   if (terminal !== null && terminal.failed === true && isAuthFailure(`${terminal.code ?? ""}\n${terminal.text ?? ""}`)) return "auth-expired";
   if (typeof args.earlyExit === "string" && isAuthFailure(args.earlyExit)) return "auth-expired";
   if (terminal === null || terminal.failed !== true) return "unknown";
+  if (args.run !== undefined && terminal.text !== null && planLimitReached(args.run, terminal.text)) return "usage-exhausted";
   return "not-exhausted";
+}
+
+/**
+ * The recognisers: every entry needs a real run behind it, with its fixture under test/fixtures/fallback. Nothing adds
+ * one at runtime; a new one is a reviewed source edit, because it can move work and spend money.
+ *
+ * Claude, subscription. Six real builder runs on 2.1.290 ended with this structural failure result; two of them
+ * mid-task. Claude Code's published errors page names the family: session, weekly, Opus and Sonnet limits, each
+ * "· resets <time>". The whole terminal must match, so a build's own output quoting these words does not, and neither
+ * does the spend-cap family ("your monthly spend limit") or a throttle. Wording that changes misses and fails closed.
+ */
+type Recogniser = {
+  provider: string;
+  authMode: string;
+  /** Seen on this CLI version; recognised up to, not including, `below`. */
+  from: readonly [number, number, number];
+  below: readonly [number, number, number];
+  terminal: RegExp;
+};
+const RECOGNISERS: readonly Recogniser[] = Object.freeze([
+  {
+    provider: "claude", authMode: "subscription", from: [2, 1, 290], below: [2, 2, 0],
+    terminal: /^You've hit your (?:session|weekly|Opus|Sonnet) limit · resets [^\n]{1,64}$/,
+  },
+]);
+
+function versionOf(version: string | null): readonly [number, number, number] | null {
+  const parts = version === null ? null : /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?:\s|$)/.exec(version);
+  return parts === null ? null : [Number(parts[1]), Number(parts[2]), Number(parts[3])];
+}
+
+function before(a: readonly [number, number, number], b: readonly [number, number, number]): boolean {
+  for (let at = 0; at < 3; at++) if (a[at] !== b[at]) return a[at]! < b[at]!;
+  return false;
+}
+
+function planLimitReached(run: { provider: string; authMode: string; version: string | null }, text: string): boolean {
+  const version = versionOf(run.version);
+  if (version === null) return false;
+  const words = text.trim();
+  return RECOGNISERS.some(one => one.provider === run.provider && one.authMode === run.authMode
+    && !before(version, one.from) && before(version, one.below) && one.terminal.test(words));
+}
+
+/** Whether a terminal reads as a limit for this provider and auth mode, before its CLI version is asked. */
+export function terminalMatchesLimit(provider: string, authMode: string, terminal: StructuralTerminal | null): boolean {
+  if (terminal === null || terminal.failed !== true || terminal.text === null) return false;
+  const words = terminal.text.trim();
+  return RECOGNISERS.some(one => one.provider === provider && one.authMode === authMode && one.terminal.test(words));
+}
+
+/** Whether Toolroll can recognise this agent running out at all: the words every surface shows beside an entry. */
+export function limitRecognised(provider: string, authMode: string): boolean {
+  return RECOGNISERS.some(one => one.provider === provider && one.authMode === authMode);
 }
 
 /**

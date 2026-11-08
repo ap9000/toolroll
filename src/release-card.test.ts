@@ -248,7 +248,7 @@ describe("the release card", () => {
     const taskId = fileGate();
     expect(store.getScope(taskId)!.profile).toMatchObject({ checkAccess: "unsandboxed" });
     const offer = decideOffer(store, { kind: "plan", taskId }, who(), NOW, "telegram", root)!;
-    expect(offer.text).toContain("This release's checks run outside the sandbox, so it's approved in Toolroll with your password.");
+    expect(offer.text).toContain("This release's checks run outside the sandbox, so this card can't approve it. Approve it in Toolroll, or ask your lead for its approval card, which shows every term.");
     expect(offer.rows.flat()).toEqual([expect.objectContaining({ label: "Approve in Toolroll", path: expect.stringContaining(taskId) })]);
     // A Continue minted for it anyway (a stale card, a crafted token): Continue and Approve both refuse, nothing seals.
     const card = releaseCardOf(store, store.getScope(taskId)!, planInChatDigest(taskId), { profile: () => null });
@@ -256,7 +256,7 @@ describe("the release card", () => {
     const tapped = applyDecideTap(store, seat(), { token: minted.tokens[0]!, message: "m1", shown: "", repos: [repo], root, now: NOW });
     expect(tapped?.edit?.rows.flat().some(one => one.label === "Approve") ?? false).toBe(false);
     expect(store.getScope(taskId)!.approvedAt).toBeNull();
-    // The seal itself agrees: a chat seal is refused, the person's password ceremony is the road.
+    // The seal itself agrees: this card's chat seal is refused; Toolroll or the lead's full approval card is the road.
     expect(store.sealScopeApproval(taskId, "alex", NOW, {}, { kind: "chat", modeDigest: "m", card: "release", cardDigest: card.digest })).toBe(false);
     // The same release with sandboxed checks reaches Approve.
     expect(store.setProjectCheckAccess(repo, "sandboxed", "alex", NOW, { may: "narrow" })).not.toBeNull();
@@ -276,7 +276,7 @@ describe("the release card", () => {
     const taskId = plain("fix-queue");
     expect(store.getScope(taskId)!.profile).toMatchObject({ checkAccess: "unsandboxed" });
     const offer = decideOffer(store, { kind: "plan", taskId }, who(), NOW, "telegram", root)!;
-    expect(offer.text).toContain("This plan's checks run outside the sandbox, so it's approved in Toolroll with your password.");
+    expect(offer.text).toContain("This plan's checks run outside the sandbox, so this card can't approve it. Approve it in Toolroll, or ask your lead for its approval card, which shows every term.");
     expect(offer.rows.flat()).toEqual([expect.objectContaining({ label: "Approve in Toolroll", path: expect.stringContaining(taskId) })]);
     // A crafted Approve for its current digest: the first tap refuses, and so does a Yes minted for it.
     const digest = planInChatDigest(taskId);
@@ -286,7 +286,7 @@ describe("the release card", () => {
     const crafted = store.handle.prepare("INSERT INTO chat_decide_action (token, channel, binding, chat, message, act, phase, task_id, run, digest, created_at, expires_at) VALUES ('d:abababababababababababab','telegram',1,'4242','p1','approve','yes',?,NULL,?,?,?)");
     crafted.run(taskId, digest, NOW.toISOString(), new Date(NOW.getTime() + 60_000).toISOString());
     const yes = applyDecideTap(store, seat(), { token: "d:abababababababababababab", message: "p1", shown: "", repos: [repo], root, now: NOW });
-    expect(JSON.stringify(yes)).toContain("approved in Toolroll with your password");
+    expect(JSON.stringify(yes)).toContain("so this card can't approve it");
     expect(store.getScope(taskId)!.approvedAt).toBeNull();
     // Control: the same plan with sandboxed checks reaches Approve and seals.
     expect(store.setProjectCheckAccess(repo, "sandboxed", "alex", NOW, { may: "narrow" })).not.toBeNull();

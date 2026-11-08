@@ -68,6 +68,7 @@ import {
 import { storeEvidence, readVerifiedArtifact, EVIDENCE_CAPS } from "./evidence.js";
 import type { AuthorityChangeField } from "./plan.js";
 import type { ParsedReport } from "./scout-report.js";
+import { moveOnIfExhausted } from "./fallback.js";
 
 
 export type Claim = {
@@ -392,6 +393,8 @@ export function acquireIfReady(
     provider?: string;
     /** The model this dispatch would run — the quota scope. */
     model?: string;
+    /** A fallback entry's pinned auth mode: its quota is that credential's, never the base's. */
+    authMode?: "subscription" | "api-key";
     /** What this dispatch is FOR. Re-proved inside the transaction — the
      * caller's survey is not trusted (Codex planning review, finding 2). */
     dispatchRole?: "builder" | "planner" | "scout";
@@ -466,7 +469,7 @@ export function acquireIfReady(
     // Quota is keyed to the credential that actually exhausts: the RESOLVED
     // provider, never a fixed binary name — codex quota must not collide
     // with claude's, nor bypass it (Codex provider review, high finding 5).
-    const quota = store.quotaState(runner, options.provider ?? "claude", scope, options.now);
+    const quota = store.quotaState(runner, options.provider ?? "claude", scope, options.now, options.authMode ?? "subscription");
     if (quota !== null && quota.state === "exhausted") {
       return {
         ok: false as const,
@@ -517,7 +520,7 @@ export function acquireIfReady(
     // exhausted with no probe in flight (finding 3). Same transaction, so
     // consume-with-claim is all-or-nothing.
     if (taken.ok && quota !== null) {
-      store.consumeHalfOpen(runner, options.provider ?? "claude", scope, options.now);
+      store.consumeHalfOpen(runner, options.provider ?? "claude", scope, options.now, options.authMode ?? "subscription");
     }
     return taken;
   });
@@ -1039,6 +1042,7 @@ export type FailureDisposition =
   | { ok: true; disposition: "stalled"; strikes: number; incidentId: number }
   | { ok: true; disposition: "commit-incident"; incidentId: number }
   | { ok: true; disposition: "auth-expired"; provider: string }
+  | { ok: true; disposition: "fallback"; provider: string }
   | { ok: false; reason: "fenced" | "unknown" | "stopped" };
 
 export type InterruptSeal =
@@ -1187,6 +1191,16 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
   // no retry, the task back in the queue, and its provider paused.
   if (failureClass !== "commit-failure" && run.terminalClass === "auth-expired") {
     return { ok: true as const, ...sealAuthExpired(store, run, taskId, now) };
+  }
+  // Out of plan on an approved chain: the walk moves on, no strike, and the next agent runs through the ordinary claim.
+  // Anything else about this ending (fallback.ts says what closed the walk) stays the ordinary road below.
+  // Only the agent's own exit moves: a lease, branch or HEAD law that failed, or a commit that failed, is that ending.
+  if (failureClass === "unknown") {
+    const moved = moveOnIfExhausted(store, runId, taskId, now);
+    if (moved !== null) {
+      store.finishRun(runId, { outcome: "failed", reason: "usage-exhausted", now });
+      return { ok: true as const, disposition: "fallback" as const, provider: moved.to.provider };
+    }
   }
   store.finishRun(runId, { outcome: "failed", reason: failureClass, now });
 

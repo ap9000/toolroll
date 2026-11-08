@@ -201,7 +201,7 @@ function nestedRepository(path: string): boolean {
  * repository (boundDirs; `binding.repo` when the caller has the project's), is refused; so is a command whose
  * repository changed under it while git ran.
  */
-async function inView(cwd: string, binding: GitBinding, work: (view: GitView, restore: (result: ExecResult, args: readonly string[]) => ExecResult) => Promise<ExecResult>, after = true, lockTimeoutMs?: number, gitFile = "git"): Promise<ExecResult> {
+async function inView(cwd: string, binding: GitBinding, work: (view: GitView, restore: (result: ExecResult, args: readonly string[]) => ExecResult) => Promise<ExecResult>, after = true, lockTimeoutMs?: number, doing?: string, gitFile = "git"): Promise<ExecResult> {
   const root = checkoutRootOf(cwd);
   if (root === null) return NOT_A_REPOSITORY;
   // One plane git command at a time on a checkout (git-views.ts withCheckoutLock: re-entrant along one call chain).
@@ -210,7 +210,7 @@ async function inView(cwd: string, binding: GitBinding, work: (view: GitView, re
   try {
     return await withCheckoutLock(realpathSync(homedir()), key, async () => {
       let view: GitView;
-      try { view = gitView(root, "write", binding, gitFile); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
+      try { view = gitView(root, "write", binding, gitFile, undefined, doing); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
       try {
         const result = await work(view, (result, args) => ({ ...result, stdout: view.restore(result.stdout, args), stderr: view.restore(result.stderr, args) }));
         if (!after) return result;
@@ -245,6 +245,7 @@ export function teardownGit(runner: Runner = run, binding: GitBinding = {}, lock
     const forced = removal && args.includes("--force");
     const inspection = args.includes("status") || args.includes("diff");
     const target = removal ? resolve(cwd, args.at(-1)!) : cwd;
+    const doing = teardownDoing(args);
     const safeArgs = [...args];
     if (inspection && !safeArgs.includes("--ignore-submodules=all")) {
       const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
@@ -270,8 +271,21 @@ export function teardownGit(runner: Runner = run, binding: GitBinding = {}, lock
       // the target's view, inspected above, so it judges the target by the target's own settings.
       return ran(removal && !forced ? { ...view.env, GIT_COMMON_DIR: targetView.env["GIT_COMMON_DIR"]! } : view.env);
       // A removed target has no git directory left to prove: the folder it was removed from is proven instead.
-    }, !removal, lockTimeoutMs, gitFile);
-  }, true, lockTimeoutMs, gitFile);
+    }, !removal, lockTimeoutMs, doing, gitFile);
+  }, true, lockTimeoutMs, teardownDoing(args), gitFile);
+}
+
+/** What teardown git is doing, for an incident's notice: removing a checkout, or looking one over to tidy it. */
+function teardownDoing(args: readonly string[]): string {
+  return args.includes("worktree") && args.includes("remove") ? "removing an old checkout" : "tidying an old checkout";
+}
+
+/** What a build's git is doing, for an incident's notice. */
+function checkoutDoing(args: readonly string[]): string {
+  if (args.includes("worktree")) return args.includes("remove") ? "removing a checkout" : args.includes("add") ? "making a checkout" : "listing checkouts";
+  if (args.some(arg => arg === "commit" || arg === "add" || arg === "merge" || arg === "rebase" || arg === "reset" || arg === "checkout" || arg === "switch")) return "saving a build's work";
+  if (args.some(arg => arg === "fetch" || arg === "push")) return "updating a repository";
+  return "reading a build's checkout";
 }
 
 /**
@@ -320,7 +334,7 @@ function regularFile(path: string): string | null {
 
 /** A checkout's git directory and common directory, as git finds them from its `.git` (a folder, or a one-line
  * `gitdir: ` file); null when the pointer isn't one git would read the same way. */
-function gitDirsOf(checkout: string): { gitdir: string; common: string } | null {
+function gitDirsOf(checkout: string, vouched: ReadonlySet<string> = NO_VOUCHED): { gitdir: string; common: string } | null {
   let gitdir = join(checkout, ".git");
   try {
     if (!lstatSync(gitdir).isDirectory()) {
@@ -335,10 +349,13 @@ function gitDirsOf(checkout: string): { gitdir: string; common: string } | null 
   // Where the checkout's own files point (a build can write both): read, in the console, only while that folder
   // answered a look lately, and never vouched for by the checkout pool's spelling (folder-gate.ts). Held back: not one
   // git would read the same way, so every caller refuses.
-  if (gitdir !== join(checkout, ".git") && !folderAnswers(gitdir, true)) return null;
+  // `vouched`: the very folders this view was made from, read again after git ran (settle). They answered moments ago
+  // and git just ran in them; the gate's staleness is no evidence about them. Anything they now point elsewhere is
+  // gated as ever, so a re-pointed `.git` or `commondir` is never read on the console's thread on its say.
+  if (gitdir !== join(checkout, ".git") && !vouched.has(gitdir) && !folderAnswers(gitdir, true)) return null;
   const named = regularFile(join(gitdir, "commondir"))?.trim();
   const common = named === undefined || named === "" ? gitdir : resolve(gitdir, named);
-  if (common !== gitdir && !folderAnswers(common, true)) return null;
+  if (common !== gitdir && !vouched.has(common) && !folderAnswers(common, true)) return null;
   return { gitdir, common };
 }
 
@@ -374,9 +391,12 @@ function includeIn(path: string, gitFile = "git", limit?: Limit): string | null 
  * checkout. With `repo` (the project's main checkout, from the plane's own records) the common folder must be the real
  * path of its `.git` folder, a real one holding no `commondir`. Throws with the reason otherwise.
  */
-type BoundDirs = { checkout: string; gitdir: string; common: string; linked: boolean };
+type BoundDirs = { checkout: string; gitdir: string; common: string; linked: boolean;
+  /** The folders as the checkout's pointers spell them (before real paths), for settle's own re-read (gitDirsOf). */
+  spelled: readonly string[] };
+const NO_VOUCHED: ReadonlySet<string> = new Set();
 export type GitBinding = { repo?: string | null };
-function boundDirs(checkout: string, binding: GitBinding = {}): BoundDirs {
+function boundDirs(checkout: string, binding: GitBinding = {}, vouched: ReadonlySet<string> = NO_VOUCHED): BoundDirs {
   const fail = (why: string): never => { throw new Error(`the checkout's .git ${why}`); };
   let top: string;
   try { top = realpathSync(checkout); } catch { return fail("couldn't be found"); }
@@ -386,10 +406,10 @@ function boundDirs(checkout: string, binding: GitBinding = {}): BoundDirs {
   let dirs: BoundDirs;
   if (held.isDirectory()) {
     if (existsSync(join(dotgit, "commondir"))) fail("names another repository (commondir)");
-    dirs = { checkout: top, gitdir: dotgit, common: dotgit, linked: false };
+    dirs = { checkout: top, gitdir: dotgit, common: dotgit, linked: false, spelled: [dotgit] };
   } else {
     if (!held.isFile()) fail("is a link");
-    const named = gitDirsOf(top);
+    const named = gitDirsOf(top, vouched);
     if (named === null) return fail("couldn't be read as git reads it");
     let gitdir: string;
     try { gitdir = realpathSync(named.gitdir); } catch { return fail("names a git directory that isn't there"); }
@@ -405,7 +425,7 @@ function boundDirs(checkout: string, binding: GitBinding = {}): BoundDirs {
     let backReal: string | null = null;
     try { backReal = back === undefined || back === "" ? null : realpathSync(resolve(gitdir, back)); } catch { backReal = null; }
     if (backReal !== dotgit) fail("belongs to a git directory that names another checkout");
-    dirs = { checkout: top, gitdir, common, linked: true };
+    dirs = { checkout: top, gitdir, common, linked: true, spelled: [named.gitdir, named.common, gitdir, common] };
   }
   // The common folder is a main checkout's own `.git` folder, a real one.
   if (basename(dirs.common) !== ".git") fail("belongs to a repository that isn't a checkout's");
@@ -464,7 +484,13 @@ type GitView = { env: Record<string, string>; restore: (output: string, args: re
 const ADMIN_LINKED = ["index", "logs", "refs", "reftable"];
 /** What git keeps in a common directory (its path.c common_list, and reftable), linked whether or not it exists yet. */
 const COMMON_NAMES = ["branches", "gc.pid", "logs", "lost-found", "modules", "objects", "packed-refs", "reftable", "refs", "remotes", "rr-cache", "shallow", "svn", "worktrees"];
-function gitView(checkout: string, kind: "read" | "write", binding: GitBinding = {}, gitFile = "git", limit?: Limit): GitView {
+/** Where git incidents are recorded: beside the fenced views folder (git-incident.ts). */
+export function gitIncidentRecord(): string {
+  return join(dirname(ensureGitViewsRoot(realpathSync(homedir()))), "git-incidents.jsonl");
+}
+
+/** `doing`: what the plane was doing, in a person's words ("tidying an old checkout"), for an incident's notice. */
+function gitView(checkout: string, kind: "read" | "write", binding: GitBinding = {}, gitFile = "git", limit?: Limit, doing?: string): GitView {
   const dirs = boundDirs(checkout, binding);
   const root = ensureGitViewsRoot(realpathSync(homedir()));
   const view = realpathSync(mkdtempSync(join(root, `${kind}-`)));
@@ -579,12 +605,14 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
   const settle = (): string | null => {
     const now = pinned(dirs);
     let bound = false;
-    try { const again = boundDirs(checkout, binding); bound = again.gitdir === dirs.gitdir && again.common === dirs.common; } catch { bound = false; }
+    // The same proof as before git ran, of the same folders: re-read past the console's folder gate only where they are
+    // the very ones this view was made from (vouched), so a gate whose answer went stale mid-run is never read as a swap.
+    try { const again = boundDirs(checkout, binding, new Set(dirs.spelled)); bound = again.gitdir === dirs.gitdir && again.common === dirs.common; } catch { bound = false; }
     if (!now.ok || !bound) {
       // Too late to prevent: recorded and told (git-incident.ts), never rolled back where the swap leads.
       if (kind === "write") {
         gitIncident({ checkout: dirs.checkout, repository: dirs.common, swapped: now.swapped.length > 0 ? now.swapped.map(({ path, leadsTo }) => ({ path, leadsTo })) : [{ path: join(dirs.checkout, ".git"), leadsTo: null }],
-          record: join(dirname(ensureGitViewsRoot(realpathSync(homedir()))), "git-incidents.jsonl") });
+          cause: now.swapped.length > 0 ? "swapped" : "rebound", ...(doing === undefined ? {} : { doing }), record: gitIncidentRecord() });
       }
       return "the checkout's repository changed while git ran";
     }
@@ -594,7 +622,7 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
       const left = readdirSync(admin).filter(name => !initial.has(name) && !WORKTREE_STATE.includes(name) && !["commondir", "gitdir", "info"].includes(name));
       try { carryBack(admin, dirs.gitdir, initial, anchor); } catch (error) {
         if (!(error instanceof AnchorMoved)) return "the checkout's git state couldn't be carried back after git ran";
-        gitIncident({ checkout: dirs.checkout, repository: dirs.common, swapped: [{ path: error.message, leadsTo: null }], record: join(dirname(ensureGitViewsRoot(realpathSync(homedir()))), "git-incidents.jsonl") });
+        gitIncident({ checkout: dirs.checkout, repository: dirs.common, swapped: [{ path: error.message, leadsTo: null }], cause: "moved", ...(doing === undefined ? {} : { doing }), record: gitIncidentRecord() });
         return "the checkout's repository changed while git ran";
       }
       if (left.length > 0) return `git left state Toolroll can't keep in the checkout (${left.slice(0, 5).join(", ")})`;
@@ -872,7 +900,7 @@ export function checkoutGit(inner: Runner = run, mode: "build" | "read" = "build
     if (lfsExtensionIn(cwd)) return refused("the checkout's .lfsconfig sets a git-lfs key that can run a command");
     const once = async (): Promise<ExecResult> => {
     let view: GitView;
-    try { view = gitView(cwd, mode === "read" ? "read" : "write", binding); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
+    try { view = gitView(cwd, mode === "read" ? "read" : "write", binding, "git", undefined, checkoutDoing(args)); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
     try {
       const viewed = { ...options, env: { ...(options?.env ?? {}), ...view.env } };
       // The checkout's own config may name no command. Read with this runner's own bounds (internalOptions).

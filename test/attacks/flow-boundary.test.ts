@@ -172,7 +172,7 @@ describe("attack: a flow reaching past the agents' fence", () => {
     mkdirSync(folder, { recursive: true });
     // A fenced launch makes its folder in the shared launch root, which an outer sandbox (the plane's check) holds.
     if (INSIDE_FENCE) needs(ctx, osFence());
-    const launch = flowLaunch(store, { repo, folder, scratch: join(pool, "flow-checks"), copy: false, home, available: () => true });
+    const launch = await flowLaunch(store, { repo, folder, scratch: join(pool, "flow-checks"), copy: false, home, available: () => true });
     if (launch === null || "problem" in launch) throw new Error("no launch");
     try {
       expect(launch.fence!.fence).toContain(realpathSync(join(home, ".ssh")));
@@ -189,9 +189,9 @@ describe("attack: a flow reaching past the agents' fence", () => {
     const folder = join(pool, "flow-checks", "run-2");
     mkdirSync(folder, { recursive: true });
     // Refused where nothing can confine it and nobody allowed that.
-    expect(flowLaunch(store, { repo, folder, scratch: join(pool, "flow-checks"), copy: false, home: join(root, "home"), available: () => false })).toMatchObject({ problem: expect.stringContaining("can't confine") });
+    expect(await flowLaunch(store, { repo, folder, scratch: join(pool, "flow-checks"), copy: false, home: join(root, "home"), available: () => false })).toMatchObject({ problem: expect.stringContaining("can't confine") });
     store.setUnfencedAgentsAllowed(true, "alex", T0);
-    const launch = flowLaunch(store, { repo, folder, scratch: join(pool, "flow-checks"), copy: false, home: join(root, "home"), available: () => false });
+    const launch = await flowLaunch(store, { repo, folder, scratch: join(pool, "flow-checks"), copy: false, home: join(root, "home"), available: () => false });
     if (launch === null || "problem" in launch) throw new Error("no launch");
     try {
       // An outer sandbox (the plane's release check) may hold the shared launch root: the temp folder it gave is used.

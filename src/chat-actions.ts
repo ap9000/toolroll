@@ -13,8 +13,20 @@ import { withActor } from "./actor.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import { publicChatText } from "./chat-display.js";
 import { gateWords } from "./approval-policy.js";
+import { checkLeadIdentity } from "./lead-identity.js";
+import { hasForbiddenControls } from "./decision.js";
+import { activeUnattendedGrant, candidatesDigestOf, FLOW_ACCEPTANCE, parseUnattendedAsk, revokeUnattended, sealUnattended, unattendedCandidates, unattendedSignProblem, untilWords, workReposOf, type UnattendedAsk } from "./flow-unattended.js";
+import { UNATTENDED_RULE_WORDS, unattendedCoverWords, unattendedHeadWords, unattendedLimitWords } from "./flow-unattended-words.js";
+import { CHECK_ACTION, checkFindingAt, cleanFindingText, familyInReach, FINDING_EXCERPT_LIMIT, FINDING_ROUND_LIMIT, FINDING_TEXT_LIMIT, findingLine, findingStandingWords, getFinding, resendFinding, REVIEW_ACTION, reviewFindingAt, sendCheckFinding, sendFinding, sendReviewFinding } from "./findings.js";
+import { lessonNoteOf } from "./lesson-notes.js";
+import { decideProposal, listProposals } from "./memory-pass.js";
+import { authPauseOf, liftAuthPause } from "./provider-auth.js";
+import { isProviderId } from "./provider.js";
+import { approverStandsNow, familyRepoOf } from "./tidy.js";
+import { chatApproveMode, effectiveChatApproval, type ChatApprovalLimits } from "./chat-approval.js";
+import { cardTermsDigest, chatLimitProblem, scopeTermsText } from "./chat-terms.js";
 import { createHash, randomBytes } from "node:crypto";
-import { leadTurnKeepsProposals, verifiedAuthor, type Store } from "./store.js";
+import { archiveTaskFamily, leadTurnKeepsProposals, restoreTaskFamily, verifiedAuthor, type Store } from "./store.js";
 import {
   isVerifiedApprover,
   reproveApprover,
@@ -40,6 +52,7 @@ import { passwordlessSessionFor,
   authenticateApprover,
   describeScope,
   scopeAuthorityOf,
+  machineActing,
   type ExecutionProfile,
   freshnessFor,
   localApprovalEligible,
@@ -62,7 +75,7 @@ import { assignFlowCard, commentOnFlowCard, flowPeople, mentionsIn, watchFlowCar
 import { browserViewOf, liveBrowserGrant, revokeFlowBrowser, signFlowBrowser } from "./flow-browser.js";
 import { addFlowTriggerTo, describeTrigger, readLinearKey, removeFlowTrigger, takesDeliveries, triggerConfigOf, validateTriggerConfig } from "./flow-triggers.js";
 import { describeSchedule, parseSchedule } from "./flow-schedule.js";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { handleOf, parseSoul, SOUL_CHARS, SUBAGENT_TEMPLATES, subagentLabel } from "./subagents.js";
 import { createSubagentFrom, labelOf, nameOf, renamedSoul, saveSoul, setSubagentState } from "./subagent-admin.js";
 import { cleanMemory, editMemory, forgetMemory, tellSubagent } from "./subagent-memory.js";
@@ -128,7 +141,7 @@ export const CHAT_ACTIONS = {
   flow_starter: { label: "Switch on", protected: false, password: false },
   // Lead fan-out (docs/plans/lead-fan-out.md): files N tasks under one brief and approves each one's scope — the
   // person's ceremony (protected, with the password), N ordinary approvals of exactly the scopes shown.
-  sweep_file: { label: "Start sweep", protected: true, password: true },
+  sweep_file: { label: "Start sweep", protected: true, password: false },
   // Stops every item of a sweep not yet ready; finished results stay. An ordinary act, like cancelling a task.
   sweep_cancel_rest: { label: "Cancel the rest", protected: false, password: false },
   flow_edit: { label: "Save flow", protected: false, password: false },
@@ -146,9 +159,9 @@ export const CHAT_ACTIONS = {
   flow_trigger_pause: { label: "Pause trigger", protected: false, password: false },
   flow_trigger_resume: { label: "Turn trigger on", protected: false, password: false },
   flow_trigger_remove: { label: "Remove trigger", protected: false, password: false },
-  // Browser use widens a flow's sandbox (flow-browser.ts): the lead may only propose it; a person allows it with their
-  // own password on the secure screen, never on a chat card or a paired phone's tap. Turning it off lowers authority.
-  flow_browser: { label: "Allow browser", protected: true, password: true },
+  // Browser use widens a flow's sandbox (flow-browser.ts): the lead may only propose it; a person allows it with their own
+  // yes on a card that shows every term, in a chat they are signed in to or linked from. Turning it off lowers authority.
+  flow_browser: { label: "Allow browser", protected: true, password: false },
   flow_browser_off: { label: "Turn off browser", protected: false, password: false },
   subagent_create: { label: "Add subagent", protected: false, password: false },
   subagent_soul: { label: "Update soul file", protected: false, password: false },
@@ -170,23 +183,48 @@ export const CHAT_ACTIONS = {
   // The code map's switch and holdout (docs/plans/code-map.md §5): a person's yes on the card, re-proved in the write.
   code_map_switch: { label: "Change code map", protected: false, password: false },
   code_map_holdout_end: { label: "End holdout", protected: false, password: false },
+  // Chat and console parity (docs/plans/toolroll-cards.md): plain acts that lower authority or change no one's reach,
+  // each the console's own write. Ending a mode and turning a flow off its own only ever lower authority.
+  mode_revoke: { label: "End automatic approvals", protected: false, password: false },
+  flow_unattended_off: { label: "Stop running on its own", protected: false, password: false },
+  flow_archive: { label: "Archive flow", protected: false, password: false },
+  provider_resume: { label: "Resume agent", protected: false, password: false },
+  worker_note: { label: "Note on worker", protected: false, password: false },
+  lead_identity: { label: "Name your lead", protected: false, password: false },
+  task_archive: { label: "Put away task", protected: false, password: false },
+  task_restore: { label: "Restore task", protected: false, password: false },
+  incident_resolve: { label: "Resolve incident", protected: false, password: false },
+  memory_decide: { label: "Decide memory proposal", protected: false, password: false },
+  // Follow-through (findings.ts): not an approval. A person's yes to words shown on the card sends them to the agent.
+  finding_send: { label: "Send finding", protected: false, password: false },
+  finding_resend: { label: "Send finding back", protected: false, password: false },
+  // The rest of the approvals: a person's own yes on a card that shows every term.
+  task_reopen: { label: "Reopen task", protected: true, password: false },
+  revision_accept: { label: "Accept plan revision", protected: true, password: false },
+  revision_reject: { label: "Reject plan revision", protected: true, password: false },
+  flow_unattended: { label: "Let flow run on its own", protected: true, password: false },
   // What the owner's own lead knows about them: theirs alone, in no project (lead-about.ts).
   lead_about_you: { label: "Remember", protected: false, password: false },
-  scope_approve: { label: "Approve work", protected: true, password: true },
+  scope_approve: { label: "Approve work", protected: true, password: false },
   result_accept: { label: "Accept", protected: true, password: false },
   task_cancel: { label: "Cancel task", protected: true, password: false },
-  task_resume: { label: "Resume task", protected: true, password: true },
+  task_resume: { label: "Resume task", protected: true, password: false },
 } as const;
 export type ChatAction = keyof typeof CHAT_ACTIONS;
 // Every action has a schema (contracts/chat-actions.ts) and every schema an action: a mismatch fails to compile.
 const SAME_ACTIONS: [ChatAction, ChatActionOperation] extends [ChatActionOperation, ChatAction] ? true : never = true;
 void SAME_ACTIONS;
-/** Protected actions a paired phone may confirm behind its own explicit
- * yes/cancel challenge instead of the console's secure screen. Password
- * actions and long or redacted terms never qualify. */
-export const CHALLENGE_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["result_accept"]);
+/** Approvals (owner's decision, docs/plans/toolroll-cards.md): a person's own yes from their chat stands without a password.
+ * Only a person's tap in a linked chat, or their click in a signed-in browser, ever runs one. */
+export const APPROVAL_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["scope_approve", "task_resume", "sweep_file", "flow_browser", "task_reopen", "revision_accept", "revision_reject", "flow_unattended"]);
+/** Protected actions a linked chat may confirm behind its own explicit yes/cancel challenge instead of the review screen.
+ * Password actions and long or redacted terms never qualify: the card must show the exact terms. */
+export const APPROVAL_TERM_CHARS = 3000;
+export const CHALLENGE_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["result_accept", ...APPROVAL_ACTIONS]);
 /** Actions about the person themselves, in no project: their card carries no project (repo ""). */
-export const OWNER_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["lead_about_you"]);
+export const OWNER_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["lead_about_you", "provider_resume", "worker_note", "lead_identity"]);
+/** Actions the console refuses a project-limited account (route table: limited "deny"): the same here. */
+const INSTANCE_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["mode_revoke", "flow_unattended_off", "flow_unattended", "provider_resume", "worker_note", "lead_identity", "incident_resolve", "memory_decide"]);
 export function isChatAction(value: unknown): value is ChatAction {
   return typeof value === "string" && Object.hasOwn(CHAT_ACTIONS, value);
 }
@@ -319,6 +357,13 @@ export function prepareSharedAction(
   // confirmation rebuilds the same stamp from the same bytes.
   const read = readChatActionRequest(operation, input);
   if (!read.ok) throw Error(`This action can't be read — ${read.issues.map(issue => issue.line).join("; ")}.`);
+  if (INSTANCE_ACTIONS.has(operation) && store.accountOf(who.name)?.projects !== null) throw Error("That needs an account with access to every project, as in the console.");
+  if (operation === "provider_resume" || operation === "worker_note" || operation === "lead_identity") {
+    requireActor(store, who, "", operation);
+    const { request, terms, state, title } = instanceAction(store, who, operation, input);
+    const stamp = hash({ operation, request, repo: "", state, terms, actor: who.name, generation: who.generation, ceiling: who.ceilingDigest });
+    return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
+  }
   if (operation === "lead_about_you") {
     // The owner's own note: the card shows the line, and the line it replaces beside it.
     const checked = checkAboutYouLine(input["line"]);
@@ -340,7 +385,7 @@ export function prepareSharedAction(
     return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
   }
   const task =
-    operation.startsWith("code_map_") || operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_") || operation.startsWith("suggestion_") || operation.startsWith("trial_")
+    operation === "mode_revoke" || operation === "memory_decide" || operation === "incident_resolve" || operation === "finding_resend" || operation.startsWith("code_map_") || operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_") || operation.startsWith("suggestion_") || operation.startsWith("trial_")
       ? null
       : text(input, "task", 64);
   const flowTarget = operation.startsWith("flow_") && operation !== "flow_create" && operation !== "flow_script_save" && operation !== "flow_starter" ? flowTargetOf(store, input) : null;
@@ -352,6 +397,8 @@ export function prepareSharedAction(
   if (operation === "subagent_answer" && (questionTarget === null || questionFlow === null)) throw Error("That question isn't open any more.");
   const repo =
     operation === "sweep_cancel_rest" ? store.getSweep(integer(input, "sweep"))?.repo
+      : operation === "incident_resolve" ? incidentRepoOf(store, integer(input, "incident"))
+      : operation === "finding_resend" ? getFinding(store, integer(input, "finding"))?.repo
       : flowTarget !== null ? flowTarget.flow.repo : subagentTarget !== null ? subagentTarget.repo : questionFlow !== null ? questionFlow.repo : task === null ? text(input, "repo", 4096) : store.lookupRef(task)?.repo;
   if (!repo) throw Error("Choose an available project.");
   requireActor(store, who, repo);
@@ -359,7 +406,12 @@ export function prepareSharedAction(
     terms: string[] = [];
   let state: Record<string, unknown>,
     title = CHAT_ACTIONS[operation].label as string;
-  if (operation.startsWith("skill_")) {
+  if (PARITY_ACTIONS.has(operation)) {
+    const made = parityAction(store, who, operation, input, repo, flowTarget?.flow ?? null, now, request, root);
+    state = made.state;
+    title = made.title;
+    terms.push(...made.terms);
+  } else if (operation.startsWith("skill_")) {
     const view = skillsView(store, repo, who.name);
     state = {
       identity: view.identity,
@@ -642,6 +694,8 @@ export function prepareSharedAction(
       `Each item's goal is the shared rules, then its own item, then: ${VERDICT_RULE}`,
       ...tests.map(line => `Every item — ${line}`),
       ...(children.every(one => one.runtime === children[0]!.runtime) ? [`Every item — ${children[0]!.runtime}`] : children.map((one, index) => `Item ${index + 1} — ${one.runtime}`)),
+      // Each item's own terms, word for word: its yes is bound to this text.
+      ...children.map((one, index) => `Item ${index + 1} in full:\n${one.terms}`),
       "Confirming files all of them and approves each one's scope exactly as shown. An item that needs a second person, or that the project's rules keep from its requester, is filed and waits for its own approval.",
       "Each ends with a verdict (fixed, not reproducible, blocked or done) and the sweep's table shows them as they land.",
     );
@@ -739,8 +793,9 @@ export function prepareSharedAction(
         state = { flow: flow.id, revision: flow.revision, digest: view.digest };
         title = `Allow browser use in ${flow.name}`;
         terms.push(`Flow: ${flow.name} · project ${project}`,
-          ...view.zones.map(zone => `${zone.title} runs ${zone.script} v${zone.version}\nScript digest ${zone.digest}`),
-          "Each run of these zones starts a headless Chromium.", ...view.terms, `Approval digest ${view.digest}`);
+          // Each script by its short digest: the whole approval, every script's full digest included, is bound in the state.
+          ...view.zones.map(zone => `${zone.title} runs ${zone.script} v${zone.version}\nScript ${zone.digest.slice(0, 12)}`),
+          "Each run of these zones starts a headless Chromium.", ...view.terms);
       }
     } else if (operation === "flow_trigger_pause" || operation === "flow_trigger_resume" || operation === "flow_trigger_remove") {
       const { flow, trigger } = flowTarget!;
@@ -947,9 +1002,11 @@ export function prepareSharedAction(
       });
       if (!authority.ok) throw Error(authority.problem);
       state["authMode"] = authority.authMode;
+      // The whole terms word for word (the yes is bound to this text: chat-terms.ts cardShowsScope), then everything else.
       terms.push(
+        scopeTermsText(scope),
         ...describeScope(scope, undefined, taskEvidenceWords(store, scope.taskId, now))
-          .filter((line) => !/^\s*(reference|approved)\s/.test(line))
+          .filter((line) => !/^\s*(reference|approved|goal|not this|touches)\s/.test(line))
           .map((line) =>
             line
               .trimStart()
@@ -1036,6 +1093,8 @@ export function prepareSharedAction(
         if (!assignment.attention.includes(caveat)) terms.push(`Limitation: ${caveat}`);
     }
   }
+  // An approval keeps the digest of the exact words its card shows, from now on: the yes is to these (scope.ts approve).
+  if (APPROVAL_ACTIONS.has(operation)) state["shown"] = cardTermsDigest(terms.join("\n"));
   const stamp = hash({
     operation,
     request,
@@ -1056,14 +1115,14 @@ export function sharedActionPayload(value: unknown): SharedAction | null {
 /** A shortened or redacted preview is not complete consent. This rule lives
  * in the shared door, so a forged transport callback cannot bypass it. */
 function sharedActionContentNeedsReview(action: SharedAction): boolean {
+  // An approval's card has room for longer terms. Its words are compared exactly: anything the card would hide or
+  // rewrite (a long hex value, a path, a secret) sends the person to the review page. Toolroll's own digest is bound in
+  // the state, never in the terms, and a commit is written short, so an ordinary approval shows every word as stored.
+  const approval = APPROVAL_ACTIONS.has(action.operation), cap = approval ? APPROVAL_TERM_CHARS : 1200;
   const content = [action.title, ...action.terms];
   return (
-    action.terms.join("\n").length > 1200 ||
-    content.some(
-      (value, index) =>
-        publicChatText(value, index === 0 ? 200 : 1200) !==
-        value.replace(/\s+/g, " ").trim(),
-    )
+    action.terms.join("\n").length > cap ||
+    content.some((value, index) => publicChatText(value, index === 0 ? 200 : cap) !== value.replace(/\s+/g, " ").trim())
   );
 }
 export function sharedActionNeedsReview(action: SharedAction): boolean {
@@ -1184,6 +1243,10 @@ export type SharedActionOptions = {
   root?: string;
   review?: { nonce: string; password: string };
   confirm?: boolean;
+  /** The web door only: a person's signed-in browser session, never a token. */
+  person?: boolean;
+  /** A linked chat's own binding: which chat the yes came from, for the ledger. */
+  binding?: number;
 };
 /** Called inside the proposal door's transaction, after ownership and session
  * checks. No password or review receipt is ever part of a saved proposal. */
@@ -1206,8 +1269,10 @@ export function executeSharedAction(
   if ((options.authority === "local-owner" || currentLocalOwner() !== null) && (!isChatAction(payload.operation) || CHAT_ACTION_LOCAL_ACTS[payload.operation] === null))
     return refuse("refused", "Set a password to do this.");
   let live: SharedAction;
+  let drafted: SharedAction;
   try {
     const saved = savedActionContext(store, who, id, "confirming");
+    drafted = saved;
     if (hash(saved) !== hash(payload))
       return refuse(
         "refused",
@@ -1233,7 +1298,6 @@ export function executeSharedAction(
   }
   // The review nonce was minted against the saved proposal's stamp: it is checked against that, whoever reviews.
   const savedStamp = payload.stamp;
-  let personProved: string | null = null;
   payload = live;
   const config = CHAT_ACTIONS[live.operation],
     req = live.request;
@@ -1242,6 +1306,10 @@ export function executeSharedAction(
     options.via !== "cli" &&
     options.confirm === true &&
     sharedActionAllowsChallenge(payload);
+  if (APPROVAL_ACTIONS.has(live.operation) && machineActing()) return refuse("needs-confirm", "Only a person approves this.");
+  // A lead's or remote token reaches the same web door: an approval needs a person's own session (or tap, above).
+  if (APPROVAL_ACTIONS.has(live.operation) && options.via === "web" && options.authority !== "local-owner" && options.person !== true)
+    return refuse("needs-confirm", "Approve this yourself, in your signed-in chat.");
   if (sharedActionNeedsReview(payload) && !challenged) {
     if (options.via !== "web" || !options.review || options.confirm !== true)
       return refuse(
@@ -1262,20 +1330,8 @@ export function executeSharedAction(
         "needs-confirm",
         "This confirmation expired or was already used. Open the review again.",
       );
-    // A scope approval proves its person inside approve() (one transaction with the seal, under the same freshness
-    // rule as the task page); here an empty field is only looked at, never spent (an explicit re-check is one-use).
-    const emptyApproval = payload.operation === "scope_approve" && options.review.password === "";
-    const proved = config.password && !emptyApproval ? authenticateApprover(store, who.name, options.review.password, payload.repo) : null;
-    // How the person was proved, for an approval that records it (browser use: flow-browser.ts refuses any but a person's).
-    if (proved?.ok === true) personProved = proved.method;
-    if (
-      config.password &&
-      (emptyApproval
-        ? !passwordlessSessionFor(store, who.name) && !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null
-          // Easy-start C5: a local owner's eligible approval takes no password (approve() proves it again in the seal).
-          && !(options.authority === "local-owner" && currentLocalOwner()?.act === "approve-plan" && typeof req["task"] === "string" && localApprovalEligible(store, who.name, req["task"]).ok)
-        : proved?.ok !== true)
-    )
+    const proved = config.password ? authenticateApprover(store, who.name, options.review.password, payload.repo) : null;
+    if (config.password && proved?.ok !== true)
       return refuse(
         "needs-confirm",
         "Confirm with your password in the secure screen.",
@@ -1289,6 +1345,8 @@ export function executeSharedAction(
         repo = payload.repo,
         actor = who.name;
       let taskId = task;
+      if (LATE_APPROVALS.has(payload.operation)) return runLateApproval(store, who, payload, repo => approvalBy(store, who, repo, now, options, drafted), approvalRoad(options), now);
+      if (PARITY_ACTIONS.has(payload.operation) || OWNER_PARITY.has(payload.operation)) return runParityAction(store, who, payload, now, options.root);
       if (payload.operation === "lead_about_you") {
         const next = withAboutYouLine(aboutYouOf(store, actor), String(req["line"]), Number(req["replaces"] ?? 0));
         if (!next.ok) throw Error(next.message);
@@ -1340,7 +1398,9 @@ export function executeSharedAction(
         // re-reads the flow, its zones and scripts in this transaction and refuses unless they are what the card showed.
         const flow = Number(payload.state["flow"]);
         // signFlowBrowser re-reads the account's generation and reach in its transaction (it may have narrowed since).
-        const signed = signFlowBrowser(store, { flow, signer: actor, proof: personProved, sawDigest: String(payload.state["digest"] ?? ""), console: { generation: who.generation } }, now);
+        const by = approvalBy(store, who, repo, now, options, drafted);
+        if (by.ok === false) throw Error(by.why);
+        const signed = signFlowBrowser(store, { flow, signer: actor, proof: options.via === "web" ? "session" : "chat", sawDigest: String(payload.state["digest"] ?? ""), console: { generation: who.generation } }, now);
         if (!signed.ok) throw Error(signed.message);
         return { ok: true as const, taskId: null, said: "Browser allowed. Its browser zones can start Chromium now.", href: `/flows/${flow}` };
       }
@@ -1358,7 +1418,7 @@ export function executeSharedAction(
         return { ok: true as const, taskId: null, said, href: `/sweeps/${Number(req["sweep"])}` };
       }
       else if (payload.operation === "sweep_file") {
-        const done = fileSweep(store, who, id, payload, options.review?.password ?? "", now);
+        const done = fileSweep(store, who, id, payload, approvalBy(store, who, payload.repo, now, options, drafted), now);
         return { ok: true as const, taskId: null, said: done.said, href: done.href };
       }
       else if (payload.operation === "kit_setup") {
@@ -1428,14 +1488,14 @@ export function executeSharedAction(
       else if (payload.operation === "scope_approve") {
         const scope = store.getScope(task!)!;
         // Cockpit B2: classified by the act, not the road — the same standard-approval freshness as /t/:id/approve.
-        const result = withFreshness("approve-standard", () => approve(
-          store,
-          task!,
-          actor,
-          now,
-          scope.digest,
-          options.review!.password,
-        ));
+        const by = approvalBy(store, who, repo, now, options, drafted);
+        if (by.ok === false) throw Error(by.why);
+        const limited = chatLimitProblem(scope, by.limits, "your chat approval setting");
+        if (limited !== null) throw Error(limited);
+        // A local owner keeps its own road (approve proves it again in the seal); everyone else, their own yes from chat,
+        // to the scope and the words the card was made with.
+        const sawDigest = String((drafted.state["scope"] as { digest?: unknown } | null | undefined)?.digest ?? "");
+        const result = withFreshness("approve-standard", () => approve(store, task!, actor, now, sawDigest, options.review?.password ?? "", {}, undefined, by.chat));
         if (!result.ok) {
           // A first yes on protected work is kept, with how its person was proved: committed, never rolled back.
           // The card stays open (`awaiting`) for the second approver; the same person again changes nothing.
@@ -1455,13 +1515,15 @@ export function executeSharedAction(
         if (!result.ok)
           throw Error(`Task was not cancelled: ${result.reason}.`);
       } else if (payload.operation === "task_resume") {
+        const by = approvalBy(store, who, repo, now, options, drafted);
+        if (by.ok === false) throw Error(by.why);
         const result = resumeTaskStop(
           store,
           {
             taskId: task!,
             runId: Number(req["run"]),
             by: verifiedAuthor(actor),
-            via: "web",
+            via: options.via,
           },
           now,
         );
@@ -1534,7 +1596,7 @@ function fileSweepChild(store: Store, who: VerifiedApprover, repo: string, brief
 }
 
 /** A filed child's scope in the words an approval agrees to (no identity lines), its runtime terms, and their digest. */
-function sweepChildScopeOf(store: Store, taskId: string): { fingerprint: string; runtime: string; words: string[] } {
+function sweepChildScopeOf(store: Store, taskId: string): { fingerprint: string; runtime: string; words: string[]; terms: string } {
   const scope = store.getScope(taskId);
   if (scope === null) throw Error("A sweep item has no scope to show.");
   const authority = scopeAuthorityOf(scope, { authMode: readAuthModeStrict });
@@ -1545,7 +1607,7 @@ function sweepChildScopeOf(store: Store, taskId: string): { fingerprint: string;
   // as an agent's idle timeout, still makes the card stale): its exact terms with only identity left out.
   const { taskId: _task, digest: _digest, approvedDigest: _approved, approvedBy: _by, approvedAt: _at, proposedAt: _proposed, approvalBasis: _basis,
     modeDigest: _mode, approvedProfile: _approvedProfile, approvedProfileJson: _approvedProfileJson, approvedChainJson: _approvedChain, ...terms } = scope as unknown as Record<string, unknown>;
-  return { fingerprint: hash({ words, runtime, authMode: authority.authMode, profile: authority.profile, terms }), runtime, words };
+  return { fingerprint: hash({ words, runtime, authMode: authority.authMode, profile: authority.profile, terms }), runtime, words, terms: scopeTermsText(scope) };
 }
 
 /** Every child as filing would make it, found in a savepoint that is always rolled back: prepare never writes. */
@@ -1568,7 +1630,23 @@ function sweepChildScopes(store: Store, who: VerifiedApprover, repo: string, bri
   return found;
 }
 
-function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payload: SharedAction, password: string, now: Date): { said: string; href: string } {
+/** How this yes stands, and under whose limits: a person's own from chat, by their own chat setting, with the words and
+ * digest the card was made with. A local owner's road has none: approve() proves it itself. */
+function approvalBy(store: Store, who: VerifiedApprover, repo: string, now: Date, options: SharedActionOptions, drafted: SharedAction):
+  { ok: true; limits: ChatApprovalLimits; chat?: { modeDigest: string; shown: { expect: string; terms: string } } } | { ok: false; why: string } {
+  if (options.authority === "local-owner") return { ok: true, limits: { fullAccess: true, capMicrousd: null } };
+  if (options.via === "cli") return { ok: false, why: "Approve this in chat or in Toolroll." };
+  const shown = { expect: String(drafted.state["shown"] ?? ""), terms: drafted.terms.join("\n") };
+  if (options.via === "web") {
+    const allowed = effectiveChatApproval(store, repo, who.name);
+    return allowed.ok ? { ok: true, limits: allowed.limits, chat: { modeDigest: allowed.setting.digest, shown } } : { ok: false, why: allowed.why };
+  }
+  const allowed = chatApproveMode(store, repo, who.name, now, options.via);
+  return allowed.ok ? { ok: true, limits: allowed.limits, chat: { modeDigest: allowed.digest, shown } } : allowed;
+}
+
+function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payload: SharedAction, by: ReturnType<typeof approvalBy>, now: Date): { said: string; href: string } {
+  if (by.ok === false) throw Error(by.why);
   const req = payload.request;
   const already = store.sweepOfProposal(proposal);
   if (already !== null) return { said: "This sweep was already started.", href: `/sweeps/${already}` };
@@ -1589,7 +1667,9 @@ function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payloa
   const waiting: string[] = [];
   for (const one of filed) {
     const scope = store.getScope(one.id);
-    const approved = scope === null ? null : withFreshness("approve-standard", () => approve(store, one.id, who.name, now, scope.digest, password));
+    // A person's own limits hold for each item: one past them is filed and waits for its own approval.
+    const approved = scope === null || chatLimitProblem(scope, by.limits, "your chat approval setting") !== null ? null
+      : withFreshness("approve-standard", () => approve(store, one.id, who.name, now, scope.digest, "", {}, undefined, by.chat));
     if (approved === null || !approved.ok) waiting.push(one.title);
   }
   const said = waiting.length === 0
@@ -1744,4 +1824,266 @@ function runFlowAction(store: Store, payload: SharedAction, actor: string, repos
       })();
   if (!acted.ok) throw Error(acted.message);
   return settle(card.flow, acted.said, card.id);
+}
+
+// ---- chat and console parity (docs/plans/toolroll-cards.md) ------------------------------------------------------------
+
+const LATE_APPROVALS: ReadonlySet<ChatAction> = new Set<ChatAction>(["task_reopen", "revision_accept", "revision_reject", "flow_unattended"]);
+const PARITY_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["mode_revoke", "flow_unattended_off", "flow_archive", "task_archive", "task_restore", "incident_resolve", "memory_decide", "finding_send", "finding_resend", ...LATE_APPROVALS]);
+const OWNER_PARITY: ReadonlySet<ChatAction> = new Set<ChatAction>(["provider_resume", "worker_note", "lead_identity"]);
+
+function incidentRepoOf(store: Store, id: number): string | null {
+  const open = store.openIncidents().find(one => one.id === id);
+  return open === undefined ? null : store.lookupRef(open.taskId)?.repo ?? null;
+}
+
+function instanceAction(store: Store, who: VerifiedApprover, operation: "provider_resume" | "worker_note" | "lead_identity", input: Record<string, unknown>): { request: Record<string, unknown>; terms: string[]; state: Record<string, unknown>; title: string } {
+  if (operation === "provider_resume") {
+    const provider = text(input, "provider", 40);
+    if (!isProviderId(provider)) throw Error("Choose an agent provider.");
+    const pause = authPauseOf(store, provider);
+    if (pause === null) throw Error("That agent isn't paused.");
+    // The pause is the whole installation's: every project with work waiting on it is named, and must be in reach here.
+    const repos = [...new Set(store.handle.prepare(`SELECT t.repo AS repo FROM run r JOIN task_ref t ON t.id = r.task_ref WHERE r.provider = ? AND r.reason = 'auth-expired' AND r.finished_at >= ?
+      UNION SELECT repo FROM task_ref WHERE auth_wait_pause = ?`).all(provider, pause.openedAt, pause.id).flatMap(row => row["repo"] === null ? [] : [String(row["repo"])]))].sort();
+    if (repos.some(one => !who.repos.includes(one))) throw Error("That agent has work waiting in a project outside your access here.");
+    return { request: { provider }, title: `Resume ${provider}`, state: { pause: pause.id, repos }, terms: [`Lifts the sign-in pause on ${provider} and sends its waiting tasks back to the queue. Existing approvals and holds still apply.`, ...(repos.length === 0 ? [] : [`Waiting work in: ${repos.map(one => basename(one)).join(", ")}`])] };
+  }
+  if (operation === "worker_note") {
+    const runner = text(input, "runner", 120), note = String(input["note"] ?? "").trim();
+    if (note.length > 200 || hasForbiddenControls(note)) throw Error("A worker's note is at most 200 plain characters.");
+    const worker = store.listRunners().find(one => one.name === runner && one.retiredAt === null);
+    if (worker === undefined) throw Error("No such worker.");
+    return { request: { runner, note }, title: `Note on ${runner}`, state: { runner }, terms: [note === "" ? "Clears this worker's note." : `Sets this worker's note to: ${note}`] };
+  }
+  const checked = checkLeadIdentity(String(input["name"] ?? ""), String(input["persona"] ?? ""));
+  if (!checked.ok) throw Error(checked.message);
+  return { request: { name: checked.identity.name, persona: checked.identity.persona }, title: `Call your lead ${checked.identity.name}`, state: {}, terms: [`Name: ${checked.identity.name}`, `Persona: ${checked.identity.persona}`] };
+}
+
+const REOPEN_REFUSED: Record<string, string> = {
+  "unknown-task": "This task is not external work.", "not-latched": "The tracker never closed this: there is nothing to reopen.",
+  "not-seen-open": "The tracker hasn't been seen open again since the close. Reopen it there first; the next sync notices.",
+  claimed: "This task is being built right now.", held: "A hold stands: lift it first.", "question-open": "An unanswered question stands: answer or close it first.",
+  "incident-open": "An unresolved incident stands: resolve it first.", "bad-state": "This task is not in a state reopen can take.",
+};
+
+/** The one plan revision waiting on a decision for this task, by its id or as the only one. */
+function waitingRevision(store: Store, task: string, asked: unknown) {
+  const ref = store.lookupRef(task);
+  const waiting = ref === null ? [] : store.listPlanRevisions(ref.id).filter(one => one.status === "blocked");
+  const found = asked === undefined ? (waiting.length === 1 ? waiting[0]! : null) : waiting.find(one => one.id === asked) ?? null;
+  if (found === null) throw Error("That plan revision isn't waiting on a decision.");
+  return found;
+}
+
+/** A finding follows its task's family, so every project the family reaches must be in reach (findings.ts, one gate). */
+function familyWithin(store: Store, who: VerifiedApprover, task: string): void {
+  if (familyInReach(store, who, task) === null) throw Error("This task's work reaches a project outside your access here.");
+}
+
+function parityAction(store: Store, who: VerifiedApprover, operation: ChatAction, input: Record<string, unknown>, repo: string, flow: FlowRow | null, now: Date, request: Record<string, unknown>, root?: string): { state: Record<string, unknown>; title: string; terms: string[] } {
+  switch (operation) {
+    case "finding_send": {
+      const task = String(input["task"]), row = store.getTask(task);
+      if (row === null) throw Error("No such task.");
+      familyWithin(store, who, task);
+      const given = ["summary", "pointer", "run"].filter(key => input[key] !== undefined);
+      if (given.length !== 1) throw Error("Send one thing: words in summary, a review finding's pointer, or a failed check's run.");
+      const head = `Sends this to the agent on ${row.title}. It reaches a running build now, or the next attempt's brief, as data to check. The agent must accept it or reject it with a reason; a repeat counts as another round.`;
+      if (input["pointer"] !== undefined) {
+        const read = reviewFindingAt(store, task, text(input, "pointer", 40));
+        if (!read.ok) throw Error(read.message);
+        const place = read.finding.file === null ? [] : [`Where: ${read.finding.file}${read.finding.line === null ? "" : `:${read.finding.line}`}`];
+        return { state: { task, pointer: input["pointer"], finding: read.finding }, title: "Send a review finding", terms: [head, `Finding: ${cleanFindingText(read.finding.scenario, FINDING_TEXT_LIMIT)}`, ...place, `Severity: ${read.finding.severity}`, `Asks: ${REVIEW_ACTION}`] };
+      }
+      if (input["run"] !== undefined) {
+        if (root === undefined) throw Error("The check's log can't be read here.");
+        const read = checkFindingAt(store, root, task, integer(input, "run"));
+        if (!read.ok) throw Error(read.message);
+        return { state: { task, run: input["run"], excerpt: read.excerpt, head: read.head }, title: "Send a failed check", terms: [head, `Finding: ${read.summary}`, `Log: ${cleanFindingText(read.excerpt, FINDING_EXCERPT_LIMIT)}`, `Asks: ${CHECK_ACTION}`] };
+      }
+      const summary = cleanFindingText(text(input, "summary", FINDING_TEXT_LIMIT), FINDING_TEXT_LIMIT);
+      if (summary === "") throw Error("Say what the finding is.");
+      const file = input["file"] === undefined ? null : cleanFindingText(text(input, "file", 300), 300) || null;
+      const line = file === null || input["line"] === undefined ? null : integer(input, "line");
+      for (const key of ["file", "line"]) delete request[key];
+      request["summary"] = summary;
+      if (file !== null) request["file"] = file;
+      if (line !== null) request["line"] = line;
+      return { state: { task, updatedAt: row.updatedAt }, title: "Send a finding", terms: [head, `Finding: ${summary}`, ...(file === null ? [] : [`Where: ${file}${line === null ? "" : `:${line}`}`]), `Asks: ${REVIEW_ACTION}`] };
+    }
+    case "finding_resend": {
+      const finding = getFinding(store, integer(input, "finding"));
+      if (finding === null) throw Error("No such finding.");
+      familyWithin(store, who, finding.taskId);
+      if (finding.state === "open") throw Error("That finding is already with the agent.");
+      if (finding.state === "closed") throw Error("That finding is closed.");
+      if (finding.state === "with-person") throw Error("That finding has used its rounds: it needs your decision on the task.");
+      const next = finding.rounds >= FINDING_ROUND_LIMIT ? "Its rounds are used, so this hands it to a person on the task." : `This is round ${finding.rounds + 1} of ${FINDING_ROUND_LIMIT}.`;
+      return { state: { finding: finding.id, state: finding.state, rounds: finding.rounds, answer: finding.answer?.detail ?? null }, title: `Send finding #${finding.id} back`, terms: [`Finding: ${findingLine(finding)}`, `How it stands: ${findingStandingWords(finding)}`, next] };
+    }
+    case "task_reopen": {
+      const task = String(input["task"]), row = store.getTask(task);
+      if (row === null) throw Error("No such task.");
+      if (store.mirrorByTask(task) === null) throw Error(REOPEN_REFUSED["unknown-task"]!);
+      return { state: { task, updatedAt: row.updatedAt, taskState: row.state }, title: `Reopen ${row.title}`, terms: ["Takes this outside work back up: the tracker shows it open again, and Toolroll may build it. Existing approvals and holds still apply."] };
+    }
+    case "revision_accept": case "revision_reject": {
+      const task = String(input["task"]), revision = waitingRevision(store, task, input["revision"]);
+      request["revision"] = revision.id;
+      const artifact = store.getArtifact(revision.artifact);
+      if (artifact === null || root === undefined) throw Error("The revised plan can't be read here.");
+      const read = readVerifiedArtifact(root, artifact);
+      if (!read.ok || artifact.truncated || artifact.redacted) throw Error("The revised plan couldn't be verified in full.");
+      return { state: { task, revision: revision.id, artifact: artifact.sha256, authority: revision.authorityDigest }, title: `${operation === "revision_accept" ? "Accept" : "Reject"} revision ${revision.revision} of this plan`,
+        terms: [`Why the builder asked: ${revision.reason}`, `Changes: ${revision.changedFields.join(", ") || "the plan only"}${revision.authorityKind === "authority-change" ? ". This changes what was approved." : "."}`, `Plan:\n${read.content.toString("utf8")}`] };
+    }
+    case "flow_unattended": {
+      const asked = parseUnattendedAsk({ days: input["days"], budget: input["budget"], runs: input["runs"], include: input["include"] });
+      if (!asked.ok) throw Error(asked.message);
+      const problem = unattendedSignProblem(store, flow!, who.name);
+      if (problem !== null) throw Error(problem);
+      const candidates = unattendedCandidates(store, flow!.id), include = asked.ask.include ?? [];
+      const covered = candidates.filter(one => one.optional === null || include.includes(one.id));
+      if (include.some(id => !candidates.some(one => one.id === id))) throw Error("Name schedules from this flow's own list.");
+      if (covered.length === 0) throw Error("Choose a schedule to include: this flow's schedules bring in outside content, so none is covered unless you pick it.");
+      // Every project its work files in: the person must reach each, and each is named and checked at the yes.
+      const repos = [...new Set([flow!.repo, ...workReposOf(flow!)])];
+      if (repos.some(one => !who.repos.includes(one) || !store.accountCanAccess(who.name, one))) throw Error("This flow files work in a project outside your access here.");
+      return { state: { flow: flow!.id, revision: flow!.revision, schedules: candidatesDigestOf(candidates), ask: asked.ask, repos }, title: `Let ${flow!.name} run on its own`,
+        terms: [...unattendedHeadWords(who.name, FLOW_ACCEPTANCE), `Works in: ${repos.map(one => basename(one)).join(", ")}`, unattendedCoverWords(covered), ...covered.flatMap(one => one.optional === null ? [] : [`${one.words}: ${one.optional}`]), ...unattendedLimitWords(asked.ask.budgetMicrousd, asked.ask.dailyRunCap), ...UNATTENDED_RULE_WORDS, `It ends after ${asked.ask.days} ${asked.ask.days === 1 ? "day" : "days"}.`] };
+    }
+    case "mode_revoke": {
+      const mode = store.activeMode(repo, now);
+      if (mode === null) throw Error("No automatic approvals are on for this project.");
+      return { state: { mode: mode.id, digest: mode.digest }, title: "End automatic approvals", terms: [`Ends the ${mode.name} mode signed by ${mode.signedBy}. Every act goes back to its own approval.`] };
+    }
+    case "flow_unattended_off": {
+      const grant = activeUnattendedGrant(store, flow!.id, now);
+      if (grant === null) throw Error(`${flow!.name} isn't running on its own.`);
+      return { state: { flow: flow!.id, grant: grant.id }, title: `Stop ${flow!.name} running on its own`, terms: ["New cards wait for a person again."] };
+    }
+    case "flow_archive":
+      return { state: { flow: flow!.id, revision: flow!.revision }, title: `Archive ${flow!.name}`, terms: ["Takes this flow off the list. Its triggers stop starting cards."] };
+    case "task_archive": {
+      const task = String(input["task"]), row = store.getTask(task), reason = text(input, "reason", 500, true).trim();
+      if (row === null) throw Error("No such task.");
+      if (reason === "") delete request["reason"]; else request["reason"] = reason;
+      return { state: { task, updatedAt: row.updatedAt, state: row.state }, title: `Put away ${row.title}`, terms: ["Takes this task out of every list. It stays saved and can be restored.", ...(reason === "" ? [] : [`Reason: ${reason}`])] };
+    }
+    case "task_restore": {
+      const task = String(input["task"]), row = store.getTask(task);
+      if (row === null) throw Error("No such task.");
+      return { state: { task, updatedAt: row.updatedAt }, title: `Restore ${row.title}`, terms: ["Puts this task back in the lists."] };
+    }
+    case "incident_resolve": {
+      const id = integer(input, "incident"), open = store.openIncidents().find(one => one.id === id)!;
+      return { state: { incident: id }, title: `Resolve the incident on ${open.taskId}`, terms: ["Marks this incident resolved. Nothing else about the task changes."] };
+    }
+    case "memory_decide": {
+      const id = integer(input, "proposal"), decision = input["decision"] === "accept" ? "accept" : "reject";
+      const proposal = listProposals(store, repo).find(one => one.id === id);
+      if (proposal === undefined) throw Error("That proposal isn't waiting any more.");
+      // A lesson note is accepted in the person's own words (memory-pass.ts): never a model's, so never from a card.
+      if (decision === "accept" && lessonNoteOf(store, id) !== null) throw Error("A lesson note is accepted in your own words: write it on the Knowledge page.");
+      return { state: { proposal: id }, title: `${decision === "accept" ? "Accept" : "Reject"} a memory proposal`, terms: [proposal.title, ...(proposal.beforeText === null ? [] : [`Was: ${proposal.beforeText}`]), `Becomes: ${proposal.afterText}`, `Why: ${proposal.rationale}`, decision === "accept" ? "Later agent sessions in this project read this." : "Nothing is added to project memory."] };
+    }
+    default:
+      throw Error("Choose an available action.");
+  }
+}
+
+/** Where a yes came from, in the words the other chat approvals' ledger lines use. */
+const approvalRoad = (options: SharedActionOptions): string => `via ${options.via}${options.binding === undefined ? "" : ` · chat binding #${options.binding}`}`;
+
+/** The approvals added last: the console's own write, after the same question every approval asks. */
+function runLateApproval(store: Store, who: VerifiedApprover, payload: SharedAction, byFor: (repo: string) => ReturnType<typeof approvalBy>, road: string, now: Date): { ok: true; taskId: string | null; said: string; href?: string } {
+  const req = payload.request, actor = who.name, by = byFor(payload.repo);
+  // Rejecting lowers: it takes a person's yes, not their approving setting.
+  if (by.ok === false && payload.operation !== "revision_reject") throw Error(by.why);
+  if (payload.operation === "task_reopen") {
+    const task = String(req["task"]), reopened = store.reopenMirror(task, actor, now);
+    if (!reopened.ok) throw Error(REOPEN_REFUSED[reopened.reason] ?? "The task could not be reopened.");
+    return { ok: true, taskId: task, said: "Reopened." };
+  }
+  if (payload.operation === "flow_unattended") {
+    const ask = payload.state["ask"] as UnattendedAsk;
+    // The person's own setting holds in every project this flow's work files in, not only its own.
+    for (const repo of payload.state["repos"] as string[]) {
+      const here = byFor(repo);
+      if (here.ok === false) throw Error(here.why);
+      if (here.limits.capMicrousd !== null && (ask.budgetMicrousd === null || ask.budgetMicrousd > here.limits.capMicrousd)) throw Error("This has a higher attempt limit than your chat approval setting allows.");
+    }
+    const signed = sealUnattended(store, { flow: Number(req["flow"]), signer: actor, ask, sawRevision: Number(payload.state["revision"]), sawSchedules: String(payload.state["schedules"]), road }, now);
+    if (!signed.ok) throw Error(signed.message);
+    return { ok: true, taskId: null, said: `Runs on its own until ${untilWords(signed.grant.absoluteExpiry)}.`, href: `/flows/${Number(req["flow"])}` };
+  }
+  const task = String(req["task"]), revision = waitingRevision(store, task, req["revision"]), accept = payload.operation === "revision_accept";
+  // A saved limit can't be read against a change of authority: that one opens in Toolroll.
+  if (accept && by.ok && revision.authorityKind === "authority-change" && (!by.limits.fullAccess || by.limits.capMicrousd !== null)) throw Error("This revision changes what was approved, beyond your chat approval limits. Open it in Toolroll.");
+  if (!store.resolvePlanRevision(revision.id, accept ? "applied" : "rejected", actor, now)) throw Error("That plan revision is no longer waiting on a decision.");
+  store.releaseOwnedHold("revision", String(revision.id));
+  return { ok: true, taskId: task, said: accept ? "Revision accepted." : "Revision rejected." };
+}
+
+/** Each runs the write the console's own handler calls, as this person, inside the confirm door's transaction. */
+function runParityAction(store: Store, who: VerifiedApprover, payload: SharedAction, now: Date, root?: string): { ok: true; taskId: string | null; said: string; href?: string } {
+  const req = payload.request, actor = who.name, repo = payload.repo;
+  const done = (said: string, href?: string, taskId: string | null = null) => ({ ok: true as const, taskId, said, ...(href === undefined ? {} : { href }) });
+  switch (payload.operation) {
+    case "finding_send": case "finding_resend": {
+      const task = payload.operation === "finding_send" ? String(req["task"]) : getFinding(store, Number(req["finding"]))?.taskId ?? null;
+      const sent = payload.operation === "finding_resend" ? resendFinding(store, Number(req["finding"]), now)
+        : req["pointer"] !== undefined ? sendReviewFinding(store, task!, String(req["pointer"]), actor, now)
+        : req["run"] !== undefined ? sendCheckFinding(store, root ?? "", task!, Number(req["run"]), actor, now)
+        // The lead drafted these words and the person confirmed them: recorded as the lead's, sent by the person.
+        : sendFinding(store, { taskId: task!, source: "lead", by: actor, summary: String(req["summary"]), file: typeof req["file"] === "string" ? req["file"] : null, line: typeof req["line"] === "number" ? req["line"] : null }, now);
+      if (!sent.ok) throw Error(sent.message);
+      const said = sent.standing === "with-person" ? `Finding #${sent.id} needs a person's decision on the task.` : sent.standing === "already-sent" ? `Finding #${sent.id} was already sent.`
+        : sent.standing === "running" ? `Finding #${sent.id} sent to the running build.` : `Finding #${sent.id} goes to the next attempt.`;
+      return done(said, task === null ? undefined : `/t/${encodeURIComponent(task)}#findings`, task);
+    }
+    case "mode_revoke":
+      if (!store.revokeMode(repo, actor, "operator", now)) throw Error("That mode already ended.");
+      return done("Automatic approvals are off. Every act goes back to its own approval.", "/mode");
+    case "flow_unattended_off":
+      if (!revokeUnattended(store, Number(req["flow"]), actor, now)) throw Error("It wasn't running on its own.");
+      return done("It no longer runs on its own. New cards wait for a person.", `/flows/${Number(req["flow"])}`);
+    case "flow_archive":
+      store.archiveFlow(Number(req["flow"]), actor, now);
+      return done("Flow archived.", "/flows");
+    case "task_archive": case "task_restore": {
+      const task = String(req["task"]);
+      const standing = (refs: readonly number[]) => approverStandsNow(store, actor, familyRepoOf(store, refs));
+      const made = payload.operation === "task_archive"
+        ? archiveTaskFamily(store, task, { by: actor, byKind: "person", rule: null, reason: String(req["reason"] ?? "").trim() || "Put away from chat" }, now, { guard: standing })
+        : restoreTaskFamily(store, task, actor, now, standing);
+      if (!made.ok) throw Error(made.message);
+      return done(payload.operation === "task_archive" ? "Put away." : "Restored.", undefined, task);
+    }
+    case "incident_resolve":
+      if (!store.resolveIncident(Number(req["incident"]), actor, now)) throw Error("That incident was already resolved.");
+      return done("Incident resolved.");
+    case "memory_decide": {
+      const decision = req["decision"] === "accept" ? "accept" : "reject";
+      decideProposal(store, { repo, actor, id: Number(req["proposal"]), decision }, now);
+      return done(decision === "accept" ? "Added to project memory." : "Rejected.", `/settings/knowledge?repo=${encodeURIComponent(repo)}`);
+    }
+    case "provider_resume": {
+      const lifted = liftAuthPause(store, String(req["provider"]), "person", actor, now);
+      if (lifted === null) throw Error("That agent isn't paused any more.");
+      return done(`Resumed. ${lifted.resumed} ${lifted.resumed === 1 ? "task went" : "tasks went"} back to the queue.`);
+    }
+    case "worker_note": {
+      const note = String(req["note"]);
+      if (!store.setRunnerQueueNote(String(req["runner"]), note === "" ? null : note).ok) throw Error("No such worker.");
+      return done("Note saved.", "/fleet");
+    }
+    case "lead_identity":
+      store.setLeadConfig(actor, String(req["name"]), String(req["persona"]), now);
+      return done(`Your lead is called ${String(req["name"])} now.`, "/settings/lead");
+    default:
+      throw Error("Choose an available action.");
+  }
 }

@@ -1,3 +1,6 @@
+import { slackCardBlocks } from "./card-render.js";
+import { withoutCard } from "./chat-card-part.js";
+import { cardWithin } from "./chat-card.js";
 import { chatFlowButtons } from "./chat-flow.js";
 import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-shots.js";
 import { chatQuestionButtons } from "./subagent-question.js";
@@ -56,6 +59,7 @@ export type SlackChatOptions = {
   clock?: () => Date;
   upload?: typeof uploadSlackBytes;
 };
+const SLACK_REFUSED_BLOCKS: ReadonlySet<string> = new Set(["invalid_blocks", "invalid_blocks_format", "invalid_arguments", "msg_too_long", "msg_blocks_too_long"]);
 const nowOf = (options: SlackChatOptions): Date =>
   options.clock?.() ?? new Date();
 const split = (text: string, size = 2800): string[] => {
@@ -302,6 +306,10 @@ export async function deliverSlackPart(
       !repos.includes(store.lookupRef(content.task)?.repo ?? "")
     )
       throw new SlackError("Connected projects changed");
+    if (content.rich && !cardWithin(content.rich, repos)) {
+      state.dropPart(row.id, "Connected projects changed");
+      return true;
+    }
     // A screenshot sent with a result goes in that result's thread once its message is placed, and waits until then.
     const result = content.shot?.follows == null ? null : state.part(content.shot.follows);
     if (result !== null && !slackTs(result.message) && result.state === "pending") {
@@ -515,7 +523,7 @@ export async function deliverSlackPart(
         .replaceAll("&", "&amp;")
         .replaceAll("<", "&lt;")
         .replaceAll(">", "&gt;"),
-      blocks: voiced === null ? slackBlocks(text, buttons) : slackVoiceBlocks(voiced, buttons),
+      blocks: content.rich ? slackCardBlocks(content.rich, buttons) : voiced === null ? slackBlocks(text, buttons) : slackVoiceBlocks(voiced, buttons),
       mrkdwn: voiced !== null,
       parse: "none",
       unfurl_links: false,
@@ -548,6 +556,11 @@ export async function deliverSlackPart(
     }
     // No permission to upload files here: one plain line instead of the result's screenshots.
     const saved = readChatPart(row.payload), content = saved.ok ? saved.value : null;
+    // Slack refused the card's blocks: the part's own plain text goes instead, so the message is never lost.
+    if (content?.rich && error instanceof SlackError && SLACK_REFUSED_BLOCKS.has(error.code)) {
+      state.repaint(row.id, withoutCard(content));
+      return true;
+    }
     if (content !== null && content.image && content.shot && error instanceof SlackError && ["missing_scope", "no_permission"].includes(error.code)) {
       refuseResultShots(state, store, row, content, "Slack", nowOf(options));
       return true;

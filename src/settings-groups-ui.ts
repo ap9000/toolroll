@@ -609,6 +609,8 @@ export function modePageHtml(view: ModePageView): Html {
         items: [["0", "Wait for a person"], ["1", "Approve plans that keep what I filed"]] })),
       formRow("Approving from a chat app", "Plans that widen permissions, go past the attempt limit or touch protected paths still open Toolroll.", select({ name: "chat-approve", label: "Approving from a chat app", current: "",
         items: [["", "Here, with my password"], ["1", "In my paired chat app, two taps"]] })),
+      formRow("Failed checks", "A repair stays inside the plan you approved. When it can't, or the tries run out, it comes to you.", select({ name: "repair-auto", label: "Failed checks", current: "",
+        items: [["", "Wait for me to start a repair"], ["1", "Repair them, up to 2 tries"]] })),
       html`<div class="k-acts">${btn("Review the terms", { variant: "primary", type: "submit" })}</div>`,
     ])) });
   const answer = view.problem ? notice(sentence(view.problem)) : view.said ? infoLine(sentence(view.said)) : "";
@@ -617,11 +619,11 @@ export function modePageHtml(view: ModePageView): Html {
 }
 
 /** /mode/confirm: every resolved term in words; the password signs exactly this digest (a changed form is refused). */
-export function modeCeremonyHtml(view: { name: string; project: string; words: string[]; chatApprove: boolean; hidden: Readonly<Record<string, string>> }): Html {
+export function modeCeremonyHtml(view: { name: string; project: string; words: string[]; chatApprove: boolean; repairAuto: boolean; hidden: Readonly<Record<string, string>> }): Html {
   return settingsSubPage("approval", `Sign the ${view.name} mode`, joinHtml([
     settingsSection({ id: "mode-terms", title: `What you sign for ${view.project}`,
       body: html`<ul class="k-ssec-lead">${view.words.map(words => html`<li>${words}</li>`)}</ul>` }),
-    kitSectionForm({ proof: view.chatApprove ? "mode-sign-chat-approve" : "mode-sign", action: "/mode/sign", id: "mode-sign-form", native: true, hidden: view.hidden,
+    kitSectionForm({ proof: view.repairAuto ? "mode-sign-repair" : view.chatApprove ? "mode-sign-chat-approve" : "mode-sign", action: "/mode/sign", id: "mode-sign-form", native: true, hidden: view.hidden,
       save: { label: "Sign it" }, confirm: `Sign the ${view.name} mode for ${view.project}`, body: html`` }),
     note(html`<a class="k-link" href="/mode">Back, and sign nothing</a>`),
   ]));

@@ -19,6 +19,8 @@
  * are one command.
  */
 
+import { telegramCardMessage } from "./card-render.js";
+import { flowDoneCard } from "./flow-result-card.js";
 import { applyTelegramQuestionReply, applyTelegramQuestionTap, openQuestionOf, telegramQuestionButtons } from "./subagent-question.js";
 import { acceptanceEvidenceText } from "./chat-acceptance.js";
 import { verifyApproverStanding } from "./principal.js";
@@ -1305,6 +1307,15 @@ async function deliverOne(
       parts = voiced.map(one => one.text);
       entities = voiced.map(one => one.entities);
     }
+    // A flow's result as a card (flow-result-card.ts): one more message, its tables as monospaced text.
+    const resultCard = offer === null ? sent?.card ?? flowDoneCard(store, notification, clock()) : null;
+    if (resultCard != null) {
+      const message = telegramCardMessage(resultCard);
+      entities = [...parts.map((_, at) => entities[at] ?? []), message.entities as TelegramEntity[]];
+      parts = [...parts, message.text];
+    }
+    // Its links stay on the words: the card follows them.
+    const keyedPart = parts.length - (resultCard != null ? 2 : 1);
     // A subagent's question (v93): its options and "Answer in words", for the person it asks.
     const asked = flowKeys === null && choiceKeys === null ? openQuestionOf(store, notification.dedupeKey) : null;
     const questionKeys = asked === null ? null : telegramQuestionButtons(store, binding, asked, clock());
@@ -1318,7 +1329,7 @@ async function deliverOne(
       }
     }
     for (const [index, part] of parts.entries()) {
-      const final = index === parts.length - 1;
+      const final = index === keyedPart;
       const decideKeys = decided === null ? [] : decideKeyboard(phoneOrigin, decided.rows);
       const keyboard = !final ? undefined : keys !== null ? [...keys.keyboard, ...(button === null ? [] : [button])] : decideKeys.length > 0 ? decideKeys : button !== null ? [button] : undefined;
       const sent = await sender(part, keyboard, undefined, entities[index]?.length ? entities[index] : undefined);

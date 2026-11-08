@@ -12,6 +12,8 @@ import { reclaimDatabase } from "./database-reclaim.js";
 import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
 import { codeMapRemoteChanged, codeMapShapeProblem, forgetCodeMap, V152_ADDED_COLUMNS, V152_SCHEMA } from "./code-map-store.js";
 import { readStamps, stampDigest, stampRefusal, V154_SCHEMA, type CheckStamp, type StampReading } from "./check-stamp.js";
+import { FINDING_SOURCES, FINDING_SOURCES_BEFORE_LEAD, V155_SCHEMA, V155_STEPS } from "./fleet-schema.js";
+import { V156_SCHEMA, V156_STEPS } from "./fallback-schema.js";
 import { refArchived, taskArchived } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -89,8 +91,9 @@ import { hashPassword, liveReleaseOf } from "./scope.js";
 import { currentLocalOwner, LOCAL_MODE_CONFINES, LOCAL_OWNER_LAPSED, localModeOn, localOwnerInFlight, localOwnerStandsNow, type Authority, type LocalMode } from "./local-owner.js";
 import { nightlyDebtHold } from "./nightly-github.js";
 import { releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
-import { APPROVAL_BASES, approvalOf, machineActing, personProof, proofDetailOf, quarantinedAuthor, sealOriginOf, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
+import { APPROVAL_BASES, approvalOf, machineActing, personProof, proofDetailOf, quarantinedAuthor, sealOriginOf, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, liveChainFromJson, CHAIN_DIGEST_VERSION, LIVE_CHAIN_VERSION, type ChainEntry, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
+import { bindRunToWalk, chainForFiling, chainJsonOf, chainSealProblem, fallbackStampProblem } from "./fallback.js";
 import {
   canonicalOverridesJson, canonicalRouteJson, isRiskLevel, isTaskSize, headroomFrom, makesNoPlan, legOf, overridesFromJson, phaseOfRole, recommendRoute, routeDigestOf, routeFromJson, routeProblems, routeStampProblem, ROUTE_ERA, type ExactSpec, type ProviderRoom, type CandidateTier, PROVIDER_ID_LIST, type TaskSize, type TaskSizing, type PhaseRoute, type PublicationAuthority, type RouteStamp, type ReadinessLookup, type ReadinessObservation, type ReadinessState, type RouteEvidenceKind, type RouteOverride,
 } from "./phase-routing.js";
@@ -139,7 +142,7 @@ import { PULL_REQUEST_SCHEMA } from "./pull-request-schema.js";
 import { chatTurnAmountOf, combineReportedModels, providerTurnsOf, reportedCostUsdOf, reportedModelOf, runAmountOf, type ReportedAmount } from "./reported-usage.js";
 import { usageOf } from "./run-efficiency.js";
 import { YOUIYOUX_FILED_VIA } from "./contracts/youiyoux-request.js";
-import { shownTermsDigest } from "./chat-terms.js";
+import { cardShowsScope, cardTermsDigest, shownTermsDigest } from "./chat-terms.js";
 
 // PR #263 follow-up: the built-ins the Store money seal uses, captured as this module is evaluated, so code that later
 // replaces `Object.defineProperty` and the like can't fool the seal or the lock (lockStoreMoneyMethods refuses when
@@ -1196,7 +1199,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // V153_SCHEMA, V153_ADDED_COLUMNS.
 // v154 adds, and changes no saved row (docs/plans/trusted-release-reports.md, H2): each check launch's execution stamp
 // (check_stamp, a new table; check-stamp.ts). A run from before reads no stamp: how its checks ran is unknown.
-export const SCHEMA_VERSION = 154;
+// v155 adds, and changes no saved row (docs/plans/fleet-follow-through.md): findings and their answers, check repairs,
+// before-and-after evidence and provider captures (V155_SCHEMA, new tables only; fleet-schema.ts).
+// v156 adds fallback chains (V156_SCHEMA, new tables only; fallback-schema.ts), after v155.
+export const SCHEMA_VERSION = 156;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1334,7 +1340,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1598,7 +1604,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2003,6 +2009,8 @@ export const V153_SCHEMA = VANISHED_SCHEMA + CHECK_ONLY_SCHEMA + BUILDER_SERVICE
 export const V153_STEPS = Object.freeze(["plain-tables", "plain-columns"] as const);
 /** The v154 migration's steps after v153's, in order (OpenOptions.migrationStep may stop after each). */
 export const V154_STEPS = Object.freeze(["check-stamps"] as const);
+export { V155_STEPS };
+export { V156_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -5981,7 +5989,8 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   }
   // A current file is this build's exact shape: the checks above read, the connection gets its settings, and no DDL
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
-  if (preflight === SCHEMA_VERSION) {
+  // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
+  if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
     const missing = codeMapShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
@@ -6358,6 +6367,17 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   // v154: each check launch's execution stamp (a new table). Idempotent, as v153's steps are.
   db.exec(V154_SCHEMA);
   step("check-stamps");
+  // v155: what happens to a result after its agent finishes (new tables only). Idempotent, as v154's step is.
+  db.exec(V155_SCHEMA);
+  step("follow-through-tables");
+  // A file from the first v155 builds keeps finding.source's CHECK without 'lead': rebuilt with every row, id and
+  // counter, then its index made again. Idempotent: a widened table is untouched.
+  widenFindingSources(db);
+  db.exec(V155_SCHEMA);
+  step("finding-sources");
+  // v156: fallback chains (new tables only). Idempotent, as v155's steps are.
+  db.exec(V156_SCHEMA);
+  step("fallback-tables");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -8594,8 +8614,9 @@ export class Store {
       mutation,
       "unhold",
       () => this.transact(() => {
+        // The operator's own hold, and the storage check's (dispose.ts holdForStorage): a person's "Try again".
         const { changes } = this.db
-          .prepare("DELETE FROM hold WHERE task_ref = ? AND owner_kind = 'operator'")
+          .prepare("DELETE FROM hold WHERE task_ref = ? AND (owner_kind = 'operator' OR (owner_kind = 'backoff' AND owner_id = 'storage:' || task_ref))")
           .run(taskRef);
         if (Number(changes) === 0) return false;
         this.bumpWake();
@@ -9319,10 +9340,19 @@ export class Store {
       // whatever route it managed to compute (a stated problem is a term
       // too); only a row with no route at all keeps the caller's draft
       // digest, and it can never be approved.
+      // THE FALLBACK CHAIN (fallback.ts): the project's agents, snapshotted here so the yes covers them. Only the road
+      // that resolved its own agents: an explicit profile (a frozen flow, a pinned filing) and a deploy keep exactly those.
+      let chain: ChainEntry[] | null = null;
+      if (profile !== null && options.profile === undefined && releaseTerms === null && releaseCheck === null && !scope.candidate && (ref?.deliverable ?? "branch") !== "report") {
+        const baseAuth = readAuthModeStrict(profile.provider);
+        const filing = baseAuth.ok ? chainForFiling(this, ref?.repo ?? null, profile, baseAuth.mode, lowered) : { ok: true as const, chain: null };
+        if (filing.ok) chain = filing.chain;
+        else { profile = null; unresolvedReason = filing.problem; }
+      }
       const digest =
         profile === null
           ? route !== null || qualityMode === "strict" ? digestOf(digestInput, null, route) : scope.digest
-          : digestOf(digestInput, profile, route);
+          : digestOf(digestInput, chain === null ? profile : { chain, version: LIVE_CHAIN_VERSION }, route);
       // THE AUTH MODE AT FILING (atomic authority closure): the credential
       // the resolved profile's provider would spend under is read strictly
       // here, on every road — explicit profile or resolved — so a present
@@ -9334,6 +9364,7 @@ export class Store {
         const filedAuth = readAuthModeStrict(profile.provider);
         if (!filedAuth.ok) {
           profile = null;
+          chain = null;
           unresolvedReason = filedAuth.problem;
           boundDigest = digestOf(digestInput, null, route);
         }
@@ -9374,8 +9405,7 @@ export class Store {
           unresolvedReason,
           profile === null ? 1 : 2,
           provenance,
-          // Fallback chains (v30-v114) are gone: no filing names one.
-          null,
+          chain === null ? null : chainJsonOf(chain),
           scope.acceptance.length === 0 ? null : JSON.stringify(scope.acceptance),
           qualityMode,
           // The declared risk level is gone (v115): every route is filed at
@@ -9439,7 +9469,9 @@ export class Store {
   sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat" | "grant" | "schedule" | "auto-check" | "auto-green"; modeDigest: string;
     /** A chat seal of a deploy gate: the release card it came from (chat-management.md §0a.5). A chat seal of a task
      * filed from outside text: `terms`, and the digest of every word the card showed (chat-terms.ts). */
-    card?: "release" | "terms"; cardDigest?: string }, approverKind?: ApproverKind): boolean {
+    card?: "release" | "terms" | "shown"; cardDigest?: string;
+    /** `shown`: the exact words a card showed whole, whose digest (kept when it was made) is `cardDigest`. */
+    shownTerms?: string }, approverKind?: ApproverKind): boolean {
     return (
       this.once(mutation, "sealScopeApproval", () => {
         // ONLY A PERSON'S SEAL HAS NO BASIS (approval policy, phase 1): with none given this is the person's
@@ -9458,11 +9490,17 @@ export class Store {
         // task — console, CLI `task scope`, and direct callers alike hit
         // this wall. The promise to the operator is a fresh password
         // ceremony that shows WHO asked; only `basis: password` seals it.
+        let personReadTerms = false;
         if (basis !== undefined) {
+          // A PERSON'S YES IN CHAT TO EVERY WORD (owner's decision, docs/plans/toolroll-cards.md): a chat seal carrying the
+          // words its card showed, with the digest kept when the card was made, is a person who read them, as the
+          // ceremony is. Nothing automatic (a mode, a grant, a schedule) ever gets through the walls below.
+          const liveScope = basis.kind === "chat" && basis.card === "shown" ? this.getScope(taskId) : null;
+          personReadTerms = liveScope !== null && typeof basis.shownTerms === "string" && basis.cardDigest === cardTermsDigest(basis.shownTerms) && cardShowsScope(liveScope, basis.shownTerms);
           const filedByCoordinator = this.db
             .prepare("SELECT 1 AS hit FROM task_ref WHERE backend = ? AND external_id = ? AND coordinator_cid IS NOT NULL")
             .get(BUILT_IN, taskId);
-          if (filedByCoordinator !== undefined) return false;
+          if (filedByCoordinator !== undefined && !personReadTerms) return false;
           // THE MATE QUARANTINE (mate arc, ruling 2): a scope a confirmed
           // lead proposal wrote is model-authored text; mode coverage never
           // seals it. Only the password ceremony — which shows the operator
@@ -9470,7 +9508,7 @@ export class Store {
           const writtenByLead = this.db
             .prepare("SELECT 1 AS hit FROM task_scope WHERE task_id = ? AND proposed_via IN ('mate','coordinator','scout')")
             .get(taskId);
-          if (writtenByLead !== undefined) return false;
+          if (writtenByLead !== undefined && !personReadTerms) return false;
           // THE OUTSIDE-REQUEST QUARANTINE (youiyoux-intake.ts): a task filed from a youiyoux change request is text
           // anyone who can write the project's folder wrote, so only a person who read every word of it approves it.
           // Its provenance is immutable, so no road around this exists. A mode, a grant, a schedule, auto-check and
@@ -9483,18 +9521,19 @@ export class Store {
           // ever seals it, here, whatever road it came by.
           if (basis.kind !== "chat" && issueImported(this, taskId)) return false;
           // CHECK ACCESS (v132, check-access.ts): a scope whose checks reach beyond the fence (sign-ins, or no sandbox at
-          // all) seals only on a person's password ceremony — never a mode, a grant, a chat confirmation or a carry.
+          // all) seals only on a person's own yes to those terms: the ceremony, or a chat card that showed every word —
+          // never a mode, a grant, a plain chat tap or a carry.
           const profileText = this.db.prepare("SELECT profile_json FROM task_scope WHERE task_id = ?").get(taskId)?.["profile_json"];
           let sealedAccess: unknown;
           // SANDBOX WIDENINGS (v133, project-sandbox.ts): extra macOS services seal, likewise,
-          // only on a person's own password yes to exactly them.
+          // only on a person's own yes to exactly them.
           let sandboxWidened = false;
           try {
             const stored = typeof profileText === "string" ? JSON.parse(profileText) as { profile?: Record<string, unknown> | null } | null : null;
             sealedAccess = stored?.profile?.["checkAccess"];
             sandboxWidened = stored?.profile?.["machLookup"] !== undefined;
           } catch { sealedAccess = "unreadable"; }
-          if (sealedAccess !== undefined || sandboxWidened) return false;
+          if ((sealedAccess !== undefined || sandboxWidened) && !personReadTerms) return false;
         }
         // SEPARATION OF DUTIES (v102), enforced in the primitive so no road
         // around it exists: a project's rules can refuse the requester, and
@@ -9545,7 +9584,7 @@ export class Store {
         if (purpose.purpose !== null && basis !== undefined && basis.kind !== "chat") return false;
         if (deployGate && basis?.kind === "chat" && !(basis.card === "release" && typeof basis.cardDigest === "string" && /^[0-9a-f]{64}$/.test(basis.cardDigest))) return false;
         // The outside-request quarantine's chat road (above): the card showed every word of these live terms.
-        if (basis?.kind === "chat" && (this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA || issueImported(this, taskId))
+        if (basis?.kind === "chat" && !personReadTerms && (this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA || issueImported(this, taskId))
           && !(basis.card === "terms" && typeof basis.cardDigest === "string" && basis.cardDigest === shownTermsDigest(readScope(working)))) return false;
         // AUTOMATIC RELEASE SEALS (auto-approve-green.md): only on a release task (a candidate and release terms signed
         // in), only naming the evidence row the plane wrote for exactly this task, kind, digest and candidate.
@@ -9561,17 +9600,18 @@ export class Store {
         // Nor does a fast start ever anchor a release, whoever approves it.
         if (terms.terms !== null && this.db.prepare("SELECT 1 AS hit FROM task_ref WHERE backend = ? AND external_id = ? AND fast_start_at IS NOT NULL").get(BUILT_IN, taskId) !== undefined) return false;
         if (terms.terms !== null && releaseSealProblem(this, terms.terms) !== null) return false;
+        // FALLBACK AGENTS (fallback.ts): a paid entry takes a person's own yes.
+        if (chainSealProblem(this, readScope(working), basis) !== null) return false;
         const changed = this.db
           .prepare(
             `UPDATE task_scope
                 SET approved_at = ?, approved_by = ?, approved_digest = digest,
                     approved_profile_json = profile_json,
                     approval_basis = ?, mode_digest = ?,
-                    -- A profile approval, always (fallback-chain approvals
-                    -- were removed in v115); a re-approval clears an old
-                    -- chain snapshot.
-                    approved_chain_json = NULL,
-                    approval_kind = 'profile',
+                    -- The chain seals as the profile does: copied, never
+                    -- re-resolved. No chain clears an old snapshot.
+                    approved_chain_json = proposed_chain_json,
+                    approval_kind = CASE WHEN proposed_chain_json IS NULL THEN 'profile' ELSE 'chain' END,
                     -- The ROUTE seals exactly as the profile does (v47):
                     -- copied, never re-resolved.
                     approved_route_json = proposed_route_json
@@ -14724,7 +14764,8 @@ export class Store {
    *     phase's exact leg. A planner may also run under the working
    *     proposed route, or — with no scope yet — the live recommendation,
    *     re-derived here from durable state. Nothing else.
-   *   fallback — never (fallback chains were removed in v115).
+   *   fallback — the walk's current entry of the sealed chain, exactly
+   *     (fallback.ts), and nothing else.
    *   legacy — only a row proven to predate routing or a task with no
    *     scope; never a routed row.
    */
@@ -14734,6 +14775,7 @@ export class Store {
       role: Run["role"] | "scout";
       provider: string;
       model: string | null;
+      parentRun?: number;
     },
     stamp: unknown,
     now: Date,
@@ -14779,7 +14821,7 @@ export class Store {
       // it spends as, never a live recommendation re-derived here.
       return "a task with no scope plans as the word legacy — nothing spends as a routed plan leg on it";
     }
-    if (leg.chosen === "fallback") return "fallback chains were removed — nothing spends as a fallback";
+    if (leg.chosen === "fallback") return fallbackStampProblem(this, run.taskRef, taskId, leg, run.parentRun ?? null);
     // legacy
     if (leg.routeDigest !== "legacy" && !leg.routeDigest.startsWith("profile:")) return `a legacy stamp names a profile digest or the word legacy, not ${leg.routeDigest}`;
     if (routed) {
@@ -14866,8 +14908,9 @@ export class Store {
       return { ok: false, reason: "unreadable", detail: scope.approvedRouteJson == null ? "the approval sealed no agent route — re-file the scope and approve it again" : "the approval's sealed agent route cannot be read — re-file the scope and approve it again" };
     }
     const fields = { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default", releaseTerms: scope.releaseTerms ?? null, releaseCheck: scope.releaseCheck ?? null };
-    const chain = scope.approvalKind === "chain" ? chainFromJson(scope.approvedChainJson ?? null) : null;
-    const target = chain !== null ? { chain } : (scope.approvedProfile ?? null);
+    const liveChain = scope.approvalKind === "chain" ? liveChainFromJson(scope.approvedChainJson ?? null) : null;
+    const chain = liveChain ?? (scope.approvalKind === "chain" ? chainFromJson(scope.approvedChainJson ?? null) : null);
+    const target = chain !== null ? { chain, version: liveChain !== null ? LIVE_CHAIN_VERSION : CHAIN_DIGEST_VERSION } : (scope.approvedProfile ?? null);
     if (target === null) return { ok: false, reason: "unreadable", detail: "the approval sealed no agent profile — re-file the scope and approve it again" };
     if (digestOf(fields, target, route) !== scope.approvedDigest) {
       return { ok: false, reason: "unreadable", detail: "the sealed agent route does not verify against the approval — re-file the scope and approve it again" };
@@ -15990,8 +16033,7 @@ export class Store {
     // route authority it holds — the sealed leg for its phase, the working
     // plan leg before approval, the sealed profile of a pre-routing row, the
     // bare word `legacy` on a task with no scope — or no row opens, in words.
-    // `fallback` provenance (an approved fallback entry, before v115) opens
-    // nothing.
+    // `fallback` provenance opens only the walk's current entry.
     const refuse: (problem: string) => never = problem => {
       throw new RunAdmissionRefused(`run admission refused for task_ref ${run.taskRef} (${role}): ${problem}`);
     };
@@ -16008,9 +16050,6 @@ export class Store {
     if (road.road === "correction" && role !== "reviewer") refuse("a correction child is a reviewer");
     if (road.road === "recovered" && role !== "builder") refuse("a recovered draft is a builder's");
     if (road.road === "repair" && run.parentRun === undefined) refuse("a repair turn mends exactly one live builder attempt — none was named");
-    if (run.route !== undefined && (run.route as { chosen?: unknown }).chosen === "fallback") {
-      refuse("fallback chains were removed — nothing opens as `fallback`");
-    }
     // EVERY run presents (atomic authority closure): a task with no scope
     // presents the bare word `legacy` for the pair it spends as; a task
     // with a scope presents the leg its authority names. Nothing opens
@@ -16232,6 +16271,8 @@ export class Store {
         .run(run.now.toISOString(), id, requestToConsume, run.parentRun ?? null);
       if (Number(consumed.changes) !== 1) refuse(`review request #${requestToConsume} was consumed under this admission — nothing reviews without it`);
     }
+    // ITS PLACE IN THE WALK (fallback.ts), in this same transaction: a run on a chain approval that can't take one rolls back.
+    { const unbound = bindRunToWalk(this, id, run.now); if (unbound !== null) refuse(unbound); }
     // The start fact (Telegram task updates), after every proof above so a
     // refused admission says nothing: one per ATTEMPT — a builder, planner
     // or scout head, or a root reviewer. A repair turn and a correction
@@ -26960,4 +27001,21 @@ export function taskCheckStamp(store: Store, repo: string, taskId: string): { ru
     if (store.artifactsFor(runId).some(one => one.kind === "check-log")) return { runId, reading: runCheckStamp(store, runId) };
   }
   return null;
+}
+
+/** Whether this file's finding table is the first v155 builds' shape: its source CHECK without 'lead'. */
+function findingSourcesStale(db: Database): boolean {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'finding'").get();
+  return row !== undefined && String(row["sql"]).includes(FINDING_SOURCES_BEFORE_LEAD);
+}
+
+/** Widen finding.source to admit 'lead' (rebuildExact: every row and id, the AUTOINCREMENT counter, what refers to it,
+ * in one transaction). Only the exact earlier shape is rebuilt; a widened table is untouched. */
+function widenFindingSources(db: Database): void {
+  if (!findingSourcesStale(db)) return;
+  const stored = String(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'finding'").get()!["sql"]);
+  if (stored.split(FINDING_SOURCES_BEFORE_LEAD).length !== 2) throw new Error("the finding table's DDL is not a shape this migration knows — refusing to widen it");
+  const named = (sql: string) => (name: string) => sql.replace(/^CREATE TABLE (?:IF NOT EXISTS )?"?finding"?/, `CREATE TABLE ${name}`);
+  const columns = db.prepare("PRAGMA table_info(finding)").all().map(one => String(one["name"]));
+  rebuildExact(db, "finding", named(stored), named(stored.replace(FINDING_SOURCES_BEFORE_LEAD, FINDING_SOURCES)), columns);
 }

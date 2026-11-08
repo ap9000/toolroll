@@ -189,9 +189,10 @@ function rowForForm(proof: string, action: string, hidden: Readonly<Record<strin
   const row = proofRow(proof);
   if (!row.routes.includes(action)) throw new Error(`${row.id} doesn't post to ${action}`);
   for (const name of Object.keys(hidden)) if (row.field === name || row.secrets.includes(name)) throw new Error(`${row.id}: ${name} is never a hidden value`);
-  // The exact variant: its own selector must be in the hidden terms, and no other variant's may be.
+  // The exact variant: its own selector must be in the hidden terms, and no other variant's may be, unless both are
+  // credential acts: two of those on one form ask the strongest proof there is, so nothing gets weaker.
   if (row.select !== undefined && String(hidden[row.select.field] ?? "") !== row.select.value) throw new Error(`${row.id} posts ${row.select.field}=${row.select.value}`);
-  for (const other of variantsOf(row)) if (other.select !== undefined && String(hidden[other.select.field] ?? "") === other.select.value) throw new Error(`${action} with ${other.select.field}=${other.select.value} is ${other.id}, not ${row.id}`);
+  for (const other of variantsOf(row)) if (other.select !== undefined && !(other.proof === "credential" && row.proof === "credential") && String(hidden[other.select.field] ?? "") === other.select.value) throw new Error(`${action} with ${other.select.field}=${other.select.value} is ${other.id}, not ${row.id}`);
   return row;
 }
 

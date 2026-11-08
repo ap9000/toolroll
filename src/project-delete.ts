@@ -67,6 +67,8 @@ const SETTINGS: [table: string, column: string][] = [
   ["intake_grant", "repo"], ["capability", "repo"], ["project_tool", "repo"],
   ["learning_policy", "repo"], ["operating_mode", "repo"], ["project_knowledge", "repo"], ["live_detail_setting", "repo"],
   ["project_decision", "repo"], ["flow_script", "repo"], ["workflow_recipe", "repo"], ["team_lead_project", "project"],
+  // Its fallback agents and, on the same row, its paid fallback grant (fallback.ts).
+  ["fallback_setting", "repo"],
 ];
 
 /** The project's Models rows, counted with its settings and deleted by forgetProjectModels only. */
@@ -274,6 +276,9 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("diff_comment", `${IN("run")} OR ${IN("reviewer_run")} OR ${IN("artifact")}`, R, R, A);
   del("review_request", `${IN("run")} OR ${IN("reviewer_run")}`, R, R);
   del("repair_chain", IN("source_run"), R);
+  // What happens to a result after its agent finishes (fleet-schema.ts): a project's own rows, answers first.
+  del("finding_answer", "finding IN (SELECT id FROM finding WHERE repo = ?)", repo);
+  for (const table of ["finding", "check_repair", "evidence_pair", "failing_first", "provider_capture"]) del(table, "repo = ?", repo);
   for (const table of ["incident", "proof_acceptance", "proof_verdict", "run_process", "run_route", "run_spend", "run_tool", "run_note", "run_stop", "run_checkpoint", "execution_slot"]) del(table, IN("run"), R);
   del("code_map_delivery", IN("run"), R);
   del("code_map_snapshot", IN("run"), R);

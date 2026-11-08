@@ -2,6 +2,7 @@
  * Lead fan-out (docs/plans/lead-fan-out.md): one sweep card files N ordinary tasks under one shared brief and approves
  * each one's scope with one ceremony — all filed or none; a child the approval refuses stays filed and unapproved.
  */
+import { setChatApproval } from "./chat-approval.js";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -157,6 +158,7 @@ describe("lead sweeps", () => {
       : null;
     return confirmLeadProposal(store, who, id, now, { authority: "full", 
       via: secure ? "web" : "telegram",
+      ...(secure ? { person: true } : {}),
       evidenceRoot: root,
       ...(review
         ? {
@@ -170,7 +172,7 @@ describe("lead sweeps", () => {
   const ACCEPTANCE = [{ id: "c1", statement: "Fixed with proof, or shown not reproducible.", evidence: ["check"] }];
   const sweepCard = (over: Record<string, unknown> = {}) => proposal("sweep_file", { repo, title: "Discord bug sweep", brief: "Reproduce first; not reproducible is a valid result.", items: ITEMS, acceptance: ACCEPTANCE, maxParallel: 2, ...over });
 
-  test("one card shows every item and the shared rules; a tap alone does nothing; the password files and approves all", () => {
+  test("one card shows every item and the shared rules; a first tap alone does nothing; the person's own yes files and approves all", () => {
     const id = sweepCard();
     const saved = store.getLeadProposal(id)!.payload as { title: string; terms: string[] };
     expect(saved.title).toContain("Discord bug sweep");
@@ -197,6 +199,13 @@ describe("lead sweeps", () => {
   test("all or none: a child that can't be filed files nothing — refused already at the card (the dry run)", () => {
     expect(() => sweepCard({ acceptance: [{ id: "", statement: "", evidence: [] }] })).toThrow(/can't be filed/);
     expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()!["n"])).toBe(0);
+  });
+
+  test("a person's own limits hold for each item: over them, it is filed and waits for its own approval", () => {
+    setChatApproval(store, { approver: who.name, scope: repo, enabled: true, limits: { fullAccess: false, capMicrousd: 1 }, via: "test" }, now);
+    const id = sweepCard();
+    expect(confirm(id, true)).toMatchObject({ ok: true });
+    for (const child of store.sweepTasks(store.sweepOfProposal(id)!)) expect(store.scopeSealed(child.rootTask)).toBe(false);
   });
 
   test("a project that keeps work from its requester: every child is filed and waits for its own approval", () => {

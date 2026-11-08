@@ -1,0 +1,111 @@
+name: Upgrade path
+
+# Pull requests that can affect an upgrade: scripts/upgrade-path.mjs, which installs recent releases from npm, gives each
+# a realistic database and moves it to this candidate. It lived only in the release check, so a broken upgrade passed all
+# of CI and cost a release approval (0.9.94: the updater queried a column before its migration).
+#
+# Which pull requests: the release check's own rule (scripts/ci-upgrade-scope.mjs), from the base revision's copy, run
+# by a job that loads nothing of the candidate's. Advisory like journeys.yml: not one of REQUIRED_PR_CHECKS, and left out
+# of the release verdict by name and workflow (release.ts ADVISORY_PR_CHECKS). The release check keeps its own upgrade step.
+#
+# The candidate runs as the user of its own (scripts/ci-candidate.mjs): no sudo, no token, an allowlisted environment.
+# This workflow has no secrets and reads only. The test needs the public npm registry, which that user already reaches
+# for `npm ci`.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels the run on its older head; never a release-* branch's run.
+concurrency:
+  group: upgrade-path-${{ (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-')) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    name: upgrade path · scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    outputs:
+      upgrade: ${{ steps.decide.outputs.upgrade }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          # The diff from the merge base needs both histories.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      # Until the base revision has the rule (the change that introduces it), the test simply runs.
+      - name: Can this change affect an upgrade
+        id: decide
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          script=.trusted-base/scripts/ci-upgrade-scope.mjs
+          if [ ! -f "$script" ]; then echo "::warning::the base revision has no upgrade rule yet; running the test"; echo "upgrade=run" >> "$GITHUB_OUTPUT"; exit 0; fi
+          node "$script" decide --base "$BASE" --head "$TESTED_SHA" --root . >> "$GITHUB_OUTPUT"
+
+  # Runs unless the rule said skip: a scope job that failed runs it.
+  upgrade:
+    name: upgrade path
+    needs: scope
+    if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.upgrade == 'skip') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          # upgrade-path.mjs picks the releases from the tags this commit contains.
+          fetch-depth: 0
+          # The candidate's copy of this checkout must hold no token.
+          persist-credentials: false
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The harness comes from the base revision: nothing the candidate wrote decides how it is run.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+      - name: The candidate's user and its copy of the checkout
+        shell: bash
+        run: |
+          harness=.trusted-base/scripts
+          if [ ! -f "$harness/ci-candidate.mjs" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts; fi
+          mkdir -p "$RUNNER_TEMP/harness"
+          cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$RUNNER_TEMP/harness/"
+          sudo -n "$(command -v node)" "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --npm-cache "$(npm config get cache)" --tool-cache "$RUNNER_TOOL_CACHE"
+      - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
+      # Inside this job, not beside it: what it proves is this job's own isolation.
+      - run: '"$RUNNER_TEMP/candidate" canary'
+      - run: '"$RUNNER_TEMP/candidate" run -- npm run build'
+      # The release check's default set: the last five releases, the baseline and 0.5.0.
+      - run: '"$RUNNER_TEMP/candidate" run --env CI=true -- node scripts/upgrade-path.mjs'

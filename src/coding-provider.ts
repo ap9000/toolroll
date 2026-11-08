@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { prepareProtectedStorage, storageRefusalOf } from "./protected-storage.js";
 import { TextDecoder } from "node:util";
 import { homedir, hostname } from "node:os";
 import { readDenyPath } from "./project-sandbox.js";
@@ -408,22 +409,25 @@ export function createCodexCodingProvider(options: { cwd?: string; command?: str
  * sessions have never had one). The worktree is bound to its project by the plane's own records first; anything that
  * doesn't prove refuses the session.
  */
-export function codingSessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, worktreeRoot: string): (input: { repo: string; worktree: string }) => CodingPermissions {
+export function codingSessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, worktreeRoot: string): (input: { repo: string; worktree: string }) => Promise<CodingPermissions> {
   return input => sessionPermissions(store, { ...input, worktreeRoot });
 }
 
-function sessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, input: { repo: string; worktree: string; worktreeRoot: string }): CodingPermissions {
+async function sessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, input: { repo: string; worktree: string; worktreeRoot: string }): Promise<CodingPermissions> {
   const databaseFile = store.databaseFile();
   if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return { problem: "The coding session has no state folder to fence, so it was not started." };
   try {
     const poolRoots = [join(dirname(databaseFile), "worktrees"), input.worktreeRoot, ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
     const binding = trustedWorktreeBinding(input.repo, input.worktree, poolRoots);
-    const boundary = taskBoundary({ worktree: input.worktree, provider: "codex", binding, policy: FENCE_POLICY_CURRENT });
+    // The storage check, awaited off this thread (protected-storage.ts).
+    const storage = await prepareProtectedStorage();
+    const boundary = taskBoundary({ worktree: input.worktree, provider: "codex", binding, policy: FENCE_POLICY_CURRENT, storage });
     // The project's read denies, read live (a session seals none; they only narrow).
     const readDeny = store.projectSandbox(input.repo).readDeny.map(one => readDenyPath(one, homedir()));
-    const launch = fenceFor("build", { databaseFile, worktree: input.worktree, boundary, binding, runFolders: runFolders(null), poolRoots, readDeny, policy: FENCE_POLICY_CURRENT });
+    const launch = fenceFor("build", { databaseFile, worktree: input.worktree, boundary, binding, runFolders: runFolders(null), poolRoots, readDeny, policy: FENCE_POLICY_CURRENT, storage });
     return { config: codexFenceConfig(launch.fence, false, launch.fenceGrants) };
-  } catch {
-    return { problem: "The session's worktree couldn't be bound to its project, so the session was not started." };
+  } catch (error) {
+    // The storage check's own words survive: what didn't finish, and which program macOS may need to allow.
+    return { problem: storageRefusalOf(error)?.message ?? "The session's worktree couldn't be bound to its project, so the session was not started." };
   }
 }

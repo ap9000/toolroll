@@ -19,6 +19,7 @@
  * the agent. A tool connected by signing in gives a run only an access token
  * of its own (oauth-run-token.ts).
  */
+import { prepareProtectedStorage, storageRefusalOf, type ProtectedStorage } from "./protected-storage.js";
 import { inReadOnlyRequest } from "./read-only-request.js";
 import { toolRefusal } from "./policy.js";
 import { createHash } from "node:crypto";
@@ -504,7 +505,7 @@ type McpRequest = { method: string; params: unknown; doing: string };
 type McpAnswer = { ok: true; result: unknown } | { ok: false; problem: string };
 
 /** Start the server once, ask for its tools, and stop it: the proof a build can use it. */
-export async function testTool(spec: ToolSpec, values: Record<string, string>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[]; server: ToolServer }): Promise<{ ok: true; tools: string[] } | { ok: false; problem: string }> {
+export async function testTool(spec: ToolSpec, values: Record<string, string>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[]; server: ToolServer | Promise<ToolServer> }): Promise<{ ok: true; tools: string[] } | { ok: false; problem: string }> {
   const answer = await exchange(spec, values, { method: "tools/list", params: {}, doing: "listing its tools" }, options);
   return answer.ok ? { ok: true, tools: toolNames(answer.result) } : answer;
 }
@@ -514,7 +515,7 @@ export async function testTool(spec: ToolSpec, values: Record<string, string>, o
  * its description, what input it takes, and whether it says it only reads.
  * A subagent is offered these, each under its own rule.
  */
-export async function listProjectToolActions(spec: ToolSpec, values: Record<string, string>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[]; server: ToolServer }): Promise<{ ok: true; actions: ToolActionInfo[] } | { ok: false; problem: string }> {
+export async function listProjectToolActions(spec: ToolSpec, values: Record<string, string>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[]; server: ToolServer | Promise<ToolServer> }): Promise<{ ok: true; actions: ToolActionInfo[] } | { ok: false; problem: string }> {
   const answer = await exchange(spec, values, { method: "tools/list", params: {}, doing: "listing its tools" }, options);
   return answer.ok ? { ok: true, actions: toolActions(answer.result) } : answer;
 }
@@ -537,7 +538,7 @@ export type ToolCall = { ok: true; text: string; isError: boolean } | { ok: fals
  * "Use a tool" step. The answer's text parts are kept; a tool that says it
  * failed (isError) is an answer, not trouble reaching it.
  */
-export async function callProjectTool(spec: ToolSpec, values: Record<string, string>, name: string, args: Record<string, unknown>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[]; server: ToolServer }): Promise<ToolCall> {
+export async function callProjectTool(spec: ToolSpec, values: Record<string, string>, name: string, args: Record<string, unknown>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[]; server: ToolServer | Promise<ToolServer> }): Promise<ToolCall> {
   const answer = await exchange(spec, values, { method: "tools/call", params: { name, arguments: args }, doing: `using ${name}` }, options);
   if (!answer.ok) return answer;
   const result = (answer.result ?? {}) as { content?: unknown; isError?: unknown; structuredContent?: unknown };
@@ -547,14 +548,18 @@ export async function callProjectTool(spec: ToolSpec, values: Record<string, str
   return { ok: true, text, isError: result.isError === true };
 }
 
-function exchange(spec: ToolSpec, values: Record<string, string>, request: McpRequest, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[]; server: ToolServer }): Promise<McpAnswer> {
+async function exchange(spec: ToolSpec, values: Record<string, string>, request: McpRequest, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[]; server: ToolServer | Promise<ToolServer> }): Promise<McpAnswer> {
+  // The server's fence may still be on its way (toolServerFor): an answer that isn't used is never an unhandled failure.
+  const served = Promise.resolve(options.server);
+  served.catch(() => undefined);
   const missing = missingSecrets(spec, values);
-  if (missing.length > 0) return Promise.resolve({ ok: false, problem: `Set ${missing.join(", ")} first.` });
+  if (missing.length > 0) return { ok: false, problem: `Set ${missing.join(", ")} first.` };
   const timeoutMs = options.timeoutMs ?? 60_000;
   if (spec.transport === "http") return exchangeHttp(spec, values, timeoutMs, request);
   // A local server starts only in the server fence its caller made (toolServerFor), never bare.
-  if ("problem" in options.server) return Promise.resolve({ ok: false, problem: options.server.problem });
-  return exchangeStdio(spec, values, timeoutMs, options.env ?? process.env, options.omitEnv ?? [], request, options.server.fence);
+  const server = await served;
+  if ("problem" in server) return { ok: false, problem: server.problem };
+  return exchangeStdio(spec, values, timeoutMs, options.env ?? process.env, options.omitEnv ?? [], request, server.fence);
 }
 
 function exchangeStdio(spec: ToolSpec, values: Record<string, string>, timeoutMs: number, base: NodeJS.ProcessEnv, omit: readonly string[], request: McpRequest, fence: LaunchFence | null): Promise<McpAnswer> {
@@ -1048,7 +1053,7 @@ export type ToolServer = { fence: LaunchFence | null } | { problem: string };
  * byte a build wrote can load into a process that holds the tool's secrets. Required: where this machine can't confine
  * it, it doesn't start unless an instance operator allowed unconfined agents.
  */
-export function toolServerFor(store: ToolServerStore, repo: string, options: { home?: string; available?: () => boolean } = {}): ToolServer {
+export async function toolServerFor(store: ToolServerStore, repo: string, options: { home?: string; available?: () => boolean } = {}): Promise<ToolServer> {
   const databaseFile = store.databaseFile();
   if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return { fence: null };
   const available = options.available ?? (() => macosFenceAvailable() || linuxFenceAvailable());
@@ -1058,7 +1063,14 @@ export function toolServerFor(store: ToolServerStore, repo: string, options: { h
   const poolRoots = [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
   const cache = buildCacheFolder(repo, home);
   const untrusted = existsSync(cache) ? [realpathSync(cache)] : [];
-  return { fence: fenceFor("tool-server", { databaseFile, worktree: null, home, boundary: null, binding: null, runFolders: runFolders(null), poolRoots, extra: untrusted }) };
+  // The storage check, awaited off this thread (protected-storage.ts): the console's Test button never waits on it.
+  let storage: ProtectedStorage;
+  try { storage = await prepareProtectedStorage(home); } catch (error) {
+    const refused = storageRefusalOf(error);
+    if (refused === null) throw error;
+    return { problem: refused.message };
+  }
+  return { fence: fenceFor("tool-server", { databaseFile, worktree: null, home, boundary: null, binding: null, runFolders: runFolders(null), poolRoots, storage, extra: untrusted }) };
 }
 
 /** Each project's `.mcp.json` as the console last read it off its thread (its background pass): what its pages and the

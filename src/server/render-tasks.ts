@@ -4,7 +4,8 @@ import { btn } from "./kit.js";
 import { whenUtc } from "../when-html.js";
 import { networkWords } from "../egress.js";
 import type { ReleaseView } from "../release-view.js";
-import { releaseAsksAgainWords, releaseTermsSentence } from "../scope.js";
+import { chainTermsLines, liveChainFromJson, releaseAsksAgainWords, releaseTermsSentence } from "../scope.js";
+import { SUBSCRIPTION_CAPABLE } from "../keys.js";
 import { RELEASE_CI_RUNNING_WORDS } from "../release-ci-hold.js";
 import { writesWords } from "../writes-mode.js";
 import { checkAccessWords } from "../check-access.js";
@@ -29,7 +30,8 @@ import { taskRoad, type RoadChecks } from "../first-run.js";
 import { starterForWork } from "../flow-starters.js";
 import { type Gap } from "../gaps.js";
 import { readAuthModeStrict } from "../keys.js";
-import { failedAttemptSentence,type FailureExplanation,retryNoteOf,START_BUILDER_COMMAND,startBuilderHref } from "../needs-you.js";
+import type { FollowThroughView } from "./render-follow-through.js";
+import { failedAttemptSentence,type FailureExplanation,retryNoteOf,START_BUILDER_COMMAND,startBuilderHref,STORAGE_HOLD_PREFIX } from "../needs-you.js";
 import { planVersionWords } from "../plain-words.js";
 import { chosenWords, makesNoPlan, PHASES as ROUTE_PHASES, type RouteOverride, type RouteProjection, TASK_SIZES } from "../phase-routing.js";
 import { type MilestoneState,parseExecutionPlanDocument } from "../plan.js";
@@ -372,6 +374,14 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   const allowed = permissionPlainWords(scope.profile);
   if (allowed !== null) allowing.push(allowed);
   allowing.push(scope.budgetMicrousd === null ? "no attempt limit" : `up to ${money(scope.budgetMicrousd)} per attempt`);
+  // Fallback agents are terms: who takes over when an agent runs out, with any that spend money said before the yes.
+  const chain = chainTermsLines(scope);
+  const fallbacks = liveChainFromJson(scope.proposedChainJson ?? null)?.slice(1) ?? [];
+  if (fallbacks.length > 0) {
+    const paid = fallbacks.filter(one => one.authMode === "api-key" || (SUBSCRIPTION_CAPABLE as Record<string, boolean>)[one.profile.provider] !== true);
+    // Each agent named once, the paid one said where it stands in the order.
+    allowing.push(`if it runs out of its plan, the work moves to ${fallbacks.map(one => `${agentNameWords(one.profile.provider, one.profile.model)}${paid.includes(one) ? " on an API key, which spends money" : ""}`).join(", then ")}`);
+  }
   const earlier = earlierVersionsWords(input.earlier.active, input.earlier.running);
   if (earlier !== null) allowing.push(earlier);
   const yoursToCheck = scope.acceptance.filter(one => one.evidence.includes("manual-review")).map(one => one.statement.trim().replace(/[.\s]+$/, ""));
@@ -507,6 +517,7 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
       row("Changes", changes),
       row("Won’t touch", html`<p>${scope.outOfScope === null ? "Nothing is ruled out." : scope.outOfScope}</p>`),
       row("Done when", doneWhen),
+      chain.length === 0 ? "" : row("If it runs out", html`<p>${chain[0]!}</p><ol class="approval-steps" data-approval-fallback>${chain.slice(1).map(one => html`<li>${one.replace(/^\d+\. /, "")}</li>`)}</ol>`),
       html`</dl>`,
       amendment,
       // The size, said once and plainly beside who builds: "Small change: fast model, no plan".
@@ -1177,6 +1188,7 @@ export function statusActionHref(status: DisplayStatus, taskId: string, runId: n
     case "open-review": return repo === undefined ? reviewHref(taskId) : reviewHref(taskId, runId);
     case "open-run": return runId === null ? taskHref(taskId) : `/r/${runId}`;
     case "open-pr": return safePrUrl(prUrl) ?? (repo === undefined ? reviewHref(taskId) : reviewHref(taskId, runId));
+    case "open-findings": return `${taskHref(taskId)}#findings`;
     case "open-task":
     default: return taskHref(taskId);
   }
@@ -1555,6 +1567,8 @@ export function taskBodyParts(data: {
   routeChange?: string | null;
   /** A fast start's result grew past a small change (fast-start.ts): its sentence, and the one act on. */
   fastGrown?: string | null;
+  /** Findings, failed checks, before and after, and the handover note (render-follow-through.ts). */
+  followThrough?: FollowThroughView | null;
   /** Easy-start C5: the viewer is a laptop's local owner — whether this plan is one it approves without a password. */
   approvalLocal?: LocalApprovalView | null;
   /** Cockpit B2: how the current approval's person was proved (approval proved ledger), when it was a remembered one. */
@@ -1764,7 +1778,7 @@ export function taskBodyParts(data: {
           case "select-agent": return html` <a href="#scope">Choose an available provider and model</a>.`;
           case "approve-scope": return html` <a href="#approve">Review the plan and approve it</a>.`;
           case "answer-decision": return html` <a href="#decisions">Answer the waiting question</a>.`;
-          case "unhold": return html` Use <strong>Remove hold</strong> when it can continue.`;
+          case "unhold": return diagnosis.code === "storage-blocked" ? html` Use <strong>Try again</strong> once it's allowed.` : html` Use <strong>Remove hold</strong> when it can continue.`;
           // The reason is the detail itself; Retry is the status card's own act, said once.
           case "retry-task": return "";
           case "repair-capability": return html` <a href="/caps">Repair the requirement</a>.`;
@@ -1985,7 +1999,8 @@ export function taskBodyParts(data: {
       : joinHtml([
         html`<h2>Holds</h2>`,
         joinHtml(data.holds.map(
-          hold => html`<p class="row">${holdOwnerWords(hold.ownerKind)} — ${hold.reason}${hold.until === null ? "" : html` <span class="meta">until ${whenTime(hold.until)}</span>`}</p>`,
+          // The storage check's hold (dispose.ts holdForStorage) says what it waits for, in the check's own words.
+          hold => html`<p class="row">${hold.ownerKind === "backoff" && hold.reason.startsWith(STORAGE_HOLD_PREFIX) ? `waiting for macOS permission — ${hold.reason.slice(STORAGE_HOLD_PREFIX.length)}` : `${holdOwnerWords(hold.ownerKind)} — ${hold.reason}`}${hold.until === null ? "" : html` <span class="meta">until ${whenTime(hold.until)}</span>`}</p>`,
         ), "\n"),
         html`<p class="meta">Only your hold can be lifted here. Waits for a question, repeated failures or a retry clear on their own.</p>`,
       ]);
@@ -2515,7 +2530,9 @@ export function taskBodyParts(data: {
     // to "plan first" adds a second, unnecessary decision at the exact
     // moment the page should have one obvious action.
     stopControlsActive || canPlan || !canHold ? "" : holdAct,
-    data.holds.some(hold => hold.ownerKind === "operator") ? act("unhold", "Remove hold") : "",
+    data.holds.some(hold => hold.ownerKind === "operator") ? act("unhold", "Remove hold")
+      // The storage check couldn't finish (dispose.ts holdForStorage): one tap tries again now.
+      : data.holds.some(hold => hold.ownerKind === "backoff" && hold.ownerId === `storage:${hold.taskRef}`) ? act("unhold", "Try again") : "",
     html`</div>`,
     primaryAct === null ? "" : html`<p class="meta acts-why acts-why-${primaryAct.whyClass}">${primaryAct.why}</p>`,
     data.claimed && !stopControlsActive
@@ -2688,6 +2705,10 @@ export function taskBodyParts(data: {
     data.assignment == null ? section("attempts", runs, true, data.runs.length) : section("Build activity", data.runs.length === 0 ? "" : runRows, false, data.runs.length, "attempts"),
     section("usage", spendCard, false),
     section("steering", steeringCard, (data.steering ?? []).length > 0, (data.steering ?? []).length),
+    data.followThrough == null ? "" : section("findings", data.followThrough.findings, data.followThrough.openFindings > 0, data.followThrough.findingCount),
+    data.followThrough == null ? "" : section("failed checks", data.followThrough.repairs, true),
+    data.followThrough == null ? "" : section("before and after", data.followThrough.evidence, false),
+    data.followThrough == null ? "" : section("handover note", data.followThrough.handover, false),
     section(
       "plan",
       // The recipe road rides with the scope it reuses (UI polish

@@ -1405,6 +1405,34 @@ describe("toolroll release: Codex review round 1", () => {
     expect(filed).toEqual([`${gateTaskId("0.9.52", SHA)}-2`]);
   });
 
+  test("a pass an earlier failure stands against: --new on the same commit is a new task for a person, as the message says", async () => {
+    const dir = stateDir();
+    const { s, adapters } = releaseWorld();
+    adapters.release!.standing = async () => ({ ok: false, why: "an earlier check of this commit (run 7) failed", retried: [] });
+    const stopped = await runRelease(options(dir), adapters);
+    expect(stopped).toMatchObject({ ok: false, reason: "check-failed", message: expect.stringContaining("--new") });
+    const first = stopped.journal!.task.id;
+    const filed: string[] = [];
+    const fileGate = adapters.toolroll.fileGate;
+    adapters.toolroll.fileGate = async input => { filed.push(input.taskId); return fileGate(input); };
+    await runRelease(options(dir, { fresh: true, limits: { approval: 1 } }), adapters);
+    expect(filed).toEqual([`${first}-2`]);
+    expect(s.calls).not.toContain("merge");
+  });
+
+  test("--new on a new commit after a stopped check keeps its ordinary task", async () => {
+    const dir = stateDir();
+    const { s, adapters } = releaseWorld();
+    adapters.release!.standing = async () => ({ ok: false, why: "an earlier check of this commit (run 7) failed", retried: [] });
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "check-failed" });
+    s.branchHead = OTHER; s.pr.head = OTHER; s.trees.set(OTHER, TREE);
+    const filed: string[] = [];
+    const fileGate = adapters.toolroll.fileGate;
+    adapters.toolroll.fileGate = async input => { filed.push(input.taskId); return fileGate(input); };
+    await runRelease(options(dir, { fresh: true, limits: { approval: 1, ci: 1 } }), adapters);
+    expect(filed.every(id => id === gateTaskId("0.9.52", OTHER))).toBe(true);
+  });
+
   test("security review: --new after a CI failure files an id that never existed, never a task whose approval stands", async () => {
     const dir = stateDir();
     const { s, adapters, rel } = releaseWorld();

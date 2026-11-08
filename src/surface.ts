@@ -1,5 +1,6 @@
 import { KNOWLEDGE_DESCRIPTORS } from "./knowledge-cli.js";
 import { MEMORY_DESCRIPTORS } from "./memory-cli.js";
+import { CARD_DESCRIPTOR } from "./card-cli.js";
 import { FLAKY_DESCRIPTORS } from "./flaky-cli.js";
 import { MODELS_DESCRIPTORS } from "./models-cli.js";
 import { MAP_DESCRIPTORS } from "./code-map-cli.js";
@@ -133,6 +134,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
 
   ...KNOWLEDGE_DESCRIPTORS.map(spec => ({ invocation: `knowledge ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text or source file for impact" }] } : {}) })),
   ...MEMORY_DESCRIPTORS.map(spec => ({ invocation: `memory ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text, a decision id, or the decision sentence" }] } : {}) })),
+  { invocation: CARD_DESCRIPTOR.invocation, synopsis: CARD_DESCRIPTOR.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: "none" as const, flags: CARD_DESCRIPTOR.flags, positionals: [{ name: "source", required: true, meaning: "which data to show" }] },
   ...FLAKY_DESCRIPTORS.map(spec => ({ invocation: `flaky ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "identity", required: true, meaning: "a row's key from flaky list" }] } : {}) })),
   // Flow writes carry an approver's credential: an agent runs them only as the person asked, after showing the preview.
   // Letting a flow run on its own raises authority: the owner's own password ceremony, never an agent's act.
@@ -343,7 +345,19 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "digest", takesValue: true, meaning: "the exact receipt from assignment show; accepts and finishes exactly that result" },
       { name: "despite", takesValue: true, meaning: "accept with this reason, without finishing; never combines with --finish or --digest (--note is its alias)" }],
     notableReasons: ["usage", "unknown-task", "no-run", "not-ready"] },
-  operator("task repair", "inspect or approve an existing historical repair draft; use task revise for new feedback"),
+  operator("task repair", "inspect or approve a repair draft; --yes starts the repair a failed check is waiting for, under the normal plan approval"),
+  operatorRead("task handover", "where a task stands, from Toolroll's records: revision, decisions, rejected approaches, open findings, checks and the next action"),
+  operator("task before-after", "before-and-after evidence: read it, save a failing result, or rerun the same check on the latest commit with no agent"),
+  operator("task failing-first", "ask a bug fix's next attempt to write a failing test first (on|off); shown in the result as the agent's report"),
+  operatorRead("finding list", "findings still waiting on someone, or every finding of --task <id>"),
+  operatorRead("finding show", "one finding: its text, evidence and how it stands"),
+  operator("finding send", "send a finding to the task that owns the code; the owner must accept it or reject it with a reason"),
+  operator("finding resend", "send an answered finding back, one more round; past the limit it goes to a person"),
+  operator("finding close", "a person's decision on a finding"),
+  operatorRead("captures list", "what providers said when attempts failed, the ones mentioning limits first; nothing routes on these"),
+  operatorRead("captures show", "one saved provider failure"),
+  operatorRead("captures export", "one saved provider failure as a fixture"),
+  operator("captures mark", "a person's reading of a capture: exhausted or not-exhausted"),
   operator("task route", "which configured agents plan, build and repair this task; phase and size changes require renewed approval"),
   operator("task reopen", "resume external work its tracker closed and has been SEEN open again"),
   operator("task stop", "stop ONE exact live attempt (--run <id>): durable before any process is signalled, answers 'stopping' until its own processes are established gone; work, branch, and evidence preserved; no strike, no retry"),
@@ -529,6 +543,11 @@ const REMOTE_NO: readonly string[] = [
   // Reads this machine owner's own Claude and Codex session files (~/.claude, ~/.codex).
   "memory propose",
 ];
+const REMOTE_FOLLOW_THROUGH: readonly string[] = [
+  // On the server's machine or in the console: each writes through a verified person, and they read saved model text.
+  "task handover", "task before-after", "task failing-first", "finding list", "finding show", "finding send", "finding resend", "finding close",
+  "captures list", "captures show", "captures export", "captures mark",
+];
 const REMOTE_STEP_UP: readonly string[] = [
   "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle",
   // Putting tasks away and restoring them: a person's act, in the console or on the server's machine.
@@ -553,7 +572,7 @@ const REMOTE_YES: readonly string[] = [
   "knowledge search", "knowledge impact", "knowledge refresh",
   "map", "map area", "map file", "map search", "map refresh",
   "memory search", "memory decisions", "memory show", "memory review", "memory status",
-  "flaky list", "flaky show",
+  "flaky list", "flaky show", "card",
   "flows list", "flows show", "flows export", "flows create", "flows edit", "flows trigger add", "flows trigger pause", "flows trigger resume",
   "flows trigger remove", "flows card add", "flows archive",
   "models status", "models list",
@@ -562,11 +581,12 @@ const REMOTE_YES: readonly string[] = [
 /** Every row's remote policy, by invocation. Exported for the contract test, which holds it to the guide exactly. */
 export const REMOTE_POLICY: ReadonlyMap<string, RemotePolicy> = new Map([
   ...REMOTE_NO.map(invocation => [invocation, "no"] as const),
+  ...REMOTE_FOLLOW_THROUGH.map(invocation => [invocation, "no"] as const),
   ...REMOTE_STEP_UP.map(invocation => [invocation, "step-up"] as const),
   ...REMOTE_YES.map(invocation => [invocation, "yes"] as const),
 ]);
 /** How many times each invocation was classified — the contract test refuses a row stated twice. */
-export const REMOTE_POLICY_COUNT: number = REMOTE_NO.length + REMOTE_STEP_UP.length + REMOTE_YES.length;
+export const REMOTE_POLICY_COUNT: number = REMOTE_NO.length + REMOTE_FOLLOW_THROUGH.length + REMOTE_STEP_UP.length + REMOTE_YES.length;
 
 /**
  * Easy-start C3: the commands a laptop's local owner may run through the terminal UI (local-owner.ts runAsLocalOwner),
@@ -576,7 +596,7 @@ export const REMOTE_POLICY_COUNT: number = REMOTE_NO.length + REMOTE_STEP_UP.len
 const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   // Reads.
   pulls: "read", graph: "read", repos: "read", map: "read", "map area": "read", "map file": "read", "map search": "read", status: "read", ready: "read", gaps: "read", contract: "read", "skills list": "read", "skills get": "read",
-  "flaky list": "read", "flaky show": "read", "memory review": "read", "memory status": "read", "memory decisions": "read", "memory show": "read",
+  "flaky list": "read", "flaky show": "read", card: "read", "memory review": "read", "memory status": "read", "memory decisions": "read", "memory show": "read",
   // Learning loops (D3): a lesson note or a clean-up, decided by a person at the laptop (the writers check the act).
   "memory apply": "memory-review", "memory tidy": "memory-review", "memory restore": "memory-review", "memory unmerge": "memory-review",
   "task list": "read", "task show": "read", "task state": "read", "task wait": "read", "check-progress": "read", "review show": "read", welcome: "read",

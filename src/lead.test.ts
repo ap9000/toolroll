@@ -962,7 +962,9 @@ describe("the lead's turn", () => {
       // an answer (decision): a prerequisite is never behind find_tools.
       for (const prerequisite of ["search_project_memory", "get_capabilities", "get_result", "get_decision", "find_tools"]) expect(LEAD_CORE_TOOLS.has(prerequisite), prerequisite).toBe(true);
       const bytes = (list: readonly unknown[]) => list.reduce<number>((sum, one) => sum + JSON.stringify(one).length, 0);
-      expect(bytes(LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)))).toBeLessThan(26_000);
+      // 27,000 since the follow-through acts (finding_send, finding_resend: their finding, file, line and pointer fields)
+      // joined propose_action, a core tool chat parity needs; was 26,000. Every other core tool's schema is unchanged.
+      expect(bytes(LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)))).toBeLessThan(27_000);
       expect(bytes(LEAD_TOOL_SCHEMAS)).toBeGreaterThan(60_000);
     });
   });

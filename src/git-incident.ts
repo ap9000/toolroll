@@ -11,7 +11,8 @@
  * Nothing is rolled back automatically: where a swapped folder leads is the agent's choice, and the plane never runs
  * git there on its say (a confused deputy); what git wrote is for a person, named in the record.
  */
-import { appendFileSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, closeSync, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname } from "node:path";
 
 export type GitIncident = {
@@ -20,6 +21,11 @@ export type GitIncident = {
   repository: string;
   /** Folders of the repository found swapped, and where each now leads (null: its pointers changed instead). */
   swapped: { path: string; leadsTo: string | null }[];
+  /** What changed: a folder swapped for a link, the checkout's pointers naming another git directory, or a folder on the
+   * way to its own moved. Absent on older records. */
+  cause?: "swapped" | "rebound" | "moved";
+  /** What the plane was doing, in a person's words ("tidying an old checkout"). Absent on older records. */
+  doing?: string;
 };
 
 type Listener = (incident: GitIncident) => void;
@@ -32,8 +38,9 @@ export function onGitIncident(listener: Listener): () => void {
 }
 
 /** Record and tell one incident. */
-export function gitIncident(input: { checkout: string; repository: string; swapped: GitIncident["swapped"]; record: string }): GitIncident {
-  const incident: GitIncident = { at: new Date().toISOString(), checkout: input.checkout, repository: input.repository, swapped: input.swapped };
+export function gitIncident(input: { checkout: string; repository: string; swapped: GitIncident["swapped"]; cause?: GitIncident["cause"]; doing?: string; record: string }): GitIncident {
+  const incident: GitIncident = { at: new Date().toISOString(), checkout: input.checkout, repository: input.repository, swapped: input.swapped,
+    ...(input.cause === undefined ? {} : { cause: input.cause }), ...(input.doing === undefined ? {} : { doing: input.doing }) };
   try { appendFileSync(input.record, `${JSON.stringify(incident)}\n`, { mode: 0o600 }); } catch { /* still told */ }
   if (listeners.size === 0) process.stderr.write(`Toolroll git incident: ${JSON.stringify(incident)}\n`);
   for (const listener of listeners) { try { listener(incident); } catch { /* every listener hears it */ } }
@@ -58,16 +65,62 @@ const noticed = new WeakSet<object>();
 export function noticeGitIncidents(outbox: IncidentOutbox, now: () => Date = () => new Date(), record = "~/.toolroll/git-incidents.jsonl"): () => void {
   if (noticed.has(outbox)) return () => {};
   noticed.add(outbox);
+  /** Distinct changes told today, by day and checkout (only today's are kept). */
+  const seenChanges = new Map<string, Set<string>>();
   const stop = onGitIncident(incident => {
     const main = basename(incident.repository) === ".git" ? dirname(incident.repository) : incident.repository;
     const real = (path: string): string | null => { try { return realpathSync(path); } catch { return null; } };
     const known = outbox.listProjects().find(project => real(project.path) !== null && real(project.path) === real(main)) ?? null;
+    // One notice per checkout, per cause, per day: a sweep that meets the same checkout again tells nobody twice. The
+    // words say what Toolroll was doing; the paths stay in the record file (an agent's repository can spell them).
+    const at = now();
+    const checkout = createHash("sha256").update(incident.checkout, "utf8").digest("hex").slice(0, 16);
+    // What changed is part of the key: the same state met again stays quiet, but a new swap (another folder, or one now
+    // leading somewhere else) is told even on the same checkout and day.
+    // An agent chooses where a swapped folder leads, so distinct changes are capped: at most INCIDENT_CHANGES_PER_DAY a
+    // checkout a day, then one last notice for the rest of that day (every incident is still recorded and refused).
+    const day = at.toISOString().slice(0, 10);
+    const changed = createHash("sha256").update(JSON.stringify(incident.swapped.map(one => [one.path, one.leadsTo]).sort()), "utf8").digest("hex").slice(0, 16);
+    for (const key of seenChanges.keys()) if (!key.startsWith(`${day}:`)) seenChanges.delete(key);
+    const seen = seenChanges.get(`${day}:${checkout}`) ?? new Set<string>();
+    if (!seen.has(changed) && seen.size < INCIDENT_CHANGES_PER_DAY) seen.add(changed);
+    seenChanges.set(`${day}:${checkout}`, seen);
+    const slot = seen.has(changed) ? changed : "more";
+    const doing = incident.doing ?? "running git";
     outbox.enqueueNotification({
-      dedupeKey: `git-incident:${incident.at}:${known?.path ?? "unrecorded"}`, kind: "git-incident", pushClass: "attention",
+      dedupeKey: `git-incident:${day}:${checkout}:${incident.cause ?? "changed"}:${slot}`, kind: "git-incident", pushClass: "attention",
       source: known === null ? { installation: true } : { project: known.path },
-      subject: `Git incident in ${known === null ? "a project" : known.name}: a folder of its repository changed while Toolroll's git ran`,
-      body: `Toolroll stopped trusting that git command and changed nothing more. Nothing was rolled back: check the repository by hand. The checkout and the folders that changed are in ${record}.`,
-    }, now());
+      subject: `Git incident in ${known === null ? "a project" : known.name}: a folder of its repository changed while Toolroll was ${doing}`,
+      body: "Toolroll stopped trusting that git command and changed nothing more. Nothing was rolled back: check the repository by hand. The checkout and the folders that changed are in ~/.toolroll/git-incidents.jsonl. Toolroll leaves that checkout alone for a day.",
+    }, at);
   });
   return () => { stop(); noticed.delete(outbox); };
 }
+
+/** How long a checkout that had a git incident is left alone by tidying (worktree.ts inspect): a day. */
+export const INCIDENT_QUIET_MS = 24 * 60 * 60_000;
+
+/**
+ * Whether `checkout` had a git incident recorded since `since`: the last 256 KB of the record, read without following
+ * a link. A record that can't be read says no (tidying then runs, and a real incident is still caught and told).
+ */
+export function recentGitIncident(record: string, checkout: string, since: Date): boolean {
+  let fd: number | null = null;
+  try {
+    fd = openSync(record, "r");
+    const size = fstatSync(fd).size, length = Math.min(size, 256 * 1024);
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, size - length);
+    for (const line of buffer.toString("utf8").split("\n").reverse()) {
+      if (line.trim() === "") continue;
+      let read: { at?: unknown; checkout?: unknown };
+      try { read = JSON.parse(line) as typeof read; } catch { continue; }
+      if (typeof read.at !== "string" || Date.parse(read.at) < since.getTime()) continue;
+      if (read.checkout === checkout) return true;
+    }
+    return false;
+  } catch { return false; } finally { if (fd !== null) closeSync(fd); }
+}
+
+/** How many distinct changes on one checkout reach a person in a day before the rest share one last notice. */
+export const INCIDENT_CHANGES_PER_DAY = 3;

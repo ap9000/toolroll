@@ -1321,7 +1321,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       // Scope: rewritten through the guarded proposal; approval is the password ceremony, reached by one precise button under a trusted origin.
       origin = "https://console.example";
       const scope = card("scope", { task: "d", taskTitle: "work d", goal: "Do d with a smaller blast radius", acceptance: [{ id: "c1", statement: "d is smaller", evidence: ["manual-review"] }], sawDigest: store.getScope("d")?.digest ?? null });
-      expect(scope.preview.text).toContain("the new scope still needs your password approval");
+      expect(scope.preview.text).toContain("the new scope still needs your approval");
       expect(await tapPass(scope.confirm, scope.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
       expect(outcome(scope.id).outcome).toMatchObject({ ok: true, via: "telegram" });
       expect(store.getScope("d")).toMatchObject({ goal: "Do d with a smaller blast radius", proposedVia: "mate" });
@@ -1458,22 +1458,17 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(await tapPass(stop.confirm, stop.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
       expect(store.stopOf(run)).toMatchObject({ requestedBy: "alex", requestedVia: "telegram", settledAt: null });
       expect(outcome(stop.id).outcome).toMatchObject({ ok: true, said: `Stop requested for t, run #${run}.`, via: "telegram" });
-      // Resume is a password ceremony: the card says so before and after, and confirming resumes nothing.
+      // Resuming is the person's own approval: their tap on the card lifts the stop (owner's decision, toolroll-cards.md).
       // The stopped attempt ends and its stop settles, so the task is paused — the state a resume card is minted from.
       store.finishRun(run, { outcome: "failed", reason: "interrupted", committed: true, now });
       expect(store.stopOf(run)?.settledAt).not.toBeNull();
       origin = "https://console.example";
       const resume = card("task_action", { task: "t", taskTitle: "work t", operation: "resume", run, stamp: stamp("t") });
-      expect(resume.preview.text).toContain("Confirming only requests the resume. Work resumes after the password step on the task, not from here.");
-      expect(urlButtons(script.sends().at(-1))).toEqual([]);
-      const stateBefore = store.getTask("t")?.state;
-      expect(await tapPass(resume.confirm, resume.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
-      expect(script.edits().at(-1)).toBe("✓ Resume review requested for t. Complete the password confirmation on the task to resume.\n\nNothing has resumed yet: the password step on the task finishes it.");
-      expect(script.edits().at(-1)).not.toMatch(/resumed\.|is running/);
-      expect(urlButtons(lastEdit())).toEqual([["Open task", "https://console.example/chat?task=t"]]);
-      expect(store.getTask("t")?.state).toBe(stateBefore);
-      expect(store.stopOf(run)).toMatchObject({ requestedVia: "telegram", resumedAt: null, resumedVia: null });
-      expect(TELEGRAM_ACTION_PARITY["propose_task_action"]?.gap).toContain("resume completes in the console");
+      expect(resume.preview.text).toContain("Lifts this stop’s hold");
+      // The tap reaches the real resume, whose own guard holds here: this task's claim is still live.
+      expect(await tapPass(resume.confirm, resume.messageId)).toMatchObject({ ok: true });
+      expect(script.edits().at(-1)).toContain("nothing resumes over live work");
+      expect(store.stopOf(run)).toMatchObject({ requestedVia: "telegram", resumedAt: null });
     });
 
     test("review note saves feedback without a revision; cancel and console controls are handoffs with no button", async () => {

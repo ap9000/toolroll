@@ -22,9 +22,12 @@ import { adapterFor, auditOf, claudePluginEnv, isolationUnsupported, ALL_CREDENT
 import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV, type AuthMode } from "./keys.js";
 import { ACP_AGENTS, isAcpProvider, isKeyedProvider, type AcpProviderId } from "./acp-agents.js";
 import { launchFromJson, verifyLaunch } from "./acp-attest.js";
-import { classifyTerminal } from "./exhaustion.js";
+import { classifyTerminal, terminalMatchesLimit } from "./exhaustion.js";
+import { captureProviderFailure } from "./provider-capture.js";
+import { chainCustodyProblem, closeWalkSignedOut, pinnedEntryOf } from "./fallback.js";
+import { codexLoginBilling, livePlanLogin, PLAN_LOGIN_PROVABLE } from "./plan-login.js";
 import { liftAuthPause } from "./provider-auth.js";
-import { attestProvider, type VersionProbe } from "./attest.js";
+import { attestProvider, reportedVersion, type VersionProbe } from "./attest.js";
 import { run as runCommand, runOwnerTag, streamsInput } from "./exec.js";
 import { spawnSync } from "node:child_process";
 import { currentContainment } from "./containment.js";
@@ -40,6 +43,7 @@ import { homedir, tmpdir } from "node:os";
 import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
+import { prepareProtectedStorage, storageRefusalOf, type ProtectedStorage } from "./protected-storage.js";
 import { checkLaunchRoot, signInGrants, signInIsItself, type NetworkFence, type SignInGrants } from "./agent-fence.js";
 import { localModeOn } from "./local-owner.js";
 import { CHECK_STAMP_VERSION, EVERYWHERE, unfencedStamp, type CheckStamp } from "./check-stamp.js";
@@ -172,7 +176,7 @@ export type InvokeResult =
   | { kind: "ran"; outcome: AgentOutcome }
   | {
       kind: "refused";
-      reason: "provider-unattested" | "provider-protocol" | "runner-custody" | "auth-mode" | "route-authority" | "stopped" | "containment";
+      reason: "provider-unattested" | "provider-protocol" | "runner-custody" | "auth-mode" | "route-authority" | "stopped" | "containment" | "protected-storage";
       providerVersion: string | null;
       diagnostic: string | null;
       /** Bounded agent reply when a spawned turn later failed a protocol
@@ -381,7 +385,12 @@ export async function invokeAgent(
       diagnostic: strict.problem,
     };
   }
-  const authMode: AuthMode = strict.mode;
+  // A run on an approved chain spends under the auth mode that entry was pinned to, never the provider's current setting.
+  const pinned = invocation.phase === "review" ? null : pinnedEntryOf(store, runId);
+  if (pinned !== null && "problem" in pinned) {
+    return { kind: "refused", reason: "route-authority", providerVersion: attested === null ? null : attested.version, diagnostic: `the fallback agent's authority lapsed before spawn — ${pinned.problem}` };
+  }
+  const authMode: AuthMode = pinned === null ? strict.mode : pinned.entry.authMode;
   if (spec.provider === "claude" && invocation.phase !== "review") {
     const problem = claudeSettingsAuthProblem(options.env?.["CLAUDE_CONFIG_DIR"] ?? process.env["CLAUDE_CONFIG_DIR"] ?? join(keyHome ?? homedir(), ".claude"));
     if (problem !== null) return { kind: "refused", reason: "auth-mode", providerVersion: attested?.version ?? null, diagnostic: problem };
@@ -394,6 +403,27 @@ export async function invokeAgent(
     authMode === "api-key" && keyed !== null && keyEnvName !== null
       ? readProviderKey(keyed, keyHome) ?? (process.env[keyEnvName] || null)
       : null;
+  // A pinned API key that isn't there never falls through to some other credential.
+  if (pinned !== null && authMode === "api-key" && managedKey === null) {
+    return { kind: "refused", reason: "auth-mode", providerVersion: attested === null ? null : attested.version, diagnostic: `this fallback agent is approved on an API key, and ${spec.provider} has none here` };
+  }
+  // What decides the child's credential, computed once: the environment it starts from and every variable it sheds. The
+  // live plan proof below reads with exactly these, and the child launches with exactly these (childOmitEnv).
+  const childAuth = childAuthEnv({ provider: spec.provider, phase: invocation.phase, authMode, keyEnvName, ownKeyEnv,
+    extraOmitEnv: adapter.extraOmitEnv, runEnv: runOptions.env, runOmitEnv: runOptions.omitEnv });
+  // A fallback agent approved on its plan runs only on a login its CLI proves, live, is that plan: read with the run's
+  // own environment, before anything is started for it (no proxy, tools or homes to leave behind). A provider with no
+  // live proof never gets here (filing refuses it); if one does, it's refused too. A key is never read as paid.
+  if (pinned !== null && pinned.index > 0 && authMode === "subscription") {
+    const live = PLAN_LOGIN_PROVABLE.has(spec.provider)
+      ? await livePlanLogin(spec.provider, attested !== null ? attested.executable : adapter.binary, childAuth.omitEnv, childAuth.env)
+      : null;
+    if (live !== "subscription") {
+      closeWalkSignedOut(store, runId, clock());
+      return { kind: "refused", reason: "auth-mode", providerVersion: attested === null ? null : attested.version,
+        diagnostic: `this fallback agent is approved on its plan, and ${spec.provider} isn't signed in to one here${live === "api-key" ? " (it's signed in another way)" : ""}` };
+    }
+  }
   // Resume XOR mint, enforced at the GATEWAY (Codex gemini verify round 2,
   // finding 3): a resume and a minted start id are mutually exclusive —
   // geminiArgv silently prefers --resume, so a minted id that rides
@@ -471,12 +501,12 @@ export async function invokeAgent(
   // tool servers outside its command sandbox, so its own launch folder is
   // fenced too; Claude reads its config from there, inside the sandbox.
   const ownTools = tools?.privateDir === undefined ? null : realpathSync(tools.privateDir);
-  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], cache: undefined, problem: undefined } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools, launchWrites ?? WRITES_DEFAULT, launchSandbox ?? LEGACY_SANDBOX);
+  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], cache: undefined, problem: undefined } : await runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools, launchWrites ?? WRITES_DEFAULT, launchSandbox ?? LEGACY_SANDBOX);
   if (fenceOf.problem !== undefined) {
     tools?.cleanup();
     codexHome?.cleanup();
     removeAgentDatabase(isolatedDb.dir);
-    return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null, diagnostic: fenceOf.problem };
+    return { kind: "refused", reason: "storageRefused" in fenceOf && fenceOf.storageRefused === true ? "protected-storage" : "containment", providerVersion: attested?.version ?? null, diagnostic: fenceOf.problem };
   }
   const fence = [...fenceOf.fence, ...(fenceOf.fence.length > 0 && codexHarness ? [ownTools, codexHome === null ? null : realpathSync(codexHome.dir)].filter((path): path is string => path !== null) : [])];
   const grants: FenceGrants = { ...fenceOf.grants };
@@ -600,20 +630,8 @@ export async function invokeAgent(
     // the live control database through a generic RunOptions override.
     ...childDatabaseEnv(isolatedDb.file),
   };
-  const childOmitEnv = [
-    ...(runOptions.omitEnv ?? []),
-    ...adapter.extraOmitEnv,
-    // A Claude build loads no plugin, from settings or the environment (a review's safe mode already loads none).
-    ...(spec.provider === "claude" && invocation.phase !== "review" ? claudePluginEnv({ ...process.env, ...(runOptions.env ?? {}) }) : []),
-    // Subscription mode: shed this provider's OWN key too, so an ambient
-    // one cannot force API billing over the login the operator prefers.
-    // Api-key mode: shed every OTHER own-key alias (finding 1) — gemini
-    // reads GOOGLE_API_KEY as well as GEMINI_API_KEY, and a stray alias
-    // must not override the ONE canonical key this mode injected.
-    ...(authMode === "subscription"
-      ? ownKeyEnv
-      : ownKeyEnv.filter(name => name !== keyEnvName)),
-  ];
+  // The one omit list (childAuthEnv): the live plan proof read with this same list.
+  const childOmitEnv = childAuth.omitEnv;
   const launchOptions: RunOptions = {
     ...(fenced.wrap.length === 0 ? {} : { fence: fenced.wrap, fenceGrants: grants, confinement: "required" as const }),
     ...runOptions,
@@ -777,9 +795,19 @@ export async function invokeAgent(
         return { kind: "refused", reason: "provider-unattested", providerVersion: acpAttestation.agent.version, diagnostic: verified.problem };
       }
     }
-    if (attested !== null) store.stampProviderStart(runId, clock(), attested.version);
-    else if (acpAttestation !== null) store.stampProviderStart(runId, clock(), acpAttestation.agent.version);
-    else store.stampProviderStart(runId, clock());
+    // THE CHAIN'S LAST LOOK (fallback.ts): the walk's place, the approval, and for a paid entry the live grant, read in
+    // the one transaction that stamps the spend, after every await.
+    const chainRefusal = store.transact(() => {
+      const custody = invocation.phase === "review" ? null : chainCustodyProblem(store, runId);
+      if (custody !== null) return custody;
+      if (attested !== null) store.stampProviderStart(runId, clock(), attested.version);
+      else if (acpAttestation !== null) store.stampProviderStart(runId, clock(), acpAttestation.agent.version);
+      else store.stampProviderStart(runId, clock());
+      return null;
+    });
+    if (chainRefusal !== null) {
+      return { kind: "refused", reason: "route-authority", providerVersion: attested === null ? null : attested.version, diagnostic: `the fallback chain's authority lapsed before spawn — ${chainRefusal}` };
+    }
     // The brief is queued only once the checkout has passed the fence check.
     liveInput?.begin(invocation.brief);
     spawnedAt = Date.now();
@@ -887,13 +915,28 @@ export async function invokeAgent(
     result.code !== 0 && !result.timedOut && !result.notFound &&
     Date.now() - spawnedAt <= AUTH_EARLY_EXIT_MS &&
     envelope.promptConsumed !== true && (envelope.tokensOut ?? 0) === 0;
+  // Claude has no attested range (attest.ts), so a terminal that reads as a plan limit asks the installed CLI its version.
+  const limitVersion = !terminalMatchesLimit(spec.provider, authMode, envelope.structuralTerminal) ? null
+    : attested !== null ? attested.version : await reportedVersion(adapter.binary, options.versionProbe);
   const terminalClass = classifyTerminal({
     terminal: envelope.structuralTerminal,
+    run: { provider: spec.provider, authMode, version: limitVersion },
     // stderr and plain stdout only: a JSON event line can carry the agent's
     // own command output (codex aggregated_output), never its sign-in.
     earlyExit: quietEarlyExit ? `${result.stderr.slice(-4096)}\n${plainLines(result.stdout).slice(-4096)}` : null,
   });
-  store.stampTerminalClass(runId, authMode, terminalClass);
+  // A plan limit counts only from a run whose protocol and identity hold (fallback.ts moves work on it): a terminal from a
+  // conflicting session, a minted id it didn't echo, or a failure on exit 0 is refused below and is never exhaustion.
+  const protocolClean = envelope.protocolError === null
+    && !(startSessionId !== undefined && envelope.initObserved === true && envelope.sessionId !== startSessionId)
+    && sessionIdentityProblem === null
+    && !(result.code === 0 && envelope.structuralTerminal?.failed === true);
+  store.stampTerminalClass(runId, authMode, terminalClass === "usage-exhausted" && !protocolClean ? "not-exhausted" : terminalClass);
+  // What the provider said on its way out, saved for a person (provider-capture.ts). Nothing routes on it.
+  if (terminalClass !== "auth-expired" && !result.timedOut && !result.notFound && (result.code !== 0 || envelope.structuralTerminal?.failed === true)) {
+    captureProviderFailure(store, { run: runId, provider: spec.provider, model: spec.model ?? null, authMode, exitCode: result.code, code: envelope.structuralTerminal?.code ?? null,
+      texts: [envelope.structuralTerminal?.text, envelope.finalMessage?.slice(-1_000), result.stderr.slice(-2_000), plainLines(result.stdout).slice(-1_000)] }, new Date());
+  }
 
   // Contradictory structural identity is a provider protocol failure, not
   // a session selection problem. Usage above remains recorded because the
@@ -1043,7 +1086,7 @@ function linkedFor(store: Store, worktree: string | null): { repo: string; setup
 /** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree),
  * ~/.toolroll (or its older name), its task boundary and other launches' private folders; what the fence gives back
  * (FenceGrants); and what only Claude's file tools refuse. */
-function runFence(store: Store, runId: number, provider: AgentSpec["provider"] | "command", keyHome: string | undefined, ownTools: string | null, writes: WritesMode = WRITES_DEFAULT, sandbox: LaunchSandbox = LEGACY_SANDBOX): { fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; cache?: string; problem?: string } {
+async function runFence(store: Store, runId: number, provider: AgentSpec["provider"] | "command", keyHome: string | undefined, ownTools: string | null, writes: WritesMode = WRITES_DEFAULT, sandbox: LaunchSandbox = LEGACY_SANDBOX): Promise<{ fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; cache?: string; problem?: string; storageRefused?: true }> {
   try {
     // A plane always has a database file; an in-memory store (a test) has nothing to fence.
     const databaseFile = store.databaseFile();
@@ -1054,7 +1097,9 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
     if (worktree !== null && row === null) throw new CheckoutBindingError("The checkout's Git pointer was changed or its trusted binding could not be verified.");
     const poolRoots = [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
     const binding = worktree === null || row === null ? null : trustedWorktreeBinding(row.repo, worktree, poolRoots);
-    const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home, binding, policy: sandbox.policy });
+    // The storage check, awaited off this thread (protected-storage.ts): a privacy prompt holds up only its child.
+    const storage = await prepareProtectedStorage(keyHome ?? homedir());
+    const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home, binding, policy: sandbox.policy, storage });
     const folders = runFolders(ownTools);
     // A build with a checkout writes only its workspace unless its approval said anywhere (arc 2): its checkout and
     // Git data, its launch folder, its project's caches and the provider state its CLI must write.
@@ -1063,7 +1108,7 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
     // The shared install is granted only as the plane linked it: this checkout's project and stamped setup.
     // Every plane checkout pool is denied around this one: the plane's own beside the database, and the one this
     // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
-    const launch = fenceFor(provider === "command" ? "command" : "build", { databaseFile, worktree, ...home, boundary, binding, runFolders: folders, poolRoots,
+    const launch = fenceFor(provider === "command" ? "command" : "build", { databaseFile, worktree, ...home, boundary, binding, runFolders: folders, poolRoots, storage,
       extra: allowed?.deny ?? [], linked: linkedFor(store, worktree), writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, policy: sandbox.policy, provider,
       // This launch's code map file: exactly that file, read-only, inside the denied state folder. Commands don't get it.
       ...(provider === "command" ? {} : { exactFile: deliveredFile(store, runId) }),
@@ -1078,6 +1123,9 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
       ...(allowed === null || row === null ? {} : { cache: buildCacheFolder(row.repo, keyHome ?? homedir()) }),
     };
   } catch (error) {
+    // The storage check's own words: what didn't finish, and which program macOS may need to allow.
+    const refused = storageRefusalOf(error);
+    if (refused !== null) return { fence: [], fileTools: [], grants: NO_GRANTS, problem: refused.message, storageRefused: true };
     return { fence: [], fileTools: [], grants: NO_GRANTS, problem: error instanceof CheckoutBindingError ? error.message : "The build fence could not be prepared." };
   }
 }
@@ -1110,7 +1158,7 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
         stampLaunch(store, [runId], unfencedStamp());
         return await inner(file, args, { ...options, env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp } });
       }
-      const fenced = runFence(store, runId, "command", undefined, own, writes, sandbox);
+      const fenced = await runFence(store, runId, "command", undefined, own, writes, sandbox);
       if (fenced.problem !== undefined) return { code: 1, stdout: "", stderr: `${fenced.problem}\n`, timedOut: false, notFound: false };
       if (fenced.fence.length === 0) { stampLaunch(store, [runId], unfencedStamp()); return inner(file, args, options); }
       // A self-hosted check's own database (child-database.ts) is the command's to write too.
@@ -1175,13 +1223,17 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
         return { code: 1, stdout: "", stderr: "The check's checkout couldn't be bound to its project, so nothing ran.\n", timedOut: false, notFound: false };
       }
       const poolRoots = [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
-      const boundary = taskBoundary({ worktree: checkout, provider: "command", binding, policy: sandbox.policy });
+      let storage: ProtectedStorage;
+      try { storage = await prepareProtectedStorage(homedir()); } catch (error) {
+        return { code: 1, stdout: "", stderr: `${storageRefusalOf(error)?.message ?? "The check's fence could not be prepared, so nothing ran."}\n`, timedOut: false, notFound: false };
+      }
+      const boundary = taskBoundary({ worktree: checkout, provider: "command", binding, policy: sandbox.policy, storage });
       const folders = runFolders(own);
       const cache = buildCacheFolder(repo);
       const allowed = store.projectWrites(repo) !== "workspace" ? null : writeAllowlist({ provider: "command", home: homedir(), worktree: checkout, binding, launchFolder: own, cache });
       const database = options?.env?.["TOOLROLL_DB"];
       const checkData = allowed === null || database === undefined ? null : grantFolder(dirname(database), false);
-      const launch = fenceFor("check", { databaseFile, worktree: checkout, boundary, binding, runFolders: folders, poolRoots, extra: allowed?.deny ?? [], linked: linkedFor(store, checkout),
+      const launch = fenceFor("check", { databaseFile, worktree: checkout, boundary, binding, runFolders: folders, poolRoots, storage, extra: allowed?.deny ?? [], linked: linkedFor(store, checkout),
         readDeny: sandbox.readDeny.map(one => readDenyPath(one, homedir())), machLookup: sandbox.machLookup, policy: sandbox.policy,
         writes: allowed === null ? null : { writes: { ...allowed.writes, subpaths: [...allowed.writes.subpaths, ...(checkData === null ? [] : [checkData])] }, readOnly: allowed.readOnly } });
       const grants = launch.fenceGrants;
@@ -1252,18 +1304,6 @@ async function runTools(store: Store, runId: number, spec: AgentSpec, keyHome: s
     // Sign-ins made for this run couldn't all be kept (and were revoked): it doesn't start.
     if (error instanceof RunSignInError) return { refused: error.message };
     return noToolsArgs(spec.provider);
-  }
-}
-
-/** How Codex says it's signed in (`codex login status`): a ChatGPT sign-in is its plan; a key or Bedrock is a key;
- * null when it says neither (not signed in, or it didn't answer). */
-async function codexLoginBilling(binary: string, omitEnv: readonly string[]): Promise<Billing | null> {
-  try {
-    const status = await runCommand(binary, ["login", "status"], { timeoutMs: 15_000, omitEnv, processGroup: true });
-    const said = `${status.stdout}\n${status.stderr}`;
-    return /using chatgpt/i.test(said) ? "subscription" : /api key|bedrock/i.test(said) ? "api-key" : null;
-  } catch {
-    return null;
   }
 }
 
@@ -1447,4 +1487,25 @@ export function observeClaudeBilling(seen: ClaudeBillingSeen, event: Record<stri
   } else if (primaryResultEvent(event) && event["is_error"] !== true && event["subtype"] === "success") {
     seen.answered = true;
   }
+}
+
+/**
+ * What decides a child's credential: the environment it starts from (the plane's, then the caller's) and every variable
+ * it sheds. Subscription: this provider's own keys too, so an ambient key can't force API billing over the login.
+ * API key: every other own-key alias, so a stray one can't override the one key injected. Foreign keys and (for a
+ * Claude build) plugin variables always. The live plan proof and the launch both use this one answer.
+ */
+export function childAuthEnv(args: { provider: string; phase: string; authMode: string; keyEnvName: string | null; ownKeyEnv: readonly string[];
+  extraOmitEnv: readonly string[]; runEnv: Record<string, string> | undefined; runOmitEnv: readonly string[] | undefined }): { env: Record<string, string | undefined>; omitEnv: string[] } {
+  const env = { ...process.env, ...(args.runEnv ?? {}) };
+  return {
+    env,
+    omitEnv: [
+      ...(args.runOmitEnv ?? []),
+      ...args.extraOmitEnv,
+      // A Claude build loads no plugin, from settings or the environment (a review's safe mode already loads none).
+      ...(args.provider === "claude" && args.phase !== "review" ? claudePluginEnv(env) : []),
+      ...(args.authMode === "subscription" ? args.ownKeyEnv : args.ownKeyEnv.filter(name => name !== args.keyEnvName)),
+    ],
+  };
 }

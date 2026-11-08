@@ -191,9 +191,36 @@ type BuilderRun = { id: number; outcome: string | null; scopeDigest: string | nu
  * got as far as its check keeps every rule below.
  */
 export function ranNoCheck(store: Store, row: { id: number; outcome: unknown; reason: unknown; head: unknown; checkRow: unknown }): boolean {
-  if (row.outcome !== "failed" || row.reason !== "interrupted" || row.head !== null || row.checkRow !== null) return false;
+  if (row.outcome !== "failed" || (row.reason !== "interrupted" && row.reason !== "no-op") || row.head !== null || row.checkRow !== null) return false;
   if (checkAttemptOf(store, row.id) !== null) return false;
-  return !store.artifactsFor(row.id).some(artifact => artifact.kind === "check-log" || isVerificationReceipt(artifact));
+  if (store.artifactsFor(row.id).some(artifact => artifact.kind === "check-log" || isVerificationReceipt(artifact))) return false;
+  return row.reason === "interrupted" || refusedBeforeAnything(store, row.id);
+}
+
+/** The ledger entry the build writes when it refuses a prepared candidate before any process (builder.ts). */
+export const NOTHING_STARTED_ACTION = "attempt refused before anything ran";
+/** Every table a process, an agent or a check of this run writes. */
+const RUN_TRACES: readonly (readonly [table: string, column: string])[] = [["artifact", "run"], ["run_process", "run"], ["run_process_summary", "run"], ["run_tool", "run"], ["run_activity", "run"],
+  ["check_stamp", "run_id"], ["release_check_attempt", "run"], ["run_note", "run"], ["agent_turn", "run"], ["run_checkpoint", "run"], ["run_decision", "run"]];
+
+/**
+ * An attempt the build refused before anything ran (run 3332: Git couldn't read HEAD while it proved the candidate; the
+ * next attempt passed). A failed attempt with reason `no-op` proves nothing alone: an agent's empty result and a check's
+ * refusal end that way too. So the build's own ledger entry says so, written only where nothing has run, and the run's
+ * records agree: no base stamped, no provider start, session, tokens or commit, and not one row of any process, agent or
+ * check. All of them, or it stands as a failure, and a record that can't be read (an older database) never excuses one.
+ */
+function refusedBeforeAnything(store: Store, runId: number): boolean {
+  try {
+    const said = store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE run_id = ? AND action = ? AND outcome = 'refused'").get(runId, NOTHING_STARTED_ACTION)?.["n"];
+    if (Number(said) !== 1) return false;
+    const run = store.handle.prepare("SELECT base_revision, head_revision, provider_started_at, session_id, tokens_in, tokens_out, cost_usd, committed FROM run WHERE id = ?").get(runId);
+    if (run === undefined || Object.values(run).some(value => value !== null)) return false;
+    // check_fact is a learning-loops table (eval-hooks.ts): read here in its own literal statement, never through the
+    // table list, so no SQL text that could name it is assembled outside its sole writer.
+    if (store.handle.prepare("SELECT 1 FROM check_fact WHERE run = ? LIMIT 1").get(runId) !== undefined) return false;
+    return RUN_TRACES.every(([table, column]) => store.handle.prepare(`SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`).get(runId) === undefined);
+  } catch { return false; }
 }
 
 /** The task's finished builder runs under `digest`, oldest first, each with whether its check passed or never ran. */

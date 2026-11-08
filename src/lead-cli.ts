@@ -1,3 +1,4 @@
+import { cardPlainOf, isCardProposal } from "./chat-card.js";
 import { currentLocalOwner } from "./local-owner.js";
 import { parseFeedbackImage } from "./result-review.js";
 import { configureLeadFollow, leadFollowStatus } from './lead-follow.js';
@@ -107,6 +108,7 @@ export function proposalLines(proposals: readonly LeadProposal[], repos: readonl
       ? `${isChatTaskAction(payload["operation"]) ? CHAT_TASK_ACTIONS[payload["operation"]].label : "Unavailable"}: ${t("taskTitle") || t("task")}${t("dependencyTitle") ? ` · ${t("dependencyTitle")}` : ""}`
       : one.kind === "review"
       ? `${t("operation") === "revise" ? "request a revision" : "save feedback"} for ${t("taskTitle") || t("task")}: ${t("note")}${Array.isArray(payload["notes"]) && payload["notes"].length > 0 ? ` (saved notes: ${payload["notes"].join(", ")})` : ""}`
+      : isCardProposal(one) ? `\n${cardPlainOf(one)}`
       : one.kind === "control"
       ? (isChatControl(payload["control"]) ? `${CHAT_CONTROLS[payload["control"]].label}: ${chatControlHref(payload["control"], t("task"), payload["run"], payload["project"])} (open in the console)` : "control unavailable")
       : one.kind === "steer" && one.payload["mode"] === "pause" ? `pause ${t("task")}'s build`

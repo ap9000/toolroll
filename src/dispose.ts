@@ -1,4 +1,6 @@
 // Assignment tracking grants no repair authority or attempts.
+import { STORAGE_HOLD_PREFIX } from "./needs-you.js";
+import { blockAfterSignedOut } from "./fallback.js";
 import { authorizeCheckOnly } from "./check-only.js";
 import { proposeNewRoute } from "./route-change.js";
 import { originalTaskBase, focusedTestCommandSupported } from "./observations.js";
@@ -26,6 +28,7 @@ import { bodyHashOf, publicationBody } from "./publish.js";
 import { modeTermsFromJson } from "./modes.js";
 import { evidenceRoot, readVerifiedArtifact, writeEvidenceFile } from "./evidence.js";
 import { queueBuildReview } from "./build-review.js";
+import { followBuiltRun } from "./check-repair.js";
 import { homedir } from "node:os";
 import type { BuildResult } from "./builder.js";
 import type { Store } from "./store.js";
@@ -279,6 +282,7 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
       store.resetStrikes(taskRef);
       store.clearQuota(runner, provider, model ?? "");
       maybeRequestAutoReview(store, repo, runId, result.committed, result.noChange === true, clock(), context.evidenceRoot);
+      followBuiltRun(store, repo, context.evidenceRoot ?? evidenceRoot(homedir()), runId, worktreePath, clock());
       return { kind: "built", committed: result.committed, noChange: result.noChange === true };
     }
     store.transact(() => {
@@ -418,10 +422,23 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
     };
   }
 
+  if (result.reason === "protected-storage") {
+    // The storage check couldn't finish (protected-storage.ts): nothing spent,
+    // no strike. The words are kept on the run, the task holds and tries
+    // again on its own, and a person reads why and which program to allow.
+    if (leaseId !== undefined) release(store, leaseId, clock());
+    if (result.message.trim() !== "") store.recordOutcomeFacts(runId, { handoff: result.message });
+    store.finishRun(runId, { outcome: "refused", reason: "protected-storage", now: clock() });
+    holdForStorage(store, { taskRef, taskId, message: result.message }, clock());
+    return { kind: "skipped", reason: "protected-storage" as never };
+  }
+
   // no-claim, not-yours, not-leased, protected-branch, wrong-branch:
   // invariants the dispatcher was supposed to uphold.
   if (leaseId !== undefined) release(store, leaseId, clock());
   store.finishRun(runId, { outcome: "refused", reason: result.reason, now: clock() });
+  // A fallback agent not signed in to its plan: the task waits for a person's retry, never loops (fallback.ts).
+  if (result.reason === "auth-mode" && blockAfterSignedOut(store, runId, clock())) return { kind: "skipped", reason: "fallback-signed-out" as never };
   if (result.reason === "stale-approval") {
     // A deterministic refusal (setup review): the approval no longer
     // matches the routing, and nothing about the next pass changes that.
@@ -436,6 +453,32 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
   }
 
   return { kind: "invariant", reason: result.reason };
+}
+
+/** How long a task waits after the storage check couldn't finish before it tries again on its own. */
+export const STORAGE_RETRY_MS = 10 * 60_000;
+export { STORAGE_HOLD_PREFIX };
+
+/**
+ * The storage HOLD: the check couldn't finish, so no launch can be fenced
+ * now. The task waits STORAGE_RETRY_MS and tries again on its own (a person
+ * who allowed access in Privacy & Security needn't do more), and "Try again"
+ * (unhold) lifts it at once. One message per task an hour, with the words.
+ */
+export function holdForStorage(store: Store, args: { taskRef: number; taskId: string; message: string }, now: Date): void {
+  store.holdOwned({ taskRef: args.taskRef, ownerKind: "backoff", ownerId: `storage:${args.taskRef}`, reason: `${STORAGE_HOLD_PREFIX}${args.message}`, until: new Date(now.getTime() + STORAGE_RETRY_MS) }, now);
+  store.enqueueNotification(
+    {
+      source: { taskRef: args.taskRef },
+      dedupeKey: `protected-storage:${args.taskRef}:${now.toISOString().slice(0, 13)}`,
+      kind: "protected-storage",
+      pushClass: "attention",
+      link: `/t/${encodeURIComponent(args.taskId)}`,
+      subject: `${args.taskId}: waiting for macOS permission`,
+      body: `${args.message}\nIt tries again on its own in ${STORAGE_RETRY_MS / 60_000} minutes.`,
+    },
+    now,
+  );
 }
 
 /**
@@ -634,6 +677,8 @@ export function regateTask(
 export type RepairTrigger =
   | { kind: "drafted"; draftTaskId: string; attempt: number; approved: boolean }
   | { kind: "stopped"; reason: RepairStopReason }
+  /** The check runs once more on the same commit, with no agent: the failure looked unrelated to the change. */
+  | { kind: "rerun" }
   | { kind: "none" };
 
 /**
@@ -652,9 +697,9 @@ export type RepairTrigger =
  */
 export function maybeTriggerRepair(store: Store, repo: string, evidenceRoot: string, sourceRunId: number, verdict: ProofVerdict, now: Date, cause: "review" | "verification" = "review", automatic = false): RepairTrigger {
   if (verdict !== "short" && verdict !== "refuted") return { kind: "none" };
-  // Findings go to the lead. Explicit repair/revision actions remain available.
-  // Historical mode signatures remain intact; no automatic follow-up spends.
-  if (automatic) return { kind: "none" };
+  // A review's findings go to the lead, and a person asks for their repair. A failed check is the one automatic road
+  // (check-repair.ts), and only under a mode a person signed for it, checked below.
+  if (automatic && cause !== "verification") return { kind: "none" };
   // One attempt per source run, ever (source_run UNIQUE) — checked first so
   // a re-fired trigger is a silent no-op, never a duplicate.
   if (store.repairChainFor(sourceRunId) !== null) return { kind: "none" };
@@ -705,9 +750,9 @@ export function maybeTriggerRepair(store: Store, repo: string, evidenceRoot: str
   const terms = mode === null ? null : modeTermsFromJson(mode.termsJson);
   let verification: { sourceRun: number; digest: string } | undefined;
   if (cause === "verification") {
-    // A signed repair mode is required for this automatic producer. The
-    // existing review/manual road continues to offer unapproved drafts.
-    if (terms?.repairAuto !== true || run.finishedAt === null || !run.headRevision ||
+    // A signed repair mode is required for this automatic producer. A person
+    // asking (check-repair.ts startCheckRepair) gets an unapproved draft instead.
+    if ((automatic && terms?.repairAuto !== true) || run.finishedAt === null || !run.headRevision ||
       (run.outcome !== "built" && run.outcome !== "no-change")) return { kind: "none" };
     const owner = store.refForId(run.taskRef);
     if (owner === null || owner.repo !== repo || store.applicableStopFor(sourceRunId) !== null ||
@@ -737,7 +782,7 @@ export function maybeTriggerRepair(store: Store, repo: string, evidenceRoot: str
             subject: unrelated.kind === "gate-timed-out" ? "The project check ran out of time; running it once more" : "A slow test outside this change failed the check; running it once more",
             body: `${gateFailureSummary(unrelated)} The check runs again once on the same commit ${run.headRevision.slice(0, 7)}, with no agent. If it fails again, a person decides.`,
             link: `/t/${encodeURIComponent(taskId)}` }, now);
-          return { kind: "none" };
+          return { kind: "rerun" };
         }
       }
       store.enqueueNotification({ source: { run: sourceRunId }, dedupeKey: `repair-unrelated:${sourceRunId}`, kind: "repair-evidence", pushClass: "attention",

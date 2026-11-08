@@ -1,5 +1,7 @@
 /** Scripted Discord API and provider responses; no live account acceptance. */
-import { beforeEach, afterEach, expect, test, vi } from "vitest";
+import { cardContent } from "./chat-card-part.js";
+import type { ChatCard } from "./contracts/chat-card.js";
+import { describe, beforeEach, afterEach, expect, test, vi } from "vitest";
 import { htmlString } from "./html.js";
 import { withFormToken } from "./server/request-context.js";
 import {
@@ -1246,4 +1248,36 @@ test("the lead's question arrives as buttons with Something else, and a tap is t
   const history = runner.mock.calls.at(-1)![0].history;
   expect(history.filter(one => one.role === "operator").at(-1)).toMatchObject({ text: "Friday" });
   expect(sentText()).toContain("Friday it is.");
+});
+
+describe("a Toolroll card", () => {
+  const shown = (): ChatCard => ({ version: 1, title: "Tasks", asOf: now.toISOString(), repos: [repo], buttons: [], actions: [],
+    blocks: [{ kind: "table", heading: "Tasks", origin: "records", columns: [{ label: "Task", numeric: false }], rows: [["Fix the login page"]], more: 0 }] });
+  function plan(id: string) {
+    pair();
+    const binding = state.bindingFor(ID.installation, MEMBER)!;
+    state.enqueue({ id, installation: ID.installation, binding: binding.id, kind: "notice", channel: CHANNEL, member: MEMBER, ts: "", thread: "", payload: {}, created: now.toISOString() });
+    state.plan(id, [cardContent(shown())], now);
+  }
+
+  test("goes out as an embed with its table in a code block", async () => {
+    plan("card-1");
+    await drain();
+    expect(sentText()).toContain("Fix the login page");
+    expect(JSON.stringify(sends().at(-1)?.body.embeds)).toContain("```");
+  });
+
+  test("refused, the same part goes out as its plain text", async () => {
+    plan("card-2");
+    const original = options.api;
+    let refused = 0;
+    options = { ...options, api: async (method, path, body = {}, file) => {
+      if (method === "POST" && refused++ === 0) throw new DiscordError("Discord could not complete the request", 60_000);
+      return original(method, path, body, file);
+    } };
+    await drain();
+    expect(refused).toBe(2);
+    expect(sentText()).toContain("Fix the login page");
+    expect(JSON.stringify(sends().at(-1)?.body.embeds)).not.toContain("```");
+  });
 });

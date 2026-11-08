@@ -1590,6 +1590,53 @@ $ contract --commands --json → 0
       "remote": "yes"
     },
     {
+      "invocation": "card",
+      "synopsis": "show Toolroll's own data as chat's cards do: tasks, results, flows, flow_zones, spend, projects, builders, mode, integrations, providers, findings, handover (read only)",
+      "audience": "agent",
+      "agentMayInvoke": true,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "repo",
+          "takesValue": true,
+          "meaning": "one project; default: all of yours"
+        },
+        {
+          "name": "task",
+          "takesValue": true,
+          "meaning": "findings and handover: the task"
+        },
+        {
+          "name": "state",
+          "takesValue": true,
+          "meaning": "tasks: queued, running, done, failed or cancelled"
+        },
+        {
+          "name": "limit",
+          "takesValue": true,
+          "meaning": "how many rows, up to 20"
+        },
+        {
+          "name": "flow",
+          "takesValue": true,
+          "meaning": "flow_zones: the flow's number"
+        },
+        {
+          "name": "days",
+          "takesValue": true,
+          "meaning": "flow_zones: how far back, up to 90"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "source",
+          "required": true,
+          "meaning": "which data to show"
+        }
+      ],
+      "remote": "yes"
+    },
+    {
       "invocation": "flaky list",
       "synopsis": "tests with mixed outcomes under recorded conditions (read only)",
       "audience": "agent",
@@ -4983,11 +5030,107 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "task repair",
-      "synopsis": "inspect or approve an existing historical repair draft; use task revise for new feedback",
+      "synopsis": "inspect or approve a repair draft; --yes starts the repair a failed check is waiting for, under the normal plan approval",
       "audience": "operator",
       "agentMayInvoke": false,
       "mutation": "unkeyed",
       "remote": "yes"
+    },
+    {
+      "invocation": "task handover",
+      "synopsis": "where a task stands, from Toolroll's records: revision, decisions, rejected approaches, open findings, checks and the next action",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "remote": "no"
+    },
+    {
+      "invocation": "task before-after",
+      "synopsis": "before-and-after evidence: read it, save a failing result, or rerun the same check on the latest commit with no agent",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
+    },
+    {
+      "invocation": "task failing-first",
+      "synopsis": "ask a bug fix's next attempt to write a failing test first (on|off); shown in the result as the agent's report",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
+    },
+    {
+      "invocation": "finding list",
+      "synopsis": "findings still waiting on someone, or every finding of --task <id>",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "remote": "no"
+    },
+    {
+      "invocation": "finding show",
+      "synopsis": "one finding: its text, evidence and how it stands",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "remote": "no"
+    },
+    {
+      "invocation": "finding send",
+      "synopsis": "send a finding to the task that owns the code; the owner must accept it or reject it with a reason",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
+    },
+    {
+      "invocation": "finding resend",
+      "synopsis": "send an answered finding back, one more round; past the limit it goes to a person",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
+    },
+    {
+      "invocation": "finding close",
+      "synopsis": "a person's decision on a finding",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
+    },
+    {
+      "invocation": "captures list",
+      "synopsis": "what providers said when attempts failed, the ones mentioning limits first; nothing routes on these",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "remote": "no"
+    },
+    {
+      "invocation": "captures show",
+      "synopsis": "one saved provider failure",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "remote": "no"
+    },
+    {
+      "invocation": "captures export",
+      "synopsis": "one saved provider failure as a fixture",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "remote": "no"
+    },
+    {
+      "invocation": "captures mark",
+      "synopsis": "a person's reading of a capture: exhausted or not-exhausted",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
     },
     {
       "invocation": "task route",

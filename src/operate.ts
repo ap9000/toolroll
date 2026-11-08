@@ -1,3 +1,4 @@
+import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
 import { inspectAcpAgent } from "./acp-inspect.js";
@@ -315,12 +316,15 @@ import { createScheduledFlow, describeSchedule, parseSchedule } from "./flow-sch
 import { fileTaskProposal, validateTaskText } from "./proposal.js";
 import { TEMPLATES, templateByName } from "./templates.js";
 import { isDirectChatProvider, isSubscriptionChatProvider, priceOf, PRICED_MODELS } from "./converse.js";
+import { clearFallbackChain, dispatchEntryOf, entryMovesOnWords, entryWords, fallbackSettingOf, parseEntry, reconcileWalks, setFallbackChain, setPaidGrant, type FallbackEntry } from "./fallback.js";
 import { resolvePhaseAgent, resolveScopeProfile, resolveRouteCandidates, routeOfTask, INSTALLATION_SCOPE, type TaskRoute } from "./agentconfig.js";
 import { applyModelChoices, stateDigest, type ApplyResult, type ExtraWrite, type ModelChange, type Slot, type SlotPhase } from "./model-choices.js";
 import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RouteOverride, type RouteStamp } from "./phase-routing.js";
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { retryVanishedWhenStopped } from "./vanished-retry.js";
 import { requestMissingRechecks } from "./check-only.js";
+import { checkRepairOfRun, resumeParkedRepairs, startCheckRepair } from "./check-repair.js";
+import { capturesCommand, evidenceCommand, failingFirstCommand, findingCommand, handoverCommand, type FollowThroughContext } from "./follow-through-cli.js";
 import { recordBuilderWish } from "./builder-restart.js";
 import { expireFastStarts, fastRefusalWords, fastStartBuild, keepGrownChange, prepareFastStart, type FastBuild, type PasswordFacts } from "./fast-start.js";
 import { fastTermsLines } from "./fast-terms.js";
@@ -474,6 +478,8 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll project activity --json   read the current project supervision report
   toolroll project rules --repo <p>  a project's approval rules; an instance operator changes them with
                                         --not-requester on|off, --protect none|project, --protect-paths "a/**,b/**"
+  toolroll project fallback --repo <p> [--agents provider:model:plan|api-key,…] [--clear] [--allow-paid|--no-paid]
+    Which agents take over when one runs out of its plan. New tasks seal the chain; a paid agent also needs --allow-paid.
   toolroll project network --repo <p> [--allow h,…] [--remove h,…] [--open|--allowlist] [--local any|none]
                                         what the project's builds may reach on the network; an approver changes it
                                         (new scopes seal it; approved ones keep theirs)
@@ -880,7 +886,7 @@ export const TASK_ACTIONS = [
   "add", "new", "keep", "list", "show", "wait", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign",
   "reopen", "scope", "approve", "hold", "unhold", "require", "requeue", "regate", "plan",
   "review", "accept", "repair", "route", "stop", "resume", "complete", "revise", "merge", "ask",
-  "checks", "add-tests", "archive", "restore", "tidy", "ship", "ready",
+  "checks", "add-tests", "archive", "restore", "tidy", "ship", "ready", "handover", "before-after", "failing-first",
 ] as const;
 export const PUBLISH_ACTIONS = ["setup", "grant", "revoke", "status", "unblock", "rearm", "merge", "refire"] as const;
 export const CONFIG_ACTIONS = ["show", "set", "clear"] as const;
@@ -897,8 +903,8 @@ export const KEYS_ACTIONS = ["status", "set", "clear", "verify", "auth"] as cons
 export const SECRET_VALUE_FLAGS: ReadonlySet<string> = new Set(["token", "password"]);
 
 export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
-  "key", "db", "runner", "ttl", "state", "on", "reason", "until", "id", "backend", "build", "from",
-  "allow", "selector", "paths", "credentials", "repo", "token", "capacity",
+  "key", "db", "runner", "ttl", "state", "flow", "on", "reason", "until", "id", "backend", "build", "from",
+  "allow", "selector", "paths", "credentials", "repo", "token", "capacity", "agents",
   "goal", "not", "touches", "acceptance", "candidate", "by", "digest", "as", "branch", "pool", "base", "model", "turns",
   "max", "cap", "probe", "kind", "expires", "cmd", "since", "repair-model",
   "choose", "choice", "claim", "revision", "note", "max-open-decisions", "name", "days", "publication", "auto-approve", "review-auto", "port", "host", "allow-host",
@@ -921,7 +927,7 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "command", "timeout-seconds", "setup-digest", "stop-grace", "title", "name", "every", "lines",
   "label", "reviewers", "limit", "role", "key-file", "weekly-usd", "daily-turns", "per-hour", "token-file", "budget-usd", "build-usd", "sync-max-age", "merge-method",
   "phase", "tier", "clear-phase", "size", "risky",
-  "run", "containment", "agent",
+  "run", "containment", "agent", "path", "line", "action", "from-review", "from-check", "task",
   // onboard: the starter flows to switch on.
   "starter",
   // flows: templates, steps, scripts and cards.
@@ -964,6 +970,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "html", "csv", "alerts-only",
   // project network: what its builds may reach (--open | --allowlist).
   "open", "allowlist",
+  // project fallback: whether paid fallback agents may spend.
+  "allow-paid", "no-paid",
   // v105: the full export.
   "zip",
   // Settings → Integrations: the last checks, without checking again.
@@ -1572,6 +1580,7 @@ async function dispatch(
       if (positional[0] === "delete") return projectDeleteCommand(positional, flags, context);
       if (positional[0] === "concurrency") return projectConcurrencyCommand(positional, flags, context);
       if (positional[0] === "network") return projectNetworkCommand(positional, flags, context);
+      if (positional[0] === "fallback") return projectFallbackCommand(positional, flags, context);
       if (positional[0] === "writes") return projectWritesCommand(positional, flags, context);
       if (positional[0] === "check-access") return projectCheckAccessCommand(positional, flags, context);
       if (positional[0] === "sandbox") return projectSandboxCommand(positional, flags, context);
@@ -1617,8 +1626,14 @@ async function dispatch(
       const who = currentLocalOwner() !== null ? localReader(context) : verified !== null && verified.ok ? verified.who : null;
       return runMemoryCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: who?.name ?? null, repos: who?.repos ?? [], configDir: dirname(context.databaseFile), ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }) });
     }
+    case "card":
+      return cardCommand(positional, flags, context);
     case "flaky":
       return flakyCommand(positional, flags, context);
+    case "finding":
+      return findingCommand(positional, flags, followThroughContext(context, flags));
+    case "captures":
+      return capturesCommand(positional, followThroughContext(context, flags));
     case "claim":
       return claimCommand(positional, flags, context);
     case "heartbeat":
@@ -2864,6 +2879,8 @@ async function tickCommand(
   const ready = store.listReady(clock(), runner);
   const considered = ready.length;
   const dispatched: TickOutcome[] = [];
+  // Every walk settled before anything dispatches: a crash anywhere leaves a state this pass closes the same way.
+  reconcileWalks(store, clock());
   // The stale-scan (dispatch v3, finding 20): mirrors the courtesy filter
   // kept out of ready are REPORTED here, typed, with a paged episode —
   // an undispatakable tracker item is a 9am fact, not a silent absence.
@@ -2961,7 +2978,15 @@ async function tickCommand(
       }
     }
     const planLeg = route === null ? null : legOf(route.route, "plan");
-    const sealedBuildLeg = route !== null && route.source === "approved" ? legOf(route.route, "build") : null;
+    // A task whose agent ran out runs as the next approved entry: every gate below is keyed to that entry (fallback.ts).
+    const fallback = route !== null && route.source === "approved" && !wantsPlan && !wantsScout ? dispatchEntryOf(store, ref.id, id, clock()) : null;
+    if (fallback !== null && "problem" in fallback) {
+      dispatched.push({ id, outcome: "skipped", reason: "agent-config", detail: `${id}: ${fallback.problem}` });
+      continue;
+    }
+    const sealedBuildLeg = route !== null && route.source === "approved"
+      ? fallback !== null ? { provider: fallback.entry.profile.provider, model: fallback.entry.profile.model, chosen: "fallback" as const } : legOf(route.route, "build")
+      : null;
     const planFlagged = planProvider !== undefined || planModel !== undefined || providerFlag !== undefined || model !== undefined;
     if (wantsPlan && planLeg !== null && planFlagged) {
       // Pass flags cannot contradict the task's plan leg: a flag that names
@@ -3100,7 +3125,7 @@ async function tickCommand(
     // existing approval refusals own that road, and attestation must
     // never mask them. The gateway re-checks before spawn; this skip only
     // keeps the normal road cheap.
-    const skipProviders: ProviderId[] = wantsPlan
+    const skipProviders: ProviderId[] = wantsPlan || fallback !== null
       ? [spec.provider]
       : ([store.getScope(id)?.approvedProfile?.provider].filter((one): one is ProviderId => one !== null && one !== undefined) as ProviderId[]);
     let unattestedLane: string | null = null;
@@ -3131,7 +3156,7 @@ async function tickCommand(
 
     // Sprint 8: the organisation policy before the claim (build() looks again before spawn, and lowers).
     {
-      const sealed = wantsPlan || wantsScout ? null : store.getScope(id)?.approvedProfile ?? null;
+      const sealed = wantsPlan || wantsScout ? null : fallback?.entry.profile ?? store.getScope(id)?.approvedProfile ?? null;
       const refused = policyHold([sealed !== null ? { profile: sealed }
         : { provider: spec.provider, model: spec.model, ...(wantsPlan ? { session: "planning" } : wantsScout ? { session: "scouting" } : {}) }]);
       if (refused !== null) {
@@ -3146,7 +3171,8 @@ async function tickCommand(
     // Each provider as it bills now.
     // An ACP agent bills as its declaration for the exact model it would run on this runner.
     const sealedModel = store.getScope(id)?.approvedProfile?.model ?? null;
-    const budgeted = budgetHold(ref.id, [...new Set([spec.provider, ...skipProviders])].map(provider =>
+    // A paid fallback entry is a dollar spend whatever its provider's current setting says.
+    const budgeted = budgetHold(ref.id, fallback?.paid === true ? [{ provider: spec.provider, billing: "api-key" as const }] : [...new Set([spec.provider, ...skipProviders])].map(provider =>
       isAcpProvider(provider) ? store.agentFor(provider, provider === spec.provider ? spec.model ?? sealedModel : sealedModel, runner) : store.agentsFor([provider])[0]!));
     if (budgeted.over !== null) {
       dispatched.push({ id, outcome: "skipped", reason: "budget", detail: budgetWords(budgeted) });
@@ -3173,6 +3199,7 @@ async function tickCommand(
       repo,
       provider: spec.provider,
       ...(spec.model === null ? {} : { model: spec.model }),
+      ...(fallback === null ? {} : { authMode: fallback.entry.authMode }),
       ...(text(flags, "incarnation") === undefined ? {} : { incarnation: text(flags, "incarnation") as string }),
       ...(text(flags, "max-open-decisions") === undefined
         ? {}
@@ -3787,12 +3814,15 @@ async function tickCommand(
           reason: disposition.sealed
             ? disposition.disposition === "auth-expired"
               ? "auth-expired — requeued, sign-in needed"
+              : disposition.disposition === "fallback"
+              ? `out of plan — moved to the next approved agent`
               : `${disposition.failureClass}${disposition.disposition === "backoff" ? ` — retry ${disposition.strikes}/3` : disposition.disposition === "stalled" ? " — stalled" : ""}`
             : "fenced",
           ...(result.ok ? {} : { detail: result.message.slice(0, 200) }),
           worktree: leased.worktree.path,
         });
-        broke++;
+        // Moving on isn't this pass breaking: the task is queued for its next agent.
+        if (!(disposition.sealed && disposition.disposition === "fallback")) broke++;
         break;
       case "recorded":
         // The standalone-only arm; unreachable under the tick policy.
@@ -5419,7 +5449,7 @@ async function modeCommand(
   const acting = await askCredentials(flags, context);
   if (acting === null) return fail(write, json, "mode", "usage", "signing or revoking a mode takes `--as <you> --token <t>`", EXIT.usage);
   // Signing a mode that lets a chat app approve is a credential act; any other mode signing or revoking is ordinary.
-  const authed = (flag(flags, "chat-approve") ? credentialApprover(store, acting.name, acting.token) : authenticateApprover(store, acting.name, acting.token));
+  const authed = (flag(flags, "chat-approve") || flag(flags, "repair-auto") ? credentialApprover(store, acting.name, acting.token) : authenticateApprover(store, acting.name, acting.token));
   if (!authed.ok) return fail(write, json, "mode", authed.reason, "that is not an active approver, or the token does not match", EXIT.refused);
 
   if (action === "revoke") {
@@ -5441,7 +5471,15 @@ async function modeCommand(
   if (text(flags, "publication") === "notify") terms.publication = "notify";
   if (flag(flags, "auto-approve")) terms.autoApproveFiling = true;
   if (flag(flags, "plan-auto")) terms.planAuto = true;
-  if (["review-auto", "review-retry-auto", "repair-auto", "repair-max-attempts"].some(name => flags.has(name))) return fail(write, json, "mode set", "invalid", "Separate model review and automatic correction loops have been removed; finished work goes to the lead or user.", EXIT.refused);
+  if (["review-auto", "review-retry-auto"].some(name => flags.has(name))) return fail(write, json, "mode set", "invalid", "Separate model review has been removed; finished work goes to the lead or user.", EXIT.refused);
+  // Repairing failed checks by themselves: never a preset default, only these flags, with a limit you sign.
+  if (flags.has("repair-max-attempts") && !flag(flags, "repair-auto")) return fail(write, json, "mode set", "invalid", "--repair-max-attempts needs --repair-auto", EXIT.refused);
+  if (flag(flags, "repair-auto")) {
+    const limit = Number(text(flags, "repair-max-attempts") ?? 2);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 3) return fail(write, json, "mode set", "invalid", "--repair-max-attempts is 1, 2 or 3", EXIT.refused);
+    terms.repairAuto = true;
+    terms.repairMaxAttempts = limit;
+  }
   if (terms.planAuto && !terms.autoApproveFiling) return fail(write, json, "mode set", "invalid", "--plan-auto requires automatic filing approval", EXIT.refused);
   // Approving plans and merges from the signer's paired chat: never a preset default, only this flag.
   // The signature names every chat app it covers: a grant signed before that named Telegram alone, and stays so.
@@ -7025,6 +7063,8 @@ async function runWatchLoop(args: {
       if (context.agentRunner === undefined) void resumeHeldReleases(store, dirname(context.databaseFile), context.clock());
       // A result whose verdict went missing asks for its one automatic recheck (check-only.ts).
       requestMissingRechecks(store, context.evidenceRoot, context.clock());
+      // A failed check that was parked takes its next step once its task is free again (check-repair.ts).
+      resumeParkedRepairs(store, context.evidenceRoot, context.clock());
       const ran = await runWaitingChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
       if (ran > 0) progress(`watch: ran ${ran} follow-up check(s)`);
       // The nightly check of main and the release checks that clear its failures (release-once.md, part 3).
@@ -9405,6 +9445,12 @@ function taskAction(
       return requeueTask(rest, flags, context);
     case "regate":
       return regateTaskCommand(rest, flags, context);
+    case "handover":
+      return handoverCommand(rest, followThroughContext(context, flags));
+    case "before-after":
+      return evidenceCommand(rest, flags, followThroughContext(context, flags));
+    case "failing-first":
+      return failingFirstCommand(rest, followThroughContext(context, flags));
     case "plan":
       return planTaskCommand(rest, flags, context);
     case "review":
@@ -10119,8 +10165,16 @@ async function repairTaskCommand(
   if (chain === null && flags.get("yes") === true) {
     const acting = await askCredentials(flags, context);
     if (acting === null) return fail(write, json, "task repair", "usage", "Evidence collection requires --as and --token.", EXIT.usage);
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
+    // A failed check names its project: the password proves the person, and their access to the run they named.
+    const failed = checkRepairOfRun(store, runId);
+    const authenticated = authenticateApprover(store, acting.name, acting.token, failed?.repo);
     if (!authenticated.ok) return fail(write, json, "task repair", authenticated.reason, describeApproveFailure(authenticated.reason, String(runId)), EXIT.refused);
+    // A failed check waiting for a person: this draft is what they asked for, and its approval below is the normal one.
+    if (failed !== null) {
+      const started = startCheckRepair(store, context.evidenceRoot, runId, clock());
+      if (!started.ok) return fail(write, json, "task repair", "refused", started.message, EXIT.refused);
+      chain = store.repairChainFor(runId);
+    }
     const run = store.getRun(runId), proof = store.proofVerdictFor(runId);
     const repo = run && store.refById(run.taskRef)?.repo;
     if (repo && repo === repoFrom(flags) && proof?.matrix.some(row => row.assessment && row.review?.judgement === "cannot-tell") &&
@@ -14231,8 +14285,76 @@ export async function refreshLearning(store: Store, now: () => Date, reads?: GhR
   }
 }
 
+/** `toolroll card <source>`: reads only, for the remembered local login (or --as/--token) and its projects. */
+async function cardCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null || currentLocalOwner() !== null ? null : verifyApproverByPassword(context.store, acting.name, acting.token, context.store.knownRepos().filter(repo => context.store.accountCanAccess(acting.name, repo)));
+  const who = currentLocalOwner() !== null ? localReader(context) : verified !== null && verified.ok ? verified.who : null;
+  return runCardCommand(positional, flags, { store: context.store, write: context.write, json: context.json, now: context.clock(), actor: who?.name ?? null, repos: who?.repos ?? [], evidenceRoot: context.evidenceRoot ,
+    ok: (result, lines) => succeed(context.write, context.json, "card", result, lines),
+    no: (reason, message) => fail(context.write, context.json, "card", reason, message, reason === "usage" ? EXIT.usage : EXIT.refused) });
+}
+
 /** The laptop's local owner as a reader: its name and its projects. Never a proof: every write proves its own act. */
 function localReader(context: Context): { name: string; repos: string[] } | null {
   const local = currentLocalOwner();
   return local === null ? null : { name: local.account, repos: context.store.knownRepos().filter(repo => context.store.accountCanAccess(local.account, repo)) };
+}
+
+/** What the follow-through commands need from this file: its envelope, and a verified person (follow-through-cli.ts). */
+function followThroughContext(context: Context, flags: Map<string, string | true>): FollowThroughContext {
+  const { store, write, json, clock, evidenceRoot } = context;
+  return {
+    store, evidenceRoot, now: clock(),
+    ok: (command, result, lines) => succeed(write, json, command, result, lines),
+    no: (command, reason, message) => fail(write, json, command, reason, message, reason === "usage" ? EXIT.usage : EXIT.refused),
+    prove: async (command, repo) => {
+      const acting = await askCredentials(flags, context);
+      if (acting === null) { fail(write, json, command, "usage", "this takes `--as <you> --token <t>`", EXIT.usage); return null; }
+      const authed = authenticateApprover(store, acting.name, acting.token, repo);
+      if (!authed.ok) { fail(write, json, command, "not-an-approver", "that is not an approver, or the token does not match", EXIT.refused); return null; }
+      return acting.name;
+    },
+  };
+}
+
+/**
+ * `project fallback --repo <p> [--agents a,b,c] [--clear] [--allow-paid|--no-paid]`: which agents take over when one runs
+ * out of its plan (fallback.ts). New tasks seal the chain; approved ones keep theirs. Changing it is an approver's act
+ * with a password typed now, in the ledger. A lead's token never gets past the store's own check.
+ */
+async function projectFallbackCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
+  const command = "project fallback";
+  const allowed = new Set(["repo", "agents", "clear", "allow-paid", "no-paid", "as", "token", "token-file", "token-env", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project fallback option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  const agents = text(flags, "agents");
+  const clearing = flags.has("clear"), allowing = flags.has("allow-paid"), withdrawing = flags.has("no-paid");
+  if (positional.length > 1 || repoFlag === undefined || (clearing && agents !== undefined) || (allowing && withdrawing)) return fail(context.write, context.json, command, "usage", "Use project fallback --repo <project path> [--agents provider:model:plan|api-key,…] [--clear] [--allow-paid|--no-paid].", EXIT.usage);
+  const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const words = (): string[] => {
+    const setting = fallbackSettingOf(context.store, repo);
+    if (setting === null) return [`${repo}: no fallback agents. A task stops when its agent runs out of its plan.`];
+    return [`${repo}: when an agent runs out of its plan, the work moves on to:`,
+      ...setting.entries.map((one, at) => `  ${at + 1}. ${entryWords(one)}. ${entryMovesOnWords(one)}.`),
+      setting.paidGrant === null ? "Paid fallback: not allowed." : `Paid fallback: allowed by ${setting.paidGrant.by}.`];
+  };
+  const shown = () => { const setting = fallbackSettingOf(context.store, repo); return { repo, agents: setting?.entries ?? [], paidAllowed: setting?.paidGrant != null }; };
+  if (agents === undefined && !clearing && !allowing && !withdrawing) return succeed(context.write, context.json, command, shown(), words);
+  const parsed = agents === undefined ? [] : agents.split(",").map(one => parseEntry(one.trim()));
+  const bad = parsed.find((one): one is string => typeof one === "string");
+  if (bad !== undefined) return fail(context.write, context.json, command, "usage", bad, EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : credentialApprover(context.store, acting.name, acting.token, repo);
+  if (acting === null || !verified?.ok || !context.store.accountCanAccess(acting.name, repo)) return fail(context.write, context.json, command, "refused", "An approver for this project changes its fallback agents, with their password: pass --as and --token.", EXIT.refused);
+  const now = context.clock();
+  const done = context.store.transact(() => {
+    if (clearing) { const one = clearFallbackChain(context.store, repo, acting.name, now); if (!one.ok) return one; }
+    if (agents !== undefined) { const one = setFallbackChain(context.store, repo, parsed as FallbackEntry[], acting.name, now); if (!one.ok) return one; }
+    if (allowing || withdrawing) { const one = setPaidGrant(context.store, repo, allowing, acting.name, now); if (!one.ok) return one; }
+    return { ok: true as const };
+  });
+  if (!done.ok) return fail(context.write, context.json, command, "refused", done.problem, EXIT.refused);
+  return succeed(context.write, context.json, command, shown(), () => [...words(), "Tasks scoped from now on use this; tasks already approved keep the chain they were approved with."]);
 }

@@ -58,12 +58,10 @@ export type ModeTerms = {
    * fallback; fallback chains were removed in v115). Always false on new
    * modes; retained for digest and audit compatibility. */
   allowPaidFallback: boolean;
-  /** Whether this mode AUTHORIZES the bounded repair loop to draft AND
-   * auto-approve its own repair attempts (v40, evidence-review-v1) — the
-   * same precedent as the old paid-fallback grant: legacy modes default FALSE, a
-   * new authority is never inherited, only freshly signed. Without it, a
-   * short/refuted run with named unresolved criteria still gets exactly
-   * one drafted repair — it simply waits unapproved. */
+  /** Whether this mode AUTHORIZES repairing a failed check: drafting and
+   * auto-approving each attempt (check-repair.ts). Legacy modes default FALSE,
+   * a new authority is never inherited, only freshly signed. Without it a
+   * failed check waits for a person, whose repair takes the normal approval. */
   repairAuto: boolean;
   /** The signed cap on repair attempts per chain (0..3), counted over the
    * chain rooted at the original task. Meaningless (read as 0) unless
@@ -84,6 +82,8 @@ export type ModeTerms = {
 };
 
 export const MODE_MAX_DAYS = 7;
+/** Repairs of one failed check's chain: what a person can start, and what the console's choice signs. The CLI signs 1 to 3. */
+export const CHECK_REPAIR_LIMIT = 2;
 
 /** The presets are STARTING POINTS the ceremony renders in full — the
  * signature always covers the resolved terms, never a label. */
@@ -257,7 +257,7 @@ export function modeWords(terms: ModeTerms): string[] {
     ...(terms.allowPaidFallback
       ? ["a historical paid-fallback grant is retained on record but no longer used"] : []),
     ...(terms.repairAuto
-      ? ["historical automatic repair grants are retained on record but no longer schedule work"] : []),
+      ? [`a failed check repairs itself, at most ${terms.repairMaxAttempts} ${terms.repairMaxAttempts === 1 ? "try" : "tries"} per task, inside the plan you approved and under the limits above; a repair that plan doesn't cover, and the last failure, come to you`] : []),
     ...(terms.chatApprove
       ? [`your paired ${chatNames(chatApproveChatsOf(terms))} chat may approve this repository's plans and merge its ready pull requests, two taps each, without your password; a plan that widens permissions, exceeds the per-attempt cap above or touches protected paths still opens Toolroll`] : []),
     `everything above ends at ${terms.absoluteExpiry.slice(0, 16).replace("T", " ")} — revoking it earlier is one click, and every act it covered falls back to its own ceremony`,

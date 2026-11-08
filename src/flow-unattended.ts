@@ -285,7 +285,7 @@ function coverageProblem(store: Store, flow: FlowRow, owner: string, workRepos: 
 }
 
 /** The projects a flow's work zones file in (a build zone may name another). */
-function workReposOf(flow: FlowRow): string[] {
+export function workReposOf(flow: FlowRow): string[] {
   try {
     const drawn = JSON.parse(flow.definitionJson) as { stages?: { kind?: unknown; repo?: unknown }[] };
     return (drawn.stages ?? []).filter(one => one.kind === "task" && typeof one.repo === "string").map(one => one.repo as string);
@@ -588,10 +588,20 @@ export async function signUnattended(store: Store, input: { flow: number; signer
   const schedules = canonicalJson(store.flowTriggers(input.flow));
   await prepareUnattendedCandidates(store, input.flow);
   const prepared = candidatesDigestOf(unattendedCandidates(store, input.flow));
+  return sealUnattended(store, input, now, { revision, schedules, prepared });
+}
+
+/**
+ * The signature itself, in one transaction. `before` is what signUnattended read around its file pass. Chat's door is
+ * synchronous, so it signs without one, over the script snapshots the worker's pass keeps (prepareUnattendedCandidates)
+ * and the schedules its card showed (`sawSchedules`). A snapshot older than the files fails closed: a firing runs a
+ * signed script only if it is still the very code signed.
+ */
+export function sealUnattended(store: Store, input: { flow: number; signer: string; ask: UnattendedAsk; sawRevision?: number; sawSchedules?: string; /** Where the yes came from, for the ledger: "via slack · chat binding #3". */ road?: string }, now: Date, before?: { revision: number | undefined; schedules: string; prepared: string }): { ok: true; grant: UnattendedGrant } | { ok: false; message: string } {
   return store.transact(() => {
     const flow = store.getFlow(input.flow);
     if (flow === null) return { ok: false as const, message: "No such flow." };
-    if (revision !== flow.revision || schedules !== canonicalJson(store.flowTriggers(input.flow)) || prepared !== candidatesDigestOf(unattendedCandidates(store, input.flow))) return { ok: false as const, message: "This flow changed while preparing its scripts. Read the terms again." };
+    if (before !== undefined && (before.revision !== flow.revision || before.schedules !== canonicalJson(store.flowTriggers(input.flow)) || before.prepared !== candidatesDigestOf(unattendedCandidates(store, input.flow)))) return { ok: false as const, message: "This flow changed while preparing its scripts. Read the terms again." };
     if (input.sawRevision !== undefined && input.sawRevision !== flow.revision) return { ok: false as const, message: "This flow changed while you were reading. Read the terms again." };
     const problem = unattendedSignProblem(store, flow, input.signer);
     if (problem !== null) return { ok: false as const, message: problem };
@@ -611,7 +621,7 @@ export async function signUnattended(store: Store, input: { flow: number; signer
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(flow.id, flow.repo, flow.revision, unattendedTermsJson(terms), digest, input.signer, now.toISOString(), terms.absoluteExpiry).lastInsertRowid);
     store.recordAction({ at: now.toISOString(), actor: input.signer, repo: flow.repo, taskId: null, runId: null, source: "policy",
       action: `flow runs on its own: ${previous === undefined ? "signed" : "renewed"}`, outcome: previous === undefined ? "signed" : "renewed",
-      detail: `${flow.name} (flow #${flow.id}) · until ${terms.absoluteExpiry.slice(0, 16).replace("T", " ")} UTC${terms.perAttemptBudgetMicrousd === null ? "" : ` · ${dollars(terms.perAttemptBudgetMicrousd)} per attempt`}${terms.dailyRunCap === null ? "" : ` · ${terms.dailyRunCap} runs a day`}` });
+      detail: `${flow.name} (flow #${flow.id}) · until ${terms.absoluteExpiry.slice(0, 16).replace("T", " ")} UTC${terms.perAttemptBudgetMicrousd === null ? "" : ` · ${dollars(terms.perAttemptBudgetMicrousd)} per attempt`}${terms.dailyRunCap === null ? "" : ` · ${terms.dailyRunCap} runs a day`}${input.road === undefined ? "" : ` · grant #${id} · ${input.road}`}` });
     return { ok: true as const, grant: { id, flow: flow.id, repo: flow.repo, terms, digest, signedBy: input.signer, signedAt: now.toISOString(), absoluteExpiry: terms.absoluteExpiry } };
   });
 }

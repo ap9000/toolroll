@@ -34,6 +34,9 @@ import {
 } from "./chat-delivery-state.js";
 import { readChatActionBody, readChatMessageBody, readChatPairBody, readChatPart } from "./contracts/chat-content.js";
 import { readProposalActionRow } from "./contracts/chat-callback-rows.js";
+import { cardContent, cardPart } from "./chat-card-part.js";
+import { flowDoneCard } from "./flow-result-card.js";
+import { cardsFirst, isCardProposal } from "./chat-card.js";
 import { answerChatFlowPrompt, answerChoiceMessage, applyChatFlowTap, flowDecisionParts, flowSendParts } from "./chat-flow.js";
 import { connectChannel, FLOW_WORDS, takeChannelMessage, watchedChannel } from "./chat-inbox.js";
 import { triggerConfigOf } from "./flow-triggers.js";
@@ -620,10 +623,9 @@ export async function processChatEvent(
         task: image.taskId,
         run: image.run,
       });
-    for (const proposal of store
-      .listLeadProposals(turn.thread, ["pending"])
-      .filter((p) => p.turn === turn.id))
-      parts.push({ text: "", proposal: proposal.id });
+    // Cards first, so what a card leads to sits right under it. A card is an ordinary part: it confirms nothing.
+    for (const proposal of cardsFirst(store.listLeadProposals(turn.thread, ["pending"]).filter((p) => p.turn === turn.id)))
+      parts.push(isCardProposal(proposal) ? cardPart(proposal) : { text: "", proposal: proposal.id });
     state.plan(event.id, parts, nowOf(options));
     return true;
   } catch (error) {
@@ -825,6 +827,7 @@ export function applyChatAction(
           // A paired chat seat speaks for its account's full authority (pairing is a full session's act).
           authority: "full",
           via: options.state.provider,
+          binding: binding.id,
           evidenceRoot: options.evidenceRoot,
           confirm: phase === "yes",
           deferSignal: (signal) => signals.push(signal),
@@ -1224,6 +1227,11 @@ function offerNotice(options: ChatDeliveryOptions, notification: Notification, b
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
             ts: "", thread: "", payload: {}, created: now.toISOString() });
           state.plan(id, flowSendParts(store, notification, state.provider)!, now);
+        } else if (personal && flowDoneCard(store, notification, now) !== null) {
+          // A card that reached Done: what it went through, as a card with its links.
+          state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,
+            ts: "", thread: "", payload: {}, created: now.toISOString() });
+          state.plan(id, [cardContent(flowDoneCard(store, notification, now)!)], now);
         } else if (notification.kind === "flow-card" && questionParts(store, notification, binding) !== null) {
           // A subagent's question (v93): its options and "Answer in words" on the notice, for the person it asks.
           state.enqueue({ id, installation: identity.installation, binding: binding.id, kind: "notice", channel: binding.channel, member: binding.member,

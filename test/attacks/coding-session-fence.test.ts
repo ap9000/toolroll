@@ -41,9 +41,9 @@ beforeEach(() => {
 });
 
 describe("attack: a coding session reaching past its worktree", () => {
-  test("its profile denies the state, reads but never writes another session's worktree, and writes its own; without it the state is read", ctx => {
+  test("its profile denies the state, reads but never writes another session's worktree, and writes its own; without it the state is read", async ctx => {
     needs(ctx, codexSandbox());
-    const made = codingSessionPermissions(store, sessions)({ repo, worktree: own });
+    const made = await codingSessionPermissions(store, sessions)({ repo, worktree: own });
     if (!("config" in made)) throw new Error(JSON.stringify(made));
     expect(made.config).toMatchObject({ default_permissions: "standing-orders", "permissions.standing-orders.extends": ":workspace" });
     const script = [
@@ -68,9 +68,9 @@ describe("attack: a coding session reaching past its worktree", () => {
     expect(plain.stdout).toContain("sibling:read");
   });
 
-  test("a worktree that isn't one of the project's own refuses the session", () => {
+  test("a worktree that isn't one of the project's own refuses the session", async () => {
     const stray = join(sessions, "stray");
     mkdirSync(stray);
-    expect(codingSessionPermissions(store, sessions)({ repo, worktree: stray })).toMatchObject({ problem: expect.stringMatching(/couldn't be bound/) });
+    expect(await codingSessionPermissions(store, sessions)({ repo, worktree: stray })).toMatchObject({ problem: expect.stringMatching(/couldn't be bound/) });
   });
 });

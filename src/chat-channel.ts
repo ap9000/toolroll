@@ -7,6 +7,7 @@ import {
   sharedActionPayload,
   sharedActionNeedsReview,
   sharedActionReviewPath,
+  APPROVAL_TERM_CHARS,
   sharedActionAllowsChallenge,
   CHAT_ACTIONS,
 } from "./chat-actions.js";
@@ -14,6 +15,7 @@ import { isDirectChatProvider, subscriptionCredentialKey } from "./converse.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import type { DoorOutcome } from "./lead-doors.js";
 import { LEAD_TOOL_SCHEMAS } from "./lead-tools.js";
+import { cardPlainOf, isCardProposal } from "./chat-card.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { canonicalProject } from "./project.js";
 import type {
@@ -291,8 +293,14 @@ export type ChatChannelName = "telegram" | "slack" | "discord" | "teams";
  * challenge action, in the same words on every channel. */
 export function armedCardText(proposal: LeadProposal, previewText: string): string {
   const body = previewText.split("\n\nConfirm or Dismiss below")[0] ?? previewText;
-  if (proposal.kind === "action") return `${body}\n\nThis records that you handled this exact result. Confirm?`;
+  if (proposal.kind === "action") return `${body}\n\n${armedQuestion(proposal)}`;
   return `⚠ This answer is IRREVERSIBLE.\n\n${body}\n\nConfirm?`;
+}
+
+/** The second question on an action's card, in words true of what it does. */
+export function armedQuestion(proposal: LeadProposal): string {
+  const action = proposal.kind === "action" ? sharedActionPayload(proposal.payload) : null;
+  return action?.operation === "result_accept" ? "This records that you handled this exact result. Confirm?" : "You approve exactly what's written above. Confirm?";
 }
 
 /** The "yes" button's label for an armed card. */
@@ -472,7 +480,7 @@ export function proposalPreview(
       if (channel !== null && sharedActionAllowsChallenge(action))
         return card(
           phoneText(action.title, 200),
-          action.terms.map((term) => phoneText(term, 1200)),
+          action.terms.map((term) => phoneText(term, APPROVAL_TERM_CHARS)),
           "Confirm asks once more before anything is recorded.",
         );
       return sharedActionNeedsReview(action)
@@ -567,7 +575,7 @@ export function proposalPreview(
           `Goal: ${t("goal", 600)}`,
           ...(t("not") === "" ? [] : [`Not: ${t("not", 300)}`]),
         ],
-        "After confirming, the new scope still needs your password approval before work starts.",
+        "After confirming, the new scope still needs your approval before work starts.",
       );
     case "answer": {
       const id =
@@ -606,9 +614,7 @@ export function proposalPreview(
       return card(
         `${action.label}: ${taskName}${dependency === "" ? "" : ` · ${dependency}`}`,
         [action.detail],
-        operation === "resume"
-          ? "Confirming only requests the resume. Work resumes after the password step on the task, not from here."
-          : null,
+        null,
       );
     }
     case "review": {
@@ -663,6 +669,7 @@ export function proposalPreview(
         "Cancelling is armed on the task itself, never from a card.",
       ]);
     case "control": {
+      if (isCardProposal(proposal)) return handoff(cardPlainOf(proposal));
       const control = payload["control"];
       const label = isChatControl(control)
         ? CHAT_CONTROLS[control].label
@@ -837,6 +844,12 @@ export const CHAT_ACTION_PARITY: Record<
     how: "Pushes the plan's or flow card's own decision card to the owner's paired chat: Approve arms Yes and Cancel, and only the owner's Yes decides, through sealScopeApproval (as a chat-origin approval) or decideFlowCard. Outside the owner's chat-approval setting or a decision's rules it answers why, and the lead opens the console control.",
     gap: "A flow card's Send back, Edit and a Person chooses step act from the pushed card; a plan's Send back stays in the console. Fixture proof only, no physical-phone rendering.",
   },
+  get_findings: { support: "direct", how: "Read during a turn; a finding's words are shown as untrusted text.", gap: null },
+  show_card: {
+    support: "direct",
+    how: "A card of Toolroll's own records. Telegram shows it as one message: key facts as lines, tables and charts as monospaced text, its links as url buttons.",
+    gap: "A chart is bars of text on Telegram, with every number written out.",
+  },
   show_control: {
     support: "handoff",
     how: "The card names the control and the task, with one url button to that exact console control when a trusted https console-url is configured; the button opens the signed-in console and acts on nothing.",
@@ -845,12 +858,12 @@ export const CHAT_ACTION_PARITY: Record<
   propose_task: {
     support: "direct",
     how: "Card with Confirm/Dismiss through confirmLeadProposal (filed as a lead proposal, via telegram). The confirmed card links Review & start for the filed task while its scope waits; under a signed automatic mode it says the scope is approved and links the task.",
-    gap: "Under manual approval the password step happens in the console, reached from the card's button.",
+    gap: "Under manual approval the plan then needs the person's own yes, on its card.",
   },
   propose_sweep: {
     support: "direct",
     how: "A protected shared action (sweep_file): the card lists every item, the shared rules and the success test; confirming files them all and approves each scope.",
-    gap: "Starting a sweep approves work, so it opens the secure review in the console (the password, or Passwordless).",
+    gap: "Terms too long for one message open the review page, in the signed-in console.",
   },
   get_sweep: {
     support: "direct",
@@ -865,7 +878,7 @@ export const CHAT_ACTION_PARITY: Record<
   propose_scope: {
     support: "direct",
     how: "Confirm rewrites the scope through the shared door; the confirmed card links Review & start for the exact task.",
-    gap: "Approving the rewritten scope needs the password, in the console.",
+    gap: "Approving the rewritten scope is a separate yes, on its own card.",
   },
   propose_next: {
     support: "direct",
@@ -904,8 +917,8 @@ export const CHAT_ACTION_PARITY: Record<
   },
   propose_task_action: {
     support: "direct",
-    how: "stop, retry, plan, wait_for and stop_waiting confirm through the shared door (a stop is audited via telegram); resume confirms only the request, says nothing has resumed, and links the task where the password step lives.",
-    gap: "resume completes in the console (incomplete phone action).",
+    how: "stop, retry, plan, wait_for and stop_waiting confirm through the shared door (a stop is audited via telegram); resume, on a person's own tap, lifts the stop.",
+    gap: null,
   },
   propose_answer: {
     support: "direct",
@@ -974,8 +987,8 @@ export function confirmedCardText(
       : revise && state === "approved"
         ? "Revision created under your automatic approval settings."
         : said;
-  const next = resume
-    ? "Nothing has resumed yet: the password step on the task finishes it."
+  const next = resume && said.startsWith("Resume requested")
+    ? "Nothing has resumed yet: finish it on the task."
     : approval && note !== null
       ? "Approve it in Toolroll on the computer."
       : "";

@@ -4,6 +4,8 @@ import type { TaskOrigin } from "../task-source.js";
 import { assignmentSummaryHtml } from "../assignment-ui.js";
 import { type AssignmentSnapshot } from "../assignment.js";
 import { type BrowserActionCard } from "../browser-workspace.js";
+import { webCardHtml } from "../card-render.js";
+import { cardOfProposal, cardPlainOf, cardsFirst, isCardProposal } from "../chat-card.js";
 import { closedQuestionReason } from "../decision.js";
 import { CHAT_ACTIONS,sharedActionNeedsReview,sharedActionPayload,sharedActionReviewPath } from "../chat-actions.js";
 import { CHAT_CONTINUITY_SCRIPT } from "../chat-continuity.js";
@@ -711,6 +713,17 @@ export function proposalCardParts(view: ProposalCardView, inert: boolean, decisi
       card: { id: view.id, kind: view.kind, label: "Question closed", state: view.state as BrowserActionCard["state"], body: htmlString(body), said: null, links: [], primary: null, dismissable: false, note: null },
     };
   }
+  // A Toolroll card: data to read, with its fixed links. It confirms nothing, so it waits on nobody.
+  if (isCardProposal(view)) {
+    const shown = cardOfProposal(view);
+    const body = shown === null ? html`<p>${cardPlainOf(view)}</p>` : webCardHtml(shown);
+    const links = shown?.buttons.map(one => ({ label: one.label, href: one.path })) ?? [];
+    const label = shown?.title ?? "Card";
+    return {
+      html: html`<article class="card proposal proposal-data" data-card-kind="data"><div class="proposal-body"><h3>${label}</h3>${body}</div>${links.length === 0 ? "" : html`<footer class="proposal-actions">${joinHtml(links.map(one => html`<a class="button-link" href="${one.href}">${one.label}</a>`))}</footer>`}</article>`,
+      card: { id: view.id, kind: view.kind, label, state: "pending", body: htmlString(body), said: null, links, primary: null, dismissable: false, note: null, data: true },
+    };
+  }
   const presentations: Record<LeadProposal["kind"], { label: string; action: string; icon: Html }> = {
     task: { label: payload["report"] === true ? "Scout investigation" : "New task", action: "file task", icon: html`<path d="M12 5v14"/><path d="M5 12h14"/>` },
     next: { label: "Queue priority", action: "move to front", icon: html`<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>` },
@@ -1077,7 +1090,7 @@ export function leadBrowserMessages(rows: Pick<LeadThreadRows, "messages" | "pro
     activity: message.activity, createdAt: message.createdAt,
     ...(() => {
       // Under the lead's message only, as the server-rendered thread does: the person's message shares the turn.
-      const parts = message.turn === null || message.role === 'operator' ? [] : rows.proposals.filter(one => one.turn === message.turn)
+      const parts = message.turn === null || message.role === 'operator' ? [] : cardsFirst(rows.proposals.filter(one => one.turn === message.turn))
         .map(one => leadProposalCardParts(one, rows.pending !== null, rows.decisions.get(typeof one.payload['decision'] === 'number' ? one.payload['decision'] : -1) ?? null, back));
       return { cardsHtml: htmlString(joinHtml(parts.map(one => one.html))), cards: parts.map(one => one.card) };
     })(),

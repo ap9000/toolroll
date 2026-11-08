@@ -430,6 +430,8 @@ export function pullRequestFactOf(publication: { state: string; prNumber?: numbe
 /** The assignment's stage. The work status, when the caller read one, names
  * the exact reason (a running planner, a pause, a failed attempt, a sign-in). */
 export function assignmentStageOf(assignment: Pick<AssignmentSnapshot, "state" | "primaryAction"> & { review?: AssignmentSnapshot["review"]; need?: AssignmentSnapshot["need"] }, work?: { token: string; views?: readonly string[] } | null, planning = false): { stage: TaskStage; need?: TaskStatusFacts["need"]; wait?: WaitKey } {
+  // A finding held for a person outlives the stage the work is in, a saved result included: only a person closes it.
+  if (work?.token === "finding-held" && assignment.state !== "cancelled") return { stage: "needs-you", need: "finding" };
   // The assignment's own reading (a build Toolroll can't confirm stopped) comes first.
   const own = assignment.need ?? null;
   if (own !== null && (assignment.state === "working" || assignment.state === "needs-decision")) return "wait" in own ? { stage: "waiting", wait: own.wait } : { stage: "needs-you", need: own.key };
@@ -448,6 +450,7 @@ export function assignmentStageOf(assignment: Pick<AssignmentSnapshot, "state" |
       if (action === "approve-scope") return { stage: "needs-you", need: "approval" };
       if (action === "answer-decision") return { stage: "needs-you", need: "answer" };
       if (action === "inspect-decisions") return { stage: "needs-you", need: "questions" };
+      if (action === "inspect-findings") return { stage: "needs-you", need: "finding" };
       const token = work?.token ?? "";
       // A failed attempt is Failed. A saved result that still needs a decision
       // (its scope, a hold, a process exit) is Needs you, even if its checks

@@ -8,18 +8,22 @@
 
 /** What a person is asked for. */
 export type NeedKey =
-  | "approval" | "card" | "answer" | "questions" | "sign-in" | "stop-unproven" | "hold"
+  | "approval" | "card" | "answer" | "questions" | "sign-in" | "stop-unproven" | "hold" | "storage"
   | "choose-project" | "define-task" | "fix-request" | "choose-agent" | "fix-dependency" | "add-requirement"
-  | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "replan" | "earlier-version" | "history" | "other";
+  | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "replan" | "earlier-version" | "history" | "finding" | "other";
 /** What the work waits for when no person can act. */
 export type WaitKey = "build-stopping" | "build-finishing" | "build-checking" | "other-computer" | "card-reply" | "card-time" | "card-ci"
   | "plan-next" | "research-next" | "builders-busy" | "retry-later" | "app-update" | "other-task";
 
 /** The action's code: the WorkAction that owns the act, or one of the acts a surface renders itself. */
+/** The reason a storage hold carries before the check's own words (dispose.ts holdForStorage; dispatch.ts and
+ * work-index.ts read it back). */
+export const STORAGE_HOLD_PREFIX = "protected-storage — ";
+
 export type NeedActionCode =
   | "approve-scope" | "approve-card" | "answer-decision" | "inspect-decisions" | "sign-in" | "recheck-stopped" | "inspect-hold"
   | "place-task" | "write-scope" | "select-agent" | "repair-dependency" | "repair-capability" | "start-worker" | "reconcile-run"
-  | "open-result" | "retry-task" | "inspect-task";
+  | "open-result" | "retry-task" | "inspect-task" | "inspect-findings" | "unhold";
 export type NeedAction = { code: NeedActionCode; label: string };
 /** Where "Connect a builder" and "Start the builder" lead (code `start-worker`): the Start a builder page, which shows
  * the one command to run and the open project's builder state. Every signed-in person can open it, a project-limited
@@ -54,6 +58,8 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
   // what's theirs and have it look again, nothing more.
   "stop-unproven": { sentence: context => `Toolroll can't prove ${build(context)} stopped from this computer, so the work is held. Close anything of yours that is using its folder, then check again.`, action: { code: "recheck-stopped", label: "Check again" } },
   hold: { sentence: () => "A hold is keeping this task from starting. Review it to release it.", action: { code: "inspect-hold", label: "Review hold" } },
+  // The storage check couldn't finish (protected-storage.ts): its own words say which program macOS may need to allow.
+  storage: { sentence: () => "Toolroll couldn't finish checking other apps' data before starting. Allow it in Privacy & Security, then try again.", action: { code: "unhold", label: "Try again" }, useReason: always },
   "choose-project": { sentence: () => "Choose a project so a builder can start.", action: { code: "place-task", label: "Choose a project" } },
   "define-task": { sentence: () => "Say what the task should do so it can be planned.", action: { code: "write-scope", label: "Define the task" } },
   "fix-request": { sentence: () => "The request can't be planned as written. Edit it so the planner can start.", action: { code: "write-scope", label: "Edit the request" },
@@ -80,6 +86,8 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
     action: { code: "inspect-task", label: "Open earlier version" } },
   // An actionable need, never a quiet Waiting: a person opens it to retry or archive it.
   history: { sentence: () => "Toolroll can't read this task's history. Open it to retry or archive it.", action: { code: "inspect-task", label: "Open the task" } },
+  // A finding the reviewer and the agent couldn't settle (findings.ts): only a person closes it.
+  finding: { sentence: () => "A finding has used its rounds. Read both sides and decide.", action: { code: "inspect-findings", label: "Open finding" } },
   other: { sentence: () => "Open the task to see what it needs from you.", action: { code: "inspect-task", label: "Open the task" }, useReason: always },
 };
 
@@ -125,10 +133,10 @@ export function resultHoldUpSentence(facts: Partial<ResultHoldUp>): string {
 }
 
 export const NEED_ASK: Readonly<Record<NeedKey, Ask>> = {
-  approval: "decide", card: "decide", answer: "decide", questions: "decide", "choose-project": "decide", "define-task": "decide",
+  finding: "decide", approval: "decide", card: "decide", answer: "decide", questions: "decide", "choose-project": "decide", "define-task": "decide",
   "fix-request": "decide", "choose-agent": "decide",
   "review-result": "review", rebuild: "review", replan: "decide",
-  "sign-in": "unblock", "stop-unproven": "unblock", hold: "unblock", "fix-dependency": "unblock",
+  "sign-in": "unblock", "stop-unproven": "unblock", hold: "unblock", storage: "unblock", "fix-dependency": "unblock",
   "add-requirement": "unblock", "connect-builder": "unblock", "start-builder": "unblock", vanished: "unblock", "earlier-version": "unblock", history: "unblock", other: "unblock",
 };
 
@@ -214,12 +222,14 @@ export const CODE_READING: Readonly<Record<string, CodeReading>> = {
   "history-problem": { stage: "needs-you", need: "history", act: "inspect-task" },
   "earlier-active": { stage: "needs-you", need: "earlier-version", act: "inspect-task" },
   "waiting-decision": { stage: "needs-you", need: "answer", act: "answer-decision" },
+  "finding-held": { stage: "needs-you", need: "finding", act: "inspect-findings" },
   "decision-queue": { stage: "needs-you", need: "questions", act: "inspect-decisions" },
   // A saved result that can't simply be accepted yet: its own reason (resultHoldUpSentence) is the sentence.
   "result-needs-attention": { stage: "needs-you", need: "other", act: "inspect-run" },
   "process-needs-attention": { stage: "needs-you", need: "stop-unproven", act: "inspect-run" },
   "vanished-run": { stage: "needs-you", need: "vanished", act: "reconcile-run" },
   held: { stage: "needs-you", need: "hold", act: "inspect-hold" },
+  "storage-blocked": { stage: "needs-you", need: "storage", act: "unhold" },
   "terminal-dependency": { stage: "needs-you", need: "fix-dependency", act: "repair-dependency" },
   "needs-project": { stage: "needs-you", need: "choose-project", act: "place-task" },
   "needs-scope": { stage: "needs-you", need: "define-task", act: "write-scope" },
@@ -251,6 +261,8 @@ export const RUN_REASON_WORDS: Readonly<Record<string, string>> = {
   agent: "the agent failed",
   "agent-reported": "the agent reported it could not finish",
   "no-op": "nothing changed when something should have",
+  "usage-exhausted": "the agent ran out of its plan, so its work moved to the next approved agent",
+  "fallback-signed-out": "the next approved agent isn't signed in to its plan here, so it didn't run; sign it in, then retry",
   "no-handoff": "the agent stopped before handing off; its work was kept and it is being resumed",
   "moved-head": "the branch moved underneath the build",
   "moved-branch": "the branch moved underneath the build",

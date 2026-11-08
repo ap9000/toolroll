@@ -38,7 +38,7 @@ import { DEPS_FOLDER, linkedKey, readyCopy, sharedCopies } from "./shared-deps.j
 import type { LoopbackMode } from "./egress.js";
 import type { ExecutionProfile } from "./scope.js";
 import { SEATBELT_PROBE, sandboxRuntimeProblem, srtSpawn, type SrtTerms } from "./sandbox-runtime.js";
-import { protectedStorageDenies, protectedStorageNames } from "./protected-storage.js";
+import { protectedStorageDenies, protectedStorageNames, type ProtectedStorage } from "./protected-storage.js";
 import { ensureSecretsDir, legacyLoginFileOf, SECRETS_DIR, secretsDirOf } from "./login-secrets.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime";
 
@@ -252,7 +252,7 @@ export type TaskBoundary = { protectedShell?: string[]; shell: string[]; fileToo
  * The task's worktree, the files Toolroll makes for the run (in the
  * system temp folder) and everything else stay as they are.
  */
-export function taskBoundary(options: { worktree: string; provider: string; home?: string; binding?: WorktreeBinding | null; policy?: FencePolicy }): TaskBoundary {
+export function taskBoundary(options: { worktree: string; provider: string; home?: string; binding?: WorktreeBinding | null; policy?: FencePolicy; storage?: ProtectedStorage }): TaskBoundary {
   const home = real(options.home ?? homedir());
   const worktree = real(options.worktree);
   const main = options.binding?.main ?? null;
@@ -263,7 +263,7 @@ export function taskBoundary(options: { worktree: string; provider: string; home
   // Policy v2 (docs/plans/sandbox-parity.md §1.2): the home folder, the repositories beside this one and the project's
   // primary checkout are read as Anthropic's sandbox runtime reads them; only writes to the primary checkout stay denied.
   // Protected storage by name, under both policies (protected-storage.ts): never part of the v1-only home configuration.
-  const storage = protectedStorageNames(home);
+  const storage = options.storage?.names ?? protectedStorageNames(home);
   if ((options.policy ?? 1) === 2) return v2Boundary(worktree, main, gitdir, storage);
   const shell = new Set(present(HOME_CONFIGURATION.filter(name => !own.has(name))));
   const protectedShell = [...shell, ...storage];
@@ -1057,6 +1057,10 @@ export type FenceKind = "build" | "command" | "check" | "flow" | "tool-server";
  * with no checkout), so no caller forgets one; every path comes from Toolroll's own records, never from the checkout.
  */
 export type FenceContext = {
+  /** This launch's storage check, awaited before the fence is made (protected-storage.ts prepareProtectedStorage). Every
+   * launch road passes it (an architecture test holds them to it); without one the check runs right here, which only a
+   * test does. */
+  storage?: ProtectedStorage;
   /** One exact file read back inside the fence (a build's code map), or null. */
   exactFile?: string | null;
   databaseFile: string | null;
@@ -1112,7 +1116,7 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
   const home = ctx.home === undefined ? {} : { home: ctx.home };
   // The project's read denies join the fence by name, there or not (the runtime denies a path that isn't there yet).
   // Protected storage, resolved once for this launch, from the plane's own environment (protected-storage.ts).
-  const storage = protectedStorageDenies(ctx.home ?? homedir());
+  const storage = ctx.storage?.denies ?? protectedStorageDenies(ctx.home ?? homedir());
   const fence = agentFence({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, ...home, boundary: ctx.boundary, binding: ctx.binding, runFolders: ctx.runFolders, extra: [...ctx.extra ?? [], ...ctx.readDeny ?? []], protectedStorage: storage });
   const found = fenceGrants({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, boundary: ctx.boundary, runFolders: ctx.runFolders, linked: ctx.linked ?? null, binding: ctx.binding, ...home, poolRoots: ctx.poolRoots });
   // Toolroll's own install, the sandbox runtime's package and the Node running them, never written by anything it
