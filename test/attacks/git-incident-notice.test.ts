@@ -83,4 +83,24 @@ describe("git incidents in the console's outbox", () => {
       expect(rows()).toHaveLength(3);
     } finally { stop(); }
   });
+
+  test("an agent can't flood a person by swapping to ever-new places: three a checkout a day, then one last notice", () => {
+    store = openStore(":memory:");
+    let at = new Date("2026-11-08T02:03:30.000Z");
+    const stop = noticeGitIncidents(store, () => at);
+    try {
+      const rows = () => store!.listNotifications("pending").filter(row => row.kind === "git-incident");
+      const swap = (checkout: string, n: number) => gitIncident({ checkout, repository: "/p/.git", swapped: [{ path: "/p/.git/refs", leadsTo: `/elsewhere/${n}` }], cause: "swapped", record: "/dev/null" });
+      for (let n = 0; n < 50; n++) swap("/p/worktrees/t1", n);
+      expect(rows()).toHaveLength(4);
+      // An earlier change met again stays its own (quiet) notice; another checkout has its own allowance.
+      swap("/p/worktrees/t1", 1);
+      swap("/p/worktrees/t2", 99);
+      expect(rows()).toHaveLength(5);
+      // The next day starts over.
+      at = new Date("2026-11-09T02:03:30.000Z");
+      swap("/p/worktrees/t1", 100);
+      expect(rows()).toHaveLength(6);
+    } finally { stop(); }
+  });
 });

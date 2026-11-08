@@ -65,6 +65,8 @@ const noticed = new WeakSet<object>();
 export function noticeGitIncidents(outbox: IncidentOutbox, now: () => Date = () => new Date(), record = "~/.toolroll/git-incidents.jsonl"): () => void {
   if (noticed.has(outbox)) return () => {};
   noticed.add(outbox);
+  /** Distinct changes told today, by day and checkout (only today's are kept). */
+  const seenChanges = new Map<string, Set<string>>();
   const stop = onGitIncident(incident => {
     const main = basename(incident.repository) === ".git" ? dirname(incident.repository) : incident.repository;
     const real = (path: string): string | null => { try { return realpathSync(path); } catch { return null; } };
@@ -75,10 +77,18 @@ export function noticeGitIncidents(outbox: IncidentOutbox, now: () => Date = () 
     const checkout = createHash("sha256").update(incident.checkout, "utf8").digest("hex").slice(0, 16);
     // What changed is part of the key: the same state met again stays quiet, but a new swap (another folder, or one now
     // leading somewhere else) is told even on the same checkout and day.
+    // An agent chooses where a swapped folder leads, so distinct changes are capped: at most INCIDENT_CHANGES_PER_DAY a
+    // checkout a day, then one last notice for the rest of that day (every incident is still recorded and refused).
+    const day = at.toISOString().slice(0, 10);
     const changed = createHash("sha256").update(JSON.stringify(incident.swapped.map(one => [one.path, one.leadsTo]).sort()), "utf8").digest("hex").slice(0, 16);
+    for (const key of seenChanges.keys()) if (!key.startsWith(`${day}:`)) seenChanges.delete(key);
+    const seen = seenChanges.get(`${day}:${checkout}`) ?? new Set<string>();
+    if (!seen.has(changed) && seen.size < INCIDENT_CHANGES_PER_DAY) seen.add(changed);
+    seenChanges.set(`${day}:${checkout}`, seen);
+    const slot = seen.has(changed) ? changed : "more";
     const doing = incident.doing ?? "running git";
     outbox.enqueueNotification({
-      dedupeKey: `git-incident:${at.toISOString().slice(0, 10)}:${checkout}:${incident.cause ?? "changed"}:${changed}`, kind: "git-incident", pushClass: "attention",
+      dedupeKey: `git-incident:${day}:${checkout}:${incident.cause ?? "changed"}:${slot}`, kind: "git-incident", pushClass: "attention",
       source: known === null ? { installation: true } : { project: known.path },
       subject: `Git incident in ${known === null ? "a project" : known.name}: a folder of its repository changed while Toolroll was ${doing}`,
       body: "Toolroll stopped trusting that git command and changed nothing more. Nothing was rolled back: check the repository by hand. The checkout and the folders that changed are in ~/.toolroll/git-incidents.jsonl. Toolroll leaves that checkout alone for a day.",
@@ -111,3 +121,6 @@ export function recentGitIncident(record: string, checkout: string, since: Date)
     return false;
   } catch { return false; } finally { if (fd !== null) closeSync(fd); }
 }
+
+/** How many distinct changes on one checkout reach a person in a day before the rest share one last notice. */
+export const INCIDENT_CHANGES_PER_DAY = 3;
