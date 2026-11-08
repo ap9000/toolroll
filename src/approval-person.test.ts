@@ -332,8 +332,10 @@ describe("protected work counts only people", () => {
 describe("every surface reads an old lead-made seal the way dispatch does", () => {
   test("chat offers to approve it and status asks a person, instead of 'already approved' and 'wait for a worker'", () => {
     filed("t-surface"); legacySeal("t-surface", "lead-token");
+    // Approving from chat is on for a person with the authority (56922b51): the lead-made seal isn't approval, so chat
+    // offers this plan for the person's own yes, never "already approved".
     const why = planInChat(store, "t-surface", "alex", NOW, "telegram");
-    expect(why).toMatchObject({ ok: false });
+    expect(why).toMatchObject({ ok: true });
     expect(why.ok ? "" : why.why).not.toBe("This plan is already approved.");
     expect(taskWaitSnapshot(store, "t-surface", NOW)).toMatchObject({ next: "Approve task" });
     // A person's seal reads approved everywhere.

@@ -151,7 +151,7 @@ describe("the exact-run control on the console (v52)", () => {
     expect(controlOf(await page(cookie, "/chat?task=payouts"))).toContain('data-task-control="paused"');
   });
 
-  test("chat proposals stop once and open the shared resume ceremony without granting resume authority", async () => {
+  test("chat proposals stop once and resume once, on a person's own signed-in click, never a bearer's", async () => {
     const { executeLeadTool } = await import("./lead-tools.js");
     const { verifyApproverStanding } = await import("./principal.js");
     const { subscriptionCredentialKey } = await import("./converse.js");
@@ -188,18 +188,17 @@ describe("the exact-run control on the console (v52)", () => {
     expect(store.stopsForTask(ref)).toHaveLength(1);
     expect(store.getLeadProposal(staleStop)?.state).toBe("refused");
     finalize(store, leaseId, { kind: "interrupted", runId, taskId: "payouts", stopRun: runId, now });
-    const resume = make("resume");
-    const armed = await post(cookie, `/chat/proposal/${resume}/confirm`, { csrf });
-    expect(armed.status).toBe(200);
-    const ceremony = await armed.text();
-    expect(ceremony).toContain('action="/t/payouts/resume"');
-    expect(ceremony).toContain('name="return" value="chat"');
+    // Owner's decision (56922b51): a person's own click in their signed-in browser resumes, as their second tap in a
+    // linked chat does. A bearer on the same door is a machine and never resumes; the resume is spent once.
+    const resume = make("resume"), again = make("resume");
+    const bearer = await fetch(url(`/chat/proposal/${resume}/confirm`), { method: "POST", headers: { authorization: `Bearer alex:${approverToken}`, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf }).toString(), redirect: "manual" });
+    expect(bearer.status).toBeGreaterThanOrEqual(400);
     expect(store.stopOf(runId)?.resumedAt).toBeNull();
-    const nonce = /name="nonce" value="([A-Za-z0-9_-]+)"/.exec(ceremony)![1]!;
-    expect((await post(cookie, "/t/payouts/resume", { csrf, run: String(runId), nonce, token: "wrong" })).status).toBe(403);
-    expect(store.stopOf(runId)?.resumedAt).toBeNull();
-    expect((await post(cookie, "/t/payouts/resume", { csrf, run: String(runId), nonce, token: approverToken, return: "chat" })).headers.get("location")).toBe("/chat?task=payouts#task-control");
-    expect((await post(cookie, "/t/payouts/resume", { csrf, run: String(runId), nonce, token: approverToken })).status).toBe(409);
+    expect((await post(cookie, `/chat/proposal/${resume}/confirm`, { csrf })).status).toBe(303);
+    expect(store.stopOf(runId)?.resumedAt).not.toBeNull();
+    expect(store.stopOf(runId)?.resumedBy).toBe("alex");
+    await post(cookie, `/chat/proposal/${again}/confirm`, { csrf });
+    expect(store.getLeadProposal(again)?.state).toBe("refused");
     expect(store.runsFor(ref)).toHaveLength(1);
   });
 
