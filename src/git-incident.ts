@@ -73,9 +73,12 @@ export function noticeGitIncidents(outbox: IncidentOutbox, now: () => Date = () 
     // words say what Toolroll was doing; the paths stay in the record file (an agent's repository can spell them).
     const at = now();
     const checkout = createHash("sha256").update(incident.checkout, "utf8").digest("hex").slice(0, 16);
+    // What changed is part of the key: the same state met again stays quiet, but a new swap (another folder, or one now
+    // leading somewhere else) is told even on the same checkout and day.
+    const changed = createHash("sha256").update(JSON.stringify(incident.swapped.map(one => [one.path, one.leadsTo]).sort()), "utf8").digest("hex").slice(0, 16);
     const doing = incident.doing ?? "running git";
     outbox.enqueueNotification({
-      dedupeKey: `git-incident:${at.toISOString().slice(0, 10)}:${checkout}:${incident.cause ?? "changed"}`, kind: "git-incident", pushClass: "attention",
+      dedupeKey: `git-incident:${at.toISOString().slice(0, 10)}:${checkout}:${incident.cause ?? "changed"}:${changed}`, kind: "git-incident", pushClass: "attention",
       source: known === null ? { installation: true } : { project: known.path },
       subject: `Git incident in ${known === null ? "a project" : known.name}: a folder of its repository changed while Toolroll was ${doing}`,
       body: "Toolroll stopped trusting that git command and changed nothing more. Nothing was rolled back: check the repository by hand. The checkout and the folders that changed are in ~/.toolroll/git-incidents.jsonl. Toolroll leaves that checkout alone for a day.",

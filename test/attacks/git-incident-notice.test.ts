@@ -65,4 +65,22 @@ describe("git incidents in the console's outbox", () => {
       expect(rows()).toHaveLength(4);
     } finally { stop(); rmSync(project, { recursive: true, force: true }); }
   });
+
+  test("a new swap on a checkout already told about today is still told", () => {
+    store = openStore(":memory:");
+    let at = new Date("2026-11-08T02:03:30.000Z");
+    const stop = noticeGitIncidents(store, () => at);
+    try {
+      const rows = () => store!.listNotifications("pending").filter(row => row.kind === "git-incident");
+      const swap = (path: string, leadsTo: string | null) => gitIncident({ checkout: "/p/worktrees/t1", repository: "/p/.git", swapped: [{ path, leadsTo }], cause: "swapped", record: "/dev/null" });
+      swap("/p/.git/refs", "/elsewhere/a");
+      at = new Date("2026-11-08T02:35:00.000Z");
+      swap("/p/.git/refs", "/elsewhere/a");
+      expect(rows()).toHaveLength(1);
+      // The same folder now leading somewhere else, or another folder swapped: told, the same day.
+      swap("/p/.git/refs", "/elsewhere/b");
+      swap("/p/.git/objects", "/elsewhere/a");
+      expect(rows()).toHaveLength(3);
+    } finally { stop(); }
+  });
 });
