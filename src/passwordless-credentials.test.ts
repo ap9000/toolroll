@@ -27,7 +27,8 @@ const CREDENTIAL_ACTS: ReadonlyArray<{ act: string; file: string; line: RegExp }
   { act: "connecting or pairing Discord", file: "server/settings.ts", line: /if\(!\(action==="connect"\|\|action==="pair" \? authenticateCredential\(who, body\.get\("password"\)\?\?""\) : authenticateApprover\(who, body\.get\("password"\)\?\?""\)\)\.ok\) return show\("Enter your Toolroll password to change Discord access/ },
   { act: "pairing a phone (Telegram)", file: "server/settings.ts", line: /const pairingIdentity = authenticateAccount\(store, who\.name, body\.get\("password"\) \?\? ""\);/ },
   { act: "turning on approving from chat", file: "server/settings.ts", line: /const proved = authenticateAccount\(store, who\.name, body\.get\("token"\) \?\? ""\);/ },
-  { act: "signing a mode with chat approval", file: "server/settings.ts", line: /if \(!\(body\.get\("chat-approve"\) === "1" \? authenticateCredential\(who, token\) : authenticateApprover\(who, token\)\)\.ok\)/ },
+  // Since 4a4176dc a mode with automatic repairs takes the typed password too; chat approval still does.
+  { act: "signing a mode with chat approval", file: "server/settings.ts", line: /if \(!\(body\.get\("chat-approve"\) === "1" \|\| body\.get\("repair-auto"\) === "1" \? authenticateCredential\(who, token\) : authenticateApprover\(who, token\)\)\.ok\)/ },
   // Project settings that widen what builds and checks reach (chat-management.md §0a.4).
   { act: "a project's network", file: "server/settings.ts", line: /if \(!authenticateCredential\(who, body\.get\("password"\) \?\? ""\)\.ok\) return back\("problem", "Enter your Toolroll password to change what builds may reach\."\);/ },
   { act: "where a project's builds may write", file: "server/settings.ts", line: /if \(!authenticateCredential\(who, body\.get\("password"\) \?\? ""\)\.ok\) return back\("problem", "Enter your Toolroll password to change where builds may write\."\);/ },
@@ -43,7 +44,7 @@ const CREDENTIAL_ACTS: ReadonlyArray<{ act: string; file: string; line: RegExp }
   { act: "CLI: people invite and access", file: "operate.ts", line: /const authenticated = \(action === "revoke" \? authenticateApprover\(store, acting\.name, acting\.token\) : credentialApprover\(store, acting\.name, acting\.token\)\);/ },
   { act: "CLI: bridge pair", file: "operate.ts", line: /const authenticated = \(action === "pair" \? credentialApprover\(store, asWho, token\) : authenticateApprover\(store, asWho, token\)\);/ },
   { act: "CLI: chat-approval on", file: "operate.ts", line: /const authed = \(action === "on" \? credentialApprover\(store, acting\.name, acting\.token\) : authenticateApprover\(store, acting\.name, acting\.token\)\);/ },
-  { act: "CLI: mode sign with chat approval", file: "operate.ts", line: /const authed = \(flag\(flags, "chat-approve"\) \? credentialApprover\(store, acting\.name, acting\.token\) : authenticateApprover\(store, acting\.name, acting\.token\)\);/ },
+  { act: "CLI: mode sign with chat approval", file: "operate.ts", line: /const authed = \(flag\(flags, "chat-approve"\) \|\| flag\(flags, "repair-auto"\) \? credentialApprover\(store, acting\.name, acting\.token\) : authenticateApprover\(store, acting\.name, acting\.token\)\);/ },
 ];
 
 test.each(CREDENTIAL_ACTS)("$act proves with a typed password, never a session or the remembered login", ({ file, line }) => {
