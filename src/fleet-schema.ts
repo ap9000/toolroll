@@ -6,6 +6,11 @@
  * runtime's file before this version's migration has run (as buildReviewOf does), and a missing table is simply nothing
  * to show. Writers run only in a process whose Store opened, and so migrated, the file.
  */
+/** Who a finding's words are from. 'lead' (the lead drafted, a person confirmed) came after the first v155 builds, which
+ * this build's v155 step widens in place (store.ts widenFindingSources). */
+export const FINDING_SOURCES = "CHECK (source IN ('build-review', 'person', 'lead', 'check-failure'))";
+export const FINDING_SOURCES_BEFORE_LEAD = "CHECK (source IN ('build-review', 'person', 'check-failure'))";
+
 export const V155_SCHEMA = `
 -- A finding sent to the task that owns the code. It belongs to the task family, so a revision or repair inherits it.
 -- summary, action and excerpt can hold model output or repository text: they are data everywhere they are read.
@@ -14,7 +19,7 @@ CREATE TABLE IF NOT EXISTS finding (
   family_root   TEXT NOT NULL,
   task_id       TEXT NOT NULL,
   repo          TEXT,
-  source        TEXT NOT NULL CHECK (source IN ('build-review', 'person', 'lead', 'check-failure')),
+  source        TEXT NOT NULL ${FINDING_SOURCES},
   source_key    TEXT UNIQUE,
   source_run    INTEGER,
   severity      TEXT CHECK (severity IS NULL OR severity IN ('HIGH', 'MEDIUM', 'LOW')),
@@ -118,7 +123,7 @@ CREATE INDEX IF NOT EXISTS provider_capture_provider ON provider_capture (provid
 `;
 
 export const V155_TABLES = Object.freeze(["finding", "finding_answer", "check_repair", "evidence_pair", "failing_first", "provider_capture"] as const);
-export const V155_STEPS = Object.freeze(["follow-through-tables"] as const);
+export const V155_STEPS = Object.freeze(["follow-through-tables", "finding-sources"] as const);
 
 /** One read, or `fallback` when the file predates v155. Any other error is real and goes on. */
 export function readingFleet<T>(read: () => T, fallback: T): T {

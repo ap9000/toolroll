@@ -12,7 +12,7 @@ import { reclaimDatabase } from "./database-reclaim.js";
 import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
 import { codeMapRemoteChanged, codeMapShapeProblem, forgetCodeMap, V152_ADDED_COLUMNS, V152_SCHEMA } from "./code-map-store.js";
 import { readStamps, stampDigest, stampRefusal, V154_SCHEMA, type CheckStamp, type StampReading } from "./check-stamp.js";
-import { V155_SCHEMA, V155_STEPS } from "./fleet-schema.js";
+import { FINDING_SOURCES, FINDING_SOURCES_BEFORE_LEAD, V155_SCHEMA, V155_STEPS } from "./fleet-schema.js";
 import { refArchived, taskArchived } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -5985,7 +5985,8 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   }
   // A current file is this build's exact shape: the checks above read, the connection gets its settings, and no DDL
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
-  if (preflight === SCHEMA_VERSION) {
+  // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
+  if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
     const missing = codeMapShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
@@ -6365,6 +6366,11 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   // v155: what happens to a result after its agent finishes (new tables only). Idempotent, as v154's step is.
   db.exec(V155_SCHEMA);
   step("follow-through-tables");
+  // A file from the first v155 builds keeps finding.source's CHECK without 'lead': rebuilt with every row, id and
+  // counter, then its index made again. Idempotent: a widened table is untouched.
+  widenFindingSources(db);
+  db.exec(V155_SCHEMA);
+  step("finding-sources");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -26977,4 +26983,21 @@ export function taskCheckStamp(store: Store, repo: string, taskId: string): { ru
     if (store.artifactsFor(runId).some(one => one.kind === "check-log")) return { runId, reading: runCheckStamp(store, runId) };
   }
   return null;
+}
+
+/** Whether this file's finding table is the first v155 builds' shape: its source CHECK without 'lead'. */
+function findingSourcesStale(db: Database): boolean {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'finding'").get();
+  return row !== undefined && String(row["sql"]).includes(FINDING_SOURCES_BEFORE_LEAD);
+}
+
+/** Widen finding.source to admit 'lead' (rebuildExact: every row and id, the AUTOINCREMENT counter, what refers to it,
+ * in one transaction). Only the exact earlier shape is rebuilt; a widened table is untouched. */
+function widenFindingSources(db: Database): void {
+  if (!findingSourcesStale(db)) return;
+  const stored = String(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'finding'").get()!["sql"]);
+  if (stored.split(FINDING_SOURCES_BEFORE_LEAD).length !== 2) throw new Error("the finding table's DDL is not a shape this migration knows — refusing to widen it");
+  const named = (sql: string) => (name: string) => sql.replace(/^CREATE TABLE (?:IF NOT EXISTS )?"?finding"?/, `CREATE TABLE ${name}`);
+  const columns = db.prepare("PRAGMA table_info(finding)").all().map(one => String(one["name"]));
+  rebuildExact(db, "finding", named(stored), named(stored.replace(FINDING_SOURCES_BEFORE_LEAD, FINDING_SOURCES)), columns);
 }
