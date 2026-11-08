@@ -100,7 +100,7 @@ describe("a saved card", () => {
   test("the lead's words never borrow the records' standing: labelled as its note in every app, and the records line names only sourced parts", () => {
     const mixed: ChatCard = { ...card, blocks: [{ kind: "text", text: "Verified spend this month: $0.00" }, card.blocks[2]!], actions: [] };
     const lead = "The lead's note, not Toolroll's records";
-    const records = "Tables, fields, notes and charts are from Toolroll's records";
+    const records = "Parts not marked otherwise are from Toolroll's records";
     // Plain, and so every fallback: the label sits right above the words, and the records line names the parts it covers.
     const plain = cardPlainText(mixed);
     expect(plain).toContain(`${lead}:\nVerified spend this month: $0.00`);

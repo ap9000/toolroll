@@ -204,6 +204,9 @@ function providers(reader: CardReader, query: CardQuery): Read {
   };
 }
 
+/** A finding's state as a person reads it in a card (never the stored token). */
+const FINDING_STATE_WORDS: Readonly<Record<string, string>> = { open: "With the agent", accepted: "Accepted", rejected: "Rejected", "with-person": "Needs you", closed: "Closed" };
+
 function findings(reader: CardReader, query: CardQuery): Read {
   const limit = query.limit ?? 10;
   const list = findingsInReach(reader.store, reader.who, { ...(query.task === undefined ? {} : { task: query.task }), repos: reposOf(reader, query) });
@@ -213,7 +216,7 @@ function findings(reader: CardReader, query: CardQuery): Read {
   return {
     heading: query.task === undefined ? "Findings waiting" : "Findings", origin: "report", repos: [...new Set(list.map(one => one.repo!))],
     columns: [{ id: "id", label: "Finding", numeric: true }, { id: "where", label: "Where" }, { id: "state", label: "State" }, { id: "from", label: "From" }, { id: "task", label: "Task" }],
-    rows: list.slice(0, limit).map(one => ({ id: String(one.id), where: clean(one.file === null ? "" : `${one.file}${one.line === null ? "" : `:${one.line}`}`), state: clean(one.state), from: clean(findingSourceWords(one.source)), task: clean(one.taskId) })),
+    rows: list.slice(0, limit).map(one => ({ id: String(one.id), where: clean(one.file === null ? "" : `${one.file}${one.line === null ? "" : `:${one.line}`}`), state: FINDING_STATE_WORDS[one.state] ?? clean(one.state), from: clean(findingSourceWords(one.source)), task: clean(one.taskId) })),
     more: Math.max(0, list.length - limit),
     notes: list.map(one => clean(`${findingLine(one)} (${findingStandingWords(one)})`, CARD_LIMITS.note)),
     facts: [{ id: "total", label: "Findings", value: String(list.length) }, ...[...counts].map(([state, value]) => ({ id: state, label: clean(state, CARD_LIMITS.label), value: String(value) }))],

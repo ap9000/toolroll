@@ -15,7 +15,9 @@ const fit = (text: string, width: number): string => text.length <= width ? text
 /** Only parts filled from a named source are Toolroll's records; the line says so only when a card has one, and says
  * which parts, so the lead's own words beside them never borrow that standing. */
 const sourced = (card: ChatCard): boolean => card.blocks.some(one => one.kind !== "text" && one.kind !== "divider");
-const asOfWords = (card: ChatCard): string => `${card.blocks.some(one => one.kind === "text") ? "Tables, fields, notes and charts are from Toolroll's records" : "From Toolroll's records"} · ${card.asOf.slice(0, 16).replace("T", " ")} UTC`;
+/** A part marked as not Toolroll's records: the lead's note, or words an agent reported. */
+const marked = (card: ChatCard): boolean => card.blocks.some(one => one.kind === "text" || ((one.kind === "table" || one.kind === "notes") && one.origin === "report"));
+const asOfWords = (card: ChatCard): string => `${marked(card) ? "Parts not marked otherwise are from Toolroll's records" : "From Toolroll's records"} · ${card.asOf.slice(0, 16).replace("T", " ")} UTC`;
 const footWords = (card: ChatCard): string[] => sourced(card) ? [asOfWords(card)] : [];
 const reportWords = "Reported by the agent, not Toolroll's records";
 /** A Text part is the lead's (a model's) words: always labelled as such, on every app, never as a record. */
