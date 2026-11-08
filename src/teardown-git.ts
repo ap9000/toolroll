@@ -650,8 +650,8 @@ const WORKTREE_STATE_DIRS = ["sequencer", "rebase-merge", "rebase-apply"];
  * state, a split index's shared files); and the object store (the common `objects`, and a submodule git directory's
  * own under modules/): its fan-out folders' entries for links, `info` and `pack` all the way down, but not each loose
  * object (a big repository has very many, and hard-linked objects are legitimate). Any link is refused, so is a folder
- * that can't be listed, and so is any file walked deep with a second hard link (git appends to a log in place). The
- * exemption is by place only: an `objects` anywhere else (under refs/, logs/, worktrees/) is walked like the rest. For each one found, where it leads (for an incident's record).
+ * that can't be listed, and so is any file walked deep with a second hard link (git appends to a log in place), but for
+ * another checkout's index (siblingIndexes: still never a link). The exemptions are by place only: an `objects` anywhere else (under refs/, logs/, worktrees/) is walked like the rest. For each one found, where it leads (for an incident's record).
  *
  * Checked when the view is made and again after git ran; between the two, a process that outlived the agent's turn
  * can still swap one of these for a link and have git write through it mid-command. That window is an accepted
@@ -662,6 +662,7 @@ function pinned(dirs: BoundDirs): { ok: boolean; swapped: GitIncident["swapped"]
   const seen = new Set<string>();
   let budget = 400_000;
   const stores = objectStores(dirs.common);
+  const siblings = siblingIndexes(dirs);
   /** `deep`: every entry all the way down, each file held to one hard link. `shallow`: the folder's own entries
    * checked for links only. `store`: an object store (objects/: its fan-out folders shallow, `info` and `pack` deep
    * without the hard-link test). A link, or a folder that can't be listed, is swapped. */
@@ -677,7 +678,10 @@ function pinned(dirs: BoundDirs): { ok: boolean; swapped: GitIncident["swapped"]
       swapped.push({ path, leadsTo: real });
       return;
     }
-    if (held.isFile() && mode === "deep" && held.nlink > 1) { swapped.push({ path, leadsTo: null }); return; }
+    // Another checkout's own index, by exact place (siblingIndexes): held to being no link, but a second name is not
+    // counted. A tool in that checkout may hard-link it for a moment (Claude Code's security-guidance plugin does, to
+    // diff against a copy), and git never writes another checkout's index, nor any index in place.
+    if (held.isFile() && mode === "deep" && held.nlink > 1 && !siblings.has(path)) { swapped.push({ path, leadsTo: null }); return; }
     if (!held.isDirectory()) return;
     let entries: string[];
     // A folder that can't be listed hides what's in it: it counts as swapped (fail closed).
@@ -731,6 +735,28 @@ function objectStores(common: string): Set<string> {
   };
   visit(join(common, "modules"), 0);
   return stores;
+}
+
+/**
+ * The index files of the repository's other checkouts, by exact place, enumerated before the walk: `index` directly in
+ * each worktree folder of the common `worktrees` that isn't this checkout's own git directory, and, for a linked
+ * checkout, the main checkout's `index` in the common folder. The walk still refuses any of them that is a link; it
+ * only doesn't count a second hard link to one (pinned). The view links only this checkout's own index, and git writes
+ * an index only by renaming a new file over it, so a hard link at another checkout's can't take a write of the plane's
+ * anywhere. Measured (Nov 2026): Claude Code's security-guidance plugin hard-links the index of the checkout a session
+ * runs in to a temporary copy for up to seconds at a time, and a release gate that ran meanwhile in another checkout of
+ * the repository was stopped as an incident naming that checkout's index.
+ */
+function siblingIndexes(dirs: BoundDirs): Set<string> {
+  const indexes = new Set<string>();
+  if (dirs.linked) indexes.add(join(dirs.common, "index"));
+  let ids: string[] = [];
+  try { ids = readdirSync(join(dirs.common, "worktrees")); } catch { /* none (an unlistable folder is the walk's to refuse) */ }
+  for (const id of ids) {
+    const folder = join(dirs.common, "worktrees", id);
+    if (folder !== dirs.gitdir) indexes.add(join(folder, "index"));
+  }
+  return indexes;
 }
 
 /** Every folder from the root down to `path`, with its device and inode as they are now (none may be a link). */
