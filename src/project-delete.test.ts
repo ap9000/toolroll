@@ -365,3 +365,13 @@ test("removing a project from the list keeps its learning rows, as it keeps its 
   store.forgetProject(OTHER);
   expect(learningCounts(OTHER)).toEqual({ facts: 1, results: 1, watches: 1, merges: 1 });
 });
+
+test("deleting a project removes its fallback agents and its paid fallback grant, and keeps another project's", async () => {
+  const setting = store.handle.prepare("INSERT INTO fallback_setting (repo, entries_json, paid_granted_by, paid_granted_at, updated_by, updated_at) VALUES (?, ?, 'alex', ?, 'alex', ?)");
+  const entries = JSON.stringify([{ provider: "codex", model: "gpt-5.5", authMode: "api-key" }]);
+  for (const where of [repo, OTHER]) setting.run(where, entries, NOW.toISOString(), NOW.toISOString());
+  expect(projectHoldings(store, repo).settings).toBeGreaterThanOrEqual(1);
+  expect(await deleteProject(store, repo, { actor: "alex", via: "command line", now: NOW, evidenceRoot: evidence, poolRoot: pool })).toMatchObject({ ok: true });
+  expect(store.handle.prepare("SELECT repo, paid_granted_by FROM fallback_setting ORDER BY repo").all()).toEqual([{ repo: OTHER, paid_granted_by: "alex" }]);
+  expect(PROJECT_SETTINGS.map(([table]) => table)).toContain("fallback_setting");
+});

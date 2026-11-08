@@ -4,6 +4,7 @@
  * then read exactly what goes and confirm with their password (or a fresh
  * sign-in with the identity provider). The repository itself stays.
  */
+import { entryMovesOnWords, entryWords, type FallbackSetting } from "./fallback.js";
 import { sandboxRuntimeWords } from "./sandbox-runtime.js";
 import type { ProjectSandbox } from "./project-sandbox.js";
 import type { ProjectNetwork } from "./egress.js";
@@ -33,6 +34,8 @@ export type ProjectSettingsView = {
   liveView?: { commands: boolean; canChange: boolean; nonce?: string };
   /** What its builds may reach on the network (egress.ts), and whether this person may change it. */
   network?: { setting: ProjectNetwork; canChange: boolean };
+  /** Who takes over when an agent runs out of its plan (fallback.ts), and whether this person may change it. */
+  fallback?: { setting: FallbackSetting | null; canChange: boolean };
   /** Where its builds may write (writes-mode.ts), and whether this person may change it. */
   writes?: { setting: WritesMode; canChange: boolean };
   /** What its builds and checks may not read, and the macOS services and protected files they may still use
@@ -168,6 +171,22 @@ function networkHtml(view: ProjectSettingsView): Html | "" {
       ]) }))]) });
 }
 
+function fallbackHtml(view: ProjectSettingsView): Html | "" {
+  const fallback = view.fallback;
+  if (fallback === undefined) return "";
+  const { setting } = fallback;
+  const lead = setting === null ? html`When an agent runs out of its plan, the task stops.` : html`When an agent runs out of its plan, the work moves to the next agent here.`;
+  const lines = setting === null ? "" : joinHtml(setting.entries.map(one => note(`${entryWords(one)}. ${entryMovesOnWords(one)}.`)));
+  return settingsSection({ id: "fallback", title: "Fallback agents", state: setting === null ? "" : ` · ${setting.entries.length}`, lead,
+    body: joinHtml([lines, !fallback.canChange ? APPROVER_CHANGES : disclose("Change", kitSectionForm({ proof: "project-fallback", action: "/settings/project/fallback", id: "fallback-form", gate: true, hidden: { repo: view.repo },
+      body: joinHtml([
+        formRow("Agents, in order", "One per line: provider:model:plan or provider:model:api-key. Empty turns this off.", textarea({ id: "fallback-agents", name: "agents", value: setting === null ? "" : setting.entries.map(one => `${one.provider}:${one.model}:${one.authMode === "subscription" ? "plan" : "api-key"}`).join("\n"), rows: 3,
+          attrs: { autocomplete: "off", autocapitalize: "off", spellcheck: "false", placeholder: "codex:gpt-5.6:plan", "aria-label": "Fallback agents, in order" } }), "top"),
+        formRow("Paid fallback", "An agent on an API key spends money. It runs only while this is on.", switchInput({ id: "fallback-paid", name: "paid", label: "Allowed", on: setting?.paidGrant != null, attrs: { value: "on", "aria-label": "Allow paid fallback agents to spend" } }), "inline"),
+        note("Tasks scoped from now on use this; tasks already approved keep the chain they were approved with."),
+      ]) }))]) });
+}
+
 /** Live view: hidden by default; showing commands takes the password, hiding them is one step. */
 function liveViewHtml(view: ProjectSettingsView): Html | "" {
   const live = view.liveView;
@@ -241,7 +260,7 @@ export function projectSettingsHtml(view: ProjectSettingsView, said: { said?: st
       formRow("Recorded remote", view.remoteUrl ? null : "None. Landed work waits for your review.", view.remoteUrl ? mono(view.remoteUrl) : html``, view.remoteUrl ? "wide" : "inline"),
       disclose("Change remote", joinHtml([note("An owner or instance operator can run:"), codeLine("toolroll repos add <project> --remote <url>")])),
     ]) });
-  const settings = joinHtml([buildsHtml(view), accessHtml(view), networkHtml(view), writesHtml(view), sandboxHtml(view), checkAccessHtml(view), liveViewHtml(view), codeMapHtml(view)]);
+  const settings = joinHtml([buildsHtml(view), accessHtml(view), networkHtml(view), fallbackHtml(view), writesHtml(view), sandboxHtml(view), checkAccessHtml(view), liveViewHtml(view), codeMapHtml(view)]);
   if (!view.canDelete) return joinHtml([answer, project, settings, note("An instance operator can remove or delete a project.")]);
   const deleteBody = view.running.length > 0
     ? notice(`Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.`)

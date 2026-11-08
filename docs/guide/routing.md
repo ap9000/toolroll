@@ -95,11 +95,32 @@ has since re-sealed away refuses to spend. Malformed authority — corrupt route
 or profile JSON, a model id that is not one, a turn bound or clock that is not
 a positive whole number — fails closed in words and never shrinks.
 
-Fallback chains and the declared risk level were removed (schema v115). An
-unfinished task that was filed or approved with fallback agents asks again
-after the update — its scope says so, and saving it once chooses its
-agents; finished tasks and routes sealed at elevated or high risk keep their
-exact bytes and still verify.
+The declared risk level was removed (schema v115), along with the first
+version of fallback chains. Finished tasks and routes sealed at elevated or
+high risk keep their exact bytes and still verify.
+
+## Fallback agents
+
+When an agent runs out of its plan mid-task, the work can move to the next
+agent you approved:
+
+    toolroll project fallback --repo ~/code/shop --agents codex:gpt-5.6:plan
+    toolroll project fallback --repo ~/code/shop --allow-paid
+
+Or use Settings → Project → Fallback agents. Tasks scoped afterwards show the
+chain on their approval, and the approval covers it. A paid agent (an API key)
+also needs `--allow-paid`, read again each time it would spend, and a person's
+own yes on the approval. Its changes so far are kept on the task's branch.
+
+A fallback agent on a plan runs only when its CLI proves, right then, that
+it is signed in to that plan (Claude and Codex can). Otherwise nothing runs
+and the task waits for you to sign it in and retry. Gemini can't prove its
+plan, so it can only be a fallback on an API key.
+
+Toolroll only moves work when it recognises the provider's own words, taken
+from a real run. Today that is Claude on a plan. Other agents can take over,
+but when they run out the chain stops there. A throttle or a spend cap never
+moves work.
 
 Codex resumes carry their sandbox as a configuration override (`-c
 sandbox_mode=…`): `codex exec resume` has no `--sandbox` flag, so a structured

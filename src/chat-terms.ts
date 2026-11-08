@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { isAcpProfile } from "./acp-agents.js";
 import { checkAccessWords } from "./check-access.js";
 import { sandboxTermsWords } from "./project-sandbox.js";
-import type { Scope } from "./scope.js";
+import { chainTermsLines, type Scope } from "./scope.js";
 
 /** What a plan's yes allows an agent to do, in a few plain words (the approval sheet's "You're allowing"). */
 export function permissionPlainWords(profile: Scope["profile"] | null | undefined): string | null {
@@ -26,7 +26,7 @@ export function permissionPlainWords(profile: Scope["profile"] | null | undefine
 
 const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(2)}`;
 
-export type ShownScope = Pick<Scope, "goal" | "outOfScope" | "touches" | "acceptance" | "profile" | "budgetMicrousd">;
+export type ShownScope = Pick<Scope, "goal" | "outOfScope" | "touches" | "acceptance" | "profile" | "budgetMicrousd"> & Partial<Pick<Scope, "proposedChainJson">>;
 
 /** Every word of the terms a yes agrees to, as the card shows them: the goal, what's excluded, the files (or plainly any
  * file), each requirement with the evidence it needs, and what the agent may do and spend. Nothing is shortened. */
@@ -43,6 +43,7 @@ export function scopeTermsText(scope: ShownScope): string {
     ...(scope.acceptance.length === 0 ? ["You decide when you review the result."] : scope.acceptance.map(one => `• ${one.statement} (${one.evidence.join(", ")})`)),
     "",
     `Starting allows: ${allows.join(" · ")}`,
+    ...((chain) => chain.length === 0 ? [] : ["", "Fallback agents:", ...chain])(chainTermsLines(scope)),
   ].join("\n");
 }
 

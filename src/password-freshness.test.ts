@@ -988,6 +988,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 1,
     // Agent Baseline arc 1: Settings → Project → Network, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@49": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectFallback@117": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectWrites@104": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@105": 1,
     // Sandbox parity C9: Settings → Project → Home folder, a password typed now (reviewed new site).
@@ -1006,6 +1007,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#credentialApprover@125": 1,
     // Agent Baseline arc 1: a project's network and unconfined agents change with a password typed now.
     "src/operate.ts#projectNetworkCommand@142": 1,
+    "src/operate.ts#projectFallbackCommand@234": 1,
     "src/operate.ts#projectWritesCommand@143": 1,
     "src/operate.ts#unconfinedAgentsCommand@144": 1,
     // Sandbox parity C9: a project's sandbox changes with a password typed now (reviewed new site).

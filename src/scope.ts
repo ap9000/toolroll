@@ -319,11 +319,12 @@ export function profileDigestOf(profile: ExecutionProfile): string {
     .slice(0, 32);
 }
 
-// ---- fallback chains (v30-v114; removed in v115) --------------------------
-// History only: an approval sealed over a fallback chain still decodes and
-// its digest still re-derives, so old tasks verify and render. Nothing
-// files, seals, or dispatches a chain any more.
+// ---- fallback chains (fallback.ts, docs/plans/fallback-chains.md) ----------
+// Version 1 is history (v30-v114): an old approval still decodes and its digest
+// still re-derives, so old tasks verify and render, and it holds no authority.
+// Version 2 is what filing writes now: only it dispatches.
 export const CHAIN_DIGEST_VERSION = 1;
+export const LIVE_CHAIN_VERSION = 2;
 
 /** One entry of an approved fallback chain: the WHOLE execution profile
  * (so a claude->codex switch cannot inherit one provider's repair config)
@@ -335,24 +336,24 @@ export type ChainEntry = {
 
 /** The stored snapshot bytes for a chain: the version rides IN the
  * snapshot, exactly like a single profile's. */
-export function canonicalChainJson(entries: readonly ChainEntry[]): string {
-  return canonicalJson({ digestVersion: CHAIN_DIGEST_VERSION, chain: entries });
+export function canonicalChainJson(entries: readonly ChainEntry[], version: number = CHAIN_DIGEST_VERSION): string {
+  return canonicalJson({ digestVersion: version, chain: entries });
 }
 
 /** sha256 over a domain-separated canonical chain encoding — a DIFFERENT
  * domain from a single profile ("standing-orders:chain:" vs
  * ":profile:"), so a chain digest can never collide with a profile
  * digest, truncated to the same 128 bits. */
-export function chainDigestOf(entries: readonly ChainEntry[]): string {
+export function chainDigestOf(entries: readonly ChainEntry[], version: number = CHAIN_DIGEST_VERSION): string {
   return createHash("sha256")
-    .update(`standing-orders:chain:v${CHAIN_DIGEST_VERSION}:${canonicalChainJson(entries)}`, "utf8")
+    .update(`standing-orders:chain:v${version}:${canonicalChainJson(entries, version)}`, "utf8")
     .digest("hex")
     .slice(0, 32);
 }
 
 /** Strict re-hydration of a stored chain — every entry proved through the
  * single-profile rehydrator; anything unexpected is null. */
-export function chainFromJson(json: string | null): ChainEntry[] | null {
+export function chainFromJson(json: string | null, version: number = CHAIN_DIGEST_VERSION): ChainEntry[] | null {
   if (json === null) return null;
   let parsed: unknown;
   try {
@@ -362,7 +363,7 @@ export function chainFromJson(json: string | null): ChainEntry[] | null {
   }
   if (parsed === null || typeof parsed !== "object") return null;
   const wrapper = parsed as { digestVersion?: unknown; chain?: unknown };
-  if (wrapper.digestVersion !== CHAIN_DIGEST_VERSION) return null;
+  if (wrapper.digestVersion !== version) return null;
   // Exact keys on the wrapper and on every entry (v48 integrity): a
   // snapshot carrying anything this code never writes is not one it wrote.
   if (!exactKeys(wrapper, ["digestVersion", "chain"], [])) return null;
@@ -928,7 +929,7 @@ export function digestOf(
   // (an outer field would change the legacy bytes; C1). A chain-of-one is
   // still an EXPLICIT chain and uses the chain digest, distinct from the
   // single-profile digest by design.
-  target?: ExecutionProfile | null | { chain: readonly ChainEntry[] },
+  target?: ExecutionProfile | null | { chain: readonly ChainEntry[]; version?: number },
   // v47: the phase route. EVERY route filed since v47 folds in — routine
   // shaped ones included — so the approval binds exactly which agent runs
   // each phase. Absent (null) only for a row proven to predate v47, whose
@@ -939,7 +940,7 @@ export function digestOf(
     target == null
       ? null
       : "chain" in target
-        ? chainDigestOf(target.chain)
+        ? chainDigestOf(target.chain, target.version)
         : profileDigestOf(target);
   return createHash("sha256")
     .update(
@@ -1712,7 +1713,7 @@ export function approvalOf(scope: Scope | null): Approval {
  * no approve action, no seal — is exposed on it.
  */
 export type ScopeAuthority =
-  | { ok: true; profile: ExecutionProfile; route: PhaseRoute; digest: string; authMode: AuthMode | null }
+  | { ok: true; profile: ExecutionProfile; route: PhaseRoute; digest: string; authMode: AuthMode | null; chain?: ChainEntry[] }
   | { ok: false; reason: "terms" | "unrouted" | "unresolved" | "profile" | "chain" | "route" | "parity" | "digest" | "auth-mode"; problem: string };
 
 /** What the strict projection reads OUTSIDE the row (atomic authority
@@ -1775,10 +1776,11 @@ export function scopeAuthorityOf(scope: Scope, env: ScopeAuthorityEnv = {}): Sco
   if (profile === null) {
     return { ok: false, reason: "profile", problem: profileJson === null ? "the scope carries no agent profile" : "the scope's agent profile cannot be read exactly (unknown keys, an unsafe number, or a clock no timer can hold)" };
   }
-  // A scope filed with fallback agents (v30-v114) holds no authority now
-  // that fallback chains are gone: saving it again chooses its agents.
-  if (scope.proposedChainJson != null) {
-    return { ok: false, reason: "chain", problem: "this scope named fallback agents, which Toolroll no longer uses — save the scope again to choose its agents" };
+  // Fallback agents: a current chain whose base IS this profile. An older
+  // chain (v30-v114) holds no authority: saving the scope again re-files it.
+  const chain = scope.proposedChainJson == null ? null : liveChainFromJson(scope.proposedChainJson);
+  if (scope.proposedChainJson != null && (chain === null || profileDigestOf(chain[0]!.profile) !== profileDigestOf(profile))) {
+    return { ok: false, reason: "chain", problem: "this scope named fallback agents from an older version, or they can't be read — save the scope again to choose its agents" };
   }
   const routeJson = scope.proposedRouteJson ?? null;
   const route = routeFromJson(routeJson);
@@ -1789,7 +1791,7 @@ export function scopeAuthorityOf(scope: Scope, env: ScopeAuthorityEnv = {}): Sco
   if (parity !== null) return { ok: false, reason: "parity", problem: parity };
   const digest = digestOf(
     { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default", releaseTerms: scope.releaseTerms ?? null, releaseCheck: scope.releaseCheck ?? null },
-    profile,
+    chain === null ? profile : { chain, version: LIVE_CHAIN_VERSION },
     route,
   );
   if (digest !== scope.digest) {
@@ -1806,8 +1808,10 @@ export function scopeAuthorityOf(scope: Scope, env: ScopeAuthorityEnv = {}): Sco
     const read = env.authMode(profile.provider);
     if (!read.ok) return { ok: false, reason: "auth-mode", problem: read.problem };
     authMode = read.mode;
+    // The base was filed under one credential; a yes on another isn't a yes to these terms.
+    if (chain !== null && chain[0]!.authMode !== authMode) return { ok: false, reason: "auth-mode", problem: "the agent's sign-in changed since this was filed — save the scope again" };
   }
-  return { ok: true, profile, route, digest, authMode };
+  return { ok: true, profile, route, digest, authMode, ...(chain === null ? {} : { chain }) };
 }
 
 /** The rubric's approval-card lines (v39): one per criterion, the id in
@@ -1848,6 +1852,7 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
     // leg with its reason and readiness — before anyone signs.
     ...scopeRouteWords(scope, readiness),
     ...(evidence === null ? [] : [`  why model    ${evidence.replace(/^Why this model: /, "")}`]),
+    ...chainTermsLines(scope).map((line, at) => at === 0 ? `  fallback     ${line}` : `               ${line}`),
     // What the build may reach (egress.ts), part of what the yes agrees to.
     ...(scope.profile === null || scope.profile === undefined ? [] : [`  network      ${networkWords(scope.profile.network ?? null).replace(/^Network: /, "")}`]),
     ...(scope.profile === null || scope.profile === undefined ? [] : [`  writes       ${writesWords(scope.profile.writes)}`]),
@@ -1900,6 +1905,9 @@ function describeApproval(approval: Approval): string {
 
 export { personProof } from "./person-proof.js";
 import { personProof } from "./person-proof.js";
+import { permissionPlainWords } from "./chat-terms.js";
+import { limitRecognised } from "./exhaustion.js";
+import { SUBSCRIPTION_CAPABLE } from "./keys.js";
 import { releaseCheckPurposeDigest, releaseTermsDigest, type ReleaseCheckPurpose, type ReleaseTerms } from "./contracts/release-terms.js";
 import { CHECK_ACCESS_WIDTH, autoEvidenceOf, carriesUnsandboxed, newestReleaseGeneration, releaseAuthorityOfTask, releaseAutoApproves, releaseSealProblem, type AutoEvidence, type ReleaseAuthority, type ReleaseCarry } from "./release-authority.js";
 
@@ -2161,4 +2169,31 @@ export function localApprovalEligible(store: Store, by: string, taskId: string):
   const stored = ref["repo"] == null ? undefined : store.handle.prepare("SELECT level FROM project_check_access WHERE repo = ?").get(ref["repo"])?.["level"];
   if (stored === "unsandboxed" || scope.profile.checkAccess === "unsandboxed") return no("unsandboxed");
   return { ok: true };
+}
+
+// ---- Fallback chains (fallback.ts). Kept last too.
+
+/** A chain that may dispatch: version 2, a base and at least one fallback. An older chain is history, never this. */
+export function liveChainFromJson(json: string | null): ChainEntry[] | null {
+  const chain = chainFromJson(json, LIVE_CHAIN_VERSION);
+  return chain === null || chain.length < 2 ? null : chain;
+}
+
+// The chain's four providers by name, here rather than provider-auth.ts: this file sits under the contracts, and that one
+// loads every adapter.
+const CHAIN_AGENT_NAMES: Readonly<Record<string, string>> = { claude: "Claude", codex: "Codex", gemini: "Gemini", openrouter: "OpenRouter" };
+
+/** The chain in full, the words a yes agrees to: order, agent, model, how it bills, what it may do, and whether Toolroll
+ * can see it run out. Every approval surface shows these lines; empty for a scope with no chain. */
+export function chainTermsLines(scope: Pick<Scope, "proposedChainJson">): string[] {
+  const chain = liveChainFromJson(scope.proposedChainJson ?? null);
+  if (chain === null) return [];
+  return [
+    "If an agent runs out of its plan, the work moves to the next one here:",
+    ...chain.map((entry, at) => {
+      const paid = entry.authMode === "api-key" || (SUBSCRIPTION_CAPABLE as Record<string, boolean>)[entry.profile.provider] !== true;
+      const last = at === chain.length - 1;
+      return `${at + 1}. ${CHAIN_AGENT_NAMES[entry.profile.provider] ?? entry.profile.provider} ${entry.profile.model}, ${paid ? "on an API key, which spends money, and only while the project allows paid fallback" : "its plan"}; ${permissionPlainWords(entry.profile) ?? "agent permissions not known"}. ${last ? "Last in the chain." : limitRecognised(entry.profile.provider, entry.authMode) ? "Moves on when its plan runs out." : "Won't move on: Toolroll can't yet recognise this agent running out."}`;
+    }),
+  ];
 }

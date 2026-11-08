@@ -2923,14 +2923,14 @@ describe("bounded repair", () => {
     const repair = store.runsFor(taskRef).find(r => r.role === "repair")!;
     expect(store.runRoute(repair.id)).toMatchObject({ phase: "repair", provider: "claude", model: "sonnet", chosen: "recommended", routeDigest: routeDigestOf(sealed) });
 
-    // A `fallback` stamp (fallback chains were removed in v115) opens no
+    // A `fallback` stamp on an approval with no fallback agents opens no
     // run row and no repair.
     expect(() =>
       store.startRun({
         taskRef, leaseId: currentClaim(store, taskRef, T0)!.leaseId, runner: "builder-1", branch: "feat/a", worktree, now: T0,
         route: { routeDigest: routeDigestOf(sealed), phase: "build", provider: "claude", model: "sonnet", chosen: "fallback" },
       }),
-    ).toThrow(/nothing opens as `fallback`/);
+    ).toThrow(/names no fallback agents/);
 
     // The route removed from the routed row while the build runs: the
     // repair refuses — no mending under agents nobody can read.

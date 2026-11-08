@@ -198,3 +198,13 @@ export async function attestProvider(
   }
   return { ok: true, executable: resolved, version };
 }
+
+/** What the installed CLI says its version is, with no range attached: a recogniser's own check (exhaustion.ts), asked of
+ * the exact executable PATH resolves on this runner, only when a terminal already reads as a plan limit. Null: no answer. */
+export async function reportedVersion(binary: string, probe: VersionProbe = defaultProbe): Promise<string | null> {
+  const resolved = resolveExecutable(binary);
+  if (resolved === null) return null;
+  const answer = await probe(resolved, ["--version"], PROBE_TIMEOUT_MS);
+  const raw = answer.stdout.trim().slice(0, 100);
+  return answer.code !== 0 || raw === "" ? null : raw;
+}

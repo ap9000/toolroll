@@ -4,7 +4,8 @@ import { btn } from "./kit.js";
 import { whenUtc } from "../when-html.js";
 import { networkWords } from "../egress.js";
 import type { ReleaseView } from "../release-view.js";
-import { releaseAsksAgainWords, releaseTermsSentence } from "../scope.js";
+import { chainTermsLines, liveChainFromJson, releaseAsksAgainWords, releaseTermsSentence } from "../scope.js";
+import { SUBSCRIPTION_CAPABLE } from "../keys.js";
 import { RELEASE_CI_RUNNING_WORDS } from "../release-ci-hold.js";
 import { writesWords } from "../writes-mode.js";
 import { checkAccessWords } from "../check-access.js";
@@ -373,6 +374,14 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   const allowed = permissionPlainWords(scope.profile);
   if (allowed !== null) allowing.push(allowed);
   allowing.push(scope.budgetMicrousd === null ? "no attempt limit" : `up to ${money(scope.budgetMicrousd)} per attempt`);
+  // Fallback agents are terms: who takes over when an agent runs out, with any that spend money said before the yes.
+  const chain = chainTermsLines(scope);
+  const fallbacks = liveChainFromJson(scope.proposedChainJson ?? null)?.slice(1) ?? [];
+  if (fallbacks.length > 0) {
+    const paid = fallbacks.filter(one => one.authMode === "api-key" || (SUBSCRIPTION_CAPABLE as Record<string, boolean>)[one.profile.provider] !== true);
+    allowing.push(`if it runs out of its plan, the work moves to ${fallbacks.map(one => agentNameWords(one.profile.provider, one.profile.model)).join(", then ")}`);
+    if (paid.length > 0) allowing.push(`${paid.map(one => agentNameWords(one.profile.provider, one.profile.model)).join(" and ")} on an API key, which spends money`);
+  }
   const earlier = earlierVersionsWords(input.earlier.active, input.earlier.running);
   if (earlier !== null) allowing.push(earlier);
   const yoursToCheck = scope.acceptance.filter(one => one.evidence.includes("manual-review")).map(one => one.statement.trim().replace(/[.\s]+$/, ""));
@@ -508,6 +517,7 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
       row("Changes", changes),
       row("Won’t touch", html`<p>${scope.outOfScope === null ? "Nothing is ruled out." : scope.outOfScope}</p>`),
       row("Done when", doneWhen),
+      chain.length === 0 ? "" : row("If it runs out", html`<p>${chain[0]!}</p><ol class="approval-steps" data-approval-fallback>${chain.slice(1).map(one => html`<li>${one.replace(/^\d+\. /, "")}</li>`)}</ol>`),
       html`</dl>`,
       amendment,
       // The size, said once and plainly beside who builds: "Small change: fast model, no plan".

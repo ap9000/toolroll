@@ -2,6 +2,7 @@ import { PASSWORDLESS_TRADE, passwordlessSetting, setPasswordless } from "../pas
 import { ACP_AGENTS, isKeyedProvider } from "../acp-agents.js";
 import { LIVE_VIEW_CONSENT, liveViewConsentDigest, setLiveCommands } from "../live-detail.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
+import { clearFallbackChain, parseEntry, setFallbackChain, setPaidGrant, type FallbackEntry } from "../fallback.js";
 import { galleryTemplateOf } from "../flow-gallery.js";
 import { finishGoogleConsent,GOOGLE_CALLBACK } from "../google-mail.js";
 import { kitInstalled,kitOf } from "../kits.js";
@@ -2433,6 +2434,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.project-concurrency": projectConcurrency,
     "settings.project-live-view": projectLiveView,
     "settings.project-network": projectNetwork,
+    "settings.project-fallback": projectFallback,
     "settings.project-writes": projectWrites,
     "settings.project-check-access": projectCheckAccess,
     "settings.project-sandbox": projectSandbox,
@@ -2777,5 +2779,25 @@ ${postForm("/settings/chat-approval/save", html`\
       : kind === "not-now" ? "Not now. This suggestion stays quiet for 30 days."
       : kind === "suggest-on" ? "Suggestions are on for this project." : "Suggestions are off for this project.");
   }; }
+  // Settings → Project → Fallback agents (fallback.ts): who takes over when an agent runs out of its plan. An approver for
+  // the project, with their password typed now; the ledger keeps every change. New tasks seal it; approved ones keep theirs.
+  async function projectFallback(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.projectFallback);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+    if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes its fallback agents.", "/settings/project");
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#fallback");
+    const parsed = (body.get("agents") ?? "").split(/[\n,]+/).map(one => one.trim()).filter(Boolean).map(parseEntry);
+    const bad = parsed.find((one): one is string => typeof one === "string");
+    if (bad !== undefined) return back("problem", `Nothing changed: ${bad}.`);
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change fallback agents.");
+    const done = store.transact(() => {
+      const set = parsed.length === 0 ? clearFallbackChain(store, repo, who.name, now) : setFallbackChain(store, repo, parsed as FallbackEntry[], who.name, now);
+      if (!set.ok || parsed.length === 0) return set;
+      return setPaidGrant(store, repo, body.get("paid") === "on", who.name, now);
+    });
+    return done.ok ? back("said", "Saved. Tasks scoped from now on use it; tasks already approved keep the chain they were approved with.") : back("problem", `Nothing changed: ${done.problem}`);
+  }
   return { registrations, modelsView };
 }

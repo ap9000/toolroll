@@ -278,7 +278,7 @@ function reviewViewOf(sourceRun: number, retry: ReviewRetryState): ReviewDispatc
 }
 
 function approvedProfile(scope: ReturnType<Store["getScope"]>): ExecutionProfile | null {
-  if (scope === null || scope.approvalKind === "chain") return null;
+  if (scope === null) return null;
   return scope.approvedProfile ?? scope.profile ?? null;
 }
 
