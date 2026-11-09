@@ -100,7 +100,7 @@ Wording only; reasons, kinds and every refusal's logic stay as they are.
 | Status is a snapshot, not a promise that the next attempt will succeed. | This is how things stand right now. |
 | Latest agent-reported milestone update: … (not independent proof). | Latest update from the agent, not verified: … |
 | Operating mode — the signed posture this repository runs under | Operating mode — how much this project may do without asking |
-| Action ledger | Activity log |
+| Action ledger (menus) | Audit log, the name the page already has |
 
 Left alone on purpose: the sweep approval's "Confirming files all of them…" (`src/chat-actions.ts:699`) and the
 "Requirements … satisfied in the saved record" line (`src/chat-actions.ts:1089`, `src/telegram-status.ts:276`). Both

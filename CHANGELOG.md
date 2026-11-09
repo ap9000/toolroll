@@ -3,7 +3,7 @@
 ## Unreleased
 
 - **The lead is asked for shorter answers in plainer words.** Its instructions now ask for the answer first, in one to three sentences, in everyday words and without an account of its own steps, in the browser and the terminal as well as the chat apps. How much shorter real answers are has not been measured yet; `node scripts/lead-answer-eval.mjs --real` now reports answer length and wording.
-- **Plainer wording on a few cards and phone status lines.** "Plan" instead of "scope", "Your sign-in changed. Sign in again.", "Activity log" in the menu.
+- **Plainer wording on a few cards and phone status lines.** "Plan" instead of "scope", "Your sign-in changed. Sign in again.", "Audit log" in every menu, matching the page it opens.
 
 ## 0.9.97 — 2026-11-09
 

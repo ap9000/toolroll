@@ -26,7 +26,7 @@ computer where your projects are; queued work resumes.
 
 **"Too many wrong passwords. Try again in 15 minutes."** Five wrong
 passwords in a row lock a name. Wait, or restart Toolroll to clear
-it. **Action ledger** (filter Sign-ins) shows the attempts.
+it. **Audit log** (filter Sign-ins) shows the attempts.
 
 **"database is locked" from the command line.** The app was writing at that
 moment: run the command again.

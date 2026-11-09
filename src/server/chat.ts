@@ -758,7 +758,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const cardJson = String(request.headers["accept"] ?? "").includes("application/json") && !body.has("nonce");
     const cardAnswer = (status: number, ok: boolean, said: string, taskId: string | null = null): void =>
       respond(response, status, "application/json", JSON.stringify({ ok, said, taskId }));
-    if (principal === null) return cardJson ? cardAnswer(403, false, "Your approver standing changed. Sign in again.") : refuse(response, who, 403, "your approver standing changed — sign in again", back);
+    if (principal === null) return cardJson ? cardAnswer(403, false, "Your sign-in changed. Sign in again.") : refuse(response, who, 403, "Your sign-in changed. Sign in again.", back);
     if (op === "dismiss") {
       const dismissed = dismissLeadProposal(store, principal, id, now);
       if (cardJson) return cardAnswer(dismissed ? 200 : 409, dismissed, dismissed ? "Dismissed." : "That card was already acted on.");
@@ -819,7 +819,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const body = readForm(posted, CONSOLE_FORMS.coordinatorProposal);
     if (who.via !== "cookie") return refuse(response, who, 403, "proposals are confirmed from the browser or the CLI");
     const principal = leadPrincipal(who);
-    if (principal === null) return refuse(response, who, 403, "your approver standing changed — sign in again", "/chat");
+    if (principal === null) return refuse(response, who, 403, "Your sign-in changed. Sign in again.", "/chat");
     const id = Number(url.pathname.split("/")[2]);
     store.sweepCoordinatorProposals(now);
     const back = body.get("return") === null ? "/chat" : safeReturn(body.get("return"));
@@ -887,7 +887,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const unbound = binding.length === 0 || (binding.length === 1 && binding[0] === String(NOT_STARTED_SESSION));
     if (who.role === "approver" && enabled.billing === "subscription" && unbound) {
       const principal = leadPrincipal(who);
-      if (principal === null) return wantsJson ? said(403, "your approver standing changed — sign in again") : refuse(response, who, 403, "your approver standing changed — sign in again", back);
+      if (principal === null) return wantsJson ? said(403, "Your sign-in changed. Sign in again.") : refuse(response, who, 403, "Your sign-in changed. Sign in again.", back);
       const sentRequest = body.get("request");
       if (sentRequest !== null && (body.getAll("request").length !== 1 || !/^[a-f0-9]{32}$/.test(sentRequest))) return said(409, "This conversation changed. Reload it before sending your message.");
       const usable = leadSession !== null && leadSession.ceilingDigest === principal.ceilingDigest && leadSession.approverGeneration === principal.generation;
@@ -920,7 +920,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
       // Every send has one identity (a form without one gets it here): a message that waits is known by it.
       const requestId = sentRequest ?? randomBytes(16).toString("hex");
       const principal = leadPrincipal(who);
-      if (principal === null) return wantsJson ? said(403, "your approver standing changed — sign in again") : refuse(response, who, 403, "your approver standing changed — sign in again", back);
+      if (principal === null) return wantsJson ? said(403, "Your sign-in changed. Sign in again.") : refuse(response, who, 403, "Your sign-in changed. Sign in again.", back);
       const message = (body.get("message") ?? "").trim();
       if (message === "" || message.length > LEAD_MESSAGE_MAX_CHARS) {
         return said(400, `a message is 1 to ${LEAD_MESSAGE_MAX_CHARS} characters`, leadSession.id);

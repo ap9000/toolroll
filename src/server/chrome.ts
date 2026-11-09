@@ -893,7 +893,7 @@ export function workToolRows(scoped = false, _offersChat = false, offersCode = f
     { key: "tasks", href: "/tasks", label: "Task list", hint: "everything, filterable by state" },
     { key: "recipes", href: "/recipes", label: "Recipes", hint: "choose, customize, and reuse a workflow" },
     { key: "workbench", href: "/tasks?scope=all", label: "Every project", hint: "every project's tasks in one list" },
-    { key: "ledger", href: "/ledger", label: "Activity log", hint: "who acted, what happened, and the result" },
+    { key: "ledger", href: "/ledger", label: "Audit log", hint: "who acted, what happened, and the result" },
     { key: "spend", href: "/spend", label: "Spend", hint: "what agent work cost, and monthly budgets" },
   ];
   return scoped ? rows.filter(row => row.key !== "workbench" && row.key !== "spend") : rows;
