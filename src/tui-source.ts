@@ -88,7 +88,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
           id: words(row["id"], words(row["rootId"])), title: shown(row["title"]), status: shown(status["label"], words(row["state"])), detail: shown(status["detail"]),
           needsYou: views.includes("needs-you"), liveRunId: typeof row["liveRunId"] === "number" ? row["liveRunId"] : null, repo: typeof row["repo"] === "string" ? row["repo"] : null,
           // The same rule as Home's groups, over the same work index item.
-          group: homeGroupOf({ status: { views: views.filter((one): one is string => typeof one === "string"), label: words(status["label"]) } }),
+          group: homeGroupOf({ status: { views: views.filter((one): one is string => typeof one === "string") } }),
         };
       });
       const waiting = rows.filter(one => one.needsYou);

@@ -63,7 +63,7 @@ export function inHomeOrder(rows: readonly TuiRow[]): TuiRow[] {
   const rank = (row: TuiRow) => row.group === null ? HOME_GROUPS.length : HOME_GROUPS.indexOf(row.group);
   return rows.map((row, index) => ({ row, index })).sort((a, b) => rank(a.row) - rank(b.row) || a.index - b.index).map(one => one.row);
 }
-/** A group's heading in the list; work in no group (cancelled, replaced, queued) is listed under Other. */
+/** A group's heading in the list; work in no group (cancelled, replaced) is listed under Other. */
 const groupHeading = (row: TuiRow): string => row.group === null ? "Other" : HOME_GROUP_LABEL[row.group];
 
 /** Printable characters typed or pasted into a composer (control characters dropped). */

@@ -12,19 +12,19 @@ export const HOME_GROUPS: readonly HomeGroup[] = ["you", "working", "done"];
 /** Each group's heading. */
 export const HOME_GROUP_LABEL: Readonly<Record<HomeGroup, string>> = { you: "Waiting on you", working: "Working", done: "Done" };
 
-/** What the rule reads of a work index item (work-index.ts WorkIndexItem): the views that list it and its headline. */
-export type HomeGroupFacts = { readonly status: { readonly views: readonly string[]; readonly label: string } };
+/** What the rule reads of a work index item (work-index.ts WorkIndexItem): the Tasks views that list it. */
+export type HomeGroupFacts = { readonly status: { readonly views: readonly string[] } };
 
 /**
  * Which group a work index item belongs to, in this order: it waits on you when the Needs you view lists it; it is
- * working when it runs, or when it is queued and waits on Toolroll or another task ("Waiting", nobody is asked); it is
- * done when it is complete. Null for anything else: cancelled, replaced, put away, or queued under another headline.
+ * working when the Running or the Queued view lists it (it runs, or it waits its turn or on Toolroll or another task:
+ * nobody is asked), so Working is exactly what the Running and Queued figures count; it is done when it is complete.
+ * Null for anything else: cancelled, replaced, put away.
  */
 export function homeGroupOf(item: HomeGroupFacts): HomeGroup | null {
   const views = item.status.views;
   if (views.includes("needs-you")) return "you";
-  if (views.includes("running")) return "working";
-  if (views.includes("queued") && item.status.label === "Waiting") return "working";
+  if (views.includes("running") || views.includes("queued")) return "working";
   if (views.includes("completed")) return "done";
   return null;
 }

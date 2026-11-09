@@ -87,7 +87,7 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
     workIndexPage(store, now, access, { view, limit, project, ...(facts.evidenceRoot === undefined ? {} : { root: facts.evidenceRoot }) });
   const needs = read("needs-you", HOME_NEEDS_SHOWN);
   const running = read("running", HOME_RUNNING_SHOWN);
-  // Waiting (docs/plans/plain-toolroll.md P1.4): what Toolroll or another task moves on, with no person asked.
+  // Queued: what waits its turn, or what Toolroll or another task moves on, with no person asked.
   const waiting = read("queued", HOME_RUNNING_SHOWN);
   // Done: the Completed list is ordered by completion time, newest first, so its first rows are the newest finished;
   // only those finished in the last 7 days are listed, and that filter runs before the cap.
@@ -114,7 +114,7 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
   // Waiting on you, in today's order of what it asks: decide (with any row whose ask the index couldn't name, which
   // still waits on this person and is never lost), then review, then unblock. Each row's chip names its ask.
   const yours = take((["decide", null, "review", "unblock"] as const).flatMap(ask => needs.items.filter(one => one.ask === ask)), "you");
-  // Working: what runs, then what waits on Toolroll, each read with its own bound.
+  // Working: what runs, then what is queued (waits its turn, or on Toolroll or another task), each read with its own bound.
   const working = [...take(running.items, "working"), ...take(waiting.items, "working")];
   const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
   const done = take(completed.items.filter(one => (one.completion?.at ?? one.updatedAt) >= weekAgo), "done").slice(0, HOME_DONE_SHOWN);

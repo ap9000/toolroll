@@ -27,8 +27,8 @@ describe("homeGroupOf", () => {
     expect(homeGroupOf(item(["all", "needs-you", "ready"], "Ready for review"))).toBe("you");
     expect(homeGroupOf(item(["all", "running"], "Building"))).toBe("working");
     expect(homeGroupOf(item(["all", "queued"], "Waiting"))).toBe("working");
-    // Queued under any other headline isn't Home's Working (Home never listed it).
-    expect(homeGroupOf(item(["all", "queued"], "Queued"))).toBeNull();
+    // Queued under any headline is working: Working is what the Running and Queued figures count.
+    expect(homeGroupOf(item(["all", "queued"], "Queued"))).toBe("working");
     expect(homeGroupOf(item(["all", "completed"], "Complete"))).toBe("done");
     // A complete family with a repair running is working, not done.
     expect(homeGroupOf(item(["all", "running", "completed"], "Building"))).toBe("working");
@@ -76,7 +76,10 @@ describe("Home's view", () => {
     const group = (key: string) => view.groups.find(one => one.key === key)?.rows.map(row => row.id) ?? [];
     expect(asked.length + running.length + waiting.length, "the demo has work in the old groups").toBeGreaterThan(0);
     expect(group("you")).toEqual(ids(asked));
-    expect(group("working")).toEqual([...ids(running), ...ids(waiting)]);
+    // Working is the Running rows, then the Queued rows; every row the old Waiting group showed is among them, in order.
+    const queued = page(now, "queued", 8).items.filter(one => !one.status.views.includes("needs-you") && !ids(running).includes(one.rootId));
+    expect(group("working")).toEqual([...ids(running), ...ids(queued)]);
+    expect(ids(queued).filter(id => ids(waiting).includes(id))).toEqual(ids(waiting).filter(id => !ids(running).includes(id)));
     const listed = view.groups.flatMap(one => one.rows.map(row => row.id));
     expect(new Set(listed).size, "one row per family").toBe(listed.length);
     for (const id of [...ids(asked), ...ids(running), ...ids(waiting)]) expect(listed.filter(one => one === id), id).toHaveLength(1);
