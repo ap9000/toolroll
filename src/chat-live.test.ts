@@ -446,3 +446,24 @@ test("a pass delivers up to five parts, stopping at the first rate signal", asyn
   expect(delivered).toBe(3);
   expect(DELIVER_PER_PASS).toBe(5);
 });
+
+test("due reply parts go out before the next event starts another turn", async () => {
+  const log: string[] = [];
+  const events = ["turn 1", "turn 2"];
+  const due: string[] = [];
+  let passes = 0;
+  await workChatQueue({
+    same: () => passes < 6, ready: () => true, pause: async () => { passes += 1; }, notifications: () => false,
+    rooms: async () => true, notify: async () => true,
+    process: async () => {
+      const event = events.shift();
+      if (!event) return false;
+      log.push(event);
+      for (let part = 1; part <= 6; part++) due.push(`${event} part ${part}`);
+      return true;
+    },
+    deliver: async () => { const part = due.shift(); if (!part) return false; log.push(part); return true; },
+  });
+  expect(log.indexOf("turn 1 part 6")).toBeLessThan(log.indexOf("turn 2"));
+  expect(log).toHaveLength(14);
+});

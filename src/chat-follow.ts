@@ -14,9 +14,9 @@ export const abortablePause = (signal: AbortSignal) => async (ms: number): Promi
 export const DELIVER_PER_PASS = 5;
 
 /**
- * Works the queue while this connection stays the current, leased one: each pass takes in saved events, plans room
- * messages, delivers up to DELIVER_PER_PASS parts and plans notifications (when they are on), checking it is still
- * current between steps.
+ * Works the queue while this connection stays the current, leased one: each pass first delivers parts already due,
+ * then, only when none remain, takes in saved events and plans room messages, delivering up to DELIVER_PER_PASS parts
+ * in all, and plans notifications (when they are on), checking it is still current between steps.
  * A pass waits while the connection isn't ready (offline, or the provider asked to retry later).
  */
 export async function workChatQueue(steps: {
@@ -34,10 +34,22 @@ export async function workChatQueue(steps: {
       await steps.pause(1000);
       continue;
     }
-    await steps.process();
-    if (steps.same()) await steps.rooms();
-    // Up to five parts a pass (one event's whole reply, usually), stopping at the first rate signal (`ready`).
-    for (let parts = 0; parts < DELIVER_PER_PASS && steps.same() && steps.ready() && await steps.deliver(); parts++);
+    // Up to five parts a pass (one event's whole reply, usually), stopping at the first rate signal (`ready`). True
+    // when nothing more was due.
+    let parts = 0;
+    const drain = async (): Promise<boolean> => {
+      while (parts < DELIVER_PER_PASS && steps.same() && steps.ready()) {
+        if (!(await steps.deliver())) return true;
+        parts += 1;
+      }
+      return false;
+    };
+    // Parts already due go first (§3.5): a new event's turn starts only once nothing earlier waits to be delivered.
+    if (await drain() && steps.same()) {
+      await steps.process();
+      if (steps.same()) await steps.rooms();
+      await drain();
+    }
     if (steps.same() && steps.notifications()) await steps.notify();
     await steps.pause(1000);
   }
