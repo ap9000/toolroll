@@ -983,7 +983,7 @@ export function confirmedCardText(
   // approved, and the card says that instead of asking again.
   const words =
     proposal.kind === "task" && state === "approved"
-      ? `${said.split(" — ")[0]} — approved under your automatic approval settings; nothing more is needed from you.`
+      ? `${said.split(/ — |\. /)[0]} — approved under your automatic approval settings; nothing more is needed from you.`
       : revise && state === "approved"
         ? "Revision created under your automatic approval settings."
         : said;

@@ -504,7 +504,7 @@ describe("the new chat actions", () => {
 
     test.each(["slack", "discord", "telegram"] as const)("a tap in %s lifts the stop and is recorded as %s", via => {
       const { run } = stopped();
-      expect(yes(resumeCard(run), via)).toMatchObject({ ok: true, said: expect.stringContaining("Stop released") });
+      expect(yes(resumeCard(run), via)).toMatchObject({ ok: true, said: expect.stringContaining("Stop lifted") });
       expect(store.stopOf(run)).toMatchObject({ resumedVia: via, resumedBy: expect.stringContaining("operator") });
     });
 

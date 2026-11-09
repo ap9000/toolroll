@@ -58,7 +58,7 @@ export function applyChatTaskAction(store: Store, who: VerifiedApprover, payload
       if (!allowed.ok && controls.via !== "web") { const mode = controls.via === undefined || controls.via === "cli" ? allowed : chatApproveMode(store, ref.repo!, who.name, now, controls.via); if (!mode.ok) return { ok: false, message: mode.why }; }
       if (!allowed.ok && controls.via === "web") return { ok: false, message: allowed.why };
       const resumed = resumeTaskStop(store, { taskId: task, runId: run, by: verifiedAuthor(who.name), via: controls.via ?? "web" }, now);
-      return resumed.ok ? { ok: true, taskId: task, said: `Stop released. ${resumed.gate ? "Other requirements still prevent the next attempt." : "The next attempt may start."}` } : { ok: false, message: resumed.detail };
+      return resumed.ok ? { ok: true, taskId: task, said: `Stop lifted. ${resumed.gate ? "Something else still holds the next attempt." : "The next attempt may start."}` } : { ok: false, message: resumed.detail };
     }
     const { via, evidenceRoot: _root, ...rest } = controls;
     const result = requestTaskStop(store, { taskId: task, runId: run, by: verifiedAuthor(who.name), via: via ?? (web ? "web" : "cli"), ...rest }, now);

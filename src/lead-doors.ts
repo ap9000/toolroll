@@ -131,7 +131,7 @@ const VIA_WORDS: Record<DoorOptions["via"], string> = {
 };
 const CARD_WORDS: Partial<Record<ProposalKind, string>> = {
   task: "New task", next: "Queue priority", reserve: "Worker assignment", hold: "Pause work", unhold: "Resume work",
-  steer: "Guidance for the agent", scope: "Scope revision", answer: "Decision answer", repair: "Waiting task",
+  steer: "Guidance for the agent", scope: "Plan change", answer: "Decision answer", repair: "Waiting task",
   agents: "Agents change", task_action: "Task update", action: "Action",
 };
 
@@ -188,11 +188,11 @@ export function proposalActGate(store: Store, who: { name: string; generation: n
 }
 
 export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposalId: number, now: Date, options: DoorOptions): DoorOutcome {
-  if (!isVerifiedApprover(who)) return { ok: false, kind: null, reason: "standing", said: "your approver standing changed — sign in again" };
+  if (!isVerifiedApprover(who)) return { ok: false, kind: null, reason: "standing", said: "Your sign-in changed. Sign in again." };
   const signals: (() => void)[] = [];
   const defer = options.deferSignal ?? ((signal: () => void) => signals.push(signal));
   const result = store.transact(() => {
-    if (!reproveApprover(store, who).ok) return { ok: false, kind: null, reason: "standing", said: "your approver standing changed — sign in again" } as const;
+    if (!reproveApprover(store, who).ok) return { ok: false, kind: null, reason: "standing", said: "Your sign-in changed. Sign in again." } as const;
     const proposal = store.getLeadProposal(proposalId);
     if (proposal === null) return { ok: false, kind: null, reason: "not-yours", said: "no such proposal" } as const;
     const thread = store.getLeadThread(proposal.thread);
@@ -203,14 +203,14 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
     if (!gate.ok) return { ok: false, kind: proposal.kind, reason: gate.reason, said: gate.said } as const;
     const session = (shared ? store.teamMateSession(who.name, thread.id) : store.activeLeadSession(who.name))!;
     if (proposal.ceilingDigest !== who.ceilingDigest || session.ceilingDigest !== who.ceilingDigest) {
-      return { ok: false, kind: proposal.kind, reason: "ceiling-changed", said: "the admitted projects changed since this was proposed — it cannot be confirmed" } as const;
+      return { ok: false, kind: proposal.kind, reason: "ceiling-changed", said: "Your projects changed since this was drafted, so it can't be confirmed. Ask for it again." } as const;
     }
     const turn = store.getLeadTurn(proposal.turn);
     if (!leadTurnKeepsProposals(turn) || proposal.state === "drafting") {
       return { ok: false, kind: proposal.kind, reason: "turn-not-answered", said: "this proposal's turn did not finish — it cannot be confirmed" } as const;
     }
     if (proposal.kind === "cancel") {
-      return { ok: false, kind: proposal.kind, reason: "not-confirmable", said: "cancelling is armed on the task itself — open the task" } as const;
+      return { ok: false, kind: proposal.kind, reason: "not-confirmable", said: "Cancel from the task page." } as const;
     }
     if (proposal.kind === "control") return { ok: false, kind: proposal.kind, reason: "not-confirmable", said: "Open the linked control to complete this action." } as const;
     if (proposal.kind === "action") {
@@ -283,12 +283,12 @@ export function dismissLeadProposal(store: Store, who: VerifiedApprover, proposa
  * involved — nothing here spends.
  */
 export function confirmCoordinatorProposal(store: Store, who: VerifiedApprover, proposalId: number, now: Date, options: DoorOptions): DoorOutcome {
-  if (!isVerifiedApprover(who)) return { ok: false, kind: null, reason: "standing", said: "your approver standing changed — sign in again" };
+  if (!isVerifiedApprover(who)) return { ok: false, kind: null, reason: "standing", said: "Your sign-in changed. Sign in again." };
   const signals: (() => void)[] = [];
   // Easy-start C1: a coordinator's proposal is never a local owner's to confirm (work a coordinator files needs a password).
   if (localDoor(options)) return { ok: false, kind: null, reason: "refused", said: localDoorWords(store, who.name) };
   const result = store.transact(() => {
-    if (!reproveApprover(store, who).ok) return { ok: false, kind: null, reason: "standing", said: "your approver standing changed — sign in again" } as const;
+    if (!reproveApprover(store, who).ok) return { ok: false, kind: null, reason: "standing", said: "Your sign-in changed. Sign in again." } as const;
     const proposal = store.getCoordinatorProposal(proposalId);
     if (proposal === null || !who.repos.includes(proposal.repo)) return { ok: false, kind: null, reason: "not-yours", said: "no such proposal in your projects" } as const;
     if (Date.parse(proposal.createdAt) + COORDINATOR_PROPOSAL_TTL_MS <= now.getTime()) {
@@ -296,7 +296,7 @@ export function confirmCoordinatorProposal(store: Store, who: VerifiedApprover, 
       return { ok: false, kind: proposal.kind, reason: "expired", said: "this proposal is older than seven days — it expired" } as const;
     }
     if (proposal.kind === "cancel") {
-      return { ok: false, kind: proposal.kind, reason: "not-confirmable", said: "cancelling is armed on the task itself — open the task" } as const;
+      return { ok: false, kind: proposal.kind, reason: "not-confirmable", said: "Cancel from the task page." } as const;
     }
     const needsConfirm = proposal.kind === "answer" && proposal.payload["reversible"] === false && options.confirm !== true;
     if (needsConfirm) return { ok: false, kind: proposal.kind, reason: "needs-confirm", said: "an irreversible choice must be confirmed explicitly" } as const;
@@ -335,7 +335,7 @@ function executeProposal(
   now: Date,
   options: DoorOptions & { scopeAuthor?: "mate" | "coordinator"; deferSignal: NonNullable<import("./task-control.js").StopRequest["deferSignal"]> },
 ): DoorOutcome {
-  if (!isVerifiedApprover(actor) || !reproveApprover(store, actor).ok) return { ok: false, kind, reason: "standing", said: "your approver standing changed — sign in again" };
+  if (!isVerifiedApprover(actor) || !reproveApprover(store, actor).ok) return { ok: false, kind, reason: "standing", said: "Your sign-in changed. Sign in again." };
   const taskId = payloadString(payload, "task");
   const admitted = (repo: string | null): boolean => repo !== null && actor.repos.includes(repo);
   const refuse = (reason: DoorRefusal, said: string): DoorOutcome => ({ ok: false, kind, reason, said });
@@ -372,7 +372,7 @@ function executeProposal(
       kind,
       said: filed.planning
         ? `filed ${filed.id} — the planner is reading the project before you approve anything`
-        : `filed ${filed.id} — review and approve its scope to start work`,
+        : `Filed ${filed.id}. Approve its plan to start work.`,
       taskId: filed.id,
     };
   }
@@ -673,7 +673,7 @@ function executeProposal(
       now,
     });
     if (!proposed.ok) return refuseFromReason(kind, proposed.reason);
-    return { ok: true, kind, said: `${taskId}'s scope rewritten — approve it with your password on the task`, taskId };
+    return { ok: true, kind, said: `${taskId}'s plan changed. Approve it on the task page.`, taskId };
   }
 
   return refuse("not-confirmable", "this kind of proposal has no door");

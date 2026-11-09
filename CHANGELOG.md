@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **The lead is asked for shorter answers in plainer words.** Its instructions now ask for the answer first, in one to three sentences, in everyday words and without an account of its own steps, in the browser and the terminal as well as the chat apps. How much shorter real answers are has not been measured yet; `node scripts/lead-answer-eval.mjs --real` now reports answer length and wording.
+- **Plainer wording on a few cards and phone status lines.** "Plan" instead of "scope", "Your sign-in changed. Sign in again.", "Activity log" in the menu.
+
 ## 0.9.97 — 2026-11-09
 
 - **Chat answers feel instant, everywhere.** On the web, Telegram, Slack, Discord, Teams and `toolroll chat`, your message gets an acknowledgement at once (👀 in chat apps, a status line on the web and in the terminal), you see what the lead is doing in one line, and the answer appears as it is written. Cards and buttons come when the answer is finished, as before.

@@ -498,7 +498,7 @@ export function chatLimitsHtml(facts: {
     html`<span class="mono">${facts.provider} · ${facts.model}</span>`,
     html`<span>${facts.turnsToday} / ${facts.dailyTurns} turns today</span>`,
   ];
-  if (facts.subscription) rows.push(html`<span>membership login · no dollar ceiling</span>`);
+  if (facts.subscription) rows.push(html`<span>membership login · no dollar limit</span>`);
   else if (facts.weekly !== null) rows.push(html`<span>this week ${chatMoney(facts.weekly.spent)} of ${chatMoney(facts.weekly.ceiling)}</span>`);
   return html`<details class="chat-limits"><summary>Model &amp; limits<span class="meta">${facts.subscription ? "membership" : facts.provider}</span></summary><div class="chat-budget">${rows}</div></details>`;
 }
@@ -731,7 +731,7 @@ export function proposalCardParts(view: ProposalCardView, inert: boolean, decisi
     hold: { label: "Pause work", action: "hold", icon: html`<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>` },
     unhold: { label: "Resume work", action: "release hold", icon: html`<path d="m7 4 13 8-13 8z"/>` },
     steer: { label: "Guidance for the agent", action: "add guidance", icon: html`<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>` },
-    scope: { label: "Scope revision", action: "save scope", icon: html`<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z"/>` },
+    scope: { label: "Plan change", action: "save plan", icon: html`<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z"/>` },
     answer: { label: "Decision answer", action: "confirm answer", icon: html`<path d="M9.1 9a3 3 0 1 1 5.8 1c0 2-3 2-3 4"/><path d="M12 18h.01"/><circle cx="12" cy="12" r="9"/>` },
     cancel: { label: "Cancel task", action: "open task", icon: html`<path d="m15 9-6 6"/><path d="m9 9 6 6"/><circle cx="12" cy="12" r="9"/>` },
     repair: {
@@ -1238,7 +1238,7 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
     html`<details class="chat-limits chat-session-details"><summary>Conversation details<span class="meta">${subscription ? "membership" : data.config.provider}</span></summary>\n${joinHtml([
       html`<div class="chat-budget"><span class="mono">${data.config.provider} · ${data.config.model}</span><span>${data.turnsToday} / ${data.config.dailyTurns} turns today</span>${
         subscription
-          ? html`<span>membership login · no dollar ceiling</span>`
+          ? html`<span>membership login · no dollar limit</span>`
           : html`<span>this conversation: ${chatMoney(data.session?.spentMicrousd ?? 0)} of ${chatMoney(data.session?.ceilingMicrousd ?? 0)}</span><span>this week ${chatMoney(data.weeklySpent)} of ${chatMoney(data.config.weeklyCeilingMicrousd)}</span>`}</div>`,
       data.session === null
         ? html`<p class="meta">No conversation yet. Send a message to start one.</p>`
