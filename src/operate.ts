@@ -129,7 +129,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
-  checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
+  checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -358,6 +358,7 @@ import { noticeGitIncidents } from "./git-incident.js";
 import { containmentNotice, containmentStatus, currentContainment, describeContainment, resolveContainment, type EffectiveContainment } from "./containment.js";
 import { readPulls } from "./pulls.js";
 import { startMaintenance } from "./maintenance.js";
+import { WakePoker, wakeHubFor } from "./wake-hub.js";
 import { livePin, modelWatchPass } from "./model-catalog.js";
 import { runModelsCommand } from "./models-cli.js";
 import { ALL_PROJECTS, chatApprovalSettings, chatApprovalWords, setChatApproval } from "./chat-approval.js";
@@ -6928,6 +6929,10 @@ async function runWatchLoop(args: {
   // an authority this process no longer holds.
   let leaseLost = false;
   const followController = new AbortController();
+  // The process's one wake poller (wake-hub.ts) replaces every per-loop and per-lane 50 ms read of the wake counter.
+  // It only says "look": every claim still re-proves its fences.
+  const hub = wakeHubFor(store);
+  const wakes = new WakePoker();
   args.onFollowController?.(followController);
   const stopping = (): boolean => args.isStopping() || leaseLost;
 
@@ -6946,6 +6951,8 @@ async function runWatchLoop(args: {
     if (!renewed && !leaseLost) {
       leaseLost = true;
       followController.abort();
+      // A lost lease ends every doze of this loop and its lanes now, not at the next beat (live-wakeups.md).
+      wakes.poke();
       progress(`watch: ${runner} on ${repo}: ${problem} — stopping without admitting more work`);
     }
   }, WATCH_HEARTBEAT_MS);
@@ -7005,13 +7012,10 @@ async function runWatchLoop(args: {
   const deadline = runFor === null ? null : startedAt + runFor;
   let lastTick = 0;
   let lastBridge = 0;
-  let lastPush = 0;
-  let lastWebhook = 0;
   let ticks = 0;
   let built = 0;
   let brokeCount = 0;
 
-  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   // Reconciliation has its own cadence and sink. Sharing tick's sink would
   // interleave envelopes while a build awaits its provider or project check.
   const sweepOwner = {};
@@ -7032,8 +7036,11 @@ async function runWatchLoop(args: {
       const code = await reconcileCommand(passFlags(), maintenanceContext);
       if (code !== EXIT.ok) throw new Error(maintenanceLines.join(" "));
       if (reconciliationFailure !== null) progress("watch: reconciliation recovered — new work may resume");
+      const recovered = !reconciliationReady;
       reconciliationFailure = null;
       reconciliationReady = true;
+      // Admission resumes now: a loop dozing while paused looks again at once.
+      if (recovered) wakes.poke();
       if (!stopping() && store.openedPublications().length > 0) {
         try {
           const checks = await observeChecks(store, {
@@ -7149,6 +7156,9 @@ async function runWatchLoop(args: {
     run: async () => { if (await modelWatchPass(store, context.clock())) progress("watch: checked models and CLI versions"); },
   });
 
+  // The process's delivery and fast CI beats (live-wakeups.md): one set however many project loops run.
+  const leaveServiceBeats = joinServiceBeats({ context, progress, ciReady: () => reconciliationReady && !stopping() });
+
   // Parallel builds (project-concurrency.ts): this loop is the project's
   // first build lane and keeps every housekeeping duty; extra lanes, up to
   // the project's own number (never past the worker's capacity), only
@@ -7220,9 +7230,8 @@ async function runWatchLoop(args: {
       const seqIdle = store.wakeSeq();
       const dozeUntil = Math.min(Date.now() + tickEveryMs, deadline ?? Number.MAX_SAFE_INTEGER);
       const theirTurnEnded = (): boolean => yieldingTo !== null && yieldingSince !== null && passes.lastPass(yieldingTo) > yieldingSince;
-      while (!stopping() && Date.now() < dozeUntil && store.wakeSeq() === seqIdle && !theirTurnEnded()) {
-        await sleep(paused() ? 250 : 50);
-      }
+      // Doze on the shared poller: a wake, the cadence, a stop, a lost lease or the fair-share turn ending.
+      await hub.changed({ baseline: seqIdle, deadline: dozeUntil, until: () => stopping() || theirTurnEnded(), poker: wakes });
     }
   };
   const ensureLanes = (): void => {
@@ -7238,7 +7247,9 @@ async function runWatchLoop(args: {
     await maintenance.runNow();
     while (!stopping() && (deadline === null || Date.now() < deadline)) {
       if (paused()) {
-        await sleep(250);
+        // Paused: look again when the wake moves (pause and resume bump it), when reconciliation recovers (a poke),
+        // or after a second at most, whichever comes first.
+        await hub.changed({ baseline: store.wakeSeq(), deadline: Date.now() + 1_000, until: stopping, poker: wakes });
         continue;
       }
       ensureLanes();
@@ -7307,24 +7318,8 @@ async function runWatchLoop(args: {
         }
       }
 
-      // Push rides its OWN cadence, whether or not Telegram holds the wire
-      // (arc 3 finding 8): the pair ledger's claims fence concurrent loops.
-      if (now - lastPush >= 45_000) {
-        lastPush = now;
-        try {
-          await pushPass(context.store, { configDir: dirname(context.databaseFile), clock: () => new Date() });
-        } catch {
-          // Push is additive; a broken pass never stops the watch.
-        }
-      }
-
-      if (now - lastWebhook >= bridgeEveryMs) {
-        lastWebhook = now;
-        const dir = dirname(context.databaseFile);
-        const primary = effectivePrimary(process.env, dir, loadBotToken(process.env, context.telegramTokenFile) !== null);
-        const targets = activeWebhookTargets(process.env, dir, primary.channel);
-        if (targets.length > 0) await webhookPass(store, { targets, consoleUrl: loadConsoleUrl(process.env, dir), clock: context.clock });
-      }
+      // Web push and outgoing webhooks ride the service's own delivery beat (joinServiceBeats, live-wakeups.md):
+      // every 5 s, and at once when the wake moves with new rows, never behind a build on this path.
 
       // The embedded follower owns the wire while it lives; the timer-driven
       // pass is the fallback shape for a watch started before a token existed.
@@ -7364,7 +7359,6 @@ async function runWatchLoop(args: {
         Math.min(
           lastTick + tickEveryMs,
           lastBridge + bridgeEveryMs,
-          lastWebhook + bridgeEveryMs,
           deadline ?? Number.MAX_SAFE_INTEGER,
         ) - Date.now();
       // Doze for the WHOLE idle window, waking early only for a signal or a
@@ -7375,9 +7369,7 @@ async function runWatchLoop(args: {
       const dozeUntil = Date.now() + Math.max(idleUntil, 0);
       const theirTurnEnded = (): boolean =>
         firstLaneYieldingTo !== null && firstLaneYieldingSince !== null && passes.lastPass(firstLaneYieldingTo) > firstLaneYieldingSince;
-      while (!stopping() && Date.now() < dozeUntil && store.wakeSeq() === seqIdle && !theirTurnEnded()) {
-        await sleep(50);
-      }
+      await hub.changed({ baseline: seqIdle, deadline: dozeUntil, until: () => stopping() || theirTurnEnded(), poker: wakes });
     }
   } finally {
     // Every build lane finishes or hands its attempt back before the
@@ -7389,6 +7381,7 @@ async function runWatchLoop(args: {
     await flowMoves.stop();
     await flowSteps.stop();
     await modelWatch.stop();
+    await leaveServiceBeats();
     clearInterval(heartbeat);
     followController.abort();
     if (follower !== null) await follower;
@@ -7467,6 +7460,7 @@ async function watchCommand(
     }
     stopping = true;
     followAbort?.abort();
+    wakeHubFor(context.store).poke();
     graceTimer = setTimeout(hardStop, stopGraceMs);
   };
   process.on("SIGINT", stop);
@@ -13067,6 +13061,8 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
     stopping = true;
     resolveStopped();
     for (const controller of followControllers) controller.abort();
+    // Every project loop's doze ends now (wake-hub.ts), not at its next beat.
+    wakeHubFor(store).poke();
     const building = store.liveClaimCount(runnerName, clock());
     if (building > 0) {
       progress(`Stopping: ${building} build(s) running. Waiting up to ${Math.round(config.stopGraceMs / 1000)}s for them to finish; any still running then is saved and resumes when the builder starts again.`);
@@ -14390,4 +14386,152 @@ async function quickAnswersConfig(action: string, repoGiven: boolean, flags: Map
   setLeadQuickAnswers(store, action === "set", acting.name, clock());
   const shown = said();
   return succeed(write, json, command, shown.payload, shown.lines);
+}
+
+// ---- service beats (docs/plans/live-wakeups.md, slices 4 and 6) ----------------------------------------------------
+
+/** A project loop's share in its process's service beats. */
+export type ServiceBeatMember = {
+  context: Context;
+  progress: (line: string) => void;
+  /** This loop's reconciliation stands and it is not stopping: the fast CI pass runs only while every member's does. */
+  ciReady: () => boolean;
+};
+
+type ServiceBeats = {
+  members: Set<ServiceBeatMember>;
+  stopped: boolean;
+  delivery: ReturnType<typeof startMaintenance>;
+  fastCi: ReturnType<typeof startMaintenance>;
+  poker: WakePoker;
+  wakeLoop: Promise<void>;
+};
+
+/** The delivery beat: web push and outgoing webhooks, off the build path. */
+export const DELIVERY_EVERY_MS = 5_000;
+/** The fast CI beat: only while an opened pull request waits on its checks or its merge. */
+export const FAST_CI_EVERY_MS = 30_000;
+/** The most pull requests one fast CI pass reads. */
+export const FAST_CI_LIMIT = 10;
+/** A pull request whose checks read as "none" stays on the fast pass this long after it was last updated: CI that
+ * has not registered yet, not a project without CI, which the 5 minute pass keeps reading. */
+const FAST_CI_NONE_WINDOW_MS = 30 * 60_000;
+
+const serviceBeats = new WeakMap<Store, ServiceBeats>();
+
+/** The newest notification id: the delivery beat's high-water mark. */
+function newestNotificationId(store: Store): number {
+  return Number(store.handle.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM notification").get()?.["id"] ?? 0);
+}
+
+/**
+ * The opened pull requests the fast CI pass reads, oldest read first, at most `limit`: checks not settled (never read,
+ * running, or "none" shortly after an update), or green with its merge still waiting (a merge intent in flight, or a
+ * followed pull request not yet marked ready on its accepted commit). Failing and settled ones stay on the 5 minute pass.
+ */
+export function fastCiWaiting(store: Store, now: Date, limit = FAST_CI_LIMIT): Publication[] {
+  const waiting = store.openedPublications().filter(publication => {
+    if (publication.prNumber === null) return false;
+    const state = publication.lastCheckState;
+    if (state === null || state === "running") return true;
+    if (state === "none") return now.getTime() - Date.parse(publication.lastCheckAt ?? publication.updatedAt) < FAST_CI_NONE_WINDOW_MS
+      && now.getTime() - Date.parse(publication.updatedAt) < FAST_CI_NONE_WINDOW_MS;
+    if (state !== "passing") return false;
+    const intent = store.mergeIntentFor(publication.id);
+    if (intent !== null && ["pending", "claimed", "waiting-human", "firing"].includes(intent.state)) return true;
+    const follow = store.handle.prepare("SELECT flow_card, ready_head, merge_commit FROM pull_request_follow WHERE publication = ?").get(publication.id);
+    return follow !== undefined && follow["flow_card"] == null && follow["merge_commit"] == null && follow["ready_head"] !== publication.headSha;
+  });
+  return waiting
+    .sort((a, b) => (a.lastCheckAt ?? "").localeCompare(b.lastCheckAt ?? "") || a.id - b.id)
+    .slice(0, limit);
+}
+
+/**
+ * Join this process's service beats: one delivery beat (web push and outgoing webhooks every 5 s, and at once when
+ * the wake moves with new notifications) and one fast CI beat (every 30 s, the existing `observeChecks` reader, only
+ * for pull requests that wait). One set per store, however many project loops join; the last to leave stops them.
+ * Opening a pull request stays on the tick path, and the 5 minute pass alone may set reconciliation ready.
+ */
+export function joinServiceBeats(member: ServiceBeatMember): () => Promise<void> {
+  const store = member.context.store;
+  let beats = serviceBeats.get(store);
+  if (beats === undefined) beats = startServiceBeats(store);
+  beats.members.add(member);
+  const joined = beats;
+  return async () => {
+    if (!joined.members.delete(member) || joined.members.size > 0) return;
+    joined.stopped = true;
+    if (serviceBeats.get(store) === joined) serviceBeats.delete(store);
+    joined.poker.poke();
+    await joined.delivery.stop();
+    await joined.fastCi.stop();
+    await joined.wakeLoop;
+  };
+}
+
+function startServiceBeats(store: Store): ServiceBeats {
+  const anyMember = (): ServiceBeatMember | undefined => beats.members.values().next().value;
+  let deliveredThrough = newestNotificationId(store);
+  let deliveryProblem: string | null = null;
+  const delivery = startMaintenance({
+    intervalMs: DELIVERY_EVERY_MS,
+    shouldStop: () => beats.stopped,
+    onError: error => {
+      const detail = describe(error);
+      if (detail !== deliveryProblem) anyMember()?.progress(`watch: outgoing webhooks failed — ${detail}; they try again in a few seconds`);
+      deliveryProblem = detail;
+    },
+    run: async () => {
+      const member = anyMember();
+      if (member === undefined) return;
+      const { context } = member;
+      const dir = dirname(context.databaseFile);
+      deliveredThrough = newestNotificationId(store);
+      // Push is additive; a broken pass never stops the watch. The pair ledger's claims fence any other sender.
+      try { await pushPass(store, { configDir: dir, clock: () => new Date() }); } catch { /* tried again next beat */ }
+      const primary = effectivePrimary(process.env, dir, loadBotToken(process.env, context.telegramTokenFile) !== null);
+      const targets = activeWebhookTargets(process.env, dir, primary.channel);
+      if (targets.length > 0) await webhookPass(store, { targets, consoleUrl: loadConsoleUrl(process.env, dir), clock: context.clock });
+      deliveryProblem = null;
+    },
+  });
+  const fastCi = startMaintenance({
+    intervalMs: FAST_CI_EVERY_MS,
+    shouldStop: () => beats.stopped,
+    // A failed fast pass is skipped: it records nothing and says nothing. The 5 minute pass still reads every PR.
+    onError: () => {},
+    run: async () => {
+      const members = [...beats.members];
+      if (members.length === 0 || !members.every(one => one.ciReady())) return;
+      const { context, progress } = members[0]!;
+      const waiting = fastCiWaiting(store, context.clock());
+      if (waiting.length === 0) return;
+      const exec = context.publishExec === undefined ? {} : { exec: context.publishExec };
+      const checks = await observeChecks(store, { ...exec, publications: waiting });
+      if (beats.stopped) return;
+      if (checks.failing > 0) progress(`watch: CI is red on ${checks.failing} published PR(s) — the outbox has it`);
+      const followed = await followPullRequests(store, checks.seen, { evidenceRoot: context.evidenceRoot, ...exec });
+      if (followed.revisions > 0) progress(`watch: filed ${followed.revisions} CI revision(s)`);
+      if (followed.merged > 0) progress(`watch: merged ${followed.merged} pull request(s) whose checks passed`);
+    },
+  });
+  const poker = new WakePoker();
+  const hub = wakeHubFor(store);
+  const beats: ServiceBeats = { members: new Set(), stopped: false, delivery, fastCi, poker, wakeLoop: Promise.resolve() };
+  // A wake with new notifications sends them now, not at the next beat.
+  beats.wakeLoop = (async () => {
+    while (!beats.stopped) {
+      try {
+        const why = await hub.changed({ baseline: store.wakeSeq(), deadline: Number.MAX_SAFE_INTEGER, until: () => beats.stopped, poker });
+        if (why === "wake" && !beats.stopped && newestNotificationId(store) > deliveredThrough) void delivery.runNow();
+      } catch {
+        // The store could not be read: the 5 s beat still runs; look again shortly.
+        await new Promise<void>(resolveLater => { const timer = setTimeout(resolveLater, 1_000); timer.unref?.(); });
+      }
+    }
+  })();
+  serviceBeats.set(store, beats);
+  void delivery.runNow();
+  return beats;
 }

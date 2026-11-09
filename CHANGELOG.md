@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Approved work starts within a second.** Approving a plan or a merge, by any road, now tells the builder at once, and phone notifications, webhooks and Telegram messages go out within seconds instead of up to a minute. Pull requests waiting on CI are checked every 30 seconds instead of every 5 minutes.
+- **A quieter idle builder.** An idle builder now checks for new work once per process instead of once per project and build slot, so it uses far less CPU while nothing is happening.
+
 ## 0.9.97 — 2026-11-09
 
 - **Chat answers feel instant, everywhere.** On the web, Telegram, Slack, Discord, Teams and `toolroll chat`, your message gets an acknowledgement at once (👀 in chat apps, a status line on the web and in the terminal), you see what the lead is doing in one line, and the answer appears as it is written. Cards and buttons come when the answer is finished, as before.

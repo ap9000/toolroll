@@ -9644,6 +9644,9 @@ export class Store {
           if (openReleaseAuthority(this, { taskId, digest: String(working["digest"]), terms: terms.terms, by, now }) === null) throw new ReleaseSealRefused();
         }
         if (changed.changes > 0) {
+          // A real seal is work a builder can take now: wake the loops (live-wakeups.md). Inside the seal's own
+          // transaction, so a seal that rolls back wakes nothing. The claim re-proves the approval regardless.
+          this.bumpWake();
           // The project's tools this yes saw (v80): a later addition needs a later yes.
           this.sealProjectTools(taskId, String(working["digest"]), now);
           // A fresh yes lifts the stale-approval hold and closes its page
@@ -13605,6 +13608,10 @@ export class Store {
     now: Date,
     expiresAt: string | null = null,
   ): boolean {
+    return this.transact(() => {
+    // The status before this answer, read in the same transaction: only a gap that fills wakes the loop. A
+    // repeated passing probe refreshes the timestamp and says nothing new, so it must not wake (live-wakeups.md).
+    const prior = this.db.prepare("SELECT status FROM capability WHERE repo = ? AND kind = ? AND name = ?").get(repo, kind, name);
     const { changes } = this.db
       .prepare(
         `UPDATE capability SET status = ?, last_verified_at = ?, verified_by = ?, last_result = ?, expires_at = COALESCE(?, expires_at)
@@ -13624,9 +13631,10 @@ export class Store {
     // is a new fact, and must be allowed to say so.
     if (Number(changes) > 0 && outcome.status === "verified") {
       this.clearGapEpisode(repo, kind, name);
-      this.bumpWake();
+      if (prior?.["status"] !== "verified") this.bumpWake();
     }
     return Number(changes) > 0;
+    });
   }
 
   /** Set what a task needs, as `kind:name` keys, replacing what it needed before. */
@@ -19271,6 +19279,8 @@ export class Store {
             WHERE id = ? AND state = 'waiting-human'`,
         )
         .run(id);
+      // The person's yes makes the merge actionable now: wake the loops (live-wakeups.md). The firing CAS re-proves it.
+      this.bumpWake();
       return { ok: true as const };
     });
   }

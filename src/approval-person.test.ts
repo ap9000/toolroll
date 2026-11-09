@@ -187,6 +187,16 @@ describe("the seal primitive", () => {
     expect(store.getScope("t-belt")!.approvedAt).toBeNull();
     expect(store.sealScopeApproval("t-belt", "alex", NOW)).toBe(true);
   });
+
+  test("a real seal wakes the worker; a refused seal does not (live-wakeups.md)", () => {
+    filed("t-wake");
+    const before = store.wakeSeq();
+    expect(withActor({ account: "alex", lead: true }, () => store.sealScopeApproval("t-wake", "alex", NOW))).toBe(false);
+    expect(store.sealScopeApproval("t-none", "alex", NOW)).toBe(false);
+    expect(store.wakeSeq()).toBe(before);
+    expect(store.sealScopeApproval("t-wake", "alex", NOW)).toBe(true);
+    expect(store.wakeSeq()).toBeGreaterThan(before);
+  });
 });
 
 describe("which authorities stand", () => {
