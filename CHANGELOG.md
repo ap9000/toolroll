@@ -5,6 +5,7 @@
 - **Approved work starts within a second.** Approving a plan or a merge, by any road, now tells the builder at once, and phone notifications, webhooks and Telegram messages go out within seconds instead of up to a minute. Pull requests waiting on CI are checked every 30 seconds instead of every 5 minutes.
 - **A quieter idle builder.** An idle builder now checks for new work once per process instead of once per project and build slot, so it uses far less CPU while nothing is happening.
 - **The lead is asked for shorter answers in plainer words.** Its instructions now ask for the answer first, in one to three sentences, in everyday words and without an account of its own steps, in the browser and the terminal as well as the chat apps. How much shorter real answers are has not been measured yet; `node scripts/lead-answer-eval.mjs --real` now reports answer length and wording.
+- **Home shows three groups: Waiting on you, Working, Done.** What asks something of you comes first (decisions, then results to review, then what is blocked), then what is running and what waits its turn, then up to eight tasks finished in the last 7 days. The figures above still open the same Tasks lists and count the same things; "Needs you" now reads "Waiting on you" and "Finished" reads "Done".
 - **Plainer wording on a few cards and phone status lines.** "Plan" instead of "scope", "Your sign-in changed. Sign in again.", "Audit log" in every menu, matching the page it opens.
 
 ## 0.9.97 — 2026-11-09

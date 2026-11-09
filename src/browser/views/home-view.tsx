@@ -1,6 +1,6 @@
 /**
  * Home ("/", UI revamp wave B; prototype app.js `homeView`): one sentence that answers "what needs me?", four counts
- * that agree with the Tasks filters they open, what waits on this person grouped by what it asks and what is running,
+ * that agree with the Tasks filters they open, the work in three groups (Waiting on you, Working, Done),
  * the selected item open beside the list (an agent's question answered in place, one click), and the lead's box.
  * On a phone the list is the page; a row opens its task, and the dock holds Needs you and New task.
  */
@@ -99,13 +99,13 @@ function AskLead({ ask }: { ask: NonNullable<BrowserHomeView["ask"]> }) {
 
 export function HomeView({ view }: { view: BrowserHomeView }) {
   const rows = rowsOf(view);
-  const firstWait = view.groups.find(group => group.key !== "running" && group.key !== "waiting")?.rows[0] ?? rows[0] ?? null;
+  const firstWait = view.groups.find(group => group.key === "you")?.rows[0] ?? rows[0] ?? null;
   const [selected, setSelected] = useState<string | null>(firstWait?.id ?? null);
   const list = useRef<HTMLDivElement>(null);
   // A re-read that removed the selected row selects the first that waits.
   useEffect(() => { if (selected === null || !rows.some(one => one.id === selected)) setSelected(firstWait?.id ?? null); }, [view]);
   const open = rows.find(one => one.id === selected) ?? null;
-  const openWaits = open !== null && view.groups.some(group => group.key !== "running" && group.key !== "waiting" && group.rows.includes(open));
+  const openWaits = open !== null && view.groups.some(group => group.key === "you" && group.rows.includes(open));
   const move = (step: number) => {
     const at = rows.findIndex(one => one.id === selected);
     const next = rows[Math.max(0, Math.min(rows.length - 1, at + step))];
@@ -132,10 +132,10 @@ export function HomeView({ view }: { view: BrowserHomeView }) {
           </a>)}</div>
       </section>
       <div className="so-triage">
-        <div className="so-tri-list" ref={list} role="listbox" aria-label="Needs you, running and waiting" onKeyDown={event => {
+        <div className="so-tri-list" ref={list} role="listbox" aria-label="Waiting on you, working and done" onKeyDown={event => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); move(event.key === "ArrowDown" ? 1 : -1); }
         }}>
-          {view.groups.length === 0 && <p className="so-tri-none">Nothing needs you, runs or waits.</p>}
+          {view.groups.length === 0 && <p className="so-tri-none">Nothing is waiting on you, working or done this week.</p>}
           {view.groups.map(group => <div key={group.key} role="group" aria-label={group.label}>
             <p className="so-tri-g" aria-hidden="true">{group.label}</p>
             {group.rows.map(row => <a key={row.id} className="so-ti" href={row.href} role="option" aria-selected={row.id === selected} data-row={row.id}
@@ -144,7 +144,7 @@ export function HomeView({ view }: { view: BrowserHomeView }) {
               onFocus={() => { if (!isPhone()) setSelected(row.id); }}>
               <span className="so-ti-t">{row.title}</span>
               <span className="so-ti-m"><KChip word={row.chip.word} tone={row.chip.tone} />{row.project && <span>{row.project}</span>}<span className="k-num">{row.age}</span></span>
-              {(group.key === "running" || group.key === "waiting") && row.line && <span className="so-ti-d">{row.line}</span>}
+              {group.key === "working" && row.line && <span className="so-ti-d">{row.line}</span>}
             </a>)}
           </div>)}
           {view.more && <p className="so-tri-more"><a className="k-link" href={view.more.href}>{view.more.count} more in Tasks</a></p>}
