@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.97 — 2026-11-08
+## 0.9.97 — 2026-11-09
 
 - **Chat answers feel instant, everywhere.** On the web, Telegram, Slack, Discord, Teams and `toolroll chat`, your message gets an acknowledgement at once (👀 in chat apps, a status line on the web and in the terminal), you see what the lead is doing in one line, and the answer appears as it is written. Cards and buttons come when the answer is finished, as before.
 - **Safer chat text.** A reply in Slack can no longer ping `@here`; `toolroll chat` no longer lets reply text change your terminal; a half-written answer never shows a password-like string or an approval button.
