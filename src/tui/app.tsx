@@ -8,9 +8,10 @@
  */
 import { keyWords, SHORTCUTS, type TuiShortcut } from "../keymap.js";
 import { Box, Text, useApp, useInput, type Key } from "ink";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { terminalText } from "../terminal-text.js";
+import { HOME_GROUP_LABEL, HOME_GROUPS } from "../home-groups.js";
 import type { TuiAct, TuiExit, TuiFastTerms, TuiRow, TuiSession, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./data.js";
 
 /** Text that came from outside this screen (an agent, a person, a project), as the terminal shows it: escapes and
@@ -56,6 +57,15 @@ export const HELP_LINES = [
   "q                quit",
 ];
 
+/** The list in Home's order (home-groups.ts): Waiting on you, Working, Done, then anything in no group; each group keeps
+ * the order the work index gave it. */
+export function inHomeOrder(rows: readonly TuiRow[]): TuiRow[] {
+  const rank = (row: TuiRow) => row.group === null ? HOME_GROUPS.length : HOME_GROUPS.indexOf(row.group);
+  return rows.map((row, index) => ({ row, index })).sort((a, b) => rank(a.row) - rank(b.row) || a.index - b.index).map(one => one.row);
+}
+/** A group's heading in the list; work in no group (cancelled, replaced, queued) is listed under Other. */
+const groupHeading = (row: TuiRow): string => row.group === null ? "Other" : HOME_GROUP_LABEL[row.group];
+
 /** Printable characters typed or pasted into a composer (control characters dropped). */
 const typed = (input: string): string => [...input].filter(char => char >= " " && char !== "\u007f").join("");
 
@@ -72,7 +82,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
   const ticks = useRef(0);
   const ended = useRef(false);
 
-  const rows: readonly TuiRow[] = snapshot?.rows ?? [];
+  const rows: readonly TuiRow[] = inHomeOrder(snapshot?.rows ?? []);
   const current: TuiRow | undefined = rows[Math.min(selected, Math.max(rows.length - 1, 0))];
 
   const refresh = useCallback(async () => {
@@ -351,11 +361,13 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
         return (
           <Box>
             <Box flexDirection="column" width="45%" borderStyle="single" paddingX={1}>
-              <Text bold>Tasks</Text>
               {rows.map((row, index) => (
-                <Text key={row.id} inverse={row === current} wrap="truncate-end">
-                  {row === current ? "> " : "  "}<SafeText>{row.title}</SafeText> <SafeText {...(row.needsYou ? { color: "yellow" } : { dimColor: true })}>{row.status}</SafeText>
-                </Text>
+                <Fragment key={row.id}>
+                  {index === 0 || rows[index - 1]!.group !== row.group ? <Text bold>{groupHeading(row)}</Text> : null}
+                  <Text inverse={row === current} wrap="truncate-end">
+                    {row === current ? "> " : "  "}<SafeText>{row.title}</SafeText> <SafeText {...(row.needsYou ? { color: "yellow" } : { dimColor: true })}>{row.status}</SafeText>
+                  </Text>
+                </Fragment>
               ))}
             </Box>
             <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>

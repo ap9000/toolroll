@@ -102,6 +102,9 @@ const statusOutput = answers("status", {
   signIn: rows({ provider: str, reason: str, command: str, since: str }),
   tasks: rows({ task: str, title: str, headline: str, sentence: str }),
   lead: nullable(z.looseObject({ owner: str, doing: str, at: str, task: nullable(str), line: str })),
+  // Home's figures (home-groups.ts), the opening line's counts: each is the count of the Tasks list it names. An
+  // older Toolroll's answer has none.
+  figures: z.looseObject({ waitingOnYou: int, running: int, queued: int, done: int }).optional(),
   projects: rows({ repo: str, name: str, running: int, limit: int }),
   update: z.looseObject({ current: str, latest: str, security: z.boolean(), updateCommand: str, url: str }).optional(),
   integrations: z.looseObject({ broken: rows({ key: str, name: str, fix: nullable(str) }) }).optional(),

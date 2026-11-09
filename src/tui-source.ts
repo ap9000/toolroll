@@ -20,6 +20,7 @@ import { localModeOf, openStoreReadOnly, type Store } from "./store.js";
 import { routeChangeOf } from "./route-change.js";
 import { flakyCount } from "./flaky.js";
 import { memoryWaiting } from "./lesson-notes.js";
+import { homeGroupOf } from "./home-groups.js";
 import type { TuiAct, TuiActResult, TuiDecision, TuiFastTerms, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
 import { terminalText } from "./terminal-text.js";
 import { welcomeHere, welcomeLines } from "./welcome-facts.js";
@@ -86,6 +87,8 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         return {
           id: words(row["id"], words(row["rootId"])), title: shown(row["title"]), status: shown(status["label"], words(row["state"])), detail: shown(status["detail"]),
           needsYou: views.includes("needs-you"), liveRunId: typeof row["liveRunId"] === "number" ? row["liveRunId"] : null, repo: typeof row["repo"] === "string" ? row["repo"] : null,
+          // The same rule as Home's groups, over the same work index item.
+          group: homeGroupOf({ status: { views: views.filter((one): one is string => typeof one === "string"), label: words(status["label"]) } }),
         };
       });
       const waiting = rows.filter(one => one.needsYou);

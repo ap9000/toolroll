@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { installationStatus, renderInstallationStatus, taskWaitSnapshot } from "./lead-status.js";
 import { runOperate } from "./operate.js";
 import { BUILT_IN, openStore, type Store } from "./store.js";
+import { workIndexPage } from "./work-index.js";
 
 const NOW = new Date("2026-09-28T18:00:00.000Z");
 const LATER = new Date("2026-09-28T18:05:00.000Z");
@@ -65,6 +66,32 @@ describe("lead status commands", () => {
     lines.length = 0;
     await runOperate("status", ["--json"], line => lines.push(line), options);
     expect(JSON.parse(lines.join("\n")).legacyWebhookWarning).toBe("Legacy webhooks are deprecated. Connect Slack or Discord in Chat settings.");
+  });
+
+  test("status and its --json open with Home's figures, from the work index totals; everything below stays", async () => {
+    const seed = openStore(db);
+    try {
+      for (const id of ["needs-a", "needs-b"]) create(seed, id);
+      create(seed, "approved");
+      draft(seed, "approved", true);
+    } finally { seed.close(); }
+    const options = { databaseFile: db, clock: () => NOW, releaseIo: { fetch: async () => { throw Error("offline"); } } };
+    const json: string[] = [];
+    expect(await runOperate("status", ["--json"], line => json.push(line), options)).toBe(0);
+    const body = JSON.parse(json.join("\n")) as Record<string, any>;
+    // The same totals as the Tasks list: a figure is the count of the list it names.
+    const store = openStore(db);
+    let totals;
+    try { totals = workIndexPage(store, NOW, { principal: "operator", repos: null, includeUnplaced: true }, { limit: 1 }).totals; } finally { store.close(); }
+    expect(body.figures).toEqual({ waitingOnYou: totals["needs-you"], running: totals.running, queued: totals.queued, done: totals.completed });
+    expect(body.figures.waitingOnYou).toBeGreaterThan(0);
+    const lines: string[] = [];
+    expect(await runOperate("status", [], line => lines.push(line), options)).toBe(0);
+    const said = lines.join("\n").split("\n");
+    expect(said[0]).toBe(`Waiting on you ${body.figures.waitingOnYou} · Running ${body.figures.running} · Queued ${body.figures.queued} · Done ${body.figures.done}`);
+    // Everything that was there before is still below it.
+    for (const start of ["Tasks:", "Building:", "Queued:", "Ready for review:", "Release check:", "Plan windows:"]) expect(said.some(line => line.startsWith(start)), start).toBe(true);
+    expect(renderInstallationStatus({ ...body, figures: { waitingOnYou: 2, running: 1, queued: 0, done: 14 } } as never)[0]).toBe("Waiting on you 2 · Running 1 · Queued 0 · Done 14");
   });
 
   test("task wait returns 0 after the attempt it observed becomes ready", async () => {

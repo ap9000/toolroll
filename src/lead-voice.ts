@@ -11,7 +11,7 @@ import { BATCH_MS, chatText, chatTitle } from "./chat-voice.js";
 import { BUILT_IN, refArchived, type Notification, type Store } from "./store.js";
 import { leadNameOf } from "./lead-identity.js";
 import { leadLapsed } from "./task-status.js";
-import { phoneText as plain } from "./telegram-status.js";
+import { publicChatText as plain } from "./chat-display.js";
 
 export const LEAD_SAY_KIND = "lead-say";
 /** Repaints the owner's task card when the lead takes a task on: it never makes a new message in quiet chat. */

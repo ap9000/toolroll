@@ -6,6 +6,7 @@
 - **A quieter idle builder.** An idle builder now checks for new work once per process instead of once per project and build slot, so it uses far less CPU while nothing is happening.
 - **The lead is asked for shorter answers in plainer words.** Its instructions now ask for the answer first, in one to three sentences, in everyday words and without an account of its own steps, in the browser and the terminal as well as the chat apps. How much shorter real answers are has not been measured yet; `node scripts/lead-answer-eval.mjs --real` now reports answer length and wording.
 - **Home shows three groups: Waiting on you, Working, Done.** What asks something of you comes first (decisions, then results to review, then what is blocked), then what is running and what waits its turn, then up to eight tasks finished in the last 7 days. The figures above still open the same Tasks lists and count the same things; "Needs you" now reads "Waiting on you" and "Finished" reads "Done".
+- **The same figures in the terminal and in chat.** `toolroll status` (and `--json`, as `figures`) and `/status` in chat start with "Waiting on you N · Running N · Queued N · Done N", the counts Home shows. The terminal UI lists tasks under the same three headings as Home, with cancelled and other tasks last under Other.
 - **Plainer wording on a few cards and phone status lines.** "Plan" instead of "scope", "Your sign-in changed. Sign in again.", "Audit log" in every menu, matching the page it opens.
 
 ## 0.9.97 — 2026-11-09

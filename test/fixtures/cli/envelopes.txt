@@ -7020,6 +7020,12 @@ $ status --json → 0
       "sentence": "waiting on design"
     }
   ],
+  "figures": {
+    "waitingOnYou": 2,
+    "running": 0,
+    "queued": 0,
+    "done": 0
+  },
   "lead": null,
   "projects": [
     {

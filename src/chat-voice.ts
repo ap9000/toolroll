@@ -5,7 +5,7 @@
  * The console keeps every exact name and fact. */
 import { leadOnIt } from "./task-status.js";
 import type { TelegramTransport } from "./telegram.js";
-import { phoneText } from "./telegram-status.js";
+import { publicChatText as phoneText } from "./chat-display.js";
 import type { Store } from "./store.js";
 
 /** The bot's display name in every chat app. */

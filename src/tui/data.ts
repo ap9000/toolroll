@@ -9,9 +9,9 @@ import type { TuiRow, TuiSession, TuiSource, TuiTask } from "../tui-contract.js"
 /** A sample plane that changes nothing: every write is refused with words that say so. */
 export function sampleSource(): TuiSource {
   const rows: TuiRow[] = [
-    { id: "t1", title: "Sample: fix the login redirect", status: "Running", detail: "Sample task (not real)", needsYou: false, liveRunId: 1, repo: null },
-    { id: "t2", title: "Sample: add CSV export", status: "Ready", detail: "Sample task (not real)", needsYou: false, liveRunId: null, repo: null },
-    { id: "t3", title: "Sample: upgrade the test runner", status: "Needs you", detail: "Plan ready to approve", needsYou: true, liveRunId: null, repo: null },
+    { id: "t3", title: "Sample: upgrade the test runner", status: "Needs you", detail: "Plan ready to approve", needsYou: true, liveRunId: null, repo: null, group: "you" },
+    { id: "t1", title: "Sample: fix the login redirect", status: "Running", detail: "Sample task (not real)", needsYou: false, liveRunId: 1, repo: null, group: "working" },
+    { id: "t2", title: "Sample: add CSV export", status: "Complete", detail: "Sample task (not real)", needsYou: false, liveRunId: null, repo: null, group: "done" },
   ];
   return {
     fastTerms: async () => null,
@@ -19,7 +19,7 @@ export function sampleSource(): TuiSource {
     task: async id => {
       const row = rows.find(one => one.id === id);
       if (row === undefined) return null;
-      const task: TuiTask = { id, title: row.title, status: row.status, detail: row.detail, liveRunId: row.liveRunId, hasResult: row.status === "Ready", decisions: [],
+      const task: TuiTask = { id, title: row.title, status: row.status, detail: row.detail, liveRunId: row.liveRunId, hasResult: row.status === "Complete", decisions: [],
         plan: row.needsYou ? { digest: "sample", lines: ["Goal: upgrade the test runner (sample)"] } : null };
       return task;
     },
