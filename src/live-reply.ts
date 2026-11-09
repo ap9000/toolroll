@@ -53,8 +53,8 @@ function opening(leads: readonly string[], body: string): string {
  * whose match spans spaces (a private-key header, an npm `_authToken = value`) look at the whole last line.
  */
 const SECRET_STARTS: readonly RegExp[] = [
-  // private-key: "-----BEGIN RSA PRIVATE KEY-----", partway.
-  /(?:^|\s)-{1,5}(?:B(?:E(?:G(?:I(?:N(?:[ \t][A-Z \t]*-{0,5})?)?)?)?)?)?$/,
+  // private-key: "-----BEGIN RSA PRIVATE KEY-----", partway. No start boundary: the complete detector has none either.
+  /-{1,5}(?:B(?:E(?:G(?:I(?:N(?:[ \t][A-Z \t]*-{0,5})?)?)?)?)?)?$/,
   // npm-auth-token: "_authToken = value", partway.
   new RegExp(String.raw`(?:^|[^A-Za-z0-9])${opening(["_authToken"], String.raw`[\s=]`)}\S*$`),
   // aws-access-key, github-token, slack-token, openai-key, stripe-key, google-api-key, gitlab-token.

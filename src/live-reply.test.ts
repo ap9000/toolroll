@@ -25,11 +25,13 @@ describe("live partials never show a password or key", () => {
     for (const sample of Object.values(SECRETS).flat()) expect(scanForSecrets(`${LEAD} ${sample} `), sample).not.toHaveLength(0);
   });
 
-  test.each(Object.entries(SECRETS).flatMap(([family, samples]) => samples.map(sample => [family, sample] as const)))("%s split at every boundary never shows any of it (%s)", (_family, sample) => {
+  // Punctuation right before the value ("Key=-----BEGIN RSA ") must not let any of it through either.
+  const PREFIXES = ["", "Key=", "(", "\""];
+  test.each(Object.entries(SECRETS).flatMap(([family, samples]) => samples.flatMap(sample => PREFIXES.map(prefix => [family, sample, prefix] as const))))("%s split at every boundary never shows any of it (%s after %j)", (_family, sample, prefix) => {
     for (let cut = 1; cut <= sample.length; cut += 1) {
       // A cut-off value then a space is a finished word that isn't a secret; only the whole value then a space is one.
       for (const tail of cut === sample.length ? ["", " "] : [""]) {
-        const raw = `${LEAD} ${sample.slice(0, cut)}${tail}`;
+        const raw = `${LEAD} ${prefix}${sample.slice(0, cut)}${tail}`;
         const shown = partialDisplay(raw, false);
         if (shown.kind === "shown") expect(shown.text, JSON.stringify(raw)).toBe(LEAD);
         // The whole secret, finished or not, closes the preview; it never shows.
