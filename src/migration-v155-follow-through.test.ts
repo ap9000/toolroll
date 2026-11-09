@@ -23,7 +23,7 @@ const fresh = (): Store => { dir ??= mkdtempSync(join(tmpdir(), "so-v155-")); co
 describe("v155", () => {
   test("a fresh database has the tables; a v154 one gains them and may update in place", () => {
     const store = fresh();
-    expect(SCHEMA_VERSION).toBe(158);
+    expect(SCHEMA_VERSION).toBe(159);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(155);
     expect(V155_STEPS).toEqual(["follow-through-tables", "finding-sources"]);
     store.createTask({ id: "t-1", title: "kept" }, NOW);
@@ -34,7 +34,7 @@ describe("v155", () => {
     db.close();
     const upgraded = openStore(join(dir!, "s.db"));
     open.push(upgraded);
-    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(158);
+    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
     for (const table of V155_TABLES) expect(upgraded.handle.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"], table).toBe(0);
     expect(upgraded.getTask("t-1")?.title).toBe("kept");
   });
@@ -61,7 +61,7 @@ describe("v155", () => {
     const upgraded = openStore(join(dir!, "s.db"), { migrationStep: one => steps.push(one) });
     open.push(upgraded);
     expect(steps).toContain("finding-sources");
-    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(158);
+    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
     expect(String(upgraded.handle.prepare("SELECT sql FROM sqlite_master WHERE name = 'finding'").get()!["sql"])).toContain(FINDING_SOURCES);
     expect(upgraded.handle.prepare("SELECT id, summary FROM finding ORDER BY id").all()).toEqual([{ id: 1, summary: "one" }, { id: 2, summary: "two" }]);
     expect(upgraded.handle.prepare("SELECT finding, detail FROM finding_answer").all()).toEqual([{ finding: 1, detail: "because" }]);

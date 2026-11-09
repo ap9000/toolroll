@@ -40,12 +40,30 @@ export function authorityStandsSql(scope: string, repo: string, now: string): st
 /**
  * SQL, conjunctive with every alternative above (plain-toolroll.md P2.4): narrow only. A fast start's seal dispatches only
  * inside its start window, and only as what it claims to be: a person's own ceremony yes to these exact bytes, proved at
- * the seal's instant. Losing the marker leaves an ordinary person approval; nothing here grants anything.
+ * the seal's instant (`password`), or (one-step-chat.md C1) their own yes on a chat Start card (`chat`), which stands only
+ * on ONE complete chat proof row at the seal's instant carrying the fast marker (chatFastProofSql). Losing the marker
+ * leaves an ordinary person approval; nothing here grants anything.
  */
 export function fastStartStandsSql(scope: string, now: string): string {
   return `NOT EXISTS (SELECT 1 FROM task_ref fsr WHERE fsr.backend = 'built-in' AND fsr.external_id = ${scope}.task_id AND fsr.fast_start_until IS NOT NULL
-      AND (fsr.fast_start_until <= ${now} OR COALESCE(${scope}.approval_basis, '') <> 'password' OR ${machineSealSql(scope)} OR NOT ${personSealSql(scope)}))`;
+      AND (fsr.fast_start_until <= ${now}
+        OR NOT (COALESCE(${scope}.approval_basis, '') = 'password' OR (COALESCE(${scope}.approval_basis, '') = 'chat' AND ${chatFastProofSql(scope)}))
+        OR ${machineSealSql(scope)} OR NOT ${personSealSql(scope)}))`;
 }
+
+/**
+ * SQL: a chat seal's fast-start proof — ONE `approval proved` row that matches all of: this task, the seal's approver,
+ * the seal's instant, outcome `chat`, and a detail that is valid JSON (checked before any json_extract, which would fail
+ * on anything else) whose `$.fastStart.rule` is the rule this build writes (fast-start.ts FAST_START_RULE), `$.at` the
+ * seal's instant and `$.digest` the approved digest. Facts split across rows never add up to one.
+ */
+export const chatFastProofSql = (scope: string): string =>
+  `EXISTS (SELECT 1 FROM action_ledger cfp WHERE cfp.task_id = ${scope}.task_id AND cfp.action = 'approval proved'
+      AND cfp.actor = ${scope}.approved_by AND cfp.at = ${scope}.approved_at AND cfp.outcome = 'chat'
+      AND CASE WHEN json_valid(cfp.detail) THEN json_type(cfp.detail, '$.fastStart.rule') = 'text' AND json_extract(cfp.detail, '$.fastStart.rule') = 'small-v1'
+                                             AND json_type(cfp.detail, '$.at') = 'text' AND json_extract(cfp.detail, '$.at') = ${scope}.approved_at
+                                             AND json_type(cfp.detail, '$.digest') = 'text' AND json_extract(cfp.detail, '$.digest') = ${scope}.approved_digest
+               ELSE 0 END)`;
 
 /**
  * SQL, conjunctive with every alternative above (results routing slice 3): a task whose sealed route tries a cheaper
