@@ -141,6 +141,8 @@ export type BrowserConversation = {
   project?: string | null;
   /** The lead thread a change in reachable projects replaced (mate arc ruling 9): shown above a divider, read only. */
   previous?: { messages: BrowserMessage[] } | null;
+  /** How the last reply failed, from its saved turn (docs/plans/responsive-chat.md §3.4); absent or null otherwise. */
+  failure?: string | null;
 };
 /** A page rebuilt as React components (shadcn/ui). The server still renders
  * its HTML as the no-JavaScript fallback; forms post to the same routes. */

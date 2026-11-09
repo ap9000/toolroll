@@ -24,6 +24,9 @@ import { createLiveRooms, LiveConnection, type LiveBus, type LiveViewer } from "
 import { reproveRemote } from "../operate-remote.js";
 import { rowVisible } from "../project.js";
 import type { LeadThreadScope } from "../store.js";
+import type { LeadLiveTool } from "../lead-progress.js";
+import { createLiveSender, LIVE_STATUS, type LiveView } from "../live-reply.js";
+import type { LiveTurn } from "./render-chat.js";
 import { TEAM_PASSWORD_REVERIFY_MS } from "../team-http.js";
 import type { TeamActor, TeamResponse } from "../team-contract.js";
 import type { WorkspaceRevision } from "../workspace-revision.js";
@@ -44,6 +47,16 @@ const ROOM_NAME = /^(workspace|task|flow|chat|team|agent|summary|agents-live)(?:
 const WORKSPACE_SETTLE_MS = 1_000;
 /** A running reply's preview: at most one snapshot every 80 ms; the last one always goes out. */
 const TURN_SETTLE_MS = 80;
+
+/** What the chat room says about a running reply (docs/plans/responsive-chat.md §3.4): the tools per step (fixed
+ * copy), one status line, the phase, and the partial text already settled, checked and shaped on the server. Raw
+ * model text never leaves the server. */
+type ChatSnapshot = { steps: { tools: string[]; toolCalls: LeadLiveTool[] }[]; phase: LiveView["phase"]; status: string; text: string; done: boolean; ok: boolean };
+function chatSnapshot(turn: LiveTurn): ChatSnapshot {
+  const view: LiveView = turn.reply?.view() ?? { phase: "working", status: LIVE_STATUS.thinking };
+  const steps = (turn.reply?.tools() ?? []).map(calls => ({ tools: calls.map(call => call.label), toolCalls: calls }));
+  return { steps, phase: view.phase, status: turn.done ? "" : turn.reply?.status() ?? LIVE_STATUS.thinking, text: view.phase === "writing" ? view.text : "", done: turn.done, ok: turn.ok };
+}
 
 export type LiveRoom =
   | { kind: "workspace" }
@@ -151,28 +164,24 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     return valid;
   }
 
-  /** A running reply for one viewer's thread: snapshots while it runs, then the last one. */
+  /** A running reply for one viewer's thread: snapshots while it runs, then the last one. Every snapshot goes through
+   * one serialized sender (live-reply.ts): one in flight, the newest waiting, standing re-proved before each, and the
+   * last one only after the sender has closed, so no preview lands after it. */
   function follow(viewer: ChatViewer, thread: number): void {
     if (!admitted(viewer, thread)) return;
     const turn = liveTurns.get(thread);
     if (turn === undefined || turn.done || viewer.detach !== null) return;
-    let queued: NodeJS.Timeout | null = null;
-    const snapshot = () => {
-      if (admitted(viewer, thread)) viewer.connection.send(viewer.room, "turn", { steps: turn.steps, done: turn.done, ok: turn.ok });
-    };
-    const flush = (): void => {
-      queued = null;
-      snapshot();
-      if (turn.done) stop();
-    };
+    const send = (payload: ChatSnapshot): void => { viewer.connection.send(viewer.room, "turn", payload); };
+    const sender = createLiveSender<ChatSnapshot>({ send, standing: () => admitted(viewer, thread), spacingMs: TURN_SETTLE_MS });
     const listener = (): void => {
-      if (turn.done) { if (queued !== null) clearTimeout(queued); flush(); return; }
-      if (queued === null) queued = setTimeout(flush, TURN_SETTLE_MS);
+      if (!turn.done) { sender.offer(chatSnapshot(turn)); return; }
+      stop();
+      void sender.close().then(() => { if (admitted(viewer, thread)) send(chatSnapshot(turn)); });
     };
-    const stop = (): void => { if (queued !== null) clearTimeout(queued); turn.listeners.delete(listener); viewer.detach = null; };
+    const stop = (): void => { turn.listeners.delete(listener); viewer.detach = null; void sender.close(); };
     turn.listeners.add(listener);
     viewer.detach = stop;
-    snapshot();
+    sender.offer(chatSnapshot(turn));
   }
 
   /** A reply starts on a thread: whoever has that conversation open follows it. */

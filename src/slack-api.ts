@@ -43,6 +43,10 @@ export class SlackError extends ChatDeliveryError {
           message_not_found:
             "The original Slack message was removed. Open the saved chat to recover it.",
           already_complete: "Waiting to confirm the uploaded file’s receipt.",
+          cant_update_message: "Slack wouldn't let that message be changed.",
+          edit_window_closed: "Slack wouldn't let that message be changed any more.",
+          already_reacted: "The reaction was already there.",
+          no_reaction: "The reaction was already gone.",
         } as Record<string, string>
       )[code] ?? code;
   }
@@ -61,6 +65,11 @@ const errors = new Set([
   "file_not_found",
   "already_complete",
   "not_in_channel",
+  // The 👀 and edits of the live message: named, so they are told apart from a real failure.
+  "already_reacted",
+  "no_reaction",
+  "cant_update_message",
+  "edit_window_closed",
 ]);
 export function slackApi(
   token: string,
@@ -279,6 +288,8 @@ export const SLACK_MANIFEST = {
         "users:read",
         "files:read",
         "files:write",
+        // The 👀 on a message when it arrives, and taking it off once the answer is delivered.
+        "reactions:write",
       ],
     },
   },

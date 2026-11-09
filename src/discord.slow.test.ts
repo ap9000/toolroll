@@ -412,7 +412,7 @@ test("pairing is one use, hashed, private and bound to the current account", asy
   ])
     expect(receive("private", extra)).toBe(false);
 });
-test("the lead's voice in Discord: a tool turn gets one 👍 on the owner's message and typing; the reply is one Markdown description with a labelled link and no title, header or internal id", async () => {
+test("the lead's voice in Discord: a tool turn shows typing (the 👀 goes at arrival, beside the queue); the reply is one Markdown description with a labelled link and no title, header or internal id", async () => {
   answers.push(
     { text: "Checking.", calls: [{ id: "q1", name: "list_tasks", args: {} }] },
     { text: "## Payout\n**Ready**: see https://console.example/chat?task=payout (run #4). Ask @everyone." },
@@ -421,15 +421,16 @@ test("the lead's voice in Discord: a tool turn gets one 👍 on the owner's mess
   expect(receiveDiscord(state, ID, "MESSAGE_CREATE", body, now)).toBe(true);
   await processDiscordEvent(options);
   await drain();
-  expect(calls.filter((c) => c.method === "PUT").map((c) => c.path)).toEqual([`/channels/${CHANNEL}/messages/${body.id}/reactions/%F0%9F%91%8D/@me`]);
+  expect(calls.filter((c) => c.method === "PUT")).toEqual([]);
   expect(calls.some((c) => c.method === "POST" && c.path === `/channels/${CHANNEL}/typing`)).toBe(true);
   const reply = sends().filter((c) => c.path === `/channels/${CHANNEL}/messages`).at(-1)!.body;
   expect(reply.embeds).toEqual([{ description: "Payout\n**Ready**: see [the task](https://console.example/chat?task=payout). Ask @\u200beveryone.", color: 0x297b70 }]);
   expect(reply.allowed_mentions).toEqual({ parse: [], replied_user: false });
-  // The REST wrapper admits exactly these two routes beyond messages: the 👍 and typing.
+  // The REST wrapper admits exactly these two routes beyond messages: the 👀 and typing.
   const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
-  await expect(discordApi(TOKEN, fetcher)("PUT", `/channels/${CHANNEL}/messages/${body.id}/reactions/%F0%9F%91%8D/@me`)).resolves.toEqual({});
+  await expect(discordApi(TOKEN, fetcher)("PUT", `/channels/${CHANNEL}/messages/${body.id}/reactions/%F0%9F%91%80/@me`)).resolves.toEqual({});
   await expect(discordApi(TOKEN, fetcher)("POST", `/channels/${CHANNEL}/typing`)).resolves.toEqual({});
+  await expect(discordApi(TOKEN, fetcher)("PUT", `/channels/${CHANNEL}/messages/${body.id}/reactions/%F0%9F%91%8D/@me`)).rejects.toThrow("Invalid Discord request");
   await expect(discordApi(TOKEN, fetcher)("PUT", `/channels/${CHANNEL}/messages/${body.id}/reactions/%F0%9F%92%A9/@me`)).rejects.toThrow("Invalid Discord request");
 });
 

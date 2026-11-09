@@ -622,6 +622,10 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-tool-status { white-space: nowrap; }
 .so-tool-reason { margin: 2px 0 0; white-space: pre-wrap; }
 .so-live-text { margin: 0 0 var(--so-space-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* A lost stream: what was written so far is dimmed, never read as the answer. */
+.so-live-reply[data-live-lost] .so-live-text { opacity: .55; }
+.so-live-reply .k-disclose { margin: 0 0 var(--so-space-sm); }
+.so-live-failed { margin: 0 0 var(--so-space-md); color: var(--so-danger); white-space: pre-wrap; }
 .so-live-caret { display: inline-block; width: 7px; height: 1em; margin-left: 2px; vertical-align: -2px; border-radius: 1px; background: var(--so-accent); animation: so-caret 1s steps(2, start) infinite; }
 @keyframes so-caret { to { visibility: hidden; } }
 @media (prefers-reduced-motion: reduce) { .so-live-caret { animation: none; } }

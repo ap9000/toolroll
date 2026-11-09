@@ -11,7 +11,7 @@ import { type TokenSource } from "../telegram.js";
 import { chatMoney,type Chrome,screen,type Screen,when } from "./chrome.js";
 import { taskHref } from "./http.js";
 import { html,joinHtml,postForm,type Html } from "../html.js";
-import { acts,btn,chip,codeLine,disclose,facts,formRow,input,note,notice,select,settingsLink,settingsRecord,settingsSection,textarea } from "./kit.js";
+import { acts,btn,chip,codeLine,disclose,facts,formRow,input,note,notice,select,settingsLink,settingsRecord,settingsSection,switchInput,textarea } from "./kit.js";
 import { kitSectionForm,SECRET_OPT_OUTS } from "../settings-kit.js";
 import { settingsSubPage,type WorkerFacts } from "../settings-groups-ui.js";
 
@@ -31,6 +31,9 @@ export function leadSettingsHtml(data: { config: import("../store.js").ChatConfi
   saved?: boolean; identity?: LeadIdentity;
   about?: string[]; aboutSaved?: boolean;
   promises?: { id: number; what: string; when: string; until: string }[];
+  /** Quick answers (responsive-chat.md §8): whether they're on, the faster model's name, whether this person may change
+   * them (an instance operator), and whether the last save was this one. Absent: not shown. */
+  quick?: { on: boolean; model: string; canChange: boolean; saved: boolean };
   /** D5: the lead's subagents in the projects this person can use: name and role, project, and whether it's paused. */
   subagents?: { id: number; label: string; project: string; paused: boolean }[] }): Html {
   const { config, facts } = data;
@@ -60,6 +63,17 @@ export function leadSettingsHtml(data: { config: import("../store.js").ChatConfi
         attrs: { maxlength: ABOUT_YOU_MAX_LINES * (ABOUT_YOU_LINE_MAX + 1), placeholder: "Keep copy terse.\nI test changes myself.", "aria-label": "What your lead knows about you" } }), "top"),
       html`<div class="k-ssave">${savedLine(data.aboutSaved === true)}${btn("Save", { sm: true, type: "submit" })}</div>`,
     ]), { attrs: { "data-lead-about": true } }) });
+  // Quick answers: plain status questions go to a faster model; anything that asks for a change stays on the main one.
+  const quick = data.quick === undefined || config === null ? "" : settingsSection({ id: "lead-quick", title: "Quick answers",
+    lead: config.provider === "claude-subscription"
+      ? `Short questions about what's going on, like "what's running?", are answered by ${data.quick.model}, a faster model. Anything that asks for a change still goes to the lead's main model.`
+      : "Short questions about what's going on can go to a faster model. This works only when the lead uses the Anthropic membership.",
+    body: data.quick.canChange
+      ? postForm("/settings/lead/quick", joinHtml([
+          switchInput({ id: "lead-quick", name: "enabled", label: "Quick answers use a faster model", on: data.quick.on }),
+          html`<div class="k-ssave">${savedLine(data.quick.saved)}${btn("Save", { sm: true, type: "submit" })}</div>`,
+        ]), { attrs: { "data-lead-quick": true } })
+      : note(data.quick.on ? "On." : "Off.") });
   // What the lead promised to follow up on; it reports each once, here in chat, and drops it after 7 days.
   const promises = (data.promises ?? []).length === 0 ? "" : settingsSection({ id: "lead-promises", title: "Promises", lead: "What the lead said it would follow up on. Each is reported once, then dropped after 7 days.",
     body: joinHtml(data.promises!.map(one => settingsRecord({
@@ -86,7 +100,7 @@ export function leadSettingsHtml(data: { config: import("../store.js").ChatConfi
       save: { label: "Turn the lead off", variant: "danger" }, confirm: "Turn the lead off", body: note("The lead stops answering until you turn it on again.") }) });
   return settingsSubPage("agents", "Lead", joinHtml([
     data.problem ? notice(data.problem.charAt(0).toUpperCase() + data.problem.slice(1)) : data.said === null ? "" : html`<p class="k-notice info" role="status">${data.said}</p>`,
-    runs, identity, about, promises, subagents,
+    runs, identity, about, quick, promises, subagents,
     disclose("Advanced", joinHtml([leadConfigForm(config, facts), keys, off])),
   ], "\n"));
 }

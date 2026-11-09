@@ -3,7 +3,8 @@
 import { resultShotsPruned } from "./result-shots.js";
 import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
-import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatContent, type ChatIdentity } from "./chat-delivery-state.js";
+import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatContent, type ChatEvent, type ChatIdentity } from "./chat-delivery-state.js";
+import { isLiveMessage, liveSpacingOf, underCooldown, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
 import { channelAccess, chatObject as object, heldForWatch, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
@@ -14,9 +15,13 @@ import { admitChatEvent } from "./chat-admission.js";
 import { chatResultHref } from "./chat-controls.js";
 import { TeamsError, type TeamsApi } from "./teams-api.js";
 import { readTeamsSubmit } from "./contracts/teams-callback.js";
-import type { ChatEventBody } from "./contracts/chat-content.js";
+import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
+const TEAMS_GONE = "Teams refused the request (404)";
+const TEAMS_SLOW = "Teams asked to slow down";
 
-export type TeamsChatOptions = Omit<ChatDeliveryOptions, "state" | "label" | "member" | "partSize" | "maxProposal"> & { api: TeamsApi };
+export type TeamsChatOptions = Omit<ChatDeliveryOptions, "state" | "label" | "member" | "partSize" | "maxProposal" | "live"> & { api: TeamsApi;
+  /** The live "Working on it…" message (chat-live.ts): on in the worker. */
+  liveReplies?: LiveReplies };
 
 const serviceKey = (conversation: string) => `serviceUrl:${conversation}`;
 export const teamsUserId = (v: unknown): v is string => typeof v === "string" && /^29:[A-Za-z0-9_=-]{10,200}$/.test(v);
@@ -39,6 +44,7 @@ export async function teamsMember(api: TeamsApi, state: ChatState, installation:
   }
 }
 
+const teamsRateLimited = (error: unknown): number | null => error instanceof TeamsError && error.code === TEAMS_SLOW ? error.retryMs : null;
 export const teamsDelivery = (options: TeamsChatOptions): ChatDeliveryOptions => {
   const state = new ChatState(options.store, "teams");
   return {
@@ -48,11 +54,12 @@ export const teamsDelivery = (options: TeamsChatOptions): ChatDeliveryOptions =>
     member: (member, channel) => teamsMember(options.api, state, options.identity.installation, member, channel),
     // "Typing…" while the lead works; Teams gives bots no reactions, so there is no 👍 here.
     warm: (event) => ({
-      typing: async () => {
+      typing: underCooldown(state, options.identity.installation, teamsRateLimited, () => options.clock?.() ?? new Date(), async () => {
         const serviceUrl = state.meta(options.identity.installation, serviceKey(event.channel));
         if (serviceUrl !== null) await options.api("POST", serviceUrl, `/v3/conversations/${encodeURIComponent(event.channel)}/activities`, { type: "typing" });
-      },
+      }),
     }),
+    ...(options.liveReplies ? { live: (event: ChatEvent) => teamsLive(options, state, event, liveSpacingOf(options.liveReplies)) } : {}),
     partSize: 3500,
     maxProposal: 6000,
   };
@@ -220,8 +227,49 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
       state.dropPart(row.id, error.message);
       return true;
     }
+    // The live message the reply was to replace is gone: the reply goes out as a new message.
+    const saved = readChatPart(row.payload), content = saved.ok ? saved.value : null;
+    if (content?.edit !== undefined && error instanceof TeamsError && error.code === TEAMS_GONE && isLiveMessage(state, row.event, content.edit)) {
+      const { edit: _edit, ...asNew } = content;
+      state.repaint(row.id, asNew);
+      return true;
+    }
     const problem = error instanceof TeamsError ? error : new TeamsError("Teams delivery failed", 15_000, true);
     state.partFailed(row.id, { problem: problem.message, until: new Date(now.getTime() + problem.retryMs).toISOString(), uncertain: problem.uncertain }, 20);
     return true;
   }
+}
+
+/** The live message for one owner message: a plain Markdown activity, replaced whole (PUT) on every edit. */
+export function teamsLive(options: Pick<TeamsChatOptions, "api" | "identity">, state: ChatState, event: ChatEvent, spacingMs?: number): ChatLiveTransport | null {
+  const serviceUrl = state.meta(options.identity.installation, serviceKey(event.channel));
+  if (serviceUrl === null) return null;
+  const activities = `/v3/conversations/${encodeURIComponent(event.channel)}/activities`;
+  const body = (text: string) => ({ type: "message", text, textFormat: "markdown" });
+  return {
+    platform: "teams",
+    ...(spacingMs === undefined ? {} : { spacingMs }),
+    limit: PLATFORM_LIMITS.teams - 200,
+    create: async (text) => {
+      const answer = await options.api("POST", serviceUrl, activities, body(text));
+      if (typeof answer.id !== "string" || answer.id === "") throw new TeamsError("Teams did not confirm the message", 15_000, true);
+      return answer.id;
+    },
+    edit: async (message, text) => { await options.api("PUT", serviceUrl, `${activities}/${encodeURIComponent(message)}`, body(text)); },
+    rateLimited: error => error instanceof TeamsError && error.code === TEAMS_SLOW ? error.retryMs : null,
+    uncertain: error => !(error instanceof TeamsError) || error.uncertain,
+  };
+}
+
+/** Teams gives bots no reactions: the arrival ack is "typing…", with nothing to take off. */
+export function teamsAckHooks(options: Pick<TeamsChatOptions, "api" | "identity">, state: ChatState): ChatAckHooks {
+  return {
+    typing: async (event) => {
+      const serviceUrl = state.meta(options.identity.installation, serviceKey(event.channel));
+      if (serviceUrl !== null) await options.api("POST", serviceUrl, `/v3/conversations/${encodeURIComponent(event.channel)}/activities`, { type: "typing" });
+    },
+    refused: () => false,
+    settled: () => false,
+    rateLimited: error => error instanceof TeamsError && error.code === TEAMS_SLOW ? error.retryMs : null,
+  };
 }

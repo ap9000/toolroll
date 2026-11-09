@@ -60,6 +60,7 @@ import {
   whichTaskText,
   type TelegramConversationOptions,
 } from "./telegram-lead.js";
+import { telegramAck } from "./telegram-live.js";
 import { askOf, parseTelegramUpdate, pickOf, readTelegramButtonData, readTelegramUpdate, telegramButton, type TelegramUpdate } from "./contracts/telegram-callback.js";
 
 /** Read the enrolled project list on demand. No callback means no task data,
@@ -130,7 +131,10 @@ export function keepPushedUpdate(store: Store, botId: string, body: Buffer, now:
     console.warn(`Ignoring a pushed Telegram update: ${update.issues.map(issue => issue.line).join("; ")}`);
     return { ok: true, kept: false };
   }
-  return { ok: true, kept: store.queueTelegramUpdate(botId, update.value.update_id, JSON.stringify(raw), now) };
+  const kept = store.queueTelegramUpdate(botId, update.value.update_id, JSON.stringify(raw), now);
+  // The bridge in this process (if any) stops idling and drains it now; elsewhere it waits at most one cycle.
+  if (kept) wakeTelegramBridge(botId);
+  return { ok: true, kept };
 }
 
 // ---- the credential --------------------------------------------------------
@@ -528,6 +532,20 @@ export async function followBridge(
         signal.addEventListener("abort", finish, { once: true });
       }));
 
+  /** The push idle: the ordinary wait, ended early when this process keeps a push for this bot. */
+  const idle = (ms: number): Promise<void> => {
+    if (bridgeWokenEarly.delete(botId)) return Promise.resolve();
+    let wake: () => void = () => {};
+    const woken = new Promise<void>(resolve => { wake = resolve; });
+    const wakers = bridgeWakers.get(botId) ?? new Set<() => void>();
+    bridgeWakers.set(botId, wakers);
+    wakers.add(wake);
+    return Promise.race([wait(ms), woken]).finally(() => {
+      wakers.delete(wake);
+      if (wakers.size === 0 && bridgeWakers.get(botId) === wakers) bridgeWakers.delete(botId);
+    });
+  };
+
   const total: FollowReport = { cycles: 0, sent: 0, answered: 0, paired: 0, ignored: 0, problems: [] };
   let commandsListed = false;
   let failures = 0;
@@ -678,7 +696,8 @@ export async function followBridge(
       // While Telegram pushes (v98) there is no long poll to wait on: a pushed update waits at most this long.
       const floor = pushing() ? PUSH_IDLE_MS : FOLLOW_IDLE_FLOOR_MS;
       if (!signal.aborted && report.sent === 0 && report.answered === 0 && (report.chatAnswered ?? 0) === 0 && took < floor) {
-        await wait(floor - took);
+        // While Telegram pushes, a push kept by this process's hook ends the idle at once.
+        await (pushing() ? idle(floor - took) : wait(floor - took));
       }
     }
   } finally {
@@ -1915,6 +1934,19 @@ function applyConversation(context: Context, update: Update, effects: Effect[]):
     clock(),
   );
   report.chatQueued = (report.chatQueued ?? 0) + 1;
+  // Saved: 👀 on the owner's message right away (docs/plans/responsive-chat.md §3.1), once this update's transaction
+  // has committed. It comes off when the answer or the failure notice is delivered. Never awaited: a burst of messages
+  // waits its turn on the chat's own lane, not the drain.
+  const gapMs = context.conversation?.liveTiming?.ackGapMs;
+  effects.push(async () => {
+    void telegramAck({
+      store, botId, transport, clock, chatId: binding.chatId, messageId: String(message.message_id), on: true, ...(gapMs === undefined ? {} : { gapMs }),
+      paired: () => {
+        const live = store.liveTelegramBindingById(binding.id);
+        return live !== null && live.approverGeneration === binding.approverGeneration && store.accountOf(live.approver)?.role === "approver";
+      },
+    });
+  });
 }
 
 /** The picker's buttons: one task per row (its title and where it stands),
@@ -2607,4 +2639,16 @@ function expiredDraftGuard(store: Store, binding: TelegramBinding, decisionId: n
   if (expired === undefined) return false;
   store.setNoteDraftState(Number(expired["id"]), "discarded");
   return true;
+}
+
+/** Bridges in this process waiting out their push idle, by bot: a kept push ends the wait early. */
+const bridgeWakers = new Map<string, Set<() => void>>();
+/** Bots with a push kept while no bridge idled (it was mid-cycle): the next idle doesn't wait. */
+const bridgeWokenEarly = new Set<string>();
+
+/** A pushed update was kept for this bot: wake its bridge if it runs in this process (docs/plans/responsive-chat.md §3.1). */
+export function wakeTelegramBridge(botId: string): void {
+  const wakers = bridgeWakers.get(botId);
+  if (wakers === undefined || wakers.size === 0) { bridgeWokenEarly.add(botId); return; }
+  for (const wake of wakers) wake();
 }

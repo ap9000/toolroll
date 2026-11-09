@@ -19,7 +19,9 @@ import { Buffer } from "node:buffer";
 import { leadToolFailureReason, leadToolLabel, type LeadProgress, type LeadToolOutcome } from "./lead-progress.js";
 import { createHash } from "node:crypto";
 import type { ChatConfig, DirectChatProviderId, LeadProposalKind, LeadSession, LeadThread, LeadTurnEvidence, Store, SubscriptionChatProviderId } from "./store.js";
-import { leadTimeoutNotice } from "./store.js";
+import { leadAskAwaitsAnswer, leadQuickAnswersOn, leadTimeoutNotice, setLeadTurnRoute } from "./store.js";
+import type { LeadFailureDetail, LeadRoute } from "./lead-latency-schema.js";
+import { quickAdvertises, quickLeadModel, quickRoute, quickStepEscalates, routeWords } from "./lead-route.js";
 import { RESULT_IMAGES_PER_TURN_CAP } from "./chat-evidence.js";
 import type { Integration } from "./integrations.js";
 import type { VerifiedApprover } from "./principal.js";
@@ -207,8 +209,9 @@ export const LEAD_FAILURE_COPY = {
   unusable: "The lead's answer couldn't be used, so it was thrown away. Nothing was kept. Send your message again.",
 } as const;
 
-/** A failed turn's saved reason as plain words, for a surface that reads the turn back later (a restart, a delivery retry). */
-export function leadFailureText(reason: string | null, unknownSpend = false): string {
+/** A failed turn's saved reason as plain words, for a surface that reads the turn back later (a restart, a delivery retry).
+ * Its saved detail (v158), when known, names the exact cause the person saw live ("not installed", "sign-in expired"). */
+export function leadFailureText(reason: string | null, unknownSpend = false, detail: LeadFailureDetail | null = null): string {
   // A turn whose cost is unknown paused chat: say what happened (its reason's first sentence), then that the person must
   // confirm the cost before chat runs again — never "send it again", which would only meet the pause.
   if (unknownSpend) {
@@ -218,6 +221,8 @@ export function leadFailureText(reason: string | null, unknownSpend = false): st
     const happened = /^[^.]*\./.exec(leadFailureText(reason))?.[0] ?? "The lead's reply didn't finish.";
     return `${happened} Its cost isn't known, so chat is paused. Confirm the cost on the Chat page to turn chat back on.`;
   }
+  if (reason === "provider-error" && detail === "not-installed") return LEAD_FAILURE_COPY.notInstalled;
+  if (reason === "provider-error" && detail === "sign-in") return LEAD_FAILURE_COPY.signIn;
   switch (reason) {
     case "over-reservation": return "This reply reported more use than was set aside for it, so it was stopped and its cost counted. Send your message again.";
     case "timeout": case "crashed": return LEAD_FAILURE_COPY.tooLong;
@@ -332,6 +337,14 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   // The channel's standing, proved before anything is admitted or sent.
   if (input.revalidate !== undefined && !(await input.revalidate()).ok) return refuse("channel");
 
+  // Which model answers (responsive-chat.md §8), decided once, before the turn: the faster one only for a plain read
+  // question with quick answers on; everything else on the configured model, as before.
+  const quickOn = leadQuickAnswersOn(store);
+  const quickModel = quickOn ? quickLeadModel(store) : config.model;
+  let route: LeadRoute = quickRoute({ enabled: quickOn, provider: config.provider, mainModel: config.model, message,
+    hasContext: input.context !== undefined, hasReplyImage: input.replyImage !== undefined, askOpen: quickOn && leadAskAwaitsAnswer(store, thread.id, clock()),
+    quickModel, quickAllowed: quickOn && store.agentPolicyRefusal(config.provider, quickModel) === null }).route;
+
   let now = clock();
   store.sweepStaleLeadTurns(now);
 
@@ -403,6 +416,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     const turnId = opened.id;
     const started = store.startLeadTurn(turnId, now);
     if (!started.ok) throw new Error("new lead turn could not start");
+    setLeadTurnRoute(store, turnId, started.generation, route);
     if (input.queuedMessageId === undefined) store.appendLeadMessage({ thread: thread.id, turn: turnId, role: "operator", text: message }, now);
     else {
       // Binding admits it: the same statement clears pending, so it joins history exactly when its turn exists (v128).
@@ -421,6 +435,9 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   const turnStartedAt = now.getTime();
   const progress = (event: LeadProgress): void => { try { input.onProgress?.(event); } catch { /* a watcher never breaks the turn */ } };
   progress({ kind: "started", turn: turnId });
+  /** Text that looked like a secret was held back: every preview closes, once (responsive-chat.md §2.1). */
+  let blockedSaid = false;
+  const blockPreview = (): void => { if (!blockedSaid) { blockedSaid = true; progress({ kind: "blocked", turn: turnId }); } };
 
   let proposals = 0;
   let reads = 0;
@@ -449,18 +466,18 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   };
 
   /** The turn ends failed: its drafts are deleted, its cost settled — the whole reservation when any of it is unknown. */
-  const fail = (failed: LeadFailure, message: string, unknownSpend: boolean): LeadTurnOutcome => {
+  const fail = (failed: LeadFailure, message: string, unknownSpend: boolean, failureDetail: LeadFailureDetail | null = null): LeadTurnOutcome => {
     now = clock();
-    store.finalizeLeadTurn(turnId, started.generation, { state: "failed", settledMicrousd: settled, unknownSpend, tokensIn, tokensOut, failureReason: failed }, now);
+    store.finalizeLeadTurn(turnId, started.generation, { state: "failed", settledMicrousd: settled, unknownSpend, tokensIn, tokensOut, failureReason: failed, failureDetail }, now);
     store.dropLeadAsk(turnId);
     return { ok: false, turn: turnId, failed, message, unknownSpend };
   };
   /** The turn stopped at its deadline: the notice is saved in the thread with whatever its completed tool calls proposed, in
    * the same write that ends the turn, so a refresh, another device or a restart shows the same outcome. */
-  const timedOut = (unknownSpend: boolean): LeadTurnOutcome => {
+  const timedOut = (unknownSpend: boolean, failureDetail: LeadFailureDetail | null = null): LeadTurnOutcome => {
     now = clock();
     const message = leadTimeoutNotice(proposals > 0, unknownSpend);
-    const saved = store.finalizeLeadTurn(turnId, started.generation, { state: "failed", settledMicrousd: settled, unknownSpend, tokensIn, tokensOut, failureReason: "timeout", keepProposals: true, message: { text: message, activity: activitySummary(reads, proposals, steps) } }, now);
+    const saved = store.finalizeLeadTurn(turnId, started.generation, { state: "failed", settledMicrousd: settled, unknownSpend, tokensIn, tokensOut, failureReason: "timeout", failureDetail, keepProposals: true, message: { text: message, activity: activitySummary(reads, proposals, steps) } }, now);
     store.dropLeadAsk(turnId);
     if (!saved) return { ok: false, turn: turnId, failed: "superseded", message: LEAD_FAILURE_COPY.stopped, unknownSpend: false };
     return { ok: false, turn: turnId, failed: "timeout", message, unknownSpend, saved: true };
@@ -498,6 +515,8 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   let repaired = false;
   /** The turn's one shorten step for a reply over its channel's message limit (LEAD_REPLY_LIMITS); still over, it is split. */
   let shortened = false;
+  /** Why the next step runs, when it re-asks about the reply itself (repair or shorten): the live status says so. */
+  let nextReason: "repair" | "shorten" | undefined;
   const replyLimit = input.channel === undefined ? null : LEAD_REPLY_LIMITS[input.channel];
   const unbacked = (text: string): string | null => {
     const claim = deliverableClaim(text);
@@ -511,7 +530,10 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     const remainingMs = TURN_WALL_CLOCK_MS - (now.getTime() - turnStartedAt);
     if (remainingMs <= 0) return timedOut(false);
     // This request's advertised tools: fixed for the request; a tool found in its reply is advertised from the next one.
-    const advertised = advertisedTools();
+    // A quick step (§8) advertises the reads, and find_tools as its way to ask for more, on the faster model.
+    const quick = route === "fast";
+    const stepModel = quick ? quickModel : config.model;
+    const advertised = quick ? LEAD_TOOL_SCHEMAS.filter(one => quickAdvertises(one.name)) : advertisedTools();
     const advertisedNames = new Set(advertised.map(one => one.name));
     const request = direct ? composeDirect(input.key as string, advertised) : composeSubscription(advertised);
     // Tool results join the outbound body: scanned again before every dispatch.
@@ -520,7 +542,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       return fail("secret-refused", LEAD_FAILURE_COPY.secretRead, false);
     }
     const step = store.openLeadStep(
-      { leadTurn: turnId, generation: started.generation, approver: who.name, credentialKey, provider: config.provider, model: config.model, deadlineMs: remainingMs + 10_000 },
+      { leadTurn: turnId, generation: started.generation, approver: who.name, credentialKey, provider: config.provider, model: stepModel, deadlineMs: remainingMs + 10_000 },
       now,
     );
     if (!step.ok) {
@@ -530,16 +552,19 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     const stepStarted = store.startChatTurn(step.id, now);
     if (!stepStarted.ok) return fail("provider-error", LEAD_FAILURE_COPY.notStarted, false);
     steps++;
-    progress({ kind: "step", turn: turnId, step: steps });
+    progress({ kind: "step", turn: turnId, step: steps, ...(nextReason === undefined ? {} : { reason: nextReason }) });
+    nextReason = undefined;
     const requestBytes = Buffer.byteLength(outbound, "utf8");
-    let result: Awaited<ReturnType<typeof performLeadRequest>>;
+    let result: Awaited<ReturnType<typeof performLeadRequest>> | { ok: false; problem: string; quiet?: boolean };
     // The turn owns its deadline (lead-stall, release check 2438): at the deadline the request is aborted, which ends a
     // harness's whole process group, and a provider that still has not settled LEAD_ABORT_GRACE_MS later is left behind.
     // Whatever it says after that is never read; the turn has already ended with its notice.
     const controller = new AbortController();
     const abortAt = setTimeout(() => controller.abort(), remainingMs);
     const settle = (work: Promise<typeof result>): Promise<typeof result> => settleBy(work, remainingMs + LEAD_ABORT_GRACE_MS)
-      .then(value => value === LATE || controller.signal.aborted ? { ok: false as const, problem: "timeout" } : value)
+      // A harness that ended at the deadline still says whether it had written anything (recorded, never shown).
+      .then(value => value === LATE ? { ok: false as const, problem: "timeout" } : controller.signal.aborted
+        ? { ok: false as const, problem: "timeout", ...(!value.ok && "quiet" in value && typeof value.quiet === "boolean" ? { quiet: value.quiet } : {}) } : value)
       .finally(() => clearTimeout(abortAt));
     if (direct) {
       result = await settle(performLeadRequest(request as { url: string; headers: Record<string, string>; body: string }, directProvider, controller.signal, fetcher)
@@ -548,7 +573,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       const runner = input.subscriptionRunner ?? performSubscriptionLeadRequest;
       result = await settle((async () => runner({
           provider: subscriptionProvider as SubscriptionChatProviderId,
-          model: config.model,
+          model: stepModel,
           system: LEAD_CONTRACT,
           dataDocument: document,
           history,
@@ -557,14 +582,18 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
           signal: controller.signal,
           // The reply as it is written; text that looks like a secret is
           // never shown (the finished reply is scanned again before saving).
-          ...(input.onProgress === undefined ? {} : { onText: (text: string) => { if (!controller.signal.aborted && scanForSecrets(text).length === 0) progress({ kind: "text", turn: turnId, step: steps, text }); } }),
+          ...(input.onProgress === undefined ? {} : { onText: (text: string) => { if (controller.signal.aborted) return; if (scanForSecrets(text).length === 0) progress({ kind: "text", turn: turnId, step: steps, text }); else blockPreview(); } }),
         }))().catch(() => ({ ok: false as const, problem: "provider-error" })));
     }
     now = clock();
     const finishStep = (outcome: Parameters<Store["finalizeChatTurn"]>[2]): boolean => store.finalizeChatTurn(step.id, stepStarted.generation, outcome, now);
     if (!result.ok) {
       if (!direct) {
-        finishStep({ state: "failed", failureReason: result.problem === "timeout" ? "timeout" : result.problem === "malformed-reply" ? "malformed-reply" : "provider-error", settledMicrousd: 0 });
+        // The exact cause, saved (v158): what a later reader shows, and what the next timeout diagnosis reads.
+        const quiet = "quiet" in result ? result.quiet : undefined;
+        const detail: LeadFailureDetail | null = result.problem === "timeout" ? (quiet === true ? "timeout-silent" : quiet === false ? "timeout-output" : null)
+          : result.problem === "not-found" ? "not-installed" : result.problem === "malformed-reply" ? null : "sign-in";
+        finishStep({ state: "failed", failureReason: result.problem === "timeout" ? "timeout" : result.problem === "malformed-reply" ? "malformed-reply" : "provider-error", settledMicrousd: 0, failureDetail: detail });
         const message =
           result.problem === "not-found"
             ? LEAD_FAILURE_COPY.notInstalled
@@ -573,29 +602,30 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
               : result.problem === "malformed-reply"
                 ? LEAD_FAILURE_COPY.unreadable
                 : LEAD_FAILURE_COPY.signIn;
-        if (result.problem === "timeout") return timedOut(false);
-        return fail(result.problem === "malformed-reply" ? "malformed-reply" : "provider-error", message, false);
+        if (result.problem === "timeout") return timedOut(false, detail);
+        return fail(result.problem === "malformed-reply" ? "malformed-reply" : "provider-error", message, false, detail);
       }
       if (result.problem.startsWith("status-")) {
         // The provider ANSWERED with an error: nothing billed for this step.
-        finishStep({ state: "failed", failureReason: "provider-error", settledMicrousd: 0 });
-        return fail("provider-error", LEAD_FAILURE_COPY.refused, false);
+        finishStep({ state: "failed", failureReason: "provider-error", settledMicrousd: 0, failureDetail: "refused" });
+        return fail("provider-error", LEAD_FAILURE_COPY.refused, false, "refused");
       }
       if (result.problem === "timeout") {
         finishStep({ state: "failed", failureReason: "timeout", settledMicrousd: null, unknownSpend: true });
         return timedOut(true);
       }
       if (result.problem === "network") {
-        finishStep({ state: "failed", failureReason: "provider-error", settledMicrousd: null, unknownSpend: true });
-        return fail("provider-error", LEAD_FAILURE_COPY.lostUnknownCost, true);
+        finishStep({ state: "failed", failureReason: "provider-error", settledMicrousd: null, unknownSpend: true, failureDetail: "lost" });
+        return fail("provider-error", LEAD_FAILURE_COPY.lostUnknownCost, true, "lost");
       }
       finishStep({ state: "failed", failureReason: "malformed-reply", settledMicrousd: null, unknownSpend: true });
       return fail("malformed-reply", LEAD_FAILURE_COPY.unreadableUnknownCost, true);
     }
     const answer = result.answer;
     // The streamed reply's finished text, once, secret-checked whole: only now may its last word show live.
-    if (!direct && input.onProgress !== undefined && !controller.signal.aborted && answer.text !== "" && scanForSecrets(answer.text).length === 0) {
-      progress({ kind: "text", turn: turnId, step: steps, text: answer.text, final: true });
+    if (!direct && input.onProgress !== undefined && !controller.signal.aborted && answer.text !== "") {
+      if (scanForSecrets(answer.text).length === 0) progress({ kind: "text", turn: turnId, step: steps, text: answer.text, final: true });
+      else blockPreview();
     }
     // Usage that cannot be true — more input tokens than bytes sent — is a
     // malformed reply with unknown cost, never a number to settle by.
@@ -619,7 +649,9 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       cacheReadTokens: answer.cacheReadTokens ?? null, cacheWriteTokens: answer.cacheWriteTokens ?? null,
       // v140: what the provider itself reported for this request (absent: unreported, kept NULL).
       modelReported: answer.modelReported ?? null, providerTurns: answer.providerTurns ?? null, reportedCostUsd: answer.reportedCostUsd ?? null,
-      billingReported: answer.billingReported ?? null });
+      billingReported: answer.billingReported ?? null,
+      // v158: the tools this step asked for, names only (responsive-chat.md §7.2), so the next latency call is data-driven.
+      tools: answer.calls.map(one => one.name) });
     tokensIn += answer.tokensIn;
     tokensOut += answer.tokensOut;
     if (answer.cacheReadTokens === undefined) cacheKnown = false; else cacheRead += answer.cacheReadTokens;
@@ -632,12 +664,22 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     const changed = guard(await revalidated());
     if (changed !== null) return changed;
 
+    // A quick step that asked for more than a read (§8): its calls are discarded unrun, and the configured model takes the
+    // reply over from the same history, for this step and every later one. Steps and the turn's deadline still bind.
+    if (route === "fast" && quickStepEscalates(answer.calls)) {
+      route = "escalated";
+      setLeadTurnRoute(store, turnId, started.generation, route);
+      lastText = "";
+      continue;
+    }
+
     if (answer.calls.length === 0) {
       if (answer.text.trim() === "") return fail("malformed-reply", LEAD_FAILURE_COPY.empty, false);
       // "Here's the screenshot" with nothing attached or linked: one repair step to attach it or drop the claim; never the claim alone.
       const claim = unbacked(answer.text);
       if (claim !== null && !repaired && steps < maxSteps) {
         repaired = true;
+        nextReason = "repair";
         history.push({ role: "assistant", text: answer.text, calls: [] });
         history.push({ role: "operator", text: deliverableRepair(claim) });
         continue;
@@ -645,6 +687,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       const candidate = claim === null ? answer.text : dropDeliverableClaims(answer.text);
       if (replyLimit !== null && candidate.length > replyLimit && !shortened && steps < maxSteps) {
         shortened = true;
+        nextReason = "shorten";
         history.push({ role: "assistant", text: answer.text, calls: [] });
         history.push({ role: "operator", text: shortenAsk([{ field: "Your reply", limit: replyLimit, length: candidate.length }]) });
         continue;
@@ -697,10 +740,11 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     reply = `${last === "" ? "" : `${last}\n\n`}(I stopped here: this answer needed more steps than ${maxSteps < LEAD_MAX_STEPS ? "this conversation's remaining spending allows" : "one reply allows"}. Ask me to carry on.)`;
   }
   // Ruling 11: model text is scanned before it becomes durable.
-  if (scanForSecrets(reply).length > 0) return fail("secret-refused", LEAD_FAILURE_COPY.secretReply, false);
+  if (scanForSecrets(reply).length > 0) { blockPreview(); return fail("secret-refused", LEAD_FAILURE_COPY.secretReply, false); }
 
   now = clock();
-  const activity = activitySummary(reads, proposals, steps, cacheKnown && tokensIn > 0 ? Math.min(1, cacheRead / tokensIn) : null);
+  const routed = routeWords(route, quickModel, config.model);
+  const activity = `${activitySummary(reads, proposals, steps, cacheKnown && tokensIn > 0 ? Math.min(1, cacheRead / tokensIn) : null)}${routed === null ? "" : ` · ${routed}`}`;
   // One write (finding 12): settle, debit, promote the drafts, append the assistant text.
   const finalized = store.finalizeLeadTurn(turnId, started.generation, { state: "answered", settledMicrousd: settled, tokensIn, tokensOut, message: { text: reply, activity } }, now);
   if (!finalized) return { ok: false, turn: turnId, failed: "superseded", message: LEAD_FAILURE_COPY.stopped, unknownSpend: false };

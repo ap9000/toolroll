@@ -8,6 +8,7 @@ import {
   discordId,
 } from "./discord-api.js";
 import { ChatState, chatHash } from "./chat-delivery-state.js";
+import { runChatAcks } from "./chat-live.js";
 import {
   receiveDiscord,
   processDiscordEvent,
@@ -15,6 +16,7 @@ import {
   planDiscordNotifications,
   type DiscordChatOptions,
   planDiscordRooms,
+  discordAckHooks,
 } from "./discord-chat.js";
 export function discordReadyMatches(
   raw: unknown,
@@ -101,6 +103,9 @@ export async function followDiscord(
     client.on("shardError", () =>
       problem("Discord connection failed. Saved replies will retry."),
     );
+    // The 👀 on each owner message as it arrives, beside the queue (a turn there can take a minute).
+    const acks = runChatAcks({ state, installation: credentials.installation, owner, current: () => same() && connected,
+      hooks: discordAckHooks({ api }), same, signal: options.signal });
     // Never subscribe a logger to raw payloads, SDK debug output or interaction tokens.
     client.on("raw", (packet: { t: string; d: unknown }) => {
       if (!same()) return;
@@ -124,6 +129,7 @@ export async function followDiscord(
           body,
           new Date(),
         );
+        if (saved && packet.t === "MESSAGE_CREATE") acks.wake();
         if (
           packet.t === "INTERACTION_CREATE" &&
           body.type === 3 &&
@@ -170,6 +176,7 @@ export async function followDiscord(
       api,
       current: same,
       canNotify: options.notifications,
+      liveReplies: true,
     };
     try {
       await client.login(credentials.botToken);

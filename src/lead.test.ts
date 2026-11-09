@@ -314,7 +314,9 @@ describe("the lead's turn", () => {
     if (!outcome.ok) throw new Error("unreachable");
     expect(events.map(event => event.kind === "tool" ? `tool:${event.label}` : event.kind === "tool-result" ? `result:${event.outcome.state}` : event.kind === "text" ? `${event.final ? "final" : "text"}:${event.step}:${event.text}` : event.kind === "step" ? `step:${event.step}` : event.kind)).toEqual([
       "started", "step:1", "text:1:Let me look.", "final:1:Let me look.", "tool:Recapping", "result:succeeded", `tool:${leadToolLabel("find_tools")}`, "result:succeeded",
-      "step:2", "tool:Reading the flows", "result:failed", "step:3", "text:3:One decision", "text:3:One decision needs you.",
+      "step:2", "tool:Reading the flows", "result:failed", "step:3", "text:3:One decision",
+      // The frame that looked like a key is never sent; every preview is told to close and clear (responsive chat §2.1).
+      "blocked", "text:3:One decision needs you.",
       // Slice 8: each step's finished answer once more, secret-checked whole, so a live view may show its last word.
       "final:3:One decision needs you.",
     ]);
@@ -590,7 +592,10 @@ describe("the lead's turn", () => {
     };
     test("gets one repair step telling the lead to attach it or drop the claim", async () => {
       const script = scripted([text("Here's the screenshot of the payout page."), text("That result has no screenshots saved yet. Open it to check the page yourself.")]);
-      const outcome = await turn("show me the payout page", script.fetcher);
+      const steps: unknown[] = [];
+      const outcome = await turn("show me the payout page", script.fetcher, { onProgress: event => { if (event.kind === "step") steps.push(event.reason ?? null); } });
+      // The live status can say why the second step runs.
+      expect(steps).toEqual([null, "repair"]);
       expect(script.bodies).toHaveLength(2);
       expect(script.bodies[1]).toContain("nothing is attached or linked this turn");
       expect(reply(outcome)).toBe("That result has no screenshots saved yet. Open it to check the page yourself.");
@@ -978,7 +983,9 @@ describe("the lead's turn", () => {
     test("gets one step asking the lead to shorten it to the channel's limit", async () => {
       expect(long.length).toBeGreaterThan(2_000);
       const script = scripted([text(long), text("The payout guard is fixed and its test passes.")]);
-      const outcome = await turn("did it work?", script.fetcher, { channel: "discord" });
+      const steps: unknown[] = [];
+      const outcome = await turn("did it work?", script.fetcher, { channel: "discord", onProgress: event => { if (event.kind === "step") steps.push(event.reason ?? null); } });
+      expect(steps).toEqual([null, "shorten"]);
       expect(script.bodies).toHaveLength(2);
       expect(script.bodies[0]).toContain("Keep each reply within 2,000 characters, one message");
       expect(script.bodies[1]).toContain(`Your reply is ${long.length.toLocaleString("en-US")} characters; the limit is 2,000.`);
@@ -1366,8 +1373,11 @@ describe("the lead's turn", () => {
     expect(await turn("use AKIAABCDEFGHIJKLMNOP please", script.fetcher)).toMatchObject({ ok: false, refused: "secret-in-message" });
     expect(store.listLeadMessages(thread().id, 10)).toHaveLength(0);
     expect(script.bodies).toHaveLength(0);
-    const leaky = await turn("hello", scripted([text("the key is AKIAABCDEFGHIJKLMNOP")]).fetcher);
+    const kinds: string[] = [];
+    const leaky = await turn("hello", scripted([text("the key is AKIAABCDEFGHIJKLMNOP")]).fetcher, { onProgress: event => kinds.push(event.kind) });
     expect(leaky).toMatchObject({ ok: false, failed: "secret-refused", unknownSpend: false });
+    // The refused reply closes every live preview at once (responsive chat §2.1).
+    expect(kinds.at(-1)).toBe("blocked");
     expect(store.listLeadMessages(thread().id, 10).map(one => one.role)).toEqual(["operator"]);
   });
 

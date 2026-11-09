@@ -32,7 +32,7 @@ import { LEAD_ASK_OTHER, type LeadAsk, type LeadProposal, type Store, type Teleg
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { phoneText } from "./telegram-status.js";
 import { shapeReplyParts, telegramReply } from "./reply-shape.js";
-import { WARM_EMOJI, warmTurn } from "./chat-warmth.js";
+import { createTelegramLiveDraft, forgetWaitingDraft, telegramAck, telegramWaitingDraft, type TelegramLiveTiming } from "./telegram-live.js";
 import { TeamLeads } from "./team-leads.js";
 import { chatResultHref } from "./chat-controls.js";
 import { resultImageFileName, safeResultImageCaption, verifyResultImage } from "./chat-evidence.js";
@@ -69,6 +69,8 @@ export type TelegramConversationOptions = {
   phoneOrigin?: () => string | null;
   /** Injected by tests: how a Merge tapped in chat reaches GitHub (production: mergePullRequest). */
   merge?: (input: { runId: number; by: string }) => Promise<{ ok: true } | { ok: false; message: string }>;
+  /** Injected by tests: the live reply's timings (telegram-live.ts); production uses its defaults. */
+  liveTiming?: TelegramLiveTiming;
 };
 
 /** One Bot API call, the shape telegram.ts injects. */
@@ -437,8 +439,26 @@ const ANSWERED_SENDING = "answered:sending";
  */
 async function runTelegramConversation(row: TelegramConversation, args: TurnArgs): Promise<void> {
   const { store, botId, transport, owner, clock, readProjects, options, report, only } = args;
-  const finish = (result: Parameters<Store["finishTelegramConversation"]>[2]): boolean => store.finishTelegramConversation(row.id, owner, result, clock());
+  /** The row's live binding as it arrived (pairing alone: a reaction or a waiting draft carries no project data). */
+  const stillPaired = (): boolean => {
+    const live = store.liveTelegramBindingById(row.binding);
+    return live !== null && live.botId === botId && live.approverGeneration === row.approverGeneration && store.accountOf(live.approver)?.role === "approver";
+  };
+  const finish = (result: Parameters<Store["finishTelegramConversation"]>[2]): boolean => {
+    const done = store.finishTelegramConversation(row.id, owner, result, clock());
+    // Answered (every part sent) or failed (its notice tried): the 👀 comes off, after what was delivered. Never awaited.
+    if (done && (result.state === "done" || result.state === "failed")) {
+      forgetWaitingDraft(botId, row.id);
+      void telegramAck({ store, botId, transport, clock, chatId: row.chatId, messageId: row.messageId, on: false, paired: stillPaired, ...(options.liveTiming?.ackGapMs === undefined ? {} : { gapMs: options.liveTiming.ackGapMs }) });
+    }
+    return done;
+  };
   const held = (): boolean => store.renewTelegramConversation(row.id, owner, CONVERSATION_CLAIM_MS, clock());
+  /** The claim, read (a draft never renews it: only the turn's own heartbeat and durable steps do). */
+  const claimed = (): boolean => {
+    const now = store.getTelegramConversation(row.id);
+    return now !== null && now.claimOwner === owner && now.claimExpiresAt !== null && now.claimExpiresAt > clock().toISOString();
+  };
   const ageMs = clock().getTime() - Date.parse(row.createdAt);
   const requeue = async (outcome: string): Promise<void> => {
     // A turn already admitted for it waits for that turn's own outcome (bounded by the turn's deadline); waiting for the
@@ -453,6 +473,10 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     }
     // Behind the person's own earlier messages: said once, then it waits quietly.
     if (outcome === "backlog" && row.outcome !== "backlog") await notify("Queued behind your earlier messages. It goes to the lead once they're answered.");
+    // Waiting for the lead: a draft that says so, refreshed while it waits (never over this chat's running turn).
+    if (outcome === "busy" || outcome === "backlog") {
+      await telegramWaitingDraft({ store, botId, transport, clock, chatId: row.chatId, binding: row.binding, draftId: row.id, allowed: () => stillPaired() && claimed(), ...(options.liveTiming === undefined ? {} : { timing: options.liveTiming }) });
+    }
     finish({ state: "queued", outcome, nextAttemptAt: new Date(clock().getTime() + CONVERSATION_RETRY_MS).toISOString() });
   };
 
@@ -701,7 +725,7 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     store.bindTelegramConversationTurn(row.id, owner, session, turnId);
     if (turn.state === "queued" || turn.state === "running") { await requeue("replayed:running"); return; }
     if (turn.state !== "answered") {
-      await notify(leadFailureText(turn.failureReason, store.leadTurnCostUnconfirmed(turn.id)));
+      await notify(leadFailureText(turn.failureReason, store.leadTurnCostUnconfirmed(turn.id), turn.failureDetail ?? null));
       finish({ state: "failed", outcome: `replayed:${turn.failureReason ?? "failed"}` });
       report.refused++;
       return;
@@ -789,10 +813,33 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
   // crash gets the original turn back, never a second dispatch.
   const heartbeat = setInterval(() => { held(); }, 30_000);
   heartbeat.unref?.();
-  // Once the turn reaches a tool step: a 👍 on the owner's message, and "typing…" while the lead works.
-  const warm = warmTurn({
-    react: () => transport("setMessageReaction", { chat_id: chatId, message_id: Number(row.messageId), reaction: [{ type: "emoji", emoji: WARM_EMOJI }] }),
-    typing: () => transport("sendChatAction", { chat_id: chatId, action: "typing" }),
+  // The live reply: one draft in this private chat with the status line and the reply as it is written
+  // (telegram-live.ts). A draft with words goes out only after the full fence: this exact binding, approver and the
+  // ceiling the turn opened under (the registry read at most every 5 s), the turn still running under the generation it
+  // first ran with, and this row's claim, re-checked after the read.
+  let draftGeneration: number | null = null;
+  let draftRegistry: { at: number; repos: readonly string[] } | null = null;
+  const turnStillRunning = (turnId: number): boolean => {
+    const turn = store.getLeadTurn(turnId);
+    if (turn === null || turn.state !== "running" || turn.session !== session.id || turn.thread !== thread.id) return false;
+    draftGeneration ??= turn.generation;
+    return turn.generation === draftGeneration;
+  };
+  const draftStanding = async (turnId: number): Promise<boolean> => {
+    if (!turnStillRunning(turnId) || !claimed()) return false;
+    if (draftRegistry === null || clock().getTime() - draftRegistry.at > 5_000) {
+      try { draftRegistry = { at: clock().getTime(), repos: await readProjects() }; } catch { draftRegistry = null; return false; }
+    }
+    const read = draftRegistry.repos;
+    const problem = await telegramChannelProblem(store, { botId, bindingId: binding.id, approverGeneration: binding.approverGeneration, repos: who.repos }, async () => read);
+    return problem === null && turnStillRunning(turnId) && claimed();
+  };
+  const live = createTelegramLiveDraft({
+    store, botId, transport, clock, chatId, binding: binding.id, draftId: row.id,
+    // Shaped as the final reply is: for this message, with the phone's own trusted origin.
+    shape: { asked: row.text, appOrigin: options.phoneOrigin?.() ?? null },
+    standing: draftStanding, paired: () => pairingProblem() === null,
+    ...(options.liveTiming === undefined ? {} : { timing: options.liveTiming }),
   });
   const replyImage = row.replyTo === null ? undefined : store.telegramMessageBindings(binding, row.replyTo).find(one => one.taskId === row.taskId && one.run === row.sourceRun && one.image !== undefined)?.image;
   let outcome: Awaited<ReturnType<typeof runLeadTurn>>;
@@ -802,11 +849,12 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
       ...(row.context === null ? {} : { context: row.context }),
       ...(replyImage === undefined ? {} : { replyImage }),
       ...(options.subscriptionRunner === undefined ? {} : { subscriptionRunner: options.subscriptionRunner }),
-      clock, evidenceRoot: options.evidenceRoot, revalidate, mediaDelivery: "documents", channel: "telegram", onProgress: warm.onProgress,
+      clock, evidenceRoot: options.evidenceRoot, revalidate, mediaDelivery: "documents", channel: "telegram", onProgress: live.onProgress,
     });
   } finally {
     clearInterval(heartbeat);
-    warm.stop();
+    // Closed, and its draft in flight settled, before anything durable: no draft can land after the answer or a notice.
+    await live.close();
   }
   const receipt = store.leadRequestReceipt(session.id, row.request);
   if (receipt !== null) store.bindTelegramConversationTurn(row.id, owner, session.id, receipt.turn);

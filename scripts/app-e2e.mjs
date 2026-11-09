@@ -42,7 +42,7 @@ const GROUPS = {
   task: { journeys: 5, about: "A task from an idea to an accepted result, then sent back twice; the same by keyboard alone" },
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
-  lead: { journeys: 4, real: 3, shared: 1, about: "The lead chat: questions, tasks and flows from plain words" },
+  lead: { journeys: 5, real: 3, shared: 1, about: "The lead chat: questions, tasks and flows from plain words; the reply shown live as it is written" },
   maya: { journeys: 6, real: 1, shared: 1, about: "Subagents (Maya), which the lead then changes and asks for help; messages that wait for the lead; the chat box above a phone's keyboard" },
   rosa: { journeys: 4, real: 1, shared: 1, about: "A subagent that acts with a real tool: its rules, routine, week and undo" },
   memory: { journeys: 2, shared: 1, about: "A subagent that acts with a real tool: its memory, and the looser rule it suggests" },
@@ -950,6 +950,104 @@ async function turnLeadChatOn() {
   leadChatOn = true;
 }
 await journey(["lead", "maya"], SCRIPTED, "Turn the lead chat on (first-run setup, with your password)", [], turnLeadChatOn);
+
+/** Watch one lead reply on a page, from the send until its saved message (or its saved failure) replaces the live one:
+ * every change to the live reply, timed from the send, with how many saved lead replies the thread had then. */
+async function watchLiveReply(on, message, settled) {
+  await on.goto(`${base}/chat`);
+  const box = on.locator("[data-workspace-composer] textarea");
+  await waitFor(box, "the chat box");
+  const saved = 'article.lc-lead[data-message-id]';
+  const before = await on.locator(saved).count();
+  await on.evaluate(selector => {
+    window.__live = [];
+    const seen = () => {
+      const reply = document.querySelector("[data-live-reply]");
+      if (reply === null) return;
+      window.__live.push({ at: performance.now() - (window.__sentAt ?? 0), status: reply.querySelector("[data-live-status]")?.textContent ?? "", text: reply.querySelector("[data-live-text]")?.textContent ?? "",
+        acts: reply.querySelectorAll("button, form, [data-view=chat-card], input").length, saved: document.querySelectorAll(selector).length });
+    };
+    new MutationObserver(seen).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+  }, saved);
+  await box.fill(message);
+  const send = on.locator('[data-workspace-composer] button[type="submit"].k-send:not(.k-stop):not([aria-disabled="true"])');
+  await waitFor(send, "Send");
+  await on.evaluate(() => { window.__sentAt = performance.now(); });
+  await send.click();
+  await settled(before);
+  return { before, samples: await on.evaluate(() => window.__live) };
+}
+
+await journey("lead", SCRIPTED, "The lead's reply shows live as it is written: a status line at once, the steps behind a disclosure, the words growing before the saved reply replaces them, and a failed reply's words removed for its saved reason (desktop and phone)", ["Turn the lead chat on (first-run setup, with your password)"], async () => {
+  // Synthetic journey copy: a scripted lead, two steps (a read, then a long answer streamed in small pieces).
+  const answer = `Two tasks are **ready** to check: the payout guard and run #12's retry. ${"Both passed their checks and wait for you to look at them. ".repeat(8)}Open each one to review it.`;
+  const streamed = { delayMs: 700, steps: [{ text: "", calls: [{ name: "list_tasks", arguments: {} }] }, { text: answer, calls: [], streamMs: 90 }] };
+  script(
+    { role: "lead", when: [/^Live reply on a desk/], answer: streamed },
+    { role: "lead", when: [/^Live reply on a phone/], answer: streamed },
+    { role: "lead", when: [/^Live reply that fails/], answer: { steps: [{ text: "Let me check the queue first, then I will answer.", calls: [{ name: "list_tasks", arguments: {} }], streamMs: 120 }, { fail: "scripted provider failure" }] } },
+  );
+  const check = (samples, before, where) => {
+    const live = samples.filter(one => one.saved === before);
+    // Acknowledged at once: the status line, before any word (the empty state reads "Thinking…").
+    const first = live.find(one => one.status !== "");
+    if (first === undefined || first.at > 1_000) throw new Error(`${where}: no live status within 1 s of sending: ${JSON.stringify(samples.slice(0, 3))}`);
+    if (first.text !== "") throw new Error(`${where}: the first live state already had words: ${JSON.stringify(first)}`);
+    const texts = [...new Set(live.map(one => one.text).filter(Boolean))];
+    if (texts.length < 2 || !texts.every((one, index) => index === 0 || one.length >= texts[index - 1].length)) throw new Error(`${where}: the words didn't grow before the saved reply: ${JSON.stringify(texts.slice(0, 5))}`);
+    if (!live.some(one => one.status === "Writing…")) throw new Error(`${where}: the status never read Writing…: ${JSON.stringify([...new Set(live.map(one => one.status))])}`);
+    // Shaped on the server as the final reply is, and never a card, button or form while it is written.
+    const raw = texts.find(one => one.includes("**") || one.includes("#12"));
+    if (raw !== undefined) throw new Error(`${where}: unshaped live words: ${raw.slice(0, 160)}`);
+    if (samples.some(one => one.acts > 0)) throw new Error(`${where}: the live reply carried a control`);
+    return { firstStatusMs: Math.round(first.at), firstTextMs: Math.round(live.find(one => one.text !== "").at), snapshots: texts.length };
+  };
+  const answered = on => async before => {
+    await until("the saved reply to replace the live one", async () => (await on.locator('article.lc-lead[data-message-id]').count()) === before + 1 && (await on.locator("[data-live-reply]").count()) === 0, { timeoutMs: 60_000, everyMs: 250 });
+  };
+
+  // Desktop: the Steps disclosure is closed by default and opens to the read.
+  let opened = false;
+  const desk = await watchLiveReply(page, "Live reply on a desk: what is ready to check?", async before => {
+    const steps = page.locator("[data-live-reply] details.k-disclose");
+    await waitFor(steps, "the live reply's Steps", { timeoutMs: 20_000 });
+    if (await steps.evaluate(el => el.open)) throw new Error("Steps opened by itself");
+    await steps.locator("summary").click();
+    opened = await page.locator("[data-live-reply] .so-live-steps li", { hasText: "Listing tasks" }).count() === 1;
+    await shot("live-reply-writing");
+    await answered(page)(before);
+  });
+  if (!opened) throw new Error("the Steps disclosure didn't show the read");
+  const deskFacts = check(desk.samples, desk.before, "desktop");
+  // No duplicate: the saved reply alone carries the words, shaped the same way.
+  if (await page.locator("[data-workspace-chat]", { hasText: "Open each one to review it." }).locator("article").filter({ hasText: "Open each one to review it." }).count() !== 1) throw new Error("the reply shows twice");
+
+  // Phone: the same, at a phone's width, with nothing wider than the screen.
+  const phone = await alexPhone("light");
+  const small = await watchLiveReply(phone, "Live reply on a phone: what is ready to check?", async before => {
+    await waitFor(phone.locator("[data-live-reply] [data-live-text]"), "the live words on the phone", { timeoutMs: 20_000 });
+    if (await phone.evaluate(() => document.scrollingElement.scrollWidth > innerWidth + 1)) throw new Error("the live reply is wider than the phone");
+    await phone.screenshot({ path: join(w.out, "live-reply-phone.png") }).catch(() => undefined);
+    await answered(phone)(before);
+  });
+  const phoneFacts = check(small.samples, small.before, "phone");
+  await putPhoneDown();
+
+  // A reply that fails after its first words: the words go at once, and the reason is read from the saved turn.
+  const failed = await watchLiveReply(page, "Live reply that fails: check the queue.", async () => {
+    await waitFor(page.locator("[data-lead-failed]"), "the saved failure in the thread", { timeoutMs: 60_000 });
+  });
+  if (!failed.samples.some(one => one.text.startsWith("Let me check the queue first"))) throw new Error(`the failing reply never showed its first words: ${JSON.stringify(failed.samples.slice(-3))}`);
+  if (await page.locator("[data-live-text]").count() !== 0) throw new Error("a failed reply's words stayed on screen");
+  const reason = await page.locator("[data-lead-failed]").innerText();
+  // A subscription provider's failure is saved with its sign-in detail (v158): the same specific words as live.
+  if (!/its sign-in may have expired/.test(reason)) throw new Error(`the failure shown: ${reason}`);
+  // A reload (as after a restart) reads the same failure from the saved turn.
+  await page.reload();
+  await waitFor(page.locator("[data-lead-failed]"), "the saved failure after a reload");
+  await shot("live-reply-failed");
+  return { desktop: deskFacts, phone: phoneFacts };
+});
 
 await journey("lead", REAL_MODEL, "The lead answers a question about the project from its files (real Claude turn)", ["Turn the lead chat on (first-run setup, with your password)"], async () => {
   // The project's code index, refreshed the way Settings → Knowledge does, so the lead's project search reads a current one.
@@ -2811,7 +2909,12 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   if (comment === undefined) throw new Error(`the lead wasn't sent the file, line and run: ${sentRows.map(one => String(one.text)).join(" | ").slice(0, 400)}`);
   // The thread itself, while the lead works (its steps) and once it has answered (its reply and a card to confirm).
   await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}`);
-  await waitFor(on.locator("[data-live-reply] .so-live-steps li").first(), "the lead's steps while it answers", { timeoutMs: 30_000 });
+  // One status line at once; the steps sit behind a closed "Steps (n)" disclosure, opened here to show them.
+  await waitFor(on.locator("[data-live-reply] [data-live-status]"), "the lead's status line while it answers", { timeoutMs: 30_000 });
+  const liveSteps = on.locator("[data-live-reply] details.k-disclose");
+  await waitFor(liveSteps, "the lead's Steps while it answers", { timeoutMs: 30_000 });
+  if (!await liveSteps.evaluate(el => el.open)) await liveSteps.locator("summary").click();
+  await waitFor(on.locator("[data-live-reply] .so-live-steps li").first(), "the lead's steps while it answers", { timeoutMs: 10_000 });
   await bothSizes(on, "chat-thread-live");
   // The reply is the comment's own turn, answered, recorded under that turn and shown in the thread after the comment.
   const answered = await until("the lead's answer to the comment", async () => {

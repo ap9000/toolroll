@@ -23,7 +23,7 @@ test.each([143, -143])("v%s: flows survive unchanged and none has browser use ap
     const before = historySnapshot(old);
     old.close();
     const migrated = openStore(file);
-    expect(SCHEMA_VERSION).toBe(156);
+    expect(SCHEMA_VERSION).toBe(158);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(144);
     expect(migrated.handle.prepare("SELECT definition_json, revision FROM flow WHERE id = ?").get(flow)).toMatchObject({ definition_json: definitionJson, revision: 3 });
     expect(liveBrowserGrant(migrated, Number(flow))).toBeNull();

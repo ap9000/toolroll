@@ -27,6 +27,8 @@
  *             written to the nonce-bound PLAN or PARK file the brief names, and nothing else changes.
  *   builder   { files: { path: text }, status, conclusion } or { park: { question, options, … } }: the files are
  *             written in the worktree, uncommitted, then the nonce-bound handoff (or park) file the brief names.
+ *   lead step { fail } fails that step alone; { streamMs } streams its structured answer as input_json_delta frames that far apart (Claude stream-json
+ *             with --include-partial-messages, as the live chat preview reads it); 0 by default.
  *   any role  { delayMs } waits first; { mcp: [{ server, tool, arguments }] } calls tools of the MCP servers the run
  *             was given (--mcp-config); { fail: "why" } fails the turn the way the CLI does.
  *
@@ -223,6 +225,7 @@ export function readCall(provider, argv) {
       provider, prompt: inline, format, input: value("--input-format") ?? "text",
       schema: json(value("--json-schema") ?? "null"), resume: value("--resume"), session: value("--session-id"),
       mcp: all("--mcp-config"), tools: value("--tools"), permission: value("--permission-mode"),
+      partial: argv.includes("--include-partial-messages"),
     };
   }
   const resumeAt = argv[0] === "exec" && argv[1] === "resume" ? 2 : -1;
@@ -373,8 +376,10 @@ async function perform(role, answer, { prompt, call, cwd, step, signal }) {
     case "lead": {
       const steps = answer.steps ?? [{ text: answer.text ?? "", calls: answer.calls ?? [] }];
       const one = steps[Math.min(step, steps.length - 1)];
+      // A step may fail on its own (after earlier steps streamed their words), the way the CLI fails a turn.
+      if (step < steps.length && one.fail !== undefined) throw new Error(String(one.fail));
       const calls = step >= steps.length ? [] : (one.calls ?? []).map((each, at) => ({ id: `call-${step + 1}-${at + 1}`, name: each.name, argumentsJson: JSON.stringify(each.arguments ?? {}) }));
-      return { value: { text: one.text ?? "", calls }, mcp };
+      return { value: { text: one.text ?? "", calls }, mcp, streamMs: one.streamMs ?? answer.streamMs ?? 0 };
     }
     case "subagent": {
       const value = { action: "route", answer: "", text: "", note: "", question: "", options: [], reason: "Scripted for this journey.", tool: "", input: "", remember: "", ...answer };
@@ -437,7 +442,7 @@ async function turn(dir, call, prompt, cwd, signal) {
     record(dir, { ...entry, ok: true, ...(done.mcp.length === 0 ? {} : { mcp: done.mcp }) });
     return { ok: true, ...done };
   } catch (error) {
-    record(dir, { ...entry, ok: false, error: error.message, ...(answer.fail === undefined ? {} : { intended: true }) });
+    record(dir, { ...entry, ok: false, error: error.message, ...(answer.fail === undefined && !(answer.steps ?? []).some(one => one?.fail !== undefined) ? {} : { intended: true }) });
     return { ok: false, error: error.message };
   }
 }
@@ -453,6 +458,24 @@ function claudeResult(done, session, cost) {
 }
 const init = (session, cwd) => ({ type: "system", subtype: "init", session_id: session, cwd, model: "claude-scripted", tools: [], mcp_servers: [], permissionMode: "default" });
 const assistant = (session, text, id = `msg_${randomUUID()}`) => ({ type: "assistant", parent_tool_use_id: null, session_id: session, message: { id, role: "assistant", content: [{ type: "text", text }] } });
+
+/**
+ * The structured answer as Claude Code streams it with --include-partial-messages: a StructuredOutput tool_use block
+ * whose input arrives as input_json_delta frames, `streamMs` apart (a step's `streamMs`, else 0), so a journey can watch
+ * the reply grow in the live preview before the finished message lands.
+ */
+async function streamStructured(session, value, streamMs) {
+  const event = inner => say({ type: "stream_event", parent_tool_use_id: null, session_id: session, event: inner });
+  event({ type: "message_start", message: { id: `msg_${randomUUID()}`, role: "assistant", content: [] } });
+  event({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: `toolu_${randomUUID()}`, name: "StructuredOutput", input: {} } });
+  const json = JSON.stringify(value);
+  for (let at = 0; at < json.length; at += 12) {
+    event({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: json.slice(at, at + 12) } });
+    if (streamMs > 0) await new Promise(done => setTimeout(done, streamMs));
+  }
+  event({ type: "content_block_stop", index: 0 });
+  event({ type: "message_stop" });
+}
 
 /** The words of a stdin user frame: a string, or text blocks. */
 const frameText = frame => {
@@ -574,7 +597,12 @@ async function main([provider, ...argv]) {
       say({ type: "turn.completed", usage: { input_tokens: usage.input_tokens, cached_input_tokens: 0, output_tokens: usage.output_tokens } });
     } else say({ type: "turn.failed", error: { message: done.error } });
   } else if (call.format === "json") say(claudeResult(done, session, 0.001));
-  else if (call.format === "stream-json") { say(init(session, cwd)); if (done.ok) say(assistant(session, messageOf(done))); say(claudeResult(done, session, 0.001)); }
+  else if (call.format === "stream-json") {
+    say(init(session, cwd));
+    if (done.ok && call.partial && done.value !== undefined) await streamStructured(session, done.value, done.streamMs ?? 0);
+    if (done.ok) say(assistant(session, messageOf(done)));
+    say(claudeResult(done, session, 0.001));
+  }
   else process.stdout.write(done.ok ? `${messageOf(done)}\n` : "");
   process.exitCode = done.ok ? 0 : 1;
 }

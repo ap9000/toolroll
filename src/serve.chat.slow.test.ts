@@ -16,6 +16,7 @@ import { addApprover, approvalOf, approve, propose } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { PersistentSessions } from "./server/session.js";
 import { TURN_WALL_CLOCK_MS, type LeadProviderAnswer } from "./converse.js";
+import { leadFailureText } from "./lead.js";
 import { presented, T0, workspaceOf, sealScopeFixture } from "../test/serve-kit.js";
 import { TeamLeads } from './team-leads.js';
 import type { TeamOperation, TeamResponse } from './team-contract.js';
@@ -465,7 +466,9 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
   let evidenceRoot: string;
   let repoDir: string;
   let script: (() => Response)[];
-  let subscriptionAnswers: LeadProviderAnswer[];
+  /** A membership step's answer, or a function that plays it (streaming text through `onText`) and settles it. */
+  type SubscriptionStep = (request: { onText?: (text: string) => void }) => Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }>;
+  let subscriptionAnswers: (LeadProviderAnswer | SubscriptionStep)[];
   /** What the scripted subscription runner was handed (package 2): the
    * exact history — with its task context — the provider would see. */
   let subscriptionRequests: { history: { role: string; text?: string }[] }[];
@@ -542,6 +545,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
         subscriptionRequests.push(request as unknown as { history: { role: string; text?: string }[] });
         const next = subscriptionAnswers.shift();
         if (next === undefined) throw new Error("the subscription script ran out");
+        if (typeof next === "function") return next(request) as never;
         return { ok: true, answer: next };
       },
     });
@@ -827,6 +831,59 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     await settle();
     const leads = ((await (await fetch(url('/agents/live'), { headers: { cookie } })).json()) as { leads: { state: string; lines: string[] }[] }).leads;
     expect(leads).toMatchObject([{ state: 'done', lines: ['All 24 tests passed.'] }]);
+  });
+
+  test('responsive chat slice 1: membership partials reach the room settled, shaped and checked, never raw; a held-back key closes the preview; a failed reply is read back from its saved turn', async () => {
+    store.setChatConfig({ provider: 'claude-subscription', model: 'default', dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, 'alex', T0);
+    const cookie = await login(), csrf = csrfFrom(await page(cookie));
+    if (store.activeLeadSession('alex') === null) expect((await post(cookie, '/chat/mate/mint', { csrf, token: approverToken })).status).toBe(303);
+    const session = String(store.activeLeadSession('alex')!.id);
+    const room = await chatRoom(cookie, 'chat?task=a');
+    let next!: () => void;
+    const step = () => new Promise<void>(resolve => { next = resolve; });
+    const key = `AKIA${'Q7'.repeat(8)}`;
+    try {
+      let gate = step();
+      subscriptionAnswers.push(async request => {
+        request.onText?.('Checking run #12 now, **bo');
+        await gate; gate = step();
+        request.onText?.(`Checking run #12 now, **bold** and ${key.slice(0, 6)}`);
+        await gate; gate = step();
+        request.onText?.(`Checking run #12 now, **bold** and ${key} `);
+        await gate;
+        return { ok: true, answer: { text: 'All done.', calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null } };
+      });
+      expect((await sendJson(cookie, { csrf, task: 'a', message: 'How is it going?', request: 'f'.repeat(32), 'request-session': session })).status).toBe(202);
+      type Shown = { text: string; phase: string; status: string; done: boolean; ok: boolean; steps: Record<string, unknown>[] };
+      const shown = () => room.turns as unknown as Shown[];
+      // Settled and shaped: the unfinished bold run waits, and the run's id is dropped as in the final reply.
+      await room.until(() => shown().some(one => one.text === 'Checking the run now,'));
+      expect(shown().at(-1)).toMatchObject({ phase: 'writing', status: 'Writing…', done: false });
+      next();
+      // The tail could be the start of a key: nothing new shows while it can.
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(shown().every(one => !one.text.includes('AKIA'))).toBe(true);
+      next();
+      // The whole key arrives: the engine holds it back and every preview closes and clears at once.
+      await room.until(() => shown().some(one => one.phase === 'closed'));
+      expect(shown().find(one => one.phase === 'closed')).toMatchObject({ text: '', done: false });
+      next();
+      await room.until(() => shown().at(-1)?.done === true);
+      expect(shown().at(-1)).toMatchObject({ done: true, ok: true });
+      const everything = JSON.stringify(room.turns);
+      for (const raw of ['#12', '**bo', 'AKIA']) expect(everything).not.toContain(raw);
+      expect(shown().every(one => one.steps.every(entry => !('text' in entry)))).toBe(true);
+      await settle();
+
+      // A failed reply: its reason comes from the saved turn (a restart keeps it), not from process memory. A subscription
+      // provider's error saves the sign-in detail (v158), so the read-back names the same cause the person saw live.
+      subscriptionAnswers.push(async () => ({ ok: false, problem: 'provider-error' }));
+      expect((await sendJson(cookie, { csrf, task: 'a', message: 'And now?', request: 'e'.repeat(32), 'request-session': session })).status).toBe(202);
+      await room.until(() => shown().at(-1)?.done === true && shown().at(-1)?.ok === false);
+      await settle();
+      const read = await (await fetch(url('/t/a?format=workspace'), { headers: { cookie } })).json() as import('./browser-workspace.js').BrowserWorkspace;
+      expect(read.conversation?.failure).toBe(leadFailureText('provider-error', false, 'sign-in'));
+    } finally { room.close(); }
   });
 
   test('a revoked browser stream gets no reply started later by another session', async () => {

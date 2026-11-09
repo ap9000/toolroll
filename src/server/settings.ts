@@ -84,6 +84,7 @@ import { cleanUpHtml,decisionsHtml,framedSection,knowledgeHtml,MEMORY_INTRO,memo
 import { aboutYouOf,checkAboutYou,saveAboutYou } from "../lead-about.js";
 import { cancelCommitment,conditionWords,openCommitments } from '../lead-commitments.js';
 import { checkLeadIdentity,leadIdentityOf } from "../lead-identity.js";
+import { modelName as leadModelName,quickLeadModel } from "../lead-route.js";
 import { mailboxAccess,readThroughImap } from "../mailbox.js";
 import { startConnect } from "../mcp-connect.js";
 import { decideProposal,defaultTidyAnalyzer,listProposals,memoryStatus } from "../memory-pass.js";
@@ -131,6 +132,7 @@ import { addProjectInstructions,ASSISTANTS,detectPreparation,modelChoices,previe
 import { skillsHtml,skillsScript } from "../skills-ui.js";
 import { checkSlackCredentials,clearSlackCredentials,loadSlackCredentials,saveSlackCredentials,SLACK_MANIFEST,SlackError } from "../slack-api.js";
 import { slackSettingsHtml } from "../slack-settings.js";
+import { ACK_REFUSED_META } from "../chat-live.js";
 import { spendHtml,spendScript,type LimitEdit,type LimitRowView } from "../spend-ui.js";
 import { approvalFactsNow } from "./kit.js";
 import { spendReport,spendReportCsv,spendRows } from "../spend-report.js";
@@ -144,7 +146,7 @@ import { sweepSchedule } from "../storage-sweep-schedule.js";
 import { storageHtml } from "../storage-ui.js";
 import { landedSummary } from "../landed-cleanup.js";
 import { bytesWords,parseCleanup,parseIdle } from "../storage.js";
-import { checkoutIdle,isDigestTime,liveBackupState,setCheckoutIdle,localModeOf,RESULT_SCREENSHOTS,setLiveBackupSettings,setLocalModeOff,type ResultScreenshots } from "../store.js";
+import { checkoutIdle,isDigestTime,leadQuickAnswersOn,liveBackupState,setCheckoutIdle,localModeOf,RESULT_SCREENSHOTS,setLeadQuickAnswers,setLiveBackupSettings,setLocalModeOff,type ResultScreenshots } from "../store.js";
 import { defaultLiveFolder,liveFolderOf,liveFolderProblem } from "../live-backup.js";
 import { LIVE_EVERY } from "../backup-ui.js";
 import { checkTeamsCredentials,clearTeamsCredentials,loadTeamsCredentials,saveTeamsCredentials,TeamsError } from "../teams-api.js";
@@ -643,6 +645,7 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     return sendScreen(response, 200, screen("Lead", leadSettingsHtml({ config, facts, words: leadWords(), signedIn, command: agentSignInCommand(),
       said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), saved: url.searchParams.get("saved") === "1", identity: leadIdentityOf(store, who.name), promises,
       about: aboutYouOf(store, who.name), aboutSaved: url.searchParams.get("saved") === "about",
+      quick: { on: leadQuickAnswersOn(store), model: leadModelName(quickLeadModel(store)), canChange: who.role === "approver" && store.isInstanceOperator(who.name), saved: url.searchParams.get("saved") === "quick" },
       subagents: store.subagents(consoleProjects().filter(repo => store.accountCanAccess(who.name, repo))).map(one => ({ id: one.id, label: labelOf(one), project: projectName(one.repo), paused: one.state === "paused" })) }), { chrome: chromeFor(project, "settings") }));
   }
   async function telegramPage(ctx: HandlerContext): Promise<void> {
@@ -1709,6 +1712,8 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
         if(account?.role!=="approver"||account.generation!==generation||account.revokedAt!==null) return show("Your access changed. Sign in again.",403);
         if(credentials || loadSlackCredentials(dir)) return show("Disconnect the current Slack app before connecting another.",409);
         saveSlackCredentials(dir,checked);
+        // A fresh connection asks for the 👀 again at once (an app reinstalled with reactions:write).
+        state.deleteMeta(checked.installation,ACK_REFUSED_META);
       } catch(error) {return show(error instanceof SlackError?error.message:"Slack could not be connected. Check the tokens and try again.");}
     } else if(action==="disconnect") {
       if(credentials) state.revoke(credentials.installation,now);
@@ -2527,6 +2532,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "mode.revoke": modeRevoke,
     "settings.lead-identity": leadIdentity,
     "settings.lead-about": leadAbout,
+    "settings.lead-quick": leadQuick,
     "settings.lead-promise-cancel": leadPromiseCancel,
     "settings.lead-on": leadOn,
     "settings.code-map": codeMapAct("switch"),
@@ -2798,6 +2804,13 @@ ${postForm("/settings/chat-approval/save", html`\
       return setPaidGrant(store, repo, body.get("paid") === "on", who.name, now);
     });
     return done.ok ? back("said", "Saved. Tasks scoped from now on use it; tasks already approved keep the chain they were approved with.") : back("problem", `Nothing changed: ${done.problem}`);
+  }
+  // Settings → Lead: quick answers on or off (installation-wide; the route admits an instance operator only).
+  async function leadQuick(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.leadQuick);
+    setLeadQuickAnswers(store, body.get("enabled") === "on", who.name, now);
+    return redirect(response, "/settings/lead?saved=quick");
   }
   return { registrations, modelsView };
 }

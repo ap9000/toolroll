@@ -54,7 +54,8 @@ const CHAT = 4242;
 const USER = 31337;
 
 type Call = { id: string; name: string; args: Record<string, unknown> };
-type Answer = { text: string; calls?: Call[]; before?: () => void | Promise<void> };
+/** `stream`: what the provider writes before its answer, through the engine's own live text hook. */
+type Answer = { text: string; calls?: Call[]; before?: () => void | Promise<void>; stream?: (write: (text: string) => void) => Promise<void> };
 
 /** What the scripted wire does to one sendMessage: nothing special, a lost answer, an ok with no message id, or Telegram's own refusal. */
 type SendFault = "throw" | "no-id" | { ok: false; description?: string; parameters?: { retry_after?: number } } | null;
@@ -66,17 +67,24 @@ function scriptedTransport() {
   const script = {
     /** Consulted before every sendMessage with the attempt count so far; a fault is recorded as an attempt, never as a send. */
     fault: null as ((params: Record<string, unknown>, attempt: number) => SendFault) | null,
+    /** Telegram's answer to a message draft; null: accepted. */
+    draftFault: null as ((params: Record<string, unknown>) => { ok: false; description?: string; parameters?: { retry_after?: number } } | null) | null,
   };
-  const attempts = () => calls.filter(call => call.method.startsWith("sendMessage"));
+  // A message draft (sendMessageDraft) is a live preview, never an attempt at the reply.
+  const attempts = () => calls.filter(call => call.method === "sendMessage" || call.method === "sendMessage:failed");
   const transport: TelegramTransport = async (method, params, _signal, upload) => {
     if (method === "getUpdates") {
       calls.push({ method, params, messageId: null });
       const offset = Number(params["offset"] ?? 0);
       return { ok: true, result: (updates.shift() ?? []).filter(update => Number((update as { update_id: number }).update_id) >= offset) };
     }
+    if (method === "sendMessageDraft" && script.draftFault !== null) {
+      const fault = script.draftFault(params);
+      if (fault !== null) { calls.push({ method: `${method}:failed`, params, messageId: null }); return fault; }
+    }
     if (method === "sendMessage" || method === "sendDocument") {
       // A document is the multipart road: recorded with the exact upload the adapter would serialize, faulted by the same script.
-      const fault = script.fault === null ? null : script.fault(params, calls.filter(call => call.method.startsWith(method)).length);
+      const fault = script.fault === null ? null : script.fault(params, calls.filter(call => call.method === method || call.method === `${method}:failed`).length);
       if (fault !== null) {
         calls.push({ method: `${method}:failed`, params, messageId: null, ...(upload === undefined ? {} : { upload }) });
         if (fault === "throw") throw new Error("socket hang up");
@@ -107,7 +115,8 @@ function scriptedTransport() {
     };
     return { messageId: sent.messageId as number, text: String(sent.params["text"]), rows, button };
   };
-  return { transport, calls, updates, sends, documents, attempts, texts, edits, acks, card, set fault(value: typeof script.fault) { script.fault = value; } };
+  const drafts = () => calls.filter(call => call.method === "sendMessageDraft");
+  return { transport, calls, updates, sends, documents, attempts, texts, edits, acks, card, drafts, set fault(value: typeof script.fault) { script.fault = value; }, set draftFault(value: typeof script.draftFault) { script.draftFault = value; } };
 }
 
 const textUpdate = (id: number, text: string, extra: Record<string, unknown> = {}) => ({
@@ -150,6 +159,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     const next = answers.shift();
     if (next === undefined) throw new Error("the harness script ran out of answers");
     await next.before?.();
+    await next.stream?.(text => request.onText?.(text));
     return { ok: true, answer: { text: next.text, calls: next.calls ?? [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null } };
   };
   const readProjects = vi.fn(async () => projects);
@@ -163,7 +173,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     // Lifecycle progress facts have their own suite (task-notifications.test.ts);
     // this one drives the conversation, so they are settled before each pass.
     store.resolveEpisodes("life", now);
-    return bridgePass(store, { botId: BOT, transport: script.transport, clock: () => now, deliver: false, readProjects, conversation: { evidenceRoot, subscriptionRunner: runner, phoneOrigin: () => origin }, ...extra });
+    return bridgePass(store, { botId: BOT, transport: script.transport, clock: () => now, deliver: false, readProjects, conversation: { evidenceRoot, subscriptionRunner: runner, phoneOrigin: () => origin, liveTiming: { ackGapMs: 0, draftSpacingMs: 0 } }, ...extra });
   };
   /** The url row of the last edit or send carrying a keyboard: label and href, or [] when none rides it. */
   const urlButtons = (call: { params: Record<string, unknown> } | undefined) =>
@@ -391,7 +401,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(store.listTelegramConversations(BOT)).toHaveLength(1);
   });
 
-  test("the lead's voice on the phone: a tool turn gets one 👍 on the owner's message and typing; the reply is shaped, its bold and links sent as entities", async () => {
+  test("the lead's voice on the phone: 👀 on the owner's message once it is saved, off once the answer is delivered; the reply is shaped, its bold and links sent as entities", async () => {
     origin = "https://so.example.com";
     answers.push(
       { text: "Checking.", calls: [{ id: "q1", name: "list_tasks", args: {} }, { id: "q2", name: "list_repos", args: {} }] },
@@ -399,18 +409,21 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     );
     script.updates.push([textUpdate(2, "how is the payout fix?")]);
     expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
-    const reactions = script.calls.filter(call => call.method === "setMessageReaction");
-    expect(reactions).toHaveLength(1);
-    expect(reactions[0]!.params).toMatchObject({ message_id: 1002, reaction: [{ type: "emoji", emoji: "👍" }] });
-    expect(script.calls.filter(call => call.method === "sendChatAction").map(call => call.params["action"])).toContain("typing");
+    const reactions = () => script.calls.filter(call => call.method === "setMessageReaction").map(call => [call.params["message_id"], call.params["reaction"]]);
+    // On at ingestion, before any model call or reply; off after the reply went out. Never a "done" mark.
+    await vi.waitFor(() => expect(reactions()).toEqual([[1002, [{ type: "emoji", emoji: "👀" }]], [1002, []]]));
+    const order = script.calls.map(call => call.method);
+    expect(order.indexOf("setMessageReaction")).toBeLessThan(order.indexOf("sendMessage"));
+    expect(order.lastIndexOf("setMessageReaction")).toBeGreaterThan(order.indexOf("sendMessage"));
+    expect(script.calls.filter(call => call.method === "sendChatAction")).toEqual([]);
     const reply = script.sends()[0]!;
     expect(reply.params["text"]).toBe("Payout\nReady: see the task.");
     expect(reply.params["entities"]).toEqual([{ type: "bold", offset: 7, length: 5 }, { type: "text_link", offset: 18, length: 8, url: "https://so.example.com/chat?task=payout" }]);
-    // A quick answer (no tool step) gets neither; the lead never reacts to its own messages.
+    // A quick answer gets the same acknowledgement.
     answers.push({ text: "All quiet." });
     script.updates.push([textUpdate(3, "anything else?")]);
     expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
-    expect(script.calls.filter(call => call.method === "setMessageReaction")).toHaveLength(1);
+    await vi.waitFor(() => expect(reactions().slice(2)).toEqual([[1003, [{ type: "emoji", emoji: "👀" }]], [1003, []]]));
     expect(script.texts().at(-1)).toBe("All quiet.");
     expect(script.sends().at(-1)!.params["entities"]).toBeUndefined();
   });
@@ -944,8 +957,11 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(row()).toMatchObject({ state: "running", replyMessageId: "100" });
       store.close(); store = openStore(file);
       later(CONVERSATION_CLAIM_MS + 1_000);
+      const drafts = script.drafts().length;
       expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
       expect(script.texts()).toEqual([first, rest]);
+      // A replay sends what was planned and makes no draft.
+      expect(script.drafts()).toHaveLength(drafts);
       expect(parts().map(one => [one.state, one.messageId])).toEqual([["sent", "100"], ["sent", "101"]]);
       expect(row()).toMatchObject({ state: "done", outcome: "replayed", attempts: 2 });
       // The answer and its one shorten step, both before the crash: the restart made no model call.
@@ -1151,6 +1167,11 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(deferred.ok && deferred.report.chatAnswered).toBeFalsy();
     expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "queued", outcome: "busy" });
     expect(store.getLeadTurn(running.id)?.state).toBe("running");
+    // It says so as a draft, refreshed only every 25 s while it waits (no data, no keyboard).
+    expect(script.drafts().map(call => [call.params["draft_id"], call.params["text"], call.params["reply_markup"]])).toEqual([[3, "Waiting for your earlier messages…", undefined]]);
+    now = new Date(now.getTime() + 6_000);
+    await pass();
+    expect(script.drafts()).toHaveLength(1);
     // The console turn ends; the deferred message runs on the next pass on the same thread.
     expect(store.finalizeLeadTurn(running.id, startedRunning.generation, { state: "failed", settledMicrousd: 0, unknownSpend: false, tokensIn: 0, tokensOut: 0, failureReason: "ended" }, now)).toBe(true);
     now = new Date(now.getTime() + 6_000);
@@ -2086,6 +2107,131 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(doc).toContain("incomplete phone action");
   });
 
+  describe("the live reply on the phone: one draft while the lead works (responsive-chat.md §3.1)", () => {
+    const words = (call: { params: Record<string, unknown> }) => String(call.params["text"] ?? "");
+    const draftOrder = () => script.calls.map(call => call.method);
+    const shown = (text: string) => () => expect(script.drafts().some(call => words(call).includes(text))).toBe(true);
+
+    test("a streamed turn: Telegram's own Thinking…, then the status line and the settled reply as entities; closed before the answer, no keyboard, no draft after it", async () => {
+      origin = "https://so.example.com";
+      answers.push(
+        { text: "Checking.", calls: [{ id: "q1", name: "list_tasks", args: {} }] },
+        {
+          text: "The **payout fix** is ready: https://so.example.com/chat?task=payout",
+          stream: async write => {
+            write("The **payout fix** is rea");
+            await vi.waitFor(shown("The payout fix is"));
+            write("The **payout fix** is ready: https://so.example.com/chat?task=payout and more");
+            await vi.waitFor(shown("the task"));
+          },
+        },
+      );
+      script.updates.push([textUpdate(2, "how is the payout fix?")]);
+      expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
+      const drafts = script.drafts();
+      // One draft per message: this chat, this update; words only, never a keyboard or parse mode.
+      for (const call of drafts) {
+        expect(call.params).toMatchObject({ chat_id: CHAT, draft_id: 2 });
+        expect(call.params).not.toHaveProperty("reply_markup");
+        expect(call.params).not.toHaveProperty("parse_mode");
+        expect(call.params).not.toHaveProperty("can_stop");
+      }
+      expect(words(drafts[0]!)).toBe("");
+      // Every draft with words leads with its status line, in italics.
+      for (const call of drafts.filter(one => words(one) !== "")) expect((call.params["entities"] as { type: string; offset: number }[])[0]).toMatchObject({ type: "italic", offset: 0 });
+      // The unfinished word stays out; bold and the link are entities on the settled words, the status line italic.
+      const partial = drafts.find(call => words(call).includes("The payout fix is"))!;
+      expect(words(partial)).toBe("Writing…\n\nThe payout fix is");
+      expect(partial.params["entities"]).toEqual([{ type: "italic", offset: 0, length: 8 }, { type: "bold", offset: 14, length: 10 }]);
+      const linked = drafts.find(call => words(call).includes("the task"))!;
+      expect(linked.params["entities"]).toContainEqual({ type: "text_link", offset: expect.any(Number), length: 8, url: "https://so.example.com/chat?task=payout" });
+      expect(words(linked)).not.toContain("**");
+      // Every draft went out before the answer; none after it.
+      expect(draftOrder().lastIndexOf("sendMessageDraft")).toBeLessThan(draftOrder().indexOf("sendMessage"));
+      expect(script.texts()).toEqual(["The payout fix is ready: the task"]);
+    });
+
+    test("every draft with words re-proves the ceiling: once the connected projects change mid-turn, none goes out (and the reply is refused as before)", async () => {
+      answers.push({
+        text: "First part. Second part.",
+        stream: async write => {
+          write("First part. ");
+          await vi.waitFor(shown("First part."));
+          // The registry changes; the draft's cached read (at most 5 s) is past its age.
+          projects = [];
+          now = new Date(now.getTime() + 6_000);
+          const before = script.drafts().length;
+          write("First part. Second part. More ");
+          write("First part. Second part. More words ");
+          await new Promise(resolve => setTimeout(resolve, 50));
+          expect(script.drafts().slice(before).filter(call => words(call) !== "")).toEqual([]);
+        },
+      });
+      script.updates.push([textUpdate(2, "what's new?")]);
+      expect(await pass()).toMatchObject({ ok: true });
+      expect(script.drafts().some(call => words(call).includes("Second part"))).toBe(false);
+      expect(script.texts().some(text => text.includes("Second part"))).toBe(false);
+      expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "failed" });
+    });
+
+    test("a draft needs the row's claim: once another worker holds it, no draft with words goes out", async () => {
+      answers.push({
+        text: "Alpha. Beta.",
+        stream: async write => {
+          write("Alpha. ");
+          await vi.waitFor(shown("Alpha."));
+          store.handle.prepare("UPDATE chat_event SET claim_owner = 'someone-else' WHERE provider = 'telegram' AND kind = 'message'").run();
+          const before = script.drafts().length;
+          write("Alpha. Beta. Gamma ");
+          await new Promise(resolve => setTimeout(resolve, 50));
+          expect(script.drafts().slice(before).filter(call => words(call) !== "")).toEqual([]);
+        },
+      });
+      script.updates.push([textUpdate(2, "and?")]);
+      await pass();
+      expect(script.drafts().some(call => words(call).includes("Beta"))).toBe(false);
+    });
+
+    test("Telegram's pause on a draft is shared: the answer waits it out, then goes", async () => {
+      script.draftFault = params => String(params["text"]) === "" ? null : { ok: false, description: "Too Many Requests: retry after 30", parameters: { retry_after: 30 } };
+      answers.push({
+        text: "Done thinking.",
+        stream: async write => {
+          write("Done thinking. ");
+          await vi.waitFor(() => expect(script.calls.some(call => call.method === "sendMessageDraft:failed")).toBe(true));
+        },
+      });
+      script.updates.push([textUpdate(2, "status?")]);
+      await pass();
+      expect(store.telegramRetryAt(BOT) > now.toISOString()).toBe(true);
+      expect(script.sends()).toEqual([]);
+      expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "queued", outcome: "delivering" });
+      script.draftFault = null;
+      now = new Date(now.getTime() + 31_000);
+      const drafts = script.drafts().length;
+      expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
+      expect(script.texts()).toEqual(["Done thinking."]);
+      // Sending what was already planned makes no draft.
+      expect(script.drafts()).toHaveLength(drafts);
+    });
+
+    test("a failed turn after drafts: the notice is tried once (a lost one leaves the draft to expire), 👀 comes off, and no draft follows", async () => {
+      script.fault = () => "throw";
+      const failing: SubscriptionLeadRunner = async request => {
+        requests.push(request);
+        request.onText?.("Half an answer ");
+        await vi.waitFor(shown("Half an"));
+        return { ok: false, problem: "the provider failed" };
+      };
+      script.updates.push([textUpdate(2, "go")]);
+      await bridgePass(store, { botId: BOT, transport: script.transport, clock: () => now, deliver: false, readProjects, conversation: { evidenceRoot, subscriptionRunner: failing, phoneOrigin: () => origin, liveTiming: { ackGapMs: 0, draftSpacingMs: 0 } } });
+      expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "failed" });
+      expect(script.attempts().length).toBeGreaterThan(0);
+      expect(draftOrder().lastIndexOf("sendMessageDraft")).toBeLessThan(draftOrder().indexOf("sendMessage:failed"));
+      await vi.waitFor(() => expect(script.calls.filter(call => call.method === "setMessageReaction").map(call => call.params["reaction"])).toEqual([[{ type: "emoji", emoji: "👀" }], []]));
+    });
+  });
+
   describe("production wiring", () => {
     const stub = () => {
       vi.stubEnv(TOKEN_ENV, "");
@@ -2218,7 +2364,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
             return answer;
           } finally { polling--; }
         }
-        if (method.startsWith("send") && polling > 0) {
+        // A reply or notice beside the long poll is the Oct 2 failure; a live draft is best effort and may go beside it.
+        if (method.startsWith("send") && method !== "sendMessageDraft" && polling > 0) {
           besidePoll.push(String(params["text"]));
           return { ok: false, description: "fetch failed", uncertain: true };
         }
@@ -2269,7 +2416,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const observer = openStore(file);
       const holders: string[] = [];
       const traced: TelegramTransport = async (method, params, signal, upload) => {
-        if (method.startsWith("send")) holders.push(String(observer.handle.prepare("SELECT owner FROM chat_runtime WHERE provider = 'telegram' AND installation = ?").get(BOT)?.["owner"]));
+        if (method.startsWith("send") && method !== "sendMessageDraft") holders.push(String(observer.handle.prepare("SELECT owner FROM chat_runtime WHERE provider = 'telegram' AND installation = ?").get(BOT)?.["owner"]));
         return script.transport(method, params, signal, upload);
       };
       answers.push({ text: "Toolroll 0.9.9: lighter tests, shared dependencies, a clear Needs you." });

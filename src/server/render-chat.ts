@@ -1025,6 +1025,8 @@ export function replacedThreadHtml(previous: ReplacedThread | null | undefined):
 }
 
 export type LeadThreadRows = {
+  /** How the thread's last reply failed, from its saved turn (no message of its own); null otherwise. */
+  failure?: string | null;
   /** The lead thread a change in reachable projects replaced; shown only. */
   previous?: ReplacedThread | null;
   messages: LeadMessage[];
@@ -1050,7 +1052,7 @@ export type LeadThreadRows = {
  * A div, not a p: the Remove form can't sit inside a paragraph (the parser would close it first). */
 function queuedStateHtml(row: LeadQueueRow, back: string | null): Html {
   if (row.status === "queued") {
-    const waiting = row.error?.startsWith("Waiting: ") === true ? row.error.slice("Waiting: ".length) : "It goes to the lead when it finishes.";
+    const waiting = row.error?.startsWith("Waiting: ") === true ? row.error.slice("Waiting: ".length) : "Waiting for your earlier messages…";
     return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="queued"><span class="so-queued-state">Queued</span> · ${waiting}${
       postForm(`/chat/queued/${row.message}/remove`, html`<button type="submit" class="so-queued-remove quiet">Remove</button>`, { attrs: { class: "inline" }, ...(back === null ? {} : { returnTo: back }) })}</div>`;
   }
@@ -1179,6 +1181,7 @@ export function leadThreadHtml(data: LeadThreadRows & { csrf: string; now: Date;
         cards.map(one => leadProposalCard(one, inert, data.decisions.get(typeof one.payload["decision"] === "number" ? one.payload["decision"] : -1) ?? null, data.focusTask === null ? null : returnTo))}<div class="chat-message-foot">${chatActivity(message.activity)}<time datetime="${message.createdAt}">${relativeAge(message.createdAt, data.now)}</time></div></div>`,
     );
   }
+  if (data.pending === null && data.failure) thread.push(html`<div class="problem" data-key="failed" data-lead-failed role="alert">${data.failure}</div>`);
   parts.push(html`<div class="thread" data-key="thread" data-chat-list>\n${joinHtml(thread, "\n")}\n</div>`);
   if (data.pending !== null) {
     const subscription = data.pending.reservedMicrousd === 0;
@@ -1298,7 +1301,7 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
           sessionId, user: approver, version: leadChatVersion(data),
           messages: leadBrowserMessages(data, data.focusTask === null && chatProject === null ? null : returnTo, { task: data.focusTask?.id ?? null, project: chatProject }),
           pendingTurnId: data.pending?.id ?? null, requestId: randomBytes(16).toString('hex'), maxChars: LEAD_MESSAGE_MAX_CHARS,
-          taskId: data.focusTask?.id ?? null, resultRunId: data.resultRunId ?? null, project: chatProject,
+          taskId: data.focusTask?.id ?? null, resultRunId: data.resultRunId ?? null, project: chatProject, failure: data.pending === null ? data.failure ?? null : null,
           ...(data.previous == null ? {} : { previous: { messages: replacedBrowserMessages(data.previous) } }),
         },
         focus: data.focusTask === null ? null : { id: data.focusTask.id, title: data.focusTask.title,
@@ -1321,7 +1324,10 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
      * when each step began (epoch ms). Never sent to the chat room. */
     turn?: number; startedAt?: number; endedAt?: number; stepAt?: number[];
     /** Per step: its text is the provider's finished answer, secret-checked whole (lead.ts `final`). */
-    confirmed?: boolean[] };
+    confirmed?: boolean[];
+    /** The shared live-reply core (live-reply.ts): the only source of what the chat room shows — one status line, the
+     * tools behind a disclosure, and shaped, settled partial text. `steps[].text` above is raw and never sent. */
+    reply?: import("../live-reply.js").LiveReply };
 
   export type ChatEnablement =
     | { ok: true; billing: "metered"; config: ChatConfig & { provider: DirectChatProviderId }; key: string; keySource: "environment" | "stored"; price: import("../converse.js").ModelPrice; credentialKey: string }

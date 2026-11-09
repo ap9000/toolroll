@@ -37,6 +37,8 @@ import { leadActivity } from "../lead-voice.js";
 import { limitsView } from "../limits-ui.js";
 import { confirmCoordinatorProposal,confirmLeadProposal,dismissCoordinatorProposal,dismissLeadProposal } from "../lead-doors.js";
 import type { LeadProgress } from "../lead-progress.js";
+import { createLiveReply } from "../live-reply.js";
+import type { ShapeOptions } from "../reply-shape.js";
 import { LEAD_MESSAGE_MAX_CHARS,runLeadTurn } from "../lead.js";
 import { livePin,modelOptions } from "../model-catalog.js";
 import { verifyApproverByPassword,verifyApproverStanding,type VerifiedApprover } from "../principal.js";
@@ -947,18 +949,22 @@ export function createChatHandlers(runtime: ServerRuntime) {
       // The live display starts once this message holds a turn: a refusal (a secret, a turn still running) never blanks
       // the display of a reply that is still running in the same conversation.
       let onProgress: ((event: LeadProgress) => void) | undefined;
+      // Partials are shaped as the final reply is: for this message, with this console's own addresses.
+      const liveShape: ShapeOptions = { asked: message, appOrigin: requestContext.getStore()?.appOrigins ?? null };
       const ended = (ok: boolean) => { if (onProgress !== undefined) endLiveTurn(opened.thread.id, ok, onProgress); };
       // Detached work never carries this request's browser session (Passwordless reads it): it runs with no session facts.
       void freshFacts.run(null, () => runLeadTurn({ store, who: principal, session: leadSession, thread: opened.thread, config: enabled.config, key: enabled.key, message,
-        onAdmitted: () => { onProgress = beginLiveTurn(opened.thread.id); }, onProgress: event => onProgress?.(event), channel: "console", requestId, ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot }))
+        onAdmitted: () => { onProgress = beginLiveTurn(opened.thread.id, liveShape); }, onProgress: event => onProgress?.(event), channel: "console", requestId, ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot }))
         .then(outcome => {
           // Lost a race to another turn of this person's between deciding and admission: it waits instead of being refused.
           if (!outcome.ok && "refused" in outcome && (outcome.refused === "concurrent" || outcome.refused === "backlog") && queueIt().kind === "queued") {
             ended(false);
             return;
           }
-          // A turn that saved its outcome in the thread (one stopped at its deadline) is said there, once.
-          if (!outcome.ok && !("saved" in outcome && outcome.saved === true)) noteLead(who.session.csrf, "turn" in outcome ? outcome.turn : null, outcome.message);
+          // A turn that saved its outcome in the thread (one stopped at its deadline) is said there, once. Any other turn
+          // that ended failed is said from its saved row (leadConversationRows `failure`), which a restart keeps; only a
+          // refusal before any turn existed is said from memory.
+          if (!outcome.ok && !("saved" in outcome && outcome.saved === true) && !("turn" in outcome)) noteLead(who.session.csrf, null, outcome.message);
           ended(outcome.ok);
         })
         .catch(() => { noteLead(who.session.csrf, null, "the turn failed unexpectedly"); ended(false); })
@@ -1158,10 +1164,10 @@ export function createChatHandlers(runtime: ServerRuntime) {
   /** Which live display each progress handle started: ending a turn ends only its own display (a turn stopped from
    * another window that settles late can never end the next turn's). */
   const progressOf = new WeakMap<(event: LeadProgress) => void, LiveTurn>();
-  function beginLiveTurn(thread: number): (event: LeadProgress) => void {
+  function beginLiveTurn(thread: number, shape: ShapeOptions = {}): (event: LeadProgress) => void {
     const previous = liveTurns.get(thread);
     if (previous?.expiry) clearTimeout(previous.expiry);
-    const live: LiveTurn = { steps: [], done: false, ok: false, listeners: previous?.listeners ?? new Set(), startedAt: clock().getTime(), stepAt: [] };
+    const live: LiveTurn = { steps: [], done: false, ok: false, listeners: previous?.listeners ?? new Set(), startedAt: clock().getTime(), stepAt: [], reply: createLiveReply(shape) };
     liveTurns.set(thread, live);
     // A page that has this conversation open follows the reply (GET /live, its chat room).
     runtime.liveTurnStarted(thread);
@@ -1170,6 +1176,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const progress = (event: LeadProgress): void => {
       if (live.done) return;
       live.turn ??= event.turn;
+      live.reply?.push(event);
       if (event.kind === "step") newStep();
       else if (event.kind === "tool") {
         current().tools.push(event.label);
@@ -1185,6 +1192,9 @@ export function createChatHandlers(runtime: ServerRuntime) {
       } else if (event.kind === "text") {
         current().text = event.text;
         (live.confirmed ??= [])[live.steps.length - 1] = event.final === true;
+      } else if (event.kind === "blocked") {
+        // Held back as a possible password or key: no step keeps its words (the Live grid's tile reads these too).
+        for (const step of live.steps) step.text = "";
       }
       for (const listener of live.listeners) listener();
     };
@@ -1197,6 +1207,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     if (progress !== undefined && progressOf.get(progress) !== live) return;
     live.done = true;
     live.ok = ok;
+    live.reply?.close(ok ? "answered" : "failed");
     live.endedAt = clock().getTime();
     for (const listener of live.listeners) listener();
     live.expiry = setTimeout(() => { if (liveTurns.get(thread) === live) liveTurns.delete(thread); }, 60_000);
