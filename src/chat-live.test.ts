@@ -11,9 +11,9 @@ import { ackPass, liveRow, liveText, openChatLive, planWithLive, reactionsRefuse
 import { LIVE_STATUS } from "./live-reply.js";
 import { SlackError, SLACK_MANIFEST, type SlackApi } from "./slack-api.js";
 import { deliverSlackPart, processSlackEvent, receiveSlack, slackAckHooks, slackLivePayload, slackVoiceBlocks, type SlackChatOptions } from "./slack-chat.js";
-import { discordAckHooks, discordLive } from "./discord-chat.js";
+import { discordAckHooks, discordDelivery, discordLive, type DiscordChatOptions } from "./discord-chat.js";
 import { DiscordError, discordApi, type DiscordApi } from "./discord-api.js";
-import { teamsAckHooks, teamsLive } from "./teams-chat.js";
+import { teamsAckHooks, teamsDelivery, teamsLive, type TeamsChatOptions } from "./teams-chat.js";
 import { workChatQueue, DELIVER_PER_PASS } from "./chat-follow.js";
 import type { LeadProgress } from "./lead-progress.js";
 
@@ -425,6 +425,30 @@ describe("Slack end to end", () => {
     expect(calls.filter(one => one.method === "chat.postMessage")).toHaveLength(1);
   });
 
+  test("a rate-limited access proof mid-turn keeps the live message and shares the wait; the reply still replaces it", async () => {
+    const real = options.api;
+    let limited = false;
+    options.api = async (method, args) => limited && method === "users.info" ? Promise.reject(new SlackError("ratelimited", 9_000)) : real(method, args);
+    options.subscriptionRunner = vi.fn(async request => {
+      limited = true;
+      request.onText?.("Nothing needs you right now. Two tasks are ");
+      await flush();
+      limited = false;
+      return { ok: true as const, answer: { text: "Nothing needs you right now. Two tasks are building.", calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null } };
+    });
+    receiveSlack(state, ID, "events_api", { api_app_id: ID.app, team_id: ID.team, event_id: "Ev3", event: { type: "message", channel_type: "im", user: MEMBER, channel: CHANNEL, ts: TS, text: "what needs me?" } }, now);
+    await processSlackEvent(options);
+    const event = String(state.prepare("SELECT id FROM chat_event WHERE provider = :provider").get()!["id"]);
+    expect(calls.filter(one => one.method === "chat.update")).toHaveLength(0);
+    expect(state.retryAt(ID.installation)).toBe(new Date(now.getTime() + 9_000).toISOString());
+    const live = liveRow(state, event)!;
+    expect(live.state).toBe("finalized");
+    now = new Date(now.getTime() + 10_000);
+    state.lease(ID.installation, "test", now);
+    for (let i = 0; i < 5 && await deliverSlackPart(options); i++);
+    expect(calls.at(-1)).toMatchObject({ method: "chat.update", args: { ts: live.message } });
+  });
+
   test("the live message was deleted: the reply goes out as a new message instead of retrying forever", async () => {
     receiveSlack(state, ID, "events_api", { api_app_id: ID.app, team_id: ID.team, event_id: "Ev2", event: { type: "message", channel_type: "im", user: MEMBER, channel: CHANNEL, ts: TS, text: "what needs me?" } }, now);
     await processSlackEvent(options);
@@ -516,5 +540,49 @@ describe("Discord recovery and access proofs under rate limits", () => {
     await turn1.close();
     expect(recent.calls).toEqual(["GET", "POST"]);
     expect(liveRow(recent.discord, "d1")).toMatchObject({ state: "placed", message: DISCORD.message });
+  });
+
+  test("a rate-limited access proof drops only that view: the message stays, and the wait is shared", async () => {
+    saveEvent("e1");
+    let proof: () => Promise<boolean> = async () => true;
+    const { transport, sent } = scripted();
+    const live = open(transport, () => proof());
+    live.push(turn("started"));
+    await flush();
+    proof = async () => { throw new SlackError("ratelimited", 9_000); };
+    live.push(turn("text", { text: "The release is blocked by one check " }));
+    await flush();
+    await live.close();
+    expect(sent.map(one => one.op)).toEqual(["create"]);
+    expect(liveRow(state, "e1")!.state).toBe("placed");
+    expect(state.retryAt(ID.installation)).toBe(new Date(now.getTime() + 9_000).toISOString());
+  });
+
+  test("Discord and Teams typing waits out the shared cooldown, and a 'slow down' on it sets it", async () => {
+    const discord = new ChatState(store, "discord");
+    discord.lease(ID.installation, "test", now);
+    discord.enqueue({ id: "d1", installation: ID.installation, binding: null, kind: "message", channel: DISCORD.channel, member: DISCORD.member, ts: DISCORD.ts, thread: DISCORD.ts, payload: { text: "hi" }, created: now.toISOString() });
+    const calls: string[] = [];
+    let limited = false;
+    const api: DiscordApi = async (_method, path) => { calls.push(path); if (limited) throw new DiscordError("ratelimited", 8_000); return {}; };
+    const options = { store, identity: ID, api, clock: () => now } as unknown as DiscordChatOptions;
+    const typing = discordDelivery(options).warm!(discord.event("d1")!, null as never).typing!;
+    discord.deferUntil(ID.installation, new Date(now.getTime() + 30_000).toISOString());
+    await typing();
+    expect(calls).toEqual([]);
+    now = new Date(now.getTime() + 60_000);
+    limited = true;
+    await typing().catch(() => undefined);
+    expect(calls).toHaveLength(1);
+    expect(discord.retryAt(ID.installation)).toBe(new Date(now.getTime() + 8_000).toISOString());
+
+    const teams = new ChatState(store, "teams");
+    teams.enqueue({ id: "t1", installation: ID.installation, binding: null, kind: "message", channel: "a:1dm-conversation", member: "29:1someone-xxxxxxxxxxxx", ts: "1", thread: "1", payload: { text: "hi" }, created: now.toISOString() });
+    teams.setMeta(ID.installation, "serviceUrl:a:1dm-conversation", "https://smba.trafficmanager.net/teams/", now);
+    teams.deferUntil(ID.installation, new Date(now.getTime() + 30_000).toISOString());
+    const teamsCalls: string[] = [];
+    const teamsApi = async (_method: string, _url: string, path: string) => { teamsCalls.push(path); return {}; };
+    await teamsDelivery({ store, identity: ID, api: teamsApi, clock: () => now } as unknown as TeamsChatOptions).warm!(teams.event("t1")!, null as never).typing!();
+    expect(teamsCalls).toEqual([]);
   });
 });

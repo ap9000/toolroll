@@ -4,7 +4,7 @@ import { resultShotsPruned } from "./result-shots.js";
 import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatContent, type ChatEvent, type ChatIdentity } from "./chat-delivery-state.js";
-import { isLiveMessage, liveSpacingOf, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
+import { isLiveMessage, liveSpacingOf, underCooldown, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
 import { channelAccess, chatObject as object, heldForWatch, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
@@ -44,6 +44,7 @@ export async function teamsMember(api: TeamsApi, state: ChatState, installation:
   }
 }
 
+const teamsRateLimited = (error: unknown): number | null => error instanceof TeamsError && error.code === TEAMS_SLOW ? error.retryMs : null;
 export const teamsDelivery = (options: TeamsChatOptions): ChatDeliveryOptions => {
   const state = new ChatState(options.store, "teams");
   return {
@@ -53,10 +54,10 @@ export const teamsDelivery = (options: TeamsChatOptions): ChatDeliveryOptions =>
     member: (member, channel) => teamsMember(options.api, state, options.identity.installation, member, channel),
     // "Typing…" while the lead works; Teams gives bots no reactions, so there is no 👍 here.
     warm: (event) => ({
-      typing: async () => {
+      typing: underCooldown(state, options.identity.installation, teamsRateLimited, () => options.clock?.() ?? new Date(), async () => {
         const serviceUrl = state.meta(options.identity.installation, serviceKey(event.channel));
         if (serviceUrl !== null) await options.api("POST", serviceUrl, `/v3/conversations/${encodeURIComponent(event.channel)}/activities`, { type: "typing" });
-      },
+      }),
     }),
     ...(options.liveReplies ? { live: (event: ChatEvent) => teamsLive(options, state, event, liveSpacingOf(options.liveReplies)) } : {}),
     partSize: 3500,

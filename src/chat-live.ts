@@ -205,7 +205,8 @@ export function openChatLive(input: {
   shape: ShapeOptions;
   /** The lease, the connection and the binding, read locally (no network): the fence for words that carry no data. */
   fenced: () => boolean;
-  /** The chat's full standing (channelAccess under the turn's ceiling) before an edit that carries the turn's words. */
+  /** The chat's full standing (channelAccess under the turn's ceiling) before an edit that carries the turn's words.
+   * False: refused (nothing more is edited). Throws: no answer now (that view is dropped). */
   standing: () => Promise<boolean>;
   now: () => Date;
 }): ChatLiveTurn {
@@ -294,8 +295,15 @@ export function openChatLive(input: {
       await pause(gate.liveNext - input.now().getTime());
       if (off || stopped.signal.aborted) return;
       if (!input.fenced()) return abandon("Chat access changed");
-      let standing = false;
-      try { standing = await input.standing(); } catch { standing = false; }
+      let standing: boolean;
+      try {
+        standing = await input.standing();
+      } catch (error) {
+        // Not a refusal, only no answer now (a "slow down", a lost answer): this view is dropped and the message stays.
+        const wait = transport.rateLimited(error);
+        if (wait !== null) slowDown(state, input.installation, gate, wait, input.now());
+        return;
+      }
       if (!standing) return abandon("Chat access changed");
       // Re-read after the awaits: the turn may have ended, or the lease moved, meanwhile.
       if (off || stopped.signal.aborted || !input.fenced()) return;
@@ -454,6 +462,20 @@ export async function settleLive(state: ChatState, event: string, transport: Cha
   if ("found" in found) setLive(state, event, ["creating"], "placed", now(), { message: found.found });
   else setLive(state, event, ["creating"], "uncertain", now(), { problem: LIVE_WORDS.maybeLeft });
   return true;
+}
+
+/** A cosmetic send (typing…) under the app's shared cooldown: skipped while it holds, and a "slow down" sets it. */
+export function underCooldown(state: ChatState, installation: string, rateLimited: (error: unknown) => number | null, now: () => Date, call: () => Promise<unknown>): () => Promise<unknown> {
+  return async () => {
+    if (coolingDown(state, installation, now())) return;
+    try {
+      return await call();
+    } catch (error) {
+      const wait = rateLimited(error);
+      if (wait !== null) slowDown(state, installation, null, wait, now());
+      throw error;
+    }
+  };
 }
 
 /** Forget who was acknowledged when (tests). */

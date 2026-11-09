@@ -24,7 +24,7 @@ import {
 import { chatResultHref } from "./chat-controls.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { discordPlain, renderReply } from "./reply-shape.js";
-import { isLiveMessage, liveSpacingOf, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
+import { isLiveMessage, liveSpacingOf, underCooldown, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
 import {
   proposalPreview,
   proposalLink,
@@ -51,19 +51,24 @@ export type DiscordChatOptions = Omit<
 > & { api: DiscordApi; /** The live "Working on it…" message (chat-live.ts): on in the worker. */ liveReplies?: LiveReplies };
 export const discordDelivery = (
   options: DiscordChatOptions,
-): ChatDeliveryOptions => ({
-  ...options,
-  state: new ChatState(options.store, "discord"),
-  label: "Discord",
-  member: (member, channel) => discordMember(options.api, member, channel),
-  // "typing…" while the lead works (the 👀 goes at arrival: discordAckHooks); a missing permission is skipped silently.
-  warm: (event) => ({
-    typing: () => options.api("POST", `/channels/${event.channel}/typing`),
-  }),
-  ...(options.liveReplies ? { live: (event: ChatEvent) => discordLive(options, event, liveSpacingOf(options.liveReplies)) } : {}),
-  partSize: 1800,
-  maxProposal: 3400,
-});
+): ChatDeliveryOptions => {
+  const state = new ChatState(options.store, "discord");
+  return {
+    ...options,
+    state,
+    label: "Discord",
+    member: (member, channel) => discordMember(options.api, member, channel),
+    // "typing…" while the lead works (the 👀 goes at arrival: discordAckHooks), under the shared cooldown; a missing
+    // permission is skipped silently.
+    warm: (event) => ({
+      typing: underCooldown(state, options.identity.installation, error => error instanceof DiscordError && error.code === "ratelimited" ? error.retryMs : null, () => options.clock?.() ?? new Date(),
+        () => options.api("POST", `/channels/${event.channel}/typing`)),
+    }),
+    ...(options.liveReplies ? { live: (event: ChatEvent) => discordLive(options, event, liveSpacingOf(options.liveReplies)) } : {}),
+    partSize: 1800,
+    maxProposal: 3400,
+  };
+};
 export const processDiscordEvent = (options: DiscordChatOptions) =>
   processChatEvent(discordDelivery(options));
 export const planDiscordRooms = (options: DiscordChatOptions) =>

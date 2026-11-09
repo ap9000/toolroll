@@ -408,7 +408,17 @@ export async function processChatEvent(
       live ??= openChatLive({
         state, event, installation: identity.installation, transport, shape: { asked: text, appOrigin: options.origin() },
         fenced: () => options.current() && state.owns(identity.installation, options.owner, nowOf(options)) && state.live(binding),
-        standing: async () => { if (ceiling === null) return false; await channelAccess(options, binding, ceiling); return true; },
+        // False only on a definite refusal; a failed proof (a "slow down", a lost answer) throws: that view is dropped.
+        standing: async () => {
+          if (ceiling === null) return false;
+          try {
+            await channelAccess(options, binding, ceiling);
+            return true;
+          } catch (error) {
+            if (error instanceof ChatDeliveryError && ["Chat access changed", "Connected projects changed", `${options.label} account access changed`].includes(error.code)) return false;
+            throw error;
+          }
+        },
         now: () => nowOf(options),
       });
       return live;
