@@ -39,7 +39,7 @@ describe("the coordinator credential", () => {
   afterEach(() => store.close());
 
   const mint = (over: Partial<Parameters<typeof mintCoordinator>[1]> = {}) =>
-    mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: T0, ...over });
+    mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: new Date(), ...over });
 
   test("mint validates name, rate, and repos; the token authenticates; the cid is the identity", () => {
     expect(mint({ name: "Bad Name!" })).toMatchObject({ ok: false, reason: "bad-name" });
@@ -177,7 +177,7 @@ describe("the coordinator quarantine", () => {
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", T0);
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", T0);
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", T0);
-    const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: T0 });
+    const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: new Date() });
     if (!made.ok) throw new Error("mint failed");
     cid = made.cid;
     token = made.token;
@@ -325,7 +325,7 @@ describe("coordinator events on machine roads", () => {
 
   beforeEach(() => {
     store = openStore(":memory:");
-    const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: T0 });
+    const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: new Date() });
     if (!made.ok) throw new Error("mint failed");
     cid = made.cid;
     const filed = fileCoordinatorProposal(store, made.token, { repo: REPO, title: "machine-cancelled", idempotencyKey: "key-mach" }, T0);
@@ -415,7 +415,7 @@ describe("the outstanding caps and credential-scoped reads", () => {
     // the installation-wide cap — disjoint repos so the allowlists never touch.
     const needed = Math.ceil(GLOBAL_OUTSTANDING / PER_CID_OUTSTANDING);
     for (let c = 0; c < needed; c++) {
-      const made = mintCoordinator(store, { name: `bot-${c}`, repos: [`/repo/global-${c}`], perHour: 60, by: "alex", now: T0 });
+      const made = mintCoordinator(store, { name: `bot-${c}`, repos: [`/repo/global-${c}`], perHour: 60, by: "alex", now: new Date() });
       if (!made.ok) throw new Error("mint failed");
       for (let i = 0; i < PER_CID_OUTSTANDING; i++) {
         expect(
@@ -430,7 +430,7 @@ describe("the outstanding caps and credential-scoped reads", () => {
     }
     // A FRESH coordinator with ZERO outstanding filings of its own: the
     // per-cid check passes, the global one refuses — with the global reason.
-    const fresh = mintCoordinator(store, { name: "bot-fresh", repos: ["/repo/global-fresh"], perHour: 60, by: "alex", now: T0 });
+    const fresh = mintCoordinator(store, { name: "bot-fresh", repos: ["/repo/global-fresh"], perHour: 60, by: "alex", now: new Date() });
     if (!fresh.ok) throw new Error("mint failed");
     const refused = fileCoordinatorProposal(
       store,
@@ -442,7 +442,7 @@ describe("the outstanding caps and credential-scoped reads", () => {
   });
 
   test("outstanding is UNSEALED and non-terminal: a rewritten seal counts again, done stops counting, failed keeps counting", () => {
-    const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], perHour: 60, by: "alex", now: T0 });
+    const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], perHour: 60, by: "alex", now: new Date() });
     if (!made.ok) throw new Error("mint failed");
     const file = (key: string, at: Date) =>
       fileCoordinatorProposal(store, made.token, { repo: REPO, title: `work ${key}`, idempotencyKey: key }, at);
@@ -491,7 +491,7 @@ describe("the outstanding caps and credential-scoped reads", () => {
   });
 
   test("a github-issues ref colliding with a foreign built-in task id never leaks that task through the reads", () => {
-    const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: T0 });
+    const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: new Date() });
     if (!made.ok) throw new Error("mint failed");
     const who = whoOf(made.token);
 
@@ -514,7 +514,7 @@ describe("the outstanding caps and credential-scoped reads", () => {
   });
 
   test("a task with NULL repo vanishes from every scoped read and count", () => {
-    const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: T0 });
+    const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: new Date() });
     if (!made.ok) throw new Error("mint failed");
     const who = whoOf(made.token);
     const filed = fileCoordinatorProposal(store, made.token, { repo: REPO, title: "placed work", idempotencyKey: "key-null-01" }, T0);

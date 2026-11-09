@@ -958,7 +958,7 @@ describe("the operations console", () => {
 
   test("coordinator cancellation requires a reason and retains the rejected draft", async () => {
     const { mintCoordinator, fileCoordinatorProposal } = await import("./coordinator.js");
-    const minted = mintCoordinator(store, { name: "cancel-review", repos: ["/repo/main"], by: "alex", now: T0 });
+    const minted = mintCoordinator(store, { name: "cancel-review", repos: ["/repo/main"], by: "alex", now: new Date() });
     if (!minted.ok) throw new Error("mint failed");
     const filed = fileCoordinatorProposal(store, minted.token, { repo: "/repo/main", title: "Replace the outdated export", idempotencyKey: "console-cancel" }, T0);
     if (!filed.ok) throw new Error("filing failed");

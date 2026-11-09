@@ -135,7 +135,7 @@ const TABLE = (["lead", "gateway"] as const).flatMap(surface => NAMES[surface].m
 function gatewayToolsList(): { name: string; inputSchema: Json }[] {
   const store = openStore(":memory:");
   try {
-    const made = mintCoordinator(store, { name: "contract-bot", repos: ["/repo/demo"], by: "alex", now: new Date("2026-10-05T12:00:00Z") });
+    const made = mintCoordinator(store, { name: "contract-bot", repos: ["/repo/demo"], by: "alex", now: new Date() });
     if (!made.ok) throw new Error("mint failed");
     let onLine: (line: string) => void = () => undefined;
     const out: string[] = [];

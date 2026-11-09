@@ -247,7 +247,7 @@ describe("operating the queue from the command line", () => {
     test("coordinator state cancellation requires --reason and a corrected retry keeps the same key", async () => {
       const { mintCoordinator, fileCoordinatorProposal } = await import("./coordinator.js");
       const store = openStore(db);
-      const minted = mintCoordinator(store, { name: "cancel-review", repos: [REPO], by: "alex", now: T0 });
+      const minted = mintCoordinator(store, { name: "cancel-review", repos: [REPO], by: "alex", now: new Date() });
       if (!minted.ok) throw new Error("mint failed");
       const filed = fileCoordinatorProposal(store, minted.token, { repo: REPO, title: "Replace the outdated export", idempotencyKey: "cli-cancel" }, T0);
       if (!filed.ok) throw new Error("filing failed");

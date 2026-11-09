@@ -113,7 +113,7 @@ test("policy changes are ledger events with what changed, and a person's coordin
   ]);
   const second = addApprover(store, "sam", T0, { name: "alex", token: password });
   if (!second.ok) throw new Error("second");
-  const made = mintCoordinator(store, { name: "sams-bot", repos: ["/repo/main"], perHour: 6, by: "sam", now: T0 });
+  const made = mintCoordinator(store, { name: "sams-bot", repos: ["/repo/main"], perHour: 6, by: "sam", now: new Date() });
   if (!made.ok) throw new Error(JSON.stringify(made));
   expect(store.revokeAccount("sam", "alex", T0)).toMatchObject({ ok: true });
   expect(store.handle.prepare("SELECT revoked_at FROM credential WHERE kind = 'coordinator' AND name = 'sams-bot'").get()?.["revoked_at"]).toBe(T0.toISOString());
