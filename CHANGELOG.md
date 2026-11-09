@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.97 — 2026-11-08
+
+- **Chat answers feel instant, everywhere.** On the web, Telegram, Slack, Discord, Teams and `toolroll chat`, your message gets an acknowledgement at once (👀 in chat apps, a status line on the web and in the terminal), you see what the lead is doing in one line, and the answer appears as it is written. Cards and buttons come when the answer is finished, as before.
+- **Safer chat text.** A reply in Slack can no longer ping `@here`; `toolroll chat` no longer lets reply text change your terminal; a half-written answer never shows a password-like string or an approval button.
+- **Failures say why** ("its sign-in may have expired") on every surface, and a failed reply on the web survives a console restart.
+- **Quick answers (off by default).** Short read-only questions can use a faster model and move to Opus the moment they touch work. Turn it on in Settings → Lead after running `node scripts/lead-answer-eval.mjs --real`.
+- **Slack:** reinstall the app once (Settings → Chat apps → Slack → app manifest) to get the 👀 reaction.
+
 ## 0.9.96 — 2026-11-08
 
 - **Tables in Telegram are readable on a phone.** Each row is a short list item with its name in full, and anything shared by every row is said once at the top, instead of a squeezed grid of cut-off words.
