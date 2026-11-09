@@ -467,3 +467,34 @@ test("due reply parts go out before the next event starts another turn", async (
   expect(log.indexOf("turn 1 part 6")).toBeLessThan(log.indexOf("turn 2"));
   expect(log).toHaveLength(14);
 });
+
+describe("Discord recovery and access proofs under rate limits", () => {
+  const DISCORD = { channel: "123456789012345678", member: "223456789012345678", ts: "323456789012345678", bot: "523456789012345678", message: "423456789012345678" };
+  const setup = (created: string) => {
+    const discord = new ChatState(store, "discord");
+    discord.lease(ID.installation, "test", now);
+    discord.enqueue({ id: "d1", installation: ID.installation, binding: null, kind: "message", channel: DISCORD.channel, member: DISCORD.member, ts: DISCORD.ts, thread: DISCORD.ts, payload: { text: "hi" }, created: now.toISOString() });
+    discord.prepare("INSERT INTO chat_live (provider, event, state, created, updated) VALUES (:provider, 'd1', 'creating', ?, ?)").run(created, created);
+    const calls: string[] = [];
+    let answer: (method: string) => Record<string, unknown> | Error = method => method === "GET" ? { items: [] } : { id: DISCORD.message, channel_id: DISCORD.channel, author: { id: DISCORD.bot } };
+    const api: DiscordApi = async method => { calls.push(method); const out = answer(method); if (out instanceof Error) throw out; return out; };
+    const transport = { ...discordLive({ api, identity: { ...ID, bot: DISCORD.bot } }, discord.event("d1")!), spacingMs: 0 };
+    const live = () => openChatLive({ state: discord, event: discord.event("d1")!, installation: ID.installation, transport, shape: {}, fenced: () => true, standing: async () => true, now: () => now });
+    return { discord, calls, transport, live, answer: (next: typeof answer) => { answer = next; } };
+  };
+
+  test("a recovery lookup that is rate limited is not absence: no create, the row stays creating, the wait is shared", async () => {
+    const { discord, calls, transport, live, answer } = setup(now.toISOString());
+    answer(method => method === "GET" ? new DiscordError("ratelimited", 7_000) : { id: DISCORD.message, channel_id: DISCORD.channel, author: { id: DISCORD.bot } });
+    const turn1 = live();
+    turn1.push(turn("started"));
+    await flush();
+    await turn1.close();
+    expect(calls).toEqual(["GET"]);
+    expect(liveRow(discord, "d1")!.state).toBe("creating");
+    expect(discord.retryAt(ID.installation)).toBe(new Date(now.getTime() + 7_000).toISOString());
+    // Settling before the reply is planned: still undecided, so planning waits instead of orphaning the message.
+    expect(await settleLive(discord, "d1", transport, () => now)).toBe(false);
+    expect(liveRow(discord, "d1")!.state).toBe("creating");
+  });
+});

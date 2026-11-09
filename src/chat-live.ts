@@ -8,10 +8,10 @@
  *   project data: the lease and a live binding are its fence.
  * - The live message is its own `chat_live` row (v157), never a `chat_part`: planning the reply still adds its own
  *   parts, and the first of them edits this message, so the event stays queued until then. Creation is
- *   creating → placed. On Discord a nonce makes a repeated create return the same message; on Slack and Teams an
- *   answer that never came leaves the row uncertain, and an uncertain message is never posted again (the reply then
- *   posts fresh, and the event's problem says a "Working on it…" may be left above it). That is the promise: no
- *   duplicate, except after an uncertain create on Slack or Teams.
+ *   creating → placed. On Discord a nonce makes a repeated create return the same message, and a lookup that fails
+ *   decides nothing; on Slack and Teams an answer that never came leaves the row uncertain, and an uncertain message
+ *   is never posted again (the reply then posts fresh, and the event's problem says a "Working on it…" may be left
+ *   above it). That is the promise: no duplicate, except after an uncertain create on Slack or Teams.
  * - Edits go through one serialized sender per message (live-reply.ts): one request in flight, the newest view
  *   waiting, closed (and the request in flight settled) before the reply is planned. Every edit re-proves the chat's
  *   standing (`standing`, the same proof final delivery uses), then the lease after it. Once that fails, nothing more is
@@ -58,7 +58,8 @@ export type ChatLiveTransport = {
   spacingMs?: number;
   /** Post the live message; resolves its id. Discord sends its nonce, so a repeat returns the same message. */
   create(text: string): Promise<string>;
-  /** Discord only: the message an unconfirmed create left, found by its nonce, or null. */
+  /** Discord only: the message an unconfirmed create left, found by its nonce, or null (not among the recent ones).
+   * Throws when the lookup itself failed: that is not absence. */
   recover?(): Promise<string | null>;
   /** Replace the live message's whole text (every field, as the final edit does). */
   edit(message: string, text: string): Promise<void>;
@@ -130,6 +131,19 @@ export function liveRow(state: ChatState, event: string): LiveRow | null {
   const row = state.prepare("SELECT state, message, generation, problem FROM chat_live WHERE provider = :provider AND event = ?").get(event);
   return row === undefined ? null : { state: String(row["state"]) as LiveRow["state"], message: row["message"] == null ? null : String(row["message"]),
     generation: Number(row["generation"]), problem: row["problem"] == null ? null : String(row["problem"]) };
+}
+
+/** The message an unconfirmed create left: found, not among the recent messages (absent), or the lookup failed (a
+ * "slow down" is shared). */
+async function recoverLive(state: ChatState, installation: string, transport: ChatLiveTransport, now: () => Date): Promise<{ found: string } | { absent: true } | { failed: true }> {
+  try {
+    const found = await transport.recover!();
+    return found === null ? { absent: true } : { found };
+  } catch (error) {
+    const wait = transport.rateLimited(error);
+    if (wait !== null) slowDown(state, installation, null, wait, now());
+    return { failed: true };
+  }
 }
 const setLive = (state: ChatState, event: string, from: LiveRow["state"][], to: LiveRow["state"], now: Date, extra: { message?: string; problem?: string } = {}): boolean =>
   Number(state.prepare(`UPDATE chat_live SET state = ?, message = COALESCE(?, message), problem = COALESCE(?, problem), updated = ?
@@ -220,9 +234,11 @@ export function openChatLive(input: {
         } else if (row.state === "creating") {
           // A create from before a restart: Discord finds it by its nonce (or repeats it under the same nonce); Slack
           // and Teams can't know, so it is never posted again.
-          const found = transport.recover === undefined ? null : await transport.recover().catch(() => null);
-          if (found !== null) { message = found; setLive(state, event.id, ["creating"], "placed", input.now(), { message: found }); return; }
           if (transport.recover === undefined) { off = true; setLive(state, event.id, ["creating"], "uncertain", input.now(), { problem: LIVE_WORDS.maybeLeft }); return; }
+          const found = await recoverLive(state, input.installation, transport, input.now);
+          // The lookup failed: undecided, so nothing is posted; the row stays creating for a later look.
+          if ("failed" in found) return;
+          if ("found" in found) { message = found.found; setLive(state, event.id, ["creating"], "placed", input.now(), { message: found.found }); return; }
         } else if (row.state === "placed") { message = row.message; return; }
         else { off = true; return; }
         if (!input.fenced()) return;
@@ -238,8 +254,8 @@ export function openChatLive(input: {
           setLive(state, event.id, ["creating"], "uncertain", input.now(), { problem: LIVE_WORDS.maybeLeft });
         } else if (transport.uncertain(error)) {
           // Discord: the row stays creating, so the reply's planning looks for it by nonce once more (settleLive).
-          const found = await transport.recover!().catch(() => null);
-          if (found !== null) { message = found; setLive(state, event.id, ["creating"], "placed", input.now(), { message: found }); }
+          const found = await recoverLive(state, input.installation, transport, input.now);
+          if ("found" in found) { message = found.found; setLive(state, event.id, ["creating"], "placed", input.now(), { message: found.found }); }
           else off = true;
         } else {
           // Refused outright: nothing was posted. The reply goes out as a new message.
@@ -418,13 +434,17 @@ export async function ackPass(input: {
 
 /**
  * Before an event's reply is planned: a create that never confirmed (this pass, or before a restart) is found by its
- * nonce on Discord, else marked uncertain, so planning edits the right message or none.
+ * nonce on Discord, else marked uncertain, so planning edits the right message or none. False: the lookup failed, so
+ * it is still undecided and planning waits (a "slow down" is shared).
  */
-export async function settleLive(state: ChatState, event: string, transport: ChatLiveTransport | null, now: () => Date): Promise<void> {
-  if (liveRow(state, event)?.state !== "creating") return;
-  const found = transport?.recover === undefined ? null : await transport.recover().catch(() => null);
-  if (found !== null) setLive(state, event, ["creating"], "placed", now(), { message: found });
+export async function settleLive(state: ChatState, event: string, transport: ChatLiveTransport | null, now: () => Date): Promise<boolean> {
+  const row = liveRow(state, event);
+  if (row?.state !== "creating") return true;
+  const found = transport?.recover === undefined ? { absent: true } as const : await recoverLive(state, state.event(event)?.installation ?? "", transport, now);
+  if ("failed" in found) return false;
+  if ("found" in found) setLive(state, event, ["creating"], "placed", now(), { message: found.found });
   else setLive(state, event, ["creating"], "uncertain", now(), { problem: LIVE_WORDS.maybeLeft });
+  return true;
 }
 
 /** Forget who was acknowledged when (tests). */

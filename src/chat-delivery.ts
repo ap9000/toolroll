@@ -589,7 +589,12 @@ export async function processChatEvent(
     }
     // A live message whose create never confirmed (this pass, or before a restart) is found first (Discord, by its
     // nonce) or marked uncertain, so the reply edits the right message or none.
-    await settleLive(state, event.id, transport, () => nowOf(options));
+    if (!(await settleLive(state, event.id, transport, () => nowOf(options)))) {
+      // Whether the live message was posted is still unknown (its lookup failed): the reply waits, so it edits that
+      // message rather than leaving it behind.
+      state.defer(event.id, "Reply is waiting to send", new Date(Math.max(nowOf(options).getTime() + 5000, Date.parse(state.retryAt(identity.installation)) || 0)));
+      return true;
+    }
     store.sweepStaleLeadTurns(nowOf(options));
     const turn = store.getLeadTurn(receipt.turn);
     if (turn?.state === "running" || turn?.state === "queued") {
