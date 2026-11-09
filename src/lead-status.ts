@@ -315,10 +315,11 @@ export function installationStatus(store: Store, now: Date, viewer: string | nul
 
 /** `limited`: a report over some projects (installationStatus's `repos`), which has no release check or plan windows to state. */
 export function renderInstallationStatus(status: InstallationStatus, limited = false): string[] {
-  // It opens with Home's figures, the same words and counts as Home.
-  const lines: string[] = [homeFiguresLine(status.figures)];
-  // A paused provider comes next: it is the one thing a person must do.
+  const lines: string[] = [];
+  // A paused provider comes first: it is the one thing a person must do.
   for (const one of status.signIn) lines.push(`${one.reason} — run \`${one.command}\`. Its tasks wait until then.`);
+  // Then Home's figures, the same words and counts as Home.
+  lines.push(homeFiguresLine(status.figures));
   if (status.lead != null) lines.push(status.lead.line);
   // Each task's one headline, the same words as the console and chat cards.
   if (status.tasks.length > 0) {
