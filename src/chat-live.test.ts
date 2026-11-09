@@ -497,4 +497,24 @@ describe("Discord recovery and access proofs under rate limits", () => {
     expect(await settleLive(discord, "d1", transport, () => now)).toBe(false);
     expect(liveRow(discord, "d1")!.state).toBe("creating");
   });
+
+  test("an old create not found in the recent messages is uncertain: never posted again, the reply says one may be left", async () => {
+    const old = setup(new Date(now.getTime() - 10 * 60_000).toISOString());
+    const turn1 = old.live();
+    turn1.push(turn("started"));
+    await flush();
+    await turn1.close();
+    expect(old.calls).toEqual(["GET"]);
+    expect(liveRow(old.discord, "d1")).toMatchObject({ state: "uncertain", problem: LIVE_WORDS.maybeLeft });
+  });
+
+  test("a create retried within the nonce's window may repeat under the same nonce", async () => {
+    const recent = setup(new Date(now.getTime() - 10_000).toISOString());
+    const turn1 = recent.live();
+    turn1.push(turn("started"));
+    await flush();
+    await turn1.close();
+    expect(recent.calls).toEqual(["GET", "POST"]);
+    expect(liveRow(recent.discord, "d1")).toMatchObject({ state: "placed", message: DISCORD.message });
+  });
 });

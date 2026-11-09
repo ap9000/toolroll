@@ -592,6 +592,8 @@ export function discordLive(options: Pick<DiscordChatOptions, "api" | "identity"
       ...discordVoicePayload(text), nonce, enforce_nonce: true,
       ...(discordId(event.thread) ? { message_reference: { message_id: event.thread, channel_id: event.channel, fail_if_not_exists: false } } : {}),
     })),
+    // Discord checks an enforced nonce against "the past few minutes": a repeat within one minute is the same message.
+    nonceMs: 60_000,
     recover: async () => {
       const recent = await options.api("GET", `/channels/${event.channel}/messages?limit=100`);
       const found = (Array.isArray(recent.items) ? recent.items : []).map(object)

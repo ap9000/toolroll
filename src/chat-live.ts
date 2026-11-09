@@ -8,10 +8,11 @@
  *   project data: the lease and a live binding are its fence.
  * - The live message is its own `chat_live` row (v157), never a `chat_part`: planning the reply still adds its own
  *   parts, and the first of them edits this message, so the event stays queued until then. Creation is
- *   creating → placed. On Discord a nonce makes a repeated create return the same message, and a lookup that fails
- *   decides nothing; on Slack and Teams an answer that never came leaves the row uncertain, and an uncertain message
- *   is never posted again (the reply then posts fresh, and the event's problem says a "Working on it…" may be left
- *   above it). That is the promise: no duplicate, except after an uncertain create on Slack or Teams.
+ *   creating → placed. On Discord a nonce makes a repeated create within its window return the same message, and
+ *   a lookup that fails decides nothing; on Slack and Teams an answer that never came leaves the row uncertain, as
+ *   does an older Discord create not found among the recent messages. An uncertain message is never posted again (the
+ *   reply then posts fresh, and the event's problem says a "Working on it…" may be left above it). That is the
+ *   promise: no duplicate, except after an uncertain create.
  * - Edits go through one serialized sender per message (live-reply.ts): one request in flight, the newest view
  *   waiting, closed (and the request in flight settled) before the reply is planned. Every edit re-proves the chat's
  *   standing (`standing`, the same proof final delivery uses), then the lease after it. Once that fails, nothing more is
@@ -61,6 +62,8 @@ export type ChatLiveTransport = {
   /** Discord only: the message an unconfirmed create left, found by its nonce, or null (not among the recent ones).
    * Throws when the lookup itself failed: that is not absence. */
   recover?(): Promise<string | null>;
+  /** With `recover`: how long after a create a repeat under the same nonce is known to return the same message. */
+  nonceMs?: number;
   /** Replace the live message's whole text (every field, as the final edit does). */
   edit(message: string, text: string): Promise<void>;
   /** The wait an error asks for when it means "slow down", else null. */
@@ -125,12 +128,12 @@ export function liveText(view: LiveView, platform: LivePlatform, limit: number, 
 
 // ---- the saved row ----------------------------------------------------------------------------------------------
 
-export type LiveRow = { state: "creating" | "uncertain" | "placed" | "finalized" | "abandoned"; message: string | null; generation: number; problem: string | null };
+export type LiveRow = { state: "creating" | "uncertain" | "placed" | "finalized" | "abandoned"; message: string | null; generation: number; problem: string | null; created: string };
 
 export function liveRow(state: ChatState, event: string): LiveRow | null {
-  const row = state.prepare("SELECT state, message, generation, problem FROM chat_live WHERE provider = :provider AND event = ?").get(event);
+  const row = state.prepare("SELECT state, message, generation, problem, created FROM chat_live WHERE provider = :provider AND event = ?").get(event);
   return row === undefined ? null : { state: String(row["state"]) as LiveRow["state"], message: row["message"] == null ? null : String(row["message"]),
-    generation: Number(row["generation"]), problem: row["problem"] == null ? null : String(row["problem"]) };
+    generation: Number(row["generation"]), problem: row["problem"] == null ? null : String(row["problem"]), created: String(row["created"]) };
 }
 
 /** The message an unconfirmed create left: found, not among the recent messages (absent), or the lookup failed (a
@@ -232,13 +235,19 @@ export function openChatLive(input: {
           state.prepare("INSERT OR IGNORE INTO chat_live (provider, event, state, created, updated) VALUES (:provider, ?, 'creating', ?, ?)")
             .run(event.id, input.now().toISOString(), input.now().toISOString());
         } else if (row.state === "creating") {
-          // A create from before a restart: Discord finds it by its nonce (or repeats it under the same nonce); Slack
-          // and Teams can't know, so it is never posted again.
+          // A create from before a restart: Discord finds it by its nonce, or repeats it under the same nonce while
+          // that is known to return the same message; Slack and Teams can't know, so it is never posted again.
           if (transport.recover === undefined) { off = true; setLive(state, event.id, ["creating"], "uncertain", input.now(), { problem: LIVE_WORDS.maybeLeft }); return; }
           const found = await recoverLive(state, input.installation, transport, input.now);
           // The lookup failed: undecided, so nothing is posted; the row stays creating for a later look.
           if ("failed" in found) return;
           if ("found" in found) { message = found.found; setLive(state, event.id, ["creating"], "placed", input.now(), { message: found.found }); return; }
+          const age = input.now().getTime() - Date.parse(row.created);
+          if (!(age >= 0 && age < (transport.nonceMs ?? 0))) {
+            off = true;
+            setLive(state, event.id, ["creating"], "uncertain", input.now(), { problem: LIVE_WORDS.maybeLeft });
+            return;
+          }
         } else if (row.state === "placed") { message = row.message; return; }
         else { off = true; return; }
         if (!input.fenced()) return;
