@@ -1071,7 +1071,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(raced.ok && raced.report.chatConfirmed).toBeFalsy();
     expect(tasks()).toBe(before);
     expect(script.acks().at(-1)).toBe("already done");
-    expect(script.edits().at(-1)).toMatch(/^✓ Done \(from web\): filed /);
+    expect(script.edits().at(-1)).toMatch(/^✓ Done \(from web\): Filed /);
     // A stale button — the same token again, or the token on another message — does nothing more.
     expect(await tapPass(sent.button(/^Confirm$/), sent.messageId)).toMatchObject({ ok: true, report: { ignored: 1 } });
     expect(await tapPass(sent.button(/^Dismiss$/), sent.messageId + 1)).toMatchObject({ ok: true, report: { ignored: 1 } });
