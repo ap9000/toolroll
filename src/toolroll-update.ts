@@ -45,6 +45,7 @@ import { V151_ADDED_COLUMNS } from "./storage.js";
 import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS, V150_ADDED_COLUMNS } from "./store.js";
 import { V152_ADDED_COLUMNS } from "./code-map-store.js";
 import { V153_ADDED_COLUMNS } from "./plain-schema.js";
+import { V158_ADDED_COLUMNS } from "./lead-latency-schema.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
@@ -446,7 +447,9 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // v154 adds a table only (check_stamp): no saved row changes, so no rule is needed for it.
   // v155 adds tables only (fleet-schema.ts): no saved row changes, so no rule is needed for it.
   // v156 adds tables only (fallback chains): likewise.
-  ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS, V150_ADDED_COLUMNS, V151_ADDED_COLUMNS, V152_ADDED_COLUMNS, V153_ADDED_COLUMNS))
+  // v158 (after v157's chat-app tables): a saved lead step reads no tool names and no failure detail, and a saved reply no route and no failure detail
+  // (NULL); the quick-answer switch is a new table.
+  ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS, V150_ADDED_COLUMNS, V151_ADDED_COLUMNS, V152_ADDED_COLUMNS, V153_ADDED_COLUMNS, V158_ADDED_COLUMNS))
     .map(([table, rule]) => [table, { ...EARLIER_RULES[table], ...rule }])),
 };
 /** The tables a migration may remove whole (v115's removed features). */

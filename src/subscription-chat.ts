@@ -59,7 +59,7 @@ export type SubscriptionLeadRequest = {
 
 export type SubscriptionLeadRunner = (
   request: SubscriptionLeadRequest,
-) => Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }>;
+) => Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string; quiet?: boolean }>;
 
 
 const RESPONSE_CAP_BYTES = 65_536;
@@ -243,7 +243,7 @@ function lastResultLine(stdout: string): string {
 export async function performSubscriptionLeadRequest(
   request: SubscriptionLeadRequest,
   runner: CommandRunner = run,
-): Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }> {
+): Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string; quiet?: boolean }> {
   // An eval world (eval-gate.ts): each request takes one of the attempt's dispatch slots; past the limit nothing is
   // sent ("status-": nothing billed).
   const evalSlot = takeEvalDispatch(`chat:${request.provider}`);
@@ -289,7 +289,9 @@ export async function performSubscriptionLeadRequest(
       processGroup: true,
       ...(streaming ? { onStdout: claudeStreamReader(request.onText!) } : {}),
     });
-    if (result.timedOut) return { ok: false, problem: "timeout" };
+    // Whether the harness wrote anything at all before its deadline (v158, responsive-chat.md §7.5): a silent one never
+    // started answering; one with output was answering slowly. Recorded, never shown.
+    if (result.timedOut) return { ok: false, problem: "timeout", quiet: result.stdout.trim() === "" };
     if (result.notFound) return { ok: false, problem: "not-found" };
     // v105: a streamed Claude turn says its plan's usage windows, and (once it answered) how this computer's Claude bills
     // with no key from us: the chat ran with every key left out. v140: its session's init names the exact model.

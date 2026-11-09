@@ -14,6 +14,7 @@ import { codeMapRemoteChanged, codeMapShapeProblem, forgetCodeMap, V152_ADDED_CO
 import { readStamps, stampDigest, stampRefusal, V154_SCHEMA, type CheckStamp, type StampReading } from "./check-stamp.js";
 import { FINDING_SOURCES, FINDING_SOURCES_BEFORE_LEAD, V155_SCHEMA, V155_STEPS } from "./fleet-schema.js";
 import { V156_SCHEMA, V156_STEPS } from "./fallback-schema.js";
+import { V158_ADDED_COLUMNS, V158_SCHEMA, V158_STEPS, LEAD_FAILURE_DETAILS, LEAD_ROUTES, type LeadFailureDetail, type LeadRoute } from "./lead-latency-schema.js";
 import { refArchived, taskArchived } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -1202,7 +1203,11 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v155 adds, and changes no saved row (docs/plans/fleet-follow-through.md): findings and their answers, check repairs,
 // before-and-after evidence and provider captures (V155_SCHEMA, new tables only; fleet-schema.ts).
 // v156 adds fallback chains (V156_SCHEMA, new tables only; fallback-schema.ts), after v155.
-export const SCHEMA_VERSION = 156;
+// v157 is the chat apps' live placeholders (chat-apps slice; merged separately).
+// v158 adds, and changes no saved row (docs/plans/responsive-chat.md, slice 5): the tools each lead step asked for, an
+// exact failure detail on a step and a reply, which model answered a reply (mate_turn.route), and the quick-answer
+// switch (lead_quick_setting). V158_SCHEMA, V158_ADDED_COLUMNS (lead-latency-schema.ts): saved rows read NULL.
+export const SCHEMA_VERSION = 158;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1340,7 +1345,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1604,7 +1609,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V158_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2011,6 +2016,7 @@ export const V153_STEPS = Object.freeze(["plain-tables", "plain-columns"] as con
 export const V154_STEPS = Object.freeze(["check-stamps"] as const);
 export { V155_STEPS };
 export { V156_STEPS };
+export { V158_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -2827,6 +2833,10 @@ export type LeadTurn = {
   tokensIn: number | null;
   tokensOut: number | null;
   failureReason: string | null;
+  /** v158: why it failed, more exactly (lead-latency-schema.ts); null when unknown or before v158. */
+  failureDetail?: LeadFailureDetail | null;
+  /** v158: which model answered (default, the quick model, or the main model after a quick step asked for more). */
+  route?: LeadRoute | null;
 };
 
 /** Who placed a hold — and therefore who alone may lift it. */
@@ -6378,6 +6388,12 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   // v156: fallback chains (new tables only). Idempotent, as v155's steps are.
   db.exec(V156_SCHEMA);
   step("fallback-tables");
+  // v158: the lead's latency records and its quick-answer switch (V158_SCHEMA, V158_ADDED_COLUMNS: saved rows read
+  // NULL). Idempotent, as v156's and v157's steps are.
+  db.exec(V158_SCHEMA);
+  step("lead-quick-setting");
+  for (const [table, columns] of Object.entries(V158_ADDED_COLUMNS)) for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  step("lead-latency-columns");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -15319,6 +15335,10 @@ export class Store {
       reportedCostUsd?: number | null;
       /** v141: how the request's own events said it was billed (a subscription harness); absent or null: unknown. */
       billingReported?: "subscription" | "api-key" | null;
+      /** v158: the tool names a lead step asked for (names only, never arguments); absent: not recorded. */
+      tools?: readonly string[];
+      /** v158: why it failed, more exactly than failureReason; absent: unknown. */
+      failureDetail?: LeadFailureDetail | null;
     },
     now: Date,
   ): boolean {
@@ -15327,7 +15347,7 @@ export class Store {
       .prepare(
         `UPDATE chat_turn SET state = ?, failure_reason = ?, tokens_in = ?, tokens_out = ?,
            settled_microusd = ?, unknown_spend = ?, reply_bytes = ?, candidate_count = ?, cache_read_tokens = ?, cache_write_tokens = ?,
-           model_reported = ?, provider_turns = ?, reported_cost_usd = ?, billing_reported = ?, finished_at = ?
+           model_reported = ?, provider_turns = ?, reported_cost_usd = ?, billing_reported = ?, tools = ?, failure_detail = ?, finished_at = ?
          WHERE id = ? AND generation = ? AND state IN ('queued','running')`,
       )
       .run(
@@ -15345,6 +15365,8 @@ export class Store {
         providerTurnsOf(outcome.providerTurns),
         reportedCostUsdOf(outcome.reportedCostUsd),
         outcome.billingReported === "subscription" || outcome.billingReported === "api-key" ? outcome.billingReported : null,
+        outcome.tools === undefined ? null : JSON.stringify(outcome.tools.filter(name => /^[a-z_]{1,64}$/.test(name)).slice(0, 32)),
+        outcome.failureDetail != null && (LEAD_FAILURE_DETAILS as readonly string[]).includes(outcome.failureDetail) ? outcome.failureDetail : null,
         now.toISOString(),
         id,
         generation,
@@ -21042,6 +21064,8 @@ export class Store {
       tokensIn: number;
       tokensOut: number;
       failureReason?: string;
+      /** v158: why it failed, more exactly than failureReason (the words a later reader shows); absent: unknown. */
+      failureDetail?: LeadFailureDetail | null;
       /** Answered turns: the assistant row, written in the same transaction as the promotion. A timed-out turn's notice. */
       message?: { text: string; activity: string };
       /** A timed-out turn keeps what its completed, validated tool calls proposed (its drafts go pending with its notice). */
@@ -21056,10 +21080,11 @@ export class Store {
       const settled = outcome.unknownSpend === true ? Math.max(Number(before["reserved"]), outcome.settledMicrousd) : outcome.settledMicrousd;
       const changed = this.db
         .prepare(
-          `UPDATE mate_turn SET state = ?, settled_microusd = ?, tokens_in = ?, tokens_out = ?, failure_reason = ?, finished_at = ?
+          `UPDATE mate_turn SET state = ?, settled_microusd = ?, tokens_in = ?, tokens_out = ?, failure_reason = ?, failure_detail = ?, finished_at = ?
            WHERE id = ? AND generation = ? AND state IN ('queued','running')`,
         )
-        .run(outcome.state, settled, outcome.tokensIn, outcome.tokensOut, outcome.failureReason ?? null, now.toISOString(), id, generation);
+        .run(outcome.state, settled, outcome.tokensIn, outcome.tokensOut, outcome.failureReason ?? null,
+          outcome.failureDetail != null && (LEAD_FAILURE_DETAILS as readonly string[]).includes(outcome.failureDetail) ? outcome.failureDetail : null, now.toISOString(), id, generation);
       if (Number(changed.changes) !== 1) return false;
       this.db.prepare("UPDATE lead_session SET spent_microusd = spent_microusd + ? WHERE id = ?").run(settled, Number(before["session"]));
       if (outcome.state === "answered") {
@@ -24738,6 +24763,8 @@ function readLeadTurn(row: Record<string, unknown>): LeadTurn {
     tokensIn: maybeN("tokens_in"),
     tokensOut: maybeN("tokens_out"),
     failureReason: maybe("failure_reason"),
+    failureDetail: (LEAD_FAILURE_DETAILS as readonly unknown[]).includes(row["failure_detail"]) ? row["failure_detail"] as LeadFailureDetail : null,
+    route: (LEAD_ROUTES as readonly unknown[]).includes(row["route"]) ? row["route"] as LeadRoute : null,
   };
 }
 
@@ -27025,4 +27052,33 @@ function widenFindingSources(db: Database): void {
 export function latestLeadTurnOfThread(store: Store, thread: number): LeadTurn | null {
   const row = store.handle.prepare("SELECT * FROM mate_turn WHERE thread = ? ORDER BY id DESC LIMIT 1").get(thread);
   return row === undefined ? null : readLeadTurn(row);
+}
+
+/** Settings → Lead's "Quick answers use a faster model" (v158): absent reads off, the shipped default
+ * (docs/plans/responsive-chat.md §8: on only once the lead-answer eval passes). */
+export function leadQuickAnswersOn(store: Store): boolean {
+  const row = store.handle.prepare("SELECT enabled FROM lead_quick_setting WHERE id = 1").get();
+  return row !== undefined && Number(row["enabled"]) === 1;
+}
+
+/** Turn quick answers on or off, recording who and when (the caller proved the person may change the lead's settings). */
+export function setLeadQuickAnswers(store: Store, enabled: boolean, by: string, now: Date): void {
+  store.handle.prepare(`INSERT INTO lead_quick_setting (id, enabled, updated_by, updated_at) VALUES (1, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, updated_by = excluded.updated_by, updated_at = excluded.updated_at`).run(enabled ? 1 : 0, by, now.toISOString());
+}
+
+/** Which model answers a running reply (v158): written at admission and when a quick step hands over to the main model.
+ * Only the turn's own running generation may write it. */
+export function setLeadTurnRoute(store: Store, turn: number, generation: number, route: LeadRoute): boolean {
+  if (!(LEAD_ROUTES as readonly string[]).includes(route)) return false;
+  return Number(store.handle.prepare("UPDATE mate_turn SET route = ? WHERE id = ? AND generation = ? AND state = 'running'").run(route, turn, generation).changes) === 1;
+}
+
+/** Whether a new message in this thread may be the answer to the lead's own question (ask_owner): the thread's newest
+ * reply asked one, less than LEAD_ASK_TTL_MS ago. Conservative on purpose: the quick-answer router (§8) keeps such a
+ * message on the main model. */
+export function leadAskAwaitsAnswer(store: Store, thread: number, now: Date): boolean {
+  const row = store.handle.prepare(`SELECT a.created_at AS at FROM lead_message m JOIN lead_ask a ON a.turn = m.turn JOIN mate_turn t ON t.id = m.turn
+      WHERE m.id = (SELECT MAX(id) FROM lead_message WHERE thread = ? AND role = 'assistant') AND t.state = 'answered'`).get(thread);
+  return row !== undefined && Date.parse(String(row["at"])) + LEAD_ASK_TTL_MS > now.getTime();
 }

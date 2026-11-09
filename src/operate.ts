@@ -9,6 +9,7 @@ import { adapterPolicy } from "./server/route-policy.js";
 import { UNSENT_REPLY_MS } from "./telegram-settings.js";
 import { checkPublicCommand } from "./public-check.js";
 import { leadNameOf } from "./lead-identity.js";
+import { modelName, quickLeadModel } from "./lead-route.js";
 import { maybeTriggerRepair } from "./dispose.js";
 import { CHECK_LEVEL_HINTS, CHECK_LEVEL_WORDS, isCheckLevel, liveQuickCommand, projectCheckLevel, quickVerifyKey, setProjectCheckLevel, setTaskCheckLevel, suggestQuickCommand } from "./check-levels.js";
 import { fileAddTestsTask, requestFollowUpChecks, runFollowUpCheck, runWaitingChecks } from "./result-follow-ups.js";
@@ -128,7 +129,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
-  checkoutIdle, setCheckoutIdle, openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
+  checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -752,6 +753,9 @@ Agents — which provider and model each phase runs on
       [--model <m>] [--weekly-usd <n>] [--daily-turns <n>] --as <you> --token <t>
       membership providers reuse a logged-in local harness with no dollar
       maximum; direct API providers require a key and weekly dollar ceiling
+  toolroll config set|clear|show quick-answers --as <you> --token <t>
+      quick answers on (set) or off (clear): plain status questions go to a
+      faster model on the Claude membership; changes stay on the main model
   toolroll chat --as <you> [--repo <path>…] [--say "…"] [--end]
       [--ceiling-usd <n>] [--json]                 (password at the prompt;
       --token <t> only for scripts — it lands in shell history)
@@ -5508,6 +5512,8 @@ async function configCommand(
   if (action !== undefined && !(CONFIG_ACTIONS as readonly string[]).includes(action)) return fail(write, json, "config", "usage", `unknown \`config ${action}\` — try ${CONFIG_ACTIONS.join(", ")}`, EXIT.usage);
   const repoGiven = text(flags, "repo");
   const scope = repoGiven === undefined ? INSTALLATION_SCOPE : canonicalProject(repoGiven) ?? resolve(repoGiven);
+  // Settings → Lead's "Quick answers use a faster model", the same switch (responsive-chat.md §8).
+  if (phase === "quick-answers") return quickAnswersConfig(action ?? "show", repoGiven !== undefined, flags, context);
 
   if (action === undefined || action === "show") {
     const installation = store.listPhaseConfig(INSTALLATION_SCOPE);
@@ -14360,4 +14366,28 @@ async function projectFallbackCommand(positional: readonly string[], flags: Map<
   });
   if (!done.ok) return fail(context.write, context.json, command, "refused", done.problem, EXIT.refused);
   return succeed(context.write, context.json, command, shown(), () => [...words(), "Tasks scoped from now on use this; tasks already approved keep the chain they were approved with."]);
+}
+
+
+/** `toolroll config set|clear|show quick-answers`: Settings → Lead's quick-answer switch (responsive-chat.md §8). On
+ * or off is installation-wide, so changing it takes an instance operator's password, as the web page's route does. */
+async function quickAnswersConfig(action: string, repoGiven: boolean, flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const command = `config ${action}`;
+  if (repoGiven) return fail(write, json, command, "usage", "quick answers are installation-wide: no --repo", EXIT.usage);
+  const said = () => {
+    const on = leadQuickAnswersOn(store);
+    const model = quickLeadModel(store);
+    return { payload: { quickAnswers: { on, model } }, lines: () => [on
+      ? `Quick answers are on: plain status questions are answered by ${modelName(model)}; anything that asks for a change stays on the lead's main model.`
+      : "Quick answers are off: the lead's main model answers everything."] };
+  };
+  if (action === "show") { const shown = said(); return succeed(write, json, command, shown.payload, shown.lines); }
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "usage", "changing quick answers takes `--as <you> --token <t>`", EXIT.usage);
+  const verified = authenticateApprover(store, acting.name, acting.token);
+  if (!verified.ok || !store.isInstanceOperator(acting.name)) return fail(write, json, command, "unauthenticated", "an instance operator changes quick answers, with their password", EXIT.refused);
+  setLeadQuickAnswers(store, action === "set", acting.name, clock());
+  const shown = said();
+  return succeed(write, json, command, shown.payload, shown.lines);
 }

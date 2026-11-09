@@ -25,7 +25,7 @@ test.each([142, -142])("v%s feedback retains its file, line, text and source key
     const before = historySnapshot(old);
     old.close();
     const migrated = openStore(file);
-    expect(SCHEMA_VERSION).toBe(156);
+    expect(SCHEMA_VERSION).toBe(158);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(143);
     expect(migrated.allDiffComments(run)[0]).toMatchObject({ path: "src/nav.ts", line: 4, note: "Keep this spacing.", sourceKey: "saved-note", image: null });
     expect(migrated.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);

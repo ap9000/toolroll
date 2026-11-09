@@ -696,6 +696,8 @@ post("chat", "lead.check", "/lead/check", { callers: ["cookie"] });
 post("chat", "onboarding.phone-dismiss", "/onboarding/phone/dismiss", approver("An approver puts this away.", "/chat"));
 const LEAD_WORDS: Record<string, string> = { identity: "An approver names their lead.", about: "An approver edits what their lead knows about them.", "promise/cancel": "An approver manages the lead's promises.", on: "An approver turns the lead on." };
 for (const one of ["identity", "about", "promise/cancel", "on"]) post("settings", `settings.lead-${one.replaceAll("/", "-")}`, `/settings/lead/${one}`, approver(LEAD_WORDS[one]!, "/settings/lead"));
+// Quick answers is installation-wide: which model answers everyone's plain questions (responsive-chat.md §8).
+post("settings", "settings.lead-quick", "/settings/lead/quick", { callers: ["cookie"], ...operator("An instance operator chooses how the lead answers.", "/settings/lead") });
 post("chat", "chat.config", "/chat/config", { scope: "step-up" });
 for (const one of ["mint", "follow", "end", "stop"]) post("chat", `chat.mate-${one}`, `/chat/mate/${one}`, { callers: ["cookie"], ...(one === "mint" ? { scope: "step-up" as const } : {}) });
 // Remove a message still waiting in the person's lead queue (docs/plans/lead-message-queue.md): their own, while it waits.

@@ -725,7 +725,7 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     store.bindTelegramConversationTurn(row.id, owner, session, turnId);
     if (turn.state === "queued" || turn.state === "running") { await requeue("replayed:running"); return; }
     if (turn.state !== "answered") {
-      await notify(leadFailureText(turn.failureReason, store.leadTurnCostUnconfirmed(turn.id)));
+      await notify(leadFailureText(turn.failureReason, store.leadTurnCostUnconfirmed(turn.id), turn.failureDetail ?? null));
       finish({ state: "failed", outcome: `replayed:${turn.failureReason ?? "failed"}` });
       report.refused++;
       return;

@@ -1299,7 +1299,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // failed turn that saved no message of its own says why in the thread, until the next reply starts.
     const lastTurn = thread === null ? null : latestLeadTurnOfThread(store, thread.id);
     const failure = lastTurn !== null && lastTurn.state === "failed" && !messages.some(one => one.role === "assistant" && one.turn === lastTurn.id)
-      ? leadFailureText(lastTurn.failureReason, store.leadTurnCostUnconfirmed(lastTurn.id)) : null;
+      ? leadFailureText(lastTurn.failureReason, store.leadTurnCostUnconfirmed(lastTurn.id), lastTurn.failureDetail ?? null) : null;
     return {
       failure,
       previous: replaced === null ? null : { messages: store.listLeadMessages(replaced.id, 40), proposals: previousProposals, decisions: decisionsFor(store, previousProposals) },

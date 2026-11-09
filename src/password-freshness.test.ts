@@ -387,7 +387,7 @@ describe("where freshness may be honoured", () => {
     // person proves each inside its own transaction.
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
-      "src/nightly-github.ts": 1, "src/operate.ts": 65, "src/pull-request-flow.ts": 1,
+      "src/nightly-github.ts": 1, "src/operate.ts": 66, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
@@ -516,6 +516,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#projectDemoCommand@147": 1,
     "src/operate.ts#projectRulesCommand@141": 1,
     "src/operate.ts#publishCommand@70": 5,
+    // Quick answers on or off (responsive-chat.md §8): an instance operator's password, checked where it is written.
+    "src/operate.ts#quickAnswersConfig@235": 1,
     "src/operate.ts#regateTaskCommand@36": 1,
     "src/operate.ts#repairTaskCommand@100": 2,
     "src/operate.ts#requeueTask@35": 1,

@@ -208,7 +208,8 @@ describe("subscription chat's isolated harness adapter", () => {
       await started;
       const [shell, grandchild] = readFileSync(pids, "utf8").trim().split(" ").map(Number);
       controller.abort();
-      expect(await pending).toEqual({ ok: false, problem: "timeout" });
+      // It had written (its "ready" line) before the abort: a timeout with output, not a silent one (v158).
+      expect(await pending).toEqual({ ok: false, problem: "timeout", quiet: false });
       const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
       expect(alive(shell!)).toBe(false);
       // The grandchild was in the killed group; its exit is reaped by init, so give the OS a bounded moment to show it.
