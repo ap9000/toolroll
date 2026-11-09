@@ -875,13 +875,14 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
       expect(shown().every(one => one.steps.every(entry => !('text' in entry)))).toBe(true);
       await settle();
 
-      // A failed reply: its reason comes from the saved turn (a restart keeps it), not from process memory.
+      // A failed reply: its reason comes from the saved turn (a restart keeps it), not from process memory. A subscription
+      // provider's error saves the sign-in detail (v158), so the read-back names the same cause the person saw live.
       subscriptionAnswers.push(async () => ({ ok: false, problem: 'provider-error' }));
       expect((await sendJson(cookie, { csrf, task: 'a', message: 'And now?', request: 'e'.repeat(32), 'request-session': session })).status).toBe(202);
       await room.until(() => shown().at(-1)?.done === true && shown().at(-1)?.ok === false);
       await settle();
       const read = await (await fetch(url('/t/a?format=workspace'), { headers: { cookie } })).json() as import('./browser-workspace.js').BrowserWorkspace;
-      expect(read.conversation?.failure).toBe(leadFailureText('provider-error'));
+      expect(read.conversation?.failure).toBe(leadFailureText('provider-error', false, 'sign-in'));
     } finally { room.close(); }
   });
 

@@ -47,6 +47,9 @@ const COOKIE_ONLY_POSTS = [
   'work.put-away.apply', 'task.act.archive', 'task.act.restore',
   // The welcome's Try a sample project: makes and adds a project, from a browser.
   'welcome.sample',
+  // Settings → Lead → Quick answers (responsive-chat.md §8): an operator's installation-wide switch for which model
+  // answers plain questions, from a browser. No password, and never a bearer's choice.
+  'settings.lead-quick',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {

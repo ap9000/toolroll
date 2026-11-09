@@ -1040,7 +1040,8 @@ await journey("lead", SCRIPTED, "The lead's reply shows live as it is written: a
   if (!failed.samples.some(one => one.text.startsWith("Let me check the queue first"))) throw new Error(`the failing reply never showed its first words: ${JSON.stringify(failed.samples.slice(-3))}`);
   if (await page.locator("[data-live-text]").count() !== 0) throw new Error("a failed reply's words stayed on screen");
   const reason = await page.locator("[data-lead-failed]").innerText();
-  if (!/turned the request down/.test(reason)) throw new Error(`the failure shown: ${reason}`);
+  // A subscription provider's failure is saved with its sign-in detail (v158): the same specific words as live.
+  if (!/its sign-in may have expired/.test(reason)) throw new Error(`the failure shown: ${reason}`);
   // A reload (as after a restart) reads the same failure from the saved turn.
   await page.reload();
   await waitFor(page.locator("[data-lead-failed]"), "the saved failure after a reload");
@@ -2908,7 +2909,12 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   if (comment === undefined) throw new Error(`the lead wasn't sent the file, line and run: ${sentRows.map(one => String(one.text)).join(" | ").slice(0, 400)}`);
   // The thread itself, while the lead works (its steps) and once it has answered (its reply and a card to confirm).
   await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}`);
-  await waitFor(on.locator("[data-live-reply] .so-live-steps li").first(), "the lead's steps while it answers", { timeoutMs: 30_000 });
+  // One status line at once; the steps sit behind a closed "Steps (n)" disclosure, opened here to show them.
+  await waitFor(on.locator("[data-live-reply] [data-live-status]"), "the lead's status line while it answers", { timeoutMs: 30_000 });
+  const liveSteps = on.locator("[data-live-reply] details.k-disclose");
+  await waitFor(liveSteps, "the lead's Steps while it answers", { timeoutMs: 30_000 });
+  if (!await liveSteps.evaluate(el => el.open)) await liveSteps.locator("summary").click();
+  await waitFor(on.locator("[data-live-reply] .so-live-steps li").first(), "the lead's steps while it answers", { timeoutMs: 10_000 });
   await bothSizes(on, "chat-thread-live");
   // The reply is the comment's own turn, answered, recorded under that turn and shown in the thread after the comment.
   const answered = await until("the lead's answer to the comment", async () => {
