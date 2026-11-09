@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { abortablePause, workChatQueue } from "./chat-follow.js";
 import { loadSlackCredentials, slackApi } from "./slack-api.js";
 import { ChatState } from "./chat-delivery-state.js";
+import { runChatAcks } from "./chat-live.js";
 import {
   receiveSlack,
   processSlackEvent,
@@ -10,6 +11,7 @@ import {
   planSlackNotifications,
   type SlackChatOptions,
   planSlackRooms,
+  slackAckHooks,
 } from "./slack-chat.js";
 
 export async function followSlack(
@@ -99,18 +101,22 @@ export async function followSlack(
     client.on("error", () =>
       problem("Slack connection failed. Check the app tokens and reconnect."),
     );
+    // The 👀 on each owner message as it arrives, beside the queue (a turn there can take a minute).
+    const api = slackApi(credentials.botToken);
+    const acks = runChatAcks({ state, installation: credentials.installation, owner, current: () => same() && connected,
+      hooks: slackAckHooks({ api }), same, signal: options.signal });
     client.on(
       "slack_event",
       (envelope: { type: string; body: unknown; ack: () => Promise<void> }) => {
         if (!same()) return;
         try {
-          receiveSlack(
+          if (receiveSlack(
             state,
             credentials,
             envelope.type,
             envelope.body,
             new Date(),
-          );
+          )) acks.wake();
           void envelope
             .ack()
             .catch(() =>
@@ -129,9 +135,10 @@ export async function followSlack(
       ...options,
       identity: credentials,
       owner,
-      api: slackApi(credentials.botToken),
+      api,
       canNotify: options.notifications,
       current: same,
+      liveReplies: true,
     };
     try {
       await client.start();

@@ -113,8 +113,8 @@ describe("the v149 migration", () => {
   test("a fresh database has every table and its rules", () => {
     dir = mkdtempSync(join(tmpdir(), "so-v149-"));
     const store = opened(openStore(join(dir, "fresh.db")));
-    expect(SCHEMA_VERSION).toBe(156);
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(156);
+    expect(SCHEMA_VERSION).toBe(157);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(157);
     expect(tables(store)).toEqual([...V149_TABLES].sort());
     expect(triggers(store)).toBeGreaterThan(15);
   });
@@ -127,7 +127,7 @@ describe("the v149 migration", () => {
     expect(updateSafeSchema(148)).toBe(true);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(149);
     const store = opened(openStore(file));
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(156);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(157);
     expect(tables(store)).toEqual([...V149_TABLES].sort());
     for (const table of V149_TABLES) expect(store.handle.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"], table).toBe(0);
     store.close();
@@ -148,7 +148,7 @@ describe("the v149 migration", () => {
     const peek = new DatabaseSync(crashed, { readOnly: true });
     try { expect(peek.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(-148); } finally { peek.close(); }
     const resumed = opened(openStore(crashed));
-    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(156);
+    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(157);
     expect(rowsOf(resumed)).toEqual(rowsOf(whole));
     expect(triggers(resumed)).toBe(triggers(whole));
   });

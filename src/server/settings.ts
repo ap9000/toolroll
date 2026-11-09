@@ -131,6 +131,7 @@ import { addProjectInstructions,ASSISTANTS,detectPreparation,modelChoices,previe
 import { skillsHtml,skillsScript } from "../skills-ui.js";
 import { checkSlackCredentials,clearSlackCredentials,loadSlackCredentials,saveSlackCredentials,SLACK_MANIFEST,SlackError } from "../slack-api.js";
 import { slackSettingsHtml } from "../slack-settings.js";
+import { ACK_REFUSED_META } from "../chat-live.js";
 import { spendHtml,spendScript,type LimitEdit,type LimitRowView } from "../spend-ui.js";
 import { approvalFactsNow } from "./kit.js";
 import { spendReport,spendReportCsv,spendRows } from "../spend-report.js";
@@ -1709,6 +1710,8 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
         if(account?.role!=="approver"||account.generation!==generation||account.revokedAt!==null) return show("Your access changed. Sign in again.",403);
         if(credentials || loadSlackCredentials(dir)) return show("Disconnect the current Slack app before connecting another.",409);
         saveSlackCredentials(dir,checked);
+        // A fresh connection asks for the 👀 again at once (an app reinstalled with reactions:write).
+        state.deleteMeta(checked.installation,ACK_REFUSED_META);
       } catch(error) {return show(error instanceof SlackError?error.message:"Slack could not be connected. Check the tokens and try again.");}
     } else if(action==="disconnect") {
       if(credentials) state.revoke(credentials.installation,now);

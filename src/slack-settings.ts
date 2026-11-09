@@ -2,12 +2,19 @@ import type { Store } from "./store.js";
 import { html, joinHtml, type Html } from "./html.js";
 import { loadSlackCredentials } from "./slack-api.js";
 import { chatSecretRow, chatSettingsHtml, type ChatSettingsOptions } from "./chat-settings-page.js";
+import { ChatState } from "./chat-delivery-state.js";
+import { ACK_REFUSED_META } from "./chat-live.js";
+import { notice } from "./server/kit.js";
 
 export function slackSettingsHtml(store: Store, dir: string, options: ChatSettingsOptions = {}): Html {
+  const credentials = loadSlackCredentials(dir);
+  // Slack answered "missing scope" to the 👀: an app installed before reactions:write needs one reinstall.
+  const reinstall = credentials !== null && new ChatState(store, "slack").meta(credentials.installation, ACK_REFUSED_META) !== null;
   return chatSettingsHtml(store, dir, options, {
     provider: "slack",
     label: "Slack",
-    credentials: loadSlackCredentials(dir),
+    credentials,
+    ...(reinstall ? { connection: notice(html`Reinstall needed for reactions. Update the app with the new <a class="k-link" href="/settings/slack/manifest">app manifest</a>, then reinstall it to your workspace.`) } : {}),
     intro: "Manage projects and review results in a private Slack conversation.",
     steps: html`<ol class="k-note"><li>Download the <a class="k-link" href="/settings/slack/manifest">app manifest</a>, then <a class="k-link" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">create an app</a> in your workspace using that manifest.</li><li>Under Basic Information, create an app-level token with <code class="k-mono">connections:write</code>.</li><li>Under OAuth &amp; Permissions, install the app and copy its bot token.</li></ol>`,
     fields: joinHtml([

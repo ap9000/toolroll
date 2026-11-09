@@ -9,7 +9,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { ChatState } from "./chat-delivery-state.js";
 import { chatObject as object } from "./chat-delivery.js";
 import { loadTeamsCredentials, teamsAccessToken, teamsApi, verifyTeamsToken, TeamsError } from "./teams-api.js";
-import { deliverTeamsPart, planTeamsNotifications, planTeamsRooms, processTeamsEvent, receiveTeams, type TeamsChatOptions } from "./teams-chat.js";
+import { deliverTeamsPart, planTeamsNotifications, planTeamsRooms, processTeamsEvent, receiveTeams, teamsAckHooks, type TeamsChatOptions } from "./teams-chat.js";
+import { runChatAcks } from "./chat-live.js";
 import type { Store } from "./store.js";
 import { limitWords, type Admission } from "./request-budget.js";
 
@@ -78,7 +79,7 @@ export async function followTeams(
     const stop = () => { alive = false; };
     options.signal.addEventListener("abort", stop, { once: true });
     const heartbeat = setInterval(() => { if (!same() || !state.lease(credentials.installation, owner, new Date())) stop(); }, 10_000);
-    const chat: TeamsChatOptions = { ...options, identity: credentials, owner, api: teamsApi(credentials, options.fetcher), canNotify: options.notifications, current: same };
+    const chat: TeamsChatOptions = { ...options, identity: credentials, owner, api: teamsApi(credentials, options.fetcher), canNotify: options.notifications, current: same, liveReplies: true };
     try {
       // Connected means the app can sign in; inbound reachability is the operator's endpoint to verify.
       try {
@@ -89,6 +90,8 @@ export async function followTeams(
         await pause(30_000);
         continue;
       }
+      // "typing…" on each owner message as it arrives (the receiver saves it, maybe in another process), beside the queue.
+      runChatAcks({ state, installation: credentials.installation, owner, current: same, hooks: teamsAckHooks(chat, state), same, signal: options.signal });
       await workChatQueue({
         same,
         ready: () => !(state.retryAt(credentials.installation) > new Date().toISOString()),
