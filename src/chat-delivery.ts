@@ -604,7 +604,7 @@ export async function processChatEvent(
       plan(
         [
           {
-            text: leadFailureText(turn?.failureReason ?? null, turn != null && store.leadTurnCostUnconfirmed(turn.id)),
+            text: leadFailureText(turn?.failureReason ?? null, turn != null && store.leadTurnCostUnconfirmed(turn.id), turn?.failureDetail ?? null),
           },
         ],
         nowOf(options),
