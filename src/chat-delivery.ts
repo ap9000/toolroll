@@ -17,6 +17,7 @@ import {
 import { LEAD_MESSAGE_MAX_CHARS, leadFailureText, runLeadTurn, type LeadChannelProblem } from "./lead.js";
 import { shapeReplyParts } from "./reply-shape.js";
 import { warmTurn, type WarmHooks } from "./chat-warmth.js";
+import { openChatLive, planWithLive, settleLive, type ChatLiveTransport, type ChatLiveTurn } from "./chat-live.js";
 import {
   confirmLeadProposal,
   dismissLeadProposal,
@@ -98,8 +99,11 @@ export type ChatDeliveryOptions = {
   clock?: () => Date;
   partSize?: number;
   maxProposal?: number;
-  /** The app's warm touches for one owner message (a 👍, typing), where the app and the bot's permissions allow them. */
+  /** The app's warm touch while the lead works on one owner message (typing), where the app and the bot's permissions allow it. */
   warm?: (event: ChatEvent, binding: ChatBinding) => WarmHooks;
+  /** Live replies (docs/plans/responsive-chat.md §3.2): the app's transport for the live message that answers the
+   * owner's own direct message; absent or null: the reply goes out whole at the end, as before. */
+  live?: (event: ChatEvent, binding: ChatBinding) => ChatLiveTransport | null;
   /** Merges a pull request approved in chat (tests script it); otherwise the project's own merge. */
   merge?: (input: { runId: number; by: string }) => Promise<{ ok: true } | { ok: false; message: string }>;
 };
@@ -248,6 +252,10 @@ export async function processChatEvent(
     return false;
   const event = state.next(identity.installation, now);
   if (!event) return false;
+  // The live message for this pass's turn, if any (chat-live.ts). Closed before any reply is planned.
+  let live: ChatLiveTurn | null = null;
+  // Every reply planned from here lands on the event's live message when it has one (its first part edits it).
+  const plan = (parts: ChatContent[], at: Date) => planWithLive(state, event.id, parts, at);
   try {
     if (event.kind === "pair") {
       if (!(await options.member(event.member, event.channel))) {
@@ -296,12 +304,12 @@ export async function processChatEvent(
     }
     const body = readChatMessageBody(event.payload);
     if (!body.ok) {
-      state.plan(event.id, [{ text: `That message couldn't be read (${body.issues.map(issue => issue.line).join("; ")}). Send it again.` }], nowOf(options));
+      plan([{ text: `That message couldn't be read (${body.issues.map(issue => issue.line).join("; ")}). Send it again.` }], nowOf(options));
       return true;
     }
     const input = body.value;
     if (typeof input.unsupported === "string") {
-      state.plan(event.id, [{ text: input.unsupported }], nowOf(options));
+      plan([{ text: input.unsupported }], nowOf(options));
       return true;
     }
     const text = String(input.text ?? "");
@@ -317,7 +325,7 @@ export async function processChatEvent(
       const prompt = openPromptFor(store, { channel: state.provider, binding: binding.id, chat: binding.channel }, nowOf(options));
       if (prompt !== null && answersPrompt(prompt, event.thread !== "" && event.thread !== event.ts ? event.thread : null)) {
         const answer = applyDecideFeedback(store, decideSeat(state, binding), prompt, text, repos, options.evidenceRoot, nowOf(options));
-        state.plan(event.id, [{ text: answer.said, ...(answer.link === null ? {} : { link: answer.link }) }], nowOf(options));
+        plan([{ text: answer.said, ...(answer.link === null ? {} : { link: answer.link }) }], nowOf(options));
         return true;
       }
     }
@@ -338,22 +346,22 @@ export async function processChatEvent(
       const surface = options.label.toLowerCase();
       const focusedId = store.chatFocus(surface, binding.id);
       const focusedTitle = focusedId === null ? null : phoneText(store.getTask(focusedId)?.title ?? focusedId, 64);
-      if (command.kind === "help") state.plan(event.id, [{ text: PHONE_HELP }], now_);
-      else if (command.kind === "status") state.plan(event.id, [{ text: phoneStatus(store, repos, now_, focusedTitle, options.evidenceRoot) }], now_);
-      else if (command.kind === "tasks") state.plan(event.id, [{ text: phoneTaskListText(phoneTaskChoices(store, repos, now_, null, 8, options.evidenceRoot), focusedTitle) }], now_);
+      if (command.kind === "help") plan([{ text: PHONE_HELP }], now_);
+      else if (command.kind === "status") plan([{ text: phoneStatus(store, repos, now_, focusedTitle, options.evidenceRoot) }], now_);
+      else if (command.kind === "tasks") plan([{ text: phoneTaskListText(phoneTaskChoices(store, repos, now_, null, 8, options.evidenceRoot), focusedTitle) }], now_);
       else if (command.kind === "lead") {
         store.setChatFocus(surface, binding.id, null, now_);
-        state.plan(event.id, [{ text: PHONE_BACK_TO_LEAD }], now_);
+        plan([{ text: PHONE_BACK_TO_LEAD }], now_);
       } else {
         const pick = resolvePhoneTask(store, repos, now_, command.id);
         if (pick.kind === "one") {
           store.setChatFocus(surface, binding.id, pick.id, now_);
           const view = phoneTaskView(store, repos, pick.view, now_, options.evidenceRoot);
           // The status names its task (and result): a reply to it is about that task.
-          state.plan(event.id, [{ text: phoneFocusText(view.text), ...(view.link === null ? {} : { link: view.link }), task: pick.view, ...(view.run === null ? {} : { run: view.run }) }], now_);
+          plan([{ text: phoneFocusText(view.text), ...(view.link === null ? {} : { link: view.link }), task: pick.view, ...(view.run === null ? {} : { run: view.run }) }], now_);
         } else if (pick.kind === "many") {
-          state.plan(event.id, [{ text: ["Several tasks match. Add a word from the title, or send one of these:", ...pick.choices.map(one => `• ${one.title} — /task ${one.id}`)].join("\n") }], now_);
-        } else state.plan(event.id, [{ text: PHONE_NO_MATCH }], now_);
+          plan([{ text: ["Several tasks match. Add a word from the title, or send one of these:", ...pick.choices.map(one => `• ${one.title} — /task ${one.id}`)].join("\n") }], now_);
+        } else plan([{ text: PHONE_NO_MATCH }], now_);
       }
       return true;
     }
@@ -371,13 +379,12 @@ export async function processChatEvent(
         say: (reply, link) => replies.push({ text: reply, ...(link ? { link } : {}), ...(isRoom ? { channel: event.channel } : {}) }),
       });
       if (consumed) {
-        state.plan(event.id, replies, now);
+        plan(replies, now);
         return true;
       }
     }
     if (text.length > LEAD_MESSAGE_MAX_CHARS) {
-      state.plan(
-        event.id,
+      plan(
         [
           {
             text: tooLongText(
@@ -392,14 +399,27 @@ export async function processChatEvent(
     const request = chatHash(
       `${options.state.provider}:${binding.id}:${event.id}`,
     ).slice(0, 32);
+    // The live message answers only the owner's own message in their own chat: never the bot's, never a room.
+    const ownMessage = event.kind === "message" && event.member !== identity.bot && event.member === binding.member && event.channel === binding.channel;
+    const transport = ownMessage ? options.live?.(event, binding) ?? null : null;
+    // `ceiling`: the turn's; without one (still waiting) only the fixed "Waiting…" words may go, never the turn's.
+    const openLive = (ceiling: string | null): ChatLiveTurn | null => {
+      if (transport === null) return null;
+      live ??= openChatLive({
+        state, event, installation: identity.installation, transport, shape: { asked: text, appOrigin: options.origin() },
+        fenced: () => options.current() && state.owns(identity.installation, options.owner, nowOf(options)) && state.live(binding),
+        standing: async () => { if (ceiling === null) return false; await channelAccess(options, binding, ceiling); return true; },
+        now: () => nowOf(options),
+      });
+      return live;
+    };
     let receipt =
       event.session === null
         ? null
         : store.leadRequestReceipt(event.session, request);
     if (!receipt) {
       if (new Date(event.created).getTime() + 600_000 < now.getTime()) {
-        state.plan(
-          event.id,
+        plan(
           [
             {
               text: "This message waited too long to start. Send it again when you’re ready.",
@@ -421,11 +441,11 @@ export async function processChatEvent(
           "Assistant is answering another message",
           new Date(now.getTime() + 5000),
         );
+        await openLive(null)?.queued();
         return true;
       }
       if (!resolved.ok) {
-        state.plan(
-          event.id,
+        plan(
           [
             {
               text: (resolved.said ?? "This chat is no longer paired.")
@@ -438,8 +458,7 @@ export async function processChatEvent(
         return true;
       }
       if (event.session !== null && event.session !== resolved.session.id) {
-        state.plan(
-          event.id,
+        plan(
           [{ text: "This conversation was restarted after you sent that, so it wasn't answered. Send your message again." }],
           now,
         );
@@ -471,8 +490,7 @@ export async function processChatEvent(
         ).values(),
       ];
       if (targets.length > 1) {
-        state.plan(
-          event.id,
+        plan(
           [
             {
               text: "This thread is about more than one task. Reply to the message about the one you mean, or send /tasks to pick one.",
@@ -495,8 +513,8 @@ export async function processChatEvent(
       // An unknown surface names no channel rather than a guess.
       const channel = leadChannelOf(options.label);
       // Only ever the owner's own message in their own chat: never the bot's, never a room.
-      const warm = warmTurn(options.warm !== undefined && event.kind === "message" && event.member !== identity.bot && event.member === binding.member && event.channel === binding.channel
-        ? options.warm(event, binding) : {});
+      const warm = warmTurn(options.warm !== undefined && ownMessage ? options.warm(event, binding) : {});
+      const turnLive = openLive(resolved.who.ceilingDigest);
       const outcome = await runLeadTurn({
         store,
         who: resolved.who,
@@ -516,7 +534,7 @@ export async function processChatEvent(
         evidenceRoot: options.evidenceRoot,
         mediaDelivery: "documents",
         ...(channel === undefined ? {} : { channel }),
-        onProgress: warm.onProgress,
+        onProgress: (progress) => { warm.onProgress(progress); turnLive?.push(progress); },
         revalidate: async () => {
           try {
             await channelAccess(options, binding, resolved.who.ceilingDigest);
@@ -528,7 +546,11 @@ export async function processChatEvent(
             return { ok: false, reason };
           }
         },
-      }).finally(warm.stop);
+      }).finally(async () => {
+        warm.stop();
+        // Live edits end, and the one in flight settles, before anything of the reply is planned.
+        await turnLive?.close();
+      });
       if (outcome.ok && !outcome.replayed && context?.task)
         mirrorToTaskChat(store, resolved.who, context.task, options.label, text, outcome.reply, nowOf(options));
       if (
@@ -547,12 +569,12 @@ export async function processChatEvent(
           outcome.refused === "backlog" ? "Waiting behind earlier messages" : "Assistant is answering another message",
           new Date(nowOf(options).getTime() + 5000),
         );
+        await turnLive?.queued();
         return true;
       }
       receipt = store.leadRequestReceipt(resolved.session.id, request);
       if (!receipt) {
-        state.plan(
-          event.id,
+        plan(
           [
             {
               text: !outcome.ok
@@ -565,6 +587,9 @@ export async function processChatEvent(
         return true;
       }
     }
+    // A live message whose create never confirmed (this pass, or before a restart) is found first (Discord, by its
+    // nonce) or marked uncertain, so the reply edits the right message or none.
+    await settleLive(state, event.id, transport, () => nowOf(options));
     store.sweepStaleLeadTurns(nowOf(options));
     const turn = store.getLeadTurn(receipt.turn);
     if (turn?.state === "running" || turn?.state === "queued") {
@@ -576,8 +601,7 @@ export async function processChatEvent(
       return true;
     }
     if (turn?.state !== "answered") {
-      state.plan(
-        event.id,
+      plan(
         [
           {
             text: leadFailureText(turn?.failureReason ?? null, turn != null && store.leadTurnCostUnconfirmed(turn.id)),
@@ -626,15 +650,17 @@ export async function processChatEvent(
     // Cards first, so what a card leads to sits right under it. A card is an ordinary part: it confirms nothing.
     for (const proposal of cardsFirst(store.listLeadProposals(turn.thread, ["pending"]).filter((p) => p.turn === turn.id)))
       parts.push(isCardProposal(proposal) ? cardPart(proposal) : { text: "", proposal: proposal.id });
-    state.plan(event.id, parts, nowOf(options));
+    plan(parts, nowOf(options));
     return true;
   } catch (error) {
+    // Nothing is planned while a live edit could still land.
+    await (live as ChatLiveTurn | null)?.close();
     const problem =
       error instanceof ChatDeliveryError
         ? error
         : new ChatDeliveryError(`${options.label} is waiting to retry`);
     if (problem.permanent) {
-      state.plan(event.id, [{ text: problem.message }], nowOf(options));
+      plan([{ text: problem.message }], nowOf(options));
       state.prepare("UPDATE chat_event SET next_at=NULL,problem=? WHERE provider=:provider AND id=?").run(problem.message, event.id);
       return true;
     }

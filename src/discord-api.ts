@@ -19,7 +19,7 @@ export const discordId = (v: unknown): v is string =>
   typeof v === "string" && /^[1-9][0-9]{16,19}$/.test(v);
 export type DiscordCredentials = ChatIdentity & { botToken: string };
 export type DiscordApi = (
-  method: "GET" | "POST" | "PATCH" | "PUT",
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
   path: string,
   body?: Record<string, unknown>,
   file?: { bytes: Uint8Array; name: string },
@@ -27,17 +27,23 @@ export type DiscordApi = (
 export class DiscordError extends ChatDeliveryError {}
 /** Discord's 403: the bot may not do this here (for a file, no Attach Files permission). */
 export const DISCORD_REFUSED = "Discord refused access. Check the app and direct-message permissions.";
+/** Discord's 404: the message (or the conversation) is gone. */
+export const DISCORD_GONE = "The Discord message or conversation is unavailable. Open the saved chat.";
 export function discordApi(
   token: string,
   fetcher: typeof fetch = fetch,
 ): DiscordApi {
   return async (method, path, body, file) => {
-    // Only relative API routes; never send the bot credential to supplied URLs.
+    // Only relative API routes; never send the bot credential to supplied URLs. Beyond messages: typing, and the bot's
+    // own 👀 on a message (put on, taken off).
     if (
-      !/^\/(?:users\/@me|users\/[0-9]+|oauth2\/applications\/@me|channels\/[0-9]+(?:\/typing|\/messages\/[0-9]+\/reactions\/%F0%9F%91%8D\/@me|\/messages(?:\/[0-9]+)?(?:\?limit=100)?)?|interactions\/[0-9]+\/[A-Za-z0-9._-]+\/callback)$/.test(
+      !/^\/(?:users\/@me|users\/[0-9]+|oauth2\/applications\/@me|channels\/[0-9]+(?:\/typing|\/messages\/[0-9]+\/reactions\/%F0%9F%91%80\/@me|\/messages(?:\/[0-9]+)?(?:\?limit=100)?)?|interactions\/[0-9]+\/[A-Za-z0-9._-]+\/callback)$/.test(
         path,
       )
     )
+      throw new DiscordError("Invalid Discord request");
+    // DELETE takes off the bot's own 👀 and nothing else (never a message).
+    if (method === "DELETE" && !/^\/channels\/[0-9]+\/messages\/[0-9]+\/reactions\/%F0%9F%91%80\/@me$/.test(path))
       throw new DiscordError("Invalid Discord request");
     let response: Response;
     const headers: Record<string, string> = { Authorization: `Bot ${token}` };
@@ -91,7 +97,7 @@ export function discordApi(
           : response.status === 403
             ? DISCORD_REFUSED
             : response.status === 404
-              ? "The Discord message or conversation is unavailable. Open the saved chat."
+              ? DISCORD_GONE
               : response.status === 413
                 ? "Discord refused this file size. Open the saved result to view the evidence."
                 : "Discord could not complete the request";

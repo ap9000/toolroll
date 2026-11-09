@@ -8,7 +8,7 @@ import { chatFlowButtons } from "./chat-flow.js";
 import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-shots.js";
 import { admitChatEvent } from "./chat-admission.js";
 import {
-  ChatState, ChatDeliveryError, chatHash, partContent, type ChatIdentity, type ChatContent,
+  ChatState, ChatDeliveryError, chatHash, partContent, type ChatIdentity, type ChatContent, type ChatEvent,
 } from "./chat-delivery-state.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
 import { readDiscordButtonToken, readDiscordComponentInteraction } from "./contracts/discord-callback.js";
@@ -24,7 +24,7 @@ import {
 import { chatResultHref } from "./chat-controls.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { discordPlain, renderReply } from "./reply-shape.js";
-import { WARM_EMOJI } from "./chat-warmth.js";
+import { isLiveMessage, liveSpacingOf, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
 import {
   proposalPreview,
   proposalLink,
@@ -42,12 +42,13 @@ import {
   discordMember,
   DiscordError,
   DISCORD_REFUSED,
+  DISCORD_GONE,
   type DiscordApi,
 } from "./discord-api.js";
 export type DiscordChatOptions = Omit<
   ChatDeliveryOptions,
-  "state" | "label" | "member" | "partSize" | "maxProposal"
-> & { api: DiscordApi };
+  "state" | "label" | "member" | "partSize" | "maxProposal" | "live"
+> & { api: DiscordApi; /** The live "Working on it…" message (chat-live.ts): on in the worker. */ liveReplies?: LiveReplies };
 export const discordDelivery = (
   options: DiscordChatOptions,
 ): ChatDeliveryOptions => ({
@@ -55,11 +56,11 @@ export const discordDelivery = (
   state: new ChatState(options.store, "discord"),
   label: "Discord",
   member: (member, channel) => discordMember(options.api, member, channel),
-  // A 👍 on the owner's message and "typing…" while the lead works; a missing permission is skipped silently.
+  // "typing…" while the lead works (the 👀 goes at arrival: discordAckHooks); a missing permission is skipped silently.
   warm: (event) => ({
-    react: () => options.api("PUT", `/channels/${event.channel}/messages/${event.ts}/reactions/${encodeURIComponent(WARM_EMOJI)}/@me`),
     typing: () => options.api("POST", `/channels/${event.channel}/typing`),
   }),
+  ...(options.liveReplies ? { live: (event: ChatEvent) => discordLive(options, event, liveSpacingOf(options.liveReplies)) } : {}),
   partSize: 1800,
   maxProposal: 3400,
 });
@@ -211,13 +212,7 @@ export function discordCard(
   voice = false,
 ): Record<string, unknown> {
   // The lead's own reply: one description in Discord's Markdown (bold anchors, labelled links), no title line promoted to a header.
-  if (voice)
-    return {
-      content: "",
-      embeds: [{ description: renderReply(text, "discord").slice(0, 4096), color: 0x297b70 }],
-      components: Array.from({ length: Math.min(5, Math.ceil(buttons.length / 5)) }, (_, row) => ({ type: 1, components: buttons.slice(row * 5, row * 5 + 5) })),
-      allowed_mentions: { parse: [], replied_user: false },
-    };
+  if (voice) return discordVoicePayload(renderReply(text, "discord"), buttons);
   const lines = text.split("\n"),
     first = lines[0] ?? "Toolroll",
     title =
@@ -532,6 +527,12 @@ export async function deliverDiscordPart(
     }
     // No permission to attach files here: one plain line instead of the result's screenshots.
     const saved = readChatPart(row.payload), content = saved.ok ? saved.value : null;
+    // The live message the reply was to replace is gone: the reply goes out as a new message.
+    if (content?.edit !== undefined && error instanceof DiscordError && error.code === DISCORD_GONE && isLiveMessage(state, row.event, content.edit)) {
+      const { edit: _edit, ...asNew } = content;
+      state.repaint(row.id, asNew);
+      return true;
+    }
     // Discord refused the card's embed: the part's own plain text goes instead, so the message is never lost.
     if (content?.rich && error instanceof DiscordError && error.code === "Discord could not complete the request" && error.retryMs === 60_000) {
       state.repaint(row.id, withoutCard(content));
@@ -561,4 +562,56 @@ export async function deliverDiscordPart(
     if (problem.code === "ratelimited") state.deferUntil(identity.installation, until);
     return true;
   }
+}
+
+/** The lead's words as Discord carries them, already rendered: one embed description (cut to its 4 096), empty
+ * content, its buttons (none on a live message) and never a ping. Every field is sent on every edit: Discord keeps
+ * what an edit leaves out, and inherits no allowed_mentions. */
+export function discordVoicePayload(rendered: string, buttons: Record<string, unknown>[] = []): Record<string, unknown> {
+  return {
+    content: "",
+    embeds: [{ description: rendered.slice(0, 4096), color: 0x297b70 }],
+    components: Array.from({ length: Math.min(5, Math.ceil(buttons.length / 5)) }, (_, row) => ({ type: 1, components: buttons.slice(row * 5, row * 5 + 5) })),
+    allowed_mentions: { parse: [], replied_user: false },
+  };
+}
+
+/** The live message for one owner message: a reply to it, created under a nonce so a repeat returns the same one. */
+export function discordLive(options: Pick<DiscordChatOptions, "api" | "identity">, event: ChatEvent, spacingMs?: number): ChatLiveTransport {
+  const nonce = chatHash(`discord:live:${event.id}`).slice(0, 24);
+  const confirmed = (answer: Record<string, unknown>, id?: string): string => {
+    if (!discordId(answer.id) || answer.channel_id !== event.channel || object(answer.author).id !== options.identity.bot || (id !== undefined && answer.id !== id))
+      throw new DiscordError("Discord did not confirm the message identity", 15_000, true);
+    return answer.id;
+  };
+  return {
+    platform: "discord",
+    ...(spacingMs === undefined ? {} : { spacingMs }),
+    limit: 4_000,
+    create: async (text) => confirmed(await options.api("POST", `/channels/${event.channel}/messages`, {
+      ...discordVoicePayload(text), nonce, enforce_nonce: true,
+      ...(discordId(event.thread) ? { message_reference: { message_id: event.thread, channel_id: event.channel, fail_if_not_exists: false } } : {}),
+    })),
+    recover: async () => {
+      const recent = await options.api("GET", `/channels/${event.channel}/messages?limit=100`);
+      const found = (Array.isArray(recent.items) ? recent.items : []).map(object)
+        .find(one => one.nonce === nonce && object(one.author).id === options.identity.bot && one.channel_id === event.channel && discordId(one.id));
+      return found === undefined ? null : String(found.id);
+    },
+    edit: async (message, text) => { confirmed(await options.api("PATCH", `/channels/${event.channel}/messages/${message}`, discordVoicePayload(text)), message); },
+    rateLimited: error => error instanceof DiscordError && error.code === "ratelimited" ? error.retryMs : null,
+    uncertain: error => !(error instanceof ChatDeliveryError) || error.uncertain,
+  };
+}
+
+/** The 👀 on the owner's message, and taking it off. A missing permission is asked about at most once a minute, quietly. */
+export function discordAckHooks(options: Pick<DiscordChatOptions, "api">): ChatAckHooks {
+  const path = (event: ChatEvent) => `/channels/${event.channel}/messages/${event.ts}/reactions/${encodeURIComponent("👀")}/@me`;
+  return {
+    react: (event) => options.api("PUT", path(event)),
+    unreact: (event) => options.api("DELETE", path(event)),
+    refused: error => error instanceof DiscordError && error.code === DISCORD_REFUSED,
+    settled: error => error instanceof DiscordError && error.code === DISCORD_GONE,
+    rateLimited: error => error instanceof DiscordError && error.code === "ratelimited" ? error.retryMs : null,
+  };
 }

@@ -15,6 +15,7 @@ import { readStamps, stampDigest, stampRefusal, V154_SCHEMA, type CheckStamp, ty
 import { FINDING_SOURCES, FINDING_SOURCES_BEFORE_LEAD, V155_SCHEMA, V155_STEPS } from "./fleet-schema.js";
 import { V156_SCHEMA, V156_STEPS } from "./fallback-schema.js";
 import { V158_ADDED_COLUMNS, V158_SCHEMA, V158_STEPS, LEAD_FAILURE_DETAILS, LEAD_ROUTES, type LeadFailureDetail, type LeadRoute } from "./lead-latency-schema.js";
+import { V157_SCHEMA, V157_STEPS } from "./chat-live-schema.js";
 import { refArchived, taskArchived } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -1609,7 +1610,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V158_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2016,6 +2017,7 @@ export const V153_STEPS = Object.freeze(["plain-tables", "plain-columns"] as con
 export const V154_STEPS = Object.freeze(["check-stamps"] as const);
 export { V155_STEPS };
 export { V156_STEPS };
+export { V157_STEPS };
 export { V158_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
@@ -6388,6 +6390,9 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   // v156: fallback chains (new tables only). Idempotent, as v155's steps are.
   db.exec(V156_SCHEMA);
   step("fallback-tables");
+  // v157: live replies in Slack, Discord and Teams (new tables only). Idempotent, as v156's step is.
+  db.exec(V157_SCHEMA);
+  step("chat-live-tables");
   // v158: the lead's latency records and its quick-answer switch (V158_SCHEMA, V158_ADDED_COLUMNS: saved rows read
   // NULL). Idempotent, as v156's and v157's steps are.
   db.exec(V158_SCHEMA);

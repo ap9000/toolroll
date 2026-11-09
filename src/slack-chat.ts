@@ -43,6 +43,7 @@ import {
   verifyResultImage,
 } from "./chat-evidence.js";
 import { type Store } from "./store.js";
+import { isLiveMessage, liveSpacingOf, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 
 export type SlackChatOptions = {
@@ -58,8 +59,11 @@ export type SlackChatOptions = {
   canNotify?: () => boolean;
   clock?: () => Date;
   upload?: typeof uploadSlackBytes;
+  /** The live "Working on it…" message (chat-live.ts): on in the worker, off unless asked for. */
+  liveReplies?: LiveReplies;
 };
 const SLACK_REFUSED_BLOCKS: ReadonlySet<string> = new Set(["invalid_blocks", "invalid_blocks_format", "invalid_arguments", "msg_too_long", "msg_blocks_too_long"]);
+const SLACK_UNEDITABLE: ReadonlySet<string> = new Set(["message_not_found", "cant_update_message", "edit_window_closed"]);
 const nowOf = (options: SlackChatOptions): Date =>
   options.clock?.() ?? new Date();
 const split = (text: string, size = 2800): string[] => {
@@ -184,10 +188,8 @@ const delivery = (options: SlackChatOptions): ChatDeliveryOptions => ({
   label: "Slack",
   member: (member, channel) =>
     slackMember(options.api, options.identity, member, channel),
-  // A 👍 on the owner's message where the app has reactions:write; Slack shows bots no typing indicator.
-  warm: (event) => ({
-    react: () => options.api("reactions.add", { channel: event.channel, timestamp: event.ts, name: "thumbsup" }),
-  }),
+  // Slack shows bots no typing indicator; the 👀 goes at arrival (slackAckHooks) and the live message shows the rest.
+  ...(options.liveReplies ? { live: (event: ChatEvent) => slackLive(options, event, liveSpacingOf(options.liveReplies)) } : {}),
 });
 export const processSlackEvent = (options: SlackChatOptions) =>
   processChatEvent(delivery(options));
@@ -229,7 +231,8 @@ export function slackVoiceBlocks(
 ): Record<string, unknown>[] {
   const blocks: Record<string, unknown>[] = split(mrkdwn).map((part) => ({
     type: "section",
-    text: { type: "mrkdwn", text: part },
+    // verbatim: Slack never turns words of the reply into a mention, a channel or a link (renderReply escapes the rest).
+    text: { type: "mrkdwn", text: part, verbatim: true },
   }));
   if (buttons.length) blocks.push({ type: "actions", elements: buttons });
   return blocks;
@@ -526,6 +529,7 @@ export async function deliverSlackPart(
       blocks: content.rich ? slackCardBlocks(content.rich, buttons) : voiced === null ? slackBlocks(text, buttons) : slackVoiceBlocks(voiced, buttons),
       mrkdwn: voiced !== null,
       parse: "none",
+      link_names: false,
       unfurl_links: false,
       unfurl_media: false,
     };
@@ -556,6 +560,12 @@ export async function deliverSlackPart(
     }
     // No permission to upload files here: one plain line instead of the result's screenshots.
     const saved = readChatPart(row.payload), content = saved.ok ? saved.value : null;
+    // The live message the reply was to replace is gone (deleted, or too old to edit): the reply goes out as a new one.
+    if (content?.edit !== undefined && error instanceof SlackError && SLACK_UNEDITABLE.has(error.code) && isLiveMessage(state, row.event, content.edit)) {
+      const { edit: _edit, ...asNew } = content;
+      state.repaint(row.id, asNew);
+      return true;
+    }
     // Slack refused the card's blocks: the part's own plain text goes instead, so the message is never lost.
     if (content?.rich && error instanceof SlackError && SLACK_REFUSED_BLOCKS.has(error.code)) {
       state.repaint(row.id, withoutCard(content));
@@ -581,4 +591,42 @@ export async function deliverSlackPart(
     if (problem.code === "ratelimited") state.deferUntil(identity.installation, until);
     return true;
   }
+}
+
+/** A live message's exact payload (§3.2): the rendered mrkdwn as the top-level text and as verbatim sections, every
+ * field sent on every edit, nothing parsed, linked or unfurled, no buttons. */
+export function slackLivePayload(channel: string, mrkdwn: string): Record<string, unknown> {
+  return { channel, text: mrkdwn, blocks: slackVoiceBlocks(mrkdwn), mrkdwn: true, parse: "none", link_names: false, unfurl_links: false, unfurl_media: false };
+}
+
+/** The live message for one owner message, in its thread (where the reply goes). */
+export function slackLive(options: Pick<SlackChatOptions, "api">, event: ChatEvent, spacingMs?: number): ChatLiveTransport {
+  return {
+    platform: "slack",
+    ...(spacingMs === undefined ? {} : { spacingMs }),
+    limit: 2_800,
+    create: async (text) => {
+      const answer = await options.api("chat.postMessage", { ...slackLivePayload(event.channel, text), thread_ts: event.thread });
+      if (!slackTs(answer.ts)) throw new SlackError("Slack did not confirm the message identity", 15_000, true);
+      return answer.ts;
+    },
+    edit: async (message, text) => {
+      const answer = await options.api("chat.update", { ...slackLivePayload(event.channel, text), ts: message });
+      if (answer.ts !== message) throw new SlackError("Slack did not confirm the message identity", 15_000, true);
+    },
+    rateLimited: error => error instanceof SlackError && error.code === "ratelimited" ? error.retryMs : null,
+    uncertain: error => !(error instanceof SlackError) || error.uncertain,
+  };
+}
+
+/** The 👀 on the owner's message (reactions:write). An install without that scope is asked at most once a minute, quietly. */
+export function slackAckHooks(options: Pick<SlackChatOptions, "api">): ChatAckHooks {
+  const code = (error: unknown) => error instanceof SlackError ? error.code : "";
+  return {
+    react: (event) => options.api("reactions.add", { channel: event.channel, timestamp: event.ts, name: "eyes" }),
+    unreact: (event) => options.api("reactions.remove", { channel: event.channel, timestamp: event.ts, name: "eyes" }),
+    refused: error => ["missing_scope", "no_permission", "not_in_channel", "channel_not_found"].includes(code(error)),
+    settled: error => ["already_reacted", "no_reaction", "message_not_found"].includes(code(error)),
+    rateLimited: error => code(error) === "ratelimited" ? (error as SlackError).retryMs : null,
+  };
 }
