@@ -9,6 +9,8 @@ import { familyCompleted } from "./result-completion.js";
 import { approvedCheckOf, approvedCheckStateOf, assignmentStatusFacts, checksFactOf, plainReasonOf, stageOfDispatch, taskStatusOf, type TaskStatus } from "./task-status.js";
 import { assignmentChecksForRun, assignmentOf } from "./assignment.js";
 import { CHAT_CONTROLS, chatControlHref, chatResultHref, type ChatControl } from "./chat-controls.js";
+import { homeFiguresLine, homeFiguresOf } from "./home-groups.js";
+import { workIndexPage } from "./work-index.js";
 
 export type PhoneCommand = { kind: "status" } | { kind: "help" } | { kind: "task"; id: string } | { kind: "tasks" } | { kind: "lead" };
 
@@ -113,7 +115,10 @@ export function phoneStatus(store: Store, repos: readonly string[], now: Date, f
   if (repos.length === 0) return "No projects are connected here yet. Add a project in Toolroll, then send /status again.";
   return store.transact(() => {
     const snapshot = withDispatchDiagnoses(store, store.chatSnapshot(repos, now), now);
-    const lines = [...(focused === null ? [] : [`Talking about: ${focused} · /lead to switch back`, ""]), "Recent work", `As of ${now.toISOString().replace("T", " ").slice(0, 19)} UTC · ${repos.length} project(s)`, ""];
+    // It opens with Home's figures, from the work index totals over these projects (the Tasks lists' own counts);
+    // the groups below are dispatch diagnoses, which are not the work index's families, so they keep their headings.
+    const figures = homeFiguresOf(workIndexPage(store, now, { principal: "operator", repos, includeUnplaced: false }, { limit: 1, ...(root === undefined ? {} : { root }) }).totals);
+    const lines = [homeFiguresLine(figures), "", ...(focused === null ? [] : [`Talking about: ${focused} · /lead to switch back`, ""]), "Recent work", `As of ${now.toISOString().replace("T", " ").slice(0, 19)} UTC · ${repos.length} project(s)`, ""];
     if (snapshot.tasksSaturated) lines.push("Newest 60 tasks only — older work may still need attention.", "");
     if (snapshot.tasks.length === 0) lines.push("No tasks are recorded in these projects.");
     for (const group of ["Needs attention", "Working", "Waiting / next up", "Finished", "Replaced", "Cancelled"]) {

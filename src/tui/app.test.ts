@@ -24,24 +24,49 @@ describe("terminal UI", () => {
   it("lists the tasks, what needs you, and the selected task's live output; j/k move", async () => {
     const app = render(createElement(App, { source: sampleSource(), session: sampleSession(), pollMs: 20 }));
     const shows = show(app);
-    await shows("> Sample: fix the login redirect");
+    await shows("> Sample: upgrade the test runner");
     await shows("1 task needs you");
-    await shows("Editing src/auth.ts (sample)");
     await mounted();
+    app.stdin.write("j");
+    await shows("> Sample: fix the login redirect");
+    await shows("Editing src/auth.ts (sample)");
     app.stdin.write("j");
     await shows("> Sample: add CSV export");
     app.stdin.write("k");
     await shows("> Sample: fix the login redirect");
   });
 
+  it("lists the tasks under Home's three headings, in Home's order, whatever order they arrive in; j/k follow the list", async () => {
+    const base = sampleSource();
+    const snapshot = await base.snapshot();
+    const [you, working, done] = snapshot.rows;
+    const cancelled = { ...done!, id: "t4", title: "Sample: drop the old banner", status: "Cancelled", group: null };
+    const source = scripted({ snapshot: async () => ({ ...snapshot, rows: [cancelled, done!, working!, you!] }) });
+    const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));
+    const shows = show(app);
+    await shows("> Sample: upgrade the test runner");
+    const frame = app.lastFrame() ?? "";
+    // The list is the left column: the line each text first shows on there.
+    const at = (text: string) => frame.split("\n").findIndex(line => { const column = line.indexOf(text); return column > -1 && column < 40; });
+    for (const text of ["Waiting on you", "Working", "Done", "Other"]) expect(at(text), text).toBeGreaterThan(-1);
+    expect(at("Waiting on you")).toBeLessThan(at("Sample: upgrade the test runner"));
+    expect(at("Sample: upgrade the test runner")).toBeLessThan(at("Working"));
+    expect(at("Working")).toBeLessThan(at("Sample: fix the login redirect"));
+    expect(at("Sample: fix the login redirect")).toBeLessThan(at("Done"));
+    expect(at("Done")).toBeLessThan(at("Sample: add CSV export"));
+    expect(at("Sample: add CSV export")).toBeLessThan(at("Other"));
+    expect(at("Other")).toBeLessThan(at("Sample: drop the old banner"));
+    await mounted();
+    app.stdin.write("j"); app.stdin.write("j"); app.stdin.write("j");
+    await shows("> Sample: drop the old banner");
+  });
+
   it("a shows the whole plan first; y approves exactly its digest; Esc approves nothing", async () => {
     const source = scripted();
     const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));
     const shows = show(app);
-    await shows("> Sample: fix");
-    await mounted();
-    app.stdin.write("j"); app.stdin.write("j");
     await shows("> Sample: upgrade the test runner");
+    await mounted();
     app.stdin.write("a");
     await shows("Goal: upgrade the test runner (sample)");
     app.stdin.write("\u001b");
@@ -116,10 +141,8 @@ describe("terminal UI", () => {
     });
     const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));
     const shows = show(app);
-    await shows("> Sample: fix");
-    await mounted();
-    app.stdin.write("j"); app.stdin.write("j");
     await shows("> Sample: upgrade the test runner");
+    await mounted();
     app.stdin.write("a");
     await shows("Approve this plan? Sample: upgrade the test runner");
     for (const line of ["Goal: tidy the footer", "Read the docs first", "Touches: src/footer.ts", "Acceptance: the footer reads 2026", "Risk: noneApproved already"]) await shows(line);

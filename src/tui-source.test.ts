@@ -155,6 +155,8 @@ describe("text someone else wrote reaches the screen clean", () => {
       const listed = await source.snapshot();
       const row = listed.rows.find(one => one.id === "one")!;
       expect(row.title).toBe("Fix the footer link");
+      // Home's group, by the same rule over the same work index item: a plan waiting for approval waits on you.
+      expect(row.group).toBe("you");
       const task = (await source.task("one"))!;
       expect(task.title).toBe("Fix the footer link");
       const lines = task.plan!.lines;

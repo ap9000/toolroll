@@ -5,6 +5,7 @@ import { windowLabel, type LimitWindow } from "./provider-limits.js";
 import { openAuthPauses, signInCommand, signInReason } from "./provider-auth.js";
 import { BUILT_IN, checkSuitesOf, type RunCheckSuite, type Store } from "./store.js";
 import { workIndexPage, workReadyForReview } from "./work-index.js";
+import { homeFiguresLine, homeFiguresOf, type HomeFigures } from "./home-groups.js";
 import { currentActor } from "./actor.js";
 import { leadActivity, leadActivityLine } from "./lead-voice.js";
 
@@ -45,6 +46,8 @@ export type InstallationStatus = {
   tasks: { task: string; title: string; headline: string; sentence: string }[];
   /** What the person's lead is doing now and when it last acted (lead-voice.ts), as one line. */
   lead: { owner: string; doing: string; at: string; task: string | null; line: string } | null;
+  /** Home's figures from the same work index totals (home-groups.ts): each the count of the Tasks list it names. */
+  figures: HomeFigures;
 };
 
 const maybeNumber = (value: unknown): number | null => value === null || value === undefined || !Number.isInteger(Number(value)) ? null : Number(value);
@@ -265,6 +268,8 @@ export function installationStatus(store: Store, now: Date, viewer: string | nul
   // One per family, from the same projection as the Tasks list: a completed
   // family (root or any revision) and a superseded version never count.
   const ready = workReadyForReview(store, now, access, 5);
+  // The most urgent tasks and Home's figures, from one read of the work index.
+  const index = workIndexPage(store, now, { ...access, viewer }, { limit: 8, ...(root === undefined ? {} : { root }) });
   const checkRow = (run: number) => store.handle.prepare(`SELECT ${CHECK_COLUMNS} FROM run_check AS rc WHERE rc.run = ?`).get(run);
 
   // Run ids grow with time, so the newest finished release check is the
@@ -298,8 +303,8 @@ export function installationStatus(store: Store, now: Date, viewer: string | nul
         observedAt: String(row["observed_at"]),
       })),
     signIn: pauses.map(one => ({ provider: one.provider, reason: signInReason(one), command: signInCommand(one), since: one.openedAt })),
-    tasks: workIndexPage(store, now, { ...access, viewer }, { limit: 8, ...(root === undefined ? {} : { root }) }).items
-      .map(one => ({ task: one.rootId, title: one.title, headline: one.status.label, sentence: one.status.detail })),
+    tasks: index.items.map(one => ({ task: one.rootId, title: one.title, headline: one.status.label, sentence: one.status.detail })),
+    figures: homeFiguresOf(index.totals),
     lead: repos !== null ? null : (() => {
       // Only the asker's own lead: another person's lead is never "Your lead".
       const activity = leadActivity(store, viewer);
@@ -313,6 +318,8 @@ export function renderInstallationStatus(status: InstallationStatus, limited = f
   const lines: string[] = [];
   // A paused provider comes first: it is the one thing a person must do.
   for (const one of status.signIn) lines.push(`${one.reason} — run \`${one.command}\`. Its tasks wait until then.`);
+  // Then Home's figures, the same words and counts as Home.
+  lines.push(homeFiguresLine(status.figures));
   if (status.lead != null) lines.push(status.lead.line);
   // Each task's one headline, the same words as the console and chat cards.
   if (status.tasks.length > 0) {
@@ -348,7 +355,7 @@ export function renderInstallationStatus(status: InstallationStatus, limited = f
       lines.push(`Plan windows: ${provider} — ${detail}`);
     }
   }
-  return lines.slice(0, 12 + status.signIn.length + (status.lead == null ? 0 : 1) + (status.tasks.length === 0 ? 0 : status.tasks.length + 1));
+  return lines.slice(0, 13 + status.signIn.length + (status.lead == null ? 0 : 1) + (status.tasks.length === 0 ? 0 : status.tasks.length + 1));
 }
 
 export function renderTaskWait(snapshot: TaskWaitSnapshot, outcome: string = snapshot.outcome): string {

@@ -821,7 +821,7 @@ export type BrowserWorkspace = {
 };
 
 /** Home ("/"): one sentence that answers "what needs me?", four counts that agree with the Tasks filters they open,
- * what waits on this person grouped by what it asks, what is running, and the selected item answered in place. */
+ * the work grouped as Waiting on you, Working and Done, and the selected item answered in place. */
 export type BrowserHomeView = {
   kind: 'home';
   /** "7 need you across 2 projects.", derived from the same counts as the figures. */
@@ -830,8 +830,9 @@ export type BrowserHomeView = {
   project: string | null;
   scopes: { key: string; label: string; href: string; active: boolean }[] | null;
   counts: { key: 'needs' | 'running' | 'queued' | 'finished'; label: string; value: number; href: string }[];
-  groups: { key: 'decide' | 'review' | 'unblock' | 'running' | 'waiting'; label: string; rows: BrowserHomeRow[] }[];
-  /** More waits than the list shows: open them all in Tasks. */
+  /** The work in three groups, in this order (home-groups.ts): Waiting on you, Working, Done (finished in the last 7 days). */
+  groups: { key: 'you' | 'working' | 'done'; label: string; rows: BrowserHomeRow[] }[];
+  /** More waits on you than the list shows: open them all in Tasks. */
   more: { count: number; href: string } | null;
   newTask: string;
   /** The lead's message box, where chat is allowed for this person: a POST to /chat in this scope. */

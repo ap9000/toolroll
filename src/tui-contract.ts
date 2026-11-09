@@ -18,6 +18,8 @@ export type TuiRow = {
   /** The attempt running now, if any: what Stop names. */
   readonly liveRunId: number | null;
   readonly repo: string | null;
+  /** Home's group (home-groups.ts homeGroupOf): waits on you, working, done, or none (cancelled, replaced). */
+  readonly group: "you" | "working" | "done" | null;
 };
 
 /** A parked question on a task, answered by choosing one of its options. */

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-/** Home (UI revamp wave B): the sentence and the counts agree, rows group by what they ask, the selected row opens
- * beside the list, and an agent's question is answered in place through its own one-click route. */
+/** Home (UI revamp wave B): the sentence and the counts agree, rows group as Waiting on you, Working and Done, the
+ * selected row opens beside the list, and an agent's question is answered in place through its own one-click route. */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -16,12 +16,13 @@ const row = (id: string, extra: Partial<BrowserHomeRow> = {}): BrowserHomeRow =>
 const view = (over: Partial<BrowserHomeView> = {}): BrowserHomeView => ({
   kind: "home", say: "3 need you across 2 projects.", project: null, scopes: null,
   counts: [
-    { key: "needs", label: "Needs you", value: 3, href: "/tasks?view=needs-you" }, { key: "running", label: "Running", value: 1, href: "/tasks?view=running" },
-    { key: "queued", label: "Queued", value: 0, href: "/tasks?view=queued" }, { key: "finished", label: "Finished", value: 2, href: "/tasks?view=completed" }],
+    { key: "needs", label: "Waiting on you", value: 3, href: "/tasks?view=needs-you" }, { key: "running", label: "Running", value: 1, href: "/tasks?view=running" },
+    { key: "queued", label: "Queued", value: 0, href: "/tasks?view=queued" }, { key: "finished", label: "Done", value: 2, href: "/tasks?view=completed" }],
   groups: [
-    { key: "decide", label: "Decide", rows: [row("a"), row("q", { chip: { word: "Question", tone: "ask" }, question: { id: 7, text: "How should retries back off?", recap: "They hammer endpoints.", options: [
+    { key: "you", label: "Waiting on you", rows: [row("a"), row("q", { chip: { word: "Question", tone: "ask" }, question: { id: 7, text: "How should retries back off?", recap: "They hammer endpoints.", options: [
       { id: "exp", label: "Exponential", consequence: "Slow to give up.", recommended: true }, { id: "fixed", label: "Fixed", consequence: "Gives up fast.", recommended: false }] } })] },
-    { key: "running", label: "Running", rows: [row("r", { chip: { word: "Building", tone: "live" }, line: "Step 2 of 4", action: null })] },
+    { key: "working", label: "Working", rows: [row("r", { chip: { word: "Building", tone: "live" }, line: "Step 2 of 4", action: null })] },
+    { key: "done", label: "Done", rows: [row("d", { chip: { word: "Complete", tone: "done" }, line: "Completed by alex.", action: { label: "View task details", href: "/t/d" } })] },
   ],
   more: null, newTask: "/tasks/new", ask: { project: null, placeholder: "Ask the lead about your projects…" }, empty: null, ...over });
 
@@ -45,17 +46,55 @@ test("the sentence reads the same totals as the figures", () => {
   expect(homeSentence(0, [], null, false)).toBe("No tasks yet.");
 });
 
-test("four counts link to the Tasks filters; rows group by what they ask; the first that waits is open beside the list", async () => {
+test("four counts link to the Tasks filters; rows group as Waiting on you, Working, Done; the first that waits is open beside the list", async () => {
   await mount(view());
   expect([...document.querySelectorAll("[data-home-count]")].map(one => [one.getAttribute("data-home-count"), one.getAttribute("href"), one.querySelector(".so-count-v")?.textContent]))
     .toEqual([["needs", "/tasks?view=needs-you", "3"], ["running", "/tasks?view=running", "1"], ["queued", "/tasks?view=queued", "0"], ["finished", "/tasks?view=completed", "2"]]);
-  expect([...document.querySelectorAll(".so-tri-g")].map(one => one.textContent)).toEqual(["Decide", "Running"]);
+  expect([...document.querySelectorAll(".so-count-k")].map(one => one.textContent)).toEqual(["Waiting on you", "Running", "Queued", "Done"]);
+  expect([...document.querySelectorAll(".so-tri-g")].map(one => one.textContent)).toEqual(["Waiting on you", "Working", "Done"]);
   expect(document.querySelector('[aria-selected="true"]')?.getAttribute("data-row")).toBe("a");
   expect(document.querySelector(".so-tri-open")?.textContent).toContain("Approve plan");
   // The lead's box posts to /chat as a native form, with the session's token.
   const ask = document.querySelector<HTMLFormElement>("form.so-home-ask")!;
   expect(ask.getAttribute("action")).toBe("/chat");
   expect(ask.querySelector<HTMLInputElement>('input[name="csrf"]')!.value).toBe("csrf-1");
+});
+
+test("the selected row is the first that waits on you, even when Working comes first in the data; Done rows keep the index's own action", async () => {
+  const base = view();
+  const [you, working, done] = base.groups;
+  await mount(view({ groups: [working!, done!, you!] }));
+  expect(document.querySelector('[aria-selected="true"]')?.getAttribute("data-row")).toBe("a");
+  expect(document.querySelector(".so-tri-open")?.textContent).toContain("Needs you");
+  // A Working row says what the agent is doing in the list; a Done row opens with the action the work index gave it.
+  expect(document.querySelector('[data-row="r"] .so-ti-d')?.textContent).toBe("Step 2 of 4");
+  expect(document.querySelector('[data-row="d"] .so-ti-d')).toBeNull();
+  await act(async () => document.querySelector<HTMLAnchorElement>('[data-row="d"]')!.click());
+  const pane = document.querySelector(".so-tri-open")!;
+  expect(pane.textContent).toContain("Complete");
+  expect(pane.textContent).not.toContain("Needs you");
+  expect(pane.querySelector(".k-acts a")?.textContent).toContain("View task details");
+  expect(pane.querySelector(".k-acts a")?.getAttribute("href")).toBe("/t/d");
+  expect(pane.textContent).not.toContain("Open result");
+  // With nothing waiting on you, the first row is selected and the pane says what it is.
+  await act(async () => root!.unmount()); root = null; document.body.innerHTML = "";
+  await mount(view({ groups: [working!, done!] }));
+  expect(document.querySelector('[aria-selected="true"]')?.getAttribute("data-row")).toBe("r");
+});
+
+test("on a phone the same three headings show with the rows unchanged, and a row is a link to its task", async () => {
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("max-width"), media: query, addEventListener() {}, removeEventListener() {} }));
+  await mount(view());
+  expect([...document.querySelectorAll(".so-tri-g")].map(one => one.textContent)).toEqual(["Waiting on you", "Working", "Done"]);
+  expect([...document.querySelectorAll("[data-row]")].map(one => [one.getAttribute("data-row"), one.getAttribute("href")]))
+    .toEqual([["a", "/t/a"], ["q", "/t/q"], ["r", "/t/r"], ["d", "/t/d"]]);
+  expect([...document.querySelectorAll('[role="group"]')].map(one => one.getAttribute("aria-label"))).toEqual(["Waiting on you", "Working", "Done"]);
+  expect(document.querySelector(".k-dock")?.textContent).toContain("New task");
+});
+
+test("an empty list says nothing is waiting on you, working or done this week", async () => {
+  await mount(view({ groups: [] }));
+  expect(document.querySelector(".so-tri-none")?.textContent).toBe("Nothing is waiting on you, working or done this week.");
 });
 
 test("an agent's question is answered in place: one click, the recommended option chosen, the outcome said where it happened", async () => {

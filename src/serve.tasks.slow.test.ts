@@ -2143,7 +2143,7 @@ describe("Home says when nothing will build (install review)", () => {
       return view.groups.flatMap(group => group.rows.map(row => ({ ...row, group: group.key }))).find(row => row.id === "t-idle");
     };
     let row = await rowOf();
-    expect(row).toMatchObject({ group: "unblock", line: "No builder works on this project yet. Connect one so the task can start.", action: { label: "Connect a builder" } });
+    expect(row).toMatchObject({ group: "you", line: "No builder works on this project yet. Connect one so the task can start.", action: { label: "Connect a builder" } });
     const start = await (await fetch(`${base}${row!.action!.href}`, { headers: { cookie } })).text();
     expect(start).toContain("No builder is connected");
     expect(start).toContain("toolroll up");
@@ -2151,11 +2151,11 @@ describe("Home says when nothing will build (install review)", () => {
 
     register(store, { name: "old-1", host: "h", capacity: 1, repos: ["/repo/main"], now: new Date(Date.now() - 30 * 24 * 60 * 60_000), newToken: () => "tok-old" });
     row = await rowOf();
-    expect(row).toMatchObject({ group: "unblock", action: { label: "Start the builder" } });
+    expect(row).toMatchObject({ group: "you", action: { label: "Start the builder" } });
 
     store.touchRunner("old-1", new Date());
     row = await rowOf();
-    expect(row?.group).not.toBe("unblock");
+    expect(row?.group).not.toBe("you");
     expect(row?.action?.label ?? "").not.toMatch(/builder/i);
   });
 });

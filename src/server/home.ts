@@ -1,12 +1,13 @@
 /**
  * Home ("/", UI revamp wave B): one sentence that answers "what needs me?", four counts read from the same work index
- * the Tasks list filters (so a count and the list it opens always agree), what waits on this person grouped by what it
- * asks, what is running, and the lead's message box. Reads only: every act keeps its own route and rules (an agent's
+ * the Tasks list filters (so a count and the list it opens always agree), the work in three groups (Waiting on you,
+ * Working, Done; home-groups.ts), and the lead's message box. Reads only: every act keeps its own route and rules (an agent's
  * question is answered through POST /d/<id>/answer, the same one-click act as its own page).
  */
 import type { BrowserHomeRow, BrowserHomeView } from "../browser-workspace.js";
 import { browserWorkActionHref } from "../browser-crew.js";
-import { ASK_LABEL, type Ask } from "../needs-you.js";
+import { HOME_GROUP_LABEL, homeGroupOf, type HomeGroup } from "../home-groups.js";
+import type { Ask } from "../needs-you.js";
 import { projectName } from "../project.js";
 import type { Store } from "../store.js";
 import { workIndexPage, type WorkIndexItem, type WorkIndexPage } from "../work-index.js";
@@ -17,11 +18,12 @@ import { taskHref } from "./http.js";
 
 type Tone = BrowserHomeRow["chip"]["tone"];
 const TONE: Readonly<Record<StatusTone, Tone>> = { attention: "needs", ready: "needs", live: "live", done: "done", problem: "failed", muted: "", neutral: "" };
-const ASKS: readonly Ask[] = ["decide", "review", "unblock"];
 const ASK_WORD: Readonly<Record<Ask, string>> = { decide: "Decision", review: "Result", unblock: "Blocked" };
 /** How many waiting rows Home lists; the rest open in Tasks. */
 export const HOME_NEEDS_SHOWN = 30;
 const HOME_RUNNING_SHOWN = 8;
+/** How many rows finished in the last 7 days Home lists; the rest open in Tasks. */
+const HOME_DONE_SHOWN = 8;
 
 export type HomeFacts = {
   store: Store; now: Date; access: WorkSummaryAccess; evidenceRoot?: string;
@@ -77,45 +79,53 @@ function rowOf(store: Store, item: WorkIndexItem, now: Date, multi: boolean, can
   };
 }
 
-/** Home's view for one person and scope, from two reads of the work index (what waits, what runs). */
+/** Home's view for one person and scope, from four reads of the work index (what waits on you, what runs, what waits on
+ * Toolroll, what was done), grouped by the one rule every surface shares (home-groups.ts). */
 export function homeView(facts: HomeFacts): BrowserHomeView {
   const { store, now, access, project } = facts;
-  const read = (view: "needs-you" | "running", limit: number): WorkIndexPage =>
+  const read = (view: "needs-you" | "running" | "queued" | "completed", limit: number): WorkIndexPage =>
     workIndexPage(store, now, access, { view, limit, project, ...(facts.evidenceRoot === undefined ? {} : { root: facts.evidenceRoot }) });
   const needs = read("needs-you", HOME_NEEDS_SHOWN);
   const running = read("running", HOME_RUNNING_SHOWN);
-  // Waiting (docs/plans/plain-toolroll.md P1.4): what Toolroll or another task moves on, with no person asked.
-  const waiting = workIndexPage(store, now, access, { view: "queued", limit: HOME_RUNNING_SHOWN, project, ...(facts.evidenceRoot === undefined ? {} : { root: facts.evidenceRoot }) });
+  // Queued: what waits its turn, or what Toolroll or another task moves on, with no person asked.
+  const waiting = read("queued", HOME_RUNNING_SHOWN);
+  // Done: the Completed list is ordered by completion time, newest first, so its first rows are the newest finished;
+  // only those finished in the last 7 days are listed, and that filter runs before the cap.
+  const completed = read("completed", HOME_DONE_SHOWN);
   const totals = needs.totals;
   // Queued: the Tasks list's own Queued count (the same predicate its view=queued filter lists).
   const queued = totals.queued;
   // Every project is said by name (scope=all): /tasks alone would narrow to the session's open project.
   const scopeQuery = project === null ? "scope=all&" : `project=${encodeURIComponent(project)}&`;
+  // Each figure keeps the name of the list it opens; Done is the whole Completed list, not just this week.
   const counts: BrowserHomeView["counts"] = [
-    { key: "needs", label: "Needs you", value: totals["needs-you"], href: `/tasks?${scopeQuery}view=needs-you` },
+    { key: "needs", label: HOME_GROUP_LABEL.you, value: totals["needs-you"], href: `/tasks?${scopeQuery}view=needs-you` },
     { key: "running", label: "Running", value: totals.running, href: `/tasks?${scopeQuery}view=running` },
     { key: "queued", label: "Queued", value: queued, href: `/tasks?${scopeQuery}view=queued` },
-    { key: "finished", label: "Finished", value: totals.completed, href: `/tasks?${scopeQuery}view=completed` },
+    { key: "finished", label: HOME_GROUP_LABEL.done, value: totals.completed, href: `/tasks?${scopeQuery}view=completed` },
   ];
-  const multi = project === null && new Set([...needs.items, ...running.items].map(one => one.repo ?? "")).size > 1;
+  // One row per family, in the first group that claims it.
+  const seen = new Set<string>();
+  const take = (items: readonly WorkIndexItem[], group: HomeGroup) => items.filter(one => {
+    if (homeGroupOf(one) !== group || seen.has(one.rootId)) return false;
+    seen.add(one.rootId);
+    return true;
+  });
+  // Waiting on you, in today's order of what it asks: decide (with any row whose ask the index couldn't name, which
+  // still waits on this person and is never lost), then review, then unblock. Each row's chip names its ask.
+  const yours = take((["decide", null, "review", "unblock"] as const).flatMap(ask => needs.items.filter(one => one.ask === ask)), "you");
+  // Working: what runs, then what is queued (waits its turn, or on Toolroll or another task), each read with its own bound.
+  const working = [...take(running.items, "working"), ...take(waiting.items, "working")];
+  const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
+  const done = take(completed.items.filter(one => (one.completion?.at ?? one.updatedAt) >= weekAgo), "done").slice(0, HOME_DONE_SHOWN);
+  const multi = project === null && new Set([...yours, ...working, ...done].map(one => one.repo ?? "")).size > 1;
   const groups: BrowserHomeView["groups"] = [];
-  for (const ask of ASKS) {
-    const rows = needs.items.filter(one => one.ask === ask).map(one => rowOf(store, one, now, multi, facts.canAnswer, facts.closedDoor));
-    if (rows.length > 0) groups.push({ key: ask, label: ASK_LABEL[ask], rows });
+  for (const [key, items] of [["you", yours], ["working", working], ["done", done]] as const) {
+    if (items.length > 0) groups.push({ key, label: HOME_GROUP_LABEL[key], rows: items.map(one => rowOf(store, one, now, multi, facts.canAnswer, facts.closedDoor)) });
   }
-  // A waiting row whose ask the index couldn't name still waits on this person: it goes under Decide, never lost.
-  const unnamed = needs.items.filter(one => one.ask === null).map(one => rowOf(store, one, now, multi, facts.canAnswer, facts.closedDoor));
-  if (unnamed.length > 0) {
-    const decide = groups.find(one => one.key === "decide");
-    if (decide) decide.rows.push(...unnamed); else groups.unshift({ key: "decide", label: ASK_LABEL.decide, rows: unnamed });
-  }
-  const live = running.items.filter(one => !one.status.views.includes("needs-you")).map(one => rowOf(store, one, now, multi, facts.canAnswer, facts.closedDoor));
-  if (live.length > 0) groups.push({ key: "running", label: "Running", rows: live });
-  const waits = waiting.items.filter(one => one.status.label === "Waiting" && !one.status.views.includes("needs-you")).map(one => rowOf(store, one, now, multi, facts.canAnswer, facts.closedDoor));
-  if (waits.length > 0) groups.push({ key: "waiting", label: "Waiting", rows: waits });
   const perProject = needs.projects.map(one => ({ name: one.repo === null ? "Unplaced" : projectName(one.repo), needs: one.totals["needs-you"] }));
   const any = totals.all > 0 || totals.completed > 0 || (totals.archived ?? 0) > 0;
-  const shown = groups.filter(one => one.key !== "running" && one.key !== "waiting").reduce((sum, one) => sum + one.rows.length, 0);
+  const shown = yours.length;
   return {
     kind: "home",
     say: homeSentence(totals["needs-you"], perProject, project === null ? null : projectName(project), any),

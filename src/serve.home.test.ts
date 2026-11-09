@@ -103,6 +103,9 @@ test("each of Home's counts equals the list its link opens (Queued included), on
     const read = async (path: string) => workspaceOf(await (await fetch(`${at}${path}`, { headers: { cookie } })).text());
     const home = (await read("/")).view as BrowserHomeView;
     // Each link opens its own filter (never All), whose count and rows are Home's figure.
+    // Each figure keeps the name of the list it opens (Waiting on you is the Needs you list, Done the Finished list).
+    expect(home.counts.map(one => one.label)).toEqual(["Waiting on you", "Running", "Queued", "Done"]);
+    expect(home.groups.map(one => one.label)).toEqual(home.groups.map(one => ({ you: "Waiting on you", working: "Working", done: "Done" })[one.key]));
     const labels: Record<string, string> = { needs: "Needs you", running: "Running", queued: "Queued", finished: "Finished" };
     for (const count of home.counts) {
       const list = (await read(count.href)).view as BrowserTasksView;

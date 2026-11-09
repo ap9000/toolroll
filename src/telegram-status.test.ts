@@ -7,6 +7,7 @@ import { addApprover } from "./scope.js";
 import { bridgePass, followBridge, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, saveBotToken, TOKEN_ENV, type TelegramTransport } from "./telegram.js";
 import { PHONE_HELP, phoneCommand, phoneStatus, phoneTask, phoneTaskChoices, phoneTaskListText, resolvePhoneTask } from "./telegram-status.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
+import { workIndexPage } from "./work-index.js";
 import { runOperate, EXIT } from "./operate.js";
 import { saveRepos } from "./repos.js";
 
@@ -148,6 +149,23 @@ describe("read-only phone status", () => {
     expect(phoneCommand("/task " + "x".repeat(65))).toEqual({ kind: "help" });
     expect(phoneCommand("/status@someone_else")).toBeNull();
     expect(phoneCommand("cancel all my tasks")).toBeNull();
+  });
+
+  test("/status opens with Home's figures over these projects only, and keeps its own headings below", () => {
+    task(); task("second", REPO, "second-title"); task("foreign", FOREIGN, "hidden-title"); task("unplaced", null, "unplaced-title");
+    result("complete");
+    const totals = workIndexPage(store, NOW, { principal: "operator", repos: [REPO], includeUnplaced: false }, { limit: 1 }).totals;
+    const lines = phoneStatus(store, [REPO], NOW).split("\n");
+    expect(lines[0]).toBe(`Waiting on you ${totals["needs-you"]} · Running ${totals.running} · Queued ${totals.queued} · Done ${totals.completed}`);
+    // Foreign and unplaced work is never counted.
+    const everywhere = workIndexPage(store, NOW, { principal: "operator", repos: null, includeUnplaced: true }, { limit: 1 }).totals;
+    expect(everywhere.all).toBeGreaterThan(totals.all);
+    // Its groups are dispatch diagnoses, not Home's: they keep their headings.
+    expect(lines).toContain("Recent work");
+    expect(lines.some(line => /^(Needs attention|Working|Waiting \/ next up|Finished) · \d+$/.test(line))).toBe(true);
+    expect(lines.some(line => line.startsWith("Waiting on you ·") || line.startsWith("Done ·"))).toBe(false);
+    // Focused on a task, the figures still open the reply.
+    expect(phoneStatus(store, [REPO], NOW, "Polish").split("\n")[0]).toBe(lines[0]);
   });
 
   test("projects are admitted before reading rows; null and foreign projects stay invisible", () => {
