@@ -1526,8 +1526,9 @@ export function approve(
   sawDigest: string,
   token: string,
   mutation: Mutation = {},
-  /** A fast start (fast-start.ts): Build is this same yes, with its marker in the proof. Only that road passes it. */
-  fastStart?: { rule: string; at: string },
+  /** A fast start (fast-start.ts): Build is this same yes, with its marker in the proof. Only that road passes it.
+   * `typed`: a typed yes to a Start card (one-step-chat.md C5), the message that was the yes, recorded beside the marker. */
+  fastStart?: { rule: string; at: string; typed?: { provider: string; event: string } },
   /** A person's own yes in chat (owner's decision, docs/plans/toolroll-cards.md): their tap or signed-in click stands in
    * for a password, so `token` is unused. Every rule below still applies. The caller has proved the person is the one
    * tapping. `shown` is what a card that showed its terms whole showed: those words, and the digest kept when it was
@@ -1652,8 +1653,8 @@ export const approvalProofDetail = (at: number, generation: number, digest: stri
   `${new Date(at).toISOString()} · generation ${generation}${local === undefined ? "" : ` · local ${local.generation} ${local.transport}`} · digest ${digest}`;
 /** A fast start's proof: the v1 record proofDetailOf reads, with the marker. `local` keeps the legacy words
  * localSealStandsSql reads, so a local owner's seal stands on the same rule. */
-const fastProofDetail = (fastStart: { rule: string; at: string }) => (at: number, generation: number, digest: string, local?: { generation: number; transport: LocalTransport }): string =>
-  JSON.stringify({ v: 1, at: new Date(at).toISOString(), generation, digest, fastStart, ...(local === undefined ? {} : { local: `proof · local ${local.generation} ${local.transport} · seal` }) });
+const fastProofDetail = ({ typed, ...fastStart }: { rule: string; at: string; typed?: { provider: string; event: string } }) => (at: number, generation: number, digest: string, local?: { generation: number; transport: LocalTransport }): string =>
+  JSON.stringify({ v: 1, at: new Date(at).toISOString(), generation, digest, fastStart, ...(typed === undefined ? {} : { typed: { provider: typed.provider, event: typed.event } }), ...(local === undefined ? {} : { local: `proof · local ${local.generation} ${local.transport} · seal` }) });
 /** The proof of THIS approval: the approver's own row for these exact bytes (never another approval's words). */
 export function approvalProofOf(store: Store, taskId: string, by: string, digest: string): { method: string; at: string } | null {
   const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? AND actor = ? ORDER BY id DESC LIMIT 50").all(taskId, APPROVAL_PROOF, by);

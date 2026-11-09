@@ -248,6 +248,8 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("chat_decide_action", IN("task_id"), K);
   del("chat_decide_prompt", IN("task_id"), K);
   del("chat_message_ref", `${IN("decision")} OR ${IN("task_id")} OR ${IN("run")} OR project = ? OR ${IN("notification")} OR ${IN("task_ref")}`, decisions, K, R, repo, notifications, T);
+  // A typed yes to a Start card (one-step-chat.md C5): its message, or the card's proposal, goes.
+  del("chat_typed_start", `provider || ':' || event IN (SELECT value FROM json_each(?)) OR ${IN("proposal")}`, conversations, proposals);
   del("chat_part", `provider || ':' || id IN (${parts})`, conversations, K, R);
   del("chat_event", `provider || ':' || id IN (SELECT value FROM json_each(?))`, conversations);
   del("chat_card_task", IN("task_ref"), T);

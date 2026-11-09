@@ -48,6 +48,10 @@ import { modeDigestOf, modeTermsJson, presetTerms } from "./modes.js";
 import type { SubscriptionLeadRequest, SubscriptionLeadRunner } from "./subscription-chat.js";
 import { TURN_WALL_CLOCK_MS } from "./converse.js";
 import { installFilingSizer } from "./task-sizing.js";
+import { typedStartCard } from "./typed-start.js";
+import { confirmTypedStart } from "./lead-doors.js";
+import { setChatApproval } from "./chat-approval.js";
+import { addToolTo, validateToolSpec } from "./project-tools.js";
 
 const T0 = new Date("2026-09-16T09:00:00.000Z");
 const BOT = "777000";
@@ -1562,6 +1566,250 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       task("p", `see /Users/private/notes and token sk-${"X".repeat(40)}`);
       const steer = card("steer", { task: "p", taskTitle: `see /Users/private/notes and token sk-${"X".repeat(40)}`, note: `look in C:\\Users\\me and ${"d".repeat(64)}` });
       expect(steer.preview.text).not.toMatch(/\/Users|C:\\|X{40}|d{64}/);
+    });
+  });
+
+  describe("a typed yes to a Start card (one-step-chat.md C5)", () => {
+    let dropSizer: () => void = () => {};
+    beforeEach(() => { dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); });
+    afterEach(() => dropSizer());
+    const START = { repo: "r1", title: "Fix the typo in the footer" };
+    /** The lead drafts a Start card in its own turn; it goes out last, with the "reply yes" line. */
+    const startCard = async (extra: Call[] = []) => {
+      answers.push(
+        { text: "", calls: [{ id: "g0", name: "get_capabilities", args: { repo: "r1" } }] },
+        { text: "", calls: [{ id: "s1", name: "propose_start", args: START }, ...extra] },
+        { text: "Here it is." },
+      );
+      script.updates.push([textUpdate(nextUpdate++, "just fix the typo in the footer")]);
+      await pass();
+      return script.card();
+    };
+    const say = async (text: string, extra: Record<string, unknown> = {}) => {
+      const id = nextUpdate++;
+      script.updates.push([textUpdate(id, text, extra)]);
+      return { id, result: await pass() };
+    };
+    const startedTasks = () => store.handle.prepare("SELECT external_id FROM task_ref WHERE fast_start_at IS NOT NULL").all().map(row => String(row["external_id"]));
+    const typedRows = () => store.handle.prepare("SELECT * FROM chat_typed_start").all();
+    const lastText = () => script.texts().at(-1);
+
+    // "start" alone is also Telegram's help command when it isn't a reply (telegram-status.ts phoneCommand): it shows help
+    // and starts nothing; as a reply to the card it is a yes (below).
+    const WORDS = ["yes", "y", "yep", "yeah", "yes please", "yes start", "start it", "go ahead", "do it", "Yes!", "YES.", "  Go ahead  ", "start."];
+    test.each(WORDS)("%s as the very next message starts the task once, and no lead turn reads it", async word => {
+      const card = await startCard();
+      expect(card.text.trimEnd().endsWith("Tap Start work, or reply yes.")).toBe(true);
+      const before = requests.length;
+      await say(word, { message_id: card.messageId + 1 });
+      expect(requests).toHaveLength(before);
+      expect(startedTasks()).toHaveLength(1);
+      expect(lastText()).toBe("Started. It's building now.");
+      expect(typedRows()).toMatchObject([{ how: "next", outcome: "started", card_message: String(card.messageId) }]);
+      // The proof row names the message that was the yes, beside the fast marker.
+      const proof = JSON.parse(String(store.handle.prepare("SELECT detail FROM action_ledger WHERE action = 'approval proved'").get()?.["detail"]));
+      expect(proof).toMatchObject({ fastStart: { rule: "small-v1" }, typed: { provider: "telegram", event: expect.stringMatching(/^m\d+$/) } });
+      expect(store.getScope(startedTasks()[0]!)).toMatchObject({ approvalBasis: "chat" });
+    });
+
+    test("plain start as the next message is the help command and starts nothing", async () => {
+      const card = await startCard();
+      await say("start", { message_id: card.messageId + 1 });
+      expect(startedTasks()).toEqual([]);
+      expect(typedRows()).toEqual([]);
+    });
+
+    test.each(["yes", "go ahead", "do it", "start", "y"])("%s as a reply to the card starts it, even after other messages", async word => {
+      const card = await startCard();
+      answers.push({ text: "Sure, it's waiting." });
+      await say("what was that again?");
+      await say(word, { message_id: card.messageId + 50, reply_to_message: { message_id: card.messageId } });
+      expect(startedTasks()).toHaveLength(1);
+      expect(typedRows()).toMatchObject([{ how: "reply", outcome: "started" }]);
+    });
+
+    test.each(["yes but make it blue", "ok", "sure", "yes yes", "yes, start it now"])("%s is an ordinary message to the lead and starts nothing", async words => {
+      const card = await startCard();
+      answers.push({ text: "Noted." });
+      const before = requests.length;
+      await say(words, { message_id: card.messageId + 1 });
+      expect(requests).toHaveLength(before + 1);
+      expect(startedTasks()).toEqual([]);
+      expect(typedRows()).toEqual([]);
+    });
+
+    test("a forward, a caption, an edit, a voice note and another bot's message are never read as a yes", async () => {
+      const card = await startCard();
+      const before = requests.length;
+      await say("yes", { message_id: card.messageId + 1, forward_origin: { type: "user", date: 1, sender_user: { id: USER } }, forward_date: 1 });
+      await say("yes", { message_id: card.messageId + 1, caption: "yes" });
+      await say("yes", { message_id: card.messageId + 1, via_bot: { id: 9 } });
+      script.updates.push([{ update_id: nextUpdate++, edited_message: { message_id: card.messageId + 1, chat: { id: CHAT, type: "private" }, from: { id: USER }, text: "yes" } }]);
+      await pass();
+      script.updates.push([{ update_id: nextUpdate++, message: { message_id: card.messageId + 1, chat: { id: CHAT, type: "private" }, from: { id: USER }, voice: { file_id: "v", duration: 1 } } }]);
+      await pass();
+      expect(requests).toHaveLength(before);
+      expect(startedTasks()).toEqual([]);
+      expect(typedRows()).toEqual([]);
+      expect(store.getLeadProposal(Number(store.handle.prepare("SELECT id FROM lead_proposal WHERE kind = 'action'").get()?.["id"]))?.state).toBe("pending");
+    });
+
+    test("a tapped question option whose text is Yes goes to the lead and starts nothing", async () => {
+      await startCard([{ id: "q1", name: "ask_owner", args: { question: "Also the header?", options: ["Yes", "Not yet"] } }]);
+      const asked = script.sends().find(call => String(call.params["text"]) === "Also the header?")!;
+      const rows = (asked.params["reply_markup"] as { inline_keyboard: { text: string; callback_data: string }[][] }).inline_keyboard;
+      answers.push({ text: "Okay." });
+      const before = requests.length;
+      await tapPass(rows[0]![0]!.callback_data, asked.messageId!);
+      expect(requests).toHaveLength(before + 1);
+      expect(startedTasks()).toEqual([]);
+      expect(typedRows()).toEqual([]);
+    });
+
+    test("ids that don't tie the yes to the card: two messages after it, below it, a reply to another message", async () => {
+      const card = await startCard();
+      for (const extra of [{ message_id: card.messageId + 2 }, { message_id: card.messageId - 1 }, { message_id: card.messageId + 1, reply_to_message: { message_id: card.messageId - 1 } }]) {
+        answers.push({ text: "Noted." });
+        await say("yes", extra);
+      }
+      expect(startedTasks()).toEqual([]);
+      expect(typedRows()).toEqual([]);
+    });
+
+    test("a card that wasn't delivered, or whose delivery is uncertain, takes no typed yes", async () => {
+      const card = await startCard();
+      store.handle.prepare("UPDATE chat_part SET uncertain = 1 WHERE provider = 'telegram' AND message = ?").run(String(card.messageId));
+      answers.push({ text: "Noted." });
+      await say("yes", { message_id: card.messageId + 1 });
+      store.handle.prepare("UPDATE chat_part SET uncertain = 0, state = 'pending', message = NULL WHERE provider = 'telegram' AND message = ?").run(String(card.messageId));
+      answers.push({ text: "Noted." });
+      await say("yes", { message_id: card.messageId + 1, reply_to_message: { message_id: card.messageId } });
+      expect(startedTasks()).toEqual([]);
+      expect(typedRows()).toEqual([]);
+    });
+
+    test("a card that links to the review page (terms too long for the card) takes no typed yes", async () => {
+      for (let one = 0; one < 140; one++) addToolTo(store, repo, validateToolSpec({ name: `tool-number-${one}`, transport: "stdio", command: "node", args: ["server.js"], url: null, secrets: [], bearer: null, about: "x" }), "test", "alex", now);
+      answers.push(
+        { text: "", calls: [{ id: "g0", name: "get_capabilities", args: { repo: "r1" } }] },
+        { text: "", calls: [{ id: "s1", name: "propose_start", args: START }] },
+        { text: "Here it is." },
+      );
+      script.updates.push([textUpdate(nextUpdate++, "just fix the typo in the footer")]);
+      await pass();
+      const sent = script.sends().at(-1)!;
+      expect(String(sent.params["text"])).not.toContain("reply yes");
+      answers.push({ text: "Noted." });
+      await say("yes", { message_id: sent.messageId! + 1 });
+      expect(startedTasks()).toEqual([]);
+      expect(typedRows()).toEqual([]);
+    });
+
+    test("two pending proposals take no typed yes", async () => {
+      const card = await startCard([{ id: "t1", name: "propose_task", args: { repo: "r1", title: "Tidy the header", goal: "Tidy the header.", acceptance: [{ id: "c1", statement: "Tidy.", evidence: ["manual-review"] }] } }]);
+      expect(card.text).toContain("Tap Start work, or reply yes.");
+      answers.push({ text: "Noted." });
+      await say("yes", { message_id: card.messageId + 1 });
+      expect(startedTasks()).toEqual([]);
+      expect(typedRows()).toEqual([]);
+    });
+
+    test("a proposal from a turn that didn't answer, or in a team room, takes no typed yes", async () => {
+      const card = await startCard();
+      const proposal = store.handle.prepare("SELECT id, turn, thread FROM lead_proposal WHERE kind = 'action'").get()!;
+      const chat = { binding: binding().id, chatId: binding().chatId, approver: "alex" };
+      expect(typedStartCard(store, chat, { id: String(card.messageId + 1), replyTo: null })).toMatchObject({ proposal: Number(proposal["id"]), how: "next" });
+      store.handle.prepare("UPDATE mate_turn SET state = 'failed' WHERE id = ?").run(proposal["turn"]);
+      expect(typedStartCard(store, chat, { id: String(card.messageId + 1), replyTo: null })).toBeNull();
+      store.handle.prepare("UPDATE mate_turn SET state = 'answered' WHERE id = ?").run(proposal["turn"]);
+      store.handle.exec("PRAGMA foreign_keys = OFF");
+      store.handle.prepare("INSERT INTO team_conversation (id, lead, title, visibility, projects_json, thread, created_by, created_at) VALUES ('c1', 'l1', 'Team', 'team', '[]', ?, 'alex', ?)").run(proposal["thread"], now.toISOString());
+      store.handle.exec("PRAGMA foreign_keys = ON");
+      expect(typedStartCard(store, chat, { id: String(card.messageId + 1), replyTo: null })).toBeNull();
+    });
+
+    test("an expired preview, chat approval turned off, or a card stamp changed after the yes arrived: nothing starts, and Toolroll says so", async () => {
+      const expired = await startCard();
+      store.handle.prepare("UPDATE fast_preview SET expires_at = ?").run(now.toISOString());
+      await say("yes", { message_id: expired.messageId + 1 });
+      expect(startedTasks()).toEqual([]);
+      expect(lastText()).toBe("That yes didn't start anything. Tap Start work on the card.");
+      expect(typedRows().at(-1)).toMatchObject({ outcome: "not-counted" });
+      // Chat approval off: the door's own refusal, in Toolroll's words.
+      store.handle.prepare("UPDATE lead_proposal SET state = 'dismissed' WHERE state = 'pending'").run();
+      const off = await startCard();
+      expect(setChatApproval(store, { approver: "alex", scope: repo, enabled: false, via: "test" }, now).ok).toBe(true);
+      await say("yes", { message_id: off.messageId + 1 });
+      expect(startedTasks()).toEqual([]);
+      expect(lastText()).toContain("That yes didn't start anything.");
+      expect(lastText()).toContain("You turned off approving from chat for this project");
+      expect(typedRows().at(-1)).toMatchObject({ outcome: "refused" });
+      expect(setChatApproval(store, { approver: "alex", scope: repo, enabled: true, via: "test" }, now).ok).toBe(true);
+      // A stamp that changed between ingress and the worker (the worker's registry read is between them).
+      store.handle.prepare("UPDATE lead_proposal SET state = 'dismissed' WHERE state = 'pending'").run();
+      const changed = await startCard();
+      readProjects.mockImplementation(async () => {
+        if (store.handle.prepare("SELECT 1 FROM chat_typed_start WHERE outcome IS NULL").get() !== undefined)
+          store.handle.prepare("UPDATE lead_proposal SET payload_json = json_set(payload_json, '$.stamp', 'changed') WHERE state = 'pending'").run();
+        return projects;
+      });
+      try { await say("yes", { message_id: changed.messageId + 1 }); } finally { readProjects.mockImplementation(async () => projects); }
+      expect(startedTasks()).toEqual([]);
+      expect(lastText()).toBe("That yes didn't start anything. Tap Start work on the card.");
+    });
+
+    test("a different Start card drafted after the yes was recorded doesn't get started by it", async () => {
+      const card = await startCard();
+      const first = Number(store.handle.prepare("SELECT id FROM lead_proposal WHERE kind = 'action'").get()?.["id"]);
+      readProjects.mockImplementation(async () => {
+        const recorded = store.handle.prepare("SELECT 1 FROM chat_typed_start WHERE outcome IS NULL").get() !== undefined;
+        const others = Number(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_proposal").get()?.["n"]);
+        if (recorded && others === 1) {
+          const original = store.getLeadProposal(first)!;
+          store.handle.prepare("INSERT INTO lead_proposal (thread, turn, kind, payload_json, ceiling_digest, state, created_at) VALUES (?, ?, 'action', ?, ?, 'pending', ?)")
+            .run(original.thread, original.turn, JSON.stringify(original.payload), original.ceilingDigest, now.toISOString());
+        }
+        return projects;
+      });
+      try { await say("yes", { message_id: card.messageId + 1 }); } finally { readProjects.mockImplementation(async () => projects); }
+      expect(startedTasks()).toEqual([]);
+      expect(store.handle.prepare("SELECT state FROM lead_proposal ORDER BY id").all().map(row => row["state"])).toEqual(["pending", "pending"]);
+      expect(lastText()).toBe("That yes didn't start anything. Tap Start work on the card.");
+    });
+
+    test("a typed yes and a tap together start one task", async () => {
+      const card = await startCard();
+      // Start work arms the card; the typed yes then starts it; the armed tap finds it already done.
+      await tapPass(card.button(/^Start work$/), card.messageId);
+      const armed = (lastEdit()!.params["reply_markup"] as { inline_keyboard: { text: string; callback_data: string }[][] }).inline_keyboard.flat().find(one => one.text === "✓ Yes, start work")!.callback_data;
+      await say("yes", { message_id: card.messageId + 50, reply_to_message: { message_id: card.messageId } });
+      expect(startedTasks()).toHaveLength(1);
+      expect(await tapPass(armed, card.messageId)).toMatchObject({ ok: true, report: { ignored: 1 } });
+      expect(startedTasks()).toHaveLength(1);
+    });
+
+    test("a redelivered update, and an outage between ingress and the worker, start nothing more and return the first outcome", async () => {
+      const card = await startCard();
+      // The worker can't read the projects at first: the yes waits, recorded, and nothing has started.
+      readProjects.mockImplementation(async () => { throw new Error("registry down"); });
+      const update = textUpdate(nextUpdate++, "yes", { message_id: card.messageId + 1 });
+      script.updates.push([update]);
+      try { await pass(); } finally { readProjects.mockImplementation(async () => projects); }
+      expect(typedRows()).toMatchObject([{ outcome: null }]);
+      expect(startedTasks()).toEqual([]);
+      now = new Date(now.getTime() + 60_000);
+      await pass();
+      expect(startedTasks()).toHaveLength(1);
+      // Telegram sends the same update again: saved once, acted on once.
+      script.updates.push([update]);
+      await pass();
+      expect(startedTasks()).toHaveLength(1);
+      expect(typedRows()).toHaveLength(1);
+      // Asking again returns the first outcome.
+      const row = typedRows()[0]!;
+      const again = confirmTypedStart(store, who(), { provider: "telegram", event: String(row["event"]) }, now, { binding: binding().id });
+      expect(again).toMatchObject({ ok: true, taskId: startedTasks()[0] });
+      expect(startedTasks()).toHaveLength(1);
     });
   });
 

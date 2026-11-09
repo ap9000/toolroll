@@ -29,6 +29,7 @@ import { setChatApproval } from "./chat-approval.js";
 import { scopeApprovedForDispatch } from "./dispatch.js";
 import { withActor } from "./actor.js";
 import { asLocalOwner } from "./local-owner.js";
+import { withRemote } from "./remote-run.js";
 import { addToolTo, projectToolsOf, validateToolSpec } from "./project-tools.js";
 import { grantListed } from "./subagent-tools.js";
 import { skillsView, importSkill, changeSkills } from "./project-skills.js";
@@ -1331,6 +1332,76 @@ describe("the Start card", () => {
     expect(used(preview)).toBe(now.toISOString());
     expect(fastStartBuild(store, { preview, digest: "", actor: who.name, via: "chat", turn: store.getLeadProposal(id)!.turn, proof: { chat: { fullAccess: true, capMicrousd: null } }, approveNow: () => { throw Error("never"); } }, now)).toMatchObject({ ok: false, reason: "gone" });
     expect(tasks()).toBe(0);
+  });
+
+  describe("typedStart opens one gate, for one operation, on Telegram only", () => {
+    /** A typed yes recorded for `proposal` (as ingress writes it). */
+    function recorded(proposal: number, event = "m9000"): { provider: string; event: string } {
+      const stamp = String(store.getLeadProposal(proposal)!.payload["stamp"] ?? "x");
+      store.handle.prepare(`INSERT INTO chat_event (provider, id, installation, binding, kind, channel, member, ts, thread, payload, created) VALUES ('telegram', ?, 'bot', NULL, 'message', 'c', 'u', '1', '', '{}', ?)`).run(event, now.toISOString());
+      store.handle.prepare(`INSERT INTO chat_typed_start (provider, event, proposal, card_message, stamp, how, created) VALUES ('telegram', ?, ?, '1', ?, 'next', ?)`).run(event, proposal, stamp, now.toISOString());
+      return { provider: "telegram", event };
+    }
+    const typedTap = (id: number, typedStart: { provider: string; event: string }, via: "telegram" | "slack" | "discord" | "teams" | "web" | "cli" = "telegram") =>
+      confirmLeadProposal(store, who, id, now, { authority: "full", via, evidenceRoot: root, typedStart, ...(via === "web" ? { person: true } : {}) });
+
+    test("the door's own road: a recorded yes for this card, on Telegram, starts it, and never with confirm or a review", async () => {
+      const { id } = await drafted();
+      expect(typedTap(id, recorded(id))).toMatchObject({ ok: true, said: "Started. It's building now." });
+      const proof = JSON.parse(String(store.handle.prepare("SELECT detail FROM action_ledger WHERE action = 'approval proved'").get()?.["detail"]));
+      expect(proof.typed).toEqual({ provider: "telegram", event: "m9000" });
+    });
+
+    test("on any other chat, on web or the terminal, it refuses and the card stays pending", async () => {
+      const { id } = await drafted();
+      const typed = recorded(id);
+      for (const via of ["slack", "discord", "teams", "web", "cli"] as const) expect(typedTap(id, typed, via), via).toMatchObject({ ok: false });
+      expect(store.getLeadProposal(id)!.state).toBe("pending");
+      expect(tasks()).toBe(0);
+    });
+
+    test("a yes recorded for another card, an unrecorded message, a settled record or another provider refuses", async () => {
+      const { id } = await drafted();
+      const other = await drafted("Fix the typo in the header");
+      expect(typedTap(id, recorded(other.id))).toMatchObject({ ok: false, reason: "refused", said: "That yes didn't start anything. Tap Start work on the card." });
+      expect(typedTap(id, { provider: "telegram", event: "m404" })).toMatchObject({ ok: false, reason: "refused" });
+      const mine = recorded(id, "m9001");
+      expect(typedTap(id, { provider: "slack", event: mine.event })).toMatchObject({ ok: false, reason: "refused" });
+      store.handle.prepare("UPDATE chat_typed_start SET outcome = 'not-counted' WHERE event = 'm9001'").run();
+      expect(typedTap(id, mine)).toMatchObject({ ok: false, reason: "refused" });
+      expect(tasks()).toBe(0);
+      expect(store.getLeadProposal(id)!.state).toBe("pending");
+    });
+
+    test("on any other operation, or any other kind of card, it refuses", async () => {
+      // Another approval action, recorded as if it were a Start card's yes.
+      const turn = openTurn();
+      if (!fileTaskProposal(store, { id: "plain", title: "Plain work", repo, filedVia: "cli", planning: "skip" }, now).ok) throw Error("file");
+      const action = prepareSharedAction(store, who, "task_cancel", { task: "plain" }, root, now, turn.id);
+      const cancel = store.draftLeadProposal({ thread, turn: turn.id, kind: "action", payload: { ...action }, ceilingDigest: who.ceilingDigest }, now);
+      const task = store.draftLeadProposal({ thread, turn: turn.id, kind: "task", payload: { repo, title: "x", goal: "x", acceptance: [{ id: "c1", statement: "x", evidence: ["manual-review"] }] }, ceilingDigest: who.ceilingDigest }, now);
+      answer(turn);
+      expect(typedTap(cancel, recorded(cancel, "m9100"))).toMatchObject({ ok: false, reason: "refused" });
+      expect(typedTap(task, recorded(task, "m9101"))).toMatchObject({ ok: false, reason: "refused" });
+      expect(store.getTask("plain")?.state).not.toBe("cancelled");
+      expect(store.getLeadProposal(task)!.state).toBe("pending");
+    });
+
+    test("a lead-actor or remote call with a recorded yes is refused", async () => {
+      const { id } = await drafted();
+      const typed = recorded(id);
+      expect(withActor({ account: who.name, lead: true }, () => typedTap(id, typed))).toMatchObject({ ok: false });
+      expect(withRemote({ account: who.name, scope: "act", tokenName: "t", source: "api", secret: "s", allows: () => true, lens: null, noteTask: () => {}, files: {} }, () => typedTap(id, typed))).toMatchObject({ ok: false });
+      expect(tasks()).toBe(0);
+      expect(store.getLeadProposal(id)!.state).toBe("pending");
+    });
+
+    test("terms too long for the card: a typed yes can't stand in for the review page", async () => {
+      for (let one = 0; one < 140; one++) addToolTo(store, repo, validateToolSpec({ name: `tool-number-${one}`, transport: "stdio", command: "node", args: ["server.js"], url: null, secrets: [], bearer: null, about: "x" }), "test", "operator", now);
+      const { id } = await drafted();
+      expect(typedTap(id, recorded(id))).toMatchObject({ ok: false, reason: "refused" });
+      expect(tasks()).toBe(0);
+    });
   });
 
   test("this computer's local owner starts it on web chat, on the password arm's basis", async () => {

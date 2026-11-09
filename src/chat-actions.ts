@@ -27,6 +27,7 @@ import { chatApproveMode, effectiveChatApproval, type ChatApprovalLimits } from 
 import { cardTermsDigest, chatLimitProblem, scopeTermsText } from "./chat-terms.js";
 import { chatStartDryRun, chatStartPreview, fastRefusalWords, fastStartBuild, FAST_MAX_FILES, FAST_MAX_LINES, type FastApprove, type FastProof } from "./fast-start.js";
 import { fastTermsLines } from "./fast-terms.js";
+import { TYPED_START_REFUSED, typedStartNames } from "./typed-start.js";
 import { createHash, randomBytes } from "node:crypto";
 import { archiveTaskFamily, leadTurnKeepsProposals, restoreTaskFamily, verifiedAuthor, type Store } from "./store.js";
 import {
@@ -1281,7 +1282,18 @@ export type SharedActionOptions = {
   person?: boolean;
   /** A linked chat's own binding: which chat the yes came from, for the ledger. */
   binding?: number;
+  /** A typed yes to a Start card on Telegram (one-step-chat.md C5): the inbound message that was the yes. The only other
+   * way past the "confirm this" gate, for `task_start` alone, on Telegram alone, and only while that message's unsettled
+   * typed-yes record names this proposal (typedStartOpens). It is never `confirm`, mints no review and changes no `via`. */
+  typedStart?: { provider: string; event: string };
 };
+/** Whether a typed yes may stand in for the challenge's tap on this action: a Start card, on Telegram, a person (never a
+ * machine), terms whole on the card, and an unsettled typed-yes record naming exactly this proposal. */
+export function typedStartOpens(store: Store, proposal: number, action: SharedAction, options: Pick<SharedActionOptions, "via" | "typedStart" | "authority">): boolean {
+  const typed = options.typedStart;
+  return typed !== undefined && action.operation === "task_start" && options.via === "telegram" && typed.provider === "telegram"
+    && options.authority !== "local-owner" && !machineActing() && sharedActionAllowsChallenge(action) && typedStartNames(store, typed, proposal);
+}
 /** Called inside the proposal door's transaction, after ownership and session
  * checks. No password or review receipt is ever part of a saved proposal. */
 export function executeSharedAction(
@@ -1336,11 +1348,13 @@ export function executeSharedAction(
   payload = live;
   const config = CHAT_ACTIONS[live.operation],
     req = live.request;
+  // A typed yes (C5) is checked on the live action and the live record; any use it doesn't open refuses.
+  const typed = typedStartOpens(store, id, payload, options);
+  if (options.typedStart !== undefined && !typed) return refuse("refused", TYPED_START_REFUSED);
   const challenged =
     options.via !== "web" &&
     options.via !== "cli" &&
-    options.confirm === true &&
-    sharedActionAllowsChallenge(payload);
+    ((options.confirm === true && sharedActionAllowsChallenge(payload)) || typed);
   if (APPROVAL_ACTIONS.has(live.operation) && machineActing()) return refuse("needs-confirm", "Only a person approves this.");
   // A lead's or remote token reaches the same web door: an approval needs a person's own session (or tap, above).
   if (APPROVAL_ACTIONS.has(live.operation) && options.via === "web" && options.authority !== "local-owner" && options.person !== true)
@@ -1685,7 +1699,9 @@ function startFromCard(store: Store, who: VerifiedApprover, proposal: number, dr
   if (by.chat !== undefined) {
     const chat = by.chat;
     proof = { chat: by.limits };
-    approveNow = (taskId, saw, fast) => approve(store, taskId, who.name, now, saw, "", {}, fast, chat);
+    // A typed yes (C5) is recorded beside the fast marker: which message was the yes. The executor's gate has proved it.
+    const typed = options.typedStart;
+    approveNow = (taskId, saw, fast) => approve(store, taskId, who.name, now, saw, "", {}, typed === undefined ? fast : { ...fast, typed: { provider: typed.provider, event: typed.event } }, chat);
   } else if (options.authority === "local-owner" && currentLocalOwner() !== null) {
     proof = { password: { localOwner: true, passwordless: false, freshAt: null, returnTo: "/chat" } };
     approveNow = (taskId, saw, fast) => approve(store, taskId, who.name, now, saw, "", {}, fast);

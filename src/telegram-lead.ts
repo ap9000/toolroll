@@ -1,6 +1,7 @@
 import { telegramCardMessage } from "./card-render.js";
 import { cardOfProposal, cardPlainOf, cardsFirst, cardWithin, isCardProposal } from "./chat-card.js";
 import { CHAT_ACTIONS, sharedActionAllowsChallenge, sharedActionPayload } from "./chat-actions.js";
+import { typedStartOf } from "./typed-start.js";
 import { armedQuestion, taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, NO_PHONE_LINK, NO_TASK_LINK, phoneProposalLink, confirmedLink, phoneProposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
 export { channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, CHAT_ACTION_PARITY as TELEGRAM_ACTION_PARITY, parityGaps, type PhoneLink, type ResolvedLead, type ParitySupport } from "./chat-channel.js";
 /**
@@ -26,7 +27,7 @@ export { channelRepos as telegramConversationRepos, resolveChannelLead as resolv
  */
 import { createHash, randomBytes } from "node:crypto";
 import { leadFailureText, runLeadTurn, type LeadChannelProblem } from "./lead.js";
-import { confirmLeadProposal, dismissLeadProposal } from "./lead-doors.js";
+import { confirmLeadProposal, confirmTypedStart, dismissLeadProposal } from "./lead-doors.js";
 import { ceilingDigestOf, verifyApproverStanding } from "./principal.js";
 import { LEAD_ASK_OTHER, type LeadAsk, type LeadProposal, type Store, type TelegramBinding, type TelegramConversation } from "./store.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
@@ -776,6 +777,31 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     return;
   }
   const repos = telegramConversationRepos(store, binding.approver, registry);
+
+  // A typed yes to a Start card (docs/plans/one-step-chat.md C5), recorded when the message arrived: Toolroll acts on it
+  // here and no lead turn runs for it. Its outcome and Toolroll's own reply are written in ONE transaction (the claim
+  // fences the reply; a lapsed claim takes the whole act back), then sent like any reply. A settled record returns its
+  // first outcome, so a redelivery or a crash starts nothing more.
+  const typed = typedStartOf(store, "telegram", `m${row.id}`);
+  if (typed !== null) {
+    const verified = verifyApproverStanding(store, binding.approver, binding.approverGeneration, repos);
+    try {
+      store.transact(() => {
+        const now = clock();
+        const answered = confirmTypedStart(store, verified.ok ? verified.who : null, { provider: "telegram", event: typed.event }, now, { binding: binding.id, evidenceRoot: options.evidenceRoot });
+        // The reply is fenced on the session the card was composed under.
+        const card = store.getLeadProposal(typed.proposal);
+        const turn = card === null ? null : store.getLeadTurn(card.turn);
+        if (turn === null) throw new PlanRefused();
+        if (!store.planTelegramConversationParts(row.id, owner, { session: turn.session, turn: turn.id }, [{ kind: "reply", text: answered.said, replyTo: row.messageId }], now)) throw new PlanRefused();
+      });
+    } catch (error) {
+      if (error instanceof PlanRefused) return;
+      throw error;
+    }
+    await sendOrHandOff("typed-start");
+    return;
+  }
 
   // 4. A session bound before an earlier dispatch: the receipt lives there,
   // whatever session is live today.

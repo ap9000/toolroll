@@ -1,5 +1,6 @@
 import { parseFeedbackImage, type FeedbackImage } from "./result-review.js";
 /** Shared membership-chat identity, proposal previews and result links. Transport adapters never grant authority. */
+import { TYPED_START_LINE } from "./typed-start.js";
 import { FLOW_HREF } from "./flow-engine.js";
 import { closedQuestionWords, LIMITS } from "./decision.js";
 import { createHash } from "node:crypto";
@@ -444,6 +445,8 @@ export function proposalPreview(
     headline: string,
     body: string[] = [],
     consequence: string | null = null,
+    /** Telegram only: a fixed last line outside the terms (a Start card's "reply yes", one-step-chat.md C5). */
+    last: string | null = null,
   ): { text: string; buttons: boolean } => ({
     text: (phone
       ? [
@@ -452,6 +455,7 @@ export function proposalPreview(
           ...(body.length === 0 ? [] : ["", ...body]),
           "",
           "Nothing changes until you confirm.",
+          ...(last === null ? [] : [last]),
         ]
       : [
           headline,
@@ -482,6 +486,8 @@ export function proposalPreview(
           phoneText(action.title, 200),
           action.terms.map((term) => phoneText(term, APPROVAL_TERM_CHARS)),
           "Confirm asks once more before anything is recorded.",
+          // A Start card on Telegram says what a typed yes does; no part of the lead's reply is ever inspected for it.
+          action.operation === "task_start" && channel === "telegram" ? TYPED_START_LINE : null,
         );
       return sharedActionNeedsReview(action)
         ? handoff(phoneText(action.title, 200), [

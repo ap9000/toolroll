@@ -19,6 +19,7 @@
  * are one command.
  */
 
+import { recordTypedStart, typedStartCard, typedYes } from "./typed-start.js";
 import { telegramCardMessage } from "./card-render.js";
 import { flowDoneCard } from "./flow-result-card.js";
 import { applyTelegramQuestionReply, applyTelegramQuestionTap, openQuestionOf, telegramQuestionButtons } from "./subagent-question.js";
@@ -1966,13 +1967,21 @@ function applyConversation(context: Context, update: Update, effects: Effect[]):
     report.ignored++;
     return;
   }
-  store.enqueueTelegramConversation(
-    {
-      binding, updateId: update.update_id, messageId: String(message.message_id), replyTo,
-      request: telegramRequestId(botId, binding.id, update.update_id), text, context: context_, taskId, sourceRun,
-    },
-    clock(),
-  );
+  // A typed yes to a Start card (docs/plans/one-step-chat.md C5) is read here, before any model runs, and recorded with
+  // the message in the same transaction: the fixed words only, tied to one exact card by message ids and Toolroll's own
+  // delivery record. The worker acts on it (confirmTypedStart) and no lead turn runs for it. Anything else is queued for
+  // the lead exactly as before.
+  store.transact(() => {
+    const typed = typedYes(text) ? typedStartCard(store, { binding: binding.id, chatId: binding.chatId, approver: binding.approver }, { id: String(message.message_id), replyTo }) : null;
+    store.enqueueTelegramConversation(
+      {
+        binding, updateId: update.update_id, messageId: String(message.message_id), replyTo,
+        request: telegramRequestId(botId, binding.id, update.update_id), text, context: context_, taskId, sourceRun,
+      },
+      clock(),
+    );
+    if (typed !== null) recordTypedStart(store, `m${update.update_id}`, typed, clock());
+  });
   report.chatQueued = (report.chatQueued ?? 0) + 1;
   // Saved: 👀 on the owner's message right away (docs/plans/responsive-chat.md §3.1), once this update's transaction
   // has committed. It comes off when the answer or the failure notice is delivered. Never awaited: a burst of messages

@@ -1210,7 +1210,8 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // exact failure detail on a step and a reply, which model answered a reply (mate_turn.route), and the quick-answer
 // switch (lead_quick_setting). V158_SCHEMA, V158_ADDED_COLUMNS (lead-latency-schema.ts): saved rows read NULL.
 // v159 adds, and changes no saved row (docs/plans/one-step-chat.md): the lead turn a chat start's preview was prepared
-// in (fast_preview.turn). V159_SCHEMA, V159_ADDED_COLUMNS (one-step-chat-schema.ts): saved rows read NULL.
+// in (fast_preview.turn) and a typed yes's record (chat_typed_start, a new table). V159_SCHEMA, V159_ADDED_COLUMNS
+// (one-step-chat-schema.ts): saved rows read NULL.
 export const SCHEMA_VERSION = 159;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */

@@ -1,4 +1,5 @@
-import { executeSharedAction, sharedActionPayload, sharedActionAllowsChallenge, sharedActionNeedsReview, startFromTerminalWords, type SharedActionOptions } from './chat-actions.js';
+import { executeSharedAction, sharedActionPayload, sharedActionAllowsChallenge, sharedActionNeedsReview, startFromTerminalWords, typedStartOpens, type SharedActionOptions } from './chat-actions.js';
+import { TYPED_START_REFUSED, typedStartCard, typedStartOf } from "./typed-start.js";
 /**
  * The confirm doors (mate arc §2, ruling 7; v3 §9): a pending proposal —
  * the lead's, or a coordinator's over the gateway — becomes an act only
@@ -33,7 +34,7 @@ import type { Phase, ProviderId } from "./provider.js";
 import { applyChatReview, type ReviewRequest } from "./chat-review.js";
 import { applyChatTaskAction } from "./chat-task-actions.js";
 import { currentLocalOwner, localOwnerRefusal, proposalLocalAct, withLocalAct, type Authority } from "./local-owner.js";
-import { consumeChatStartPreview } from "./fast-start.js";
+import { chatStartPreview, consumeChatStartPreview } from "./fast-start.js";
 
 /** Easy-start C1: whether this door is a local owner's — named by the caller, or the chain's own (the stricter wins). */
 function localDoor(options: Pick<DoorOptions, "authority">): boolean {
@@ -86,6 +87,9 @@ export type DoorOptions = {
   person?: boolean;
   /** A linked chat's own binding: which chat the yes came from, for the ledger. */
   binding?: number;
+  /** A typed yes to a Start card on Telegram (one-step-chat.md C5), set only by confirmTypedStart: the one new way past
+   * the "confirm this" gate, for `task_start` alone. It is not `confirm`, mints no review and changes no `via`. */
+  typedStart?: { provider: string; event: string };
   /** Which surface answered — recorded on the decision, the stop and the
    * proposal's outcome. Named by the caller, never defaulted (v3 review,
    * finding 1); `telegram` is the paired phone, never relabelled as the CLI. */
@@ -214,6 +218,8 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
       return { ok: false, kind: proposal.kind, reason: "not-confirmable", said: "Cancel from the task page." } as const;
     }
     if (proposal.kind === "control") return { ok: false, kind: proposal.kind, reason: "not-confirmable", said: "Open the linked control to complete this action." } as const;
+    // A typed yes opens nothing but a Start card's own gate (checked with the action below): any other kind refuses.
+    if (options.typedStart !== undefined && proposal.kind !== "action") return { ok: false, kind: proposal.kind, reason: "refused", said: TYPED_START_REFUSED } as const;
     if (proposal.kind === "action") {
       if (proposal.state !== "pending") return {ok:false,kind:proposal.kind,reason:"not-pending",said:"This proposal was already acted on."} as const;
       const action = sharedActionPayload(proposal.payload);
@@ -221,7 +227,11 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
       // `toolroll chat` keeps refusing approvals; a Start card names the terminal's own fast start. Before the CAS: the card
       // stays pending for the person's own tap elsewhere.
       if (options.via === "cli" && action.operation === "task_start") return { ok: false, kind: proposal.kind, reason: "not-confirmable", said: startFromTerminalWords(store, action) } as const;
-      const challenged = options.via !== "web" && options.via !== "cli" && options.confirm === true && sharedActionAllowsChallenge(action);
+      // C5: a typed yes stands in for the challenge's tap only on a Start card, on Telegram, for a person, terms whole on the
+      // card, and only while the message's unsettled record names this proposal. Any other use refuses, before the CAS.
+      const typed = typedStartOpens(store, proposal.id, action, { via: options.via, ...(options.typedStart === undefined ? {} : { typedStart: options.typedStart }), authority: localDoor(options) ? "local-owner" : "full" });
+      if (options.typedStart !== undefined && !typed) return { ok: false, kind: proposal.kind, reason: "refused", said: TYPED_START_REFUSED } as const;
+      const challenged = options.via !== "web" && options.via !== "cli" && ((options.confirm === true && sharedActionAllowsChallenge(action)) || typed);
       if (sharedActionNeedsReview(action) && !challenged && (options.via !== "web" || options.actionReview === undefined || options.confirm !== true)) return { ok: false, kind: proposal.kind, reason: "needs-confirm", said: "Review this action in the secure confirmation screen." } as const;
     }
     // Easy-start C1, before the CAS: a local owner confirms only a kind it may (LOCAL_OWNER_PROPOSALS) and, for an
@@ -238,7 +248,7 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
     // Both executors run as the card's own act: the prover answers "local-owner" only for it.
     const execute = <T,>(body: () => T): T => localAct === null ? body() : withLocalAct(localAct, body);
     const outcome: DoorOutcome = proposal.kind === "action"
-      ? { ...execute(() => executeSharedAction(store, who, proposal.id, sharedActionPayload(proposal.payload)!, now, {via:options.via, ...(options.person === undefined ? {} : { person: options.person }), ...(options.binding === undefined ? {} : { binding: options.binding }), authority: localAct === null ? "full" : "local-owner", ...(options.evidenceRoot===undefined?{}:{root:options.evidenceRoot}), ...(options.actionReview===undefined?{}:{review:options.actionReview}), ...(options.confirm===undefined?{}:{confirm:options.confirm})})), kind: proposal.kind }
+      ? { ...execute(() => executeSharedAction(store, who, proposal.id, sharedActionPayload(proposal.payload)!, now, {via:options.via, ...(options.person === undefined ? {} : { person: options.person }), ...(options.binding === undefined ? {} : { binding: options.binding }), authority: localAct === null ? "full" : "local-owner", ...(options.evidenceRoot===undefined?{}:{root:options.evidenceRoot}), ...(options.actionReview===undefined?{}:{review:options.actionReview}), ...(options.confirm===undefined?{}:{confirm:options.confirm}), ...(options.typedStart===undefined?{}:{typedStart:options.typedStart})})), kind: proposal.kind }
       : execute(() => executeProposal(store, who, proposal.kind, proposal.payload, now, { ...options, deferSignal: defer }));
     if (!outcome.ok && outcome.reason === "needs-confirm") {
       store.casLeadProposal(proposalId, "confirming", "pending", null, null, now);
@@ -696,4 +706,48 @@ function refuseFromReason(kind: ProposalKind, reason: string): DoorOutcome {
   };
   const typed = known[reason];
   return typed === undefined ? { ok: false, kind, reason: "refused", said: `refused: ${reason}` } : { ok: false, kind, ...typed };
+}
+
+// ---- a typed yes to a Start card (docs/plans/one-step-chat.md C5) -----------------------------------------------------
+
+export type TypedStartOutcome = { ok: true; taskId: string; said: string } | { ok: false; said: string };
+/** What a typed yes that started the work says (the tap's own words). */
+export const TYPED_START_STARTED = "Started. It's building now.";
+
+/**
+ * Act on a typed yes recorded at ingress, as the Telegram worker takes its message (no lead turn runs for it). ONE
+ * transaction: a settled record returns its saved outcome (a redelivery, or a crash after the write); otherwise the
+ * approver and the pairing are re-proved, the card is found again from the tables by the same ids (the last sent part,
+ * the reply or the very next message, the one pending proposal from an answered turn in the person's own thread), its
+ * stamp must still be the one recorded and its preview unexpired and unused, and then it confirms through the door with
+ * `typedStart`: everything after that gate is the tap's road (the single-use step, the person's own chat setting and
+ * limits, fastStartBuild, approve()). Any failed check settles the record as not counted, and nothing starts.
+ */
+export function confirmTypedStart(store: Store, who: VerifiedApprover | null, typed: { provider: "telegram"; event: string }, now: Date, options: { binding: number; evidenceRoot?: string }): TypedStartOutcome {
+  return store.transact((): TypedStartOutcome => {
+    const row = typedStartOf(store, typed.provider, typed.event);
+    if (row === null) return { ok: false, said: TYPED_START_REFUSED };
+    if (row.outcome !== null) return row.outcome === "started" && row.taskId !== null ? { ok: true, taskId: row.taskId, said: TYPED_START_STARTED } : { ok: false, said: TYPED_START_REFUSED };
+    const settle = (outcome: "started" | "refused" | "not-counted", taskId: string | null, said: string): TypedStartOutcome => {
+      store.handle.prepare("UPDATE chat_typed_start SET outcome = ?, task_id = ?, finished = ? WHERE provider = ? AND event = ? AND outcome IS NULL")
+        .run(outcome, taskId, now.toISOString(), typed.provider, typed.event);
+      return outcome === "started" && taskId !== null ? { ok: true, taskId, said } : { ok: false, said };
+    };
+    const notCounted = (): TypedStartOutcome => settle("not-counted", null, TYPED_START_REFUSED);
+    if (who === null || !isVerifiedApprover(who) || !reproveApprover(store, who).ok) return notCounted();
+    const binding = store.liveTelegramBindingById(options.binding);
+    if (binding === null || binding.approver !== who.name || binding.approverGeneration !== who.generation) return notCounted();
+    const message = store.handle.prepare("SELECT binding, channel, ts, thread FROM chat_event WHERE provider = 'telegram' AND id = ? AND kind = 'message'").get(typed.event);
+    if (message === undefined || Number(message["binding"]) !== binding.id || String(message["channel"]) !== binding.chatId) return notCounted();
+    const again = typedStartCard(store, { binding: binding.id, chatId: binding.chatId, approver: who.name }, { id: String(message["ts"]), replyTo: message["thread"] === "" ? null : String(message["thread"]) });
+    if (again === null || again.proposal !== row.proposal || again.cardMessage !== row.cardMessage || again.how !== row.how || again.stamp !== row.stamp) return notCounted();
+    const proposal = store.getLeadProposal(row.proposal);
+    const action = proposal?.kind === "action" ? sharedActionPayload(proposal.payload) : null;
+    if (proposal === null || action === null || action.stamp !== row.stamp) return notCounted();
+    if (chatStartPreview(store, String(action.request["preview"] ?? ""), who.name, proposal.turn, now) === null) return notCounted();
+    const outcome = confirmLeadProposal(store, who, row.proposal, now, { authority: "full", via: "telegram", binding: binding.id, typedStart: typed,
+      ...(options.evidenceRoot === undefined ? {} : { evidenceRoot: options.evidenceRoot }) });
+    if (outcome.ok && outcome.taskId !== null) return settle("started", outcome.taskId, TYPED_START_STARTED);
+    return settle("refused", null, outcome.ok ? TYPED_START_REFUSED : `${TYPED_START_REFUSED} (${outcome.said.replace(/\.$/, "")}.)`);
+  });
 }
