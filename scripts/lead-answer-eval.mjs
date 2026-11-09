@@ -28,13 +28,16 @@ const { runLeadAnswerEval } = await import(pathToFileURL(join(dist, "lead-answer
 const report = await runLeadAnswerEval({ mode, k, onRun: line => process.stderr.write(`${line}\n`) });
 const out = flag("out");
 if (out !== undefined) writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
-const { read, act } = report;
+const { read, act, voice } = report;
+const voiceLine = (name, one) => `  how ${name} answers read: median ${one.medianCharacters} characters, ${Math.round(one.longShare * 100)}% over 320, ${one.internalWords} internal words, ${one.narratedOpenings} narrated openings (${one.answers} answers)`;
 process.stdout.write([
   `lead-answer eval (${mode}, k=${k}, quick model ${report.quickModel})`,
   `  read questions named in all ${k} runs: main ${read.main.passK}/${read.questions}, quick ${read.quick.passK}/${read.questions}`,
   `  false claims: main ${read.main.falseClaims}, quick ${read.quick.falseClaims}`,
   `  median turn: main ${read.main.medianMs} ms, quick ${read.quick.medianMs} ms (${Math.round(report.speedup * 100)}% faster)`,
   `  act questions on the main model or escalated: ${act.kept}/${act.total}`,
+  voiceLine("main", voice.main),
+  voiceLine("quick", voice.quick),
   report.pass ? (mode === "real" ? "PASS: quick answers may ship on." : "PASS (scripted: proves the harness only; the gate is --real).") : `FAIL: ${report.reasons.join("; ")}`,
   "",
 ].join("\n"));

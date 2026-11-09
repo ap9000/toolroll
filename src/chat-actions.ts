@@ -1531,7 +1531,7 @@ export function executeSharedAction(
         return {
           ok: true as const,
           taskId,
-          said: `Stop released. ${result.gate ? "Other requirements still prevent the next attempt." : "The next attempt may start."}`,
+          said: `Stop lifted. ${result.gate ? "Something else still holds the next attempt." : "The next attempt may start."}`,
         };
       }
       const said =

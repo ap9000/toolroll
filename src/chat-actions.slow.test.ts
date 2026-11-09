@@ -860,7 +860,7 @@ describe("shared chat action lifecycle", () => {
     const action = proposal("task_resume", { task: id, run });
     expect(confirm(action, true)).toMatchObject({
       ok: true,
-      said: expect.stringContaining("Other requirements"),
+      said: expect.stringContaining("Something else still holds"),
     });
     expect(store.stopOf(run)?.resumedBy).toBe(who.name);
     expect(store.activeHolds(ref.id, now).map((one) => one.ownerKind)).toEqual([

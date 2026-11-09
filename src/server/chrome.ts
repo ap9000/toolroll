@@ -893,7 +893,7 @@ export function workToolRows(scoped = false, _offersChat = false, offersCode = f
     { key: "tasks", href: "/tasks", label: "Task list", hint: "everything, filterable by state" },
     { key: "recipes", href: "/recipes", label: "Recipes", hint: "choose, customize, and reuse a workflow" },
     { key: "workbench", href: "/tasks?scope=all", label: "Every project", hint: "every project's tasks in one list" },
-    { key: "ledger", href: "/ledger", label: "Action ledger", hint: "who acted, what happened, and the result" },
+    { key: "ledger", href: "/ledger", label: "Audit log", hint: "who acted, what happened, and the result" },
     { key: "spend", href: "/spend", label: "Spend", hint: "what agent work cost, and monthly budgets" },
   ];
   return scoped ? rows.filter(row => row.key !== "workbench" && row.key !== "spend") : rows;
@@ -904,7 +904,7 @@ export function settingsRows(scoped = false, offersSettings = false): NavRow[] {
     { key: "fleet", href: "/fleet", label: "Fleet", hint: "who is working, and on what" },
     { key: "caps", href: "/caps", label: "Requirements", hint: "tools and credentials builds need" },
     { key: "people", href: "/people", label: "People", hint: "who can sign in, and what they have done" },
-    { key: "mode", href: "/mode", label: "Operating mode", hint: "the signed posture this repository runs under" },
+    { key: "mode", href: "/mode", label: "Operating mode", hint: "how much this project may do without asking" },
     { key: "system", href: "/system", label: "System", hint: "workers, providers, and grants" },
   ];
   return scoped ? rows.filter(row => row.key === "people" || row.key === "settings") : rows;
