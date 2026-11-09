@@ -6934,7 +6934,16 @@ async function runWatchLoop(args: {
   const hub = wakeHubFor(store);
   const wakes = new WakePoker();
   args.onFollowController?.(followController);
-  const stopping = (): boolean => args.isStopping() || leaseLost;
+  // The loop or a build lane failed (the store could not be read): everything stops, cleans up, and then the first
+  // failure is thrown. Without this a failed lane skipped the cleanup, and a failed loop left its lanes running.
+  let failed = false;
+  let failure: unknown;
+  const fail = (error: unknown): void => {
+    if (!failed) failure = error;
+    failed = true;
+    wakes.poke();
+  };
+  const stopping = (): boolean => args.isStopping() || leaseLost || failed;
 
   const heartbeat = setInterval(() => {
     let renewed = false;
@@ -7157,7 +7166,8 @@ async function runWatchLoop(args: {
   });
 
   // The process's delivery and fast CI beats (live-wakeups.md): one set however many project loops run.
-  const leaveServiceBeats = joinServiceBeats({ context, progress, ciReady: () => reconciliationReady && !stopping() });
+  // The fast CI pass runs only while this loop would admit work: not stopping, reconciled, and no update drain.
+  const leaveServiceBeats = joinServiceBeats({ context, progress, ciReady: () => !admissionStopped() });
 
   // Parallel builds (project-concurrency.ts): this loop is the project's
   // first build lane and keeps every housekeeping duty; extra lanes, up to
@@ -7237,7 +7247,8 @@ async function runWatchLoop(args: {
   const ensureLanes = (): void => {
     const facts = slotFacts(null);
     const wanted = effectiveConcurrency(facts.limitOf(repo), facts.capacity);
-    while (lanes.length + 1 < wanted && !stopping()) lanes.push(buildLane(lanes.length + 1));
+    // A lane never rejects: its failure is kept, every doze is woken, and the loop's own cleanup runs before it is thrown.
+    while (lanes.length + 1 < wanted && !stopping()) lanes.push(buildLane(lanes.length + 1).catch(fail));
   };
   let firstLaneYieldingSince: number | null = null;
   let firstLaneYieldingTo: string | null = null;
@@ -7371,6 +7382,9 @@ async function runWatchLoop(args: {
         firstLaneYieldingTo !== null && firstLaneYieldingSince !== null && passes.lastPass(firstLaneYieldingTo) > firstLaneYieldingSince;
       await hub.changed({ baseline: seqIdle, deadline: dozeUntil, until: () => stopping() || theirTurnEnded(), poker: wakes });
     }
+  } catch (error) {
+    // Kept, not thrown yet: the lanes must see the stop, and the cleanup below must run first.
+    fail(error);
   } finally {
     // Every build lane finishes or hands its attempt back before the
     // loop's lease and episode end.
@@ -7391,6 +7405,7 @@ async function runWatchLoop(args: {
     store.endWatchEpisode(incarnation, { ticks, built, broke: brokeCount }, new Date());
     store.releaseWatchLease(runner, repo, incarnation, new Date());
   }
+  if (failed) throw failure;
 
   if (leaseLost) {
     return { ok: false, reason: "lease-lost", detail: `the watch lease for ${runner} on ${repo} stopped renewing — another process may have taken this worker over`, ticks, built, broke: brokeCount };
@@ -14425,11 +14440,11 @@ function newestNotificationId(store: Store): number {
 }
 
 /**
- * The opened pull requests the fast CI pass reads, oldest read first, at most `limit`: checks not settled (never read,
+ * The opened pull requests the fast CI pass reads, oldest read or tried (`attempted`) first, at most `limit`: checks not settled (never read,
  * running, or "none" shortly after an update), or green with its merge still waiting (a merge intent in flight, or a
  * followed pull request not yet marked ready on its accepted commit). Failing and settled ones stay on the 5 minute pass.
  */
-export function fastCiWaiting(store: Store, now: Date, limit = FAST_CI_LIMIT): Publication[] {
+export function fastCiWaiting(store: Store, now: Date, limit = FAST_CI_LIMIT, attempted: ReadonlyMap<number, string> = new Map()): Publication[] {
   const waiting = store.openedPublications().filter(publication => {
     if (publication.prNumber === null) return false;
     const state = publication.lastCheckState;
@@ -14442,8 +14457,13 @@ export function fastCiWaiting(store: Store, now: Date, limit = FAST_CI_LIMIT): P
     const follow = store.handle.prepare("SELECT flow_card, ready_head, merge_commit FROM pull_request_follow WHERE publication = ?").get(publication.id);
     return follow !== undefined && follow["flow_card"] == null && follow["merge_commit"] == null && follow["ready_head"] !== publication.headSha;
   });
+  // Oldest attempt first: a pull request GitHub cannot read still takes its turn, then goes to the back of the line.
+  const last = (one: Publication): string => {
+    const read = one.lastCheckAt ?? "", tried = attempted.get(one.id) ?? "";
+    return tried > read ? tried : read;
+  };
   return waiting
-    .sort((a, b) => (a.lastCheckAt ?? "").localeCompare(b.lastCheckAt ?? "") || a.id - b.id)
+    .sort((a, b) => last(a).localeCompare(last(b)) || a.id - b.id)
     .slice(0, limit);
 }
 
@@ -14474,6 +14494,8 @@ function startServiceBeats(store: Store): ServiceBeats {
   const anyMember = (): ServiceBeatMember | undefined => beats.members.values().next().value;
   let deliveredThrough = newestNotificationId(store);
   let deliveryProblem: string | null = null;
+  // When the fast CI pass last tried each pull request, read or not.
+  const attempted = new Map<number, string>();
   const delivery = startMaintenance({
     intervalMs: DELIVERY_EVERY_MS,
     shouldStop: () => beats.stopped,
@@ -14502,16 +14524,22 @@ function startServiceBeats(store: Store): ServiceBeats {
     // A failed fast pass is skipped: it records nothing and says nothing. The 5 minute pass still reads every PR.
     onError: () => {},
     run: async () => {
-      const members = [...beats.members];
-      if (members.length === 0 || !members.every(one => one.ciReady())) return;
-      const { context, progress } = members[0]!;
-      const waiting = fastCiWaiting(store, context.clock());
+      // Every project loop must still stand, read again before each revision, ready mark and merge: a stop, a lost
+      // lease, a failed reconciliation or an update drain that arrives while GitHub answers ends the pass there.
+      const standing = (): boolean => !beats.stopped && beats.members.size > 0 && [...beats.members].every(one => one.ciReady());
+      if (!standing()) return;
+      const { context, progress } = beats.members.values().next().value!;
+      const now = context.clock();
+      const waiting = fastCiWaiting(store, now, FAST_CI_LIMIT, attempted);
       if (waiting.length === 0) return;
+      // A pull request GitHub would not read keeps its place in line only until the others had their turn.
+      if (attempted.size > 500) attempted.clear();
+      for (const one of waiting) attempted.set(one.id, now.toISOString());
       const exec = context.publishExec === undefined ? {} : { exec: context.publishExec };
       const checks = await observeChecks(store, { ...exec, publications: waiting });
-      if (beats.stopped) return;
+      if (!standing()) return;
       if (checks.failing > 0) progress(`watch: CI is red on ${checks.failing} published PR(s) — the outbox has it`);
-      const followed = await followPullRequests(store, checks.seen, { evidenceRoot: context.evidenceRoot, ...exec });
+      const followed = await followPullRequests(store, checks.seen, { evidenceRoot: context.evidenceRoot, ...exec, proceed: standing });
       if (followed.revisions > 0) progress(`watch: filed ${followed.revisions} CI revision(s)`);
       if (followed.merged > 0) progress(`watch: merged ${followed.merged} pull request(s) whose checks passed`);
     },

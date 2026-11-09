@@ -293,12 +293,16 @@ function taskIdOf(store: Store, publication: Publication): string {
 export async function followPullRequests(
   store: Store,
   seen: readonly ObservedPullRequest[],
-  options: { evidenceRoot: string; exec?: PublishExec; clock?: () => Date },
+  options: { evidenceRoot: string; exec?: PublishExec; clock?: () => Date;
+    /** Asked again before each revision, ready mark and merge: false ends the pass there and writes nothing more. */
+    proceed?: () => boolean },
 ): Promise<FollowReport> {
   const exec = options.exec ?? execRun;
   const clock = options.clock ?? (() => new Date());
   const report: FollowReport = { revisions: 0, asked: 0, ready: 0, merged: 0, problems: [] };
+  const halted = (): boolean => options.proceed?.() === false;
   for (const one of seen) {
+    if (halted()) break;
     const publication = one.publication;
     const follow = followOf(store, publication.id);
     // A flow's Pull request zone follows its own PR: green moves the card on, red takes its failure path.
@@ -324,6 +328,7 @@ export async function followPullRequests(
       const check = failingChecks(one.rollup)[0] ?? { name: "a check", url: null };
       const skeleton = ciRevisionNote(check.name, pr, one.headOid, "");
       const excerpt = await logExcerpt(exec, publication.githubRepo, check.url, 490 - skeleton.length);
+      if (halted()) break;
       const note = ciRevisionNote(check.name, pr, one.headOid, excerpt);
       const request = createHash("sha256").update(`ci-revision ${publication.githubRepo} ${pr} ${one.headOid}`).digest("hex").slice(0, 32);
       const scope = store.getScope(taskId);
@@ -358,8 +363,11 @@ export async function followPullRequests(
       const grant = store.publicationGrantFor(store.refById(publication.taskRef)?.repo ?? "");
       updateFollow(store, publication.id, { ready_head: one.headOid }, clock());
       if (grant?.mergeWhenGreen === true && grant.publishOn === "complete") {
-        const merged = await mergePullRequest(store, { runId: publication.run, by: "merge when checks pass", exec, clock });
+        const merged = await mergePullRequest(store, { runId: publication.run, by: "merge when checks pass", exec, clock,
+          ...(options.proceed === undefined ? {} : { proceed: options.proceed }) });
         if (merged.ok) { report.merged++; continue; }
+        // Halted before the merge was reserved: the ready mark is taken back so the next pass merges it, and nobody is asked to.
+        if (merged.reason === "halted") { updateFollow(store, publication.id, { ready_head: follow.readyHead }, clock()); break; }
         report.problems.push(`PR #${pr}: ${merged.message}`);
       }
       store.enqueueNotification({
@@ -414,7 +422,9 @@ export async function mergePullRequest(
     /** A flow's Pull request zone merges its own way; otherwise the project's. */
     method?: MergeMethod;
     /** Only a person merging by hand may skip waiting for the full check. */
-    anyway?: boolean },
+    anyway?: boolean;
+    /** An automatic pass's standing, read in the write that reserves the merge: false refuses ("halted") and merges nothing. */
+    proceed?: () => boolean },
 ): Promise<Result<{ commit: string | null }>> {
   const exec = input.exec ?? execRun;
   const clock = input.clock ?? (() => new Date());
@@ -485,13 +495,15 @@ export async function mergePullRequest(
   // one that comes after waits for GitHub's answer (the reservation counts as work going on).
   // One merge at a time, each owning its reservation by its token: a second caller is refused, and each releases only its own.
   const token = randomUUID();
-  const reserved = store.transact((): "ok" | "archived" | "merging" | "deleting" => {
+  const reserved = store.transact((): "ok" | "archived" | "merging" | "deleting" | "halted" => {
+    if (input.proceed?.() === false) return "halted";
     if (refArchived(store, publication.taskRef)) return "archived";
     if (store.handle.prepare("SELECT 1 FROM hold WHERE task_ref = ? AND owner_id LIKE 'project-delete:%' AND (until IS NULL OR until > ?)").get(publication.taskRef, clock().toISOString()) !== undefined) return "deleting";
     if (store.handle.prepare("SELECT 1 FROM merge_in_flight WHERE publication = ? AND at > ?").get(publication.id, new Date(clock().getTime() - 15 * 60_000).toISOString()) !== undefined) return "merging";
     store.handle.prepare("INSERT OR REPLACE INTO merge_in_flight (publication, task_ref, token, by, at) VALUES (?, ?, ?, ?, ?)").run(publication.id, publication.taskRef, token, input.by, clock().toISOString());
     return "ok";
   });
+  if (reserved === "halted") return refuse("halted", "The worker is stopping or paused, so this merge waits for its next pass.");
   if (reserved === "archived") return refuse("archived", "This task is put away. Restore it before merging.");
   if (reserved === "deleting") return refuse("deleting", "This task's project is being deleted, so nothing merges.");
   if (reserved === "merging") return refuse("merging", "This pull request is already being merged. Wait for that to finish.");

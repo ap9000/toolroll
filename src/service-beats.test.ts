@@ -111,3 +111,47 @@ test("a failed fast pass is skipped: it records nothing and says nothing", async
   expect(store.handle.prepare("SELECT COUNT(*) AS n FROM notification WHERE kind = 'ci-failing'").get()!["n"]).toBe(0);
   expect(lines).toEqual([]);
 });
+
+test("a loop that stops admitting work while GitHub answers ends the fast pass: nothing is said and nothing is followed", async () => {
+  vi.useFakeTimers({ now: T0, toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  const id = opened(1, null);
+  store.handle.prepare("INSERT INTO pull_request_follow (publication, flow_card, revisions, created_at, updated_at) VALUES (?, NULL, 0, ?, ?)").run(id, T0.toISOString(), T0.toISOString());
+  let ready = true;
+  const asked: string[] = [];
+  const exec: PublishExec = async (file, args) => {
+    asked.push([file, ...args].slice(0, 3).join(" "));
+    if (file === "gh" && args[0] === "pr" && args[1] === "view") {
+      ready = false; // an update drain or a failed reconciliation lands while GitHub answers
+      return { code: 0, stdout: JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: "https://github.com/o/r/actions/runs/7/job/9" }], headRefOid: "1".padStart(40, "a"), state: "OPEN", mergeCommit: null }), stderr: "", timedOut: false, notFound: false };
+    }
+    return { code: 1, stdout: "", stderr: "unexpected", timedOut: false, notFound: false };
+  };
+  const lines: string[] = [];
+  const leave = joinServiceBeats(member(exec, () => ready, lines));
+  try {
+    await vi.advanceTimersByTimeAsync(FAST_CI_EVERY_MS);
+  } finally { await leave(); }
+  expect(asked).toEqual(["gh pr view"]); // the failure log was never fetched: the follow never began
+  expect(lines).toEqual([]);
+  expect(store.handle.prepare("SELECT revisions, red_head, revision_task FROM pull_request_follow WHERE publication = ?").get(id)).toEqual({ revisions: 0, red_head: null, revision_task: null });
+});
+
+test("pull requests GitHub will not read take their turn, then wait behind the others", async () => {
+  vi.useFakeTimers({ now: T0, toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  for (let n = 1; n <= 12; n++) opened(n, null);
+  const asked: string[] = [];
+  const exec: PublishExec = async (file, args) => {
+    if (file === "gh" && args[0] === "pr" && args[1] === "view") asked.push(String(args[2]));
+    return { code: 1, stdout: "", stderr: "GitHub is not answering", timedOut: false, notFound: false };
+  };
+  const lines: string[] = [];
+  const leave = joinServiceBeats(member(exec, () => true, lines));
+  try {
+    await vi.advanceTimersByTimeAsync(FAST_CI_EVERY_MS);
+    expect(asked.slice().sort((a, b) => Number(a) - Number(b))).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
+    // None of the ten was read, so none has a read time; the two that never had a turn still go first.
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM publication WHERE last_check_at IS NOT NULL").get()!["n"]).toBe(0);
+    await vi.advanceTimersByTimeAsync(FAST_CI_EVERY_MS);
+    expect(asked.slice(FAST_CI_LIMIT, FAST_CI_LIMIT + 2).sort()).toEqual(["11", "12"]);
+  } finally { await leave(); }
+});

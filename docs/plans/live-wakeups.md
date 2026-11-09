@@ -187,3 +187,13 @@ There is no receiver wired to PR checks. The 5 min pass (`src/operate.ts:7015-70
 | 4 | Medium | An early readiness check can miss new work; triggers need no card | Slice 7 deferred |
 | 5 | Medium | Telegram abort is offset-safe with conditions | Conditions written into the build set |
 | 6 | Low | Slices 1-2 sound; merge approval still unwoken | Merge approval bump added |
+
+## Codex round 2 ledger (the build, commit b06a0063: NO-GO, three findings, all fixed)
+
+This was the arc's last review round. Each fix has a test that fails without it.
+
+| # | Severity | Finding | Change |
+| --- | --- | --- | --- |
+| 1 | High | The fast CI pass could file a revision or merge during an update drain, or after a loop stopped standing while GitHub answered | A loop counts as ready only while it would admit work (`!admissionStopped()`). The pass asks again after the read, before each revision and ready mark, and inside the write that reserves a merge; a halted merge takes its ready mark back. The 5 minute pass is unchanged. Tests: `src/pull-request-flow.test.ts`, `src/service-beats.test.ts` |
+| 2 | High | A failed read of the wake counter rejected every build lane; the loop's cleanup then threw and was skipped, leaving the lease held | A failed lane or a failed loop is recorded, everything dozing is woken and stops, the cleanup runs, and the first failure is thrown after it. Test: `src/project-concurrency.slow.test.ts` |
+| 3 | Medium | Ten pull requests GitHub would not read kept the fast pass's ten places forever | The pass remembers when it last tried each one (in memory) and orders by the later of the last read and the last try. Test: `src/service-beats.test.ts` |
