@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { LEAD_ASK_OTHER, type ChatConfig, type DirectChatProviderId, type LeadProposal, type Store, type SubscriptionChatProviderId } from "./store.js";
 import { CHAT_KEY_ENV, credentialKeyOf, isDirectChatProvider, priceForConfig, subscriptionCredentialKey } from "./converse.js";
-import { verifyApproverByPassword, type VerifiedApprover } from "./principal.js";
+import { reproveApprover, verifyApproverByPassword, type VerifiedApprover } from "./principal.js";
 import { runLeadTurn, type LeadTurnOutcome } from "./lead.js";
 import { voiceReply, type ShapeOptions } from "./reply-shape.js";
 import { confirmLeadProposal, dismissLeadProposal } from "./lead-doors.js";
@@ -283,8 +283,22 @@ export async function runLeadCli(input: LeadCliInput): Promise<LeadCliResult> {
       const outcome: LeadTurnOutcome = { ok: false, refused: "session-ended", message: "This conversation has ended. Run chat again to start a new one." };
       return outcome;
     }
+    // Before every draw: this approver as verified, this conversation and thread still open under the same projects,
+    // and the turn still running under the generation it was admitted with (as the engine's own guard re-proves).
+    let admitted: number | null = null;
+    const standing = (turnId: number | null): boolean => {
+      if (!reproveApprover(store, who).ok) return false;
+      const nowSession = store.getLeadSession(live.id), nowThread = store.getLeadThread(thread.id);
+      if (nowSession === null || nowSession.endedAt !== null || nowSession.approver !== who.name || nowSession.approverGeneration !== who.generation || nowSession.ceilingDigest !== who.ceilingDigest) return false;
+      if (nowThread === null || nowThread.closedAt !== null || nowThread.approver !== who.name || nowThread.ceilingDigest !== who.ceilingDigest) return false;
+      if (turnId === null) return true;
+      const row = store.getLeadTurn(turnId);
+      if (row === null || row.state !== "running" || row.session !== live.id || row.thread !== thread.id) return false;
+      admitted ??= row.generation;
+      return row.generation === admitted;
+    };
     // The live block draws only on a real terminal; its last draw is erased before the answer or failure is printed.
-    const watch = input.liveTerminal === undefined || json ? null : startTerminalLive(input.liveTerminal, { appOrigin: input.appOrigin ?? null, asked: message });
+    const watch = input.liveTerminal === undefined || json ? null : startTerminalLive(input.liveTerminal, { appOrigin: input.appOrigin ?? null, asked: message }, { standing });
     try {
       return await runLeadTurn({ store, who, session: live, thread, config, key, message, channel: "terminal", ...(watch === null ? {} : { onProgress: watch.progress }), ...(seams.fetcher === undefined ? {} : { fetcher: seams.fetcher }), ...(seams.subscriptionRunner === undefined ? {} : { subscriptionRunner: seams.subscriptionRunner }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), clock });
     } finally {

@@ -10,6 +10,7 @@
  * Views come from the shared live-reply core and are drawn through its serialized sender, so `finish()` resolves only
  * after the last draw: the block is erased and the caller prints the final answer (or the failure) strictly after.
  * The erase moves up within the block's known height; a terminal that scrolled meanwhile keeps what it showed.
+ * Every draw first re-proves the caller's `standing`: once it fails, the block is erased and nothing more is drawn.
  */
 import type { LeadProgress } from "./lead-progress.js";
 import { createLiveReply, createLiveSender } from "./live-reply.js";
@@ -126,8 +127,15 @@ export type TerminalLive = {
  * Start one turn's live block: the status line shows at once. `shape` is the final reply's shaping (the owner's
  * message and this app's origins), so a partial reads as the final will.
  */
-export function startTerminalLive(out: TerminalLiveOutput, shape: ShapeOptions = {}, options: { spacingMs?: number } = {}): TerminalLive {
+export function startTerminalLive(out: TerminalLiveOutput, shape: ShapeOptions = {}, options: {
+  spacingMs?: number;
+  /** Re-proved immediately before every draw (the person, the conversation, its projects and the turn, once known,
+   * running under the generation it was admitted with). False: the block is erased and nothing more is drawn. */
+  standing?: (turn: number | null) => boolean;
+} = {}): TerminalLive {
   const reply = createLiveReply(shape);
+  /** The turn this block follows, once the engine has said it started. */
+  let turn: number | null = null;
   /** The rows on screen now, as drawn (without the dim styling); empty when nothing is. */
   let drawn: string[] = [];
   let ended = false;
@@ -146,6 +154,15 @@ export function startTerminalLive(out: TerminalLiveOutput, shape: ShapeOptions =
   };
   const draw = (): void => {
     if (ended) return;
+    if (options.standing !== undefined && !options.standing(turn)) {
+      // Standing lost: clear what is shown and close the preview; the turn's own outcome says why.
+      ended = true;
+      void sender.close();
+      stopResize();
+      const erase = eraseSequence();
+      if (erase !== "") out.write(erase);
+      return;
+    }
     // Three columns short of the edge: a full row never leaves the cursor waiting to wrap, and the "^C" a terminal
     // echoes after the last row on Ctrl-C never wraps it, so the erase's height stays right.
     const width = Math.max(10, columns() - 3);
@@ -170,6 +187,7 @@ export function startTerminalLive(out: TerminalLiveOutput, shape: ShapeOptions =
   draw();
   return {
     progress(event) {
+      turn ??= event.turn;
       // Model text is made terminal-safe before it is settled and shaped, on the whole text written so far.
       if (reply.push(event.kind === "text" ? { ...event, text: terminalText(event.text) } : event)) sender.offer(null);
     },

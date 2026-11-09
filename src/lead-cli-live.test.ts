@@ -212,6 +212,34 @@ describe("toolroll chat in a terminal (responsive chat slice 4)", () => {
     expect(term.listening()).toBe(0);
   });
 
+  test("revoked mid-turn: no project text is drawn after the revocation, and the preview clears", async () => {
+    expect(addApprover(store, "robin", T0, { name: "alex", token })).toMatchObject({ ok: true });
+    const log: string[] = [];
+    const term = fakeTerminal(60, log);
+    let revokedAt = -1;
+    const revoking: SubscriptionLeadRunner = async request => {
+      request.onText?.("The payout guard ");
+      await drained();
+      request.onText?.("The payout guard is ");
+      await drained();
+      expect(store.revokeAccount("alex", "robin", T0)).toMatchObject({ ok: true });
+      revokedAt = log.length;
+      request.onText?.("The payout guard is waiting on the ledger check today ");
+      // Longer than the redraw spacing: a draw would have happened by now.
+      await new Promise(resolve => setTimeout(resolve, 120));
+      return { ok: true, answer: { text: "The payout guard is waiting on the ledger check today.", calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null } };
+    };
+    await runLeadCli({ store, databaseFile: file, write: line => log.push(`LINE:${line}`), json: false, credentials: { name: "alex", token }, repos: [repo], say: "How is the payout guard going?", end: false, ceilingUsd: undefined, liveTerminal: term.out, seams: { subscriptionRunner: revoking, clock: () => T0 } });
+    expect(revokedAt).toBeGreaterThan(0);
+    expect(log.slice(0, revokedAt).some(entry => !entry.startsWith("LINE:") && entry.includes("The payout"))).toBe(true);
+    const after = log.slice(revokedAt).filter(entry => !entry.startsWith("LINE:"));
+    expect(after.some(entry => entry.includes("ledger") || entry.includes("payout"))).toBe(false);
+    // The block was erased, and the answer never printed.
+    expect(after.at(-1)).toMatch(/^\r(?:\x1b\[\d+A)?\x1b\[J$/);
+    expect(log.some(entry => entry.startsWith("LINE:") && entry.includes("ledger"))).toBe(false);
+    expect(term.listening()).toBe(0);
+  });
+
   test("a failed turn replaces the partial with its saved failure words", async () => {
     const log: string[] = [];
     const term = fakeTerminal(60, log);
