@@ -166,7 +166,10 @@ export function mintCardTokens(store: Store, binding: TelegramBinding, proposal:
   for (const [token, phase] of [[confirm, "confirm"], [dismiss, "dismiss"]] as const) {
     store.createTelegramProposalAction({ token, binding: binding.id, proposal, phase, chatId, ttlMs: CARD_TTL_MS, ...(messageId === undefined ? {} : { messageId }) }, now);
   }
-  return { keyboard: [[telegramButton("Confirm", confirm), telegramButton("Dismiss", dismiss)]], tokens: [confirm, dismiss] };
+  // A Start card's button says what it does: the card's last line tells the person to tap it (or reply yes).
+  const saved = store.getLeadProposal(proposal);
+  const label = saved?.kind === "action" && sharedActionPayload(saved.payload)?.operation === "task_start" ? "Start work" : "Confirm";
+  return { keyboard: [[telegramButton(label, confirm), telegramButton("Dismiss", dismiss)]], tokens: [confirm, dismiss] };
 }
 
 export type CardEffect =

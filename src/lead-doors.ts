@@ -218,8 +218,9 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
       if (proposal.state !== "pending") return {ok:false,kind:proposal.kind,reason:"not-pending",said:"This proposal was already acted on."} as const;
       const action = sharedActionPayload(proposal.payload);
       if (action === null) return { ok: false, kind: proposal.kind, reason: "refused", said: "This action is incomplete." } as const;
-      // `toolroll chat` keeps refusing approvals; a Start card names the terminal's own fast start. The card stays pending.
-      if (options.via === "cli" && action.operation === "task_start") return { ok: false, kind: proposal.kind, reason: "needs-confirm", said: startFromTerminalWords(store, action) } as const;
+      // `toolroll chat` keeps refusing approvals; a Start card names the terminal's own fast start. Before the CAS: the card
+      // stays pending for the person's own tap elsewhere.
+      if (options.via === "cli" && action.operation === "task_start") return { ok: false, kind: proposal.kind, reason: "not-confirmable", said: startFromTerminalWords(store, action) } as const;
       const challenged = options.via !== "web" && options.via !== "cli" && options.confirm === true && sharedActionAllowsChallenge(action);
       if (sharedActionNeedsReview(action) && !challenged && (options.via !== "web" || options.actionReview === undefined || options.confirm !== true)) return { ok: false, kind: proposal.kind, reason: "needs-confirm", said: "Review this action in the secure confirmation screen." } as const;
     }

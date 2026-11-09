@@ -1267,7 +1267,7 @@ describe("the Start card", () => {
 
   test("`toolroll chat` refuses and names the terminal's own fast start; the card stays pending", async () => {
     const { id } = await drafted();
-    expect(tap(id, "cli")).toMatchObject({ ok: false, reason: "needs-confirm", said: `Start it from the terminal with \`toolroll task new 'Fix the typo in the footer' --repo ${shellWordOrNull(repo) ?? "<project>"}\`.` });
+    expect(tap(id, "cli")).toMatchObject({ ok: false, reason: "not-confirmable", said: `Start it from the terminal with \`toolroll task new 'Fix the typo in the footer' --repo ${shellWordOrNull(repo) ?? "<project>"}\`.` });
     expect(store.getLeadProposal(id)!.state).toBe("pending");
     expect(tasks()).toBe(0);
   });

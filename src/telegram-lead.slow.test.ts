@@ -47,6 +47,7 @@ import { saveConsoleUrl, CONSOLE_URL_ENV } from "./webhooks.js";
 import { modeDigestOf, modeTermsJson, presetTerms } from "./modes.js";
 import type { SubscriptionLeadRequest, SubscriptionLeadRunner } from "./subscription-chat.js";
 import { TURN_WALL_CLOCK_MS } from "./converse.js";
+import { installFilingSizer } from "./task-sizing.js";
 
 const T0 = new Date("2026-09-16T09:00:00.000Z");
 const BOT = "777000";
@@ -1437,6 +1438,42 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(String(script.calls.filter(call => call.method === "editMessageText").at(-1)!.params["text"])).toContain("✓ Accepted and finished.");
       // A repeated yes is spent; the record is unchanged.
       expect(await tapPass(yes2, complete.messageId)).toMatchObject({ ok: true, report: { ignored: 1 } });
+    });
+
+    test("a Start card: the lead's propose_start, Start work, then Yes, start work, files, approves and marks one small task, and wakes the builder", async () => {
+      const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+      try {
+        answers.push(
+          { text: "", calls: [{ id: "g0", name: "get_capabilities", args: { repo: "r1" } }] },
+          { text: "", calls: [{ id: "s1", name: "propose_start", args: { repo: "r1", title: "Fix the typo in the footer" } }] },
+          { text: "Here it is." },
+        );
+        script.updates.push([textUpdate(2, "just fix the typo in the footer")]);
+        expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
+        const sent = script.card();
+        expect(sent.text).toContain("Start work in repo: Fix the typo in the footer");
+        expect(sent.text).toContain("Written by the lead from your request: “Fix the typo in the footer”");
+        expect(sent.rows[0]!.map(one => one.text)).toEqual(["Start work", "Dismiss"]);
+        // The Start card is the last message Toolroll sends for the turn.
+        expect(script.sends().at(-1)!.messageId).toBe(sent.messageId);
+        // `toolroll chat` on the same conversation names the terminal's own fast start, and the card keeps waiting.
+        const lines: string[] = [];
+        const cli = await runLeadCli({ store, databaseFile: file, write: line => lines.push(line), json: false, credentials: { name: "alex", token }, repos: [repo], say: undefined, end: false, ceilingUsd: undefined, seams: { lines: ["proposals", "confirm 1", "confirm 1 yes", "quit"], clock: () => now } });
+        expect(cli.code, lines.join("\n")).toBe(0);
+        expect(lines.join("\n")).toContain(`refused: Start it from the terminal with \`toolroll task new 'Fix the typo in the footer' --repo`);
+        expect(lines.join("\n")).toContain("toolroll task new");
+        expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]).toBe(0);
+        const wake = store.wakeSeq();
+        expect(await tapPass(sent.button(/^Start work$/), sent.messageId)).toMatchObject({ ok: true, report: { ignored: 0 } });
+        expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]).toBe(0);
+        const armed = lastEdit()!;
+        const yes = (armed.params["reply_markup"] as { inline_keyboard: { text: string; callback_data: string }[][] }).inline_keyboard.flat().find(one => one.text === "✓ Yes, start work")!.callback_data;
+        expect(await tapPass(yes, sent.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
+        const taskId = String(store.handle.prepare("SELECT external_id FROM task_ref WHERE fast_start_at IS NOT NULL").get()?.["external_id"]);
+        expect(store.getScope(taskId)).toMatchObject({ approvalBasis: "chat" });
+        expect(store.wakeSeq()).toBeGreaterThan(wake);
+        expect(String(lastEdit()!.params["text"])).toContain("Started. It's building now.");
+      } finally { dropSizer(); }
     });
 
     test("task actions: retry, plan, dependencies and a stop confirm through the shared door — the stop is audited as telegram; resume only opens the password step", async () => {

@@ -19,6 +19,7 @@ import { TURN_WALL_CLOCK_MS, type LeadProviderAnswer } from "./converse.js";
 import { leadFailureText } from "./lead.js";
 import { presented, T0, workspaceOf, sealScopeFixture } from "../test/serve-kit.js";
 import { TeamLeads } from './team-leads.js';
+import { installFilingSizer } from "./task-sizing.js";
 import type { TeamOperation, TeamResponse } from './team-contract.js';
 
 describe("fleet chat — the LLM drafts, the ceremony approves (v13)", () => {
@@ -1161,6 +1162,39 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(thread).not.toContain('name="token"');
     expect(thread).toContain("this conversation: $0.00 of $5.00");
     expect(thread).toContain('action="/chat/mate/end"');
+  });
+
+  test("a Start card on web chat: Review and start opens the whole terms; I confirm this exact action files, approves and marks one small task and wakes the builder", async () => {
+    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+    try {
+      const cookie = await login(); const csrf = await mint(cookie);
+      script.push(
+        () => answer([{ type: "tool_use", id: "cap", name: "get_capabilities", input: { repo: "r1" } }]),
+        () => answer([{ type: "tool_use", id: "start", name: "propose_start", input: { repo: "r1", title: "Fix the typo in the footer" } }]),
+        () => answer([{ type: "text", text: "Review it and start." }]),
+      );
+      expect((await post(cookie, "/chat", { csrf, message: "just fix the typo in the footer" })).status).toBe(303);
+      await settle();
+      const html = await page(cookie);
+      const card = /<article[^>]*data-card-kind="action"[^>]*>([\s\S]*?)<\/article>/.exec(html)?.[1] ?? "";
+      expect(card).toContain("Start work in ");
+      expect(card).toContain("Review and start");
+      // The web card leaves the terms to the review page and confirms nothing itself.
+      expect(card).not.toContain("/confirm");
+      const proposal = store.handle.prepare("SELECT id FROM lead_proposal WHERE kind = 'action'").get()!["id"];
+      const review = await (await fetch(url(`/chat/action/${proposal}`), { headers: { cookie } })).text();
+      expect(review).toContain("Starts now as a small change. If it grows past 3 files or 150 changed lines, it waits for you to approve it again.");
+      expect(review).toContain("I confirm this exact action");
+      const nonce = /name="nonce" value="([0-9a-f]+)"/.exec(review)?.[1] ?? "";
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task WHERE id NOT IN ('a','b')").get()?.["n"]).toBe(0);
+      const wake = store.wakeSeq();
+      expect((await post(cookie, `/chat/proposal/${proposal}/confirm`, { csrf, nonce, confirm: "yes", return: "/chat" })).status).toBe(303);
+      const started = store.handle.prepare("SELECT external_id FROM task_ref WHERE fast_start_at IS NOT NULL").get();
+      expect(started).toBeDefined();
+      expect(store.getScope(String(started!["external_id"]))).toMatchObject({ approvalBasis: "chat" });
+      expect(store.wakeSeq()).toBeGreaterThan(wake);
+      expect(store.getLeadProposal(Number(proposal))?.outcome).toMatchObject({ ok: true, via: "web", said: "Started. It's building now." });
+    } finally { dropSizer(); }
   });
 
   test("navigation cards offer one labelled link without implying a pending approval", async () => {

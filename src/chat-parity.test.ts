@@ -76,8 +76,14 @@ describe("the new chat actions", () => {
   }
 
   test("a Start card is drafted only by the lead's turn loop: propose_action refuses it, get_actions leaves it out, and no turn means no card", () => {
-    const tool = (name: string, args: Record<string, unknown>) => executeLeadTool({ store, who, now, step: 1, readDecisions: new Map(), draft: () => 1 }, name, args);
-    expect(tool("propose_action", { operation: "task_start", repo: "r1", preview: "0".repeat(32) })).toMatchObject({ ok: false, message: "Use propose_start for a small change to start now." });
+    const draft = vi.fn(() => 1);
+    const tool = (name: string, args: Record<string, unknown>) => executeLeadTool({ store, who, now, step: 1, readDecisions: new Map(), draft }, name, args);
+    // propose_action's contract doesn't offer it, and its handler refuses it besides.
+    const offered = tool("propose_action", { operation: "task_start", repo: "r1", preview: "0".repeat(32) });
+    expect(offered.ok).toBe(false);
+    expect(offered.ok ? "" : offered.message).toContain("operation: must be one of");
+    expect(offered.ok ? "" : offered.message).not.toContain("task_start");
+    expect(draft).not.toHaveBeenCalled();
     const listed = tool("get_actions", {});
     expect(listed.ok && (listed.body as { actions: { operation: string }[] }).actions.some(one => one.operation === "task_start")).toBe(false);
     expect(() => prepareSharedAction(store, who, "task_start", { repo, preview: "0".repeat(32) }, root, now)).toThrow("This expired. Ask again.");

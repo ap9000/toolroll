@@ -43,6 +43,8 @@ import {
 import { knowledgeView } from "./project-knowledge.js";
 import { resolveChannelLead, parityGaps } from "./chat-channel.js";
 import { prepareSharedAction } from "./chat-actions.js";
+import { prepareChatStart } from "./fast-start.js";
+import { installFilingSizer } from "./task-sizing.js";
 import { verifyApproverStanding } from "./principal.js";
 import { assignmentOf } from "./assignment.js";
 import { TeamLeads } from "./team-leads.js";
@@ -280,7 +282,7 @@ describe("Slack shared chat", () => {
     return { ref, run };
   }
   function draft(
-    payload: Record<string, unknown>,
+    given: Record<string, unknown> | ((turn: number) => Record<string, unknown>),
     kind: Parameters<Store["draftLeadProposal"]>[0]["kind"] = "action",
   ) {
     const binding = state.binding(ID.installation)!;
@@ -307,6 +309,7 @@ describe("Slack shared chat", () => {
     if (!opened.ok) throw Error("turn");
     const started = store.startLeadTurn(opened.id, now);
     if (!started.ok) throw Error("start");
+    const payload = typeof given === "function" ? given(opened.id) : given;
     const id = store.draftLeadProposal(
       {
         thread: resolved.thread.id,
@@ -999,6 +1002,35 @@ describe("Slack shared chat", () => {
     expect(state.bindings(ID.installation).map(one => one.approver)).toEqual(["alex"]);
     expect(receive("status", { user: "USAM", channel: "DSAM" })).toBe(false);
   });
+  test("a Start card confirms behind its yes in Slack: one small task filed, approved and marked, and the builder woken", async () => {
+    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+    try {
+      const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, projects);
+      if (!who.ok) throw Error("who");
+      const prepared = await prepareChatStart(store, { actor: "alex", repo, title: "Fix the typo in the footer", turn: 1 }, now);
+      if (!prepared.eligible) throw Error(prepared.reason);
+      // As the lead's turn loop does: the preview belongs to the turn the card is drafted in.
+      const bound = (turn: number) => {
+        store.handle.prepare("UPDATE fast_preview SET turn = ? WHERE id = ?").run(turn, prepared.preview);
+        return { ...prepareSharedAction(store, who.who, "task_start", { repo, preview: prepared.preview }, join(dir, "evidence"), now, turn) };
+      };
+      draft(bound);
+      await drain();
+      const c = latestCard();
+      expect(String(sends().at(-1)?.args["text"])).toContain("Start work in repo: Fix the typo in the footer");
+      await tap(c.token, c.ts);
+      expect(JSON.stringify(sends().at(-1)!.args["blocks"])).toContain("Yes, start work");
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]).toBe(0);
+      const wake = store.wakeSeq();
+      const yes = state.prepare("SELECT token FROM chat_action WHERE provider=:provider AND part=? AND phase='yes' AND consumed IS NULL").get(c.id)!;
+      await tap(String(yes.token), c.ts);
+      const taskId = String(store.handle.prepare("SELECT external_id FROM task_ref WHERE fast_start_at IS NOT NULL").get()?.["external_id"]);
+      expect(store.getScope(taskId)).toMatchObject({ approvalBasis: "chat" });
+      expect(store.wakeSeq()).toBeGreaterThan(wake);
+      expect(store.getLeadProposal(c.proposal)?.outcome).toMatchObject({ ok: true, via: "slack", said: "Started. It's building now." });
+    } finally { dropSizer(); }
+  });
+
   test("mark complete confirms behind a second tap in Slack and records the assignment check for the exact result", async () => {
     const { run } = ready();
     const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, projects);

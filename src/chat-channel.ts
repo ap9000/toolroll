@@ -325,7 +325,7 @@ export function proposalLink(
       repos.includes(action.repo) &&
       sharedActionNeedsReview(action) &&
       !(channel !== null && sharedActionAllowsChallenge(action))
-      ? { label: "Review action", path: sharedActionReviewPath(proposal.id) }
+      ? { label: action.operation === "task_start" ? "Review and start" : "Review action", path: sharedActionReviewPath(proposal.id) }
       : null;
   }
   const task = typeof payload["task"] === "string" ? payload["task"] : "";
