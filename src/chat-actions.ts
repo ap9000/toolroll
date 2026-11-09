@@ -25,6 +25,8 @@ import { isProviderId } from "./provider.js";
 import { approverStandsNow, familyRepoOf } from "./tidy.js";
 import { chatApproveMode, effectiveChatApproval, type ChatApprovalLimits } from "./chat-approval.js";
 import { cardTermsDigest, chatLimitProblem, scopeTermsText } from "./chat-terms.js";
+import { chatStartDryRun, chatStartPreview, fastRefusalWords, fastStartBuild, FAST_MAX_FILES, FAST_MAX_LINES, type FastApprove, type FastProof } from "./fast-start.js";
+import { fastTermsLines } from "./fast-terms.js";
 import { createHash, randomBytes } from "node:crypto";
 import { archiveTaskFamily, leadTurnKeepsProposals, restoreTaskFamily, verifiedAuthor, type Store } from "./store.js";
 import {
@@ -209,6 +211,9 @@ export const CHAT_ACTIONS = {
   result_accept: { label: "Accept", protected: true, password: false },
   task_cancel: { label: "Cancel task", protected: true, password: false },
   task_resume: { label: "Resume task", protected: true, password: false },
+  // One-step start from chat (docs/plans/one-step-chat.md C2): files and approves one small task the lead drafted, under
+  // exactly the fast start rules. Only the lead's turn loop drafts one (propose_start); a person's own yes starts it.
+  task_start: { label: "Start work", protected: true, password: false },
 } as const;
 export type ChatAction = keyof typeof CHAT_ACTIONS;
 // Every action has a schema (contracts/chat-actions.ts) and every schema an action: a mismatch fails to compile.
@@ -216,7 +221,7 @@ const SAME_ACTIONS: [ChatAction, ChatActionOperation] extends [ChatActionOperati
 void SAME_ACTIONS;
 /** Approvals (owner's decision, docs/plans/toolroll-cards.md): a person's own yes from their chat stands without a password.
  * Only a person's tap in a linked chat, or their click in a signed-in browser, ever runs one. */
-export const APPROVAL_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["scope_approve", "task_resume", "sweep_file", "flow_browser", "task_reopen", "revision_accept", "revision_reject", "flow_unattended"]);
+export const APPROVAL_ACTIONS: ReadonlySet<ChatAction> = new Set<ChatAction>(["scope_approve", "task_resume", "sweep_file", "flow_browser", "task_reopen", "revision_accept", "revision_reject", "flow_unattended", "task_start"]);
 /** Protected actions a linked chat may confirm behind its own explicit yes/cancel challenge instead of the review screen.
  * Password actions and long or redacted terms never qualify: the card must show the exact terms. */
 export const APPROVAL_TERM_CHARS = 3000;
@@ -351,6 +356,9 @@ export function prepareSharedAction(
   input: Record<string, unknown>,
   root?: string,
   now = new Date(),
+  /** The lead turn the card is (or is being) drafted in: a Start card's preview must have been prepared in it. Read
+   * from the proposal row (or the running turn), never from the request. */
+  turn?: number,
 ): SharedAction {
   if (!isChatAction(operation)) throw Error("Choose an available action.");
   // The action's own schema: its fields and their kinds, refused by path. The request itself is used as given, so a
@@ -385,7 +393,7 @@ export function prepareSharedAction(
     return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
   }
   const task =
-    operation === "mode_revoke" || operation === "memory_decide" || operation === "incident_resolve" || operation === "finding_resend" || operation.startsWith("code_map_") || operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_") || operation.startsWith("suggestion_") || operation.startsWith("trial_")
+    operation === "mode_revoke" || operation === "memory_decide" || operation === "incident_resolve" || operation === "finding_resend" || operation.startsWith("code_map_") || operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_") || operation.startsWith("suggestion_") || operation.startsWith("trial_") || operation === "task_start"
       ? null
       : text(input, "task", 64);
   const flowTarget = operation.startsWith("flow_") && operation !== "flow_create" && operation !== "flow_script_save" && operation !== "flow_starter" ? flowTargetOf(store, input) : null;
@@ -653,6 +661,31 @@ export function prepareSharedAction(
       title = `Answer ${subagentOf === null ? "the subagent" : nameOf(subagentOf)}`;
       terms.push(question.question, `Your answer: ${[choice?.label, said].filter(Boolean).join(" — ")}`);
     }
+  } else if (operation === "task_start") {
+    // A Start card (docs/plans/one-step-chat.md C2). The preview is the one the lead's turn loop prepared in this card's
+    // own turn, for this person, on chat (never an id the model chose: the request only names it back), unexpired and
+    // unused. Every word below is Toolroll's, from a filing dry-run in a savepoint that is always rolled back, with the
+    // fast start rules read on it: the tap files again, and the stamp, approve()'s digest and its whole-terms check refuse
+    // anything that differs.
+    const preview = text(input, "preview", 64);
+    const saved = turn === undefined ? null : chatStartPreview(store, preview, who.name, turn, now);
+    if (saved === null || saved.repo !== repo) throw Error("This expired. Ask again.");
+    const read = chatStartDryRun(store, { actor: who.name, repo, title: saved.title, taskId: saved.taskId, sizing: saved.sizing }, now);
+    if (!read.ok) throw Error(`${fastRefusalWords(read.reason)} Ask for an ordinary task instead.`);
+    if (read.scope.digest !== saved.digest) throw Error("This changed since it was drafted. Ask again.");
+    const authority = scopeAuthorityOf(read.scope, { authMode: readAuthModeStrict });
+    if (!authority.ok) throw Error(authority.problem);
+    state = { preview, taskId: saved.taskId, digest: read.scope.digest };
+    const project = repo.split(/[\\/]/).filter(Boolean).at(-1) ?? repo;
+    title = `Start work in ${project}: ${saved.title}`;
+    terms.push(
+      `Starts now as a small change. If it grows past ${FAST_MAX_FILES} files or ${FAST_MAX_LINES} changed lines, it waits for you to approve it again.`,
+      // The goal and its one success test are the lead's words, shown exactly and labelled as the lead's.
+      `Written by the lead from your request: ${quoted(saved.title)}`,
+      scopeTermsText(read.scope),
+      ...fastTermsLines(store, read.scope, repo).map(line => `${line.label}: ${line.words}`),
+      `Agent permissions and limits\n${runtimeTerms(authority.profile)}\n${authority.authMode === "api-key" ? "Uses your API key; spend is charged to that account." : authority.authMode === "subscription" ? "Uses your subscription login." : ""}`,
+    );
   } else if (operation === "sweep_cancel_rest") {
     // Exactly the items open now: if any settles or starts in between, the card is stale and a fresh one is needed.
     const table = sweepTable(store, integer(input, "sweep"), now, who.repos);
@@ -1214,6 +1247,7 @@ export function mintSharedActionReview(
     payload.request,
     root,
     now,
+    store.getLeadProposal(id)?.turn,
   );
   if (!sameSharedAction(store, who, live, payload))
     throw Error("This action changed. Ask for a fresh proposal.");
@@ -1285,6 +1319,7 @@ export function executeSharedAction(
       saved.request,
       options.root,
       now,
+      store.getLeadProposal(id)?.turn,
     );
     if (!sameSharedAction(store, who, live, saved))
       return refuse("stale", "This action changed. Ask for a fresh proposal.");
@@ -1416,6 +1451,10 @@ export function executeSharedAction(
       else if (payload.operation === "sweep_cancel_rest") {
         const said = cancelSweepRest(store, who.name, payload.state["open"] as SweepOpenItem[], now, "web");
         return { ok: true as const, taskId: null, said, href: `/sweeps/${Number(req["sweep"])}` };
+      }
+      else if (payload.operation === "task_start") {
+        const started = startFromCard(store, who, id, drafted, options, now);
+        return { ok: true as const, taskId: started, said: "Started. It's building now.", href: `/t/${encodeURIComponent(started)}` };
       }
       else if (payload.operation === "sweep_file") {
         const done = fileSweep(store, who, id, payload, approvalBy(store, who, payload.repo, now, options, drafted), now);
@@ -1628,6 +1667,41 @@ function sweepChildScopes(store: Store, who: VerifiedApprover, repo: string, bri
     } catch (error) { if (error !== dryRun) throw error; }
   });
   return found;
+}
+
+/**
+ * A Start card's yes (docs/plans/one-step-chat.md C2): file and approve in one step through fastStartBuild, in this
+ * action's savepoint. Two proofs of the person and no third: their own yes from chat (approvalBy gives `chat`, with the
+ * card's whole words and their digest), under their own chat limits; or this computer's local owner on web chat, whose
+ * approve() proves the owner itself and allows `build-now` only with a fast marker. Anything else refuses, and a refusal
+ * throws, taking the filing back.
+ */
+function startFromCard(store: Store, who: VerifiedApprover, proposal: number, drafted: SharedAction, options: SharedActionOptions, now: Date): string {
+  // `toolroll chat` keeps refusing approvals; a Start card names the terminal's own fast start instead.
+  if (options.via === "cli") throw Error(startFromTerminalWords(store, drafted));
+  const by = approvalBy(store, who, drafted.repo, now, options, drafted);
+  if (by.ok === false) throw Error(by.why);
+  let proof: FastProof, approveNow: FastApprove;
+  if (by.chat !== undefined) {
+    const chat = by.chat;
+    proof = { chat: by.limits };
+    approveNow = (taskId, saw, fast) => approve(store, taskId, who.name, now, saw, "", {}, fast, chat);
+  } else if (options.authority === "local-owner" && currentLocalOwner() !== null) {
+    proof = { password: { localOwner: true, passwordless: false, freshAt: null, returnTo: "/chat" } };
+    approveNow = (taskId, saw, fast) => approve(store, taskId, who.name, now, saw, "", {}, fast);
+  } else throw Error("Only a person starts work this way.");
+  const turn = store.getLeadProposal(proposal)?.turn;
+  const built = fastStartBuild(store, { preview: String(drafted.state["preview"] ?? ""), digest: String(drafted.state["digest"] ?? ""), actor: who.name, via: "chat",
+    ...(turn === undefined ? {} : { turn }), proof, approveNow }, now);
+  if (!built.ok) throw Error(built.message);
+  return built.taskId;
+}
+
+/** Where `toolroll chat` sends a Start card: the terminal's own fast start, with the words the lead drafted. */
+export function startFromTerminalWords(store: Store, action: Pick<SharedAction, "repo" | "state">): string {
+  const row = store.handle.prepare("SELECT title FROM fast_preview WHERE id = ?").get(String(action.state["preview"] ?? ""));
+  const title = row === undefined ? "<what should change>" : String(row["title"]).replace(/"/g, "'");
+  return `Start it from the terminal with \`toolroll task new "${title}" --repo ${action.repo}\`.`;
 }
 
 /** How this yes stands, and under whose limits: a person's own from chat, by their own chat setting, with the words and

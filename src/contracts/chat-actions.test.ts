@@ -85,6 +85,7 @@ const REQUESTS: Record<ChatActionOperation, Record<string, unknown>> = {
   result_accept: { task: "fix-footer", run: 41 },
   task_cancel: { task: "fix-footer" },
   task_resume: { task: "fix-footer", run: 40 },
+  task_start: { repo: "/work/app", preview: "0123456789abcdef0123456789abcdef" },
 };
 
 /** Values the 0.9.36 preparation branches ignored, defaulted or delegated to their owning reader. */

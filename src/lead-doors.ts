@@ -1,4 +1,4 @@
-import { executeSharedAction, sharedActionPayload, sharedActionAllowsChallenge, sharedActionNeedsReview, type SharedActionOptions } from './chat-actions.js';
+import { executeSharedAction, sharedActionPayload, sharedActionAllowsChallenge, sharedActionNeedsReview, startFromTerminalWords, type SharedActionOptions } from './chat-actions.js';
 /**
  * The confirm doors (mate arc §2, ruling 7; v3 §9): a pending proposal —
  * the lead's, or a coordinator's over the gateway — becomes an act only
@@ -33,6 +33,7 @@ import type { Phase, ProviderId } from "./provider.js";
 import { applyChatReview, type ReviewRequest } from "./chat-review.js";
 import { applyChatTaskAction } from "./chat-task-actions.js";
 import { currentLocalOwner, localOwnerRefusal, proposalLocalAct, withLocalAct, type Authority } from "./local-owner.js";
+import { consumeChatStartPreview } from "./fast-start.js";
 
 /** Easy-start C1: whether this door is a local owner's — named by the caller, or the chain's own (the stricter wins). */
 function localDoor(options: Pick<DoorOptions, "authority">): boolean {
@@ -217,6 +218,8 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
       if (proposal.state !== "pending") return {ok:false,kind:proposal.kind,reason:"not-pending",said:"This proposal was already acted on."} as const;
       const action = sharedActionPayload(proposal.payload);
       if (action === null) return { ok: false, kind: proposal.kind, reason: "refused", said: "This action is incomplete." } as const;
+      // `toolroll chat` keeps refusing approvals; a Start card names the terminal's own fast start. The card stays pending.
+      if (options.via === "cli" && action.operation === "task_start") return { ok: false, kind: proposal.kind, reason: "needs-confirm", said: startFromTerminalWords(store, action) } as const;
       const challenged = options.via !== "web" && options.via !== "cli" && options.confirm === true && sharedActionAllowsChallenge(action);
       if (sharedActionNeedsReview(action) && !challenged && (options.via !== "web" || options.actionReview === undefined || options.confirm !== true)) return { ok: false, kind: proposal.kind, reason: "needs-confirm", said: "Review this action in the secure confirmation screen." } as const;
     }
@@ -270,6 +273,9 @@ export function dismissLeadProposal(store: Store, who: VerifiedApprover, proposa
     const shared=thread&&store.handle.prepare('SELECT id,lead FROM team_conversation WHERE thread=?').get(thread.id);
     if (proposal === null || thread === null || (shared ? !store.canUseTeamMateThread(who.name, who.generation, thread.id) : thread.approver !== who.name)) return false;
     const changed=store.casLeadProposal(proposalId, "pending", "dismissed", who.name, null, now);
+    // A dismissed Start card's preview can't be used again (one-step-chat.md C1): consumed in the same transaction.
+    const start = changed && proposal.kind === "action" ? sharedActionPayload(proposal.payload) : null;
+    if (start?.operation === "task_start" && typeof start.request["preview"] === "string") consumeChatStartPreview(store, start.request["preview"], now);
     if(changed&&shared)store.handle.prepare('INSERT INTO team_event(lead,conversation,kind,actor,created_at) VALUES(?,?,?,?,?)').run(shared['lead'],shared['id'],'proposal-changed',who.name,now.toISOString());
     return changed;
   });

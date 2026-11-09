@@ -663,7 +663,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
   },
   get_actions: {
     description: "List shared actions and required inputs. All channels use the same approvals.",
-    handle: () => ({ok:true,body:{actions:Object.entries(CHAT_ACTIONS).filter(([operation])=>!operation.startsWith('flow_')&&!operation.startsWith('subagent_')).map(([operation,value])=>({operation,label:value.label,secureReview:value.protected,inputs:CHAT_ACTION_FIELDS[operation as keyof typeof CHAT_ACTIONS].filter(field=>field!=='nonce'&&field!=='files')})),notice:'Passwords and credentials never belong in a tool call or conversation. Secure review links complete protected actions.'}}),
+    handle: () => ({ok:true,body:{actions:Object.entries(CHAT_ACTIONS).filter(([operation])=>!operation.startsWith('flow_')&&!operation.startsWith('subagent_')&&operation!=='task_start').map(([operation,value])=>({operation,label:value.label,secureReview:value.protected,inputs:CHAT_ACTION_FIELDS[operation as keyof typeof CHAT_ACTIONS].filter(field=>field!=='nonce'&&field!=='files')})),notice:'Passwords and credentials never belong in a tool call or conversation. Secure review links complete protected actions.'}}),
   },
   propose_action: {
     description: "Read get_actions and relevant skills/evidence first. Save an exact-state proposal only; protected or long terms require full secure review.",
@@ -671,6 +671,8 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const operation=args['operation'];if(!isChatAction(operation))return {ok:false,message:'Choose an action from get_actions.'};
       if(operation.startsWith('flow_'))return {ok:false,message:'Use propose_flow for flows.'};
       if(operation.startsWith('subagent_'))return {ok:false,message:'Use propose_subagent for subagents.'};
+      // A Start card is drafted only by propose_start, whose preview comes from the turn loop, never from arguments.
+      if(operation==='task_start')return {ok:false,message:'Use propose_start for a small change to start now.'};
       const input:Record<string,unknown>={...args};delete input['operation'];
       if(operation.startsWith('skill_')||operation.startsWith('knowledge_')||operation.startsWith('tool_')||operation==='mode_revoke'||operation==='memory_decide'){
         const repo=repoPathOf(ctx.who,args['repo']);if(repo===null)return {ok:false,message:'Choose a project from list_repos.'};input['repo']=repo;
