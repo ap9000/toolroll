@@ -860,6 +860,11 @@ export const CHAT_ACTION_PARITY: Record<
     how: "Card with Confirm/Dismiss through confirmLeadProposal (filed as a lead proposal, via telegram). The confirmed card links Review & start for the filed task while its scope waits; under a signed automatic mode it says the scope is approved and links the task.",
     gap: "Under manual approval the plan then needs the person's own yes, on its card.",
   },
+  propose_start: {
+    support: "direct",
+    how: "A protected shared action (task_start): Start work arms Yes and Cancel, and the person's own Yes files and approves one small task under the fast start rules (fastStartBuild), or a typed yes as a reply to the card or as the very next message. When Toolroll can't start it right away it is an ordinary task card.",
+    gap: "Terms too long for one message open the review page, in the signed-in console.",
+  },
   propose_sweep: {
     support: "direct",
     how: "A protected shared action (sweep_file): the card lists every item, the shared rules and the success test; confirming files them all and approves each scope.",

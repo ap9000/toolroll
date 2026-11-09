@@ -968,8 +968,9 @@ describe("the lead's turn", () => {
       for (const prerequisite of ["search_project_memory", "get_capabilities", "get_result", "get_decision", "find_tools"]) expect(LEAD_CORE_TOOLS.has(prerequisite), prerequisite).toBe(true);
       const bytes = (list: readonly unknown[]) => list.reduce<number>((sum, one) => sum + JSON.stringify(one).length, 0);
       // 27,000 since the follow-through acts (finding_send, finding_resend: their finding, file, line and pointer fields)
-      // joined propose_action, a core tool chat parity needs; was 26,000. Every other core tool's schema is unchanged.
-      expect(bytes(LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)))).toBeLessThan(27_000);
+      // joined propose_action, a core tool chat parity needs; was 26,000. 27,500 since propose_start (one-step chat): a
+      // "just do it" request is answered in the reply's first steps, never behind find_tools.
+      expect(bytes(LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)))).toBeLessThan(27_500);
       expect(bytes(LEAD_TOOL_SCHEMAS)).toBeGreaterThan(60_000);
     });
   });

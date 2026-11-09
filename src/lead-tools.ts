@@ -17,6 +17,7 @@ import { taskControlOf } from "./task-control.js";
 import { taskWorkSummaryOf } from "./work-summary.js";
 import { assignmentOf, assignmentBrief } from "./assignment.js";
 import { validateScopeText, validateTaskText } from "./task-text.js";
+import { fastRefusalWords, type FastPreview } from "./fast-start.js";
 import { conversationKnowledge, knowledgeView } from "./project-knowledge.js";
 import { fixTaskOf, flakyList, flakyShow } from "./flaky.js";
 import { cancelCommitment, CHECK_RESULTS, type CommitmentChannel, conditionWords, latestResultRun, recordCommitment, RUN_OUTCOMES, TASK_STATES, type CommitmentCondition, type TaskState } from "./lead-commitments.js";
@@ -119,6 +120,10 @@ export type LeadToolContext = {
   /** This turn's tool discovery (find_tools): how many searches it made and which deferred tools it found, which the
    * conversation loop advertises from its next request. Absent (a direct call outside a turn): nothing to add to. */
   findTools?: { searches: number; found: Set<string> };
+  /** propose_start only (docs/plans/one-step-chat.md C3): the preview the conversation loop prepared for THIS call, in
+   * this turn, after the call's input was validated (startInputOf). Never read from the model's arguments; absent (a
+   * direct call outside a turn), nothing was prepared and the person gets an ordinary task card. */
+  startPrepared?: FastPreview;
 };
 
 export type LeadToolResult = { ok: true; body: unknown } | { ok: false; message: string };
@@ -474,7 +479,7 @@ export function agentsOver(store: Store, taskId: string, now: Date): Record<stri
 export const LEAD_CORE_TOOLS: ReadonlySet<string> = new Set([
   "find_tools", "get_brief", "recap", "list_repos", "get_project_context", "get_project_activity", "search_project_memory", "get_capabilities",
   "list_tasks", "get_task", "get_result", "get_diff", "get_check_log", "list_decisions", "get_decision",
-  "get_actions", "get_action_status", "propose_action", "propose_task", "propose_scope", "propose_steer",
+  "get_actions", "get_action_status", "propose_action", "propose_task", "propose_start", "propose_scope", "propose_steer",
   "propose_answer", "propose_review", "remember", "ask_owner", "commit_to",
   // The lead's queue verbs: basic, and small enough that deferring them saves almost nothing.
   "queue", "propose_next", "propose_reserve", "propose_hold", "propose_unhold", "propose_cancel",
@@ -1720,6 +1725,29 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       return { ok: true, body: { proposal: id, kind: "task", repo: args["repo"], deliverable: report ? "report" : "branch", planning: report ? "not needed for a scout" : planning, awaiting: "the operator's confirmation" } };
     },
   },
+  propose_start: {
+    description: "The person asked for one small, clear change to be done now. Toolroll decides whether it can start right away; if not, you get an ordinary task card. title is the change in their words, one line.",
+    handle: (ctx, args) => {
+      const checked = startInputOf(ctx, args);
+      if (!checked.ok) return { ok: false, message: checked.message };
+      const { repo, repoId, title } = checked.input;
+      // Eligible: a Start card from the loop's own preview (the request names it back; the card checks it is this
+      // person's, this turn's, on chat). Anything else: today's task card, built directly, and why in the body.
+      const prepared = ctx.startPrepared;
+      let why = fastRefusalWords(prepared === undefined ? "classifier" : prepared.eligible ? "classifier" : prepared.reason);
+      if (prepared !== undefined && prepared.eligible) {
+        try {
+          const action = prepareSharedAction(ctx.store, ctx.who, "task_start", { repo, preview: prepared.preview }, ctx.evidenceRoot, ctx.now, ctx.turn);
+          const id = ctx.draft("action", { ...action });
+          if (id === null) return tooMany();
+          return { ok: true, body: { proposal: id, kind: "action", label: action.title, startsNow: true, awaiting: "the person's own yes on Start work", executed: false } };
+        } catch (error) { why = error instanceof Error ? error.message : why; }
+      }
+      const id = ctx.draft("task", { repo, repoId, title, goal: title, not: null, touches: [], acceptance: [{ id: "c1", statement: title, evidence: ["manual-review"] }], planning: "skip", report: false });
+      if (id === null) return tooMany();
+      return { ok: true, body: { proposal: id, kind: "task", repo: repoId, startsNow: false, why, awaiting: "the operator's confirmation" } };
+    },
+  },
   propose_sweep: {
     description: "Several independent items under ONE shared rule set (a bug sweep, a batch of small fixes): 2-20 items, each becomes its own task in its own worktree, started with one approval, at most max_parallel (default 3) at once, each reporting a verdict into one table. brief holds the shared rules every item gets (e.g. reproduce first; 'not reproducible' is a valid result; prove the fix); each item is only its own report. Not for one task, and not for steps that depend on each other.",
     handle: (ctx, args) => {
@@ -2238,4 +2266,27 @@ export function executeLeadTool(ctx: LeadToolContext, name: string, args: Record
 /** Bytes of a serialized tool result as it will sit inside the request body. */
 export function toolResultBytes(text: string): number {
   return Buffer.byteLength(JSON.stringify(text), "utf8");
+}
+
+/** What propose_start may start with, checked before Toolroll asks the classifier (docs/plans/one-step-chat.md C3): the
+ * call's contract, the same memory and capability checks every proposal makes, never a team chat, a project the person
+ * can reach now, and the same text and secret checks as propose_task. The conversation loop runs this, and only then
+ * prepares a preview; the handler runs it again. Invalid input never reaches the classifier. */
+export function startInputOf(ctx: LeadToolContext, args: Record<string, unknown>): { ok: true; input: { repo: string; repoId: string; title: string } } | { ok: false; message: string } {
+  const tool = LEAD_TOOLS.find(one => one.name === "propose_start");
+  if (tool === undefined) return { ok: false, message: "propose_start isn't available." };
+  const read = tool.read(ctx, args);
+  if (!read.ok) return { ok: false, message: read.issues.map(one => one.line).join("\n") };
+  const unchecked = memoryUnsearched(ctx, "propose_start", read.value) ?? capabilitiesUnread(ctx, "propose_start", read.value);
+  if (unchecked !== null && !unchecked.ok) return { ok: false, message: unchecked.message };
+  // A start is the person's own yes in their own chat with you: a shared team chat proposes an ordinary task.
+  if (teamRoomOf(ctx.store, ctx.thread) !== null) return { ok: false, message: "Starting work in one step is for the person's own chat. Use propose_task here." };
+  const repo = repoPathOf(ctx.who, read.value["repo"]);
+  if (repo === null || !ctx.store.accountCanAccess(ctx.who.name, repo)) return { ok: false, message: "repo must be one of the ids from list_repos" };
+  const title = read.value["title"];
+  if (typeof title !== "string") return { ok: false, message: "title is the change, one line" };
+  const badText = validateTaskText({ title, goal: title, outOfScope: null });
+  if (badText !== null) return { ok: false, message: badText.message };
+  if (scanForSecrets(title).length > 0) return { ok: false, message: "Task text cannot contain credentials." };
+  return { ok: true, input: { repo, repoId: String(read.value["repo"]), title } };
 }
