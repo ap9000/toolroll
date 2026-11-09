@@ -271,10 +271,11 @@ didn't start anything. Tap Start work on the card." It is not passed to the lead
 
 - A new pure module `src/home-groups.ts` (no server or rendering imports, so the terminal can use it):
   `homeGroupOf(item)` returns `"you"`, `"working"`, `"done"` or `null`. Precedence, in order: `"you"` when
-  `status.views` holds `needs-you`; `"working"` when running, or queued with the label "Waiting"; `"done"` when
+  `status.views` holds `needs-you`; `"working"` when running or queued (every queued task, as built: the first
+  rule, queued only with the label "Waiting", left a just-queued task in no group); `"done"` when
   complete; `null` for cancelled, replaced and any other finished row. One row per `rootId`.
 - `homeView` groups: **Waiting on you** (the same 30 needs-you rows, in today's order Decide, Review, Unblock,
-  unnamed; each row's chip already names the ask), **Working** (today's Running rows, then today's Waiting rows, each
+  unnamed; each row's chip already names the ask), **Working** (today's Running rows, then the queued rows, each
   read with its own bound as today, never merged and then cut to eight), **Done** (a fourth read, `view:
   "completed"`, filtered to the last 7 days by completion time before the cap of 8).
 - Figures keep the meaning of the list each opens: Waiting on you (needs-you), Running (`totals.running`; the label
