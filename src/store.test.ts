@@ -575,6 +575,28 @@ describe("capabilities", () => {
     store.close();
   });
 
+  test("only a gap that fills wakes the loop: a repeated passing probe refreshes its stamp without waking (live-wakeups.md)", () => {
+    const store = openStore(":memory:");
+    try {
+      store.saveCapability(one());
+      const mark = (status: "verified" | "failed", at: number) =>
+        store.markCapability("/code/thing", "env", "SUPABASE_KEY", { status, by: "builder-1", ...(status === "failed" ? { detail: "exit 1" } : {}) }, new Date(T0.getTime() + at));
+      let seq = store.wakeSeq();
+      const moved = (): boolean => { const now = store.wakeSeq(); const did = now !== seq; seq = now; return did; };
+      expect(mark("verified", 0)).toBe(true);
+      expect(moved()).toBe(true); // unprobed → verified fills a gap
+      expect(mark("verified", 1_000)).toBe(true);
+      expect(moved()).toBe(false); // verified → verified says nothing new
+      expect(store.capabilityNamed("/code/thing", "SUPABASE_KEY")?.lastVerifiedAt).toBe(new Date(T0.getTime() + 1_000).toISOString());
+      expect(mark("failed", 2_000)).toBe(true);
+      expect(moved()).toBe(false); // a gap opening never woke the loop, and still doesn't
+      expect(mark("verified", 3_000)).toBe(true);
+      expect(moved()).toBe(true); // failed → verified fills it again
+      expect(store.markCapability("/code/thing", "env", "MISSING", { status: "verified", by: "builder-1" }, T0)).toBe(false);
+      expect(moved()).toBe(false);
+    } finally { store.close(); }
+  });
+
   test("requirements replace what a task needed before", () => {
     const store = openStore(":memory:");
     store.createTask({ id: "t-1", title: "the work" }, T0);
@@ -1144,6 +1166,27 @@ describe("the watch foundations", () => {
     const afterCreate = store.wakeSeq();
     store.setTaskState("t-1", "done", later(1_000));
     expect(store.wakeSeq()).toBeGreaterThan(afterCreate);
+  });
+
+  test("a person's merge approval wakes the loop; a refused one does not (live-wakeups.md)", () => {
+    store.createTask({ id: "t-merge", title: "w" }, T0);
+    const taskRef = store.refFor(BUILT_IN, "t-merge").id;
+    store.placeTask(taskRef, "/repo");
+    const run = store.startRun({ taskRef, leaseId: "l", runner: "b", branch: "b", worktree: "/w", ...bareLegacy("build"), now: T0 });
+    store.handle.prepare("INSERT INTO publication (run, task_ref, github_repo, remote, base, head, head_sha, body_hash, draft, state, created_at, updated_at) VALUES (?, ?, 'o/r', 'origin', 'main', 'b', ?, 'h', 0, 'opened', ?, ?)")
+      .run(run, taskRef, "a".repeat(40), T0.toISOString(), T0.toISOString());
+    const publication = Number(store.handle.prepare("SELECT id FROM publication WHERE run = ?").get(run)!["id"]);
+    store.handle.prepare("INSERT INTO merge_intent (publication, grant_terms_hash, head_sha, method, state, generation, created_at) VALUES (?, 'g', ?, 'squash', 'waiting-human', 1, ?)")
+      .run(publication, "a".repeat(40), T0.toISOString());
+    const intent = Number(store.handle.prepare("SELECT id FROM merge_intent").get()!["id"]);
+    const before = store.wakeSeq();
+    expect(store.authorizeMergeIntent(intent, "b".repeat(40), "alex", T0)).toEqual({ ok: false, reason: "head-moved" });
+    expect(store.wakeSeq()).toBe(before);
+    expect(store.authorizeMergeIntent(intent, "a".repeat(40), "alex", T0)).toEqual({ ok: true });
+    expect(store.wakeSeq()).toBeGreaterThan(before);
+    const after = store.wakeSeq();
+    expect(store.authorizeMergeIntent(intent, "a".repeat(40), "alex", T0)).toEqual({ ok: false, reason: "not-waiting" });
+    expect(store.wakeSeq()).toBe(after);
   });
 
   test("one watch per (runner, repo); takeover names the superseded incarnation", () => {

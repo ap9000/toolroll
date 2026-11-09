@@ -1283,6 +1283,66 @@ describe("the follower — on the wire until told to stop", () => {
     expect(pushedByTelegram(secret, null)).toBe(false);
   });
 
+  test("a message due while the long poll is open ends the poll once: no problem, no backoff, and the cursor waits for processing (live-wakeups.md)", async () => {
+    const script = scriptedTransport();
+    await pairDirectly(script);
+    const controller = new AbortController();
+    const offsets: number[] = [];
+    const timeouts: number[] = [];
+    const transport: TelegramTransport = async (method, params, signal, upload) => {
+      if (method === "getUpdates" && Number(params["timeout"]) > 0) {
+        offsets.push(Number(params["offset"]));
+        timeouts.push(Number(params["timeout"]));
+        if (offsets.length === 1) {
+          // A decision is written while Telegram holds the line: only the delivery wake can end this poll.
+          parkedDecision();
+          return new Promise(resolve => signal!.addEventListener("abort", () => resolve({ ok: false, description: "This operation was aborted", uncertain: true }), { once: true }));
+        }
+        controller.abort();
+        return { ok: true, result: [] };
+      }
+      return script.transport(method, params, signal, upload);
+    };
+    const cursorBefore = store.acquireBridgeLease(BOT, "peek", 1, later(0));
+    store.releaseBridgeLease(BOT, "peek", later(0));
+    const sleeps: number[] = [];
+    const report = await followBridge(store, {
+      readProjects, botId: BOT, transport, signal: controller.signal, clock: () => later(5_000), deliveryCheckMs: 10,
+      sleep: ms => { sleeps.push(ms); return Promise.resolve(); },
+    });
+    expect(timeouts).toEqual([MAX_POLL_SECONDS, MAX_POLL_SECONDS]);
+    // The same offset asked twice: nothing was confirmed by the ended poll.
+    expect(offsets[1]).toBe(offsets[0]);
+    expect(report.problems).toEqual([]);
+    expect(sleeps).toEqual([]); // neither a backoff nor the empty-cycle padding
+    expect(report.sent).toBe(1); // the decision went out on the very next cycle
+    const after = store.acquireBridgeLease(BOT, "peek", 1, later(10_000));
+    expect(after).toMatchObject({ ok: true });
+    if (cursorBefore.ok && after.ok) expect(after.cursor).toBe(cursorBefore.cursor);
+  });
+
+  test("an inbound-only follower never ends its poll for outgoing messages", async () => {
+    const script = scriptedTransport();
+    await pairDirectly(script);
+    const controller = new AbortController();
+    let polls = 0;
+    const transport: TelegramTransport = async (method, params, signal, upload) => {
+      if (method === "getUpdates" && Number(params["timeout"]) > 0) {
+        polls++;
+        parkedDecision();
+        // Held for longer than many checks would take; only the test's own stop ends it.
+        await new Promise(resolve => setTimeout(resolve, 80));
+        controller.abort();
+        return { ok: true, result: [] };
+      }
+      return script.transport(method, params, signal, upload);
+    };
+    const report = await followBridge(store, { readProjects, botId: BOT, transport, signal: controller.signal, clock: () => later(5_000), deliveryCheckMs: 5, deliver: false, sleep: () => Promise.resolve() });
+    expect(polls).toBe(1);
+    expect(report.problems).toEqual([]);
+    expect(report.sent).toBe(0);
+  });
+
   test("a held poll lease is waited out, never raced", async () => {
     const script = scriptedTransport();
     store.acquireBridgeLease(BOT, "cron-pass", 60_000, later(0));

@@ -360,6 +360,8 @@ export type BridgeReport = {
   contention?: number;
   /** v98: Telegram answered that it pushes this bot's updates to a webhook. */
   webhookActive?: boolean;
+  /** The long poll was ended on purpose because a message was due to go out (live-wakeups.md): not a failure. */
+  deliveryWake?: boolean;
   /** v98: pushed updates applied this pass. */
   pushed?: number;
 };
@@ -447,6 +449,8 @@ export const MAX_POLL_SECONDS = 25;
 const FOLLOW_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const;
 /** A cycle that returned instantly with nothing is padded to this — a scripted or broken server must not spin the loop hot. */
 const FOLLOW_IDLE_FLOOR_MS = 1_000;
+/** While a long poll is open, how often the follower looks for a message due to go out (live-wakeups.md). */
+const DELIVERY_CHECK_MS = 1_000;
 /** v98: how often the bridge checks Telegram still pushes to us; how long pushes may keep failing before it asks
  * for updates itself; and how long it asks before trying pushes again. */
 const PUSH_CHECK_MS = 60_000, PUSH_GIVE_UP_MS = 5 * 60_000, PUSH_RETRY_MS = 15 * 60_000, PUSH_IDLE_MS = 2_000;
@@ -512,6 +516,8 @@ export async function followBridge(
     push?: { url: string; secret: string } | null;
     /** v98: how often to check Telegram still pushes to us (tests shorten it). */
     pushCheckMs?: number;
+    /** While a long poll is open, how often to look for a message due to go out (tests shorten it). */
+    deliveryCheckMs?: number;
   },
 ): Promise<FollowReport> {
   const clock = options.clock ?? (() => new Date());
@@ -642,6 +648,8 @@ export async function followBridge(
       const startedAt = Date.now();
       const report: BridgeReport = { sent: 0, answered: 0, paired: 0, ignored: 0, backlog: false, problems: [] };
       await managePush(report);
+      // What this cycle's delivery below covers: anything newer may end the long poll early.
+      const deliveredThrough = newestNotificationIdOf(store);
       if (options.deliver !== false) {
         await deliverOutbox(store, botId, transport, owner, clock, report, options.readProjects, options.canDeliver, options.conversation?.phoneOrigin, options.conversation?.evidenceRoot);
         await deliverTeam(store, botId, transport, clock, report, options.readProjects, options.canDeliver, options.conversation?.phoneOrigin);
@@ -656,9 +664,35 @@ export async function followBridge(
       if (pushed > 0) report.pushed = pushed;
       if (!pushing()) {
         // While a turn is running, poll briefly so its reply is sent within a second or two of being written.
-        await drainUpdates(
-          store, botId, transport, owner, lease.generation, lease.cursor, clock, report, inFlight === null ? pollSeconds : 1, signal, options.readProjects, options.conversation,
-        );
+        const seconds = inFlight === null ? pollSeconds : 1;
+        // A DELIVERY WAKE (live-wakeups.md): while the long poll is open, a message written for this bot since this
+        // cycle began delivering ends the poll, once per cycle, so it goes out now instead of after the poll. Same
+        // owner, same generation, one connection; the cursor moves only past updates already processed.
+        const poll = new AbortController();
+        const endPoll = (): void => poll.abort();
+        if (signal.aborted) poll.abort();
+        else signal.addEventListener("abort", endPoll, { once: true });
+        let woke = false;
+        const checker = options.deliver !== false && seconds > 1
+          ? setInterval(() => {
+            if (woke || poll.signal.aborted) return;
+            let due = false;
+            try { due = telegramOutboxDue(store, botId, deliveredThrough, clock()); } catch { due = false; }
+            if (!due) return;
+            woke = true;
+            poll.abort();
+          }, options.deliveryCheckMs ?? DELIVERY_CHECK_MS)
+          : null;
+        (checker as { unref?: () => void } | null)?.unref?.();
+        try {
+          await drainUpdates(
+            store, botId, transport, owner, lease.generation, lease.cursor, clock, report, seconds, poll.signal, options.readProjects, options.conversation,
+            () => woke && !signal.aborted,
+          );
+        } finally {
+          if (checker !== null) clearInterval(checker);
+          signal.removeEventListener("abort", endPoll);
+        }
         // A push address nobody here wants any more (the public address was removed): take it down, so asking works again.
         if (report.webhookActive === true && push === null) await transport("deleteWebhook", { drop_pending_updates: false }, signal);
       }
@@ -695,7 +729,8 @@ export async function followBridge(
       const took = Date.now() - startedAt;
       // While Telegram pushes (v98) there is no long poll to wait on: a pushed update waits at most this long.
       const floor = pushing() ? PUSH_IDLE_MS : FOLLOW_IDLE_FLOOR_MS;
-      if (!signal.aborted && report.sent === 0 && report.answered === 0 && (report.chatAnswered ?? 0) === 0 && took < floor) {
+      // A delivery wake goes straight back round to send: no padding.
+      if (!signal.aborted && report.deliveryWake !== true && report.sent === 0 && report.answered === 0 && (report.chatAnswered ?? 0) === 0 && took < floor) {
         // While Telegram pushes, a push kept by this process's hook ends the idle at once.
         await (pushing() ? idle(floor - took) : wait(floor - took));
       }
@@ -1533,6 +1568,8 @@ async function drainUpdates(
   signal?: AbortSignal,
   readProjects?: TelegramReadProjects,
   conversation?: TelegramConversationOptions,
+  /** True when the poll was ended on purpose for a delivery: an answer that failed then is that abort, not the wire. */
+  deliveryWake?: () => boolean,
 ): Promise<void> {
   const context: Context = { store, botId, transport, clock, report, readProjects, conversation, projects: null };
   let offset = cursor + 1;
@@ -1549,6 +1586,9 @@ async function drainUpdates(
       signal,
     );
     if (!answer.ok) {
+      // Ended on purpose so a due message goes out now: no problem, no backoff; the next cycle asks again from the
+      // same cursor, so nothing is lost.
+      if (deliveryWake?.() === true) { report.deliveryWake = true; return; }
       const said = answer.description ?? "failed";
       // v98: another program asked Telegram for this bot's updates, and Telegram ended our
       // request in its favour. Nothing is lost: an update is only gone once someone
@@ -2651,4 +2691,22 @@ export function wakeTelegramBridge(botId: string): void {
   const wakers = bridgeWakers.get(botId);
   if (wakers === undefined || wakers.size === 0) { bridgeWokenEarly.add(botId); return; }
   for (const wake of wakers) wake();
+}
+
+/** The newest notification id now: a follower cycle's mark for what its delivery covers. */
+function newestNotificationIdOf(store: Store): number {
+  return Number(store.handle.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM notification").get()?.["id"] ?? 0);
+}
+
+/**
+ * Whether a message for this bot was written after `mark` and is still due: unresolved, addressed to everyone or to a
+ * person paired with this bot, and the bot not held back by Telegram's rate limit. Read-only; delivery itself still
+ * decides each row under its own fences.
+ */
+export function telegramOutboxDue(store: Store, botId: string, mark: number, now: Date): boolean {
+  const approvers = [...new Set(store.liveTelegramBindings(botId).map(binding => binding.approver))];
+  if (approvers.length === 0) return false;
+  if (store.telegramRetryAt(botId) > now.toISOString()) return false;
+  return store.handle.prepare(`SELECT 1 AS hit FROM notification WHERE id > ? AND resolved_at IS NULL
+      AND (recipient IS NULL OR recipient IN (SELECT value FROM json_each(?))) LIMIT 1`).get(mark, JSON.stringify(approvers)) !== undefined;
 }

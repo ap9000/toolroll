@@ -379,13 +379,15 @@ export type ObservedPullRequest = {
  */
 export async function observeChecks(
   store: Store,
-  options: { clock?: () => Date; exec?: PublishExec },
+  options: { clock?: () => Date; exec?: PublishExec;
+    /** Read only these (the fast pass's waiting pull requests, live-wakeups.md); every one is read exactly as below. */
+    publications?: readonly Publication[] },
 ): Promise<CheckReport> {
   const clock = options.clock ?? (() => new Date());
   const exec = options.exec ?? execRun;
   const report: CheckReport = { observed: 0, failing: 0, resolved: 0, problems: [], seen: [] };
 
-  for (const publication of store.openedPublications()) {
+  for (const publication of options.publications ?? store.openedPublications()) {
     if (publication.prNumber === null) continue;
     // The observation generation is RESERVED before the network call
     // (merge grant, findings 20/24): a stalled older response loses its

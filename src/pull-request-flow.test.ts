@@ -309,6 +309,48 @@ describe("pull requests from Complete", () => {
     expect(gh.ran("gh pr merge")[0]).toContain("--rebase");
     expect(pullRequestViewOf(store, runId)).toMatchObject({ state: "merged", mergeCommit: "9".repeat(40) });
   });
+
+  test("an automatic pass that stops standing while GitHub answers merges nothing, asks nobody, and the next pass merges", async () => {
+    await setUp();
+    savePublishing(store, { repo: REPO, githubRepo: "alex/shop", remote: "origin", base: "main", account: "alex" }, "alex", { mergeMethod: "squash", mergeWhenGreen: true }, T0);
+    const runId = await openedPr("fix-total", HEAD);
+    let merged = false, views = 0, standing = true;
+    const gh = scripted([
+      ["gh pr merge", () => { merged = true; return {}; }],
+      // The second read is the merge's own look at the pull request: the worker stops standing while it waits.
+      ["gh pr view", () => { if (++views === 2) standing = false; return { stdout: JSON.stringify({ state: merged ? "MERGED" : "OPEN", isDraft: false, headRefOid: HEAD, statusCheckRollup: rollup("SUCCESS"), mergeCommit: merged ? { oid: "9".repeat(40) } : null }) }; }],
+    ]);
+    const seen = (await observeChecks(store, { exec: gh.exec, clock: () => T0 })).seen;
+    const halted = await followPullRequests(store, seen, { evidenceRoot: dir, exec: gh.exec, clock: () => T0, proceed: () => standing });
+    expect(halted).toMatchObject({ merged: 0, ready: 0, revisions: 0, problems: [] });
+    expect(gh.ran("gh pr merge")).toEqual([]);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM merge_in_flight").get()).toEqual({ n: 0 });
+    expect(store.listNotifications("all").filter(one => one.kind === "pull-request-ready")).toEqual([]);
+    expect(pullRequestViewOf(store, runId)).toMatchObject({ mergeCommit: null });
+
+    // Not standing from the start: nothing is read and nothing is written.
+    const before = views;
+    expect(await followPullRequests(store, seen, { evidenceRoot: dir, exec: gh.exec, clock: () => T0, proceed: () => false })).toMatchObject({ merged: 0, ready: 0 });
+    expect(views).toBe(before);
+
+    // The ready mark was taken back, so the next pass (the 5 minute one passes no standing) merges it.
+    const next = await followPullRequests(store, (await observeChecks(store, { exec: gh.exec, clock: () => T0 })).seen, { evidenceRoot: dir, exec: gh.exec, clock: () => T0 });
+    expect(next).toMatchObject({ merged: 1, ready: 0 });
+    expect(pullRequestViewOf(store, runId)).toMatchObject({ state: "merged", mergeCommit: "9".repeat(40) });
+  });
+
+  test("an automatic pass that stops standing while the failure log is read files no revision", async () => {
+    await setUp();
+    const runId = await openedPr("fix-total", HEAD);
+    let standing = true;
+    const gh = ciReads("FAILURE", HEAD, [["gh run view", () => { standing = false; return { stdout: "test\tRun npm test\t2026-09-30T09:01:00.0000000Z FAIL src/total.test.ts\n" }; }]]);
+    const seen = (await observeChecks(store, { exec: gh.exec, clock: () => T0 })).seen;
+    expect(await followPullRequests(store, seen, { evidenceRoot: dir, exec: gh.exec, clock: () => T0, proceed: () => standing })).toMatchObject({ revisions: 0, asked: 0 });
+    expect(pullRequestViewOf(store, runId)).toMatchObject({ revisionTask: null });
+    expect(store.listNotifications("all").filter(one => one.kind === "pull-request-revision")).toEqual([]);
+    // The next pass files it: the failing commit was never marked as handled.
+    expect(await followPullRequests(store, seen, { evidenceRoot: dir, exec: gh.exec, clock: () => T0 })).toMatchObject({ revisions: 1 });
+  });
   // ---- the same acts from a terminal ----------------------------------------
 
   const cli = async (argv: string[], exec?: PublishExec) => {

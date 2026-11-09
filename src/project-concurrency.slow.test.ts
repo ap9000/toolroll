@@ -4,14 +4,14 @@
  * agent is a stub: it stands where `claude` would, in the checkout it was
  * given, and answers in the CLI's output envelope.
  */
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runOperate, EXIT } from "./operate.js";
 import { run as exec } from "./exec.js";
-import { openStore } from "./store.js";
+import { openStore, Store } from "./store.js";
 import { register } from "./runner.js";
 import type { Runner } from "./builder.js";
 import { maySlotTake, ProjectPasses, PROJECT_CONCURRENCY_DEFAULT, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
@@ -299,6 +299,42 @@ describe("parallel builds from the service's builder", () => {
       expect(committed.stdout).toContain("half.ts");
     } finally {
       after.close();
+    }
+  }, 40_000);
+
+  test("a wake counter that cannot be read ends the watch at once, and the lease and the record of the watch still close", async () => {
+    // Capacity 3 with the default of two builds a project: the loop and one extra build lane both doze on the shared poller.
+    const { runnerToken } = await setup(3, []);
+    const real = Store.prototype.wakeSeq;
+    let reads = 0;
+    // After a few beats both are dozing; from then on the counter cannot be read (a disk error, say).
+    const spy = vi.spyOn(Store.prototype, "wakeSeq").mockImplementation(function (this: Store) {
+      if (++reads > 12) throw new Error("the wake counter could not be read");
+      return real.call(this);
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    const started = Date.now();
+    try {
+      expect(await watch(runnerToken, 60_000, idle), lines.join("\n")).toBe(EXIT.failed);
+      await sleep(100);
+    } finally {
+      spy.mockRestore();
+      process.removeListener("unhandledRejection", onUnhandled);
+    }
+    expect(Date.now() - started).toBeLessThan(30_000); // far short of --for: the lane saw the stop too
+    expect(lines.join("\n")).toContain("the wake counter could not be read");
+    expect(unhandled).toEqual([]);
+    const store = openStore(db);
+    try {
+      const now = new Date().toISOString();
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM watch_lease WHERE expires_at > ?").get(now)).toMatchObject({ n: 0 });
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM watch_lease").get()).toMatchObject({ n: 1 });
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM watch_episode WHERE ended_at IS NULL").get()).toMatchObject({ n: 0 });
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM watch_episode").get()).toMatchObject({ n: 1 });
+    } finally {
+      store.close();
     }
   }, 40_000);
 });
