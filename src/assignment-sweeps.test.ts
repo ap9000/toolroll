@@ -44,7 +44,7 @@ beforeEach(() => {
     ceilingMicrousd: 10_000_000, ceilingDigest: verified.who.ceilingDigest, termsDigest: "fixture" }, t0);
   const thread = store.openLeadThread(verified.who.name, verified.who.ceilingDigest, t0).thread;
   if (!configureLeadFollow(store, verified.who, store.getLeadSession(session)!, thread, true, t0)) throw Error("follow");
-  const coordinator = mintCoordinator(store, { name: "planner-bot", repos: [repo], by: "operator", now: t0 });
+  const coordinator = mintCoordinator(store, { name: "planner-bot", repos: [repo], by: "operator", now: new Date() });
   if (!coordinator.ok) throw Error("coordinator");
   token = coordinator.token;
   owner = `coordinator:${coordinator.cid}`;

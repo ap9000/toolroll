@@ -1841,7 +1841,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
   test("coordinator proposals are cards on /chat and the task page; an irreversible answer confirms only with the field", async () => {
     const { mintCoordinator } = await import("./coordinator.js");
     const { proposeAsCoordinator } = await import("./coordinator-proposals.js");
-    const minted = mintCoordinator(store, { name: "planner-bot", repos: [repoDir], by: "alex", now: clockNow });
+    const minted = mintCoordinator(store, { name: "planner-bot", repos: [repoDir], by: "alex", now: new Date() });
     if (!minted.ok) throw new Error("mint");
     sealScopeFixture(store, "a", approverToken);
     const run = store.startRun({ taskRef: store.refFor("built-in", "a").id, leaseId: "l", runner: "r", branch: "b", worktree: "/w", now: clockNow, ...presented(store, store.refFor("built-in", "a").id, "builder") });

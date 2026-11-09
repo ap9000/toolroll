@@ -56,9 +56,9 @@ function seed(file: string): Seeded {
     // A colliding person id: the coordinator and lead token below are given it in the v117 file.
     const shared = person("shared");
 
-    const live = mintCoordinator(s, { name: "planner-bot", repos: ["/srv/shop"], by: "alex", now: NOW });
-    const old = mintCoordinator(s, { name: "retired-bot", repos: ["/srv/shop"], by: "alex", now: NOW });
-    const collided = mintCoordinator(s, { name: "shared-bot", repos: ["/srv/bank"], by: "sam", now: NOW, newCid: () => "zzzzzzzzzzzz" });
+    const live = mintCoordinator(s, { name: "planner-bot", repos: ["/srv/shop"], by: "alex", now: new Date() });
+    const old = mintCoordinator(s, { name: "retired-bot", repos: ["/srv/shop"], by: "alex", now: new Date() });
+    const collided = mintCoordinator(s, { name: "shared-bot", repos: ["/srv/bank"], by: "sam", now: new Date(), newCid: () => "zzzzzzzzzzzz" });
     if (!live.ok || !old.ok || !collided.ok) throw new Error("coordinators");
     expect(revokeCoordinator(s, old.cid, "alex", NOW)).toEqual({ ok: true });
     const task = s.createTask({ id: "t-coord", title: "Filed by a coordinator" }, NOW);
@@ -156,7 +156,7 @@ test("a v117 file with every kind of credential upgrades whole into the one cred
   const after = new DatabaseSync(file, { readOnly: true });
   try { expect(changedHistory(after, history)).toEqual([]); } finally { after.close(); }
   // A coordinator minted now is in the ledger, as before.
-  expect(mintCoordinator(store, { name: "release-bot", repos: ["/srv/shop"], by: "alex", now: NOW }).ok).toBe(true);
+  expect(mintCoordinator(store, { name: "release-bot", repos: ["/srv/shop"], by: "alex", now: new Date() }).ok).toBe(true);
   expect(store.actionLedger({ repos: null, limit: 5 }).find(one => one.action === "coordinator minted: release-bot")).toMatchObject({ actor: "alex", outcome: "minted", source: "access", detail: 'projects: ["/srv/shop"]' });
   store.close(); store = undefined;
 
