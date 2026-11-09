@@ -61,8 +61,8 @@ export const LEAD_REPLY_LIMITS: Record<LeadChannel, number | null> = {
 
 const within = (channel: LeadChannel) => { const limit = LEAD_REPLY_LIMITS[channel]; return limit === null ? '' : ` Keep each reply within ${limit.toLocaleString('en-US')} characters, one message; a longer one is split across messages.`; };
 const CHANNEL_WORDS: Record<LeadChannel, string> = {
-  console: 'The Toolroll console in a browser: cards and links show beside your reply.',
-  terminal: 'The Toolroll CLI in a terminal: plain text only.',
+  console: "The Toolroll console in a browser: a few short lines. Cards and links show beside your reply, so don't repeat what a card shows.",
+  terminal: 'The Toolroll CLI in a terminal: a few short lines of plain text.',
   telegram: `Telegram on their phone: a few short lines, the most important first.${within('telegram')}`,
   slack: `A Slack thread: a few short lines; teammates may read it.${within('slack')}`,
   discord: `A Discord thread: a few short lines; teammates may read it.${within('discord')}`,

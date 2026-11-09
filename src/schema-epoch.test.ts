@@ -86,7 +86,7 @@ describe("the non-migrating door", () => {
     let migrated: Store | undefined;
     try {
       const now = new Date("2026-09-17T12:00:00Z");
-      const minted = mintCoordinator(reader, { name: "epoch-reader", repos: ["/repo/app"], by: "alex", now });
+      const minted = mintCoordinator(reader, { name: "epoch-reader", repos: ["/repo/app"], by: "alex", now: new Date() });
       if (!minted.ok) throw new Error("fixture credential failed");
       const output: Record<string, unknown>[] = [];
       let receive: (line: string) => void = () => {};

@@ -291,7 +291,7 @@ test("subagent tool calls, their decisions and undos are in the ledger, as the s
 });
 
 test("minting a coordinator is in the ledger, with its projects", () => {
-  const minted = mintCoordinator(store, { name: "release-bot", repos: ["/repo/a"], by: "alex", now: T0 });
+  const minted = mintCoordinator(store, { name: "release-bot", repos: ["/repo/a"], by: "alex", now: new Date() });
   expect(minted.ok).toBe(true);
   expect(store.actionLedger({ repos: null, limit: 5 }).find(one => one.action === "coordinator minted: release-bot")).toMatchObject({ actor: "alex", outcome: "minted", source: "access", detail: 'projects: ["/repo/a"]' });
 });

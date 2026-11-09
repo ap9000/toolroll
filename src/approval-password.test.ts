@@ -24,7 +24,7 @@ function filed(id: string, extra: { touches?: string[]; permissionMode?: "auto" 
   const ref = store.refFor("built-in", id).id;
   store.placeTask(ref, REPO, {}, NOW);
   if (extra.coordinator) {
-    const lead = mintCoordinator(store, { name: `lead-${id}`, repos: [REPO], by: "alex", now: NOW });
+    const lead = mintCoordinator(store, { name: `lead-${id}`, repos: [REPO], by: "alex", now: new Date() });
     if (!lead.ok) throw new Error(lead.reason);
     store.raw().prepare("UPDATE task_ref SET coordinator_cid = ? WHERE id = ?").run(lead.cid, ref);
   }

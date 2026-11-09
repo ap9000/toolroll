@@ -1523,7 +1523,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   search_project_memory: {
-    description: "Search decisions, instructions, references, lessons and the conversations you may read, across your projects. Read-only; cite the kind and id of what you rely on.",
+    description: "Search decisions, instructions, references, lessons and the conversations you may read, across your projects. Read-only; name what you rely on by what it settled ('you chose Postgres in March'); give its kind and id when asked.",
     handle: (ctx,args) => {
       const repo = args['repo'] === undefined ? null : repoPathOf(ctx.who,args['repo']);
       if (args['repo'] !== undefined && repo === null) return {ok:false,message:'Choose a project from list_repos.'};

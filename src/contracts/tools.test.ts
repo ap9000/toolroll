@@ -55,6 +55,7 @@ const DESCRIPTION_CHANGES: Record<string, string> = {
   propose_subagent: "D5: describe the renamed tool and the new ask operation",
   get_task: "v120: get_task says whether the agent has read the operator's notes",
   propose_steer: "v120: a running build's agent reads guidance when it next checks for notes, not only the next attempt",
+  search_project_memory: "lead voice: name a decision by what it settled; ids when asked",
 };
 const historicalName = (surface: Surface, tool: string) => RENAMED[surface][tool]?.from ?? tool;
 const historicalCall = (surface: Surface, tool: string, call: unknown): unknown => {
@@ -135,7 +136,7 @@ const TABLE = (["lead", "gateway"] as const).flatMap(surface => NAMES[surface].m
 function gatewayToolsList(): { name: string; inputSchema: Json }[] {
   const store = openStore(":memory:");
   try {
-    const made = mintCoordinator(store, { name: "contract-bot", repos: ["/repo/demo"], by: "alex", now: new Date("2026-10-05T12:00:00Z") });
+    const made = mintCoordinator(store, { name: "contract-bot", repos: ["/repo/demo"], by: "alex", now: new Date() });
     if (!made.ok) throw new Error("mint failed");
     let onLine: (line: string) => void = () => undefined;
     const out: string[] = [];

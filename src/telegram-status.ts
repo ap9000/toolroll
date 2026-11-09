@@ -110,7 +110,7 @@ function nextStep(d: DispatchDiagnosis): string {
 /** repos is the transport's explicit enrollment ceiling, never opened-project
  * history. This snapshot is intentionally bounded and advertises that bound. */
 export function phoneStatus(store: Store, repos: readonly string[], now: Date, focused: string | null = null, root?: string): string {
-  if (repos.length === 0) return "No connected projects are available to this bridge. Add a project in Toolroll, then send /status again.";
+  if (repos.length === 0) return "No projects are connected here yet. Add a project in Toolroll, then send /status again.";
   return store.transact(() => {
     const snapshot = withDispatchDiagnoses(store, store.chatSnapshot(repos, now), now);
     const lines = [...(focused === null ? [] : [`Talking about: ${focused} · /lead to switch back`, ""]), "Recent work", `As of ${now.toISOString().replace("T", " ").slice(0, 19)} UTC · ${repos.length} project(s)`, ""];
@@ -126,7 +126,7 @@ export function phoneStatus(store: Store, repos: readonly string[], now: Date, f
       if (rows.length > 2) lines.push(`  +${rows.length - 2} more in the console`);
       lines.push("");
     }
-    lines.push("Send /tasks to pick one, or /task <name> for its next step. Status is a snapshot, not a promise that the next attempt will succeed.");
+    lines.push("Send /tasks to pick one, or /task <name> for its next step. This is how things stand right now.");
     return lines.join("\n");
   });
 }
@@ -257,7 +257,7 @@ export function phoneTaskView(store: Store, repos: readonly string[], id: string
       if (latest.finishedAt !== null) lines.push(`Attempt ended: ${plain(latest.finishedAt, 40)}`);
       else if (d.condition === "running") {
         const checkpoint = store.latestCheckpointForRun(latest.id);
-        lines.push(checkpoint === null ? "No milestone progress has been recorded for this attempt." : `Latest agent-reported milestone update: ${plain(checkpoint.createdAt, 40)} (not independent proof).`);
+        lines.push(checkpoint === null ? "No milestone progress has been recorded for this attempt." : `Latest update from the agent, not verified: ${plain(checkpoint.createdAt, 40)}.`);
       }
     }
     let link: PhoneTaskLink | null = null;

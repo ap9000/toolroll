@@ -156,7 +156,7 @@ describe("read-only phone status", () => {
     expect(read).toContain("mobile-nav");
     expect(read).not.toMatch(/hidden-title|unplaced-title|secret-project|\/private/);
     expect(phoneTask(store, [REPO], "foreign", NOW)).toBe(phoneTask(store, [REPO], "does-not-exist", NOW));
-    expect(phoneStatus(store, [], NOW)).toContain("No connected projects");
+    expect(phoneStatus(store, [], NOW)).toContain("No projects are connected");
     expect(phoneTask(store, [], "mobile-nav", NOW)).not.toContain("Polish");
   });
 
@@ -331,7 +331,7 @@ describe("read-only phone status", () => {
     });
     expect(report.statusReplies).toBe(2);
     expect(s.texts()[0]).toContain("mobile-nav");
-    expect(s.texts()[1]).toContain("No connected projects");
+    expect(s.texts()[1]).toContain("No projects are connected");
   });
 
   test("public CLI reads enrollment, not opened projects, and status-only activity is successful", async () => {

@@ -32,6 +32,7 @@ import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { subscriptionCredentialKey } from "./converse.js";
 import { runLeadTurn } from "./lead.js";
 import { quickLeadModel, quickRoute } from "./lead-route.js";
+import { replyVoice, summarizeVoice, type ReplyVoice, type VoiceSummary } from "./reply-voice.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 
 export const LEAD_ANSWER_K = 3;
@@ -168,13 +169,15 @@ export function scriptedLeadAnswerRunner(questions: readonly LeadAnswerQuestion[
   };
 }
 
-type Run = { model: "main" | "quick"; route: string | null; answer: string; ms: number; named: boolean; falseClaims: number; failed: string | null };
+type Run = { model: "main" | "quick"; route: string | null; answer: string; ms: number; named: boolean; falseClaims: number; failed: string | null; voice: ReplyVoice };
 export type LeadAnswerReport = {
   mode: "scripted" | "real";
   k: number;
   quickModel: string;
   read: { main: { passK: number; falseClaims: number; medianMs: number }; quick: { passK: number; falseClaims: number; medianMs: number }; questions: number };
   act: { kept: number; total: number; failures: string[] };
+  /** How the read answers read, per model (docs/plans/lead-voice.md, V3). Reported; `pass` does not depend on it. */
+  voice: { main: VoiceSummary; quick: VoiceSummary };
   speedup: number;
   pass: boolean;
   reasons: string[];
@@ -213,10 +216,10 @@ export async function runLeadAnswerEval(options: { mode: "scripted" | "real"; k?
     const answer = outcome.ok && !outcome.replayed ? outcome.reply : "";
     const graded = gradeAnswer(question, answer);
     const failed = outcome.ok ? null : "refused" in outcome ? `refused: ${outcome.refused}` : `failed: ${outcome.failed}`;
-    return { model, route: turn?.route ?? null, answer, ms, named: failed === null && graded.named, falseClaims: graded.falseClaims, failed };
+    return { model, route: turn?.route ?? null, answer, ms, named: failed === null && graded.named, falseClaims: graded.falseClaims, failed, voice: replyVoice(answer) };
   };
   const read = questions.filter(one => one.kind === "read");
-  const tally = { main: { passK: 0, falseClaims: 0, ms: [] as number[] }, quick: { passK: 0, falseClaims: 0, ms: [] as number[] } };
+  const tally = { main: { passK: 0, falseClaims: 0, ms: [] as number[], voices: [] as ReplyVoice[] }, quick: { passK: 0, falseClaims: 0, ms: [] as number[], voices: [] as ReplyVoice[] } };
   for (const question of read) {
     for (const model of ["main", "quick"] as const) {
       let all = true;
@@ -227,6 +230,7 @@ export async function runLeadAnswerEval(options: { mode: "scripted" | "real"; k?
         if (!one.named) all = false;
         tally[model].falseClaims += one.falseClaims;
         tally[model].ms.push(one.ms);
+        if (one.answer !== "") tally[model].voices.push(one.voice);
       }
       if (all) tally[model].passK++;
     }
@@ -258,6 +262,7 @@ export async function runLeadAnswerEval(options: { mode: "scripted" | "real"; k?
     mode: options.mode, k, quickModel,
     read: { main: { passK: tally.main.passK, falseClaims: tally.main.falseClaims, medianMs: mainMs }, quick: { passK: tally.quick.passK, falseClaims: tally.quick.falseClaims, medianMs: quickMs }, questions: read.length },
     act: { kept, total: acts.length, failures: actFailures },
+    voice: { main: summarizeVoice(tally.main.voices), quick: summarizeVoice(tally.quick.voices) },
     speedup, pass: reasons.length === 0, reasons, runs,
   };
 }

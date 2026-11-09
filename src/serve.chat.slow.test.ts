@@ -1412,7 +1412,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
 
     // A membership conversation starts on its own; its settings live one tap away.
     html = await (await fetch(url("/chat?settings=1"), { headers: { cookie } })).text();
-    expect(html).toContain("membership login · no dollar ceiling");
+    expect(html).toContain("membership login · no dollar limit");
     expect(html).toContain('href="/settings/lead">Lead settings</a>');
     html = await (await fetch(url("/settings/lead"), { headers: { cookie } })).text();
     expect(html).not.toContain('name="weekly-usd"');
@@ -1433,7 +1433,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
 
     html = await page(cookie);
     expect(html).not.toContain("<script>bad()</script>");
-    expect(html).toContain("membership login · no dollar ceiling");
+    expect(html).toContain("membership login · no dollar limit");
     expect(html).not.toContain("this session: $0.00 of $0.00");
     expect(html).not.toContain('name="token"');
     const turn = store.recentLeadTurns("alex", 1)[0];
@@ -1773,7 +1773,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     store.setChatConfig({ provider: "codex-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", T0);
     const cookie = await login();
     const html = await (await fetch(url("/chat?settings=1"), { headers: { cookie } })).text();
-    expect(html).toContain("<span>membership login · no dollar ceiling</span>");
+    expect(html).toContain("<span>membership login · no dollar limit</span>");
     const limits = /<details class="chat-limits">.*?<\/details>/s.exec(html)?.[0] ?? "";
     expect(limits).not.toContain("$0.00");
   });
@@ -1841,7 +1841,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
   test("coordinator proposals are cards on /chat and the task page; an irreversible answer confirms only with the field", async () => {
     const { mintCoordinator } = await import("./coordinator.js");
     const { proposeAsCoordinator } = await import("./coordinator-proposals.js");
-    const minted = mintCoordinator(store, { name: "planner-bot", repos: [repoDir], by: "alex", now: clockNow });
+    const minted = mintCoordinator(store, { name: "planner-bot", repos: [repoDir], by: "alex", now: new Date() });
     if (!minted.ok) throw new Error("mint");
     sealScopeFixture(store, "a", approverToken);
     const run = store.startRun({ taskRef: store.refFor("built-in", "a").id, leaseId: "l", runner: "r", branch: "b", worktree: "/w", now: clockNow, ...presented(store, store.refFor("built-in", "a").id, "builder") });

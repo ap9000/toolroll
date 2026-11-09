@@ -25,6 +25,7 @@ import { runOperate } from "./operate.js";
 import { HELP } from "./cli-help.js";
 import { setChatApproval } from "./chat-approval.js";
 import { PLAIN_WORDS, bannedWordsIn } from "./plain-words.js";
+import { phoneStatus, phoneTask } from "./telegram-status.js";
 import { RUN_REASON_WORDS, NEEDS, WAITS } from "./needs-you.js";
 import type { BrowserWorkspace } from "./browser-workspace.js";
 
@@ -219,6 +220,9 @@ const ROWS: Row[] = [
   page("/tasks?view=needs-you"),
   page("/tasks?view=board"),
   page("/settings"),
+  { surface: "phone /status", read: async () => phoneStatus(store, [REPO], NOW) },
+  { surface: "phone /status, no projects", read: async () => phoneStatus(store, [], NOW) },
+  { surface: "phone /task building", read: async () => phoneTask(store, [REPO], "building", NOW) },
 ];
 
 describe("product copy says no banned word; preserved content renders unchanged", () => {

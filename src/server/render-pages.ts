@@ -558,7 +558,7 @@ export function workPage(
     ['finished', 'Finished', data.board.finished, 'completed', 'Nothing has finished yet.'],
   ] as const).map(([key, label, page, view, empty]) => ({ key, label, count: page.totals[view], href: query({ view, layout: 'list' }), empty, rows: page.items.map(rowOf) }));
   const putAwayLink = data.canPutAway === true && data.view !== 'archived' ? { label: 'Archive old tasks', href: '/tasks/archive' } : null;
-  const toolLinks = [['/tasks?view=order', 'Order the queue'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/tasks?scope=all', 'Every project']]), ['/ledger', 'Action ledger']];
+  const toolLinks = [['/tasks?view=order', 'Order the queue'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/tasks?scope=all', 'Every project']]), ['/ledger', 'Audit log']];
   const newTaskHref = lens === null ? '/tasks/new' : `/tasks/new?project=${encodeURIComponent(lens)}`;
   const emptyNow = data.work.items.length > 0 ? null : filtered && !data.previous ? { text: `No tasks are ${data.state} in this view.`, action: { label: 'Show every state', href: href(data.view, undefined, null) } } : {
     text: data.previous ? 'There are no more tasks on this page.' : current.empty,
@@ -617,7 +617,7 @@ export function workPage(
     ? html`<div class="work-empty" data-work-empty="${data.view}"><p>${data.previous ? 'There are no more tasks on this page.' : current.empty}</p>${data.view === 'all' && !data.previous ? html`<p><a class="button-link" href="${chrome.chat === true ? '/chat' : '/tasks/new'}">${chrome.chat === true ? 'Start in chat' : 'Add a task'}</a></p>` : html`<a href="${href('all')}">See all tasks →</a>`}</div>`
     : html`<div class="work-list">${data.work.items.map(rowHtml)}</div>`;
   const pages = !data.previous && data.work.nextCursor === null ? null : html`<nav class="row work-pagination" aria-label="Task pages">${data.previous ? html`<a class="button-link" href="${href(data.view)}">First page</a>` : null}${data.work.nextCursor === null ? null : html`<a class="button-link" rel="next" href="${href(data.view, data.work.nextCursor)}">Next page</a>`}</nav>`;
-  const tools = html`<details class="work-tools"><summary>Work tools${CHEVRON_ICON}</summary><nav class="work-tools-menu">${[['/', 'Home'], ['/tasks?view=board', 'Board'], ['/tasks?view=order', 'Order'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/tasks?scope=all', 'Every project']]), ['/ledger', 'Action ledger']]
+  const tools = html`<details class="work-tools"><summary>Work tools${CHEVRON_ICON}</summary><nav class="work-tools-menu">${[['/', 'Home'], ['/tasks?view=board', 'Board'], ['/tasks?view=order', 'Order'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/tasks?scope=all', 'Every project']]), ['/ledger', 'Audit log']]
       .map(([path, label]) => html`<a href="${path}">${label}</a>`)}</nav></details>`;
   return screen('work', html`<div class="work-head"><h1>Tasks</h1>${putAwayLink === null ? null : html`<a class="button-link" href="${putAwayLink.href}" data-put-away-old>${putAwayLink.label}</a>`}${tools}</div>${limitsHtml(data.limits ?? null)}${legacyTabs}${stateLinks}${list}${pages}`, { chrome, workspace: { view } });
 }

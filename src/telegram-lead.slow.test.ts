@@ -381,7 +381,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(store.lookupRef(filed)?.repo).toBe(repo);
     expect(script.acks().at(-1)).toBe("✓ done");
     // No trusted origin: one next action in words, one honest line about the missing setup, no localhost.
-    expect(script.edits().at(-1)).toBe(`✓ filed ${filed} — review and approve its scope to start work\n\nApprove it in Toolroll on the computer.\n\n${NO_PHONE_LINK}`);
+    expect(script.edits().at(-1)).toBe(`✓ Filed ${filed}. Approve its plan to start work.\n\nApprove it in Toolroll on the computer.\n\n${NO_PHONE_LINK}`);
     expect(script.edits().at(-1)).not.toMatch(/localhost|127\.0\.0\.1/);
     expect(urlButtons(lastEdit())).toEqual([]);
     // /task reads the filed task on the same view.
@@ -1071,7 +1071,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(raced.ok && raced.report.chatConfirmed).toBeFalsy();
     expect(tasks()).toBe(before);
     expect(script.acks().at(-1)).toBe("already done");
-    expect(script.edits().at(-1)).toMatch(/^✓ Done \(from web\): filed /);
+    expect(script.edits().at(-1)).toMatch(/^✓ Done \(from web\): Filed /);
     // A stale button — the same token again, or the token on another message — does nothing more.
     expect(await tapPass(sent.button(/^Confirm$/), sent.messageId)).toMatchObject({ ok: true, report: { ignored: 1 } });
     expect(await tapPass(sent.button(/^Dismiss$/), sent.messageId + 1)).toMatchObject({ ok: true, report: { ignored: 1 } });
@@ -1346,7 +1346,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(await tapPass(scope.confirm, scope.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
       expect(outcome(scope.id).outcome).toMatchObject({ ok: true, via: "telegram" });
       expect(store.getScope("d")).toMatchObject({ goal: "Do d with a smaller blast radius", proposedVia: "mate" });
-      expect(script.edits().at(-1)).toBe("✓ d's scope rewritten — approve it with your password on the task");
+      expect(script.edits().at(-1)).toBe("✓ d's plan changed. Approve it on the task page.");
       expect(urlButtons(lastEdit())).toEqual([["Review & start", "https://console.example/chat?task=d#task-chat-action"]]);
     });
 
@@ -1631,7 +1631,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(sent.rows.flat().map(one => one.text)).toEqual(["Confirm", "Dismiss"]);
       expect(await tapPass(sent.button(/^Confirm$/), sent.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
       const filed = (store.listLeadProposals(store.liveLeadThreadFor("alex")!.id)[0]!.outcome as { taskId: string }).taskId;
-      expect(script.edits().at(-1)).toBe(`✓ filed ${filed} — review and approve its scope to start work`);
+      expect(script.edits().at(-1)).toBe(`✓ Filed ${filed}. Approve its plan to start work.`);
       expect(urlButtons(lastEdit())).toEqual([["Review & start", `https://console.example/chat?task=${encodeURIComponent(filed)}#task-chat-action`]]);
       const modelCalls = requests.length;
       expect(await tapPass(sent.button(/^Confirm$/), sent.messageId)).toMatchObject({ ok: true, report: { ignored: 1 } });

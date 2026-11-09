@@ -110,7 +110,7 @@ describe("task accept: what each call means", () => {
 
   test("a scoped credential completes only with --digest, as task complete does", async () => {
     built("t-lead");
-    const minted = mintCoordinator(store, { name: "lead", repos: [REPO], by: "alex", now: NOW });
+    const minted = mintCoordinator(store, { name: "lead", repos: [REPO], by: "alex", now: new Date() });
     if (!minted.ok) throw new Error(minted.reason);
     vi.stubEnv("SO_TEST_LEAD", minted.token);
     expect(await run(["assignment", "claim", "t-lead", "--token-env", "SO_TEST_LEAD", "--json"]), lines.join("\n")).toBe(EXIT.ok);

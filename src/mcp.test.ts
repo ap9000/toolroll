@@ -62,7 +62,7 @@ describe("the MCP stdio server", () => {
 
   beforeEach(() => {
     store = openStore(":memory:");
-    const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: T0 });
+    const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: new Date() });
     if (!made.ok) throw new Error("mint failed");
     token = made.token;
   });
@@ -307,7 +307,7 @@ describe("the MCP stdio server", () => {
 
   test("reads are allowlist-scoped: a foreign task answers not-found; status counts only this credential's repos", () => {
     // A task in a repo OUTSIDE the allowlist, via a second coordinator.
-    const other = mintCoordinator(store, { name: "other-bot", repos: ["/repo/other"], by: "alex", now: T0 });
+    const other = mintCoordinator(store, { name: "other-bot", repos: ["/repo/other"], by: "alex", now: new Date() });
     if (!other.ok) throw new Error("mint failed");
     const foreign = fileCoordinatorProposal(store, other.token, { repo: "/repo/other", title: "foreign", idempotencyKey: "key-for-0001" }, T0);
     if (!foreign.ok) throw new Error("filing failed");
@@ -388,7 +388,7 @@ describe("the MCP stdio server", () => {
     // serveMcp instances, and the second server's token clobbered the
     // first's. The fix threads the token per-server — prove it holds by
     // interleaving filings across two live sessions.
-    const other = mintCoordinator(store, { name: "other-bot", repos: ["/repo/isolated"], by: "alex", now: T0 });
+    const other = mintCoordinator(store, { name: "other-bot", repos: ["/repo/isolated"], by: "alex", now: new Date() });
     if (!other.ok) throw new Error("mint failed");
     const mine = store.handle.prepare("SELECT id AS cid FROM credential WHERE kind = 'coordinator' AND name = 'planner-bot'").get();
     const myCid = String(mine?.["cid"]);
@@ -725,7 +725,7 @@ describe("assignment arguments: the CLI and the gateway read them with one schem
   test("the same malformed call is the same path-named lines — a usage failure in the CLI, InvalidParams on the gateway", () => {
     const store = openStore(":memory:");
     try {
-      const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: T0 });
+      const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: new Date() });
       if (!made.ok) throw new Error("mint failed");
       const cli = (positional: string[], flags: [string, string][]) => {
         const lines: string[] = [];
@@ -756,7 +756,7 @@ describe("the MCP server and a restored database", () => {
     const file = join(dir, "orders.db");
     const store = openStore(file);
     try {
-      const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: T0 });
+      const made = mintCoordinator(store, { name: "planner-bot", repos: [REPO], by: "alex", now: new Date() });
       if (!made.ok) throw new Error("mint failed");
       const h = harness(store, made.token);
       const call = (id: number) => h.send({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "status", arguments: {}, _meta: modernMeta } });

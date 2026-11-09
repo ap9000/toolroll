@@ -30,6 +30,8 @@ describe("the lead-answer eval", () => {
     expect(report.read.main.passK).toBe(30);
     expect(report.read.quick.passK).toBe(30);
     expect(report.act).toEqual({ kept: 10, total: 10, failures: [] });
+    expect(report.voice.main).toMatchObject({ answers: 90, longShare: 0, narratedOpenings: 0 });
+    expect(report.voice.quick.answers).toBe(90);
     expect(report.runs.filter(one => one.model === "quick" && one.question.startsWith("act-soft")).every(one => one.route === "escalated")).toBe(true);
     expect(report.runs.filter(one => one.model === "quick" && !one.question.startsWith("act")).every(one => one.route === "fast")).toBe(true);
     expect(report.runs.filter(one => one.model === "main").every(one => one.route === "default")).toBe(true);
