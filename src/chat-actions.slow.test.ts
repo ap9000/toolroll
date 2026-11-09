@@ -23,6 +23,7 @@ import {
 } from "./chat-actions.js";
 import { confirmLeadProposal, dismissLeadProposal } from "./lead-doors.js";
 import { fastStartBuild, prepareChatStart } from "./fast-start.js";
+import { shellWordOrNull, startFromTerminalWords } from "./chat-actions.js";
 import { installFilingSizer } from "./task-sizing.js";
 import { setChatApproval } from "./chat-approval.js";
 import { scopeApprovedForDispatch } from "./dispatch.js";
@@ -1266,9 +1267,29 @@ describe("the Start card", () => {
 
   test("`toolroll chat` refuses and names the terminal's own fast start; the card stays pending", async () => {
     const { id } = await drafted();
-    expect(tap(id, "cli")).toMatchObject({ ok: false, reason: "needs-confirm", said: `Start it from the terminal with \`toolroll task new "Fix the typo in the footer" --repo ${repo}\`.` });
+    expect(tap(id, "cli")).toMatchObject({ ok: false, reason: "needs-confirm", said: `Start it from the terminal with \`toolroll task new 'Fix the typo in the footer' --repo ${shellWordOrNull(repo) ?? "<project>"}\`.` });
     expect(store.getLeadProposal(id)!.state).toBe("pending");
     expect(tasks()).toBe(0);
+  });
+
+  test("the terminal words never carry a hostile title or project into the command: placeholders instead", () => {
+    const words = (title: string, project = "/work/shop") => {
+      store.handle.prepare("DELETE FROM fast_preview WHERE id = 'p-shell'").run();
+      store.handle.prepare(`INSERT INTO fast_preview (id, actor, via, task_id, repo, title, permission, sizing_json, digest, created_at, expires_at, turn) VALUES ('p-shell', 'operator', 'chat', 't', ?, ?, NULL, '{}', 'd', ?, ?, 1)`)
+        .run(project, title, now.toISOString(), now.toISOString());
+      return startFromTerminalWords(store, { repo: project, state: { preview: "p-shell" } });
+    };
+    const hostile = ["$(touch x)", "a `whoami` b", "it's", 'say "hi"', "line one\nline two", "; rm -rf ~", "--repo /etc", "x".repeat(500)];
+    for (const title of hostile) {
+      const said = words(title);
+      expect(said, title).toBe("Start it from the terminal with `toolroll task new \"<title>\" --repo '/work/shop'`.");
+      expect(said.includes(title), title).toBe(false);
+    }
+    expect(words("Fix the login button label")).toBe("Start it from the terminal with `toolroll task new 'Fix the login button label' --repo '/work/shop'`.");
+    expect(words("Fix the login button label", "/work/$(touch x)")).toBe("Start it from the terminal with `toolroll task new 'Fix the login button label' --repo <project>`.");
+    expect(words("Fix the login button label", "/work/it's")).toContain("--repo <project>`");
+    expect(shellWordOrNull("Ünïcode titel 2")).toBe("'Ünïcode titel 2'");
+    for (const bad of ["", "-x", "a!b", "a*b", "a=b", "a%b", "a~b", "a{b}", "a[b]", "a<b>", "a|b", "a&b", "a\\b", "a\tb"]) expect(shellWordOrNull(bad), bad).toBeNull();
   });
 
   test("a tap without the challenge, or a web click without the review page, is refused", async () => {

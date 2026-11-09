@@ -1697,11 +1697,25 @@ function startFromCard(store: Store, who: VerifiedApprover, proposal: number, dr
   return built.taskId;
 }
 
-/** Where `toolroll chat` sends a Start card: the terminal's own fast start, with the words the lead drafted. */
+/**
+ * A value safe to paste into a shell as ONE word, single-quoted, or null. The value is model- or person-written (the
+ * lead's title, a project path), so only a strict allowlist passes: letters, digits, spaces and `. , : _ / - ( ) + # @`,
+ * 1 to 120 characters, no leading `-`. Anything else (quotes, backticks, `$`, `\`, newlines, globs, redirections…) is
+ * null, and the caller shows a placeholder instead.
+ */
+export function shellWordOrNull(text: string): string | null {
+  if (text.length < 1 || text.length > 120 || text.startsWith("-")) return null;
+  if (!/^[\p{L}\p{N} .,:_/()+#@-]+$/u.test(text)) return null;
+  return `'${text}'`;
+}
+
+/** Where `toolroll chat` sends a Start card: the terminal's own fast start, with the words the lead drafted when they are
+ * safe to paste as one shell word, else the placeholders. Never a value unquoted or in double quotes. */
 export function startFromTerminalWords(store: Store, action: Pick<SharedAction, "repo" | "state">): string {
   const row = store.handle.prepare("SELECT title FROM fast_preview WHERE id = ?").get(String(action.state["preview"] ?? ""));
-  const title = row === undefined ? "<what should change>" : String(row["title"]).replace(/"/g, "'");
-  return `Start it from the terminal with \`toolroll task new "${title}" --repo ${action.repo}\`.`;
+  const title = row === undefined ? null : shellWordOrNull(String(row["title"]));
+  const project = shellWordOrNull(action.repo);
+  return `Start it from the terminal with \`toolroll task new ${title ?? "\"<title>\""} --repo ${project ?? "<project>"}\`.`;
 }
 
 /** How this yes stands, and under whose limits: a person's own from chat, by their own chat setting, with the words and
