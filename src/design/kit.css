@@ -304,7 +304,7 @@ button.k-steprow-head[aria-expanded="true"]::after { transform: rotate(45deg); }
 .k-work-who > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k-work-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--so-live); }
 .k-work-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; align-content: start; gap: 16px; padding: 18px; }
-.k-work-foot { flex: none; display: grid; gap: 8px; padding: 8px 14px 14px; }
+.k-work-foot { flex: none; display: grid; gap: 8px; padding: 8px 14px 14px; max-height: min(50%, 420px); overflow-y: auto; overscroll-behavior: contain; }
 .k-work-foot:empty { display: none; }
 .k-work-conv { display: grid; gap: var(--so-space-sm); min-width: 0; }
 .k-work-conv-h { display: flex; justify-content: flex-end; }

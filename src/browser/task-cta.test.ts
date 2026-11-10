@@ -240,3 +240,28 @@ test("the task's attempts stay in the Build row: while a correction is planned (
   show({ ...stopped, steps: stepRowsOf(stopped) }, "stopped");
   expect(build().querySelector("[data-earlier-attempts]")!.getAttribute("data-earlier-attempts")).toBe("1");
 });
+
+test("what a person decides sits in the step that waits, on the page: open questions and a plan change waiting for its yes", () => {
+  const questions = { key: "questions", html: '<div class="card" id="task-questions"><form method="post" action="/t/t-1/answer"><button>Answer</button></form></div>' };
+  const pending = { key: "plan-revisions", html: '<div class="card" id="plan-revisions"><form method="post" action="/t/t-1/accept-revision"><button>Approve changes &amp; continue</button></form></div>' };
+  const history = { key: "plan-revisions", html: '<div class="card" id="plan-revisions"><p>Using plan revision 2</p></div>' };
+  const rowOf = (selector: string) => host.querySelector(selector)!.closest("[data-step-row]")?.getAttribute("data-step-row") ?? null;
+  // Building: the build asked, so both are in the open Build row.
+  const building = viewOf(cardOf("Building", null), { lead: [questions, pending], journey: taskRoad({ stage: "building" }, true, false, {}) });
+  show({ ...building, steps: stepRowsOf(building) });
+  expect(rowOf("#task-questions")).toBe("build");
+  expect(rowOf("#plan-revisions")).toBe("build");
+  for (const id of ["#task-questions", "#plan-revisions"]) expect(host.querySelector(id)!.closest("[hidden]")).toBeNull();
+  expect(host.querySelectorAll("#task-questions, #plan-revisions")).toHaveLength(2);
+  // Checks running: a change that waits is in the open row, where it is seen; changes already decided are the build's history.
+  const checking = viewOf(cardOf("Building", null), { lead: [pending], journey: taskRoad({ stage: "checking" }, true, true, {}) });
+  show({ ...checking, steps: stepRowsOf(checking) }, "checking");
+  expect(rowOf("#plan-revisions")).toBe("checks");
+  expect(host.querySelector("#plan-revisions")!.closest("[hidden]")).toBeNull();
+  const decided = viewOf(cardOf("Building", null), { lead: [history], journey: taskRoad({ stage: "checking" }, true, true, {}) });
+  show({ ...decided, steps: stepRowsOf(decided) }, "decided");
+  expect(rowOf("#plan-revisions")).toBe("build");
+  // A task with no road keeps them on the page all the same: never dropped.
+  show(viewOf(cardOf("Needs you", null), { lead: [questions, pending] }), "no-road");
+  expect(host.querySelectorAll("#task-questions form, #plan-revisions form")).toHaveLength(2);
+});

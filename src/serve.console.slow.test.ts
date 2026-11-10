@@ -1924,6 +1924,16 @@ describe("the board — the pipeline as lanes, live in place", () => {
     expect(pendingPage).toContain("Approve changes &amp; continue");
     expect(pendingPage).toContain("Keep current plan");
     const pendingCsrf = /name="csrf" value="([0-9a-f]{64})"/.exec(pendingPage)?.[1] ?? "";
+    // The same decision in the script page's data: it sits on the page (a lead block), never in the work panel's
+    // thread, which only links to it. No thread card of this task carries a control of any kind.
+    const pendingView = workspaceOf(pendingPage).view as BrowserTaskView;
+    const pendingBlock = pendingView.lead.find(one => one.key === "plan-revisions");
+    expect(pendingBlock?.html).toContain('id="plan-revisions"');
+    expect(pendingBlock?.html).toContain("/t/t-adapt/accept-revision");
+    expect(pendingBlock?.html).toContain('type="password"');
+    const pendingThread = pendingView.thread ?? [];
+    expect(pendingThread.find(one => one.key === "plan-revisions")).toMatchObject({ html: "", more: null, link: { href: "#plan-revisions" } });
+    for (const one of pendingThread) expect(`${one.html}${one.more?.html ?? ""}`, one.key).not.toMatch(/<(?:form|input|button|select|textarea)\b/i);
 
     // Accepting without the password ceremony refuses.
     const noToken = await fetch(url("/t/t-adapt/accept-revision"), {

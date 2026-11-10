@@ -152,11 +152,19 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
       expect(view.tabs).toEqual([]);
       expect(data.conversation?.taskId).toBe(id);
     }
-    // The open question is answered in the thread, with its own form and anchor.
+    // The open question is answered on the page (a lead block with its form and anchor); the thread, which the work
+    // panel shows, says what was asked and links there. No thread entry of any task carries a form.
     const asking = (await workspace(cookie, "/t/asking")).view as BrowserTaskView;
     const question = asking.thread!.find(one => one.key === "questions")!;
-    expect(question.html).toContain('id="task-questions"');
-    expect(formsOf(question.html).length).toBeGreaterThan(0);
+    expect(question).toMatchObject({ html: "", more: null, link: { href: "#task-questions" } });
+    expect(question.text).not.toBe("");
+    const answerCard = asking.lead.find(one => one.key === "questions")!;
+    expect(answerCard.html).toContain('id="task-questions"');
+    expect(formsOf(answerCard.html).length).toBeGreaterThan(0);
+    for (const id of ["unscoped", "live", "asking", "finished"]) {
+      const one = (await workspace(cookie, `/t/${id}`)).view as BrowserTaskView;
+      for (const entry of one.thread ?? []) expect(`${entry.html}${entry.more?.html ?? ""}`, `${id} ${entry.key}`).not.toMatch(/<(?:form|input|button|select|textarea)\b/i);
+    }
     // The result is a thread entry with the agent's handoff, and its receipt one tap away.
     const finished = (await workspace(cookie, "/t/finished")).view as BrowserTaskView;
     expect(finished.thread!.find(one => one.kind === "result")).toMatchObject({ title: "Result ready", text: "Images now use responsive sizes.", link: { href: `/t/finished?tab=result&run=${doneRun}` } });
@@ -193,6 +201,26 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     const twice = (await workspace(cookie, "/t/finished")).view as BrowserTaskView;
     expect(twice.result?.attempts.map(one => one.href)).toEqual([`/t/finished?tab=result&run=${again}`]);
     expect((await fetch(url(`/t/finished?tab=result&run=${doneRun}`), { headers: { cookie }, redirect: "manual" })).status).toBe(404);
+  });
+
+  test("a build whose repair turn is the live run is still running: the work panel names the build and reads it live", async () => {
+    const build = building("mending", "Mend the export", "builder-1");
+    const held = store.getRun(build)!;
+    const authority = store.routeAuthorityFor(held.taskRef, "repair");
+    if (!authority?.ok) throw new Error("route");
+    const admitted = store.admitRepair({ taskRef: held.taskRef, leaseId: held.leaseId, runner: "builder-1", branch: "b/mending", worktree: "/w/mending",
+      provider: authority.stamp.provider, parentRun: build, route: authority.stamp, now: T0 });
+    if (!admitted.ok) throw new Error(admitted.problem);
+    const cookie = await login();
+    const mending = (await workspace(cookie, "/t/mending")).view as BrowserTaskView;
+    // The repair turn is no build of its own: the panel stays on the build it mends, and that build is not finished.
+    expect(mending.work).toMatchObject({ run: build, live: true });
+    expect(mending.work!.transcript).toBe(`/r/${build}?fragment=transcript&shape=records`);
+    // Once both end, the same build reads as a record.
+    store.finishRun(admitted.runId, { outcome: "built", committed: true, now: T0 });
+    store.finishRun(build, { outcome: "failed", committed: false, now: T0 });
+    const ended = (await workspace(cookie, "/t/mending")).view as BrowserTaskView;
+    expect(ended.work).toMatchObject({ run: build, live: false });
   });
 
   test("c3: the composer's mode is fixed server words for one turn; it never stands in for a confirmation", async () => {

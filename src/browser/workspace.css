@@ -542,13 +542,14 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-task-more { padding-top: var(--so-space-sm); border-top: 1px solid var(--so-line); }
 .so-task-more-h { margin: 0; font: 600 14px/1.4 var(--so-font-sans); color: var(--so-ink); }
 /* The work panel (KIT.md "The work"; opened from the header's Activity, the Build row's Watch the work or ?tab=activity):
- * beside the rows at 1100px and wider, a sheet over the page below that, the whole screen on a phone. */
+ * beside the rows at 1100px and wider, a sheet over the page below that, the whole screen on a phone. Over the page it
+ * is a kit overlay: it sits just above its scrim (25), and the page under it is inert. */
 @media (min-width: 1100px) {
   .so-workspace--kit [data-kit-page].so-task-page--work, .so-task-page--work { display: grid; grid-template-columns: minmax(0, 1fr) clamp(360px, 30vw, 440px); align-items: start; }
   .so-task-page > .k-work { position: sticky; top: 0; grid-column: 2; grid-row: 1; height: 100dvh; border-left: 1px solid var(--so-line); }
 }
 @media (max-width: 1099px) {
-  .so-task-page > .k-work { position: fixed; left: 0; right: 0; bottom: 0; z-index: 24; height: min(80dvh, 760px); border: 1px solid var(--so-overlay-line); border-bottom: 0; border-radius: 16px 16px 0 0; box-shadow: var(--so-sheet-shadow); }
+  .so-task-page > .k-work { position: fixed; left: 0; right: 0; bottom: 0; z-index: 26; --origin: 50% 100%; height: min(80dvh, 760px); border: 1px solid var(--so-overlay-line); border-bottom: 0; border-radius: 16px 16px 0 0; box-shadow: var(--so-sheet-shadow); }
 }
 @media (max-width: 760px) {
   .so-task-page > .k-work { top: 0; height: auto; border: 0; border-radius: 0; box-shadow: none; padding-bottom: env(safe-area-inset-bottom); }
@@ -557,6 +558,10 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-work-records + [data-task-thread] { padding-top: 14px; border-top: 1px solid var(--so-line); }
 /* The thread in the panel: the words under the title, past the time column ("Yesterday 08:43" fits it). */
 .k-work .so-thread .so-thread-text { margin: var(--so-space-xs) 0 0 82px; }
+/* The lead's box in the panel is as narrow as a phone's: the modes take the first line, the hint and Send the second. */
+.k-work .so-mode-switch { width: 100%; }
+.k-work .so-mode { flex: 1; }
+.k-work .so-mode span { width: 100%; justify-content: center; }
 
 /* Rebuilt task page (views/task-view.tsx): the approval sheet is its own
  * section under the status card; the secondary terms fold stays flat. */

@@ -119,6 +119,8 @@ export function useConversation(url: string | null, live: boolean, paused = fals
   const [shown, setShown] = useState<Conversation>(() => emptyConversation(url));
   const hold = useRef(paused);
   hold.current = paused;
+  /** Read at the moment of every request, straight from the page: the caller's flag arrives a render later. */
+  const held = (): boolean => hold.current || passwordShown();
   /** Start reading again after a pause (set by the reading effect while it waits on one). */
   const resume = useRef<(() => void) | null>(null);
   useEffect(() => {
@@ -128,13 +130,22 @@ export function useConversation(url: string | null, live: boolean, paused = fals
     if (url === null) return;
     let stopped = false, timer = 0;
     const publish = (next: Conversation) => { current = next; if (!stopped) setShown(next); };
+    // Held: nothing is asked. The caller's pause ending starts the next turn; a password field the page has not told
+    // React about yet (seen here, at the moment of asking) is looked for again shortly, without a request.
+    const wait = (): void => {
+      window.clearTimeout(timer);
+      const again = () => { resume.current = null; window.clearTimeout(timer); if (!stopped) void turn(); };
+      resume.current = again;
+      if (!hold.current) timer = window.setTimeout(again, 500);
+    };
     const turn = async (): Promise<void> => {
-      // Paused: nothing is asked; the pause's end starts the next turn.
-      if (hold.current) { resume.current = () => { resume.current = null; if (!stopped) void turn(); }; return; }
+      if (held()) { wait(); return; }
       let delay = 2_000;
       try {
         for (let page = 0; page < WINDOWS_PER_TURN && !stopped; page += 1) {
-          if (hold.current) { resume.current = () => { resume.current = null; if (!stopped) void turn(); }; return; }
+          // Asked again before every single request: a password popover that opened since the last window stops the
+          // next one here, whether or not React has heard of it yet.
+          if (held()) { wait(); return; }
           const gen = `${current.gen === null ? "" : `&gen=${encodeURIComponent(current.gen)}`}${current.inKey ? "&inkey=1" : ""}${current.keyTail === "" ? "" : `&ktail=${encodeURIComponent(current.keyTail)}`}`;
           const answer = await fetch(`${url}&from=${current.offset}${gen}`, { cache: "no-store", credentials: "same-origin", redirect: "manual" });
           if (stopped) return;

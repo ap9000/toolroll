@@ -4,7 +4,7 @@
  * holds the one action, a step not reached is one grey line. Under the rows, "More about this task". Forms, ceremonies
  * and ledgers stay the server's own HTML (same ids, same page scripts); this page only frames them. A task with no
  * road (cancelled) keeps its status block. */
-import { useContext, useEffect, useRef, useState, type MouseEvent, type ReactNode, type SyntheticEvent } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type SyntheticEvent } from "react";
 import { freshDraft, loadDraft, saveDraft, SteerNote, UnsentNote, type SteerDraft } from "./steer-composer.js";
 import { HEADLINE_TONE, HEADLINES, type Headline } from "../../task-status.js";
 import { FormToken, Passwordless, PostForm } from "../ui/post-form.js";
@@ -16,7 +16,7 @@ import type { StepRow } from "../../workspace-ui.js";
 import { GuardedHtml } from "../guarded-html.js";
 import {
   KApprove, KButton, KChip, KCount, KDisclose, KDocHeader, KDock, KEmpty, KFacts, KHeadlineChip, KInfoLine, KLinkButton, KNote, KOverlay, KRow, KSelect,
-  KNotice, KSlots, KStepRows, KTextarea, KTiming, KWork, KWorkRecords, useConversation, useKMenu, usePasswordAsked, type KStepRowItem,
+  KNotice, KSlots, KStepRows, KTextarea, KTiming, KWork, KWorkRecords, openOverlay, useConversation, useKMenu, usePasswordAsked, type KStepRowItem,
 } from "../kit/index.js";
 import { RETRY_NOTE_LIMIT } from "../../needs-you.js";
 import { TEXT_LIMITS } from "../../text-limits.js";
@@ -35,9 +35,14 @@ function revealTarget(id: string, show: (place: Place) => void, focus = false): 
   // #steering (where a sent note comes back to) is the work panel's message box first, then More about this task's notes.
   const target = id === "" ? null : (id === "steering" ? document.querySelector<HTMLElement>('[data-task-panel="activity"] #steering') : null) ?? document.getElementById(id);
   if (target === null) return false;
+  const inPanel = target.closest("[data-task-panel=\"activity\"]") !== null;
+  // A place on the page itself: a panel lying over the page (a sheet, a phone's full screen) closes first, and the
+  // place takes the focus the panel held.
+  const uncovered = !inPanel && panelCovers();
+  if (!inPanel) show({ page: true });
   const row = target.closest<HTMLElement>("[data-step-row]");
   if (row !== null) show({ row: row.dataset["stepRow"]! });
-  if (target.closest("[data-task-panel=\"activity\"]") !== null) show({ activity: true });
+  if (inPanel) show({ activity: true });
   if (target.closest("[data-task-details]") !== null) window.dispatchEvent(new CustomEvent("so:show-details"));
   // After the tab is shown: open the folds, then scroll (a hidden panel has no layout to scroll to).
   requestAnimationFrame(() => {
@@ -47,8 +52,71 @@ function revealTarget(id: string, show: (place: Place) => void, focus = false): 
     if (target instanceof HTMLDetailsElement) target.open = true;
     target.scrollIntoView({ block: "start", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
     if (focus) target.querySelector<HTMLElement>("input:not([type=hidden]), textarea, select, button")?.focus({ preventScroll: true });
+    else if (uncovered) focusPlace(target);
   });
   return true;
+}
+
+/** Below this width the work panel lies over the page (a sheet; a phone's full screen) instead of beside the rows. */
+const NARROW = "(max-width: 1099px)";
+const isNarrow = (): boolean => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(NARROW).matches;
+/** The work panel is open over the page right now. */
+const panelCovers = (): boolean => isNarrow() && document.querySelector('[data-task-panel="activity"]:not([hidden])') !== null;
+/** Focus a place itself (never a control in it: a stray Enter must not press anything). While the page is still
+ * behind the closing panel it waits a frame. */
+function focusPlace(target: HTMLElement, tries = 4): void {
+  if (target.closest("[inert]") !== null && tries > 0) { requestAnimationFrame(() => focusPlace(target, tries - 1)); return; }
+  if (!target.hasAttribute("tabindex") && !target.matches("a[href], button, input, select, textarea, summary")) target.tabIndex = -1;
+  target.focus({ preventScroll: true });
+}
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(isNarrow);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(NARROW);
+    const changed = () => setNarrow(query.matches);
+    changed();
+    query.addEventListener?.("change", changed);
+    return () => query.removeEventListener?.("change", changed);
+  }, []);
+  return narrow;
+}
+
+/**
+ * Below 1100px the open work panel is a kit overlay (src/design/KIT.md "Overlays"): a scrim, the page behind it inert,
+ * Tab kept inside, Escape and the scrim close it, focus back on what opened it. Nothing under it can be reached or
+ * pressed while it is open. Beside the rows (1100px and wider) it is part of the page and none of this applies.
+ */
+function usePanelOverlay(id: string, open: boolean, trigger: { readonly current: HTMLElement | null }, onClose: () => void): () => boolean {
+  const narrow = useNarrow();
+  const closed = useRef(onClose);
+  closed.current = onClose;
+  const dismiss = useRef<(() => void) | null>(null);
+  useLayoutEffect(() => {
+    const panel = document.getElementById(id);
+    if (panel === null) return;
+    // The kit's close hides the panel itself, and React writes `hidden` only when `open` changes: say it again here
+    // (a window widened with the panel open keeps it open, beside the rows).
+    panel.hidden = !open;
+    if (!open || !narrow) return;
+    let settled = false;
+    // Opened to be read: Close takes the focus, never the message box (a phone's keyboard would cover the work).
+    const first = panel.querySelector<HTMLElement>("[data-close-activity]");
+    first?.setAttribute("autofocus", "");
+    const close = openOverlay(panel, trigger.current, { dim: true, onClose: () => { if (!settled) { settled = true; closed.current(); } } });
+    first?.removeAttribute("autofocus");
+    dismiss.current = close;
+    return () => {
+      dismiss.current = null;
+      // Closed by the page (a link to a place on it, a wider window): not the person dismissing the overlay.
+      if (!settled) { settled = true; close(); }
+      panel.removeAttribute("role");
+      panel.removeAttribute("aria-modal");
+    };
+  }, [id, open, narrow]);
+  /** Close the overlay as the kit does (the page reachable again, the focus back on what opened it, then `onClose`).
+   * False when the panel is not lying over the page. */
+  return () => { const close = dismiss.current; if (close === null) return false; close(); return true; };
 }
 
 /** A link to a fold (#scope, #holds, #cancel-task) opens what holds it, on arrival and on in-page links alike. */
@@ -578,8 +646,9 @@ export function stepsOf(road: readonly JourneyStep[]): StepItem[] {
   });
 }
 
-/** Where a link or a go-to lands: a step row (opened), or the Activity panel. */
-type Place = { row: string } | { activity: true };
+/** Where a link or a go-to lands: a step row (opened), the Activity panel, or the page itself (a place outside the
+ * panel: a panel lying over the page closes so the place shows). */
+type Place = { row: string } | { activity: true } | { page: true };
 /** The address's tab (`tab=`) as the row it opens: Result is Ready, Attempts is Build, Plan is the step happening now;
  * Activity is the panel. */
 const rowOfTab = (tab: string | null | undefined): string | null => tab === "result" ? "ready" : tab === "attempts" ? "build" : null;
@@ -603,8 +672,10 @@ function Unsent({ view, csrf }: { view: BrowserTaskView; csrf: string }) {
   return <UnsentNote key={view.steerRecent!.join(",")} runs={view.steerRecent!.filter(run => !running.has(run))} action={`/t/${encodeURIComponent(view.id)}/steer`} back="task" />;
 }
 
-/** A password field in server HTML: such a card never renders inside the work panel. */
-const ASKS_PASSWORD = /<input\b[^>]*[\s"']type\s*=\s*["']?password/i;
+/** A control in server HTML (a form, a field, a button): such a card never renders inside the work panel, whether or
+ * not it asks for a password. What takes a decision is on the page, in its step's row (the server sends those as lead
+ * blocks, and the thread only links to them); this is the belt for any card that still carries one. */
+const HAS_CONTROL = /<(?:form|input|button|select|textarea)\b/i;
 
 /** Where the work panel stays open or closed, for this viewer (a convenience: the page works without it). */
 const WORK_SETTING = "toolroll.task.work";
@@ -623,7 +694,10 @@ function keepWorkOpen(open: boolean): void {
  * and the message box at the foot. The box follows what the attempt takes (steer-capabilities.ts): a note now, a note
  * for its mailbox, or the capability's own sentence when it takes none; with no live attempt it is the task's
  * conversation with the lead. A draft written for an attempt stays that attempt's (an unsent note when it ends), never
- * the lead's. Nothing here approves anything, and no ceremony renders in it. Hidden, never unmounted.
+ * the lead's; it sits at the end of what scrolls, so a long one never pushes the box off the screen. None of the
+ * page's decisions renders here (the approval, a plan change, an open question: each is in its step's row and the
+ * thread links there), no ceremony does, and the box approves nothing. What the lead proposes in the conversation keeps
+ * its own confirm, as in every chat. Hidden, never unmounted.
  */
 function WorkPanel({ view, chat, csrf, open, onClose, onClick }: { view: BrowserTaskView; chat: ThreadChat | null; csrf: string; open: boolean; onClose: () => void;
   /** The page's in-page link handling (a link to this page's own result or step opens it in place). */
@@ -638,7 +712,8 @@ function WorkPanel({ view, chat, csrf, open, onClose, onClick }: { view: Browser
   // Notes this run's records already show are not repeated in the thread under them.
   const shownNotes = new Set(conversation.notes.map(note => `steer-${note.id}`));
   const thread = (view.thread ?? []).filter(item => !shownNotes.has(item.key))
-    .map(item => ASKS_PASSWORD.test(item.html) || ASKS_PASSWORD.test(item.more?.html ?? "") ? { ...item, html: "", more: null, link: item.link ?? { label: "Open it on the task page", href: `/t/${encodeURIComponent(view.id)}` } } : item);
+    .map(item => HAS_CONTROL.test(item.html) || HAS_CONTROL.test(item.more?.html ?? "")
+      ? { ...item, html: "", more: null, link: item.link ?? { label: "Open it on the task page", href: `/t/${encodeURIComponent(view.id)}${item.kind === "result" ? "?tab=result" : ""}` } } : item);
   const off = work !== null && (work.transcript === null || conversation.state === "off" || (conversation.final && conversation.items.length === 0));
   const pause = steering?.controls.pause != null && steering.controls.pause.state === null ? steering.controls.pause : null;
   const box = steering !== null
@@ -654,12 +729,13 @@ function WorkPanel({ view, chat, csrf, open, onClose, onClick }: { view: Browser
   const who = work === null ? "No build yet" : `${work.agent} · ${work.live ? "working" : "finished"}`;
   return <KWork id="task-activity" title="Activity" who={who} live={work?.live === true} onClose={onClose} closeLabel="Close activity" closeData={{ "data-close-activity": "" }} onClick={onClick}
     hidden={!open} data-task-panel="activity" data-work-state={work === null ? "none" : asked ? "paused" : off ? "off" : steering === null ? (work.live ? "watching" : "ended") : steering.controls.send ?? "no-notes"}
-    foot={<>{open && <Unsent view={view} csrf={csrf} />}{box}</>}>
+    foot={box}>
     {work !== null && <section aria-label="The agent's work" className="so-work-records" data-work-run={work.run}>
       <KWorkRecords conversation={conversation} live={work.live} paused={asked} older={count => `${count} earlier ${count === 1 ? "note is" : "notes are"} in the task's history below.`} />
       {off && !asked && view.activity != null && <ActivityLine activity={view.activity} />}
     </section>}
     <Thread items={thread} chat={chat} chatHref={null} footer={false} />
+    {open && <Unsent view={view} csrf={csrf} />}
   </KWork>;
 }
 
@@ -698,20 +774,31 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       history.replaceState(history.state, "", url.pathname + url.search + url.hash);
     } catch { /* the address is a convenience; the place is shown either way */ }
   };
+  const activityNow = useRef(activity);
+  activityNow.current = activity;
   const show = (place: Place) => {
     if ("activity" in place) { setActivity(true); setTab("activity"); return; }
+    if ("page" in place) {
+      // Beside the rows the panel stays; lying over the page it closes, so what was asked for shows.
+      if (!activityNow.current || !isNarrow()) return;
+      setActivity(false);
+      try { if (new URL(window.location.href).searchParams.get("tab") === "activity") setTab(null); } catch { /* the address is a convenience */ }
+      return;
+    }
     setOpened(previous => previous.has(place.row) ? previous : new Set([...previous, place.row]));
   };
   const toggle = (key: string) => setOpened(previous => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next; });
   const activityButton = useRef<HTMLButtonElement>(null);
-  const closeActivity = () => { setActivity(false); setTab(null); if (document.activeElement?.closest("[data-task-panel]")) activityButton.current?.focus({ preventScroll: true }); };
-  /** Open the panel. Beside the page it is simply there; as a sheet or full screen it takes the focus. */
-  const openActivity = () => {
-    show({ activity: true });
-    requestAnimationFrame(() => {
-      if (window.matchMedia("(max-width: 1099px)").matches) document.querySelector<HTMLElement>("[data-task-panel] [data-close-activity]")?.focus({ preventScroll: true });
-    });
+  const closePanel = () => { setActivity(false); setTab(null); };
+  const dismissOverlay = usePanelOverlay("task-activity", activity, activityButton, closePanel);
+  const closeActivity = () => {
+    // Lying over the page, the kit closes it and hands the focus back; beside the rows it is this page's own.
+    if (dismissOverlay()) return;
+    closePanel();
+    if (document.activeElement?.closest("[data-task-panel]")) activityButton.current?.focus({ preventScroll: true });
   };
+  /** Open the panel. Beside the page it is simply there; as a sheet or full screen it is an overlay and takes the focus. */
+  const openActivity = () => show({ activity: true });
   useRevealHashTarget(show);
   useEffect(() => {
     const open = () => setDetails(detailsButton.current ?? document.body);
@@ -729,6 +816,23 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     if (!(anchor instanceof HTMLAnchorElement)) return;
     const to = new URL(anchor.href, window.location.href), here = new URL(window.location.href);
     const wanted = to.searchParams.get("tab");
+    // A link inside the panel to a place on this page (#plan-revisions, #task-questions; a card kept out of the panel):
+    // shown here and now, every time it is clicked (a second click changes no address, so no hashchange would come).
+    const inside = anchor.closest("[data-task-panel]") !== null;
+    if (inside && to.origin === here.origin && to.pathname === here.pathname && to.hash !== "" && to.search === here.search) {
+      if (!revealTarget(decodeURIComponent(to.hash.slice(1)), show)) return;
+      event.preventDefault();
+      try { const now = new URL(window.location.href); history.replaceState(history.state, "", now.pathname + now.search + to.hash); } catch { /* the place is shown either way */ }
+      return;
+    }
+    if (inside && to.origin === here.origin && to.pathname === here.pathname && to.hash === "" && wanted === null && panelCovers()) {
+      // "Open it on the task page": the page is this one, under the panel.
+      event.preventDefault();
+      const place = document.querySelector<HTMLElement>('[data-step-row][aria-current="step"], [data-step-row]') ?? document.querySelector<HTMLElement>("[data-task-page] .k-doc");
+      show({ page: true });
+      if (place !== null) requestAnimationFrame(() => { place.scrollIntoView({ block: "start" }); focusPlace(place); });
+      return;
+    }
     if (to.origin !== here.origin || to.pathname !== here.pathname || (wanted !== "result" && wanted !== "plan" && wanted !== "activity" && wanted !== "attempts")) return;
     if ((to.searchParams.get("version") ?? "") !== (here.searchParams.get("version") ?? "")) return;
     const run = to.searchParams.get("run");
@@ -738,7 +842,14 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     if (wanted !== "activity" && rows !== null && (row === null || !rows.some(one => one.key === row && one.opens))) return;
     event.preventDefault();
     if (wanted === "activity") openActivity();
-    else if (row !== null) { show({ row }); setTab(wanted === "plan" ? null : wanted); scrollTo(`[data-step-row="${row}"]`); }
+    else if (row !== null) {
+      // From inside a panel lying over the page: it closes first, and the row takes the focus.
+      const covered = inside && panelCovers();
+      if (inside) show({ page: true });
+      show({ row }); setTab(wanted === "plan" ? null : wanted); scrollTo(`[data-step-row="${row}"]`);
+      const place = covered ? document.querySelector<HTMLElement>(`[data-step-row="${row}"]`) : null;
+      if (place !== null) requestAnimationFrame(() => focusPlace(place));
+    }
     if (to.hash !== "") revealTarget(decodeURIComponent(to.hash.slice(1)), show);
   };
   const editPlan = approve === null ? null : () => { show({ row: "approve" }); revealTarget("plan-editor", show, true); };
@@ -753,7 +864,11 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   // Approval, the build's control and its live attempt (files changing) to Build; the rest stay under the rows.
   const stuckKey = rows?.find(row => row.state === "stuck")?.key ?? currentKey;
   // A refusal while the approval form is on the page sits with that form, wherever the road stands.
-  const ATTACHED: Readonly<Record<string, string | null>> = { problem: approve !== null ? "approve" : stuckKey, "pull-request": "ready", "needs-scope": "approve", control: "build", attempt: "build" };
+  // What a person decides sits in the step that waits on it, which is open: the questions, and a plan change that waits
+  // for its yes or no. Plan changes already decided are the build's history.
+  const decides = view.lead.some(block => block.key === "plan-revisions" && HAS_CONTROL.test(block.html));
+  const ATTACHED: Readonly<Record<string, string | null>> = { problem: approve !== null ? "approve" : stuckKey, "pull-request": "ready", "needs-scope": "approve", control: "build", attempt: "build",
+    questions: stuckKey, "plan-revisions": decides ? stuckKey : "build" };
   const leadOf = (key: string) => rows === null ? [] : view.lead.filter(block => ATTACHED[block.key] === key && rows.some(row => row.key === key && row.opens));
   const unattached = view.lead.filter(block => rows === null || !rows.some(row => row.key === ATTACHED[block.key] && row.opens));
   const leadCards = (blocks: readonly { key: string; html: string }[]) => blocks.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />);
@@ -814,8 +929,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       at: row.at, when: row.at === null ? "" : threadWhen(row.at), body: row.opens || here ? bodyOf(row) : undefined,
       toggle: row.opens && !here && !(row.key === "approve" && approve !== null), open: here || opened.has(row.key) || (row.key === "approve" && approve !== null) };
   });
-  return <div data-kit-page data-task-page={view.id} className={cn("so-task-page", activity && "so-task-page--work")}
-    onKeyDown={event => { if (event.key === "Escape" && activity && (event.target as HTMLElement).closest?.("[data-task-panel]") && window.matchMedia("(max-width: 1099px)").matches) closeActivity(); }}>
+  return <div data-kit-page data-task-page={view.id} className={cn("so-task-page", activity && "so-task-page--work")}>
     <div className="k-doc" onClick={inPage}>
       <KDocHeader back={["/tasks", "Tasks"]} title={view.title} meta={meta}
         right={<nav className="k-acts so-task-tools" aria-label="Task tools">
