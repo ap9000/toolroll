@@ -343,7 +343,7 @@ describe("after the attempt ends", () => {
 });
 
 test("an answer that does not say whether a key block is open keeps the last answer's word", async () => {
-  const { applyWindow, emptyConversation } = await import("./views/agent-conversation.js");
+  const { applyWindow, emptyConversation } = await import("./kit/k-work.js");
   const inside = applyWindow(emptyConversation("/r/7"), { records: [], nextOffset: 10, gen: "g", inKey: true, final: false, notes: [], older: 0 });
   expect(applyWindow(inside, { error: "off", notes: [], older: 0 }).inKey).toBe(true);
   expect(applyWindow(inside, { records: [], nextOffset: 10, gen: "g", final: false }).inKey).toBe(true);
@@ -351,14 +351,14 @@ test("an answer that does not say whether a key block is open keeps the last ans
 });
 
 test("a key tail is carried only in the shape this code produces", async () => {
-  const { applyWindow, emptyConversation } = await import("./views/agent-conversation.js");
+  const { applyWindow, emptyConversation } = await import("./kit/k-work.js");
   const base = emptyConversation("/r/7");
   expect(applyWindow(base, { records: [], nextOffset: 0, keyTail: "TOPSECRET" }).keyTail).toBe("");
   expect(applyWindow(base, { records: [], nextOffset: 0, keyTail: "-----BE|--||C" }).keyTail).toBe("-----BE|--||C");
 });
 
 test("past the kept limit, every row keeps its own identity: no duplicates as older rows drop", async () => {
-  const { applyWindow, emptyConversation, KEEP_ITEMS } = await import("./views/agent-conversation.js");
+  const { applyWindow, emptyConversation, KEEP_ITEMS } = await import("./kit/k-work.js");
   const at = new Date(NOW).toISOString();
   let conversation = emptyConversation("/r/7");
   for (let window = 0; window < 4; window += 1) {

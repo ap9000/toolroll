@@ -294,6 +294,44 @@ button.k-steprow-head[aria-expanded="true"]::after { transform: rotate(45deg); }
   button.k-steprow-head:hover .k-steprow-say { color: var(--so-ink); }
 }
 
+/* ---------- The work: one agent's work as a chat ---------- */
+.k-work { box-sizing: border-box; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--so-paper); color: var(--so-ink); }
+.k-work[hidden] { display: none; }
+.k-work-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 10px 12px 18px; border-bottom: 1px solid var(--so-line); }
+.k-work-title { display: grid; gap: 1px; min-width: 0; }
+.k-work-title h2 { margin: 0; font: 600 14px/1.4 var(--so-font-sans); }
+.k-work-who { display: flex; align-items: center; gap: 6px; min-width: 0; margin: 0; font-size: 12px; line-height: 1.4; color: var(--so-muted); }
+.k-work-who > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-work-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--so-live); }
+.k-work-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; align-content: start; gap: 16px; padding: 18px; }
+.k-work-foot { flex: none; display: grid; gap: 8px; padding: 8px 14px 14px; }
+.k-work-foot:empty { display: none; }
+.k-work-conv { display: grid; gap: var(--so-space-sm); min-width: 0; }
+.k-work-conv-h { display: flex; justify-content: flex-end; }
+.k-work-conv .k-work-tx { max-height: 60vh; overflow-y: auto; overscroll-behavior: contain; }
+.k-work-tx { min-width: 0; display: grid; gap: 12px; }
+.k-work-empty { margin: 0; padding: var(--so-space-md) 0; font-size: 13px; color: var(--so-muted); }
+.k-work-lines { display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; font-size: 14px; line-height: 1.6; }
+.k-work-say { white-space: pre-wrap; overflow-wrap: anywhere; }
+.k-work-mark { font-size: 12px; color: var(--so-muted); }
+.k-work-steps { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 13px; line-height: 1.5; color: var(--so-muted); }
+.k-work-step-l { display: flex; align-items: center; gap: 10px; min-height: 26px; min-width: 0; }
+.k-work-step.running .k-work-step-l { color: var(--so-ink); }
+.k-work-step-t { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.k-work-step-t .k-mono { font-size: 12px; color: var(--so-ink); }
+.k-work-step-s { flex: none; display: inline-flex; align-items: center; gap: var(--so-space-xs); font-size: 12px; color: var(--so-muted); }
+.k-work-step-s.ok { color: var(--so-done-ink); }
+.k-work-step-s.failed { color: var(--so-fail-ink); }
+.k-work-step-s.running { color: var(--so-live-ink); }
+.k-work-out { max-height: 288px; overflow: auto; margin: 4px 0 6px; padding: var(--so-space-sm) 10px; border-radius: var(--so-radius-md); background: var(--so-code-bg); color: var(--so-ink); font: 12px/1.5 var(--so-font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.k-work-note { display: grid; justify-items: end; gap: 2px; }
+.k-work-bubble { max-width: 82%; margin: 0; padding: 8px 14px; border-radius: 18px; background: var(--so-user-bubble); white-space: pre-wrap; overflow-wrap: anywhere; }
+.k-work-note-s { margin: 0; font-size: 12px; color: var(--so-muted); }
+.k-work-term { display: grid; gap: 2px; margin: 0; padding: 10px var(--so-space-md); list-style: none; border-radius: var(--so-radius-card); background: var(--so-code-bg); color: var(--so-ink); font: 12px/1.45 var(--so-font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.k-work-term-note { color: var(--so-live-ink); }
+.k-work-term-out { display: block; padding-left: var(--so-space-md); }
+.k-work-term-failed { color: var(--so-fail-ink); }
+
 /* ---------- Approval: four fixed slots in every state ---------- */
 .k-slots { border: 1px solid var(--so-line); border-radius: var(--so-radius-card); padding: 16px 18px; display: grid; gap: 10px; background: var(--so-paper); transition: border-color var(--m-slow) var(--m-ease); }
 .k-slots.wait { border-color: var(--so-needs); }

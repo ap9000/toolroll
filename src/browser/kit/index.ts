@@ -34,4 +34,5 @@ export * from "./k-not-found.js";
 export * from "./k-settings-shell.js";
 export * from "./k-dock.js";
 export * from "./k-composer.js";
+export * from "./k-work.js";
 export { composerError, composerSync, composerWorking, closeAll, installKitBehavior, openMenu, openOverlay, releaseRemoved } from "./behavior.js";
