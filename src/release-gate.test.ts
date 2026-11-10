@@ -73,6 +73,8 @@ describe("toolroll release --release-gate", () => {
     ["a released journal with the pause still held", "after-swap", p => { p.journal["phase"] = "released"; p.writeJournal(); }],
     ["a pre-swap phase that records a stop", "conflict", p => { p.journal["stoppingService"] = { supervisor: fakePid(1), children: [fakePid(2)] }; p.writeJournal(); }],
     ["a pre-swap phase that records a migration", "conflict", p => { p.journal["migration"] = { from: 1, to: 2 }; p.writeJournal(); }],
+    ["a pre-swap phase that records the launchd job the swap installs", "conflict", p => { p.journal["launchd"] = { uid: 501, label: "com.toolroll.browser", plist: "/elsewhere/com.toolroll.browser.plist", nextPlistSha256: "a".repeat(64) }; p.writeJournal(); }],
+    ["a pre-swap phase that records a stop of the new service", "conflict", p => { p.journal["newServiceStop"] = { state: "stopped", pids: [{ pid: fakePid(5), start: "Mon Nov 9 10:00:00 2026" }] }; p.writeJournal(); }],
     ["a staged new service definition", "conflict", p => { writeFileSync(join(p.stage, "browser.next.plist"), ""); }],
     ["a migrated database", "conflict", p => { p.journal["schema"] = SCHEMA_VERSION - 1; p.writeJournal(); }],
     ["another database", "conflict", p => { p.journal["database"] = "/elsewhere/orders.db"; p.writeJournal(); }],

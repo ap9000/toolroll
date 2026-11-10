@@ -71,7 +71,7 @@ test("the running service is told by exact runtime and exact database, never a p
   expect(commandKind("", scope)).toBe(null);
   // service() asks this, and holds no looser test of its own.
   const browser = readFileSync(join(import.meta.dirname, "..", "scripts", "deploy-browser.mjs"), "utf8");
-  const body = browser.slice(browser.indexOf("function service(dist) {"), browser.indexOf("const sleep = ms"));
+  const body = browser.slice(browser.indexOf("function service(dist, run) {"), browser.indexOf("const sleep = ms"));
   expect(body).toContain('if (commandKind(command, { dist, database }) !== "supervisor") return null;');
   expect(body).toContain('const up = children.filter((_, at) => commandKind(commands[at], { dist, database }) === "up");');
   expect(body).not.toMatch(/includes\(`\$\{dist\}\/(?:cli|controller-service)\.js/);

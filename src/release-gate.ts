@@ -30,7 +30,7 @@ import type { Database } from "./store.js";
 /** The journal phases a deployment passes before it stops the old service (deploy-phase.ts, the one table). */
 export { BEFORE_SWAP };
 /** Journal fields that only the swap and later phases write. */
-const SWAP_FIELDS = ["stoppingService", "codingBackupBeforeSwap", "migration", "newService", "deployedAt"] as const;
+const SWAP_FIELDS = ["stoppingService", "codingBackupBeforeSwap", "migration", "newService", "deployedAt", "launchd", "newServiceStop"] as const;
 const GATE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 
 export type GateReleaseWorld = {
