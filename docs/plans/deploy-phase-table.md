@@ -1,16 +1,18 @@
 # One table for deployment phases
 
-Status: plan v1, 2026-11-09. Branch `deploy-phase-table`. First of the state-machine fixes Alex chose on 2026-11-09
+Status: plan v2, 2026-11-09. Branch `deploy-phase-table`. First of the state-machine fixes Alex chose on 2026-11-09
 (order: deployment phase, how a run ended, incoming chat message, outgoing chat part, task state).
+v1 went to Codex (round 1): NO-GO, 8 findings. v2 folds them in; the ledger is at the end. One Codex round is
+left, kept for the build.
 
 ## Goal
 
-A deployment journal's `phase` is one of 17 words. Today seven files each keep their own list of some of those
-words, and the lists disagree at `starting`. After this change one table names every phase and the one action a
-stopped deployment at that phase calls for; every file reads the table; a test fails when a phase has no action or
-a script writes a word the table does not know.
+A deployment journal's `phase` is one of 17 words. Today nine places each keep their own list of some of those
+words, and the lists disagree at `starting`. After this change one data file names every phase and the one action a
+stopped deployment at that phase calls for; every reader uses it; a journal write of an unknown word is refused; a
+test with its own hand-written expectations fails when the file and the expectations part.
 
-Nothing about what a deployment does in a normal, uninterrupted run changes.
+Nothing about what a deployment does in a normal, uninterrupted run changes. `swap()` is not edited.
 
 ## Today
 
@@ -24,10 +26,19 @@ Nothing about what a deployment does in a normal, uninterrupted run changes.
 | `src/deploy-rescue.ts:25` | `FINISHED` | released, deployed |
 | `src/deploy-rescue.ts:55,56` | inline | stopping, stopped, migrating, migrated, start-failed, backup-restored |
 | `src/release-adapters.ts:75` | `FINISHES_FORWARD` | started, healthy |
+| `src/release-adapters.ts:556` | inline (`deploymentIdle`) | preparing, released, deployed |
 | `scripts/deploy-phases.mjs:470` | inline (finish) | started, healthy |
 | `scripts/deploy-phases.mjs:227,228` | inline | preparing, released, deployed |
 | `src/release-next.ts:68` | `deployActionOf` | built from BEFORE_SWAP, FORWARD_ONLY, two literals; any other string is "roll-back" |
-| `src/staged-runtimes.ts:66` | inline | deployed |
+| `src/staged-runtimes.ts:66` | inline | deployed (only) |
+| `src/checkout-cleanup.ts:85` | inline | deployed (only) |
+
+Writers: `save(r, "<word>")` and `save(r, r.phase)` in `scripts/deploy-phases.mjs`, `save(r, "rehearsed")` in
+`scripts/deploy-browser.mjs`, the first journal object (`phase: "preparing"`, deploy-phases.mjs:332), `mark("<word>")`
+in `scripts/deploy-recovery.mjs`, and `phase: "released"` in `src/release-gate.ts:163`.
+
+The command words of `--phase` (stage, prepare, rehearse, swap, finish, recover) are a different vocabulary and are
+not part of this table.
 
 ### The gap at `starting`
 
@@ -43,127 +54,184 @@ service; it journals `started` or `start-failed` after. A deployment killed insi
   command that just did the above.
 - `finish()` itself refuses: "Unexpected finish phase: starting."
 
-So every tool points at another one and new work stays paused until someone edits the journal by hand. (Read from
-the code; not reproduced on a live service.)
+No supported command resolves it. (Read from the code and confirmed by Codex's trace; not reproduced live.)
 
 A second, smaller hole: `deployActionOf` answers "roll-back" for any string it does not know.
 
 ## The table
 
-One row per phase, in journal order. `action` is what a stopped deployment at that phase calls for.
+One row per phase, in journal order. `action` is what the release coordinator does with a stopped deployment there.
 
-| Phase | Action | Detail |
+| Phase | Action | Flags |
 | --- | --- | --- |
-| preparing | lift-pause | pause may not be in place yet; resumable under the same id |
-| admission-paused | lift-pause | |
-| frozen | lift-pause | |
-| backup-verified | lift-pause | |
-| rehearsed | lift-pause | |
-| stopping | roll-back | only once the old processes are proved gone |
-| stopped | roll-back | start the previous service |
-| migrating | roll-back | backup first unless the previous runtime reads the result |
-| migrated | roll-back | same |
-| starting | forward | **new:** wait for the new service again; see below |
+| preparing | lift-pause | beforeSwap |
+| admission-paused | lift-pause | beforeSwap, pausedBeforeSwap |
+| frozen | lift-pause | beforeSwap, pausedBeforeSwap |
+| backup-verified | lift-pause | beforeSwap, pausedBeforeSwap |
+| rehearsed | lift-pause | beforeSwap, pausedBeforeSwap |
+| stopping | roll-back | |
+| stopped | roll-back | restartable |
+| migrating | roll-back | migrationStarted, restartable |
+| migrated | roll-back | migrationStarted, restartable |
+| starting | forward | |
 | started | forward | |
 | healthy | forward | |
-| start-failed | roll-back | backup first unless compatible |
-| backup-restored | roll-back | start the previous service |
-| restored | lift-pause | previous service already runs; only the pause is left |
+| start-failed | roll-back | migrationStarted, restartable |
+| backup-restored | roll-back | restartable |
+| restored | roll-back | (the roll-back road only lifts the pause here; same as today) |
 | released | none | |
-| deployed | none | |
+| deployed | none | deployed |
 
-Each row also carries the flags today's lists encode, so no list is kept by hand:
-`beforeSwap` (BEFORE_SWAP), `pausedBeforeSwap`, `migrationStarted`, `restartable`, `finishesForward`, `finished`.
+- Actions are exactly today's `deployActionOf` for all 17 words (`restored` stays "roll-back"; `starting` was
+  already "forward"). The only change in the lookup: a string that is not in the table is "refuse", not "roll-back".
+- Two separate questions, never one flag: **needs no recovery** (action "none": released, deployed) and
+  **deployed** (only `deployed`). `staged-runtimes.ts` and `checkout-cleanup.ts` keep asking the second, so a
+  `released` stage keeps its seven-day retention and is never taken as the installed build.
+- `deploymentIdle`'s list (preparing, released, deployed) becomes a named helper `stoppedWhereNothingChanged`.
 
-`deployActionOf(word)` becomes a lookup: a non-string or a word that is not in the table is "refuse".
+## Where the table lives: one authored file
 
-Note on `restored`: today `deployActionOf("restored")` is "roll-back", and the roll-back road (rescue → recover
-script) is what lifts the pause there. The table keeps that road for `restored` (action stays "roll-back" in code if
-changing it would alter which function runs); the row above describes the effect. The builder keeps today's road
-and records the choice in the table's comment. No behaviour change at `restored`.
+`src/deploy-phase-data.json`: the 17 rows, nothing else.
 
-## Where the table lives
+- TypeScript: `src/deploy-phase.ts` imports it (`with { type: "json" }`, `resolveJsonModule` on; `tsc` copies it
+  into `dist`), checks its shape once at load, and exports the typed helpers (`DeployPhase`, `DeployAction`,
+  `deployActionOf`, `isDeployPhase`, the derived lists). Readers: `release-gate.ts`, `deploy-rescue.ts`,
+  `release-next.ts`, `release-adapters.ts`, `staged-runtimes.ts`, `checkout-cleanup.ts`.
+- Scripts: `scripts/deploy-phase-table.mjs` reads the same file from the source tree
+  (`new URL("../src/deploy-phase-data.json", import.meta.url)`), runs the same shape check, and exports the same
+  helpers. The deploy scripts always run from a full extraction of a commit or from a checkout, so `src/` is beside
+  `scripts/`; no built runtime is needed, which recovery requires.
+- The old exported names (`BEFORE_SWAP`, `FORWARD_ONLY`, `FINISHED`, `PAUSED_BEFORE_SWAP`, `MIGRATION_STARTED`) stay,
+  derived from the table, so nothing else has to change.
 
-The deploy scripts run from the candidate's checkout as plain `.mjs`; `src/` compiles to `dist/` and cannot import
-from `scripts/` (`tsconfig` includes only `src/**`, and the scripts are not shipped in `dist`). So:
+The two small helper files are code, not data; a test runs both over every word and compares.
 
-- `scripts/deploy-phase-table.mjs`: the table and its helpers, imported by `deploy-recovery.mjs` and
-  `deploy-phases.mjs`.
-- `src/deploy-phase.ts`: the same table, typed (`DeployPhase`, `DeployAction`), imported by `release-gate.ts`,
-  `deploy-rescue.ts`, `release-next.ts`, `release-adapters.ts`, `staged-runtimes.ts`.
-- `src/deploy-phase.test.ts` imports both and fails unless they are equal row for row. It also:
-  - fails if any phase has no action;
-  - scans `scripts/deploy-*.mjs` for `save(r, "<word>")` and `mark("<word>")` and fails on a word not in the table,
-    and on a table phase that no script writes;
-  - checks each old exported list name still equals what the table derives (`BEFORE_SWAP`, `FORWARD_ONLY`,
-    `PAUSED_BEFORE_SWAP`, `MIGRATION_STARTED` stay exported, derived, so nothing else needs to change).
+## Refusing unknown words at the write
 
-Two copies kept equal by a test is weaker than one file. It is the price of scripts that must run without a build.
-Alternative considered: the scripts load the table from the staged runtime's `dist` (as they already load
-`store.js`). Rejected: recovery runs "the recorded commit's own script" and must work when the staged runtime is
-missing or damaged.
+- `save(r, phase)` in `deploy-phases.mjs` and the recovery `mark(phase)` refuse a word that is not in the table,
+  before anything is written.
+- `release-gate.ts` writes `released` through the typed constant.
 
 ## Closing the gap at `starting`
 
-In `scripts/deploy-phases.mjs`:
+The resumed forward step only looks. It never stops, boots out or restores anything.
 
-1. Move the wait-and-decide block of `swap()` (after `save(r, "starting")`: wait up to `HEALTH_WAIT_MS` for
-   `service(nextDist)`, then either the failed-start teardown ending in `save(r, "start-failed")` and the refusal,
-   or `r.newService = live; save(r, "started")` and the coding backup) into one function `awaitStart(r)`.
-   `swap()` calls it. No statement in it changes.
-2. `finish()` accepts `starting` as well: at `starting` it calls `awaitStart(loadPhase("starting"))` first. If the
-   new service is up, the journal moves to `started` and finish goes on as today. If it is not, `awaitStart` does
-   the same teardown a fresh swap does and journals `start-failed`; the existing recovery then rolls back (backup
-   first when needed) exactly as it does for a start that failed inside `swap()`.
-3. `src/release-adapters.ts` `recoverDeploy` finishes forward at every phase whose table action is "forward"
-   (so `starting` too) instead of its own two-word list.
+1. **`finish()` accepts `starting`.** At `starting` it first waits up to `HEALTH_WAIT_MS` for the service to run
+   from the new runtime (`service(nextDist)`), the same probe `swap()` uses.
+   - Up: it proves, read-only, that the live database is at the journal's new schema and that this deployment still
+     owns the pause; then `r.newService = live; save(r, "started")` and finish goes on exactly as it does from
+     `started` today.
+   - Not up, or a proof fails: it refuses. The journal stays at `starting`; nothing was stopped or changed.
+2. **`--phase recover` handles `starting` by observation only.** `recoverFailedDeployment` gains one arm: at
+   `starting`, when this deployment still owns the pause (`effects.ownsPause()`) and `effects.stopProved()` says the
+   service label is not loaded and no process of the previous or the new runtime remains, it goes on as from
+   `start-failed` (backup first unless the previous runtime reads the result, then the previous service, then the
+   pause). Otherwise it returns null as today and nothing is touched. Recovery still never stops a service: "a
+   historical journal cannot authorize stopping a current service" holds.
+3. **Recovery only restores from the original context.** `--phase finish` reads the installed service definition,
+   which after the swap names the *new* runtime; a restore from that process would start the candidate again and call
+   it the previous service. `recoverJournal`'s `restoreBackup` and `restoreService` now refuse, before touching
+   anything, unless this process's installed runtime is the journal's `priorRuntime`. Today that can never fire (a
+   finish process only sees `started`/`healthy`/`deployed`, where recovery does nothing); it guards the new road.
+   The refusal names the command that does run from the saved definition (`--phase recover`).
+4. **`recoverDeploy` (release adapter)** at a phase whose action is "forward": prove the candidate, run
+   `--phase finish`. If that fails and the journal is still at `starting`, run `--phase recover` with the recorded
+   commit; its answer is the result. At `started`/`healthy` a failed finish stops as today.
 
-`awaitStart` after a kill is safe to run again because every step in it either observes (`service`, `launchctl
-print`, process tree) or is the same teardown the first attempt would have run; nothing in it assumes it is the
-process that ran `bootstrap`. The failed-start branch's `requireTrue(launch.status !== 0 || failedPid > 1, …)`
-still refuses when the service's identity can't be read, leaving the journal at `starting` with a message that now
-names the real next step.
+What a person sees after a release was killed at `starting` and they rerun `toolroll release <branch>`:
 
-Messages: `rescueDeployment`'s refusal at a forward phase keeps its words (they become true). `recoverJournal`'s
-"stopped at <phase>" line is unchanged.
+- New service healthy: the deployment finishes and the release carries on.
+- New service gone (label not loaded, no processes): the previous service is put back and the pause lifted.
+- New service loaded but not healthy within the wait (for example, it keeps crashing under launchd): nothing is
+  stopped. The release stops and names the one manual step: stop the service (`launchctl bootout gui/<uid>/<label>`),
+  then rerun. **This case stays manual on purpose in this arc.** Letting recovery stop the new service itself needs
+  a proof that the loaded service is the one this deployment started; that is a separate, security-reviewed change
+  and a decision for Alex.
+
+Limits, stated in the PR:
+
+- The fix lives in the candidate's own scripts. A deployment whose candidate predates it still ends where it does
+  today (its `finish` refuses `starting`, the adapter then runs its `recover`, which returns null). Newer scripts
+  are never substituted for an approved commit's own.
+- With an older installed coordinator and a new candidate, `starting` still goes to `--phase recover`, which now
+  rolls back when the new service is proved gone.
 
 ## What must not change
 
-- The order of journal writes in an uninterrupted deployment and every proof before each write.
+- `swap()` and every proof and journal write in an uninterrupted deployment.
 - What recovery does at every phase other than `starting`.
-- A historical journal never authorizes stopping a current service (`stopProved` asked only at `stopping`).
+- A historical journal never authorizes stopping a service.
 - The pause is lifted only by its owner (`updateGateOwned`).
 - No new way to move a journal backwards.
+- Which stages `staged-runtimes.ts` keeps and which build `checkout-cleanup.ts` takes as deployed.
 
 ## Safety self-review (AGENTS.md), to be re-run on the build
 
-- Check and write together: `awaitStart` re-observes the service before each journal write; `finish()` re-reads the
-  journal under the deployment lock (`checkpoint()`), as today.
-- Never widen implicitly: an unknown phase word now refuses instead of rolling back.
-- Don't let input choose what's trusted: the journal's phase picks a row of a fixed table; it cannot add an action.
+- Check and write together: the resume proves service, schema and pause owner immediately before `save(r,
+  "started")`; the recover arm proves pause owner and stop immediately before the first restore; restores re-prove
+  the stop as today.
+- Never widen implicitly: unknown word refuses; the new recover arm requires more than the existing arms
+  (pause ownership), not less.
+- Don't let input choose what's trusted: a journal phase picks a row of a fixed file; it cannot add an action. The
+  restore context comes from the saved definition, checked against the journal, never from whichever plist is
+  installed.
 - Approvals: finishing forward at `starting` proves the candidate first (`proveCandidate`), as at `started`.
-- Tests never touch the person's real setup: the new tests use the existing fake worlds (no launchctl, no real
-  service label, no real state folder).
-- Prove it against the real thing: a real deploy killed at `starting` is not something the suite can do; the
-  release check's own deployment is the only live proof, and it does not stop at `starting`. Say so in the PR.
+- Credentials: none touched.
+- Tests never touch the person's real setup: fakes for launchctl, services, state folder and database.
+- Prove it against the real thing: a real deployment killed at `starting` can't be staged by the suite. Say so in
+  the PR.
 
 ## Tests
 
-- `src/deploy-phase.test.ts` (new): the table checks above.
-- `src/deploy-recovery.test.ts`, `src/release-next.test.ts`, `src/deploy-rescue.test.ts`,
-  `src/release-adapters.test.ts`, `src/release-gate.test.ts`: existing cases must pass unchanged; add
-  `deployActionOf("no-such-phase") === "refuse"`, and `recoverDeploy` at `starting` runs `--phase finish`.
-- A `finish()` at `starting` case beside the existing swap/finish tests (find the file that drives
-  `deploy-phases.mjs` with fakes): service up → journal reaches `started` then finishes; service never up →
-  journal reaches `start-failed`, recovery restores the previous service and lifts the pause.
+- `src/deploy-phase.test.ts` (new):
+  - a hand-written expected table (17 words → action and each derived list written out in the test, not computed)
+    compared with the data file through both helper files;
+  - TypeScript helpers and script helpers agree on every word and on an unknown word ("refuse");
+  - every literal phase a script or `release-gate.ts` writes is in the table, and every table word has a writer
+    (scan covers `save(r, "<w>")`, `mark("<w>")`, `phase: "<w>"`);
+  - `save`/`mark` refuse an unknown word without writing;
+  - the JSON is in the build output the package ships.
+- `src/deploy-recovery.test.ts`: existing cases unchanged; new arm at `starting`: owned + proved stopped →
+  restores (compatible and incompatible); not owned → null, no restore effect called; not proved stopped → null.
+- `src/deploy-coding.slow.test.ts` (the swap/finish fixture): `finish()` at `starting` in a **fresh-process
+  context** (installed definition already names the candidate, `priorDist === nextDist`):
+  - service up → `started` → `deployed`;
+  - service never up → refusal, journal still `starting`, no `bootout`/`bootstrap` call, database and definition
+    byte-identical; exit recovery in that same context restores nothing even when the service is proved gone;
+  - pause owner changed, or schema not the new one → refusal before `started`;
+  - a healthy replacement from another runtime beside a stale `starting` journal → nothing stopped;
+  - then `recoverJournal` in the original context (saved definition): proved gone → previous service started from
+    the **original** definition and runtime, pause lifted, backup restored only when incompatible.
+- `src/release-adapters.test.ts`: at `starting`: candidate proof refused → stops, no script run; finish ok → ok;
+  finish fails, journal still `starting` → recover runs and its answer is returned; finish refusing `starting` (an
+  older candidate's script) → same road, no regression. At `started`: failed finish stops as today.
+- `src/release-next.test.ts`: `deployActionOf` for all 17 + unknown + non-string; `restored` stays roll-back.
+- `src/staged-runtimes.test.ts`, checkout cleanup test: a `released` stage is not "deployed" (retention unchanged).
 - Guard tests and typecheck. Full suite in GitHub CI.
 
 ## Not in this arc
 
-- Changing recovery at any other phase, or any wording.
-- The Mac app updater's journal (`src/toolroll-update.ts` `RuntimePhase`), a different machine with its own list.
+- Recovery stopping an unhealthy new service by itself (needs ownership proof; Alex's decision).
+- Existing recovery arms (`stopped`, `migrating`, `migrated`, `start-failed`, `backup-restored`) do not check pause
+  ownership before restoring a backup. Noted while reading; unchanged here; worth its own look.
+- A kill between `launchctl bootstrap` and `save(r, "starting")` leaves `migrated` with the new service loaded;
+  recovery refuses there as today.
+- The Mac app updater's journal (`src/toolroll-update.ts` `RuntimePhase`), a different machine.
 - The other four state machines.
 
 ## Size
 
-About 150 lines changed across 7 files plus two new small files and tests. Ships alone, in its own release.
+About 250 lines changed across 9 files plus three new small files and tests. Ships alone, in its own release.
+
+## Ledger: Codex round 1 on plan v1 (NO-GO)
+
+| # | Sev | Finding | Answer in v2 |
+| --- | --- | --- | --- |
+| 1 | High | Re-running the teardown on resume can stop a healthy replacement without proving ownership | No teardown on resume. Forward resume only looks; recovery only observes exit. |
+| 2 | High | A fresh `finish` process has the candidate's definition as "previous"; in-process recovery would start the candidate again | Restores refuse outside the original context; the adapter runs `--phase recover` (saved definition) instead. |
+| 3 | High | Resume lacked proofs (pause owner, schema) before acting; plan's "re-observes" claim was wrong | Schema and pause owner proved before `started`; no destructive act on resume; claim removed. |
+| 4 | Med | `restored` row changed routing; a shared `finished` flag would let `released` stages be pruned early | `restored` is roll-back; "needs no recovery" and "deployed" are separate. |
+| 5 | Med | Two hand-kept tables are avoidable | One JSON data file read by both sides. |
+| 6 | Med | A newer coordinator can't fix an older candidate's script | Stated as a limit; nothing substituted. |
+| 7 | Med | Inventory missed `deploymentIdle`, `checkout-cleanup`, the first journal write, `release-gate`'s `released`, dynamic saves; derived-vs-derived test is circular | Inventory extended; writes validated at `save`/`mark`; test holds its own hand-written expectations. |
+| 8 | High | Tests missed the dangerous restart cases | Fresh-process context tests, replacement beside a stale journal, proofs failing, original-runtime restoration, adapter refusal and older-script cases. Teardown-interruption cases no longer exist (no teardown). |
