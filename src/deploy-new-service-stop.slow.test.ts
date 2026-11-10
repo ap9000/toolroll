@@ -466,6 +466,8 @@ test('T23: time running out during the last checks stops nothing; no call begins
 });
 
 test('T24: recovery interrupted while the intent is written, or during launchd\'s last answer, stops nothing', async () => {
+  // The abort here happens in the same turn: this shows the checks exist and where, not that a real signal is delivered
+  // during the event-loop turn the stop takes before them.
   for (const [at, ran] of [['the intent', []], ['launchctl print', ['ps -A', 'curl -fsS', 'launchctl print']]] as const) {
     const d = await stuck();
     try {

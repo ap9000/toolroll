@@ -309,7 +309,8 @@ E. Exit status 0: go to F. A numeric non-zero status: set `state: "failed"`, `ac
    fixed short reason (never raw stderr), write the journal, print the message, and stop. Do not look for absence in
    this run (Q4). A timeout, signal or spawn error: `state: "uncertain"`, same handling.
 
-F. Wait for absence, observed, for at most 75 s after the act:
+F. Wait for absence, observed, for about 75 s after the act (a check that began inside that time may end a little
+   after it; running out of time is never taken for absence):
    - poll `launchctl print` until it exits 113;
    - every recorded `{ pid, start }` is gone: no process has that pid with that start time. A pid now held by a
      process with a different start time counts as gone, because the recorded process has exited. The same start
@@ -518,6 +519,8 @@ placement fact (F1) holds, and the temp root's name passes the "Toolroll's own" 
   call's timeout is cut to the time left.
 - **T24. Interrupted.** A stop signal while the intent is written, or during the last `launchctl print`: no bootout,
   `failed`, `acted: false`, reason "recovery was interrupted".
+  The test aborts in the same turn, so it shows the checks are there. It does not show that a real signal is
+  delivered during the event-loop turn; only a real run would.
 
 ### Real-launchd canary (only with the owner's explicit yes)
 
@@ -593,8 +596,10 @@ request then says plainly that the launchd lifecycle itself (bootout timing, exi
 
 ## 16. Ledger: Codex review of the implementation (NO-GO, 4 findings)
 
-This was the second and last review round for this change. The fixes below were made and tested after it and have
-not been reviewed again.
+This was the second review round for this change. The fixes below were made and tested after it.
+
+Added later: the owner allowed one more, narrow round on the fix commit alone. Verdict GO, all four closed, no new
+path to the bootout or to a restore without a fresh proof of absence. Its two wording notes are taken in §8 F and T24.
 
 | # | Severity | Finding | Fix | Where |
 | --- | --- | --- | --- | --- |
