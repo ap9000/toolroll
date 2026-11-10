@@ -41,7 +41,7 @@ export const CHECK_ARTIFACT_CAP = CHECK_REPORT_MAX_BYTES;
 /** The release check's harness, named: the orchestrator, its runners and helpers, Vitest's configuration and setup, and
  * the reporter. These never carry (release-carry.ts). The execution context digests far more (inHarnessDigest). */
 export const HARNESS_FILES: readonly string[] = Object.freeze([
-  "scripts/release-check.mjs", "scripts/release-check-ci.mjs", "scripts/suite-lifecycle.mjs", "scripts/provider-gate.mjs",
+  "scripts/release-check.mjs", "scripts/release-check-ci.mjs", "scripts/upgrade-rule.mjs", "scripts/suite-lifecycle.mjs", "scripts/provider-gate.mjs",
   "scripts/e2e-parallel.mjs", "scripts/e2e-kit.mjs", "scripts/upgrade-path.mjs", "scripts/check-results.mjs",
   "vitest.config.ts", "test/attacks/vitest.config.ts",
   "test/setup-state.ts", "test/fresh-store.ts", "test/temp-root.ts", "test/ensure-build.ts", "test/release-reporter.ts",
