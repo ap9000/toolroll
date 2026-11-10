@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.98 — 2026-11-09
 
 - **Start a small task from chat in one step.** Ask the lead for one small, clear change ("just fix the typo in the footer") in web chat, Telegram, Slack, Discord or Teams, and it drafts a Start work card. Your own tap (then "Yes, start work") files and approves it under the same rules as the New task form's Build: small changes only, Toolroll's size check must agree, your chat approval setting and limits apply, it must start within 30 minutes, and you still accept the result before it's finished or published. On web chat the card opens the full terms to confirm. On Telegram you can also reply yes to the card, and the reply links the task it started. In Teams, and in Slack when a word in the request would show as an emoji, approval cards open the review page instead of taking a tap, so what you approve is always shown exactly as written. Anything bigger becomes an ordinary task card, and the lead can never start work itself.
 - **Approved work starts within a second.** Approving a plan or a merge, by any road, now tells the builder at once, and phone notifications, webhooks and Telegram messages go out within seconds instead of up to a minute. Pull requests waiting on CI are checked every 30 seconds instead of every 5 minutes.
