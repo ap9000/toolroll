@@ -19,6 +19,7 @@
 import { authorityStandsSql } from "./approval-authority.js";
 import { stopFactOf, type Store } from "./store.js";
 import { refArchived } from "./task-archive.js";
+import { moveTask } from "./task-moves.js";
 
 /** The automatic-retry limits, in one place. */
 export const RETRY_LIMIT = 3;
@@ -56,7 +57,7 @@ function approvalStands(store: Store, taskRef: number, now: Date): boolean {
 }
 
 function requeue(store: Store, taskId: string, now: Date): boolean {
-  return Number(store.handle.prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'").run(now.toISOString(), taskId).changes) > 0;
+  return moveTask(store.handle, taskId, "requeue", now);
 }
 
 function episodeOf(store: Store, taskRef: number): { retries: number; reservedMicrousd: number } | null {
@@ -69,7 +70,7 @@ function stopFor(store: Store, input: { taskRef: number; taskId: string; run: nu
   store.handle.prepare(`INSERT INTO retry_episode (task_ref, retries, reserved_microusd, stopped, stopped_run, started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (task_ref) DO UPDATE SET stopped = excluded.stopped, stopped_run = excluded.stopped_run, reserved_microusd = excluded.reserved_microusd, updated_at = excluded.updated_at`)
     .run(input.taskRef, input.retries, input.reservedMicrousd, input.why, input.run, stamp, stamp);
-  store.handle.prepare("UPDATE task SET state = 'failed', updated_at = ? WHERE id = ? AND state IN ('running', 'queued')").run(stamp, input.taskId);
+  moveTask(store.handle, input.taskId, "giveUp", input.now);
   store.enqueueNotification({
     source: { run: input.run },
     dedupeKey: `vanished:${input.run}`,

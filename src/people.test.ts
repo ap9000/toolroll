@@ -8,7 +8,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import type { Server } from "node:http";
-import { openStore, type Store } from "./store.js";
+import { liveInviteTerms, openStore, type Store } from "./store.js";
 import { addApprover, authenticateAccount, authenticateApprover, fileAndSealUnderMode, hashPassword, type AcceptanceCriterion } from "./scope.js";
 
 const RUBRIC: AcceptanceCriterion[] = [{ id: "c1", statement: "the change is reviewed", how: null, evidence: ["manual-review"] }];
@@ -68,6 +68,23 @@ describe("invites in the store", () => {
     // consumeInviteAndCreateAccount is only ever reached BEHIND a
     // successful admission in the same request — the spent-out door
     // refuses at admit, so no submission can reach the KDF or the CAS.
+  });
+
+  test("an invite that used up its ten attempts is not listed as open, and its join terms read as gone", () => {
+    const spent = store.mintInvite("viewer", "alex", T0);
+    const open = store.mintInvite("approver", "alex", T0);
+    for (let attempt = 0; attempt < 9; attempt++) store.admitInviteAttempt(spent.token, T0);
+    expect(store.openInvites(T0).map(one => one.id)).toEqual([spent.id, open.id]);
+    store.admitInviteAttempt(spent.token, T0);
+    expect(store.openInvites(T0).map(one => one.id)).toEqual([open.id]);
+    expect(liveInviteTerms(store, spent.token, T0)).toBeNull();
+    expect(liveInviteTerms(store, open.token, T0)).not.toBeNull();
+  });
+
+  test("the tenth admitted attempt can still join", () => {
+    const minted = store.mintInvite("viewer", "alex", T0);
+    for (let attempt = 0; attempt < 10; attempt++) expect(store.admitInviteAttempt(minted.token, T0)).not.toBeNull();
+    expect(store.consumeInviteAndCreateAccount({ tokenValue: minted.token, name: "casey", credentialHash: hashPassword("a-long-password") }, T0)).toEqual({ ok: true, role: "viewer" });
   });
 
   test("expiry and revocation both read as the same dead", () => {

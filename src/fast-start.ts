@@ -32,7 +32,7 @@ import { fileTaskProposal } from "./proposal.js";
 import { releaseCiHoldOf } from "./release-ci-hold.js";
 import { COMPLETION_ACTION, COMPLETION_BY_PERSON } from "./result-completion.js";
 import { deployGateScope, machineActing, propose, releaseCheckScope, type ApproveResult, type Scope } from "./scope.js";
-import { BUILT_IN, type Store } from "./store.js";
+import { BUILT_IN, withdrawApproval, type Store } from "./store.js";
 import { classifyTask, filingSizer, heuristicSizing } from "./task-sizing.js";
 import { issueImported } from "./task-source.js";
 import { titleWithin } from "./task-text.js";
@@ -275,7 +275,7 @@ export function expireFastStarts(store: Store, now: Date): number {
     const ref = Number(row["ref"]), task = String(row["task"]);
     store.transact(() => {
       if (store.currentLiveLease(ref, now) !== null) return;
-      store.handle.prepare(`UPDATE task_scope SET approved_at = NULL, approved_by = NULL, approved_digest = NULL, approved_profile_json = NULL, approved_route_json = NULL, approval_basis = NULL WHERE task_id = ?`).run(task);
+      withdrawApproval(store, { where: "WHERE task_id = ?", args: [task] }, { basisAfter: null, clearRoute: true, clearModeDigest: false });
       store.handle.prepare("UPDATE task_ref SET fast_start_until = NULL WHERE id = ?").run(ref);
       store.recordAction({ at: stamp, actor: "system", repo: row["repo"] === null ? null : String(row["repo"]), taskId: task, runId: null, action: "fast start expired", outcome: "seal cleared", source: "work", detail: `no build started within ${FAST_WINDOW_MS / 60_000} minutes` });
       cleared++;

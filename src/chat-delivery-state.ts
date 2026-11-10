@@ -1,6 +1,6 @@
 /** Durable chat receipts on the shared chat core: what each app's chats sent us and what we plan to send them. */
 import { randomBytes } from "node:crypto";
-import { LEAD_ASK_TTL_MS } from "./store.js";
+import { CONFIRM_TTL_MS, LEAD_ASK_TTL_MS } from "./store.js";
 import { ChatCore, chatHash, type ChatBinding, type ChatProvider, type ChatRoom } from "./chat-core.js";
 import { ChatMessages } from "./chat-messages.js";
 import { unsentPart } from "./chat-message-states.js";
@@ -164,7 +164,7 @@ export class ChatState extends ChatMessages {
     for (const phase of phases)
       this.prepare("INSERT INTO chat_action (provider, token, part, proposal, phase, created, expires) VALUES (:provider, ?, ?, ?, ?, ?, ?)").run(
         randomBytes(16).toString("hex"), part, proposal, phase, now.toISOString(),
-        new Date(now.getTime() + (phase === "yes" || phase === "cancel" ? 600_000 : DAY_MS)).toISOString(),
+        new Date(now.getTime() + (phase === "yes" || phase === "cancel" ? CONFIRM_TTL_MS : DAY_MS)).toISOString(),
       );
   }
 

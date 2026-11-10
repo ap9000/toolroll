@@ -31,7 +31,7 @@ import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { closedQuestionWords, validateNote } from "./decision.js";
 import { isShotsKind, resultShotsFor, type ResultShot } from "./result-shots.js";
-import { isLifecycleNotification, isTelegramProgressNotification, TELEGRAM_HOLD_REASONS, type Store, type Decision, type Notification, type TelegramBinding, type TelegramDelivery } from "./store.js";
+import { CONFIRM_TTL_MS, isLifecycleNotification, isTelegramProgressNotification, TELEGRAM_HOLD_REASONS, type Store, type Decision, type Notification, type TelegramBinding, type TelegramDelivery } from "./store.js";
 import { telegramProgressCard, type ProgressEntity } from "./telegram-progress.js";
 import { enqueueEveningDigests, finishedView, isTaskFact, joinsBatch, needsPerson, quietCardView, type QuietView } from "./chat-quiet.js";
 import { BATCH_MS, chatText, chatTitle, factLinkLabel, mentions, nameTelegramBot } from "./chat-voice.js";
@@ -78,7 +78,6 @@ export { TELEGRAM_TOKEN_ENV as TOKEN_ENV, TELEGRAM_TOKEN_ENVS as TOKEN_ENVS } fr
 const TOKEN_SHAPE = /^(\d+):[A-Za-z0-9_-]{20,}$/;
 
 export const PAIRING_TTL_MS = 10 * 60_000;
-export const CONFIRM_TTL_MS = 10 * 60_000;
 export const BRIDGE_LEASE_MS = 2 * 60_000;
 export const DELIVERY_CLAIM_MS = 2 * 60_000;
 /** Telegram's own message ceiling, with room for our part headers. */
@@ -2535,7 +2534,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
       // expires, or is cancelled strands this challenge (finding 3).
       const draft = store.liveNoteDraft(binding.id, decision.id, clock());
       const digest = draft === null ? undefined : noteDigestOf(draft.note);
-      if (draft !== null) store.setNoteDraftState(draft.id, "armed");
+      if (draft !== null) store.setNoteDraftState(draft.id, ["pending", "armed"], "armed");
       store.createTelegramAction(
         { token: confirm, binding: binding.id, decision: decision.id, optionId: option.id, phase: "confirm", chatId: binding.chatId, messageId: placedOn, ttlMs: CONFIRM_TTL_MS, ...(digest === undefined ? {} : { noteDigest: digest }) },
         clock(),
@@ -2591,7 +2590,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
   store.consumeTelegramChallenges(decision.id, clock());
   {
     const draft = store.liveNoteDraft(binding.id, decision.id, clock());
-    if (draft !== null) store.setNoteDraftState(draft.id, "discarded");
+    if (draft !== null) store.setNoteDraftState(draft.id, ["pending", "armed"], "discarded");
   }
   const fresh = decision.options.map(option => ({ option, token: randomBytes(16).toString("hex") }));
   for (const { option, token: choose } of fresh) {
@@ -2629,14 +2628,14 @@ function answerNow(
     clock(),
   );
   if (answered.ok) {
-    if (draft !== null) store.setNoteDraftState(draft.id, "consumed");
+    if (draft !== null) store.setNoteDraftState(draft.id, ["pending", "armed"], "consumed");
     report.answered++;
     ack(`✓ ${choice}${draft === null ? "" : " — with your note"}`);
     editText(answeredText(store, answered.decision));
     return;
   }
   if (answered.reason === "already-answered" || answered.reason === "closed") {
-    if (draft !== null) store.setNoteDraftState(draft.id, "discarded");
+    if (draft !== null) store.setNoteDraftState(draft.id, ["pending", "armed"], "discarded");
     const settled = store.getDecision(decision.id);
     ack(`${settled?.supersededReason != null ? closedQuestionWords(settled.supersededReason) : `already answered: ${settled?.choice ?? "?"}`}${draft === null ? "" : " — your note did NOT travel"}`);
     if (settled !== null) editText(answeredText(store, settled), []);
@@ -2693,7 +2692,7 @@ function expiredDraftGuard(store: Store, binding: TelegramBinding, decisionId: n
     )
     .get(binding.id, decisionId, now.toISOString());
   if (expired === undefined) return false;
-  store.setNoteDraftState(Number(expired["id"]), "discarded");
+  store.setNoteDraftState(Number(expired["id"]), ["pending", "armed"], "discarded");
   return true;
 }
 

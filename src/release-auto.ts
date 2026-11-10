@@ -26,7 +26,7 @@ import { releaseCheckStanding } from "./check-failure.js";
 import { CARRY_RULES, rulePath } from "./release-carry.js";
 import { AUTO_EVIDENCE_ACTION, AUTO_WITHDRAWN_ACTION, LIVE_RELEASE_STATES, RELEASE_APPROVAL_ACTION, releaseAuthorityOfTask, releaseAutoApproves, type ReleaseApprovalSetting, releaseApprovalSetting } from "./release-authority.js";
 import { autoReleaseApprovalOf, personApprovalOf } from "./scope.js";
-import { releaseOperations, revokeRelease, type Store } from "./store.js";
+import { releaseOperations, revokeRelease, withdrawApproval, type Store } from "./store.js";
 import { RELEASE_CI_HELD_ACTION, RELEASE_CI_PASSED_ACTION, RELEASE_CI_RUNNING_WORDS, releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import { nightlyDebtHold } from "./nightly-github.js";
@@ -100,8 +100,8 @@ export function setReleaseApproval(store: Store, repo: string, auto: boolean, by
  * marked withdrawn, so no later reading — the setting turned on again included — lets it stand. */
 function unseal(store: Store, taskId: string, now: Date): void {
   withdraw(store, taskId, now);
-  store.handle.prepare(`UPDATE task_scope SET approved_at = NULL, approved_by = NULL, approved_digest = NULL, approved_profile_json = NULL,
-      approved_route_json = NULL, approval_basis = NULL, mode_digest = NULL WHERE task_id = ? AND approval_basis IN ('auto-check', 'auto-green')`).run(taskId);
+  withdrawApproval(store, { where: "WHERE task_id = ? AND approval_basis IN ('auto-check', 'auto-green')", args: [taskId] },
+    { basisAfter: null, clearRoute: true, clearModeDigest: true });
 }
 
 /** Mark a task's automatic seal's evidence withdrawn for good (its seal row may stay while an issued merge reconciles). */

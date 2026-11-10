@@ -161,6 +161,9 @@ function readTelegramAction(row: Record<string, unknown>): TelegramAction {
   };
 }
 
+/** A note draft's states: `pending` and `armed` are live; the other three are final. */
+export type NoteDraftState = "pending" | "armed" | "superseded" | "consumed" | "discarded";
+
 export class ChatMessages extends ChatCore {
   createDecisionAction(
     action: {
@@ -247,7 +250,7 @@ export class ChatMessages extends ChatCore {
         .get(draft.binding, draft.decision);
       if (live !== undefined) {
         if (Number(live["event"]) >= draft.updateId) return false;
-        chat.prepare("UPDATE chat_note_draft SET state = 'superseded' WHERE provider = :provider AND id = ?").run(live["id"]);
+        chat.setNoteDraftState(Number(live["id"]), ["pending", "armed"], "superseded");
       }
       chat
         .prepare(
@@ -269,9 +272,11 @@ export class ChatMessages extends ChatCore {
     });
   }
 
-  /** Move a draft between states; the caller owns the transaction story. */
-  setNoteDraftState(id: number, state: "pending" | "armed" | "superseded" | "consumed" | "discarded"): void {
-    this.prepare("UPDATE chat_note_draft SET state = ? WHERE provider = :provider AND id = ?").run(state, id);
+  /** Move a draft to `to`, only from one of the states in `from` (the check and the write are one statement). True when
+   * it moved; false when the draft was in none of them. The caller owns the transaction story. */
+  setNoteDraftState(id: number, from: readonly NoteDraftState[], to: NoteDraftState): boolean {
+    return Number(this.prepare("UPDATE chat_note_draft SET state = ? WHERE provider = :provider AND id = ? AND state IN (SELECT value FROM json_each(?))")
+      .run(to, id, JSON.stringify(from)).changes) === 1;
   }
 
   createFlowActions(at: { binding: number; chatId: string; card: number; entry: number }, actions: readonly { token: string; action: TelegramFlowAction["action"] }[], now: Date, days = 7): void {
