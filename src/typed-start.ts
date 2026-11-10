@@ -57,7 +57,7 @@ export function typedStartCard(store: Store, chat: { binding: number; chatId: st
   if (content.card !== true || typeof content.proposal !== "number" || !Array.isArray(content.keyboard) || typeof content.text !== "string" || !content.text.trimEnd().endsWith(TYPED_START_LINE)) return null;
   const proposal = store.getLeadProposal(content.proposal);
   const action = proposal?.kind === "action" ? sharedActionPayload(proposal.payload) : null;
-  if (proposal === null || action === null || action.operation !== "task_start" || !sharedActionAllowsChallenge(action) || proposal.state !== "pending") return null;
+  if (proposal === null || action === null || action.operation !== "task_start" || !sharedActionAllowsChallenge(action, "telegram") || proposal.state !== "pending") return null;
   const thread = store.getLeadThread(proposal.thread);
   if (thread === null || thread.approver !== chat.approver || thread.closedAt !== null) return null;
   if (store.handle.prepare("SELECT 1 AS hit FROM team_conversation WHERE thread = ?").get(proposal.thread) !== undefined) return null;

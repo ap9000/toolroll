@@ -82,3 +82,20 @@ export function chatLimitProblem(scope: Pick<Scope, "profile" | "budgetMicrousd"
     return `This plan has ${scope.budgetMicrousd === null ? "no attempt limit" : `a ${money(scope.budgetMicrousd)} attempt limit`}, more than ${yours === "your mode" ? "your mode's" : "your chat approval limit of"} ${money(cap)}.`;
   return null;
 }
+
+/** The chat apps a card goes to. */
+export type CardChannel = "telegram" | "slack" | "discord" | "teams";
+
+/** Whether a chat app shows a card's words exactly as they are stored, so a tap there is a yes to those words. Teams
+ * draws card text as Markdown, where a link's label hides its address, and Slack turns `:name:` into an emoji: there
+ * the words go to the review page and no tap approves them. Telegram's card is plain text and Discord's escapes its
+ * presentation syntax. Both approval roads read this one rule (chat-decide.ts shownWhole, chat-actions.ts
+ * sharedActionAllowsChallenge), so neither can seal words the other would refuse. */
+export function shownAsWritten(text: string, channel: CardChannel): boolean {
+  switch (channel) {
+    case "telegram": case "discord": return true;
+    // Emoji names: letters and digits of any script (workspaces add their own), `_`, `+`, `'`, `-`.
+    case "slack": return !/:[\p{L}\p{N}_+'-]+:/u.test(text);
+    case "teams": return false;
+  }
+}

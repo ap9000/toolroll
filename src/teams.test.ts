@@ -18,6 +18,7 @@ import { flowFromSteps } from "./flows.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
 import { advanceFlows } from "./flow-engine.js";
 import { prepareSharedAction } from "./chat-actions.js";
+import { confirmLeadProposal } from "./lead-doors.js";
 import { installFilingSizer } from "./task-sizing.js";
 import { resolveChannelLead } from "./chat-channel.js";
 import { verifyApproverStanding, ceilingDigestOf } from "./principal.js";
@@ -303,7 +304,7 @@ describe("Teams shared chat", () => {
     expect(store.flowComments(card.id).map(one => one.body)).toEqual(["It's the Dell."]);
   });
 
-  test("a Start card from the lead confirms behind its yes in Teams: one small task filed, approved and marked, and the builder woken", async () => {
+  test("a Start card in Teams is never a tap: Teams reads card text as Markdown, so the card links to the review page and a yes sent through Teams starts nothing", async () => {
     expect(pairAs("alex", ALEX, DM_ALEX)).not.toBeNull();
     const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
     try {
@@ -314,21 +315,25 @@ describe("Teams shared chat", () => {
       );
       expect(receive(activity(DM_ALEX, ALEX, "just fix the typo in the footer"))).toBe(true);
       await processTeamsEvent(options); await drain();
-      expect(lastText()).toContain("Start work in repo: Fix the typo in the footer");
-      const cardId = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.proposal') IS NOT NULL").get()?.message);
-      const tap = (data: Record<string, unknown>) => receive({ type: "message", id: `tap-${++ids}`, serviceUrl: SERVICE, from: { id: ALEX }, recipient: { id: `28:${APP}` }, conversation: { id: DM_ALEX, conversationType: "personal", tenantId: TENANT }, replyToId: cardId, value: data });
-      const confirm = lastActions().find(action => action["title"] === "Confirm") as { data: Record<string, unknown> };
-      expect(tap(confirm.data)).toBe(true);
-      await processTeamsEvent(options); await drain();
+      const proposal = Number(state.prepare("SELECT json_extract(payload,'$.proposal') AS id FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.proposal') IS NOT NULL").get()?.id);
+      // The card carries none of the lead's words and no button that answers: one link to the page that shows them whole.
+      expect(lastText()).toBe("Review the full action in Toolroll before confirming.");
+      expect(lastActions()).toEqual([{ type: "Action.OpenUrl", title: "Review and start", url: `https://console.example/chat/action/${proposal}` }]);
+      // The part's own button tokens are never shown. Sent anyway (a replayed or guessed tap), they answer with the review
+      // page and start nothing.
+      const cardId = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.proposal')=?").get(proposal)?.message);
+      for (const hidden of state.prepare("SELECT token FROM chat_action WHERE provider=:provider AND proposal=? ORDER BY rowid").all(proposal)) {
+        expect(receive({ type: "message", id: `tap-${++ids}`, serviceUrl: SERVICE, from: { id: ALEX }, recipient: { id: `28:${APP}` }, conversation: { id: DM_ALEX, conversationType: "personal", tenantId: TENANT }, replyToId: cardId, value: { so: String(hidden["token"]) } })).toBe(true);
+        await processTeamsEvent(options); await drain();
+        expect(lastText()).toBe("Review the full action in Toolroll before confirming.");
+        expect(lastActions()).toEqual([{ type: "Action.OpenUrl", title: "Review and start", url: `https://console.example/chat/action/${proposal}` }]);
+        expect(store.getLeadProposal(proposal)?.state).toBe("pending");
+      }
+      // A yes that reaches the door through Teams anyway (a forged or replayed callback) is refused there too.
+      const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, projects); if (!who.ok) throw Error("who");
+      expect(confirmLeadProposal(store, who.who, proposal, now, { authority: "full", via: "teams", confirm: true, evidenceRoot: join(dir, "evidence") })).toMatchObject({ ok: false, reason: "needs-confirm" });
+      expect(store.getLeadProposal(proposal)?.state).toBe("pending");
       expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]).toBe(0);
-      const yes = lastActions().find(action => action["title"] === "Yes, start work") as { data: Record<string, unknown> };
-      const wake = store.wakeSeq();
-      expect(tap(yes.data)).toBe(true);
-      await processTeamsEvent(options); await drain();
-      expect(lastText()).toContain("Started. It's building now.");
-      const taskId = String(store.handle.prepare("SELECT external_id FROM task_ref WHERE fast_start_at IS NOT NULL").get()?.["external_id"]);
-      expect(store.getScope(taskId)).toMatchObject({ approvalBasis: "chat" });
-      expect(store.wakeSeq()).toBeGreaterThan(wake);
     } finally { dropSizer(); }
   });
 

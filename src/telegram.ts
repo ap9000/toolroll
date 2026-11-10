@@ -1789,7 +1789,14 @@ function applyMessage(context: Context, update: Update, effects: Effect[]): void
     if (consumed) return;
     // Replies to decisions retain their existing note meaning, even if the
     // note starts with a slash. New read commands are direct messages only.
-    if (message.reply_to_message === undefined && applyPhoneRead(context, update, effects)) return;
+    // A bare "start" as the very next message after a Start card is that card's yes (docs/plans/one-step-chat.md C5),
+    // not the help command. Only the routing is decided here, by the same ids the message path reads again when it
+    // records the yes; "/start", and "start" anywhere else, stay help.
+    const yesSeat = message.reply_to_message === undefined && chat.type === "private" && typeof message.text === "string" && typedYes(message.text)
+      && context.conversation !== undefined && context.readProjects !== undefined ? store.liveTelegramBindingFor(botId, String(from.id)) : null;
+    const answersStartCard = yesSeat !== null && String(chat.id) === yesSeat.chatId
+      && typedStartCard(store, { binding: yesSeat.id, chatId: yesSeat.chatId, approver: yesSeat.approver }, { id: String(message.message_id), replyTo: null }) !== null;
+    if (message.reply_to_message === undefined && !answersStartCard && applyPhoneRead(context, update, effects)) return;
     // A reply to a decision message this bot sent is a note, exactly as
     // before. Everything else that is ordinary text talks to the shared
     // assistant when a conversation is configured; otherwise silence.

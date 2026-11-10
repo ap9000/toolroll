@@ -24,7 +24,7 @@ import { authPauseOf, liftAuthPause } from "./provider-auth.js";
 import { isProviderId } from "./provider.js";
 import { approverStandsNow, familyRepoOf } from "./tidy.js";
 import { chatApproveMode, effectiveChatApproval, type ChatApprovalLimits } from "./chat-approval.js";
-import { cardTermsDigest, chatLimitProblem, scopeTermsText } from "./chat-terms.js";
+import { cardTermsDigest, chatLimitProblem, scopeTermsText, shownAsWritten, type CardChannel } from "./chat-terms.js";
 import { chatStartDryRun, chatStartPreview, fastRefusalWords, fastStartBuild, FAST_MAX_FILES, FAST_MAX_LINES, type FastApprove, type FastProof } from "./fast-start.js";
 import { fastTermsLines } from "./fast-terms.js";
 import { TYPED_START_REFUSED, typedStartNames } from "./typed-start.js";
@@ -1165,16 +1165,23 @@ export function sharedActionNeedsReview(action: SharedAction): boolean {
     sharedActionContentNeedsReview(action)
   );
 }
-/** Whether a paired phone may confirm this protected action behind its own
+/** Whether a linked chat may confirm this protected action behind its own
  * explicit challenge: the action is on the challenge list, needs no
- * password, and every term fits the card unshortened. */
-export function sharedActionAllowsChallenge(action: SharedAction): boolean {
+ * password, and every term fits the card unshortened. An approval's yes is
+ * a yes to the words the card showed (they are sealed as shown), so it also
+ * needs a chat app that shows them exactly as stored (shownAsWritten: never
+ * Teams, whose card reads Markdown; not Slack when a word would become an
+ * emoji). There the card links to the review page and no tap approves. The
+ * chat app is the one the card is drawn for or the tap came through, never
+ * something the action or a caller's input names. */
+export function sharedActionAllowsChallenge(action: SharedAction, channel: CardChannel): boolean {
   const config = CHAT_ACTIONS[action.operation];
   return (
     CHALLENGE_ACTIONS.has(action.operation) &&
     config.protected &&
     !config.password &&
-    !sharedActionContentNeedsReview(action)
+    !sharedActionContentNeedsReview(action) &&
+    (!APPROVAL_ACTIONS.has(action.operation) || shownAsWritten([action.title, ...action.terms].join("\n"), channel))
   );
 }
 export function sharedActionReviewPath(id: number): string {
@@ -1292,7 +1299,7 @@ export type SharedActionOptions = {
 export function typedStartOpens(store: Store, proposal: number, action: SharedAction, options: Pick<SharedActionOptions, "via" | "typedStart" | "authority">): boolean {
   const typed = options.typedStart;
   return typed !== undefined && action.operation === "task_start" && options.via === "telegram" && typed.provider === "telegram"
-    && options.authority !== "local-owner" && !machineActing() && sharedActionAllowsChallenge(action) && typedStartNames(store, typed, proposal);
+    && options.authority !== "local-owner" && !machineActing() && sharedActionAllowsChallenge(action, "telegram") && typedStartNames(store, typed, proposal);
 }
 /** Called inside the proposal door's transaction, after ownership and session
  * checks. No password or review receipt is ever part of a saved proposal. */
@@ -1354,7 +1361,7 @@ export function executeSharedAction(
   const challenged =
     options.via !== "web" &&
     options.via !== "cli" &&
-    ((options.confirm === true && sharedActionAllowsChallenge(payload)) || typed);
+    ((options.confirm === true && sharedActionAllowsChallenge(payload, options.via)) || typed);
   if (APPROVAL_ACTIONS.has(live.operation) && machineActing()) return refuse("needs-confirm", "Only a person approves this.");
   // A lead's or remote token reaches the same web door: an approval needs a person's own session (or tap, above).
   if (APPROVAL_ACTIONS.has(live.operation) && options.via === "web" && options.authority !== "local-owner" && options.person !== true)

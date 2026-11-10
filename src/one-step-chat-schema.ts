@@ -7,13 +7,16 @@
  * - `chat_typed_start` (C5): a typed yes to a Start card, recorded with the inbound message in the transaction that saves
  *   it (typed-start.ts): which card it answered (the proposal and the chat message that carried it), the card's action
  *   stamp then, how it was tied to the card (`reply` to it, or the `next` message after it), and once settled, the
- *   outcome and the task it started. A new table: nothing saved changes.
+ *   outcome and the task it started. A new table: nothing saved changes. `proposal` is a plain number, not a reference:
+ *   the record has to outlive its card. Ending the chat deletes the card's proposal, and a yes already recorded for it
+ *   must still be answered by Toolroll ("didn't start anything") and never handed to the lead as a new message. Proposal
+ *   ids are never reused (AUTOINCREMENT), so a kept number can't come to name another card.
  */
 export const V159_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_typed_start (
   provider     TEXT NOT NULL CHECK (provider IN ('telegram')),
   event        TEXT NOT NULL,
-  proposal     INTEGER NOT NULL REFERENCES lead_proposal(id) ON DELETE CASCADE,
+  proposal     INTEGER NOT NULL,
   card_message TEXT NOT NULL,
   stamp        TEXT NOT NULL,
   how          TEXT NOT NULL CHECK (how IN ('reply', 'next')),

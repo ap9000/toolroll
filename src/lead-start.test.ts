@@ -128,7 +128,7 @@ describe("propose_start", () => {
   test.each([
     ["medium", () => { dropSizer(); dropSizer = installFilingSizer(async () => ({ size: "medium", risky: false, reason: "a few files" })); }, "This looks bigger than a small change."],
     ["protected", () => { store.setApprovalRules(repo, { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", T0); }, "This may reach protected work."],
-    ["a classifier that never answers", () => { dropSizer(); dropSizer = installFilingSizer(async () => null); }, "Toolroll couldn't confirm this is a small change."],
+    ["a classifier that gives no answer", () => { dropSizer(); dropSizer = installFilingSizer(async () => null); }, "Toolroll couldn't confirm this is a small change."],
   ])("%s drafts an ordinary task card with the reason", async (_name, arrange, why) => {
     arrange();
     const script = scripted([answer([call("get_capabilities", { repo: "r1" })]), answer([call("propose_start", START)]), text("A task card instead.")]);

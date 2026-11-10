@@ -325,7 +325,7 @@ export function proposalLink(
     return action &&
       repos.includes(action.repo) &&
       sharedActionNeedsReview(action) &&
-      !(channel !== null && sharedActionAllowsChallenge(action))
+      !(channel !== null && sharedActionAllowsChallenge(action, channel))
       ? { label: action.operation === "task_start" ? "Review and start" : "Review action", path: sharedActionReviewPath(proposal.id) }
       : null;
   }
@@ -395,9 +395,10 @@ export function confirmedLink(
   // A flow change opens its canvas, the card selected.
   if (outcome.ok && proposal.kind === "action" && typeof outcome.href === "string" && FLOW_HREF.test(outcome.href)) return { label: "Open the flow", path: outcome.href };
   if (!outcome.ok || outcome.taskId === null) return null;
+  // A skill test's task, and the task a Start card started: the card opens it.
   if (
     proposal.kind === "action" &&
-    proposal.payload["operation"] === "skill_test"
+    (proposal.payload["operation"] === "skill_test" || proposal.payload["operation"] === "task_start")
   )
     return taskLink(store, outcome.taskId, repos);
   const staged =
@@ -481,7 +482,7 @@ export function proposalPreview(
     case "action": {
       const action = sharedActionPayload(payload);
       if (!action) return handoff("This action is unavailable.");
-      if (channel !== null && sharedActionAllowsChallenge(action))
+      if (channel !== null && sharedActionAllowsChallenge(action, channel))
         return card(
           phoneText(action.title, 200),
           action.terms.map((term) => phoneText(term, APPROVAL_TERM_CHARS)),
@@ -1007,4 +1008,10 @@ export function confirmedCardText(
   return [`✓ ${words}`, ...[next, setup].filter((one) => one !== "")].join(
     "\n\n",
   );
+}
+
+/** The link to a task a Start card just started (a tapped card, and Toolroll's reply to a typed yes): the task's own
+ * page, only while the task is one of the person's projects. Navigation only. */
+export function startedTaskLink(store: Store, taskId: string, repos: readonly string[]): PhoneLink | null {
+  return taskLink(store, taskId, repos);
 }

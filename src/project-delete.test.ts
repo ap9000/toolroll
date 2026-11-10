@@ -174,6 +174,9 @@ test("deleting a project removes what Toolroll holds for it and keeps everything
   // A paired Telegram chat asked about each project's task; each message has its reply planned (event ids are text, 'm…').
   const talk = telegramTalk([[shop.first.id, 501], [other.first.id, 502]]);
   expect(count("SELECT COUNT(*) AS n FROM chat_event WHERE provider = 'telegram' AND kind = 'message'")).toBe(2);
+  // A typed yes to a Start card rode each message (one-step-chat.md C5); the one that stays started the shop's task.
+  for (const event of talk) store.handle.prepare(`INSERT INTO chat_typed_start (provider, event, proposal, card_message, stamp, how, created, outcome, task_id, finished)
+    VALUES ('telegram', ?, 999, '1', 's', 'next', ?, 'started', ?, ?)`).run(event, NOW.toISOString(), shop.first.id, NOW.toISOString());
 
   const generation = modelsGenerationOf(store, repo, "build");
   expect(learningCounts(repo)).toEqual({ facts: 1, results: 1, watches: 1, merges: 1 });
@@ -192,6 +195,8 @@ test("deleting a project removes what Toolroll holds for it and keeps everything
   // The shop's message and its reply went with it; the other project's stayed.
   expect(store.handle.prepare("SELECT id FROM chat_event WHERE provider = 'telegram' AND kind = 'message'").all().map(row => row["id"])).toEqual([talk[1]]);
   expect(store.handle.prepare("SELECT event FROM chat_part WHERE provider = 'telegram'").all().map(row => row["event"])).toEqual([talk[1]]);
+  // The typed yes on the shop's message went with it; the one on the message that stays no longer names the deleted task.
+  expect(store.handle.prepare("SELECT event, outcome, task_id FROM chat_typed_start").all()).toEqual([{ event: talk[1], outcome: "started", task_id: null }]);
 
   // Where the deleted task came from goes with it: a task later made under the same id is never given that origin.
   expect(store.taskSourceOf(shop.first.id)).toBeNull();

@@ -1468,6 +1468,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
         expect(lines.join("\n")).toContain("toolroll task new");
         expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]).toBe(0);
         const wake = store.wakeSeq();
+        origin = "https://console.example";
         expect(await tapPass(sent.button(/^Start work$/), sent.messageId)).toMatchObject({ ok: true, report: { ignored: 0 } });
         expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]).toBe(0);
         const armed = lastEdit()!;
@@ -1477,6 +1478,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
         expect(store.getScope(taskId)).toMatchObject({ approvalBasis: "chat" });
         expect(store.wakeSeq()).toBeGreaterThan(wake);
         expect(String(lastEdit()!.params["text"])).toContain("Started. It's building now.");
+        // The started card opens the task it started.
+        expect(urlButtons(lastEdit())).toEqual([["Open task", `https://console.example/chat?task=${taskId}`]]);
       } finally { dropSizer(); }
     });
 
@@ -1594,9 +1597,9 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     const typedRows = () => store.handle.prepare("SELECT * FROM chat_typed_start").all();
     const lastText = () => script.texts().at(-1);
 
-    // "start" alone is also Telegram's help command when it isn't a reply (telegram-status.ts phoneCommand): it shows help
-    // and starts nothing; as a reply to the card it is a yes (below).
-    const WORDS = ["yes", "y", "yep", "yeah", "yes please", "yes start", "start it", "go ahead", "do it", "Yes!", "YES.", "  Go ahead  ", "start."];
+    // "start" alone is also Telegram's help command (telegram-status.ts phoneCommand). Right after a Start card it is the
+    // yes the card asks for; anywhere else, and "/start" everywhere, it stays help (below).
+    const WORDS = ["yes", "y", "yep", "yeah", "yes please", "yes start", "start", "Start", "start it", "go ahead", "do it", "Yes!", "YES.", "  Go ahead  ", "start."];
     test.each(WORDS)("%s as the very next message starts the task once, and no lead turn reads it", async word => {
       const card = await startCard();
       expect(card.text.trimEnd().endsWith("Tap Start work, or reply yes.")).toBe(true);
@@ -1612,11 +1615,61 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(store.getScope(startedTasks()[0]!)).toMatchObject({ approvalBasis: "chat" });
     });
 
-    test("plain start as the next message is the help command and starts nothing", async () => {
+    test("start with no Start card to answer, and /start right after one, are the help command and start nothing", async () => {
+      const before = requests.length;
+      await say("start");
+      expect(requests).toHaveLength(before);
       const card = await startCard();
-      await say("start", { message_id: card.messageId + 1 });
+      const after = requests.length;
+      await say("/start", { message_id: card.messageId + 1 });
+      await say("start", { message_id: card.messageId + 3 });
+      expect(requests).toHaveLength(after);
       expect(startedTasks()).toEqual([]);
       expect(typedRows()).toEqual([]);
+      expect(store.getLeadProposal(Number(store.handle.prepare("SELECT id FROM lead_proposal WHERE kind = 'action'").get()?.["id"]))?.state).toBe("pending");
+    });
+
+    test("the reply to a typed yes links the started task, and the card is repainted as started with the same link and no buttons", async () => {
+      origin = "https://console.example";
+      const card = await startCard();
+      await say("yes", { message_id: card.messageId + 1 });
+      const taskId = startedTasks()[0]!;
+      const link = [["Open task", `https://console.example/chat?task=${taskId}`]];
+      const reply = script.sends().at(-1)!;
+      expect(String(reply.params["text"])).toBe("Started. It's building now.");
+      expect(urlButtons(reply)).toEqual(link);
+      const edit = lastEdit()!;
+      expect(edit.params["message_id"]).toBe(card.messageId);
+      expect(String(edit.params["text"])).toBe("✓ Started. It's building now.");
+      expect(urlButtons(edit)).toEqual(link);
+      expect((edit.params["reply_markup"] as { inline_keyboard: { callback_data?: string }[][] }).inline_keyboard.flat().filter(one => one.callback_data !== undefined)).toEqual([]);
+      // The card's old buttons are spent: a late tap starts nothing more.
+      await tapPass(card.button(/^Start work$/), card.messageId);
+      expect(startedTasks()).toHaveLength(1);
+    });
+
+    test("a yes recorded just before the chat is ended is answered by Toolroll, never handed to the lead, and starts nothing", async () => {
+      const card = await startCard();
+      readProjects.mockImplementation(async () => {
+        if (store.handle.prepare("SELECT 1 FROM chat_typed_start WHERE outcome IS NULL").get() !== undefined) store.closeLeadThreadsFor("alex", now);
+        return projects;
+      });
+      const before = requests.length;
+      try { await say("yes", { message_id: card.messageId + 1 }); } finally { readProjects.mockImplementation(async () => projects); }
+      // Ending the chat removed the card's proposal; the recorded yes stays, settled, and is not a message to the lead.
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_proposal").get()?.["n"]).toBe(0);
+      expect(typedRows()).toMatchObject([{ outcome: "not-counted", task_id: null }]);
+      expect(requests).toHaveLength(before);
+      expect(startedTasks()).toEqual([]);
+      expect(lastText()).toBe("That yes didn't start anything. Tap Start work on the card.");
+      const sent = script.sends().length;
+      now = new Date(now.getTime() + 60_000);
+      await pass();
+      now = new Date(now.getTime() + 60_000);
+      await pass();
+      expect(requests).toHaveLength(before);
+      expect(script.sends()).toHaveLength(sent);
+      expect(startedTasks()).toEqual([]);
     });
 
     test.each(["yes", "go ahead", "do it", "start", "y"])("%s as a reply to the card starts it, even after other messages", async word => {
@@ -1786,6 +1839,30 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(startedTasks()).toHaveLength(1);
       expect(await tapPass(armed, card.messageId)).toMatchObject({ ok: true, report: { ignored: 1 } });
       expect(startedTasks()).toHaveLength(1);
+    });
+
+    test("a claim lost while the yes is being acted on takes the start back together with the reply; the next owner starts it once", async () => {
+      const card = await startCard();
+      const proposal = Number(store.handle.prepare("SELECT id FROM lead_proposal WHERE kind = 'action'").get()?.["id"]);
+      readProjects.mockImplementation(async () => {
+        if (store.handle.prepare("SELECT 1 FROM chat_typed_start WHERE outcome IS NULL").get() !== undefined)
+          store.handle.prepare("UPDATE chat_event SET claim_owner = 'someone-else' WHERE provider = 'telegram' AND kind = 'message' AND id IN (SELECT event FROM chat_typed_start WHERE outcome IS NULL)").run();
+        return projects;
+      });
+      try { await say("yes", { message_id: card.messageId + 1 }); } finally { readProjects.mockImplementation(async () => projects); }
+      // The start and its reply are one transaction: without the claim neither happened.
+      expect(startedTasks()).toEqual([]);
+      expect(typedRows()).toMatchObject([{ outcome: null, task_id: null }]);
+      expect(store.getLeadProposal(proposal)?.state).toBe("pending");
+      expect(script.texts()).not.toContain("Started. It's building now.");
+      now = new Date(now.getTime() + 10 * 60_000);
+      await pass();
+      expect(startedTasks()).toHaveLength(1);
+      expect(typedRows()).toMatchObject([{ outcome: "started", task_id: startedTasks()[0] }]);
+      expect(script.texts().filter(text => text === "Started. It's building now.")).toHaveLength(1);
+      await pass();
+      expect(startedTasks()).toHaveLength(1);
+      expect(script.texts().filter(text => text === "Started. It's building now.")).toHaveLength(1);
     });
 
     test("a redelivered update, and an outage between ingress and the worker, start nothing more and return the first outcome", async () => {

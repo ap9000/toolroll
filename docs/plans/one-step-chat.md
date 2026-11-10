@@ -1,7 +1,7 @@
 # One-step start from chat, and a three-state Home
 
-Status: plan v2, 2026-11-09 (one Codex round: GO WITH CHANGES, ledger at the end; the owner decided a typed yes
-counts). Two branches from main after #328 and #329: `one-step-chat` (C1-C5) and `home-three-groups` (H1-H2). Line
+Status: plan v2, 2026-11-09 (Codex round 1 on the plan: GO WITH CHANGES; round 2 on PR A's build: NO-GO, four
+findings closed; both ledgers at the end; the owner decided a typed yes counts). Two branches from main after #328 and #329: `one-step-chat` (C1-C5) and `home-three-groups` (H1-H2). Line
 numbers below were read at d8019ced; the builder refreshes them after rebasing.
 
 ## Goal
@@ -183,8 +183,17 @@ is 2773).
 ### C4 — Every chat shows it (`src/telegram-lead.ts`, `src/chat-delivery.ts`, `src/teams-chat.ts`, `src/server/chat.ts`)
 
 - `task_start` is an `action` card. Telegram arms "✓ Yes, start work / Cancel" (`telegram-lead.ts:315`); Slack and
-  Discord arm the same yes/cancel; Teams arms its submit buttons (`teams-chat.ts:188`); web chat opens the review
-  page (C2). When the terms don't fit a chat app's card, the card links to the review page, as approvals do today.
+  Discord arm the same yes/cancel; web chat opens the review page (C2). When the terms don't fit a chat app's card,
+  the card links to the review page, as approvals do today.
+- **A yes in chat needs the words shown as written** (as built, after Codex round 2). One rule,
+  `shownAsWritten(text, channel)` in `src/chat-terms.ts`, read by both approval roads (`chat-decide.ts` `shownWhole`
+  and `chat-actions.ts` `sharedActionAllowsChallenge`): Telegram and Discord show a card's words exactly as stored;
+  Slack does unless a word would be drawn as an emoji (`:name:`); Teams draws its cards as Markdown, so it never
+  does. Where the words aren't shown as written, every approval card (Start work and the others in
+  `APPROVAL_ACTIONS`) is a link to the review page ("Review and start") with no in-chat yes, and the door refuses a
+  tap that arrives anyway. Accepting a result still taps in Teams. Showing Teams cards literally is a later arc: it
+  has to be proved against real Teams.
+- A started card, on every app, carries the link to the task it started (`confirmedLink`).
 - `toolroll chat` keeps refusing approvals; for `task_start` the words name the terminal road: "Start it from the
   terminal with `toolroll task new "<title>" --repo <project>`." That command is the CLI's fast start today
   (`newTaskCommand`, `src/operate.ts:14182`). Wording lives in the executor (`chat-actions.ts:1638`).
@@ -251,6 +260,19 @@ the end of `lead-doors.ts`) and no lead turn runs for that message. In ONE trans
   reply ("Started. It's building now." with the link, or the refusal's words) as a `chat_part`.
 If any check fails at this point, the row settles as "didn't count", nothing starts, and Toolroll replies "That yes
 didn't start anything. Tap Start work on the card." It is not passed to the lead as an instruction.
+
+As built, after Codex round 2:
+- **The record outlives its card.** `chat_typed_start.proposal` is a plain number, not a foreign key: ending the
+  chat deletes the proposal, and a yes already recorded must still be answered by Toolroll, never handed to the
+  lead. With no card left the row settles as "didn't count" and Toolroll sends its fixed words straight to the chat
+  (there is no turn left to attach a reply to). Deleting a project removes a record with its message; a record
+  whose message stays is settled and forgets the deleted task.
+- **The reply and the card link the task.** "Started. It's building now." carries the task's link, and the card is
+  repainted "✓ Started. It's building now." with the same link and no buttons; its tokens are spent in the same
+  transaction as the start. Links are made at send time, never stored.
+- **Plain `start` counts right after a card.** `start` is also the phone's help command. A message that is exactly a
+  yes word and is the very next message after an eligible Start card goes to the yes road; `start` anywhere else,
+  and `/start` everywhere, stay help.
 
 - The `approval proved` detail for a typed start carries `typed: { provider, event }` beside the fast marker, so the
   record shows which message was the yes.
@@ -372,6 +394,23 @@ tests. Full suite in GitHub CI.
    chat approval setting decide it.
 6. **Ready results sit under Waiting on you** (Accept is the person's act); Done lists the last 7 days and its figure
    is the full Completed total.
+
+## Codex round 2 ledger (PR A's build review: NO-GO, four findings, all closed)
+
+Both Codex rounds for this arc are used; the fixes below were verified with tests, not a third round.
+
+| # | Severity | Finding | Change |
+| --- | --- | --- | --- |
+| 1 | High | Teams draws card text as Markdown (and Slack turns `:name:` into an emoji), so a tap could approve terms that weren't shown as written | `shownAsWritten` rule: approval cards on Teams, and on Slack when a word would become an emoji, link to the review page; the door refuses a tap. Tests: `chat-approve.test.ts`, `teams.test.ts`, `slack.test.ts` (hidden tokens sent as taps start nothing) |
+| 2 | Medium | `ON DELETE CASCADE` on `chat_typed_start.proposal`: ending the chat deleted the record, and the recorded yes went to the lead as a message | The record no longer references the proposal; the worker answers it itself and settles "didn't count"; project delete settles or removes records. Tests: `telegram-lead.slow.test.ts` (chat ended between ingress and worker), `project-delete.test.ts` |
+| 3 | Low | The typed yes's reply had no task link and the card stayed as it was | Reply and card both link the task; the card is repainted as started and its tokens are spent. The tap road's started card links the task on every app |
+| 4 | Low | Plain `start` as the next message showed help, though C5 lists it as a yes | Routed to the yes road only when it is the very next message after an eligible Start card |
+
+Test gaps Codex named: a claim lost while the yes is acted on now has a test (the start rolls back with the reply,
+the next owner starts it once). A typed yes and a tap can't run at the same instant: each is one synchronous SQLite
+transaction in one worker, so the existing ordered test covers both orders' outcome. The classifier test labelled
+"never answers" returned at once; it is renamed "gives no answer" (the wait's own limit is fast start's, unchanged
+here).
 
 ## Codex round 1 ledger (v1.2 → v2)
 

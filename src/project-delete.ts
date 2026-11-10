@@ -248,8 +248,15 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("chat_decide_action", IN("task_id"), K);
   del("chat_decide_prompt", IN("task_id"), K);
   del("chat_message_ref", `${IN("decision")} OR ${IN("task_id")} OR ${IN("run")} OR project = ? OR ${IN("notification")} OR ${IN("task_ref")}`, decisions, K, R, repo, notifications, T);
-  // A typed yes to a Start card (one-step-chat.md C5): its message, or the card's proposal, goes.
-  del("chat_typed_start", `provider || ':' || event IN (SELECT value FROM json_each(?)) OR ${IN("proposal")}`, conversations, proposals);
+  // A typed yes to a Start card (one-step-chat.md C5). Its record goes with its message. Where the message stays (it
+  // named no task of this project) but the card's proposal goes, the record is settled instead and forgets the task: a
+  // yes still waiting is then answered by Toolroll as one that started nothing, never handed to the lead.
+  del("chat_typed_start", `provider || ':' || event IN (SELECT value FROM json_each(?))`, conversations);
+  if (tableExists(db, "chat_typed_start")) {
+    db.prepare(`UPDATE chat_typed_start SET outcome = 'not-counted', task_id = NULL, finished = COALESCE(finished, ?) WHERE ${IN("proposal")}`).run(now.toISOString(), proposals);
+    // A yes that started one of this project's tasks, said in a message that stays: the record forgets the task.
+    db.prepare(`UPDATE chat_typed_start SET task_id = NULL WHERE ${IN("task_id")}`).run(K);
+  }
   del("chat_part", `provider || ':' || id IN (${parts})`, conversations, K, R);
   del("chat_event", `provider || ':' || id IN (SELECT value FROM json_each(?))`, conversations);
   del("chat_card_task", IN("task_ref"), T);

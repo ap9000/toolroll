@@ -1031,6 +1031,34 @@ describe("Slack shared chat", () => {
     } finally { dropSizer(); }
   });
 
+  test("a Start card whose words Slack would turn into an emoji is never a tap in Slack: it opens the review page, and its hidden tokens start nothing", async () => {
+    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+    try {
+      const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, projects);
+      if (!who.ok) throw Error("who");
+      const prepared = await prepareChatStart(store, { actor: "alex", repo, title: "Fix the :tada: in the footer", turn: 1 }, now);
+      if (!prepared.eligible) throw Error(prepared.reason);
+      const bound = (turn: number) => {
+        store.handle.prepare("UPDATE fast_preview SET turn = ? WHERE id = ?").run(turn, prepared.preview);
+        return { ...prepareSharedAction(store, who.who, "task_start", { repo, preview: prepared.preview }, join(dir, "evidence"), now, turn) };
+      };
+      draft(bound);
+      await drain();
+      const buttons = (call: { args: Record<string, unknown> }) => (call.args["blocks"] as { type: string; elements?: { text: { text: string }; url?: string; value?: string }[] }[]).flatMap(block => block.elements ?? []);
+      const card = sends().at(-1)!;
+      expect(String(card.args["text"])).toContain("This step finishes in Toolroll.");
+      expect(buttons(card).map(one => [one.text.text, one.url])).toEqual([["Review and start", "https://console.example/chat/action/1"]]);
+      // Tokens are minted for every card at plan time; on this card none is shown, and sending one starts nothing.
+      const proposal = Number(store.handle.prepare("SELECT id FROM lead_proposal WHERE kind = 'action' ORDER BY id DESC").get()?.["id"]);
+      const tokens = state.prepare("SELECT token FROM chat_action WHERE provider=:provider AND proposal=? ORDER BY rowid").all(proposal).map(row => String(row.token));
+      const ts = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.proposal') = ? ORDER BY id DESC LIMIT 1").get(proposal)!.message);
+      for (const token of tokens) await tap(token, ts);
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]).toBe(0);
+      expect(store.getLeadProposal(proposal)?.state).toBe("pending");
+      expect(sends().flatMap(buttons).filter(one => one.url === undefined)).toEqual([]);
+    } finally { dropSizer(); }
+  });
+
   test("mark complete confirms behind a second tap in Slack and records the assignment check for the exact result", async () => {
     const { run } = ready();
     const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, projects);

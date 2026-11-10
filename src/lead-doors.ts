@@ -231,7 +231,7 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
       // card, and only while the message's unsettled record names this proposal. Any other use refuses, before the CAS.
       const typed = typedStartOpens(store, proposal.id, action, { via: options.via, ...(options.typedStart === undefined ? {} : { typedStart: options.typedStart }), authority: localDoor(options) ? "local-owner" : "full" });
       if (options.typedStart !== undefined && !typed) return { ok: false, kind: proposal.kind, reason: "refused", said: TYPED_START_REFUSED } as const;
-      const challenged = options.via !== "web" && options.via !== "cli" && ((options.confirm === true && sharedActionAllowsChallenge(action)) || typed);
+      const challenged = options.via !== "web" && options.via !== "cli" && ((options.confirm === true && sharedActionAllowsChallenge(action, options.via)) || typed);
       if (sharedActionNeedsReview(action) && !challenged && (options.via !== "web" || options.actionReview === undefined || options.confirm !== true)) return { ok: false, kind: proposal.kind, reason: "needs-confirm", said: "Review this action in the secure confirmation screen." } as const;
     }
     // Easy-start C1, before the CAS: a local owner confirms only a kind it may (LOCAL_OWNER_PROPOSALS) and, for an
