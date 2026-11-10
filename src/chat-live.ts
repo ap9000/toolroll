@@ -27,6 +27,7 @@ import { createLiveReply, createLiveSender, LIVE_STATUS, type LiveView } from ".
 import type { LeadProgress } from "./lead-progress.js";
 import { renderReply, shapeReplyParts, type ShapeOptions } from "./reply-shape.js";
 import type { ChatContent, ChatEvent, ChatState } from "./chat-delivery-state.js";
+import { unsent } from "./chat-message-states.js";
 
 export type LivePlatform = "slack" | "discord" | "teams";
 
@@ -399,7 +400,7 @@ export async function ackPass(input: {
   if (hooks.unreact !== undefined) {
     const done = eventOf(state.prepare(`SELECT a.event FROM chat_ack a JOIN chat_event e ON e.provider = a.provider AND e.id = a.event
       WHERE a.provider = :provider AND a.state = 'sent' AND e.installation = ? AND e.state IN ('done','dropped')
-        AND NOT EXISTS (SELECT 1 FROM chat_part p WHERE p.provider = a.provider AND p.event = a.event AND p.state = 'pending')
+        AND NOT ${unsent("e")}
       ORDER BY a.created LIMIT 1`).get(installation));
     if (done !== null) {
       try {

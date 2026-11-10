@@ -373,6 +373,7 @@ import { machineActing } from "./scope.js";
 import { reevaluateResultRecords } from "./route-results.js";
 import { holdRuleOff, routeRulesPass, taskEvidenceWords } from "./route-rules.js";
 import { ruleHoldOf } from "./route-store.js";
+import { wasInterrupted } from "./run-ending.js";
 import { loginFileOf, migrateLegacyLogin, savedLoginFile, writableLoginFile } from "./login-secrets.js";
 
 export type Write = (line: string) => void;
@@ -10066,7 +10067,7 @@ function reviewStatusLines(review: ReviewRetryState | null, sourceRun: number | 
     queued: "legacy request retained; the worker will close it without running a model review",
     running: `running — attempt ${review.live?.attempt ?? review.attempts.length} of ${review.cap}`,
     succeeded: `succeeded on attempt ${review.succeeded?.attempt ?? 1} of ${review.cap}`,
-    retryable: `${review.latest?.outcome === "interrupted" || review.latest?.reason === "interrupted" ? "interrupted" : "failed"} on attempt ${review.latest?.attempt ?? review.attempts.length} of ${review.cap} — inspect the saved result; model reviews no longer retry`,
+    retryable: `${review.latest !== null && wasInterrupted(review.latest) ? "interrupted" : "failed"} on attempt ${review.latest?.attempt ?? review.attempts.length} of ${review.cap} — inspect the saved result; model reviews no longer retry`,
     exhausted: `exhausted — all ${review.cap} attempts ended without a review; nothing retries a fourth time`,
   };
   const first = review.state === "queued" && review.attempts.length === 0 ? "queued — waiting for a worker" : word[review.state];

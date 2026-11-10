@@ -36,6 +36,7 @@ import { HANDOFF_PREFIX, MAILBOX_SUFFIX, looksLikeProtocolFile, readMailbox } fr
 import { parseHandoff } from "./decision.js";
 import { diskBytes } from "./storage.js";
 import { markNeverIndex } from "./never-index.js";
+import { endedInterrupted } from "./run-ending.js";
 import { checkoutGit, gitIncidentRecord, teardownGit, type Git } from "./teardown-git.js";
 
 export type Runner = (
@@ -626,7 +627,7 @@ export class WorktreePool {
     // failed/interrupted source required here.
     if (prior.parentRun !== null) {
       const source = this.store.getRun(prior.parentRun);
-      if (source?.outcome === "failed" && source.reason === "interrupted") {
+      if (source !== null && endedInterrupted(source)) {
         return { runId: source.id, kind: "partial" };
       }
     }
@@ -649,7 +650,7 @@ export class WorktreePool {
     if (unhanded !== null && unhanded.outcome === "failed" && unhanded.reason === "no-handoff") {
       return brokeTree(attempt) || brokeTree(later) ? null : { runId: unhanded.id, kind: "partial" };
     }
-    if (prior.outcome !== null && (prior.outcome !== "failed" || prior.reason !== "interrupted")) return null;
+    if (prior.outcome !== null && !endedInterrupted(prior)) return null;
     let names: string[];
     try {
       names = readdirSync(path).filter(name => name.startsWith(HANDOFF_PREFIX) && name.endsWith(MAILBOX_SUFFIX));

@@ -6,6 +6,7 @@
  */
 import { agentFactsFor, agentGroupOf, type AgentFacts } from "./agents-board.js";
 import { stuckSince } from "./agent-board.js";
+import { wasInterrupted } from "./run-ending.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import type { Store } from "./store.js";
 import { runActivityOf } from "./task-activity.js";
@@ -60,7 +61,7 @@ export function factsOfAttempt(facts: AgentFacts, activityAt: string | null, pau
   const unread = !(facts.seen || facts.legacy);
   if (facts.outcome === "built" || facts.outcome === "no-change") return { activity: "finished", outcome: facts.outcome, obligation: false, unread };
   // Stopped by a person or a restart, in either spelling (a legacy outcome, or a failure whose reason is the interruption).
-  if (facts.outcome === "interrupted" || facts.outcome === "refused" || (facts.outcome === "failed" && facts.reason === "interrupted")) return { activity: "stopped", outcome: "none", obligation: false, unread };
+  if (wasInterrupted(facts) || facts.outcome === "refused") return { activity: "stopped", outcome: "none", obligation: false, unread };
   // A parked attempt asks only while its decision is unanswered (when known) and its task is open.
   if (facts.outcome === "parked") return { activity: "finished", outcome: "none", obligation: !settled && decisionOpen !== false, unread };
   // A failure on a task since settled (done another way, or cancelled) no longer leads.
