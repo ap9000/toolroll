@@ -266,6 +266,8 @@ describe("attack 8: the live-release predicate at every deploy entry", () => {
     ["the authority expired", f => { f.store.handle.prepare("UPDATE release_authority SET expires_at = ?").run(RELEASE_NOW.toISOString()); }],
     ["the grant changed", f => { f.store.setVerifyCommand({ repo: f.repo, command: "node other.mjs", timeoutMs: 60_000, approvedBy: "alex" }, RELEASE_NOW); }],
     ["the check access widened", f => { f.store.setProjectCheckAccess(f.repo, "sign-ins", "alex", RELEASE_NOW, { may: "widen" }); }],
+    // Codex review of the steps page, finding 2: cancelling the release task ends what its approval allows.
+    ["the release task is cancelled", f => { if (!f.store.setTaskState(f.taskId, "cancelled", RELEASE_NOW).ok) throw new Error("the cancellation was refused"); }],
   ];
   test.each(cases)("%s: deploy and merge refuse, at the gate and at every deploy-browser entry", (_name, spoil) => {
     const f = open();
@@ -291,6 +293,21 @@ describe("attack 8: the live-release predicate at every deploy entry", () => {
     // The anchor is no longer the tip.
     expect(liveReleaseOf(f.store, f.taskId, "deploy", LATER)).toMatchObject({ ok: false, why: "this is not the release's current commit" });
     expect(gates(f, f.taskId, f.approved).gate).toContain("not the release's current commit");
+  }, 120_000);
+
+  test("a cancelled anchor stops the commit carried from it, and stops the next carry", async () => {
+    const f = open();
+    const carried = await proveCarry(f.store, { authority: f.authority().id, to: f.commit(testOnly), now: LATER });
+    if (!carried.ok) throw new Error(carried.message);
+    expect(liveReleaseOf(f.store, carried.taskId, "dispatch", LATER)).toMatchObject({ applies: true, ok: true });
+    // The task a person approved is cancelled: the carried tip has nothing left to stand on.
+    expect(f.store.setTaskState(f.taskId, "cancelled", LATER)).toEqual({ ok: true });
+    for (const action of ["deploy", "merge", "dispatch", "complete"] as const) {
+      expect(liveReleaseOf(f.store, carried.taskId, action, LATER)).toMatchObject({ applies: true, ok: false, why: "the release task was cancelled" });
+    }
+    const { runner, calls } = countingRunner();
+    expect(await proveCarry(f.store, { authority: f.authority().id, to: f.commit(testOnly), now: LATER, runner })).toMatchObject({ ok: false });
+    expect(calls).toEqual([]);
   }, 120_000);
 
   test("an installed runtime too old to read release authority refuses every release task", () => {

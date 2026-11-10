@@ -18,7 +18,7 @@ import { V156_SCHEMA, V156_STEPS } from "./fallback-schema.js";
 import { V158_ADDED_COLUMNS, V158_SCHEMA, V158_STEPS, LEAD_FAILURE_DETAILS, LEAD_ROUTES, type LeadFailureDetail, type LeadRoute } from "./lead-latency-schema.js";
 import { V157_SCHEMA, V157_STEPS } from "./chat-live-schema.js";
 import { V159_ADDED_COLUMNS, V159_SCHEMA, V159_STEPS } from "./one-step-chat-schema.js";
-import { refArchived, taskArchived } from "./task-archive.js";
+import { refArchived, taskArchived, taskCancelled } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
 import { type ChatBinding, type ChatRoom } from "./chat-core.js";
@@ -9509,6 +9509,9 @@ export class Store {
         if (basis === undefined && machineActing()) return false;
         // A PUT-AWAY TASK (v145, task-tidy.md) is never approved, by any road: restore it first.
         if (taskArchived(this, taskId)) return false;
+        // A CANCELLED TASK the same (Codex review of the steps page, finding 2): no seal, and so no release authority,
+        // is written for work that was cancelled — whichever road asks (a stale form, the CLI, a rule, the schedule).
+        if (taskCancelled(this, taskId)) return false;
         // A RELEASE WAITING FOR CI (Codex review round 1, finding 4): filed while its pull request's checks still ran,
         // only the automatic road (which proves CI itself) seals it until the plane read exact-head CI passing.
         if (basis?.kind !== "auto-check" && basis?.kind !== "auto-green" && releaseCiHoldOf(this, taskId) !== null) return false;

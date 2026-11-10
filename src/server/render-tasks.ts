@@ -1025,6 +1025,7 @@ export function approveRefusalWords(reason: string): string {
   if (reason === "requester" || reason === "person-required") return gateWords({ verdict: "refuse", reason });
   if (reason === "machine-proof") return "not approved: only a person can approve this. Approve it on the task page or from your paired chat";
   if (reason === "archived") return "not approved: this task is archived. Restore it first";
+  if (reason === "cancelled") return "not approved: this task was cancelled";
   if (reason === "unrouted") return "not approved: this plan was made before agents were chosen per task, so its old approval no longer stands. Edit and save the plan to choose today’s agents, then approve it";
   if (reason === "profile-unresolved") return "not approved: the plan can't name an exact agent for every role. Fix the agent setup, then save the plan again";
   if (reason === "password-now") return "not approved: this needs your password typed now — protected work, raised permissions, or a plan an agent wrote can't use a remembered one";
