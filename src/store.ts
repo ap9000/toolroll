@@ -146,6 +146,7 @@ import { chatTurnAmountOf, combineReportedModels, providerTurnsOf, reportedCostU
 import { usageOf } from "./run-efficiency.js";
 import { YOUIYOUX_FILED_VIA } from "./contracts/youiyoux-request.js";
 import { cardShowsScope, cardTermsDigest, shownTermsDigest } from "./chat-terms.js";
+import { moveTask } from "./task-moves.js";
 
 // PR #263 follow-up: the built-ins the Store money seal uses, captured as this module is evaluated, so code that later
 // replaces `Object.defineProperty` and the like can't fool the seal or the lock (lockStoreMoneyMethods refuses when
@@ -7924,10 +7925,7 @@ export class Store {
             return { ok: true as const };
           }
           const prior = this.db.prepare("SELECT state FROM task WHERE id = ?").get(id);
-          const { changes } = this.db
-            .prepare("UPDATE task SET state = ?, updated_at = ? WHERE id = ?")
-            .run(state, now.toISOString(), id);
-          if (Number(changes) === 0) return { ok: false as const, reason: "unknown-task" as const };
+          if (!moveTask(this.db, id, "set", now, state)) return { ok: false as const, reason: "unknown-task" as const };
           if (state === "done" && prior?.["state"] !== "done") {
             const done = this.lookupRef(id);
             if (done !== null) this.noteTaskAct(done.id, "completed", now);
@@ -8920,9 +8918,7 @@ export class Store {
             WHERE local_task_id = ?`,
         )
         .run(by, now.toISOString(), localTaskId);
-      this.db
-        .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ?")
-        .run(now.toISOString(), localTaskId);
+      moveTask(this.db, localTaskId, "reopen", now);
       this.noteLifecycle(
         { taskRef, kind: "task-queued", identity: `t${taskRef}`, subject: "Back in the queue", body: "The tracker item is open again; another attempt can start.", link: chatControlHref("task", localTaskId) },
         now,
@@ -13808,7 +13804,6 @@ export class Store {
       // A put-away task (v145) is restored before it runs again.
       if (refArchived(this, taskRef)) return { ok: false as const, reason: "archived" as const };
 
-      const stamp = now.toISOString();
       if (this.hasLiveClaim(taskRef, now)) return { ok: false as const, reason: "claimed" as const };
 
       const incidents = this.db
@@ -13856,9 +13851,7 @@ export class Store {
       clearRetryEpisode(this, taskRef);
       // A person's Retry is a new person act: a fast start gets a new start window. A machine's never does.
       if (!machineActing()) this.db.prepare("UPDATE task_ref SET fast_start_until = ? WHERE id = ? AND fast_start_until IS NOT NULL").run(new Date(now.getTime() + 30 * 60_000).toISOString(), taskRef);
-      this.db
-        .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state IN ('failed','queued','done')")
-        .run(stamp, taskId);
+      moveTask(this.db, taskId, "retry", now);
       // The stall's page is answered by the act itself.
       this.resolveEpisode(`stalled:${taskRef}`, now);
       this.noteLifecycle(
