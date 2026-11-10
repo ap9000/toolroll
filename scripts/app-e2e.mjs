@@ -3311,6 +3311,9 @@ await journey("easy-start", SCRIPTED, "A refused act offers Set a password; sett
     const sessions = laptopRows("SELECT authority FROM web_session");
     if (sessions.length !== 1 || sessions[0].authority !== "full") throw new Error(`after setting it, sessions are ${JSON.stringify(sessions)}`);
     if (laptopRows("SELECT password_set FROM approver")[0]?.password_set !== 1) throw new Error("the password wasn't recorded as set");
+    // The example flow drafts a reply to its sample card at once. The install stops a moment later, so the draft usually
+    // never starts; when it does, it is answered here, like every other model call in a scripted run.
+    script({ role: "draft", when: [/Do you ship to Canada\?/], answer: { text: "Hi Sam,\n\nYes, we ship to Toronto. Orders to Canada take about a week to arrive." } });
     // The act, again: now it goes through, as a full session with this browser's fresh key.
     await tryExample();
     if (!/^\/flows\/\d+/.test(new URL(on.url()).pathname)) throw new Error(`Try an example went to ${on.url()}: ${await saysNow(on)}`);
