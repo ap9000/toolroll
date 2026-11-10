@@ -148,6 +148,7 @@ import { usageOf } from "./run-efficiency.js";
 import { endedInterrupted, wasInterrupted } from "./run-ending.js";
 import { YOUIYOUX_FILED_VIA } from "./contracts/youiyoux-request.js";
 import { cardShowsScope, cardTermsDigest, shownTermsDigest } from "./chat-terms.js";
+import { markedRunningSql, moveTask } from "./task-moves.js";
 
 // PR #263 follow-up: the built-ins the Store money seal uses, captured as this module is evaluated, so code that later
 // replaces `Object.defineProperty` and the like can't fool the seal or the lock (lockStoreMoneyMethods refuses when
@@ -7926,10 +7927,7 @@ export class Store {
             return { ok: true as const };
           }
           const prior = this.db.prepare("SELECT state FROM task WHERE id = ?").get(id);
-          const { changes } = this.db
-            .prepare("UPDATE task SET state = ?, updated_at = ? WHERE id = ?")
-            .run(state, now.toISOString(), id);
-          if (Number(changes) === 0) return { ok: false as const, reason: "unknown-task" as const };
+          if (!moveTask(this.db, id, "set", now, state)) return { ok: false as const, reason: "unknown-task" as const };
           if (state === "done" && prior?.["state"] !== "done") {
             const done = this.lookupRef(id);
             if (done !== null) this.noteTaskAct(done.id, "completed", now);
@@ -8922,9 +8920,7 @@ export class Store {
             WHERE local_task_id = ?`,
         )
         .run(by, now.toISOString(), localTaskId);
-      this.db
-        .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ?")
-        .run(now.toISOString(), localTaskId);
+      moveTask(this.db, localTaskId, "reopen", now);
       this.noteLifecycle(
         { taskRef, kind: "task-queued", identity: `t${taskRef}`, subject: "Back in the queue", body: "The tracker item is open again; another attempt can start.", link: chatControlHref("task", localTaskId) },
         now,
@@ -13794,50 +13790,10 @@ export class Store {
     | { ok: true; resolvedIncidents: number; rejectedRun: number | null }
     | { ok: false; reason: "unknown-task" | "not-stalled" | "claimed" | "accepted-result" | "published" | "moved" | "archived" } {
     return this.transact(() => {
-      const ref = this.db
-        .prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?")
-        .get(BUILT_IN, taskId);
-      if (ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
-      const taskRef = Number(ref["id"]);
-      // A put-away task (v145) is restored before it runs again.
-      if (refArchived(this, taskRef)) return { ok: false as const, reason: "archived" as const };
-
-      const stamp = now.toISOString();
-      if (this.hasLiveClaim(taskRef, now)) return { ok: false as const, reason: "claimed" as const };
-
-      const incidents = this.db
-        .prepare(
-          `SELECT incident.id FROM incident
-           JOIN run ON run.id = incident.run
-           WHERE run.task_ref = ? AND incident.resolved_at IS NULL`,
-        )
-        .all(taskRef)
-        .map(row => Number(row["id"]));
-      const state = String(this.db.prepare("SELECT state FROM task WHERE id = ?").get(taskId)?.["state"]);
-      // A finished task whose last result was rejected — a failed gate, a
-      // contradicting review, a refuted proof — runs again on the SAME
-      // filing: the branch keeps the earlier attempt, the sealed diff still
-      // spans from the original base, and a corrected candidate needs a
-      // re-scope, not a new task. An accepted or published result is final
-      // here; it is revised through a revision or its pull request.
-      let rejectedRun: number | null = null;
-      if (state === "done") {
-        // The guards hold whether or not an incident is open: a finished
-        // task's last result decides, and an accepted or published one is
-        // never reopened by resolving an incident beside it.
-        const last = this.db
-          .prepare("SELECT id FROM run WHERE task_ref = ? AND role = 'builder' AND finished_at IS NOT NULL ORDER BY id DESC LIMIT 1")
-          .get(taskRef);
-        if (last === undefined) {
-          if (incidents.length === 0) return { ok: false as const, reason: "not-stalled" as const };
-        } else {
-          rejectedRun = Number(last["id"]);
-          const final = this.finalResultReason(rejectedRun);
-          if (final !== null) return { ok: false as const, reason: final };
-        }
-      } else if (incidents.length === 0 && state !== "failed") {
-        return { ok: false as const, reason: "not-stalled" as const };
-      }
+      // Who may run again is one read, shared with the claim refusal's words (requeueEligibility, end of file).
+      const eligible = requeueEligibility(this, taskId, now);
+      if (!eligible.ok) return eligible;
+      const { taskRef, incidents, state, rejectedRun } = eligible;
       if (expect !== undefined) {
         const scope = this.db.prepare("SELECT digest, approved_digest FROM task_scope WHERE task_id = ?").get(taskId);
         if (state !== "done" || rejectedRun !== expect.run || scope === undefined || String(scope["digest"]) !== expect.scopeDigest ||
@@ -13850,9 +13806,7 @@ export class Store {
       clearRetryEpisode(this, taskRef);
       // A person's Retry is a new person act: a fast start gets a new start window. A machine's never does.
       if (!machineActing()) this.db.prepare("UPDATE task_ref SET fast_start_until = ? WHERE id = ? AND fast_start_until IS NOT NULL").run(new Date(now.getTime() + 30 * 60_000).toISOString(), taskRef);
-      this.db
-        .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state IN ('failed','queued','done')")
-        .run(stamp, taskId);
+      moveTask(this.db, taskId, "retry", now);
       // The stall's page is answered by the act itself.
       this.resolveEpisode(`stalled:${taskRef}`, now);
       this.noteLifecycle(
@@ -21904,7 +21858,7 @@ export class Store {
       .prepare(
         `SELECT
            SUM(CASE WHEN task.state = 'queued' THEN 1 ELSE 0 END) AS queued,
-           SUM(CASE WHEN task.state = 'running' THEN 1 ELSE 0 END) AS running
+           SUM(CASE WHEN ${markedRunningSql} THEN 1 ELSE 0 END) AS running
            FROM task JOIN task_ref ON task_ref.backend = 'built-in' AND task_ref.external_id = task.id
           WHERE task_ref.repo = ? AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)`,
       )
@@ -27125,4 +27079,95 @@ export function withdrawApproval(
   const set = ["approved_at = NULL", "approved_by = NULL", "approved_digest = NULL", "approved_profile_json = NULL",
     ...(writes.clearRoute ? ["approved_route_json = NULL"] : []), "approval_basis = ?", ...(writes.clearModeDigest ? ["mode_digest = NULL"] : [])];
   return Number(store.handle.prepare(`UPDATE task_scope SET ${set.join(", ")} ${rows.where}`).run(writes.basisAfter, ...rows.args).changes);
+}
+
+/**
+ * Whether `requeueTask` would run this task again, read without writing anything: the same checks in the same order,
+ * so the requeue itself and every sentence that offers it agree. Read inside the caller's transaction.
+ */
+export function requeueEligibility(store: Store, taskId: string, now: Date):
+  | { ok: true; taskRef: number; incidents: number[]; state: string; rejectedRun: number | null }
+  | { ok: false; reason: "unknown-task" | "not-stalled" | "claimed" | "accepted-result" | "published" | "archived" } {
+  const db = store.handle;
+  const ref = db.prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, taskId);
+  if (ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
+  const taskRef = Number(ref["id"]);
+  // A put-away task (v145) is restored before it runs again.
+  if (refArchived(store, taskRef)) return { ok: false as const, reason: "archived" as const };
+
+  if (store.hasLiveClaim(taskRef, now)) return { ok: false as const, reason: "claimed" as const };
+
+  const incidents = db
+    .prepare(
+      `SELECT incident.id FROM incident
+       JOIN run ON run.id = incident.run
+       WHERE run.task_ref = ? AND incident.resolved_at IS NULL`,
+    )
+    .all(taskRef)
+    .map(row => Number(row["id"]));
+  const state = String(db.prepare("SELECT state FROM task WHERE id = ?").get(taskId)?.["state"]);
+  // A finished task whose last result was rejected — a failed gate, a
+  // contradicting review, a refuted proof — runs again on the SAME
+  // filing: the branch keeps the earlier attempt, the sealed diff still
+  // spans from the original base, and a corrected candidate needs a
+  // re-scope, not a new task. An accepted or published result is final
+  // here; it is revised through a revision or its pull request.
+  let rejectedRun: number | null = null;
+  if (state === "done") {
+    // The guards hold whether or not an incident is open: a finished
+    // task's last result decides, and an accepted or published one is
+    // never reopened by resolving an incident beside it.
+    const last = db
+      .prepare("SELECT id FROM run WHERE task_ref = ? AND role = 'builder' AND finished_at IS NOT NULL ORDER BY id DESC LIMIT 1")
+      .get(taskRef);
+    if (last === undefined) {
+      if (incidents.length === 0) return { ok: false as const, reason: "not-stalled" as const };
+    } else {
+      rejectedRun = Number(last["id"]);
+      const final = store.finalResultReason(rejectedRun);
+      if (final !== null) return { ok: false as const, reason: final };
+    }
+  } else if (incidents.length === 0 && state !== "failed") {
+    return { ok: false as const, reason: "not-stalled" as const };
+  }
+  return { ok: true as const, taskRef, incidents, state, rejectedRun };
+}
+
+/** The three closed states (docs/plans/closed-task-claims.md). */
+export type ClosedState = Extract<TaskState, "done" | "failed" | "cancelled">;
+
+export function isClosedState(state: string): state is ClosedState {
+  return state === "done" || state === "failed" || state === "cancelled";
+}
+
+/**
+ * What this database knows about the task behind a reference, for a claim: a built-in task's row and state, a
+ * built-in reference with no task row, or a task of another backend (its state lives in that tracker, not here).
+ * Read inside the caller's transaction, so the answer holds until it commits.
+ */
+export function taskStateForClaim(store: Store, taskRef: number):
+  | { kind: "built-in"; state: TaskState }
+  | { kind: "missing" }
+  | { kind: "outside" } {
+  const row = store.handle.prepare(`SELECT task_ref.backend AS backend, task.state AS state FROM task_ref
+    LEFT JOIN task ON task.id = task_ref.external_id AND task_ref.backend = ?
+    WHERE task_ref.id = ?`).get(BUILT_IN, taskRef);
+  if (row === undefined) return { kind: "missing" };
+  if (String(row["backend"]) !== BUILT_IN) return { kind: "outside" };
+  if (row["state"] === null || row["state"] === undefined) return { kind: "missing" };
+  return { kind: "built-in", state: String(row["state"]) as TaskState };
+}
+
+/**
+ * Check cleanup's proof (acp-check.ts settleChecks, claim.ts acquireForCheckCleanup): the task reference of check
+ * `checkId` when that check belongs to `runner`, has finished (passed or failed) and is not yet settled, is held right
+ * now by exactly this cleanup `attempt`, and is bound to the built-in task named from the check row's own id. Null
+ * otherwise. Every fact comes from rows only code writes; read inside the caller's transaction.
+ */
+export function checkCleanupTaskOf(store: Store, checkId: number, runner: string, attempt: string, now: Date): number | null {
+  const row = store.handle.prepare(`SELECT r.task_ref AS ref FROM acp_check_request r
+    JOIN task_ref t ON t.id = r.task_ref AND t.backend = ? AND t.external_id = 'agent-check-' || r.id
+    WHERE r.id = ? AND r.runner = ? AND r.state IN ('passed','failed') AND r.settled_at IS NULL
+      AND r.settle_by = ? AND r.settle_until > ?`).get(BUILT_IN, checkId, runner, attempt, now.toISOString());
+  return row === undefined ? null : Number(row["ref"]);
 }

@@ -12,7 +12,7 @@
  */
 import { randomBytes } from "node:crypto";
 import type { ChatBinding, ChatContent, ChatEvent, ChatState } from "./chat-delivery-state.js";
-import { partContent, savedChatPart } from "./chat-delivery-state.js";
+import { partContent } from "./chat-delivery-state.js";
 import type { Store, TelegramBinding, SubagentQuestionRow } from "./store.js";
 import type { InlineButton } from "./telegram-lead.js";
 import { answerSubagentQuestion } from "./subagent-work.js";
@@ -105,12 +105,13 @@ export function chatQuestionButtons(state: ChatState, part: number, now: Date): 
     .map(one => ({ token: String(one.token), label: (labels.get(one.choice ?? "") ?? IN_WORDS).slice(0, 75), words: one.choice === null }));
 }
 
-/** Show the tapped notice again with the answer, and without its buttons. */
-function repaint(state: ChatState, part: number, event: ChatEvent, line: string): void {
+/** Show the tapped notice again with the answer, and without its buttons. A notice that was dropped isn't brought back:
+ * the line goes as a new message. */
+function repaint(state: ChatState, part: number, event: ChatEvent, line: string, now: Date): void {
   const row = state.prepare("SELECT payload FROM chat_part WHERE provider=:provider AND id=?").get(part);
   const before = row === undefined ? { text: "" } : partContent(String(row["payload"]));
   const content: ChatContent = { text: `${before.text}\n\n${line}`.slice(0, 3400), edit: event.ts, ...(before.link === undefined ? {} : { link: before.link }), ...(before.channel === undefined ? {} : { channel: before.channel }) };
-  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE provider=:provider AND id=?").run(savedChatPart(content), part);
+  if (!state.repaint(part, content)) state.plan(event.id, [{ text: line }], now);
 }
 
 /** A tapped question button, inside the action's transaction; false when the token isn't one. */
@@ -125,7 +126,7 @@ export function applyChatQuestionTap(options: { store: Store; state: ChatState; 
   const question = store.subagentQuestion(questionId);
   if (action["consumed"] !== null || String(action["expires"]) <= now.toISOString() || question === null || question.state !== "open") {
     retireEverywhere(store, questionId, now, state);
-    repaint(state, part, event, "This was already answered.");
+    repaint(state, part, event, "This was already answered.", now);
     state.finish(event.id);
     return true;
   }
@@ -141,7 +142,7 @@ export function applyChatQuestionTap(options: { store: Store; state: ChatState; 
   if (!answered.ok) { say(answered.said); return true; }
   retireEverywhere(store, questionId, now, state);
   const label = question.options.find(one => one.id === action["choice"])?.label ?? String(action["choice"]);
-  repaint(state, part, event, `✅ You answered: ${label}. ${answered.said}`);
+  repaint(state, part, event, `✅ You answered: ${label}. ${answered.said}`, now);
   state.finish(event.id);
   return true;
 }

@@ -1665,8 +1665,8 @@ export function createDemoLead(input: {
     }
   };
 
-  /** Each stage's store facts, written once, in order. */
-  const enterStage = (exchange: DemoExchange, stage: number, at: Date): void => {
+  /** Each stage's store facts, written once, in order. False when the stage can't start (its task was closed). */
+  const enterStage = (exchange: DemoExchange, stage: number, at: Date): boolean => {
     const plan = exchange.plan;
     const taskId = exchange.taskId!;
     const ref = store.refFor("built-in", taskId).id;
@@ -1679,6 +1679,8 @@ export function createDemoLead(input: {
       }
       const route = store.approvedRouteOf(taskId);
       const claimed = acquire(store, ref, CREW, { now: at, token: crewSeen(at), ttlMs: 10 * 60_000 });
+      // A task closed meanwhile (cancelled, say) is not built: no run starts and the story stops here.
+      if (!claimed.ok && (claimed.reason === "closed" || claimed.reason === "no-task")) return false;
       const leaseId = claimed.ok ? claimed.claim.leaseId : `demo-lease-${taskId}`;
       const run = store.startRun({
         taskRef: ref,
@@ -1700,6 +1702,7 @@ export function createDemoLead(input: {
       store.setRunPhase(exchange.runId!, "verifying-proof", at);
     }
     if (stage === 3) finish(exchange, at);
+    return true;
   };
 
   const finish = (exchange: DemoExchange, at: Date): void => {
@@ -1772,7 +1775,7 @@ export function createDemoLead(input: {
       const current = exchange.stage === null ? -1 : DEMO_STAGES.indexOf(exchange.stage);
       for (let stage = current + 1; stage <= target; stage++) {
         const at = new Date(exchange.approvedAt + [0, 1, 3, 4][stage]! * stepMs);
-        enterStage(exchange, stage, at);
+        if (!enterStage(exchange, stage, at)) break;
         if (stage < 3) exchange.stage = DEMO_STAGES[stage]!;
         else { exchange.state = "ready"; exchange.stage = null; exchange.progress = null; }
         touched();

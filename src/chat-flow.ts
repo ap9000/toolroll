@@ -36,7 +36,7 @@ import { renderReply } from "./reply-shape.js";
 import { deciderOf, replyTarget } from "./flows.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { verifyApproverStanding } from "./principal.js";
-import { chatHash, partContent, savedChatPart, type ChatBinding, type ChatContent, type ChatEvent, type ChatState } from "./chat-delivery-state.js";
+import { chatHash, partContent, type ChatBinding, type ChatContent, type ChatEvent, type ChatState } from "./chat-delivery-state.js";
 import { readHeldWords } from "./contracts/chat-content.js";
 import type { Store } from "./store.js";
 import { FLOW_DECIDE_KEY, flowDecisionAt } from "./telegram-flow.js";
@@ -155,14 +155,15 @@ const retire = (state: ChatState, card: number, entry: number, now: Date): void 
   state.prepare("UPDATE chat_flow_prompt SET consumed=? WHERE provider=:provider AND card=? AND entry=? AND consumed IS NULL").run(now.toISOString(), card, entry);
 };
 
-/** Show the tapped notice again with what happened, and without its buttons. */
-function repaint(state: ChatState, part: number, event: ChatEvent, line: string): void {
+/** Show the tapped notice again with what happened, and without its buttons. A notice that was dropped isn't brought
+ * back: the line goes as a new message. */
+function repaint(state: ChatState, part: number, event: ChatEvent, line: string, now: Date): void {
   const row = state.prepare("SELECT payload FROM chat_part WHERE provider=:provider AND id=?").get(part);
   const before = row === undefined ? { text: "" } : partContent(String(row["payload"]));
   // An item list (flow-items.ts) stays whole and keeps its bold titles and labelled links; only plain text is capped.
   const content: ChatContent = { text: before.voice === true ? `${before.text}\n\n${line}` : `${before.text}\n\n${line}`.slice(0, PART_CHARS + 400), edit: event.ts, ...(before.voice === true ? { voice: true as const } : {}),
     ...(before.link === undefined ? {} : { link: before.link }), ...(before.channel === undefined ? {} : { channel: before.channel }) };
-  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE provider=:provider AND id=?").run(savedChatPart(content), part);
+  if (!state.repaint(part, content)) state.plan(event.id, [{ text: line }], now);
 }
 
 /**
@@ -182,7 +183,7 @@ export function applyChatFlowTap(options: { store: Store; state: ChatState; labe
   const waiting = flowDecisionAt(store, card, entry);
   if (waiting === null) {
     retire(state, card, entry, now);
-    repaint(state, part, event, "This card has moved on since; nothing was changed.");
+    repaint(state, part, event, "This card has moved on since; nothing was changed.", now);
     state.finish(event.id);
     return true;
   }
@@ -195,7 +196,7 @@ export function applyChatFlowTap(options: { store: Store; state: ChatState; labe
     if (!decided.ok) { say(decided.message); return true; }
     retire(state, card, entry, now);
     store.retireTelegramFlowVisit(card, entry, now);
-    repaint(state, part, event, `✅ You approved it. ${decided.said}`);
+    repaint(state, part, event, `✅ You approved it. ${decided.said}`, now);
     state.finish(event.id);
     return true;
   }
@@ -224,7 +225,7 @@ function applyChatChoiceTap(options: { store: Store; state: ChatState; label: st
   const visit = flowChoiceAt(store, card, entry);
   if (visit === null) {
     retire(state, card, entry, now);
-    repaint(state, part, event, "This card has moved on since; nothing was changed.");
+    repaint(state, part, event, "This card has moved on since; nothing was changed.", now);
     state.finish(event.id);
     return true;
   }
@@ -235,7 +236,7 @@ function applyChatChoiceTap(options: { store: Store; state: ChatState; label: st
   if (!chosen.ok) { say(chosen.message); return true; }
   retire(state, card, entry, now);
   store.retireFlowChoices(card, entry, now);
-  repaint(state, part, event, `✅ You chose “${label}”. ${chosen.said}`);
+  repaint(state, part, event, `✅ You chose “${label}”. ${chosen.said}`, now);
   state.finish(event.id);
   return true;
 }
@@ -312,7 +313,7 @@ function applyChatNoteTap(options: { store: Store; state: ChatState; label: stri
   if (Number(tapped["owner"]) !== binding.id || tapped["channel"] !== event.channel || tapped["message"] !== event.ts) { say("That button expired or was already used. Ask for the current state before trying again."); return true; }
   const part = Number(tapped["part"]), card = Number(tapped["card"]), entry = Number(tapped["entry"]);
   if (tapped["consumed"] !== null || String(tapped["expires"]) <= now.toISOString()) {
-    repaint(state, part, event, "That choice was already made, or the card moved on; nothing was changed.");
+    repaint(state, part, event, "That choice was already made, or the card moved on; nothing was changed.", now);
     state.finish(event.id);
     return true;
   }
@@ -320,19 +321,19 @@ function applyChatNoteTap(options: { store: Store; state: ChatState; label: stri
   const held = state.event(String(tapped["held"]));
   const kept = typeof tapped["words"] === "string" ? readHeldWords(tapped["words"]) : null;
   const words = kept?.ok === true ? kept.value : null;
-  if (held === null || words === null) { repaint(state, part, event, "That message is no longer kept; nothing was changed."); state.finish(event.id); return true; }
+  if (held === null || words === null) { repaint(state, part, event, "That message is no longer kept; nothing was changed.", now); state.finish(event.id); return true; }
   if (tapped["answer"] === "no") {
     // Passed on as the message it was, to the lead, once.
     state.enqueue({ id: chatHash(`${held.id}:lead`), installation: held.installation, binding: held.binding, kind: "message", channel: held.channel, member: held.member,
       ts: held.ts, thread: held.thread, payload: { ...words, lead: true }, created: now.toISOString() });
-    repaint(state, part, event, "Passed to the lead.");
+    repaint(state, part, event, "Passed to the lead.", now);
     state.finish(event.id);
     return true;
   }
-  if (flowChoiceAt(store, card, entry) === null) { repaint(state, part, event, "That choice was already made, or the card moved on; nothing was changed."); state.finish(event.id); return true; }
+  if (flowChoiceAt(store, card, entry) === null) { repaint(state, part, event, "That choice was already made, or the card moved on; nothing was changed.", now); state.finish(event.id); return true; }
   const done = replyAsNote(options, binding, words.text.trim(), typeof words.originalLength === "number" && words.originalLength > words.text.length, { card, entry }, repos, now);
   if (done === null) { state.finish(event.id, true); return true; }
-  repaint(state, part, event, done.ok ? `↩️ ${done.said}` : done.said);
+  repaint(state, part, event, done.ok ? `↩️ ${done.said}` : done.said, now);
   state.finish(event.id);
   return true;
 }

@@ -31,7 +31,7 @@ import { queueBuildReview } from "./build-review.js";
 import { followBuiltRun } from "./check-repair.js";
 import { homedir } from "node:os";
 import type { BuildResult } from "./builder.js";
-import type { Store } from "./store.js";
+import type { ClosedState, Store } from "./store.js";
 import { nightlyTaskRef, releaseTaskRef } from "./store.js";
 import { type ProofVerdict, type VerifyCommandFacts } from "./proof.js";
 import { verificationEvidence, failedVerificationEvidence } from "./verification-evidence.js";
@@ -86,6 +86,9 @@ export type Disposition =
       disposition: string | null;
       strikes: number | null;
       sealed: boolean;
+      /** The state sealed when strikes ran out on a task a person had already closed (disposition "closed"): it is
+       * kept, with no incident, hold or page. Null for every other ending. */
+      closedState: ClosedState | null;
     }
   /** The standalone road's simple record: outcome written, nothing else. */
   | { kind: "recorded"; outcome: "failed" | "refused" }
@@ -402,7 +405,7 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
     }
     if (leaseId === undefined) {
       store.finishRun(runId, { outcome: "failed", reason: result.reason, now: clock() });
-      return { kind: "failed", failureClass, disposition: null, strikes: null, sealed: false };
+      return { kind: "failed", failureClass, disposition: null, strikes: null, sealed: false, closedState: null };
     }
     const sealed = finalize(store, leaseId, {
       kind: "failure",
@@ -419,6 +422,7 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
       disposition: sealed.ok ? sealed.disposition : null,
       strikes: sealed.ok && "strikes" in sealed ? sealed.strikes : null,
       sealed: sealed.ok,
+      closedState: sealed.ok && sealed.disposition === "closed" ? sealed.state : null,
     };
   }
 

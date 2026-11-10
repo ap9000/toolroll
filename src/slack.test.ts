@@ -1363,6 +1363,36 @@ describe("Slack shared chat", () => {
     expect((runner as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(turns + 1);
   });
 
+  test("a tap on a question whose message was dropped answers as a new message; the dropped one is not sent again", async () => {
+    const buttonsOf = (call: { args: Record<string, unknown> }) =>
+      ((call.args.blocks as Array<{ type: string; elements?: Array<{ text: { text: string }; value?: string; action_id: string }> }>).find(block => block.type === "actions")?.elements ?? []);
+    answers.push(
+      { text: "", calls: [{ id: "q1", name: "ask_owner", args: { question: "Which page first?", options: ["Login", "Signup"] } }] },
+      { text: "One choice changes the plan." },
+    );
+    expect(receive("Fix the sign-in pages")).toBe(true);
+    await processSlackEvent(options);
+    await drain();
+    const buttons = buttonsOf(sends().at(-1)!);
+    const ask = state.prepare("SELECT id,message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.ask') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!;
+    const askTs = String(ask.message);
+    // Its delivery was given up on after it reached the chat.
+    state.dropPart(Number(ask.id), "Slack delivery failed");
+    const before = sends().length;
+    answers.push({ text: "Starting with the login page." });
+    receiveSlack(state, ID, "interactive", { ...action(buttons[0]!.value!, askTs), message: {}, actions: [{ action_id: "toolroll_question_choice", value: buttons[0]!.value!, action_ts: `1789700001.${String(++serial).padStart(6, "0")}` }] }, now);
+    await processSlackEvent(options);
+    await drain();
+    const after = sends().slice(before);
+    expect(after.some(one => one.method === "chat.update" && one.args.ts === askTs)).toBe(false);
+    expect(after.some(one => one.method === "chat.postMessage" && String(one.args.text).includes("You chose: Login"))).toBe(true);
+    expect(state.part(Number(ask.id))!.state).toBe("dropped");
+    // The choice still reaches the lead as the owner's next message.
+    await processSlackEvent(options);
+    await drain();
+    expect(String(sends().at(-1)!.args.text)).toContain("Starting with the login page.");
+  });
+
   test("the lead's question works in a thread of the owner's own chat, says expired when too old, and its buttons never block a purge", async () => {
     const buttonsOf = (call: { args: Record<string, unknown> }) =>
       ((call.args.blocks as Array<{ type: string; elements?: Array<{ text: { text: string }; value?: string; action_id: string }> }>).find(block => block.type === "actions")?.elements ?? []);

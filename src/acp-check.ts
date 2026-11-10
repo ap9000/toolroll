@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
 import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchOf } from "./acp-attest.js";
 import { inspectAcpAgent } from "./acp-inspect.js";
-import { acquire, acquireForCheck, heartbeat, release } from "./claim.js";
+import { acquireForCheck, acquireForCheckCleanup, heartbeat, release } from "./claim.js";
 import type { AcpControl, RunOptions } from "./exec.js";
 import { invokeAgent, type InvokeResult } from "./invoke.js";
 import type { ProviderRunner } from "./provider.js";
@@ -91,7 +91,9 @@ async function settleChecks(job: AcpCheckJob, clock: () => Date): Promise<void> 
       // incarnation of a watch whose recovery may release it mid-way. Someone taking the task in between wins.
       if (lease !== null) release(store, lease, clock());
       const fresh = `agent-check-${request.id}-settle-${randomBytes(4).toString("hex")}`;
-      const took = acquire(store, ref, job.runner, { now: clock(), token: job.token, newLeaseId: () => fresh, ttlMs: SETTLE_HOLD_MS, incarnation: job.watch.owner });
+      // Cleanup's own door: it may claim the check's task even when that task is done, failed or cancelled, proved
+      // against this check row, this runner and this attempt (claim.ts acquireForCheckCleanup).
+      const took = acquireForCheckCleanup(store, request.id, attempt, job.runner, { now: clock(), token: job.token, newLeaseId: () => fresh, ttlMs: SETTLE_HOLD_MS, incarnation: job.watch.owner });
       if (!took.ok || !store.setAcpCheckLease(request.id, fresh)) { if (took.ok) release(store, fresh, clock()); continue; }
       held = fresh;
       const claim = held;

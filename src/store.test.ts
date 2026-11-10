@@ -1293,8 +1293,10 @@ describe("console mutation semantics, re-proved server-side", () => {
     enroll(store, "runner-a");
     const ref = store.refFor(BUILT_IN, "t-1").id;
     store.placeTask(ref, REPO);
+    // Claimed first: a failed task can't be claimed (closed-task-claims.md), but a person can mark it failed while
+    // the claim is live, and that is the case requeue must refuse.
+    expect(acquire(store, ref, "runner-a", { token: tok("runner-a"), now: later(1_000), ttlMs: 60 * 60_000 })).toMatchObject({ ok: true });
     store.setTaskState("t-1", "failed", T0);
-    acquire(store, ref, "runner-a", { token: tok("runner-a"), now: later(1_000), ttlMs: 60 * 60_000 });
     expect(store.requeueTask("t-1", "alex", later(2_000))).toMatchObject({ ok: false, reason: "claimed" });
   });
 

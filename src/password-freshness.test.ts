@@ -464,7 +464,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/tokens-cli.ts#<module>": 2,
     "src/tokens-cli.ts#runTokensCommand@1": 1,
     // `toolroll map`: a sign-in limits a read to that person's projects; no window is honoured there.
-    "src/operate.ts#mapCommand@224": 1,
+    "src/operate.ts#mapCommand@223": 1,
   },
   "authenticateApprover": {
     "src/chat-actions.ts#<module>": 2,
@@ -484,11 +484,11 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#<module>": 1,
     "src/operate.ts#acceptTaskProof@99": 1,
     // finding, task before-after, task failing-first, captures mark: an ordinary credentialed operator act.
-    "src/operate.ts#followThroughContext@233>prove@3": 1,
+    "src/operate.ts#followThroughContext@232>prove@3": 1,
     // task archive / restore / tidy --apply: an ordinary credentialed operator act (task-tidy.md), a person's only.
-    "src/operate.ts#archiveTasksCommand@201": 1,
-    "src/operate.ts#restoreTasksCommand@202": 1,
-    "src/operate.ts#tidyTasksCommand@203": 1,
+    "src/operate.ts#archiveTasksCommand@200": 1,
+    "src/operate.ts#restoreTasksCommand@201": 1,
+    "src/operate.ts#tidyTasksCommand@202": 1,
     "src/operate.ts#authenticateApprover@126": 1,
     "src/operate.ts#bridgeCommand@69": 1,
     "src/operate.ts#budgetCommand@154": 1,
@@ -509,7 +509,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#peopleCommand@45": 1,
     "src/operate.ts#planTaskCommand@37": 1,
     "src/operate.ts#policyCommand@162": 1,
-    "src/operate.ts#projectCheckAccessCommand@180": 1,
+    "src/operate.ts#projectCheckAccessCommand@179": 1,
     "src/operate.ts#projectChecksCommand@146": 1,
     "src/operate.ts#projectConcurrencyCommand@145": 1,
     "src/operate.ts#projectDeleteCommand@149": 1,
@@ -517,7 +517,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#projectRulesCommand@141": 1,
     "src/operate.ts#publishCommand@70": 5,
     // Quick answers on or off (responsive-chat.md §8): an instance operator's password, checked where it is written.
-    "src/operate.ts#quickAnswersConfig@235": 1,
+    "src/operate.ts#quickAnswersConfig@234": 1,
     "src/operate.ts#regateTaskCommand@36": 1,
     "src/operate.ts#repairTaskCommand@100": 2,
     "src/operate.ts#requeueTask@35": 1,
@@ -619,12 +619,12 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/scope.ts#proveCredential@41": 1,
     "src/server/settings.ts#createSettingsHandlers@1>telegramPairAct@82><anonymous>@1": 1,
     // "Approve it to keep it" (fast-start.ts) and a held release's Let it go on (release-next.ts): a person, proved now.
-    "src/operate.ts#keepGrownCommand@226": 1,
+    "src/operate.ts#keepGrownCommand@225": 1,
     "src/server/tasks.ts#createReleaseSheetHandlers@6": 2,
     "src/server/tasks.ts#createReleaseSheetHandlers@6>goOn@6": 1,
     // `toolroll map`: Check now and a person's door for on/off, each a typed credential proved now, as `models` does.
-    "src/operate.ts#mapCommand@224>runMapCommand(positional,flags,_).approver@4": 1,
-    "src/operate.ts#mapCommand@224>runMapCommand(positional,flags,_).door@5": 1,
+    "src/operate.ts#mapCommand@223>runMapCommand(positional,flags,_).approver@4": 1,
+    "src/operate.ts#mapCommand@223>runMapCommand(positional,flags,_).door@5": 1,
   },
   "checkApproverPassword": {
     "src/server/guards.ts#<module>": 1,
@@ -643,7 +643,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // process record, and `up` compares its own token's hash to confirm the registration is still its own. Neither
     // authenticates anyone; a proof only retires a holder whose every process has exited (reviewed new sites).
     "src/laptop-background.ts#<module>": 1,
-    "src/operate.ts#recordRunnerProcess@185": 4,
+    "src/operate.ts#recordRunnerProcess@184": 4,
     "src/operate.ts#upCommand@67": 1,
     "src/operate.ts#upCommand@67>roleSpawned@22": 1,
     "src/runner-process.ts#credentialDigest@4": 2,
@@ -696,7 +696,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "fresh": {
     "src/acp-check.ts#settleChecks@2": 4,
-    "src/acp-check.ts#settleChecks@2>took:acquire(store,ref,job.runner,_).newLeaseId@2": 1,
+    "src/acp-check.ts#settleChecks@2>took:acquireForCheckCleanup(store,request.id,attempt,job.runner,_).newLeaseId@2": 1,
     "src/acp-client.ts#exactField@10": 3,
     "src/backup.ts#runningNow@18": 2,
     "src/browser-workspace.ts#<module>": 2,
@@ -922,7 +922,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "verifyApproverByPassword": {
     // toolroll card: a read, signed in as flaky is.
-    "src/operate.ts#cardCommand@231": 1,
+    "src/operate.ts#cardCommand@230": 1,
     "src/flows-cli.ts#<module>": 2,
     "src/flows-cli.ts#runFlowsCommand@3": 1,
     "src/lead-cli.ts#<module>": 2,
@@ -939,7 +939,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#<module>": 2,
     "src/server/chat.ts#createChatHandlers@1>leadMint@17": 1,
     // `toolroll flaky`: a read, for the projects this typed login can open.
-    "src/operate.ts#flakyCommand@229": 1,
+    "src/operate.ts#flakyCommand@228": 1,
   },
   "verifyCredential": {
     "src/scope.ts#authenticateAccount@32": 2,
@@ -1009,11 +1009,11 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#credentialApprover@125": 1,
     // Agent Baseline arc 1: a project's network and unconfined agents change with a password typed now.
     "src/operate.ts#projectNetworkCommand@142": 1,
-    "src/operate.ts#projectFallbackCommand@234": 1,
+    "src/operate.ts#projectFallbackCommand@233": 1,
     "src/operate.ts#projectWritesCommand@143": 1,
     "src/operate.ts#unconfinedAgentsCommand@144": 1,
     // Sandbox parity C9: a project's sandbox changes with a password typed now (reviewed new site).
-    "src/operate.ts#projectSandboxCommand@181": 1,
+    "src/operate.ts#projectSandboxCommand@180": 1,
   },
   proveCredential: {
     "src/scope.ts#addApprover@31>store.transact(_)@1": 1,

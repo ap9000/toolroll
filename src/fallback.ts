@@ -23,6 +23,7 @@ import { providerName } from "./provider-auth.js";
 import { PLAN_LOGIN_PROVABLE } from "./plan-login.js";
 import { canonicalChainJson, chainDigestOf, LIVE_CHAIN_VERSION, liveChainFromJson, machineActing, profileDigestOf, type ChainEntry, type ExecutionProfile, type Scope, type UnattendedPermissionMode } from "./scope.js";
 import type { Store } from "./store.js";
+import { moveTask } from "./task-moves.js";
 
 export const MAX_FALLBACK_ENTRIES = 3;
 
@@ -459,7 +460,7 @@ export function blockAfterSignedOut(store: Store, runId: number, now: Date): boo
     if (walk === null || walk.closedReason !== "entry-signed-out") return false;
     store.handle.prepare("UPDATE run SET reason = 'fallback-signed-out' WHERE id = ? AND outcome = 'refused'").run(runId);
     const ref = store.refForId(run.taskRef);
-    if (ref !== null) store.handle.prepare("UPDATE task SET state = 'failed', updated_at = ? WHERE id = ? AND state IN ('queued','running')").run(now.toISOString(), ref.externalId);
+    if (ref !== null) moveTask(store.handle, ref.externalId, "giveUp", now);
     return true;
   });
 }
@@ -502,7 +503,7 @@ export function moveOnIfExhausted(store: Store, runId: number, taskId: string, n
   store.handle.prepare("INSERT INTO fallback_move (walk, to_index, from_run, terminal_class, paid, moved_at) VALUES (?, ?, ?, ?, ?, ?)")
     .run(walk.id, run.chainIndex + 1, run.id, evidence.terminalClass, paid ? 1 : 0, now.toISOString());
   store.handle.prepare("UPDATE fallback_walk SET cursor = ? WHERE id = ?").run(run.chainIndex + 1, walk.id);
-  store.handle.prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'").run(now.toISOString(), taskId);
+  moveTask(store.handle, taskId, "requeue", now);
   store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: store.refForId(run.taskRef)?.repo ?? null, taskId, runId: run.id, action: "work moved to fallback agent", outcome: paid ? "paid" : "plan", source: "work", detail: entryWords(to) });
   tell(store, run, taskId, "moved", to, now);
   store.bumpWake();

@@ -48,6 +48,7 @@ describe("the CLI's machine contract", () => {
         ...answers.map(one => ({ name: one.argv, input: one.envelope })),
         { name: "a key a newer Toolroll adds", input: { ...status, somethingNew: [1, 2] } },
         { name: "a command outside the guide", input: { envelopeVersion: 1, ok: true, command: "runner reap", recovered: [] } },
+        { name: "a claim refused on a closed task, with its state", input: { envelopeVersion: 1, ok: false, command: "claim", reason: "closed", message: "t-1 is done, so it can't be claimed. See its result: `toolroll task show t-1`", state: "done" } },
       ],
       invalid: [
         { name: "no envelope version", input: { ok: true, command: "status" }, paths: ["envelopeVersion"] },

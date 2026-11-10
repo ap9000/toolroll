@@ -12,7 +12,7 @@ import { openStore, type Store } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { ChatState, chatHash } from "./chat-delivery-state.js";
 import { createDecisionServer } from "./serve.js";
-import { checkTeamsCredentials, forgetTeamsKeys, forgetTeamsToken, saveTeamsCredentials, teamsIdentity, verifyTeamsToken, type TeamsApi, type TeamsCredentials } from "./teams-api.js";
+import { TeamsError, checkTeamsCredentials, forgetTeamsKeys, forgetTeamsToken, saveTeamsCredentials, teamsIdentity, verifyTeamsToken, type TeamsApi, type TeamsCredentials } from "./teams-api.js";
 import { deliverTeamsPart, planTeamsNotifications, planTeamsRooms, processTeamsEvent, receiveTeams, type TeamsChatOptions } from "./teams-chat.js";
 import { flowFromSteps } from "./flows.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
@@ -87,6 +87,30 @@ describe("Teams shared chat", () => {
     state.lease(credentials.installation, "test", now);
     expect(await deliverTeamsPart(options)).toBe(false);
     expect(state.prepare("SELECT payload,state,next_at,problem,attempts,uncertain FROM chat_part WHERE provider=:provider AND event='bad-part'").get()).toEqual(row);
+  });
+
+  test("a part Teams keeps failing to take is never given up: it waits longer, as on Slack and Discord", async () => {
+    const binding = pairAs("alex", ALEX, DM_ALEX)!;
+    state.enqueue({ id: "slow-part", installation: credentials.installation, binding: binding.id, kind: "notice", channel: DM_ALEX, member: ALEX, ts: "", thread: "", payload: {}, created: now.toISOString() });
+    state.plan("slow-part", [{ text: "Saved reply" }], now);
+    const part = () => state.prepare("SELECT state,next_at,attempts FROM chat_part WHERE provider=:provider AND event='slow-part'").get()!;
+    options = { ...options, api: async method => { if (method === "GET") return { id: ALEX }; throw new TeamsError("Teams is unreachable", 1000, true); } };
+    const waits: number[] = [];
+    for (let tries = 1; tries <= 25; tries++) {
+      expect(await deliverTeamsPart(options)).toBe(true);
+      const row = part();
+      expect(row).toMatchObject({ state: "pending", attempts: tries });
+      waits.push(new Date(String(row["next_at"])).getTime() - now.getTime());
+      now = new Date(String(row["next_at"]));
+      state.lease(credentials.installation, "test", now);
+    }
+    // The shared steps, then the last one for as long as it takes.
+    expect(waits.slice(0, 5)).toEqual([5000, 15000, 60000, 300000, 300000]);
+    expect(new Set(waits.slice(4))).toEqual(new Set([300000]));
+    // It still goes out once Teams answers.
+    options = { ...options, api };
+    expect(await deliverTeamsPart(options)).toBe(true);
+    expect(part()).toMatchObject({ state: "sent" });
   });
 
   /** A pending card on alex's own Teams thread, planned as a part, without a model turn. */
