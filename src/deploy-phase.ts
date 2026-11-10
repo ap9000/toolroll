@@ -7,6 +7,7 @@
  * its own hand-written expectations.
  */
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** What `toolroll release` does with a deployment that stopped at a phase; "refuse" for a word that is no phase. */
 export type DeployAction = "none" | "lift-pause" | "forward" | "roll-back" | "refuse";
@@ -32,7 +33,8 @@ export function deployPhaseRows(data: unknown): readonly Row[] {
   }));
 }
 
-const ROWS = deployPhaseRows(JSON.parse(readFileSync(new URL("./deploy-phase-data.json", import.meta.url), "utf8")));
+// By path, not by URL: a test environment that stands in for a browser replaces the global URL.
+const ROWS = deployPhaseRows(JSON.parse(readFileSync(join(import.meta.dirname, "deploy-phase-data.json"), "utf8")));
 const rowOf = (phase: unknown): Row | undefined => typeof phase === "string" ? ROWS.find(row => row.phase === phase) : undefined;
 const withFlag = (flag: Flag): readonly string[] => Object.freeze(ROWS.filter(row => row.flags.includes(flag)).map(row => row.phase));
 const withAction = (action: RowAction): readonly string[] => Object.freeze(ROWS.filter(row => row.action === action).map(row => row.phase));
