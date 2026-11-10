@@ -5,9 +5,10 @@
  * a task between them today: the state it writes and the states it may move from. moveTask writes one move as ONE
  * statement, so the from-check and the write happen together inside whatever transaction the caller is in.
  *
- * Each from-list is copied from the statement it replaced, so this table records current behaviour exactly. The
- * three moves marked `from: "any"` (complete, exhaust, set) have no from-check today and callers rely on that; making
- * them narrower is a behaviour change with its own plan ("Decisions not taken here").
+ * Each from-list is copied from the statement it replaced, so this table records current behaviour exactly, except
+ * where docs/plans/closed-task-claims.md changed it (exhaust narrowed, claim added). The two moves marked
+ * `from: "any"` (complete, set) have no from-check and callers rely on that; making them narrower is a behaviour
+ * change with its own plan.
  *
  * Cancellation is not a move here: it has its own door, Store.applyCancellation, which also records why and who.
  * Task creation (INSERT ... 'queued') is not a move either.
@@ -36,9 +37,13 @@ export const TASK_MOVES = {
   reopen: { to: "queued", from: ["cancelled", "failed", "queued"] },
   /** The fenced completion of an attempt. Wide today: a late result still writes over a closed task. */
   complete: { to: ["done", "failed"], from: "any" },
-  /** Strikes used up (build and scouting). Wide today: it writes failed whatever the state was. */
-  exhaust: { to: "failed", from: "any" },
-  /** Store.setTaskState (the state verb, backend.setState, claim, release and others). Wide by design: it is the
+  /** Strikes used up (build and scouting). Only an open task: one a person already closed keeps its state
+   * (docs/plans/closed-task-claims.md, decision B). */
+  exhaust: { to: "failed", from: ["queued", "running"] },
+  /** The CLI `claim`: taking a task makes it running, in the grant's own transaction. `running` is listed because
+   * taking over an expired claim on a task a CLI runner left running keeps it running. */
+  claim: { to: "running", from: ["queued", "running"] },
+  /** Store.setTaskState (the state verb, backend.setState, release and others). Wide by design: it is the
    * general-purpose write; cancelled goes through applyCancellation instead. */
   set: { to: ALL_BUT_CANCELLED, from: "any" },
 } as const satisfies Record<string, MoveRule>;

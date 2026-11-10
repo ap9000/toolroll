@@ -35,14 +35,16 @@ function rowOf(id: string): { state: string; updatedAt: string } {
   return { state: String(row["state"]), updatedAt: String(row["updated_at"]) };
 }
 
-/** The table's from-lists, pinned: each was copied from the statement it replaced. Widening one fails here. */
+/** The table's from-lists, pinned: each was copied from the statement it replaced, except exhaust (narrowed) and claim
+ * (new), docs/plans/closed-task-claims.md. Widening one fails here. */
 const EXPECTED_FROM: Record<TaskMoveName, readonly TaskState[] | "any"> = {
   requeue: ["running"],
   giveUp: ["queued", "running"],
   retry: ["failed", "queued", "done"],
   reopen: ["cancelled", "failed", "queued"],
   complete: "any",
-  exhaust: "any",
+  exhaust: ["queued", "running"],
+  claim: ["queued", "running"],
   set: "any",
 };
 
@@ -81,11 +83,6 @@ describe("moveTask through a real store", () => {
   }
 
   for (const state of STATES) {
-    test(`exhaust from ${state} writes failed`, () => {
-      const id = taskIn(state);
-      expect(moveTask(store.handle, id, "exhaust", T1)).toBe(true);
-      expect(rowOf(id)).toEqual({ state: "failed", updatedAt: T1.toISOString() });
-    });
     for (const to of ["done", "failed"] as const) {
       test(`complete from ${state} to ${to}`, () => {
         const id = taskIn(state);

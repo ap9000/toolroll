@@ -44,7 +44,11 @@ import {
   type Mutation,
   type Run,
   type TaskState,
+  type ClosedState,
+  checkCleanupTaskOf,
+  isClosedState,
   refArchived,
+  taskStateForClaim,
 } from "./store.js";
 import type { ParsedDecision, Problem } from "./decision.js";
 import { digestOf } from "./scope.js";
@@ -110,12 +114,20 @@ export type AcquireResult =
   | { ok: false; reason: "archived" }
   | { ok: false; reason: "watch-custody" }
   /** The runner reported draining (v137 lifecycle): its stop has begun, so it takes no new work. */
-  | { ok: false; reason: "draining"; until: string };
+  | { ok: false; reason: "draining"; until: string }
+  /** The task is done, failed or cancelled (docs/plans/closed-task-claims.md): nothing claims a closed task, except
+   * check cleanup's own door (acquireForCheckCleanup). */
+  | { ok: false; reason: "closed"; state: ClosedState }
+  /** A built-in reference with no task row behind it: nothing to claim. */
+  | { ok: false; reason: "no-task" };
 
 /** `fenced` means the lease was superseded; `unknown` means it never existed. */
 export type FenceResult =
   | { ok: true; claim: Claim; duplicate?: boolean }
   | { ok: false; reason: "fenced" | "unknown" | "stopped" };
+
+/** A heartbeat's answer: the fence, or `closed` when an expired claim's task was closed meanwhile (it is not renewed). */
+export type HeartbeatResult = FenceResult | { ok: false; reason: "closed"; state: ClosedState };
 
 /**
  * Completion's OWN result (external dispatch, finding 33): `completed` is
@@ -175,7 +187,7 @@ export function acquire(
   // copy, so a second replay cannot double-stamp, and Store.replay's T→T
   // contract holds for every other user.
   const replayed = store.hasMutationRecord(options.mutation ?? {});
-  const result = inTransaction(store, () => acquireLocked(store, taskRef, runner, options));
+  const result = inTransaction(store, () => acquireLocked(store, taskRef, runner, options, "refuse"));
   return replayed && result.ok ? { ...result, replayed: true } : result;
 }
 
@@ -189,6 +201,9 @@ function acquireLocked(
   taskRef: number,
   runner: string,
   options: AcquireOptions,
+  /** Not an AcquireOptions field, so no options object (CLI flag, HTTP body, chat, MCP) can carry it. Only
+   * acquireForCheckCleanup passes "check-cleanup", after proving its check row in this transaction. */
+  closed: "refuse" | "check-cleanup",
 ): AcquireResult {
   const { now, ttlMs = DEFAULT_LEASE_MS, newLeaseId = randomUUID, mutation = {} } = options;
   const db = store.handle;
@@ -278,6 +293,18 @@ function acquireLocked(
           by: String(existing["runner"]),
           until: String(existing["expires_at"]),
         };
+      }
+
+      // A CLOSED TASK claims for nobody (docs/plans/closed-task-claims.md, decision A), read here in the same write
+      // transaction as the insert below. Placed after every older refusal, so each of those answers as before; this
+      // only replaces what would have been a grant. A built-in reference with no task row has nothing to claim. A
+      // task of another backend keeps today's answer: its state is in that tracker, not in this database.
+      if (placedRef !== null && placedRef.backend === BUILT_IN) {
+        const known = taskStateForClaim(store, taskRef);
+        if (known.kind === "missing") return { ok: false as const, reason: "no-task" as const };
+        if (known.kind === "built-in" && isClosedState(known.state) && closed === "refuse") {
+          return { ok: false as const, reason: "closed" as const, state: known.state };
+        }
       }
 
       const generation = existing === undefined ? 1 : Number(existing["lease_generation"]) + 1;
@@ -379,7 +406,7 @@ export function acquireForCheck(store: Store, taskRef: number, runner: string, o
     if (registered !== null && store.liveClaimCount(runner, options.now) >= registered.runner.capacity) {
       return { ok: false as const, reason: "capacity" as const, message: `${runner} has no free slot for a check` };
     }
-    return acquireLocked(store, taskRef, runner, options);
+    return acquireLocked(store, taskRef, runner, options, "refuse");
   });
 }
 
@@ -515,7 +542,7 @@ export function acquireIfReady(
         };
       }
     }
-    const taken = acquireLocked(store, taskRef, runner, options);
+    const taken = acquireLocked(store, taskRef, runner, options, "refuse");
     // The half-open probe slot is consumed only WITH the claim it admits —
     // an attention refusal or a lost CAS must not re-arm the quota as
     // exhausted with no probe in flight (finding 3). Same transaction, so
@@ -537,11 +564,16 @@ export function heartbeat(
   leaseId: string,
   now: Date,
   ttlMs: number = DEFAULT_LEASE_MS,
-): FenceResult {
+): HeartbeatResult {
   const db = store.handle;
   const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
 
   return inTransaction(store, () => {
+    // An expired claim is not brought back on a task closed meanwhile (closed-task-claims.md, finding 1): that would
+    // be a new claim on a closed task by another road. A live claim, and an expired one on an open task, renew as
+    // always. Read in this write transaction, before the renewal.
+    const closedNow = expiredOnClosedTask(store, leaseId, now);
+    if (closedNow !== null) return { ok: false as const, reason: "closed" as const, state: closedNow };
     const { changes } = db
       .prepare(
         `UPDATE claim SET heartbeat_at = ?, expires_at = ?
@@ -1040,6 +1072,8 @@ export type FailureDisposition =
   | { ok: true; disposition: "commit-incident"; incidentId: number }
   | { ok: true; disposition: "auth-expired"; provider: string }
   | { ok: true; disposition: "fallback"; provider: string }
+  /** Strikes used up on a task a person had already closed: its state is kept, and no incident, hold or page. */
+  | { ok: true; disposition: "closed"; strikes: number; state: ClosedState }
   | { ok: false; reason: "fenced" | "unknown" | "stopped" };
 
 export type InterruptSeal =
@@ -1171,7 +1205,6 @@ export function interruptIfStopped(
  */
 function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureDisposition {
   const { runId, taskId, failureClass, message, now } = args;
-  const db = store.handle;
 
   const run = openAttempt(store, leaseId, runId, "a failure", "builder");
   const stopped = interruptIfStopped(store, { leaseId, runId, taskId, now });
@@ -1229,6 +1262,10 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
   const strikes = store.addStrike(run.taskRef);
 
   if (strikes >= MAX_STRIKES) {
+    // The state first: a task a person already closed keeps its state, and then no incident, hold or page is
+    // written either (closed-task-claims.md, decision B). The run's outcome, the release and the strike stand.
+    const closedState = exhaustUnlessClosed(store, run, taskId, now);
+    if (closedState !== null) return { ok: true as const, disposition: "closed" as const, strikes, state: closedState };
     const incidentId = store.createIncident({ run: runId, kind: "attempts-exhausted" }, now);
     store.holdOwned(
       {
@@ -1240,7 +1277,6 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
       },
       now,
     );
-    moveTask(db, taskId, "exhaust", now);
     store.enqueueNotification(
       {
         source: { run: runId },
@@ -1861,6 +1897,7 @@ export type ScoutFailureDisposition =
   | { ok: true; disposition: "malformed-incident"; incidentId: number }
   | { ok: true; disposition: "backoff"; strikes: number }
   | { ok: true; disposition: "stalled"; incidentId: number; strikes: number }
+  | { ok: true; disposition: "closed"; strikes: number; state: ClosedState }
   | { ok: true; disposition: "auth-expired"; provider: string }
   | { ok: false; reason: "fenced" | "unknown" | "stopped" };
 
@@ -1873,7 +1910,6 @@ export type ScoutFailureDisposition =
  */
 function sealScoutFailure(store: Store, leaseId: string, args: ScoutFailureSeal): ScoutFailureDisposition {
   const { runId, taskId, failure: kind, message, now } = args;
-  const db = store.handle;
   const run = openAttempt(store, leaseId, runId, "a failure", "scout");
   const stopped = interruptIfStopped(store, { leaseId, runId, taskId, now });
   if (stopped !== null) return { ok: false as const, reason: "stopped" as const };
@@ -1912,6 +1948,9 @@ function sealScoutFailure(store: Store, leaseId: string, args: ScoutFailureSeal)
 
   const strikes = store.addStrike(run.taskRef);
   if (strikes >= MAX_STRIKES) {
+    // Same as the build: a task a person already closed keeps its state, with no incident, hold or page.
+    const closedState = exhaustUnlessClosed(store, run, taskId, now);
+    if (closedState !== null) return { ok: true as const, disposition: "closed" as const, strikes, state: closedState };
     const incidentId = store.createIncident({ run: runId, kind: "attempts-exhausted" }, now);
     store.holdOwned(
       {
@@ -1923,7 +1962,6 @@ function sealScoutFailure(store: Store, leaseId: string, args: ScoutFailureSeal)
       },
       now,
     );
-    moveTask(db, taskId, "exhaust", now);
     store.enqueueNotification(
       {
         source: { run: runId },
@@ -2036,4 +2074,52 @@ function inTransaction<T>(store: Store, body: () => T): T {
   // composing a fenced finalizer with more writes (completion + publication
   // intent) joins one transaction instead of dying on a nested BEGIN.
   return store.transact(body);
+}
+
+/**
+ * Whether `leaseId` is an expired claim, still unreleased and the newest for its task, on a built-in task that is now
+ * done, failed or cancelled: that closed state, else null. heartbeat refuses to renew exactly this case.
+ */
+function expiredOnClosedTask(store: Store, leaseId: string, now: Date): ClosedState | null {
+  const row = store.handle
+    .prepare(`SELECT task_ref FROM claim WHERE lease_id = ? AND released_at IS NULL AND expires_at <= ? AND ${NOT_SUPERSEDED}`)
+    .get(leaseId, now.toISOString());
+  if (row === undefined) return null;
+  const known = taskStateForClaim(store, Number(row["task_ref"]));
+  return known.kind === "built-in" && isClosedState(known.state) ? known.state : null;
+}
+
+/**
+ * The stall's state write (build and scouting), inside finalize's transaction. The task is the run's own: a supplied
+ * id that names another task is a caller defect, thrown like openAttempt's. An open built-in task is marked failed
+ * (null back, the stall goes on as before). One a person already closed keeps its state: that state comes back and
+ * the caller writes no incident, hold or page. A reference with no built-in task row behind it (a missing row, or a
+ * task of another backend) writes no state and answers null, so the stall goes on as it did before.
+ */
+function exhaustUnlessClosed(store: Store, run: Run, taskId: string, now: Date): ClosedState | null {
+  const ref = store.refForId(run.taskRef);
+  if (ref === null || ref.externalId !== taskId) {
+    throw new Error(`run ${run.id} belongs to task reference ${run.taskRef}, not ${taskId} — a stall is sealed on the run's own task`);
+  }
+  if (ref.backend !== BUILT_IN) return null;
+  if (moveTask(store.handle, taskId, "exhaust", now)) return null;
+  const state = store.getTask(taskId)?.state;
+  return state !== undefined && isClosedState(state) ? state : null;
+}
+
+/**
+ * Check cleanup's claim (acp-check.ts settleChecks): the one road that may claim a closed task. Only the task bound to
+ * check `checkId`, when that check is this runner's, finished and unsettled, held right now by this cleanup `attempt`,
+ * and its task is the built-in one named from the check row's own id (store.ts checkCleanupTaskOf) — proved here, in
+ * the same transaction as the grant. Every other gate of the claim still applies. When the proof fails, the claim
+ * answers exactly as an ordinary one would: never wider.
+ */
+export function acquireForCheckCleanup(store: Store, checkId: number, attempt: string, runner: string, options: AcquireOptions): AcquireResult {
+  return inTransaction(store, () => {
+    const proved = checkCleanupTaskOf(store, checkId, runner, attempt, options.now);
+    if (proved !== null) return acquireLocked(store, proved, runner, options, "check-cleanup");
+    const bound = store.acpCheck(checkId)?.taskRef ?? null;
+    if (bound === null) return { ok: false as const, reason: "no-task" as const };
+    return acquireLocked(store, bound, runner, options, "refuse");
+  });
 }
