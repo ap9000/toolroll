@@ -825,7 +825,9 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       try { const now = new URL(window.location.href); history.replaceState(history.state, "", now.pathname + now.search + to.hash); } catch { /* the place is shown either way */ }
       return;
     }
-    if (inside && to.origin === here.origin && to.pathname === here.pathname && to.hash === "" && wanted === null && panelCovers()) {
+    // The same page only when everything but the tab matches: another version, run or section is another page, and loads.
+    const rest = (url: URL): string => { const query = new URLSearchParams(url.search); query.delete("tab"); query.sort(); return query.toString(); };
+    if (inside && to.origin === here.origin && to.pathname === here.pathname && to.hash === "" && wanted === null && rest(to) === rest(here) && panelCovers()) {
       // "Open it on the task page": the page is this one, under the panel.
       event.preventDefault();
       const place = document.querySelector<HTMLElement>('[data-step-row][aria-current="step"], [data-step-row]') ?? document.querySelector<HTMLElement>("[data-task-page] .k-doc");

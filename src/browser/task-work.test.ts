@@ -309,6 +309,29 @@ describe("below 1100px the panel lies over the page", () => {
     expect(host.querySelector(".k-scrim")).toBeNull();
     expect(host.querySelector<HTMLElement>(".k-doc")!.inert).toBe(false);
   });
+
+  test("a link in the panel to another version of this task is another page: it is left to load, and nothing closes", async () => {
+    screen(true);
+    await show(liveView({ thread: [
+      { key: "older", at: at(-60), kind: "progress", who: "agent", author: "", title: "Earlier version", text: null, html: "", more: null, link: { label: "Version 1", href: "/t/t-1?version=1" } },
+      { key: "same", at: at(-50), kind: "progress", who: "agent", author: "", title: "This page", text: null, html: "", more: null, link: { label: "The task page", href: "/t/t-1" } }] }));
+    // What the page's own handler decided, read after it ran; the test then stops the load itself.
+    const taken: boolean[] = [];
+    const after = (event: Event) => { taken.push(event.defaultPrevented); event.preventDefault(); };
+    document.addEventListener("click", after);
+    try {
+      await act(async () => panel().querySelector<HTMLAnchorElement>('[data-thread-entry="older"] a')!.click());
+      await frame();
+      expect(taken).toEqual([false]);
+      expect(panel().hidden).toBe(false);
+      expect(host.querySelector(".k-scrim")).not.toBeNull();
+      // The same address with no other version is this page: taken, and the panel closes.
+      await act(async () => panel().querySelector<HTMLAnchorElement>('[data-thread-entry="same"] a')!.click());
+      await frame();
+      expect(taken).toEqual([false, true]);
+      expect(panel().hidden).toBe(true);
+    } finally { document.removeEventListener("click", after); }
+  });
 });
 
 describe("the reader on a page that asks for a password", () => {
