@@ -9936,10 +9936,7 @@ export class Store {
                              WHERE tr.backend = 'built-in' AND tr.external_id = task_scope.task_id
                                AND claim.released_at IS NULL AND claim.expires_at > ?)`;
     const demoted = this.db.prepare(`SELECT task_id FROM task_scope ${demotable}`).all(digest, now.toISOString()).map(row => String(row["task_id"]));
-    this.db
-      .prepare(`UPDATE task_scope SET approved_at = NULL, approved_by = NULL, approved_digest = NULL,
-                approved_profile_json = NULL, approval_basis = 'password', mode_digest = NULL ${demotable}`)
-      .run(digest, now.toISOString());
+    withdrawApproval(this, { where: demotable, args: [digest, now.toISOString()] }, { basisAfter: "password", clearRoute: false, clearModeDigest: true });
     this.db.prepare("DELETE FROM plan_authorization WHERE basis = 'grant' AND mode_digest = ?").run(digest);
     for (const taskId of demoted) {
       const ref = this.lookupRef(taskId);
@@ -9987,14 +9984,7 @@ export class Store {
       .prepare(`SELECT task_id FROM task_scope ${demotable}`)
       .all(...demotableArgs)
       .map(row => String(row["task_id"]));
-    this.db
-      .prepare(
-        `UPDATE task_scope
-            SET approved_at = NULL, approved_by = NULL, approved_digest = NULL,
-                approved_profile_json = NULL, approval_basis = 'password', mode_digest = NULL
-          ${demotable}`,
-      )
-      .run(...demotableArgs);
+    withdrawApproval(this, { where: demotable, args: demotableArgs }, { basisAfter: "password", clearRoute: false, clearModeDigest: true });
     for (const taskId of demoted) {
       const ref = this.lookupRef(taskId);
       if (ref === null) continue;
@@ -10673,7 +10663,7 @@ export class Store {
   inviteIsLive(tokenValue: string, now: Date): boolean {
     const row = this.db
       .prepare(
-        "SELECT 1 AS hit FROM invite WHERE token_hash = ? AND revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ? AND attempts < 10",
+        `SELECT 1 AS hit FROM invite WHERE token_hash = ? AND ${INVITE_USABLE_SQL}`,
       )
       .get(createHash("sha256").update(tokenValue, "utf8").digest("hex"), now.toISOString());
     return row !== undefined;
@@ -10689,7 +10679,7 @@ export class Store {
     const row = this.db
       .prepare(
         `UPDATE invite SET attempts = attempts + 1
-          WHERE token_hash = ? AND revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ? AND attempts < 10
+          WHERE token_hash = ? AND ${INVITE_USABLE_SQL}
           RETURNING role, minted_by`,
       )
       .get(createHash("sha256").update(tokenValue, "utf8").digest("hex"), now.toISOString());
@@ -10715,6 +10705,8 @@ export class Store {
       // concurrent join must read as 'gone' — the indistinguishable dead
       // shape — never as a name collision that discloses the winner.
       const hash = createHash("sha256").update(args.tokenValue, "utf8").digest("hex");
+      // Not INVITE_USABLE_SQL on purpose: admitInviteAttempt has already counted this submission, so the tenth
+      // admitted attempt arrives here with attempts = 10 and must still be able to join.
       const live = this.db
         .prepare("SELECT 1 AS hit FROM invite WHERE token_hash = ? AND revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ?")
         .get(hash, now.toISOString());
@@ -11039,7 +11031,7 @@ export class Store {
   openInvites(now: Date): { id: number; role: "approver" | "viewer"; mintedBy: string; mintedAt: string; expiresAt: string; attempts: number; projects: ProjectAccess }[] {
     return this.db
       .prepare(
-        "SELECT id, role, minted_by, minted_at, expires_at, attempts, projects_json FROM invite WHERE revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ? ORDER BY id",
+        `SELECT id, role, minted_by, minted_at, expires_at, attempts, projects_json FROM invite WHERE ${INVITE_USABLE_SQL} ORDER BY id`,
       )
       .all(now.toISOString())
       .map(row => ({
@@ -25607,7 +25599,7 @@ export {
   type ReleaseAuthority, type ReleaseCarry, type ReleaseOperation, type ReleaseState,
 } from "./release-authority.js";
 import {
-  LIVE_RELEASE_STATES, autoEvidenceOf, belongsToRelease, newestReleaseGeneration, outstandingReleaseOperations, releaseAuthority, releaseCarryTo, releaseOperation, releaseSealProblem,
+  LIVE_RELEASE_STATES, autoEvidenceOf, belongsToRelease, releaseExpiredAt, newestReleaseGeneration, outstandingReleaseOperations, releaseAuthority, releaseCarryTo, releaseOperation, releaseSealProblem,
   type ReleaseCarry, type ReleaseOperation,
 } from "./release-authority.js";
 
@@ -25685,7 +25677,7 @@ export function reserveRelease(store: Store, input: { authority: number; kind: "
     if (releaseCiRunningOf(store, input.taskId) !== null) return { ok: false as const, why: "This release still waits for GitHub CI. Resume it with `toolroll release`." };
     const at = input.now.toISOString();
     // Expiry stops every live state; an operation already reserved settles only through reconciliation.
-    if (a.expiresAt <= at) return { ok: false as const, why: "The release approval expired." };
+    if (releaseExpiredAt(a, input.now)) return { ok: false as const, why: "The release approval expired." };
     if (a.tipTask !== input.taskId || a.tipSha !== input.candidate) return { ok: false as const, why: `Task ${input.taskId} is not the release's current commit.` };
     const leased = a.leaseOwner !== null && a.leaseExpires !== null && a.leaseExpires > at;
     if (input.epoch === null ? leased : input.epoch !== a.leaseEpoch || !leased) return { ok: false as const, why: input.epoch === null ? `A release coordinator (${a.leaseOwner}) holds this release; let it deploy.` : "This coordinator no longer holds the release's lease." };
@@ -25723,7 +25715,7 @@ export function runReleaseOperation(store: Store, id: string, epoch: number, now
     if (op === null || a === null || op.state !== "reserved" || op.epoch !== epoch || a.leaseEpoch !== epoch) return false;
     if (releaseCiRunningOf(store, op.taskId) !== null) return false;
     // Past the expiry nothing new starts; the reserved operation is settled by reconciliation instead.
-    if (a.expiresAt <= now.toISOString()) return false;
+    if (releaseExpiredAt(a, now)) return false;
     // The lease that reserved it still holds (a person's direct deploy: still no coordinator holding the release), and
     // the live-release predicate still accepts it, at this moment (review round 1).
     const at = now.toISOString();
@@ -26490,7 +26482,7 @@ export function restoreTaskFamily(store: Store, taskId: string, by: string, now:
  */
 export function liveInviteTerms(store: Store, tokenValue: string, now: Date): { role: "approver" | "viewer"; mintedBy: string; expiresAt: string; projects: ProjectAccess } | null {
   const row = store.handle
-    .prepare("SELECT role, minted_by, expires_at, projects_json FROM invite WHERE token_hash = ? AND revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ? AND attempts < 10")
+    .prepare(`SELECT role, minted_by, expires_at, projects_json FROM invite WHERE token_hash = ? AND ${INVITE_USABLE_SQL}`)
     .get(createHash("sha256").update(tokenValue, "utf8").digest("hex"), now.toISOString());
   if (row === undefined) return null;
   return { role: String(row["role"]) === "approver" ? "approver" : "viewer", mintedBy: String(row["minted_by"]), expiresAt: String(row["expires_at"]), projects: readProjectAccess(row["projects_json"]) };
@@ -27108,4 +27100,29 @@ export function leadAskAwaitsAnswer(store: Store, thread: number, now: Date): bo
   const row = store.handle.prepare(`SELECT a.created_at AS at FROM lead_message m JOIN lead_ask a ON a.turn = m.turn JOIN mate_turn t ON t.id = m.turn
       WHERE m.id = (SELECT MAX(id) FROM lead_message WHERE thread = ? AND role = 'assistant') AND t.state = 'answered'`).get(thread);
   return row !== undefined && Date.parse(String(row["at"])) + LEAD_ASK_TTL_MS > now.getTime();
+}
+
+/** When an invite can still be used: not revoked, not consumed, not expired, and fewer than ten admitted attempts.
+ * One bound parameter: the current time as an ISO string. Every read and write that asks "is this invite usable" uses
+ * this fragment, so the join page, the attempt counter, the join terms and the open-invites list agree. */
+export const INVITE_USABLE_SQL = "revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ? AND attempts < 10";
+
+/** How long a confirm step stays open: the Yes and Cancel buttons shown after a first tap, in every chat app. */
+export const CONFIRM_TTL_MS = 10 * 60_000;
+
+/**
+ * Withdraw task approvals: the one statement every withdrawal runs. It always clears approved_at, approved_by,
+ * approved_digest and approved_profile_json, and sets approval_basis to `basisAfter`. The callers differ in what else
+ * they clear, so that stays theirs to say: `clearRoute` clears approved_route_json, `clearModeDigest` clears
+ * mode_digest. `where` is the caller's own WHERE clause (starting with WHERE) with its bound values; it is always a
+ * fixed string in our code, never built from input. The check and the write are one statement. Returns the rows changed.
+ */
+export function withdrawApproval(
+  store: Store,
+  rows: { where: string; args: readonly (string | number | null)[] },
+  writes: { basisAfter: "password" | null; clearRoute: boolean; clearModeDigest: boolean },
+): number {
+  const set = ["approved_at = NULL", "approved_by = NULL", "approved_digest = NULL", "approved_profile_json = NULL",
+    ...(writes.clearRoute ? ["approved_route_json = NULL"] : []), "approval_basis = ?", ...(writes.clearModeDigest ? ["mode_digest = NULL"] : [])];
+  return Number(store.handle.prepare(`UPDATE task_scope SET ${set.join(", ")} ${rows.where}`).run(writes.basisAfter, ...rows.args).changes);
 }

@@ -1496,6 +1496,24 @@ describe("free-text answers — a reply becomes the note, a tap remains the choi
     expect(store.liveNoteDraft(1, decisionId, later(5_000))).toBeNull();
   });
 
+  test("a note draft moves only from the states its caller names; a final draft never comes back", async () => {
+    const script = scriptedTransport();
+    await pair(script);
+    const decisionId = decisionWith([{ id: "open", label: "Fail open", consequence: "c", reversible: true }]);
+    expect(store.saveNoteDraft({ binding: 1, decision: decisionId, updateId: 50, messageId: "9050", replyTo: "100", note: "a note" }, later(2_000))).toBe(true);
+    const id = store.liveNoteDraft(1, decisionId, later(2_000))!.id;
+    const stateOf = () => String(store.telegramChat().prepare("SELECT state FROM chat_note_draft WHERE provider = :provider AND id = ?").get(id)?.["state"]);
+    // Not armed yet: a move that only comes from armed is refused and writes nothing.
+    expect(store.setNoteDraftState(id, ["armed"], "consumed")).toBe(false);
+    expect(stateOf()).toBe("pending");
+    expect(store.setNoteDraftState(id, ["pending", "armed"], "armed")).toBe(true);
+    expect(store.setNoteDraftState(id, ["pending", "armed"], "consumed")).toBe(true);
+    // Consumed is final: neither arming nor discarding moves it again.
+    expect(store.setNoteDraftState(id, ["pending", "armed"], "armed")).toBe(false);
+    expect(store.setNoteDraftState(id, ["pending", "armed"], "discarded")).toBe(false);
+    expect(stateOf()).toBe("consumed");
+  });
+
   test("an irreversible confirm binds the note it displayed — a newer note strands the armed yes", async () => {
     const script = scriptedTransport();
     await pair(script);

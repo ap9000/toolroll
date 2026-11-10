@@ -26,7 +26,7 @@ import { decideFlowCard, draftFor, flowCardHref, flowDefinitionOf } from "./flow
 import { chooseFlowCard, flowChoiceAt, flowPersonOf, flowSendPaths, readFlowSend, type FlowChoiceVisit, type FlowSendContent } from "./flow-send.js";
 import { deciderOf, FLOW_END, replyTarget, type FlowStage } from "./flows.js";
 import { phoneLinkButton, type InlineButton } from "./telegram-lead.js";
-import type { FlowCardRow, FlowRow, Store, TelegramBinding, TelegramFlowAction, TelegramFlowChoice, TelegramFlowPrompt } from "./store.js";
+import { CONFIRM_TTL_MS, type FlowCardRow, type FlowRow, type Store, type TelegramBinding, type TelegramFlowAction, type TelegramFlowChoice, type TelegramFlowPrompt } from "./store.js";
 import { telegramButton, type TelegramCallbackButton } from "./contracts/telegram-callback.js";
 
 /** A flow decision's notice: one per visit, and again (`:ask:<ms>`) when the owner asks the lead to approve it. */
@@ -149,7 +149,6 @@ function freshButtons(store: Store, binding: TelegramBinding, waiting: Waiting, 
   return { keyboard: minted.keyboard.map(row => row.flatMap(one => "callback_data" in one && typeof one.callback_data === "string" ? [{ label: one.text, token: one.callback_data }] : [])), place: minted.tokens };
 }
 
-const CONFIRM_TTL_MS = 10 * 60_000;
 const FLOW_QUESTION = /\n\nApprove “[^\n]*”\? [^\n]*$/;
 
 /** Where a card is now, for a message whose buttons no longer act: named and linked only when it is in one of the

@@ -29,7 +29,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { leadFailureText, runLeadTurn, type LeadChannelProblem } from "./lead.js";
 import { confirmLeadProposal, confirmTypedStart, dismissLeadProposal, TYPED_START_STARTED } from "./lead-doors.js";
 import { ceilingDigestOf, verifyApproverStanding } from "./principal.js";
-import { LEAD_ASK_OTHER, type LeadAsk, type LeadProposal, type Store, type TelegramBinding, type TelegramConversation } from "./store.js";
+import { CONFIRM_TTL_MS, LEAD_ASK_OTHER, type LeadAsk, type LeadProposal, type Store, type TelegramBinding, type TelegramConversation } from "./store.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { phoneText } from "./telegram-status.js";
 import { shapeReplyParts, telegramReply } from "./reply-shape.js";
@@ -49,9 +49,8 @@ export const CONVERSATION_MAX_AGE_MS = 10 * 60_000;
 /** Waiting for the lead itself (it is answering, or earlier messages wait in the person's lead queue) is bounded longer:
  * two hours from the message's arrival, never reset as it moves from waiting behind the queue to waiting on a turn. */
 export const CONVERSATION_WAIT_MAX_AGE_MS = 2 * 3_600_000;
-/** A card's buttons and an armed irreversible challenge live this long. */
+/** A card's buttons live this long; its armed Yes and Cancel last CONFIRM_TTL_MS. */
 export const CARD_TTL_MS = 24 * 3_600_000;
-export const CHALLENGE_TTL_MS = 10 * 60_000;
 /** Telegram's own message ceiling, with room for our part headers (the same bound telegram.ts splits at). */
 export const PART_CAP = 3_900;
 
@@ -309,8 +308,8 @@ export function applyProposalTap(
     const yes = randomBytes(16).toString("hex");
     const cancel = randomBytes(16).toString("hex");
     const placedOn = String(message.message_id);
-    store.createTelegramProposalAction({ token: yes, binding: binding.id, proposal: proposal.id, phase: "yes", chatId: tapChatId, messageId: placedOn, ttlMs: CHALLENGE_TTL_MS }, now);
-    store.createTelegramProposalAction({ token: cancel, binding: binding.id, proposal: proposal.id, phase: "cancel", chatId: tapChatId, messageId: placedOn, ttlMs: CHALLENGE_TTL_MS }, now);
+    store.createTelegramProposalAction({ token: yes, binding: binding.id, proposal: proposal.id, phase: "yes", chatId: tapChatId, messageId: placedOn, ttlMs: CONFIRM_TTL_MS }, now);
+    store.createTelegramProposalAction({ token: cancel, binding: binding.id, proposal: proposal.id, phase: "cancel", chatId: tapChatId, messageId: placedOn, ttlMs: CONFIRM_TTL_MS }, now);
     const body = preview.text.split("\n\nConfirm or Dismiss below")[0];
     if (challenged) {
       ack("confirm it");
