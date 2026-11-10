@@ -564,7 +564,7 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
     input.coordinator === null ? "" : html`<p class="approval-note">An agent filed this: <span class="mono">${input.coordinator.label}</span>${input.coordinator.filedAgo === null ? "" : html`, ${input.coordinator.filedAgo}`}. Nothing runs until you approve, and approving runs its request.</p>`,
     reportNote,
     originNote(input.origin) === null ? "" : html`<p class="approval-note" data-plan-origin>${originNote(input.origin)!}</p>`,
-    html`<p class="plan-sheet-lead">${sheetLead}</p>`,
+    html`<p class="${sheetLead.length > 180 ? "plan-sheet-lead plan-sheet-lead-long" : "plan-sheet-lead"}">${sheetLead}</p>`,
     approachRest === "" ? "" : html`<p class="plan-sheet-text">${approachRest}</p>`,
     // An older plan that doesn't parse keeps its text, as written.
     plan !== null && !plan.ok ? html`<pre class="recap plan-doc">${input.planDocument ?? ""}</pre>` : "",

@@ -519,6 +519,32 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-team-lead-select { width: 150px; max-width: 100%; }
 }
 
+/* The task page's step rows (views/task-view.tsx, docs/plans/task-page-steps.md). The waiting Approval step: the act,
+ * then the plan it signs under a hairline, inside the row's one outline. */
+.so-approval-step { display: grid; gap: 18px; min-width: 0; }
+.so-approval-sheet { min-width: 0; padding-top: var(--so-space-xl); border-top: 1px solid var(--so-line); }
+/* The box's own Request changes opens the plan's editor; its fold's summary shows only as the editor's Cancel. */
+.so-approval-sheet .approval-edit:not([open]) > summary { display: none; }
+.so-task-plan { min-width: 0; }
+/* A row waiting on the viewer already carries the Needs-you chip: the task's status box in it doesn't say it again. */
+.k-steprow.needs > .k-steprow-main > .k-steprow-body > [data-task-status] > .k-slots .k-slot-status > .k-chip { display: none; }
+/* The plan's steps in the live Build row: done steps an ink disc, the one in progress ink, the rest muted. */
+.so-build-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--so-space-sm); font-size: 14px; line-height: 1.5; }
+.so-build-steps > li { display: flex; gap: var(--so-space-md); color: var(--so-muted); }
+.so-build-steps > li[data-state="current"], .so-build-steps > li[data-state="blocked"] { color: var(--so-ink); font-weight: 500; }
+.so-build-steps > li[data-state="completed"] { color: var(--so-ink); }
+.so-build-step-mark { flex: 0 0 22px; box-sizing: border-box; width: 22px; height: 22px; border: 1px solid var(--so-line); border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 400; color: var(--so-muted); font-variant-numeric: tabular-nums; }
+.so-build-steps > li[data-state="current"] .so-build-step-mark { border: 2px solid var(--so-info); color: var(--so-ink); }
+.so-build-steps > li[data-state="blocked"] .so-build-step-mark { border-color: var(--so-danger); color: var(--so-ink); }
+.so-build-steps > li[data-state="completed"] .so-build-step-mark { border-color: var(--so-ink); background: var(--so-ink); }
+.so-build-steps > li[data-state="completed"] .so-build-step-mark::after { content: ""; width: 4px; height: 8px; margin-top: -2px; border: solid var(--so-paper); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+/* Under the rows: More about this task, then the Activity panel (opened from the header, the Build row or ?tab=activity). */
+.so-task-more { padding-top: var(--so-space-sm); border-top: 1px solid var(--so-line); }
+.so-task-more-h, .so-task-activity-head h2 { margin: 0; font: 600 14px/1.4 var(--so-font-sans); color: var(--so-ink); }
+.so-task-activity { padding-top: var(--so-space-sm); border-top: 1px solid var(--so-line); }
+.so-task-activity[hidden] { display: none; }
+.so-task-activity-head { display: flex; align-items: center; justify-content: space-between; gap: var(--so-space-md); }
+
 /* Rebuilt task page (views/task-view.tsx): the approval sheet is its own
  * section under the status card; the secondary terms fold stays flat. */
 .so-task-approval details.task-secondary-approval { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }

@@ -2,16 +2,16 @@
   "schema": "youi.lock/v1",
   "system": "toolroll",
   "systemVersion": "1.0.0",
-  "sourceCommit": "1747a2e17260f1464c74de2640d3fcc217b3a4e5",
-  "syncedAt": "2026-11-10T17:10:34.743Z",
+  "sourceCommit": "183a7e216ba5ca548d118c667b91463c2c2ddda5",
+  "syncedAt": "2026-11-10T17:44:33.364Z",
   "files": {
     ".agents/skills/youiyoux/SKILL.md": {
       "kind": "generated",
-      "sha256": "375ad17a30a0d368e0296a2e196b0ee80a06b7ab12144c21099aefae685c8878"
+      "sha256": "9868e04bbbd0919c697ba22cc2b2853142b4e385b5e7a2829408fcec46cbaa36"
     },
     "src/design/SYSTEM.md": {
       "kind": "generated",
-      "sha256": "3bf4190013fee519eb34c9e0cd2313c6980430028553c74922292d9e31fb9832"
+      "sha256": "387630ad00d0de16683a9421ac3a5b3916b28bd2bf0650cb9c861552e08a1eee"
     },
     "src/design/theme.css": {
       "kind": "generated",

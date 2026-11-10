@@ -132,7 +132,8 @@ Server builders are in `src/server/kit.ts`; React components in `src/browser/kit
 | Needs-you panel | `needsPanel` | `KNeedsPanel` | waits that aren't tasks, on their own page |
 | Overlays | `overlay` + `overlayTrigger` | `KOverlay`, `useKMenu` | popover, drawer, sheet, menu |
 | Timing rows | `timing` | `KTiming` | steps on one elapsed-time axis |
-| Progress line | `steps` | `KSteps` | a single object's fixed stages (a task: Plan · Approval · Build · Checks · Ready), the current one's reason under it |
+| Progress line | `steps` | `KSteps` | a single object's fixed stages on one compact line (chat's first-task journey), the current one's reason under it |
+| Step rows | `stepRows` | `KStepRows` | the steps are the page (a task: Plan · Approval · Build · Checks · Ready); see [Step rows](#step-rows) |
 | Board | `board`, `boardCol`, `card` | `KBoard`, `KBoardCol`, `KCard` | a list's rows as columns, the optional view beside List; one column at a time on a phone |
 | Not found | `notFound(path)` | `KNotFound` | inside the shell |
 | Settings frame | `settingsShell` | `KSettingsShell` | Overview + the eight groups (`SETTINGS_GROUPS`) |
@@ -161,6 +162,17 @@ and the switch. A Needs-you count is ink only in its own filter; zero is muted.
 **Two page shapes.** List pages (Home, Tasks, Flows, Agents, Projects, Search, Chat, Settings) have the desk top
 bar. Reading pages (a task, a release, a run, a record, an agent, New task, a project, setup) have no desk top bar:
 the phone header, then `doc(docHeader(…), …)`.
+
+**Step rows** (`k-steprows`): an ordered list, one row per step. Each row is a marker on a rail (done: an ink disc
+with a check; current: a ring with a dot, ink when it waits on the viewer, blue while something runs, grey when it
+waits on someone else; stuck: vermilion; skipped: a dashed ring; not reached: a grey ring), the label (84px column,
+600 14px), one plain sentence (muted) and a clock time (`k-num`). The step happening now is open and holds the one
+action; a finished row is one line whose head is a `<button aria-expanded>` that opens its body; a step not reached is
+one grey line saying what will happen. The current row is `aria-current="step"`. A closed body is `hidden`, never
+unmounted. A row that waits on the viewer owns the one ink outline around its body (a `KSlots wait` inside it draws no
+border of its own), with the solid ink Needs-you chip beside its label. Nothing a person signs sits in a closed row.
+Without script every row is open. On a phone the label column narrows, the head is a 44px target and the body's
+action buttons are full width.
 
 ## Phone (760px and narrower)
 

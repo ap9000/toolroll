@@ -180,7 +180,7 @@ describe("the task page's step rows (stepRowsOf)", () => {
     const view = facts({ journey: taskRoad({ stage: "needs-you", need: "approval" }, false, false, {}), approve: { heading: "Plan ready" },
       plan: { lead: "Add subtract next to add.", by: "Claude Sonnet", at: "2026-11-10T23:28:00.000Z", planning: false },
       status: { status: { headline: "Needs you", sentence: "Approve the plan." }, attempts: [] } });
-    expect(rows(view)).toEqual(["plan:done:Written by Claude Sonnet · shown below", "approve:needs+:Plan ready", "build:todo-:Starts when you approve",
+    expect(rows(view)).toEqual(["plan:done:Written by Claude Sonnet · shown below", "approve:needs+:", "build:todo-:Starts when you approve",
       "checks:todo-:The project's checks run on the result", "ready:todo-:A result for you to review"]);
     const approval = stepRowsOf(view)![1]!;
     expect(approval).toMatchObject({ label: "Approval", needsYou: true, state: "current" });
@@ -191,7 +191,7 @@ describe("the task page's step rows (stepRowsOf)", () => {
     const view = facts({ journey: taskRoad({ stage: "building" }, true, false, {}), progress: { line: "Step 2 of 3: Adding the test." },
       approved: { by: "alex", at: "2026-11-10T23:30:00.000Z", automatic: false, rule: null },
       plan: { lead: "Add subtract next to add.", by: null, at: null, planning: false } });
-    expect(rows(view)).toEqual(["plan:done:Add subtract next to add.", "approve:done:Approved by alex", "build:live+:Step 2 of 3: Adding the test.",
+    expect(rows(view)).toEqual(["plan:done:Add subtract next to add.", "approve:done:Approved by alex", "build:live+:Working now",
       "checks:todo-:The project's checks run on the result", "ready:todo-:A result for you to review"]);
     expect(stepRowsOf({ ...view, approved: { by: "", at: "2026-11-10T23:30:00.000Z", automatic: true, rule: "your operating mode" } })![1]!.sentence).toBe("Approved automatically");
   });
@@ -207,7 +207,11 @@ describe("the task page's step rows (stepRowsOf)", () => {
   test("ready for review waits on the viewer at Ready; a finished task opens its last step", () => {
     const review = facts({ journey: taskRoad({ stage: "needs-you", need: "review-result" }, true, true, { checks: "passed" }),
       status: { status: { headline: "Ready for review", sentence: "Ready." }, attempts: [] } });
-    expect(rows(review).slice(3)).toEqual(["checks:done:Project checks passed", "ready:needs+:Ready for your review"]);
+    // The open row's head says how it stands; the box under it says the rest (no sentence twice).
+    expect(rows(review).slice(3)).toEqual(["checks:done:Project checks passed", "ready:needs+:"]);
+    // A finished road with a result still waiting on the viewer: Ready is theirs, never one done line.
+    const finished = facts({ journey: taskRoad({ stage: "finished" }, true, true, { checks: "passed" }), status: { status: { headline: "Ready for review" }, attempts: [] } });
+    expect(rows(finished).at(-1)).toBe("ready:needs+:");
     const done = facts({ journey: taskRoad({ stage: "complete" }, true, true, { checks: "passed" }), status: { status: { headline: "Complete", sentence: "Done." }, attempts: [] } });
     expect(rows(done).at(-1)).toBe("ready:done+:Finished");
     expect(stepRowsOf(done)!.filter(one => one.open)).toHaveLength(1);
@@ -226,7 +230,10 @@ describe("the task page's step rows (stepRowsOf)", () => {
 
   test("a failed build stops at Build in vermilion, waiting on nobody", () => {
     const failed = facts({ journey: taskRoad({ stage: "failed" }, true, false, {}), status: { status: { headline: "Failed", sentence: "The new test did not pass." }, attempts: [] } });
-    expect(rows(failed)[2]).toBe("build:stuck+:The new test did not pass.");
+    expect(rows(failed)[2]).toBe("build:stuck+:Failed");
     expect(stepRowsOf(failed)!.some(one => one.needsYou)).toBe(false);
+    // A stopped build waits, in grey: vermilion is only for a failure.
+    const stopped = facts({ journey: taskRoad({ stage: "stopped" }, true, false, {}), status: { status: { headline: "Stopped" }, attempts: [] } });
+    expect(rows(stopped)[2]).toBe("build:wait+:Stopped");
   });
 });

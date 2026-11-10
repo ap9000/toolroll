@@ -79,6 +79,7 @@ Each finding names its rule, the file:line and a suggestion. The suggested token
 - **KSelect**: A native select in the field family with the kit chevron: filled 36px, sm 28px pill, chip a composer pill; 44px and 16px on a phone.
 - **KSettingsShell**: The Settings frame: Overview and the eight groups, a desk breadcrumb, a phone back header, one 760px column.
 - **KSlots**: The approval box: status (chip + heading) · supporting text · actions · terms, and the error slot. The same slots in every state, so nothing moves.
+- **KStepRows**: The steps of one object as the page itself (a task's Plan · Approval · Build · Checks · Ready): the current row open with its one action, finished rows opening on press.
 - **KSteps**: A few named steps on one line (a task's Plan · Approval · Build · Checks · Ready), filled up to where the work is; the current step says why under its name.
 - **KSwitch**: An on/off setting: KSwitch acts at once and says its state in words; KSwitchInput is a checkbox with role=switch for a form.
 - **KTabs**: Underline tabs for sections of one object: KLinkTabs when each is an address (aria-current="page"), KTabs inside one page (role=tablist, arrow keys).

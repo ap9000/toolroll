@@ -1,0 +1,66 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-steprows",
+  "name": "KStepRows",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "The steps of one object as the page itself (a task's Plan · Approval · Build · Checks · Ready): the current row open with its one action, finished rows opening on press.",
+  "source": {
+    "file": "k-steprows.tsx",
+    "export": "KStepRows",
+    "also": []
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "rows": {
+      "type": "string",
+      "required": true,
+      "description": "A structured value: see the component's TypeScript type (KStepRowItem: key, label, mark, sentence, needsYou, current, at, when, body, toggle, open)."
+    },
+    "label": {
+      "type": "string",
+      "default": "Steps"
+    },
+    "onToggle": {
+      "type": "string",
+      "description": "Called with a toggle row's key when its head is pressed."
+    }
+  },
+  "tokens": {
+    "rail": "youi:toolroll/token/color.line",
+    "done": "youi:toolroll/token/color.ink",
+    "todo": "youi:toolroll/token/color.field-line",
+    "needs": "youi:toolroll/token/color.wait",
+    "live": "youi:toolroll/token/color.info",
+    "stuck": "youi:toolroll/token/color.danger",
+    "radius": "youi:toolroll/token/radius.card"
+  },
+  "a11y": {
+    "role": "list",
+    "notes": [
+      "Each row's label carries its state in words for assistive tech; the current row is aria-current=step.",
+      "A finished row's head is a button with aria-expanded and aria-controls naming its body; a closed body is hidden, never unmounted.",
+      "Nothing pulses: a ring with a dot says running."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "Use for a single object's fixed steps when the steps are the page: the step happening now is open and holds the one action.",
+      "The row owns the ink outline of a step that waits on the viewer; a KSlots box inside it is drawn without its own border."
+    ],
+    "dont": [
+      "Never put anything a person signs in a closed row; never for a list's filters or for timed steps (use KTiming), or a compact line of stages (use KSteps)."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}

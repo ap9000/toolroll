@@ -27,6 +27,7 @@ export * from "./k-approve.js";
 export * from "./k-needs-panel.js";
 export * from "./k-timing.js";
 export * from "./k-steps.js";
+export * from "./k-steprows.js";
 export * from "./k-board.js";
 export * from "./k-filter.js";
 export * from "./k-not-found.js";
