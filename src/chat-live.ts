@@ -176,7 +176,8 @@ export function planWithLive(state: ChatState, event: string, parts: ChatContent
   state.store.transact(() => {
     const row = liveRow(state, event);
     const onto = row !== null && row.message !== null && (row.state === "placed" || row.state === "abandoned") && editable(parts[0]);
-    state.plan(event, onto ? [{ ...parts[0]!, edit: row.message! }, ...parts.slice(1)] : parts, now);
+    // A dropped event gets no reply, so its live message is left as it is.
+    if (!state.plan(event, onto ? [{ ...parts[0]!, edit: row.message! }, ...parts.slice(1)] : parts, now)) return;
     if (row === null) return;
     if (onto) setLive(state, event, ["placed", "abandoned"], "finalized", now);
     else if (row.state === "creating" || row.state === "uncertain") {
