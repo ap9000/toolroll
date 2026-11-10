@@ -9934,10 +9934,7 @@ export class Store {
                              WHERE tr.backend = 'built-in' AND tr.external_id = task_scope.task_id
                                AND claim.released_at IS NULL AND claim.expires_at > ?)`;
     const demoted = this.db.prepare(`SELECT task_id FROM task_scope ${demotable}`).all(digest, now.toISOString()).map(row => String(row["task_id"]));
-    this.db
-      .prepare(`UPDATE task_scope SET approved_at = NULL, approved_by = NULL, approved_digest = NULL,
-                approved_profile_json = NULL, approval_basis = 'password', mode_digest = NULL ${demotable}`)
-      .run(digest, now.toISOString());
+    withdrawApproval(this, { where: demotable, args: [digest, now.toISOString()] }, { basisAfter: "password", clearRoute: false, clearModeDigest: true });
     this.db.prepare("DELETE FROM plan_authorization WHERE basis = 'grant' AND mode_digest = ?").run(digest);
     for (const taskId of demoted) {
       const ref = this.lookupRef(taskId);
@@ -9985,14 +9982,7 @@ export class Store {
       .prepare(`SELECT task_id FROM task_scope ${demotable}`)
       .all(...demotableArgs)
       .map(row => String(row["task_id"]));
-    this.db
-      .prepare(
-        `UPDATE task_scope
-            SET approved_at = NULL, approved_by = NULL, approved_digest = NULL,
-                approved_profile_json = NULL, approval_basis = 'password', mode_digest = NULL
-          ${demotable}`,
-      )
-      .run(...demotableArgs);
+    withdrawApproval(this, { where: demotable, args: demotableArgs }, { basisAfter: "password", clearRoute: false, clearModeDigest: true });
     for (const taskId of demoted) {
       const ref = this.lookupRef(taskId);
       if (ref === null) continue;
@@ -27117,3 +27107,20 @@ export const INVITE_USABLE_SQL = "revoked_at IS NULL AND consumed_at IS NULL AND
 
 /** How long a confirm step stays open: the Yes and Cancel buttons shown after a first tap, in every chat app. */
 export const CONFIRM_TTL_MS = 10 * 60_000;
+
+/**
+ * Withdraw task approvals: the one statement every withdrawal runs. It always clears approved_at, approved_by,
+ * approved_digest and approved_profile_json, and sets approval_basis to `basisAfter`. The callers differ in what else
+ * they clear, so that stays theirs to say: `clearRoute` clears approved_route_json, `clearModeDigest` clears
+ * mode_digest. `where` is the caller's own WHERE clause (starting with WHERE) with its bound values; it is always a
+ * fixed string in our code, never built from input. The check and the write are one statement. Returns the rows changed.
+ */
+export function withdrawApproval(
+  store: Store,
+  rows: { where: string; args: readonly (string | number | null)[] },
+  writes: { basisAfter: "password" | null; clearRoute: boolean; clearModeDigest: boolean },
+): number {
+  const set = ["approved_at = NULL", "approved_by = NULL", "approved_digest = NULL", "approved_profile_json = NULL",
+    ...(writes.clearRoute ? ["approved_route_json = NULL"] : []), "approval_basis = ?", ...(writes.clearModeDigest ? ["mode_digest = NULL"] : [])];
+  return Number(store.handle.prepare(`UPDATE task_scope SET ${set.join(", ")} ${rows.where}`).run(writes.basisAfter, ...rows.args).changes);
+}
