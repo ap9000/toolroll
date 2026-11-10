@@ -16,13 +16,14 @@ import type { StepRow } from "../../workspace-ui.js";
 import { GuardedHtml } from "../guarded-html.js";
 import {
   KApprove, KButton, KChip, KCount, KDisclose, KDocHeader, KDock, KEmpty, KFacts, KHeadlineChip, KInfoLine, KLinkButton, KNote, KOverlay, KRow, KSelect,
-  KNotice, KSlots, KStepRows, KTextarea, KTiming, useKMenu, type KStepRowItem,
+  KNotice, KSlots, KStepRows, KTextarea, KTiming, KWork, KWorkRecords, useConversation, useKMenu, usePasswordAsked, type KStepRowItem,
 } from "../kit/index.js";
 import { RETRY_NOTE_LIMIT } from "../../needs-you.js";
 import { TEXT_LIMITS } from "../../text-limits.js";
 import { pausedWords } from "../../steer-status.js";
 import { fullWhen, shortWhen, viewerZone } from "../../when-html.js";
 import { ActivityLine, AlsoViewing, useLiveTask } from "../live-task.js";
+import { cn } from "../kit/utils.js";
 import { HEADLINE_GLYPH, statusWhyLines } from "./status-summary.js";
 import type { GlyphKind } from "../components/ui/status-glyph.js";
 
@@ -31,7 +32,8 @@ import type { GlyphKind } from "../components/ui/status-glyph.js";
  * and focus its first field when asked. The one road for hash links (#scope, #holds, #cancel-task…) and ⋯ go-to items
  * alike. */
 function revealTarget(id: string, show: (place: Place) => void, focus = false): boolean {
-  const target = id === "" ? null : document.getElementById(id);
+  // #steering (where a sent note comes back to) is the work panel's message box first, then More about this task's notes.
+  const target = id === "" ? null : (id === "steering" ? document.querySelector<HTMLElement>('[data-task-panel="activity"] #steering') : null) ?? document.getElementById(id);
   if (target === null) return false;
   const row = target.closest<HTMLElement>("[data-step-row]");
   if (row !== null) show({ row: row.dataset["stepRow"]! });
@@ -304,7 +306,9 @@ function approvedWords(approved: NonNullable<BrowserTaskView["approved"]>): stri
  * slots). A live build says the step it is on, or the step it is stuck on with the act that helps; Pause, Resume and
  * Stop sit beside it. A failed task says what it missed and offers Retry with its note. The recorded reasons sit
  * under More. */
-function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere = false, resultHere = false }: { view: BrowserTaskView; card: AssignmentCard; csrf: string; approved: BrowserTaskView["approved"];
+function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere = false, resultHere = false, unsent = true }: { view: BrowserTaskView; card: AssignmentCard; csrf: string; approved: BrowserTaskView["approved"];
+  /** An unsent note shows here (the work panel, when open, shows it instead: one place at a time). */
+  unsent?: boolean;
   /** "Watch the work": opens the Activity panel beside the live build's acts. */
   watch?: (() => void) | null;
   /** The Checks row shows the project checks fact itself. */
@@ -348,12 +352,9 @@ function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere =
       </>}
       acts={acts} terms={terms} />
     {pause !== null && steering && <PauseSteerForm key={pause.run} pause={pause} onCancel={() => setSteering(false)} />}
-    {/* A note written for an attempt that ended before it went: shown, with a way to send it to the next one. */}
-    {csrf !== "" && (view.steerRecent?.length ?? 0) > 0 && <UnsentNote key={view.steerRecent!.join(",")} runs={view.steerRecent!.filter(run => run !== view.steering?.steer?.run && run !== pause?.run)} action={`/t/${encodeURIComponent(view.id)}/steer`} back="task" />}
-    {view.steering != null && csrf !== "" && <div id="steering" className="k-sec" data-task-steering>
-      <KNote>{view.steering.controls.words}</KNote>
-      {view.steering.steer !== null && <SteerNote key={view.steering.steer.run} steer={view.steering.steer} controls={{ ...view.steering.controls, pause: null }} back="task" />}
-    </div>}
+    {/* A note written for an attempt that ended before it went: shown, with a way to send it to the next one. The note
+        box itself is the work panel's (Watch the work). */}
+    {unsent && <Unsent view={view} csrf={csrf} />}
     <StatusFacts card={card} runChecks={view.runChecks ?? null} only={checksElsewhere ? key => key !== "checks" : null} />
     {why.length > 0 && <KDisclose summary="More">{why.map(one => <KNote key={one}>{one}</KNote>)}</KDisclose>}
   </div>;
@@ -417,7 +418,7 @@ function ThreadEntry({ item }: { item: BrowserTaskThreadItem }) {
 export type ThreadChat = { entries: { key: string; at: string; node: ReactNode }[]; footer: ReactNode };
 
 /** The thread: server entries and conversation messages in one time order, then the composer. */
-function Thread({ items, chat, chatHref }: { items: BrowserTaskThreadItem[]; chat: ThreadChat | null; chatHref: string | null }) {
+function Thread({ items, chat, chatHref, footer = true }: { items: BrowserTaskThreadItem[]; chat: ThreadChat | null; chatHref: string | null; footer?: boolean }) {
   const entries = [
     ...items.map(item => ({ key: `item-${item.key}`, at: item.at, node: <ThreadEntry key={`item-${item.key}`} item={item} /> })),
     ...(chat?.entries ?? []),
@@ -425,8 +426,8 @@ function Thread({ items, chat, chatHref }: { items: BrowserTaskThreadItem[]; cha
   return <section aria-label="Activity" data-task-thread {...(chat === null ? {} : { "data-workspace-chat": "" })} className="k-sec">
     {entries.length === 0 && <KEmpty title="Nothing has happened yet." />}
     <ol className="so-thread">{entries.map(one => one.node)}</ol>
-    {chat !== null ? chat.footer
-      : chatHref !== null && <KNote><a className="k-link" href={chatHref}>Message the agent</a> from Chat.</KNote>}
+    {footer && (chat !== null ? chat.footer
+      : chatHref !== null && <KNote><a className="k-link" href={chatHref}>Message the agent</a> from Chat.</KNote>)}
   </section>;
 }
 
@@ -595,13 +596,71 @@ function BuildSteps({ steps }: { steps: NonNullable<NonNullable<BrowserTaskView[
   </ol>;
 }
 
-/** The Activity panel: the task's thread in time order, ending in the composer (docs/plans/task-page-steps.md: the
- * Build row's "Watch the work", Activity in the header and `?tab=activity` open it). Hidden, never unmounted. */
-function ActivityPanel({ view, chat, open, onClose }: { view: BrowserTaskView; chat: ThreadChat | null; open: boolean; onClose: () => void }) {
-  return <section id="task-activity" className="k-sec so-task-activity" aria-labelledby="task-activity-h" hidden={!open} data-task-panel="activity">
-    <div className="so-task-activity-head"><h2 id="task-activity-h">Activity</h2><KButton variant="ghost" sm label="Close" onClick={onClose} data-close-activity="" /></div>
-    <Thread items={view.thread ?? []} chat={chat} chatHref={chat === null ? view.chatHref ?? null : null} />
-  </section>;
+/** A note this tab wrote for an attempt that has ended: offered to the next attempt (UnsentNote). Never the running one's. */
+function Unsent({ view, csrf }: { view: BrowserTaskView; csrf: string }) {
+  if (csrf === "" || (view.steerRecent?.length ?? 0) === 0) return null;
+  const running = new Set([view.steering?.steer?.run, view.pause?.run, view.work?.live ? view.work.run : undefined]);
+  return <UnsentNote key={view.steerRecent!.join(",")} runs={view.steerRecent!.filter(run => !running.has(run))} action={`/t/${encodeURIComponent(view.id)}/steer`} back="task" />;
+}
+
+/** A password field in server HTML: such a card never renders inside the work panel. */
+const ASKS_PASSWORD = /<input\b[^>]*[\s"']type\s*=\s*["']?password/i;
+
+/** Where the work panel stays open or closed, for this viewer (a convenience: the page works without it). */
+const WORK_SETTING = "toolroll.task.work";
+/** Left open last time, and there is room for it beside the rows: a sheet or a phone's full screen opens only when asked,
+ * so a remembered panel never covers what the page asks of the viewer (an approval, a result). */
+function savedWorkOpen(): boolean {
+  try { return window.localStorage.getItem(WORK_SETTING) === "open" && window.matchMedia("(min-width: 1100px)").matches; } catch { return false; }
+}
+function keepWorkOpen(open: boolean): void {
+  try { window.localStorage.setItem(WORK_SETTING, open ? "open" : "closed"); } catch { /* this browser keeps no settings */ }
+}
+
+/**
+ * The work panel (docs/plans/task-page-steps.md "Watch the work"): the live or latest build's records as a chat — what
+ * the agent said, each action as one quiet line, the notes people sent with their read state — then the task's thread,
+ * and the message box at the foot. The box follows what the attempt takes (steer-capabilities.ts): a note now, a note
+ * for its mailbox, or the capability's own sentence when it takes none; with no live attempt it is the task's
+ * conversation with the lead. A draft written for an attempt stays that attempt's (an unsent note when it ends), never
+ * the lead's. Nothing here approves anything, and no ceremony renders in it. Hidden, never unmounted.
+ */
+function WorkPanel({ view, chat, csrf, open, onClose, onClick }: { view: BrowserTaskView; chat: ThreadChat | null; csrf: string; open: boolean; onClose: () => void;
+  /** The page's in-page link handling (a link to this page's own result or step opens it in place). */
+  onClick: (event: MouseEvent<HTMLElement>) => void }) {
+  const work = view.work ?? null;
+  // A password on the page (a ceremony, or the approval popover while it is open): the reader asks for nothing until it
+  // is gone. A closed panel reads nothing either.
+  const asked = usePasswordAsked();
+  const conversation = useConversation(work?.transcript ?? null, work?.live === true, asked || !open);
+  const steering = csrf !== "" && work?.live === true ? view.steering ?? null : null;
+  const agent = work?.agent ?? "the agent";
+  // Notes this run's records already show are not repeated in the thread under them.
+  const shownNotes = new Set(conversation.notes.map(note => `steer-${note.id}`));
+  const thread = (view.thread ?? []).filter(item => !shownNotes.has(item.key))
+    .map(item => ASKS_PASSWORD.test(item.html) || ASKS_PASSWORD.test(item.more?.html ?? "") ? { ...item, html: "", more: null, link: item.link ?? { label: "Open it on the task page", href: `/t/${encodeURIComponent(view.id)}` } } : item);
+  const off = work !== null && (work.transcript === null || conversation.state === "off" || (conversation.final && conversation.items.length === 0));
+  const pause = steering?.controls.pause != null && steering.controls.pause.state === null ? steering.controls.pause : null;
+  const box = steering !== null
+    ? <div id="steering" className="so-work-box" data-task-steering="">
+      {steering.steer === null || steering.controls.send === null
+        // It takes no notes now: the capability's own sentence instead of a box.
+        ? <p className="k-note" data-work-no-notes="">{steering.controls.words}</p>
+        : <SteerNote key={steering.steer.run} steer={steering.steer} controls={{ ...steering.controls, pause }} back="task" label={`Message ${agent}`} note={steering.controls.words} />}
+    </div>
+    : <div className="so-work-box" data-work-lead="">
+      {chat !== null ? chat.footer : view.chatHref != null && <KNote><a className="k-link" href={view.chatHref}>Message the lead</a> from Chat.</KNote>}
+    </div>;
+  const who = work === null ? "No build yet" : `${work.agent} · ${work.live ? "working" : "finished"}`;
+  return <KWork id="task-activity" title="Activity" who={who} live={work?.live === true} onClose={onClose} closeLabel="Close activity" closeData={{ "data-close-activity": "" }} onClick={onClick}
+    hidden={!open} data-task-panel="activity" data-work-state={work === null ? "none" : asked ? "paused" : off ? "off" : steering === null ? (work.live ? "watching" : "ended") : steering.controls.send ?? "no-notes"}
+    foot={<>{open && <Unsent view={view} csrf={csrf} />}{box}</>}>
+    {work !== null && <section aria-label="The agent's work" className="so-work-records" data-work-run={work.run}>
+      <KWorkRecords conversation={conversation} live={work.live} paused={asked} older={count => `${count} earlier ${count === 1 ? "note is" : "notes are"} in the task's history below.`} />
+      {off && !asked && view.activity != null && <ActivityLine activity={view.activity} />}
+    </section>}
+    <Thread items={thread} chat={chat} chatHref={null} footer={false} />
+  </KWork>;
 }
 
 /** The page (docs/plans/task-page-steps.md): one header, then the steps are the page — each row's body holds its own
@@ -623,7 +682,9 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     if (approve !== null) keys.add("approve");
     return keys;
   });
-  const [activity, setActivity] = useState(view.tab === "activity");
+  // The work panel: ?tab=activity opens it; otherwise as this viewer last left it.
+  const [activity, setActivityState] = useState(() => view.tab === "activity" || savedWorkOpen());
+  const setActivity = (open: boolean) => { setActivityState(open); keepWorkOpen(open); };
   const [details, setDetails] = useState<HTMLElement | null>(null);
   const detailsButton = useRef<HTMLButtonElement>(null);
   // The step happening now opens as it moves (a live update), whatever the person opened or closed before.
@@ -642,7 +703,15 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     setOpened(previous => previous.has(place.row) ? previous : new Set([...previous, place.row]));
   };
   const toggle = (key: string) => setOpened(previous => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next; });
-  const closeActivity = () => { setActivity(false); setTab(null); };
+  const activityButton = useRef<HTMLButtonElement>(null);
+  const closeActivity = () => { setActivity(false); setTab(null); if (document.activeElement?.closest("[data-task-panel]")) activityButton.current?.focus({ preventScroll: true }); };
+  /** Open the panel. Beside the page it is simply there; as a sheet or full screen it takes the focus. */
+  const openActivity = () => {
+    show({ activity: true });
+    requestAnimationFrame(() => {
+      if (window.matchMedia("(max-width: 1099px)").matches) document.querySelector<HTMLElement>("[data-task-panel] [data-close-activity]")?.focus({ preventScroll: true });
+    });
+  };
   useRevealHashTarget(show);
   useEffect(() => {
     const open = () => setDetails(detailsButton.current ?? document.body);
@@ -654,7 +723,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   const scrollTo = (selector: string) => requestAnimationFrame(() => document.querySelector(selector)?.scrollIntoView({ block: "start",
     behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" }));
   // A link to this very page's other part (the status's Review result, a build in the thread) opens it in place.
-  const inPage = (event: MouseEvent<HTMLDivElement>) => {
+  const inPage = (event: MouseEvent<HTMLElement>) => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const anchor = (event.target as HTMLElement).closest?.("a[href]");
     if (!(anchor instanceof HTMLAnchorElement)) return;
@@ -668,7 +737,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     const row = wanted === "plan" ? currentKey : rowOfTab(wanted);
     if (wanted !== "activity" && rows !== null && (row === null || !rows.some(one => one.key === row && one.opens))) return;
     event.preventDefault();
-    if (wanted === "activity") { show({ activity: true }); scrollTo("#task-activity"); }
+    if (wanted === "activity") openActivity();
     else if (row !== null) { show({ row }); setTab(wanted === "plan" ? null : wanted); scrollTo(`[data-step-row="${row}"]`); }
     if (to.hash !== "") revealTarget(decodeURIComponent(to.hash.slice(1)), show);
   };
@@ -702,7 +771,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   </>;
   const statusBox = (key: string | null) => approve !== null ? null : view.status !== null
     // In a row, the Approval row says who approved: the status box doesn't repeat it.
-    ? <StatusBox view={view} card={view.status} csrf={csrf} approved={key === null ? view.approved ?? null : null} watch={key === "build" && view.stop != null ? () => { show({ activity: true }); scrollTo("#task-activity"); } : null}
+    ? <StatusBox view={view} card={view.status} csrf={csrf} approved={key === null ? view.approved ?? null : null} watch={key === "build" && view.stop != null ? openActivity : null} unsent={!activity}
       checksElsewhere={checksOpens && key !== "checks"} resultHere={key === "ready" && resultBody !== null} />
     : <Html html={view.statusHtml} />;
   const bodyOf = (row: StepRow): ReactNode => {
@@ -745,12 +814,13 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       at: row.at, when: row.at === null ? "" : threadWhen(row.at), body: row.opens || here ? bodyOf(row) : undefined,
       toggle: row.opens && !here && !(row.key === "approve" && approve !== null), open: here || opened.has(row.key) || (row.key === "approve" && approve !== null) };
   });
-  return <div data-kit-page data-task-page={view.id}>
+  return <div data-kit-page data-task-page={view.id} className={cn("so-task-page", activity && "so-task-page--work")}
+    onKeyDown={event => { if (event.key === "Escape" && activity && (event.target as HTMLElement).closest?.("[data-task-panel]") && window.matchMedia("(max-width: 1099px)").matches) closeActivity(); }}>
     <div className="k-doc" onClick={inPage}>
       <KDocHeader back={["/tasks", "Tasks"]} title={view.title} meta={meta}
         right={<nav className="k-acts so-task-tools" aria-label="Task tools">
           {record !== null && <KLinkButton variant="ghost" sm className="k-desk-only" label={record.label} href={record.href} />}
-          <KButton variant="ghost" sm label="Activity" aria-expanded={activity} aria-controls="task-activity" onClick={() => activity ? closeActivity() : (show({ activity: true }), scrollTo("#task-activity"))} data-open-activity="" />
+          <KButton ref={activityButton} variant="ghost" sm label="Activity" aria-expanded={activity} aria-controls="task-activity" onClick={() => activity ? closeActivity() : openActivity()} data-open-activity="" />
           <KButton ref={detailsButton} variant="ghost" sm lead="panel" label="Details" className="k-desk-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} data-open-details="" />
           <KButton variant="ghost" sm iconOnly="panel" label="Details" className="k-phone-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} />
           <MoreMenu items={[...(view.more ?? []), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} show={show} />
@@ -767,7 +837,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
         {/* No road (cancelled, or no status): the status block as it was, then what the task holds. */}
         {approve !== null && <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} />}
         {approve !== null && <Html html={approve.planHtml} className="so-task-plan" />}
-        {approve !== null ? null : view.status !== null ? <StatusBox view={view} card={view.status} csrf={csrf} approved={view.approved ?? null} /> : <Html html={view.statusHtml} />}
+        {approve !== null ? null : view.status !== null ? <StatusBox view={view} card={view.status} csrf={csrf} approved={view.approved ?? null} unsent={!activity} /> : <Html html={view.statusHtml} />}
         {approvalHere && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
         {readyExtras(resultBody !== null)}
         {resultBody}
@@ -779,8 +849,8 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       {view.questions !== "" && <Html html={view.questions} className="so-task-questions" />}
       {rows === null && (view.status?.attempts.length ?? 0) + (view.earlier?.attempts.length ?? 0) > 1 && <AttemptsPanel view={view} />}
       <MoreAboutTask view={view} approval={view.approval !== "" && !approvalHere && approve === null && !(rows?.some(row => row.key === "approve" && (row.opens || row.state === "current" || row.state === "stuck")) ?? false)} />
-      <ActivityPanel view={view} chat={chat} open={activity} onClose={closeActivity} />
     </div>
+    <WorkPanel view={view} chat={chat} csrf={csrf} open={activity} onClose={closeActivity} onClick={inPage} />
     {details !== null && <KOverlay kind="drawer" title="Details" trigger={details} onClose={() => setDetails(null)}><TaskDetails view={view} /></KOverlay>}
     {primary !== null && <KDock>{primary}</KDock>}
   </div>;

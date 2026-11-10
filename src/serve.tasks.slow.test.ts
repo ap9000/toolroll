@@ -20,7 +20,7 @@ import { routeOfTask } from "./agentconfig.js";
 import { projectRoute } from "./phase-routing.js";
 import { Window } from "happy-dom";
 import { presented, renderedHtmlOf, sealScopeFixture, T0, workspaceOf } from "../test/serve-kit.js";
-import type { BrowserHomeView, BrowserTasksView } from "./browser-workspace.js";
+import type { BrowserHomeView, BrowserTaskView, BrowserTasksView } from "./browser-workspace.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { createDemoSandbox } from "./demo.js";
 
@@ -1392,12 +1392,15 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     // The embedded regions and the scripts that fill them, addressed to
     // the run's own authenticated fragments — no /t/:id?fragment= proxy.
     expect(html).toContain('id="run-peek"');
-    expect(html).toContain('id="live-transcript"');
+    // What the agent says is the work panel's (Watch the work): no transcript box or poller on the page itself, and the
+    // panel reads the run's own guarded records window.
+    expect(html).not.toContain('id="live-transcript"');
+    expect((workspaceOf(html).view as BrowserTaskView).work).toEqual({ run, live: true, agent: expect.any(String), transcript: `/r/${run}?fragment=transcript&shape=records` });
     expect(html).toContain(`"/r/${run}?fragment=peek"`);
     expect(html).toContain(`"/r/${run}?fragment=check"`);
     expect(html).toContain('id="check-progress"');
     expect(html).toContain("unit ✓ 191 · flows 12/18 · app 30/45");
-    expect(html).toContain(`"/r/${run}"+"?fragment=transcript&from="`);
+    expect(html).not.toContain(`"/r/${run}"+"?fragment=transcript&from="`);
     expect(html).not.toContain("fetch(location.pathname");
     expect(html).not.toContain("/t/t-live?fragment");
 
@@ -1418,15 +1421,14 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(finalCheck).toContain('data-final="failed"');
     expect(finalCheck).toContain("unit ✓ 191 · flows ✓ 18 · app ✕ 1/45");
 
-    // The Claude-only transcript limitation is kept: a codex build gets the
-    // peek and the stated limit, not an empty transcript.
+    // Every streaming transport records now: a codex build's work panel reads the same window, and the page has no
+    // transcript box of its own either.
     const ref2 = seed("t-codex", "built by codex", { provider: "codex", model: "gpt-5-codex" });
     const run2 = live("t-codex", ref2, "codex", "gpt-5-codex");
     const codex = await (await fetch(url("/t/t-codex"), { headers: { cookie } })).text();
     expect(codex).toContain(`Build #${run2} · night-shift-1 · running`);
-    expect(codex).toContain("The live transcript needs the claude harness for now");
     expect(codex).not.toContain('id="live-transcript"');
-    expect(codex).not.toContain("?fragment=transcript");
+    expect((workspaceOf(codex).view as BrowserTaskView).work?.transcript).toBe(`/r/${run2}?fragment=transcript&shape=records`);
 
     // The workbench's selected-task pane is gone: its old address lands on Tasks, which carries no run pollers and no
     // empty region promising a look that cannot land. (Static panel: the sensitive composition test below.)
@@ -1467,6 +1469,8 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(html).not.toContain('id="live-transcript"');
     expect(html).not.toContain("?fragment=peek");
     expect(html).not.toContain("?fragment=transcript");
+    // The work panel names no records window on a page that asks for a password.
+    expect((workspaceOf(html).view as BrowserTaskView).work).toMatchObject({ run, live: true, transcript: null });
     // The decision renders link-only: the question and its road, no form
     // that answers, no enhancement script.
     expect(html).toContain("Which way?");

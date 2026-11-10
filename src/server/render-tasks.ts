@@ -52,7 +52,7 @@ import { assignmentStageOf,demoChecksOf,stageOfCode,stageOfDispatch,STATUS_MORE,
 import { buildProgressOf,dispatchActionLabel,type DisplayStatus,earlierAttemptsWords,type PublicationFacts,receiptPublicationWords,resultStatusOf,REVIEW_TOKENS,type ReviewFacts,stepRowsOf,type StepRow,type WorkStatus,workStatusOf } from "../workspace-ui.js";
 import { createHash, randomUUID } from "node:crypto";
 import { TEXT_LIMITS } from "../text-limits.js";
-import { type Chrome,isOverdue,oneLineOf,projectChip,regionScript,safePrUrl,screen,type Screen,SENSITIVE_INPUT,sentenceCase,shortDigest,transcriptScript,whenTime } from "./chrome.js";
+import { type Chrome,isOverdue,oneLineOf,projectChip,regionScript,safePrUrl,screen,type Screen,SENSITIVE_INPUT,sentenceCase,shortDigest,whenTime } from "./chrome.js";
 import { steerDestinationWords, steerStandingParts } from "../steer-status.js";
 import { reviewHref,taskChatHref,taskHref } from "./http.js";
 import { coordinatorProposalsSection } from "./render-chat.js";
@@ -1833,11 +1833,8 @@ export function taskBodyParts(data: {
     // With the live file view off there is nothing live to show here: no panel (the build's own page says why).
     if (data.peekable !== true) return "";
     const peek = html`<p class="meta">What is changing right now</p><div id="run-peek"><p class="meta">Watching… the first look lands within 15 seconds</p></div><p class="meta" id="run-peek-stamp"></p>`;
-    const transcript =
-      liveRun.provider !== "claude"
-          ? html`<p class="meta">The live transcript needs the claude harness for now — this build runs on ${liveRun.provider}</p>`
-          : html`<p class="meta">What the agent is saying</p><pre id="live-transcript" class="mono" style="max-height:18rem;overflow:auto;white-space:pre-wrap"></pre><p class="meta" id="live-transcript-state"></p>`;
-    return html`<div class="card attempt-live" data-live-run="${liveRun.id}">${head}${peek}${transcript}${door}</div>`;
+    // What the agent is saying is the work panel's (Watch the work): the same records, read by the workspace.
+    return html`<div class="card attempt-live" data-live-run="${liveRun.id}">${head}${peek}${door}</div>`;
   })();
 
   // One truthful answer to the first question on a queued task: "will this
@@ -3077,6 +3074,15 @@ export function taskBodyParts(data: {
     plan: planView,
     // One quiet line under the step: what the agent did last, and when.
     activity: liveRun === undefined ? null : data.activity ?? null,
+    // The work panel's run: the live build, else this version's latest build or report. Its records are read through the
+    // run page's own guarded window; a page asking for a password names no window at all.
+    work: (() => {
+      const recorded = (run: Run): boolean => run.role === "builder" || run.role === "scout";
+      const run = liveRun !== undefined && recorded(liveRun) ? liveRun : data.runs.filter(recorded).sort((a, b) => b.id - a.id)[0];
+      if (run === undefined) return null;
+      const live = run.id === liveRun?.id && run.outcome === null;
+      return { run: run.id, live, agent: agentNameWords(run.provider, run.model), transcript: degraded ? null : `/r/${run.id}?fragment=transcript&shape=records` };
+    })(),
     stop,
     pause,
     steering: data.csrf !== "" ? data.steerComposer ?? null : null,
@@ -3181,7 +3187,6 @@ export function taskPage(chrome: Chrome, data: Parameters<typeof taskBody>[0]): 
   const script =
     (liveRun === undefined ? "" : regionScript("check-progress", "check", `/r/${liveRun.id}`)) +
     (liveRun !== undefined && data.peekable === true ? regionScript("run-peek", "peek", `/r/${liveRun.id}`) : "") +
-    (liveRun !== undefined && data.peekable === true && liveRun.provider === "claude" ? transcriptScript(`/r/${liveRun.id}`) : "") +
     (data.csrf !== "" && data.decisions.some(one => one.state === "open" || one.state === "expired") ? decisionAnswerScript() : "");
   return screen(`task \u00b7 ${data.task.id}`, first.html, {
     chrome,

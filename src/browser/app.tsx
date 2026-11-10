@@ -589,7 +589,7 @@ function useTaskThreadChat(controller: ReturnType<typeof useWorkspace>): ThreadC
       </div>}
       <PostForm onSubmit={event => { void controller.send(event, mode); }} action="/chat" data-workspace-composer data-task-composer aria-busy={sending}
         className="so-task-composer-box rounded-[28px] border border-transparent bg-composer px-4 pb-2.5 pt-3 transition-[border-color] duration-100 phone:px-3">
-        <label htmlFor="task-message" className="sr-only">Message the agent</label>
+        <label htmlFor="task-message" className="sr-only">{`Message ${workspace.leadName ?? "the lead"}`}</label>
         <textarea ref={box} id="task-message" name="message" rows={2} maxLength={chat.maxChars} placeholder="Message the agent: ask, or ask for a change" value={draft.text}
           className="block max-h-[180px] min-h-12 w-full resize-none px-0.5 pb-2 text-[16px] leading-relaxed outline-none placeholder:text-muted-foreground phone:min-h-11 phone:text-[17px]"
           onChange={event => controller.edit(event.target.value)} onKeyDown={event => {
