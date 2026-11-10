@@ -5,6 +5,7 @@ import { WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 import { checkAccessOf, widerThan, type CheckAccess } from "./check-access.js";
 import { PROJECT_SANDBOX_DEFAULT, sandboxOf, type ProjectSandbox } from "./project-sandbox.js";
 import type { FencePolicy } from "./agent-fence.js";
+import type { ChatMessageOutcome } from "./chat-message-states.js";
 import { networkFromValue, PROJECT_NETWORK_DEFAULT, projectNetworkFromValue, runNetworkFromValue, type NetworkProfile, type ProjectNetwork, type RunNetworkRecord } from "./egress.js";
 import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
@@ -3480,8 +3481,8 @@ export type TelegramConversation = {
   nextAttemptAt: string | null;
   session: number | null;
   turn: number | null;
-  /** A short outcome word: answered, replayed, refused:<reason>, failed:<reason>, revoked, … */
-  outcome: string | null;
+  /** Its result word (chat-message-states.ts); a row written by an older version may hold a word no longer listed. */
+  outcome: ChatMessageOutcome | null;
   replyMessageId: string | null;
   createdAt: string;
   startedAt: string | null;
