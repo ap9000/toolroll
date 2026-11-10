@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Whether a pull request's upgrade test runs (.github/workflows/upgrade-path.yml). The rule is the release check's own
- * (release-check.mjs needsUpgrade and upgradeChanges), so a change that could affect an upgrade fails here, on the pull
+ * (upgrade-rule.mjs needsUpgrade and upgradeChanges, which release-check.mjs uses too), so a change that could affect an upgrade fails here, on the pull
  * request, before anyone is asked to approve a release.
  *
  *   node <trusted copy>/scripts/ci-upgrade-scope.mjs decide --base <sha> --head <sha> --root <checkout>
@@ -13,7 +13,7 @@
  * code. Git runs through the same hardened read as scripts/ci-scope.mjs.
  */
 import { readGit } from "./deploy-git.mjs";
-import { needsUpgrade, upgradeChanges } from "./release-check.mjs";
+import { needsUpgrade, upgradeChanges } from "./upgrade-rule.mjs";
 
 const SHA = /^[0-9a-f]{40}$/;
 
