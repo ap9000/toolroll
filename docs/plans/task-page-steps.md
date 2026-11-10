@@ -1,6 +1,7 @@
 # The task page: the steps are the page
 
-Status: plan v1, 2026-11-10. Not built. Supersedes the tab layout in `one-page-task-and-agent.md` (its URL, ceremony
+Status: plan v2, 2026-11-10. Not built. v1 was reviewed read-only by Codex (GO WITH CHANGES, 9 findings); all nine are
+folded in below and listed at the end. Supersedes the tab layout in `one-page-task-and-agent.md` (its URL, ceremony
 and "one mounted instance" rules stay).
 
 ## Why
@@ -14,14 +15,15 @@ open, ready for review, phone, phone work view, and the open step in all eight s
 
 ## What a person sees
 
-1. **Five rows are the page**: Plan, Approval, Build, Checks, Ready. No tab strip, no separate step line, no separate
-   status card. A finished step is one line (label, one plain sentence, time) and opens on press. The step that is
-   happening is open and holds the one action. A step not reached yet is one grey line saying what will happen.
-2. **No amber.** What waits on the viewer: a 1px ink outline on the open step, a solid ink "Needs you" chip, and the
-   one solid ink button. Blue only while something runs, green only for passed, vermilion only for failed. Cautions
-   (a detail that is off but blocks nothing) are ink text with a small caution glyph, never a hue.
+1. **The steps are the page**: Plan, Approval, Build, Checks, Ready (a report has four: no Checks). No tab strip, no
+   separate step line, no separate status card. A finished step is one line (label, one plain sentence, time) and
+   opens on press. The step that is happening is open and holds the one action. A step not reached yet is one grey
+   line saying what will happen.
+2. **No amber.** What waits on the viewer: one 1px ink outline on the open step, a solid ink "Needs you" chip, and
+   the one solid ink button. Blue only while something runs, green only for passed, vermilion only for failed.
+   Cautions (a detail that is off but blocks nothing) are ink text with a small caution glyph, never a hue.
 3. **The plan reads top to bottom**: one lead sentence; numbered Steps; Done when (each with how it is proven);
-   Will change / Won't touch; Worth knowing (hidden when empty); one line on the agent and its limits.
+   Will change / Won't touch; Worth knowing; the agent, its permissions and its limits.
 4. **During a build** the plan's steps tick off in the open Build row ("Step 2 of 3 · …"), and "Watch the work" opens
    the agent's work as a chat beside the page (full screen on a phone): the agent's words as text, each action as one
    quiet line, the person's notes as a bubble on the right, a filled rounded message box at the bottom.
@@ -30,143 +32,193 @@ open, ready for review, phone, phone work view, and the open step in all eight s
 
 | Need | Exists today |
 |---|---|
-| Five steps from recorded facts | `taskRoad` (`src/first-run.ts`), drawn by `stepsOf` + `KSteps` (`task-view.tsx`) |
-| One status, one sentence, one action | `StatusBox`, `headingOf`, `ApprovalBox`/`KApprove`, Stop/Pause/Resume/Retry forms (`task-view.tsx`) |
-| Signed plan rows | `approvalSheetParts` → `approve.planHtml` (`render-tasks.ts`) |
-| Approach / milestones / risks / proof | `ExecutionPlanDocument`, `executionPlanHtml`, `planCard` (today an Activity entry) |
-| Step-by-step build progress | builder checkpoints → `run_checkpoint` → `progressOf` / `buildProgressOf` → `view.progress` |
-| Chat view of the agent's work | `live/<run>.jsonl` records, `/r/<n>?fragment=transcript&shape=records`, `useConversation` + `ConversationPane` (Agents page only, CSS scoped to `#agents-view`) |
-| A note to the running agent | `POST /t/:id/steer`, `steerControlsFor`, `SteerNote` / `PauseSteerForm`, `runNotes` read state |
-| Result with changed files and diff | `reviewCockpitDetailParts` → `SelectedResult` (`taskResult`) |
+| The steps, from recorded facts | `taskRoad` (`src/first-run.ts`), drawn by `stepsOf` + `KSteps` (`task-view.tsx`) |
+| One status, one sentence, one action | `StatusBox`, `headingOf`, `ApprovalBox`/`KApprove`, Stop/Pause/Resume/Retry forms |
+| Everything an approval signs | `approvalSheetParts` → `approve.planHtml`, incl. the "Plan details" fold and runtime terms |
+| Approach / milestones / risks / proof | `ExecutionPlanDocument`, `executionPlanHtml` (with a text fallback for old plans), `planCard` |
+| Build progress | builder checkpoints → `run_checkpoint` → `progressOf` / `buildProgressOf` → `view.progress` (a sentence and a stuck summary today; per-step states need a typed projection, below) |
+| Chat view of the agent's work | `live/<run>.jsonl`, `/r/<n>?fragment=transcript&shape=records`, `useConversation` + `ConversationPane` (Agents page only) |
+| Notes to the running agent | `POST /t/:id/steer` (a note) and `POST /t/:id/pause` (pause and send), `steerControlsFor`, `steer-capabilities.ts` |
+| Live file changes | `#run-peek` in `attemptPanel` |
+| Result with changed files and diff | `reviewCockpitDetailParts` → `SelectedResult` |
 
-No new framework and no new dependency. The chat viewer is ours already; it moves into the kit and is restyled to the
-mock. Nothing is copied from outside libraries in this plan (if a later piece is, MIT only, recorded in the PR).
+No new framework and no new dependency. Nothing is copied from outside libraries.
 
-## Rules that do not move
+## Contracts that do not move
 
-- **Approval.** The server still proves the person, the freshness and the exact scope when the form arrives. The page
-  only re-arranges. Every signed term (goal, changes and paths, won't touch, done when, budget / "if it runs out", the
-  agent and its limits, a fallback chain line when there is one) is visible in the open Approval step at every width
-  before the Approve button can be pressed — nothing signed sits behind a fold, on desktop or phone. The phone mock's
-  "Show the full plan" link is therefore dropped: the phone shows the same terms, stacked. One mounted approval
-  instance keyed by `approvalIdentity`, as today. Terms and submitted value come from one snapshot (KIT.md).
-- **Password pages** keep today's behaviour (no live updates while a password input is on the page).
-- **The transcript** keeps every guard it has: cookie session, run visible, this computer's runner, sanitised records,
-  text sinks only, no tool names, command text only under the project's "Show commands" answer. The panel adds no new
-  endpoint and no new data.
-- **Messages.** A note typed in the work panel while a build is live goes to the agent through the existing steer
-  route and its controls; nothing new can be sent. When no build is live the panel's box is the existing task
-  conversation with the lead. The box's label always names who receives it ("Message Claude Sonnet" / "Ask the
-  lead"). A model never approves; the box cannot approve anything.
-- **One status source** (`task-status.ts`) and one road (`taskRoad`). No new state names.
-- **Kit**: every new piece is built twice (server `src/server/kit.ts`, React `src/browser/kit/`), registered in
-  KIT.md with a contract, classes in `kit.css` only, then `youiyoux sync` and `check --strict`.
+### Approval
+
+- The server still proves the person, the nonce, the freshness, the revision brief, the rebuild check and the exact
+  scope when the form arrives (`tasks.ts` approve handler). The page only re-arranges.
+- **Content parity, enumerated.** The open Approval step shows, unfolded and before the Approve button, everything
+  `approvalSheetParts` produces today, including what sits in today's "Plan details" fold: the goal and the full
+  repair goal; revision feedback; the amendment warning; changes and exact granted paths; won't touch; done when and
+  each evidence requirement; every agent role with its model; permissions (network, reads, writes, check access);
+  runtime and repair limits; budget / "if it runs out"; quality level; the paid-fallback warning and chain line; the
+  earlier-running-version warning; the candidate's identity (saved commit, plan version). Exact signed grants are
+  shown as signed, even when they are paths outside the project; only decorative paths are dropped.
+- **How parity is kept:** the new sheet is built by re-ordering and re-labelling the parts `approvalSheetParts`
+  already returns, not by a second reading of the plan. A test renders the old sheet and the new sheet for the
+  fixture set (plain, repair, amended, fallback chain, multi-agent, report) and asserts every term's text in the old
+  one is present, outside any `<details>` or hidden element, in the new one.
+- **Pinned together.** The terms shown and the fields submitted come from the one approval payload the page first
+  showed (`shownApproval`); a changed digest disables the button; an open plan editor blocks submission. The plan in
+  the Approval step is that payload's plan, never the latest adaptive execution plan. One mounted approval instance
+  keyed by `approvalIdentity`; bodies are hidden, never unmounted.
+- **One outline.** The step row owns the ink outline; `KSlots wait` inside it is drawn without its own border.
+- The plan is shown once: while Approval is open the Plan row above is one line ("Written by … · shown below").
+
+### Sensitive pages
+
+Password pages keep today's degraded render (no live room, no polling scripts). The work panel's poller obeys the
+same switch: `useConversation` takes a `paused` flag and makes no request while a password input is on the page or a
+password popover is open; it resumes when the popover closes. A test proves no transcript request is made in either
+state. Ceremonies never render inside the work panel or its phone sheet.
+
+### Transcript
+
+Every guard stays: cookie session, run visible (checked again after the read), this computer's runner, sanitised
+records, generation / offset / key-block handling, command text only under the permission captured with the run. The
+panel adds no endpoint and no data.
+
+### Notes to the agent
+
+The panel's box is the existing steer composer in new clothes, not a new sender. It keeps both operations (`/steer`
+for a note; `/pause` with run, draft key and request id for pause-and-send), cookie + CSRF, role and demo limits,
+exact-run validation, idempotency, and "a draft clears only on a confirmed send". It follows `steer-capabilities`:
+send now, send to its mailbox ("It reads notes at its next check"), or cannot take notes (the box is replaced by the
+capability's own sentence). The receiver is fixed while a draft exists: a note written for an attempt is never sent
+to the lead when the attempt ends; it stays as an unsent note with today's explicit "send to the next attempt"
+choice. The label always names the receiver. A model never approves; the box cannot approve anything.
+
+### Navigation
+
+One address, as today: `/t/<root>?version&tab&run&section` plus hashes and feedback parameters. `showTask`'s
+version-from-run rule and mismatch refusal, `onePageView`'s link rewriting, the `/review` and `/r/<n>` redirects and
+their exceptions, the browser's rule not to intercept a different version / run / section, and `revealTarget`'s
+focus behaviour all stay. `tab` keeps its four values and maps to what opens: `plan` → the current step,
+`result` → the result, `attempts` → Build, `activity` → the panel. `#plan-editor` and `#plan-edit` keep their
+separate meanings. Without JavaScript the server render shows every row open, in order.
+
+### Everything keeps a home
+
+| Today | After |
+|---|---|
+| Header, ⋯ menu (Run checks, Edit plan, Dependencies, Holds, Task options, Archive, Copy link, Cancel) | unchanged |
+| Details drawer (`TaskDetails`: scope, agents, diagnostics facts) | unchanged |
+| Plan tab: signed rows | the plan sheet in the Plan / Approval row |
+| Plan tab: sections scope, waits-for, holds, steering, task-diagnostics, manage, Cancel | under the rows, in the same order, as "More about this task" (flat sections, as today) |
+| Step strip + status card | the open row |
+| Result tab | the result body (Ready row; see "Result access") |
+| Activity tab (thread + lead composer) | the panel |
+| Attempts tab | the Build row's body |
+| `planCard` Activity entry | the Plan row (the thread keeps a one-line "Plan written" entry) |
+| `#run-peek` live file changes | the Build row, under the steps ("Files changing") |
+
+### Kit
+
+Every new piece is built twice (server `src/server/kit.ts`, React `src/browser/kit/`) with the same markup,
+registered in KIT.md with a contract, classes in `kit.css` only, standalone behaviour kept, then `youiyoux sync` and
+`check --strict`. System changes (tokens, rules, contracts) are proposed with `youiyoux plan`, and the plan goes in
+the PR description; the change itself is the one Alex asked for in chat.
 
 ## Slices (one PR each, in this order)
 
-### PR 1 — No amber (app-wide, small)
+### PR 1 — No amber (compatible, small)
 
-- Tokens (`src/design/system/tokens/toolroll*.tokens.json`): `--so-needs` → ink (`--so-signal`), `--so-needs-soft` →
-  the ink wash; drop `--so-needs-ink`. Regenerate `tokens.css`, `theme.css`, `SYSTEM.md` with `youiyoux sync`.
-- `kit.css`: `k-chip.needs` becomes solid ink with on-signal text (no dot); `.ask` stays neutral; `k-dot.needs`,
-  `k-step.now`, `k-slots.wait`, `k-needs`, `k-crow.wait`, `k-nav-flag`, `k-sflag` read ink through the token. Check
-  each in dark mode (ink is `#ededed` there; chip text is `#0a0a0a`).
-- Cautions: the ~30 uses of `--so-warning` / Tailwind `*-warning` (console.css, workspace.css, `TASK_STATUS_CSS`,
-  `ui/badge.tsx`, result-view, flow-view, sign-in banner) become ink text on the neutral soft fill with a caution
-  glyph. Then the warning token is removed from the token source so it cannot come back.
-- Rules and docs: replace `color.amber-means-waits.rule.yaml` with `color.ink-means-waits` (same statement, ink);
-  rewrite DESIGN.md's One Signal Rule, Status Keeps Its Hue Rule, the chip and border paragraphs, the Do/Don't lines;
-  KIT.md rows 35, 81–97, 171, 265; `docs/design/task-status.md` (the amber note on a row becomes a caution note).
-- Tests: `src/design/kit.test.ts`, `src/server/kit.test.ts`, `src/console-feel.test.ts`, `serve.chrome.test.ts`
-  ("one accent in two places"), any test asserting `warning`/`needs` class names. Evidence: Tasks, a task waiting
-  on approval, Home, Agents, Settings at 1440 and 390, light and dark.
-- Risk: with ink as both "waits on you" and "the act", a waiting card and its button share a colour. That is the
-  design (outline + chip + button read as one thing). Guard: at most one `k-slots wait` outline per page region.
+- Tokens: `needs` and `needs-soft` point at `signal` and `signal-soft` (ink). `kit.css`'s `--so-needs-ink` becomes
+  plain ink. `k-chip.needs` becomes solid ink with on-signal text; the other needs marks (`k-dot.needs`,
+  `k-step.now`, `k-slots.wait`, `k-needs`, `k-crow.wait`, `k-nav-flag`, `k-sflag`) follow through the token. Dark
+  mode checked for each.
+- The `warning` tokens stay defined in this PR (console.css aliases them, `youi.project.json` maps them, and the
+  terminal uses them as its ANSI yellow, which is terminal output, not UI). Every UI consumer (~65 lines: console.css
+  notes and chips, workspace.css, `TASK_STATUS_CSS`, `ui/badge.tsx`, result-view, flow-view, chat cards, shell, the
+  settings kit) moves to the caution style: ink text, neutral soft fill, caution glyph. A guard test then allows
+  `--so-warning` / `*-warning` only in the token files, the console alias line and the terminal palette. Deleting the
+  token is a later clean-up, not this delivery.
+- Rules, contracts, docs: `color.amber-means-waits` → `color.ink-means-waits`; component contracts that name the
+  needs tone; DESIGN.md (One Signal Rule, Status Keeps Its Hue Rule, chip and border paragraphs, Do/Don't); the
+  generated block in AGENTS.md via sync; KIT.md; `docs/design/task-status.md`.
+- Tests: `src/design/kit.test.ts`, `src/server/kit.test.ts`, `src/console-feel.test.ts`, `serve.chrome.test.ts`,
+  youiyoux tests. Evidence: Tasks, a task waiting on approval, Home, Agents, Settings at 1440 and 390, light and dark.
 
-### PR 2 — The steps are the page (task page core)
+### PR 2 — The steps are the page
 
-- **One label set.** `JOURNEY_STEPS` says "Approval" (not "You approve"); `stepsOf`'s private LABEL map goes; chat's
-  first-task journey and `first-run.tsx` read the same constant. Dynamic labels ("Checks running", "Checks failed",
-  "Checks not run", "Checks at release") move out of the label into the row's sentence; the label stays "Checks".
+- **One label set.** `JOURNEY_STEPS` says "Approval"; `stepsOf`'s private LABEL map goes; chat's first-task journey
+  and `first-run.tsx` read the same constant. `taskRoad`'s state words ("Checks failed", "Checks not run", "Checks at
+  release", "Checks unreadable") become the row's sentence; the label stays "Checks".
 - **New kit piece `k-steprows`** (server builder + `KStepRows`): an ordered list; each row has a marker (done = ink
-  disc with a check, current = ring with a dot — ink when it waits on the viewer, blue when something runs, vermilion
-  when it failed —, skipped = dashed ring, todo = grey ring), a label, a sentence, a time, and an optional body. Done
-  rows are real `<button aria-expanded>` disclosures; the current row is open and not collapsible. `aria-current="step"`
-  on the current row. Replaces `KSteps` on the task page (KSteps stays for chat's compact journey).
-- **Row sentences** come from a new pure function `stepRowsOf(view)` in `src/workspace-ui.ts` (tested), from facts
-  the view already has: who wrote the plan and when; who or which rule approved; which agent built, attempt count,
-  `buildProgressOf` words; the check's state; the result's size (files, +/−). No new store reads on the page.
-- **Row bodies** (React `TaskView`, re-arranged, same components):
-  - Plan → the plan (PR 2 layout below). "Edit plan" from ⋯ opens the existing `#plan-edit` editor here.
-  - Approval → when current: `ApprovalBox`/`KApprove` as the action header, then the plan (the signed terms) inside
-    the same outlined section. When done: who approved, when, "See what was approved" (existing terms).
-  - Build → when current: `StatusBox` content for a live build (progress sentence, Stop, Pause and steer, "Watch the
-    work"), then the plan's steps with their checkpoint state. When done or failed: attempts (`AttemptsPanel`) and
-    the problem card if any.
-  - Checks → the existing detail rows (project checks, requirements, evidence) and "Run checks" when offered.
-  - Ready → `ResultSlot` (summary, changed files, diff) with the result's one action (Open pull request / Inspect),
-    plus `MergeReadyBox`, `ShipBox`, `ReleaseBox` where they apply today.
-  - Lead cards (`view.lead`: history, control, problem, pull-request, needs-scope, mirror) attach to the row they
-    belong to: problem → the stuck row; pull-request → Ready; needs-scope → Approval; the rest → under the list.
-  - Tasks with no road (`journey = null`: releases, machine checks) keep `statusHtml` + sections as today.
-- **Where "Activity" and "Attempts" go.** Attempts are the Build row's body. The Activity thread (history entries and
-  the task conversation) becomes the side panel of PR 3; until PR 3 lands it stays reachable as the panel in its
-  simplest form (the thread as it is today, opened from an "Activity" button in the header). No content is lost
-  between PRs.
-- **URL contract kept.** `?tab=result` opens Ready, `?tab=attempts` opens Build, `?tab=activity` opens the panel,
-  `?tab=plan` (or none) opens the current step. `showTask`, `onePageView` link rewriting, the `/review` and `/r/<n>`
-  redirects, `MoreMenu` go-to items and `revealTarget` keep working through one mapping function
-  (`pageTabOf` → `openStepOf`). Hidden bodies are hidden, never unmounted (ceremony rule).
-- **Plan layout** (server, `render-tasks.ts`, new builder `planSheetHtml` fed by the same `approvalSheetParts` data
-  and `ExecutionPlanDocument`, replacing the rows in `approve.planHtml` and the `planCard` Activity entry):
-  - lead sentence = `approach`'s first sentence, else `goal`; the goal is shown under it when the two differ
-  - Steps = `milestones` (numbered); absent → the section is omitted
-  - Done when = `acceptance`, each with its kind in plain words (check → "Runs automatically", test evidence →
-    "Proven by a test", screenshot → "Shown in a screenshot", changed-path → "Seen in the changed files",
-    manual-review → "You review it"); `proof` lines that are not already acceptance follow
-  - Will change = `touches` ("Any file in the project" when open) · Won't touch = `outOfScope` ("Nothing is ruled
-    out" when empty)
-  - Worth knowing = `risks` then `dependencies`; hidden when both are empty
-  - If it runs out (budget) and the agent line ("<model> builds this. …" from the sealed profile words), then the
-    fallback chain line when present
-  - No internal codes (`c1`, `[requires: check]`), no folder paths outside the project, times as clock times.
-  The plan contract panel (`planContractHtml`) and amendment stay, under "Worth knowing".
-- **Build progress.** The open Build row lists the plan's milestones with `MilestoneState` (completed = check,
-  current = blue ring, blocked = vermilion, pending = grey) from the latest checkpoint; with no checkpoint yet it
-  shows the steps all pending and the plain activity line. Nothing new is asked of the agent.
-- **Phone** (≤ 640px): same rows, 44px targets, the action header's buttons full width, no fold of signed terms.
-- Tests to move, not delete: `one-page.test.ts` (tabs → open step mapping), `task-cta.test.ts`, `task-view.test.ts`,
-  `task-steer.test.ts`, `live-task.test.ts`, `first-run.test.ts`, `workspace-ui.test.ts` (+ `stepRowsOf`),
-  `task-status-surfaces.test.ts`; slow server suites that assert task HTML (`serve.tasks`, `serve.console`,
-  `serve.results`, `serve.workspace`, `needs-you`, `task-control-console`, `password-freshness.serve`) — targeted runs
-  locally, the full suite in CI; journeys `scripts/app-e2e.mjs` selectors (`[data-task-panel]`, `.k-steps`),
-  `workspace-result-proof.mjs`, `ui-polish-proof.mjs`. `.youi/screens/screens.json` states re-shot.
+  disc with a check; current = ring with a dot, ink when it waits on the viewer, blue when something runs; stuck =
+  vermilion; skipped = dashed ring; todo = grey ring), a label, a sentence, a time and an optional body. Finished
+  rows are `<button aria-expanded>` disclosures; the current row is open. `aria-current="step"` on the current row.
+  `KSteps` stays for chat's compact journey.
+- **Row sentences**: a pure function `stepRowsOf(view)` in `src/workspace-ui.ts` (tested) from facts the view
+  already carries. No new store reads in the browser.
+- **Typed build progress.** The server adds `progress.steps: { title, state: pending|current|completed|blocked }[]`
+  to the view, from the plan's milestones and the latest checkpoint (`parseProgressSnapshot`). No checkpoint yet →
+  all pending. Nothing new is asked of the agent.
+- **Row bodies** (same components, re-arranged):
+  - Plan → the plan sheet; "Edit plan" opens the existing editor here.
+  - Approval → when current: the action (`ApprovalBox`/`KApprove`, Request changes, Reject) then the plan sheet in
+    the one outlined section. When done: who or which rule approved, when, and the approved terms.
+  - Build → when live: the progress sentence, Stop, pause-and-steer, "Watch the work", the steps with their states,
+    files changing. When ended: attempts and the problem card.
+  - Checks → the existing check detail and "Run checks" when offered.
+  - Ready → the result with its one action, plus `MergeReadyBox`, `ShipBox`, `ReleaseBox` where they apply today.
+  - Lead cards attach to their row: problem → the stuck row; pull-request → Ready; needs-scope → Approval; the rest
+    under the list.
+- **Result access does not depend on reaching Ready.** Whenever a result exists (failed or unreadable checks, a
+  completed task whose road stopped at Checks, an older version), the Ready row can be opened and holds that result
+  with its evidence, diff, feedback and revision controls; its sentence says why it is not ready. The loaded
+  result's identity and "a newer result exists" notice behave as today.
+- **Other shapes.** A report draws four rows. A cancelled task or one with no road (`journey = null`) keeps today's
+  status block and sections, restyled only.
+- **Plan sheet** (server, `render-tasks.ts`, `planSheetHtml`, built from `approvalSheetParts`' parts plus the
+  `ExecutionPlanDocument`):
+  - lead sentence = the approach's first sentence, else the goal; the rest of the approach follows in full; the goal
+    is shown when it differs
+  - Steps = milestones, numbered; none → omitted
+  - Done when = acceptance, each with its evidence kind in plain words (`check` → "Runs automatically",
+    `screenshot` → "Shown in a screenshot", `changed-path` → "Seen in the changed files", `manual-review` → "You
+    review it"); proof lines not already covered follow
+  - Will change (granted paths, exactly) · Won't touch
+  - Worth knowing = amendment warning and other warnings first (always shown when present), then risks and
+    dependencies; hidden only when all are empty
+  - The agent: every role and model, permissions, runtime and repair limits, quality level, budget and what happens
+    when it runs out, fallback chain
+  - Old plans that do not parse keep `executionPlanHtml`'s text fallback
+  - No internal codes (`c1`, `[requires: check]`); times as clock times
+- **Phone** (≤ 640px): same rows, 44px targets, full-width action buttons, nothing signed folded.
+- **Tests.** Moved, not deleted: `one-page.test.ts`, `task-cta.test.ts`, `task-view.test.ts`, `task-steer.test.ts`,
+  `live-task.test.ts`, `first-run.test.ts`, `workspace-ui.test.ts`, `task-status-surfaces.test.ts`, the slow server
+  suites that read task HTML, `password-freshness.serve.test.ts`. New: sheet parity; stale approval disables the
+  button; wrong-password recovery keeps the shown terms; result stays selected through a live update; hash focus;
+  redirect exceptions; no-JavaScript render; server/React markup parity for `k-steprows`. Journeys:
+  `scripts/app-e2e.mjs` selectors, `workspace-result-proof.mjs`, `ui-polish-proof.mjs`. Targeted runs locally, the
+  full suite in CI. `.youi/screens/screens.json` states re-shot.
 
 ### PR 3 — Watch the work
 
-- Move `useConversation` + `ConversationPane` out of `agents-view` into a kit piece `k-work` (`KWork`): header (title,
-  who is working, live dot, close), the record list, the message box (`KComposer`). Styles move from `agents.css`
-  (scoped to `#agents-view`) to `kit.css`; the Agents page uses the same piece, so there is one viewer.
-- The task page mounts it as a right-hand panel (≥ 1100px: beside the rows; below that: a `KOverlay` sheet; phone:
-  full screen). Opened by "Watch the work" in the Build row, by "Activity" in the header, or `?tab=activity`.
-  Open/closed is a per-viewer convenience (localStorage, guarded).
-- Content: for the live or latest run, the transcript records (say → text; step → one line with a glyph, our fixed
-  kind words "Read / Edited / Ran a command / Searched …" and the target; done → "12 passed"-style result only when
-  the record carries it); the person's notes from `runNotes` as right-hand bubbles with read state. Below the live
-  part, or alone when there is no transcript: the task's thread entries as today.
-- When the transcript is off (the build runs on another computer, or the provider records nothing): the panel says
-  so in one sentence ("The agent's work is shown only for builds on this computer.") and shows the activity line
-  and the thread. No fake content.
-- The box: live build → the steer route with today's controls (`steerControlsFor`: send now, or pause and steer),
-  drafts kept per attempt as today; otherwise the task conversation. The old `<pre id="live-transcript">` and
-  `#run-peek` in `attemptPanel` are removed from the task page once the panel shows the same records.
-- Tests: `agent-conversation` tests follow the move; `steer-composer.test.ts`, `steer-live.test.ts`,
-  `live-input.test.ts`; `agents-live-proof.mjs`; a new browser test for the panel's three states (live, off, no run).
+- `useConversation` + `ConversationPane` move into a kit piece `k-work` (`KWork`): header (title, who is working,
+  live dot, close), the record list, the message box. Styles move from `agents.css` to `kit.css`; the Agents page
+  uses the same piece.
+- The task page mounts it as a right-hand panel (≥ 1100px beside the rows; below that a sheet; phone full screen).
+  Opened by "Watch the work", by "Activity" in the header, or `?tab=activity`. Open/closed is remembered per viewer
+  (guarded localStorage).
+- Content: the live or latest run's records (the agent's words; each action as one line with our fixed kind words
+  and its target; a result only when the record carries one); the person's notes with their read state; then the
+  task's thread. When the transcript is off (another computer's build, or a provider that records nothing): one
+  sentence saying so, the activity line and the thread. No invented content.
+- The box follows "Notes to the agent" above. With no live attempt it is the task conversation with the lead.
+- The `<pre id="live-transcript">` is removed from the task page once the panel shows the same records; `#run-peek`
+  stays.
+- Tests: the viewer's tests follow the move; `steer-composer.test.ts`, `steer-live.test.ts`, `live-input.test.ts`;
+  `agents-live-proof.mjs`; new: the panel's states (live, mailbox, no notes, off, no run), the paused poller, a draft
+  outliving its attempt.
 
 ### After these: the rest of the UI
 
-Same pass on Tasks, Home, Agents, Projects, Settings and chat: one action per screen, hairlines not nested boxes, one
-⋯ menu, no machine text, colour only for live / passed / failed. Planned separately once the task page ships.
+The same pass on Tasks, Home, Agents, Projects, Settings and chat, planned separately once the task page ships.
 
 ## Order, checks, release
 
@@ -174,13 +226,19 @@ PR 1 → PR 2 → PR 3, each merged on green CI. Safety self-review (AGENTS.md) 
 (approval surface, transcript, steer). Scripted journeys run locally before a release. Evidence screenshots at 1440
 and 390, light and dark, for every state in the mocks' "every state" board.
 
-## Open questions for review
+## Review record
 
-1. Is anything signed today shown only inside a fold or a tab that this layout would hide or reorder in a way that
-   breaks "an approval covers exactly what was shown"?
-2. Is mapping `?tab=` onto open steps enough to keep every inbound link, redirect and go-to working, or is a
-   contract missed?
-3. One message box with two receivers (agent while live, lead otherwise): clear enough, or should the panel show two
-   labelled boxes?
-4. Ink for both "waits on you" and "the act": does any screen end up with two competing ink outlines?
-5. Removing the warning token entirely versus keeping it for cautions: which is safer for existing server pages?
+Codex, read-only, on v1: GO WITH CHANGES.
+
+1. High — the plan sheet did not list all consent-bearing content → "Content parity, enumerated" and the parity test.
+2. High — pin the approval document and the submitted fields together → "Pinned together".
+3. High — the transcript poller ignores the sensitive-page switch → "Sensitive pages".
+4. High — steering is two operations and three capabilities → "Notes to the agent".
+5. High — a result must be reachable when Ready is not reached → "Result access".
+6. Medium — transcript records do not replace live file changes → `#run-peek` stays.
+7. Medium — wrong facts (progress shape, evidence kinds, report and cancelled roads, old-plan fallback) → corrected.
+8. Medium — missing homes and contract checks → "Everything keeps a home", "Navigation", the new tests.
+9. Medium — token removal incomplete; System changes are proposed → PR 1 keeps the warning tokens and uses
+   `youiyoux plan`.
+
+Also taken: one outline per waiting step; the full approach after its lead sentence; the plan shown once.
