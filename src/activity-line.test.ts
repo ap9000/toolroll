@@ -6,7 +6,7 @@ const AT = "2026-10-07T12:00:00.000Z";
 const after = (ms: number) => Date.parse(AT) + ms;
 
 describe("the last-activity line", () => {
-  test("at five minutes of silence it says when it last heard, in neutral words (amber is for what needs you)", () => {
+  test("at five minutes of silence it says when it last heard, in neutral words (the needs-you mark is for what needs you)", () => {
     const ran = { what: "Edited files", at: AT, worker: "online" as const };
     expect(activityLine(ran, after(QUIET_AFTER_MS - 1_000)).stale).toBe(false);
     expect(activityLine(ran, after(QUIET_AFTER_MS))).toEqual({ text: "Last update 5 min ago", quiet: false, stale: true });

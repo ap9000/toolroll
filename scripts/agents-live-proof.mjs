@@ -251,7 +251,7 @@ for (const [name, viewport] of [['desktop', { width: 1440, height: 900 }], ['tab
     && [...document.querySelectorAll('[data-live-lines]')].some(node => (node.textContent ?? '').includes('Splitting')));
   check(`${name}: three tiles, two subagents, live lines`, ready);
   check(`${name}: the terminals line`, await until(page, () => (document.body.textContent ?? '').includes("1 terminal you're driving"), 5_000));
-  // The Needs you chip's words on its amber wash meet WCAG AA for small text (4.5:1), in light and in dark.
+  // The Needs you chip's paper words on solid ink meet WCAG AA for small text (4.5:1), in light and in dark.
   for (const scheme of name === 'desktop' ? ['light', 'dark'] : []) {
     await page.emulateMedia({ colorScheme: scheme });
     const ratio = await page.evaluate(() => {

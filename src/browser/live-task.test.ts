@@ -170,7 +170,7 @@ describe("the last-activity line", () => {
     expect(text()).toEqual(["fresh: Ran a command · 40 s ago"]);
     await act(async () => vi.advanceTimersByTimeAsync(5 * 60_000));
     expect(text()).toEqual(["stale: Last update 5 min ago"]);
-    expect(host.querySelector("[data-activity]")!.className).not.toContain("text-warning");
+    expect(host.querySelector("[data-activity]")!.className).not.toContain("font-medium");
     await act(async () => root!.render(createElement(TaskView, { view: taskView({ activity: { what: "Ran a command", at: new Date(Date.now() - 40_000).toISOString(), worker: "offline" } }), details: false })));
     expect(text()).toEqual(["quiet: Worker offline · last word 40 s ago"]);
   });

@@ -549,7 +549,7 @@ export function approvalIdentity(approval: string): string {
 }
 
 /** The task's road (first-run.ts taskRoad) as the kit's progress line: Plan · Approval · Build · Checks · Ready, the
- * step that waits on you amber, a running one blue, one that stopped red, and why under its name. */
+ * step that waits on you ink, a running one blue, one that stopped red, and why under its name. */
 export function stepsOf(road: readonly JourneyStep[]): StepItem[] {
   const LABEL: Record<JourneyStep["key"], string> = { plan: "Plan", approve: "Approval", build: "Build", checks: "Checks", ready: "Ready" };
   return road.map(step => {

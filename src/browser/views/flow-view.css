@@ -1,4 +1,4 @@
-/* The flow page (flow-view.tsx), on the kit (src/design/KIT.md): paper surfaces, hairlines, no resting shadows, amber
+/* The flow page (flow-view.tsx), on the kit (src/design/KIT.md): paper surfaces, hairlines, no resting shadows, ink
    only for what waits on you. Classes are fl-; colour comes only from --so- tokens. Every rule is scoped by
    :is([data-view] .fl-page, [data-view].fl-drawer-body) so it outranks the workspace's scoped preflight (tailwind.css) and still
    reaches the drawers the kit portals to <body>. */
@@ -20,7 +20,7 @@
 :is([data-view] .fl-page, [data-view].fl-drawer-body) .fl-meta .k-btn-sm { height: 24px; padding: 0 6px; color: var(--so-muted); text-decoration: underline; text-underline-offset: 3px; }
 :is([data-view] .fl-page, [data-view].fl-drawer-body) .fl-outcome { margin: var(--so-space-xs) 0 0; }
 
-/* The browser decision: the shared amber frame, then its full terms on demand. */
+/* The browser decision: the shared ink frame, then its full terms on demand. */
 :is([data-view] .fl-page, [data-view].fl-drawer-body) .fl-browser { display: grid; gap: var(--so-space-sm); margin: 14px var(--so-space-2xl) 0; max-width: 760px; }
 :is([data-view] .fl-page, [data-view].fl-drawer-body) .fl-zones { display: grid; gap: var(--so-space-xs); margin-top: var(--so-space-sm); }
 :is([data-view] .fl-page, [data-view].fl-drawer-body) .fl-zone { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--so-space-xs) 6px; }
@@ -64,7 +64,7 @@
 :is([data-view] .fl-page, [data-view].fl-drawer-body) .fl-resize-line { border-color: var(--so-ink); }
 :is([data-view] .fl-page, [data-view].fl-drawer-body) .fl-resize-handle { width: 8px; height: 8px; background: var(--so-ink); }
 
-/* A card: one quiet box; amber only when it waits on you. */
+/* A card: one quiet box; an ink outline only when it waits on you. */
 :is([data-view] .fl-page, [data-view].fl-drawer-body) .fl-card { text-decoration: none; display: grid; gap: var(--so-space-xs); width: 100%; box-sizing: border-box; padding: var(--so-space-sm) 10px; border: 1px solid var(--so-line); border-radius: var(--so-radius-md); background: var(--so-paper); color: var(--so-ink); font: inherit; text-align: left; cursor: pointer; transition: border-color var(--m-quick) var(--m-ease); }
 @media (hover: hover) and (pointer: fine) { :is([data-view] .fl-page, [data-view].fl-drawer-body) .fl-card:hover { border-color: var(--so-field-line); } }
 :is([data-view] .fl-page, [data-view].fl-drawer-body) .fl-card.selected { border-color: var(--so-ink); }

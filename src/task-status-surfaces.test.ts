@@ -174,7 +174,7 @@ describe("one headline on every surface", () => {
     }
   });
 
-  test("the task page: the reported case reads Complete with one amber detail and an action, never red", async () => {
+  test("the task page: the reported case reads Complete with one ink note and an action, never red", async () => {
     const html = await page("/t/fix-checkout-tax");
     const view = workspaceOf(html).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
     expect(view.status!.status.headline).toBe("Complete");

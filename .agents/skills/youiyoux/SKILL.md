@@ -68,7 +68,7 @@ Each finding names its rule, the file:line and a suggestion. The suggested token
 - **KFilter**: A list's text filter: a search field with its icon that narrows the rows already shown.
 - **KFormRow**: The two-column settings row: label and one muted line | the control; stacks on a phone. (variant: |inline|top|wide)
 - **KIcon**: One 24×24 stroke icon from the kit set, drawn in currentColor. (name: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|minus|fit|bolt|code|home|tasks|flows|agents|projects|settings|pen|arrow|list|board|panel)
-- **KNeedsPanel**: Waits that aren't tasks (a spend limit, a failed backup), on their own page: one amber outline, a count, one action each. Never part of the global Needs-you count.
+- **KNeedsPanel**: Waits that aren't tasks (a spend limit, a failed backup), on their own page: one ink outline, a count, one action each. Never part of the global Needs-you count.
 - **KNotFound**: The not-found page inside the shell: what was asked for and two ways on.
 - **KNotice**: A refusal in place (role=alert: what went wrong and what didn't change), a neutral system line, or a muted supporting note. There are no toasts.
 - **KOverlay**: Popover, drawer, sheet and menu: role=dialog, the app behind inert, Tab kept inside, Escape / Close / scrim close it, focus returns to the trigger. Bordered, never a shadow. (kind: popover|drawer|sheet|menu)

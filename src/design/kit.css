@@ -19,7 +19,7 @@
  * stays here: status words on their soft wash, mixed toward ink so they read at 4.5:1 or better, and the motion
  * vocabulary (three durations, one curve; nothing longer, no bounce). */
 :root {
-  --so-needs-ink: color-mix(in srgb, var(--so-needs) 78%, var(--so-ink));
+  --so-needs-ink: var(--so-ink);
   --so-live-ink: color-mix(in srgb, var(--so-info) 82%, var(--so-ink));
   --so-done-ink: color-mix(in srgb, var(--so-success) 80%, var(--so-ink));
   --so-fail-ink: color-mix(in srgb, var(--so-danger) 85%, var(--so-ink));
@@ -64,7 +64,8 @@
 /* ---------- Status: five words, one tone each ---------- */
 .k-chip { display: inline-flex; align-items: center; gap: 6px; height: 20px; padding: 0 7px; border-radius: 6px; font: var(--so-typography-badge); background: var(--so-neutral-soft); color: var(--so-neutral-ink); white-space: nowrap; flex: none; }
 .k-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--dot, var(--so-muted)); flex: none; }
-.k-chip.needs { background: var(--so-needs-soft); color: var(--so-needs-ink); --dot: var(--so-needs); }
+.k-chip.needs { background: var(--so-needs); color: var(--so-on-signal); }
+.k-chip.needs::before { display: none; }
 .k-chip.ask { background: var(--so-neutral-soft); color: var(--so-ink); --dot: var(--so-needs); }
 .k-chip.live { background: var(--so-info-soft); color: var(--so-live-ink); --dot: var(--so-info); }
 .k-chip.done { background: var(--so-success-soft); color: var(--so-done-ink); --dot: var(--so-success); }

@@ -24,7 +24,7 @@ import { KButton, KInput, KLinkButton } from "../kit/index.js";
 type Selected = NonNullable<BrowserResultView["selected"]>;
 
 const DOT: Record<string, string> = {
-  attention: "bg-attention", danger: "bg-destructive", info: "bg-info", success: "bg-success", neutral: "bg-muted-foreground", warning: "bg-warning",
+  attention: "bg-attention", danger: "bg-destructive", info: "bg-info", success: "bg-success", neutral: "bg-muted-foreground", warning: "bg-muted-foreground",
 };
 
 
@@ -59,10 +59,10 @@ function ResultsMenu({ view }: { view: BrowserResultView }) {
   </DropdownMenu>;
 }
 
-/** A report that doesn't match its changes is a warning, never a quiet success: its dot is amber whatever the status tone. */
+/** A report that doesn't match its changes is a caution, never a quiet success: an ink caution mark whatever the status tone. */
 export function MismatchHeadline({ headline }: { headline: string }) {
   return <h2 className="flex items-center gap-2.5 text-lg font-semibold leading-snug" data-mismatch-headline>
-    <span aria-hidden="true" className="size-2.5 shrink-0 rounded-full bg-warning" />{headline}
+    <AlertTriangle aria-hidden="true" className="size-4 shrink-0 text-foreground" />{headline}
   </h2>;
 }
 
@@ -116,7 +116,7 @@ function StatusCard({ selected, acts, answers, bare = false }: { selected: Selec
       </ul></Alert>}
     </Card>;
   }
-  return <Card data-result-status={selected.status.token} data-headline={status?.headline ?? selected.status.label} aria-label="Result status" className={cn(status?.headline === "Needs you" && "border-warning")}>
+  return <Card data-result-status={selected.status.token} data-headline={status?.headline ?? selected.status.label} aria-label="Result status" className={cn(status?.headline === "Needs you" && "border-wait")}>
     <div className="min-w-0">
       {/* The blocking fact is the headline: the report doesn't match the changes. */}
       {mismatch?.headline != null ? <MismatchHeadline headline={mismatch.headline} />
@@ -225,7 +225,7 @@ function CheckItems({ panel, chatHref, answers, answer }: { panel: BrowserResult
             <Button variant="outline" aria-pressed={said === "right"} className="min-h-11 aria-pressed:bg-success-soft aria-pressed:text-success phone:flex-1" data-looks-right
               onClick={() => answer(item.id, said === "right" ? null : "right")}><Check />Looks right</Button>
             {panel.canRequest
-              ? <Button variant="ghost" aria-pressed={said === "not-right"} className="min-h-11 aria-pressed:bg-warning-soft aria-pressed:text-foreground phone:flex-1" data-not-right
+              ? <Button variant="ghost" aria-pressed={said === "not-right"} className="min-h-11 aria-pressed:bg-attention-soft aria-pressed:text-foreground phone:flex-1" data-not-right
                   onClick={() => { const undo = said === "not-right"; answer(item.id, undo ? null : "not-right"); if (!undo) requestChange(wordsOf(item)); }}>Not right</Button>
               : <Button asChild variant="ghost" className="min-h-11 phone:flex-1"><a href={chatHref} data-not-right>Not right</a></Button>}
           </div>

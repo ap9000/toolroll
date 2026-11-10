@@ -13,7 +13,7 @@ import { HEADLINE_TONE, type Headline } from "../task-status.js";
 
 /** The five status words. */
 export type StatusKey = "needs" | "running" | "queued" | "finished" | "failed";
-/** A chip's tone: "" is neutral; "ask" names a specific ask inside a Needs-you group (ink words, amber dot). */
+/** A chip's tone: "" is neutral; "ask" names a specific ask inside a Needs-you group (ink words, ink dot). */
 export type ChipTone = "" | "needs" | "ask" | "live" | "done" | "failed";
 
 export const STATUS: Readonly<Record<StatusKey, { word: string; tone: ChipTone }>> = {
@@ -25,7 +25,7 @@ export const STATUS: Readonly<Record<StatusKey, { word: string; tone: ChipTone }
 };
 
 /** A task's headline (task-status.ts) as the kit's chip: its own word, in the tone of the status it belongs to. A
- * row that waits on a person never shows a failure tone; something that waits on someone else is never amber. */
+ * row that waits on a person never shows a failure tone; something that waits on someone else never carries the needs-you mark. */
 export function chipOfHeadline(headline: Headline): { word: string; tone: ChipTone; status: StatusKey } {
   const status = statusOfHeadline(headline);
   return { word: headline === "Needs you" ? STATUS.needs.word : headline, tone: STATUS[status].tone, status };
@@ -42,7 +42,7 @@ export function statusOfHeadline(headline: Headline): StatusKey {
   }
 }
 
-/** Resource states (a computer that builds, not work): never amber. */
+/** Resource states (a computer that builds, not work): never the needs-you mark. */
 export const RESOURCE: Readonly<Record<"idle" | "building" | "offline", { word: string; tone: ChipTone }>> = {
   idle: { word: "Idle", tone: "" },
   building: { word: "Building", tone: "live" },
@@ -136,7 +136,7 @@ export function timingBars(rows: readonly TimingRow[], scale?: number): Array<{ 
 
 // ---- progress line -----------------------------------------------------------------------------------------------
 
-/** One step on a progress line: done (a check), now (waits on you: amber), live (running: blue), failed, or to do. */
+/** One step on a progress line: done (a check), now (waits on you: ink), live (running: blue), failed, or to do. */
 export type StepState = "done" | "now" | "live" | "failed" | "todo";
 export type StepItem = { label: string; state: StepState; sub?: string };
 /** The words a screen reader hears for a step's state. */

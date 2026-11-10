@@ -400,7 +400,7 @@ describe("Agents on the kit (UI revamp wave B): the window, the computers, regis
     expect(host.querySelector("[data-agent-phases]")).toBeNull();
   });
 
-  test("computers are rows with resource chips (never amber), Details opens a drawer, an offline one says how to bring it back", () => {
+  test("computers are rows with resource chips (never the needs tone), Details opens a drawer, an offline one says how to bring it back", () => {
     renderIn(listView({ computers: { list: [computer(), computer({ name: "studio-linux", host: "linux-box", state: "offline", building: [], reserved: [], heardAt: ago(180) })], manage: true, queueRevision: 4, shared: 0 },
       phases: [{ phase: "build", model: "Claude Sonnet", problem: null, source: "Set for the whole installation by alex", noDollars: false }], system: null }));
     const rows = [...host.querySelectorAll("[data-computer]")];

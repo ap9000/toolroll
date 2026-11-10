@@ -202,7 +202,7 @@ export function generalGroup(facts: SettingsFacts, flags: Record<string, boolean
       formRow("Theme", "Light, dark, or whatever this device uses.", postForm("/settings/appearance", html`<div class="k-seg" role="group" aria-label="Theme">${themeButton("system", "Match device")}${themeButton("light", "Light")}${themeButton("dark", "Dark")}</div>`, { returnTo: "/settings/general" })),
       kitSectionForm({ proof: "appearance", action: "/settings/appearance", id: "accent", gate: true, hidden: { return: "/settings/general" },
         body: joinHtml([
-          formRow("Accent", "Buttons and focus. Amber always means “needs you” and can’t be changed.",
+          formRow("Accent", "Buttons, focus and what needs you.",
             select({ name: "accent", label: "Accent", current: facts.accent, items: [...ACCENT_CHOICES.map(one => [one.hex, one.id === "ink" ? "Ink (default)" : one.name] as const), ...(custom === null ? [] : [[custom, `Your own colour (${custom})`] as const])] })),
           accentNoteWords === null ? "" : note(accentNoteWords),
         ]) }),

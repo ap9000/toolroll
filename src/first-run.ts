@@ -145,7 +145,7 @@ export const JOURNEY_STEPS = [["plan", "Plan"], ["approve", "You approve"], ["bu
 export type JourneyKey = (typeof JOURNEY_STEPS)[number][0];
 /** `stuck`: the step it stopped at (Failed, Stopped, or waiting on something other than the approval). */
 /** `skipped`: a stage the task went past without it happening (its checks didn't run or couldn't be read). `needsYou`:
- * the current or stuck step waits on a person, so it is the one step drawn amber. */
+ * the current or stuck step waits on a person, so it is the one step drawn in the needs-you ink. */
 export type JourneyStep = { key: JourneyKey; label: string; state: "done" | "current" | "stuck" | "skipped" | "todo"; needsYou?: true };
 
 /**

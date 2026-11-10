@@ -261,7 +261,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     <Box flexDirection="column">
       <Box justifyContent="space-between">
         <Text bold>Toolroll</Text>
-        {snapshot?.needsYou ? <SafeText color="yellow">{snapshot.needsYou}</SafeText> : <Text dimColor>Nothing needs you</Text>}
+        {snapshot?.needsYou ? <SafeText bold>{snapshot.needsYou}</SafeText> : <Text dimColor>Nothing needs you</Text>}
         {snapshot?.learning ? <SafeText dimColor>{snapshot.learning}</SafeText> : null}
       </Box>
       {body()}
@@ -365,7 +365,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
                 <Fragment key={row.id}>
                   {index === 0 || rows[index - 1]!.group !== row.group ? <Text bold>{groupHeading(row)}</Text> : null}
                   <Text inverse={row === current} wrap="truncate-end">
-                    {row === current ? "> " : "  "}<SafeText>{row.title}</SafeText> <SafeText {...(row.needsYou ? { color: "yellow" } : { dimColor: true })}>{row.status}</SafeText>
+                    {row === current ? "> " : "  "}<SafeText>{row.title}</SafeText> <SafeText {...(row.needsYou ? { bold: true } : { dimColor: true })}>{row.status}</SafeText>
                   </Text>
                 </Fragment>
               ))}

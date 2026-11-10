@@ -151,7 +151,7 @@ export function boardBody(
     return `${Math.round(minutes / (24 * 60))}d`;
   };
 
-  // A lane's head is a status chip in its own tone (after ReUI's badge with a dot): amber only for the lane that
+  // A lane's head is a status chip in its own tone (after ReUI's badge with a dot): solid ink only for the lane that
   // waits on a person, blue for building, green for done, neutral otherwise. The word carries the state.
   const LANE_CHIP = { attention: "chip-needs", building: "chip-live", done: "chip-done", queued: "", waiting: "" } as const;
   const laneChip = (key: keyof typeof LANE_CHIP, title: Html | string): Html =>

@@ -1,7 +1,7 @@
 /** The shared task status (task-status.ts) as React: one headline with its
  * dot, one plain sentence, then quiet detail rows — neutral words, a small
  * icon, colour only on the icon. A problem that doesn't undo the outcome is a
- * muted icon and one action on its own row (amber is for Needs you); red belongs to Failed alone. The
+ * muted icon and one action on its own row (ink is for Needs you); red belongs to Failed alone. The
  * exact technical reasons sit behind More. */
 import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 import { PostForm, Reauth } from "../ui/index.js";
@@ -11,7 +11,7 @@ import { STATUS_MORE, type DetailMark, type HeadlineTone, type StatusDetail, typ
 import { Button, Input, cn } from "../components/ui/index.js";
 
 export const HEADLINE_DOT: Record<HeadlineTone, string> = {
-  neutral: "bg-muted-foreground", live: "bg-info", attention: "bg-warning",
+  neutral: "bg-muted-foreground", live: "bg-info", attention: "bg-attention",
   ready: "bg-transparent ring-2 ring-inset ring-success", success: "bg-success", danger: "bg-destructive",
 };
 

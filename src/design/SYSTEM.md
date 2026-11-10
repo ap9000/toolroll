@@ -92,10 +92,10 @@ colors:
   success-soft-dark: rgb(61 214 140 / .12)
   user-bubble: "#f2f2f2"
   user-bubble-dark: "#202020"
-  wait: "#ab6400"
-  wait-dark: "#ffca16"
-  wait-soft: "#fff4d5"
-  wait-soft-dark: rgb(255 202 22 / .12)
+  wait: "#171717"
+  wait-dark: "#ededed"
+  wait-soft: "#e8e8e8"
+  wait-soft-dark: "#2e2e2e"
   warning: "#ab6400"
   warning-dark: "#ffca16"
   warning-soft: "#fff4d5"
@@ -254,7 +254,7 @@ The kit added these System tokens to Signal 1.0.0's (in `src/design/system/token
 
 | Token | Light / dark | For |
 |---|---|---|
-| `--so-needs`, `--so-needs-soft` | the warning amber and its wash | what waits on this person, only |
+| `--so-needs`, `--so-needs-soft` | the signal ink and its wash (no hue) | what waits on this person, only |
 | `--so-field-line` | `#8f8f8f` / `#6b6b6b` (3:1 on paper) | the boundary of an outline button, switch track or radio card (audit F6); never a text field's |
 | `--so-field` | `#ececec` / `#232323` | the filled surface of every text field, select and secondary text box |
 | `--so-composer` | `#f2f2f2` / `#242424` | the composer's filled surface, one step off the page |
@@ -300,7 +300,7 @@ its title passes `same` (`docHeader({ same: true })`, `KDocHeader same`) or uses
 
 | Word | `kit.ts` `STATUS` | Tone | Meaning |
 |---|---|---|---|
-| Needs you | `needs` | amber (`k-chip needs`) | waits on this person |
+| Needs you | `needs` | solid ink, no dot (`k-chip needs`) | waits on this person |
 | Running | `running` | blue (`live`) | happening now |
 | Queued | `queued` | neutral | will happen |
 | Finished | `finished` | green (`done`) | done or passed |
@@ -308,16 +308,17 @@ its title passes `same` (`docHeader({ same: true })`, `KDocHeader same`) or uses
 
 A task's headline (`task-status.ts`) maps onto them with `chipOfHeadline` / `statusOfHeadline` (server
 `headlineChip`, React `KHeadlineChip`): Needs you and Ready for review wait on you; Planning and Building run;
-Waiting, Queued and Stopped are neutral (something that waits on someone else is never amber); Complete is finished;
+Waiting, Queued and Stopped are neutral (something that waits on someone else never carries the needs mark); Complete is finished;
 Failed is failed. Inside a Needs-you group the chip names the specific ask in the `ask` tone (`chip("Plan", "ask")`),
 never the group's word again. A more specific running word (Building, Merging) keeps `live`; a more specific finished
 word (Merged, Released) keeps `done`.
 
 **Resource states** (a computer that builds, not work): `RESOURCE` Idle neutral, Building `live`, Offline `failed`.
-Never amber.
+Never the needs tone.
 
-**Amber means "waits on you", only**: the Needs-you chip, the 7px dot, the outline of a waiting `k-slots wait` box
-and the `k-needs` panel. Never warnings, quota, caution, links, decoration or emphasis. The one verb that resolves a
+**The needs mark means "waits on you", only**: the solid ink Needs-you chip, the 7px ink dot, the ink outline of a
+waiting `k-slots wait` box and the `k-needs` panel. It has no hue of its own. Never warnings, quota, caution, links,
+decoration or emphasis; a caution is neutral ink with a caution glyph, never yellow or amber. The one verb that resolves a
 wait is the ink primary.
 
 **One ink primary per screen.** Every other act is outline or ghost. Navigation is never the primary. An irreversible
@@ -390,7 +391,7 @@ breakpoints left controls at 28–32px in between, audit B M4). Every standalone
 has 16px text; no horizontal page scroll at 390px. The top bar becomes the phone header (back or menu · title ·
 one trailing action). The screen's one primary lives in the dock (`dock`, `KDock`), beside the Needs-you button;
 the dock holds filled controls only (the Needs-you button and any secondary act are `--so-composer-control` fills,
-never outlined boxes; the amber dot is its one accent); the card's copy of it is
+never outlined boxes; the ink dot is its one mark); the card's copy of it is
 hidden on a phone when it is marked `docked`. The Settings section nav is hidden, so a settings page links its
 sections from the body.
 
@@ -426,7 +427,7 @@ caller's `menu` items, as a conversation's settings; only what this box supports
 word, then a dimmer secondary word, as "payments-api  Lead"; it opens the project menu, a bottom sheet on a phone),
 any toggle chips (`toggleChip`, as Read code before planning) or small acts (a pill), then the **round send**: an
 arrow up, 36px (44px on a phone), solid ink with a paper arrow once the box has text, the muted control fill while
-empty. Never amber. `gate` (a message box) marks it `aria-disabled` while empty; a form's send stays pressable so an
+empty. `gate` (a message box) marks it `aria-disabled` while empty; a form's send stays pressable so an
 empty press says what is missing next to the box. With Stop it carries its twin: the box's `working` class swaps
 them and the icon morphs (160ms, none under reduced motion). No "Enter sends" hint, no mic without a real feature
 behind it. A project chosen without script is a native select drawn as the chip (`select({ chip: true })`).
@@ -484,7 +485,7 @@ the order of events are identical.
 
 Anything that asks for a decision uses the slots (`slots`, `KSlots`): status (chip + heading) · supporting text ·
 actions · terms, plus the error slot, the same in every state (waiting, approved, automatic, refused) so nothing
-moves. Waiting = `wait` (amber outline). Give the slots `data-approval="<digest>"` on a server page:
+moves. Waiting = `wait` (ink outline). Give the slots `data-approval="<digest>"` on a server page:
 `GuardedHtml` disables a kit approval form (`form.k-approve`) whose approval changed under an open edit, as it does
 for the console's ceremonies.
 
@@ -576,7 +577,7 @@ AGENTS.md block from them; never edit those by hand.
 | KFilter | `import { KFilter } from "<relative path to src/browser/kit>";` | — | A list's text filter: a search field with its icon that narrows the rows already shown. |
 | KFormRow | `import { KFormRow } from "<relative path to src/browser/kit>";` | variant: |inline|top|wide | The two-column settings row: label and one muted line | the control; stacks on a phone. |
 | KIcon | `import { KIcon } from "<relative path to src/browser/kit>";` | name: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|minus|fit|bolt|code|home|tasks|flows|agents|projects|settings|pen|arrow|list|board|panel | One 24×24 stroke icon from the kit set, drawn in currentColor. |
-| KNeedsPanel | `import { KNeedsPanel } from "<relative path to src/browser/kit>";` | — | Waits that aren't tasks (a spend limit, a failed backup), on their own page: one amber outline, a count, one action each. Never part of the global Needs-you count. |
+| KNeedsPanel | `import { KNeedsPanel } from "<relative path to src/browser/kit>";` | — | Waits that aren't tasks (a spend limit, a failed backup), on their own page: one ink outline, a count, one action each. Never part of the global Needs-you count. |
 | KNotFound | `import { KNotFound } from "<relative path to src/browser/kit>";` | — | The not-found page inside the shell: what was asked for and two ways on. |
 | KNotice | `import { KNotice, KInfoLine, KNote } from "<relative path to src/browser/kit>";` | — | A refusal in place (role=alert: what went wrong and what didn't change), a neutral system line, or a muted supporting note. There are no toasts. |
 | KOverlay | `import { KOverlay, useKMenu } from "<relative path to src/browser/kit>";` | kind: popover|drawer|sheet|menu | Popover, drawer, sheet and menu: role=dialog, the app behind inert, Tab kept inside, Escape / Close / scrim close it, focus returns to the trigger. Bordered, never a shadow. |
@@ -596,7 +597,7 @@ AGENTS.md block from them; never edit those by hand.
 
 | Rule | Severity | Enforcement | Statement |
 | --- | --- | --- | --- |
-| Amber means "waits on you", only | warn | Advisory: shown to people and agents, not checked | The needs tokens (--so-needs, --so-needs-soft, --so-needs-ink; the chip tone "needs") mark what waits on this person and nothing else. Never a warning, quota, caution, link, decoration or emphasis; something that waits on someone else is not amber. |
+| The needs mark means "waits on you", only | warn | Advisory: shown to people and agents, not checked | The needs tokens (--so-needs, --so-needs-soft, --so-needs-ink; the chip tone "needs") mark what waits on this person and nothing else. Never a warning, quota, caution, link, decoration or emphasis; something that waits on someone else never carries it. The mark is ink (the signal colour), never a hue of its own. |
 | No raw colours | error | Checked by youiyoux check (raw-color) | Colour comes from tokens. Never write a hex, rgb() or hsl() literal in a component, class name, inline style or stylesheet; only the token source may define colour values. |
 | Render the kit component, not a lookalike | error | Checked by youiyoux check (lookalike-component) | A component named like a kit element (KButton, KChip, KComposer, …) must resolve to the kit's implementation in src/browser/kit. A second implementation with the same name splits the system in two. |
 | Use the kit's controls, not native elements | warn | Checked by youiyoux check (native-element) | Outside src/browser/kit, render KButton, KInput and KTextarea (or KComposer for a message box) instead of styling <button>, <input> and <textarea> by hand. |

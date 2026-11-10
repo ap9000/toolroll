@@ -153,12 +153,11 @@ export function createScheduler(onRead: (key: string, answer: Answer) => void, f
 }
 
 /** A status chip: the shared Badge chip (components/ui/badge.tsx, youiyoux's spec): 20px, the 6px radius, a soft fill,
- * ink words and the tone in the dot. "Needs you" (DESIGN.md, waits on you) is the amber wash and dot with its words
- * leaned toward ink (`text-needs`); the tile that waits takes the thin full amber outline, never a fill or a stripe. */
+ * ink words and the tone in the dot. "Needs you" (DESIGN.md, waits on you) is solid ink with paper words; the
+ * tile that waits takes the thin full ink outline, never a fill or a stripe. */
 type ChipTone = "info" | "success" | "danger" | "neutral" | "needs";
 const TONE: Record<string, ChipTone> = { working: "info", done: "success", failed: "danger", stopped: "neutral", parked: "neutral" };
-const NEEDS_TILE = "border-warning";
-export const NEEDS_TEXT = "text-needs";
+const NEEDS_TILE = "border-wait";
 
 function Chip({ tone, children }: { tone: ChipTone; children: string }) {
   return <Badge size="chip" dot tone={tone} data-live-chip>{children}</Badge>;

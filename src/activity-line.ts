@@ -5,7 +5,7 @@
  *
  * After five minutes with no word the line says when it last heard, in the
  * same quiet secondary text (a quiet agent isn't something a person must do;
- * amber is for what needs you). A worker whose heartbeat stopped says that
+ * the needs-you mark is for what needs you). A worker whose heartbeat stopped says that
  * instead, and that one is marked: the builder going away needs a person.
  */
 
