@@ -5,6 +5,7 @@
  * once the lead or a person has marked that exact result. Slack, Discord and
  * Teams send this same card. */
 import { machineChecked } from "./machine-check.js";
+import { wasInterrupted } from "./run-ending.js";
 import { assignmentOf, type AssignmentSnapshot } from "./assignment.js";
 import { chatResultHref, chatControlHref } from "./chat-controls.js";
 import { phoneText, projectLabel, type PhoneTaskLink } from "./telegram-status.js";
@@ -71,7 +72,7 @@ export function telegramProgressCard(store: Store, run: Run, taskId: string, pro
       ...(machineChecked(store, taskId) ? { machine: true } : {}) };
   } else if (run.outcome === "parked") {
     facts = { stage: "needs-you", need: "answer" };
-  } else if (run.outcome === "interrupted" || run.reason === "interrupted") {
+  } else if (wasInterrupted(run)) {
     facts = { stage: "stopped", reason: "The attempt was interrupted. Inspect the saved work, then resume." };
   } else {
     facts = { stage: "failed", reason: "The build stopped before it finished. Inspect the blocker, then retry." };

@@ -17,6 +17,7 @@ import {
 import { changedFilesOf, COMPLETION_ACTION } from "./result-completion.js";
 import { runAccounting, type Run, type Store } from "./store.js";
 import { INFRASTRUCTURE_TERMINALS, saveResultRecord } from "./route-store.js";
+import { wasInterrupted } from "./run-ending.js";
 // The execution class and the cohort snapshot live with their writer (route-store.ts), which store.ts imports: kept
 // light so the store's module graph doesn't reach the evaluator's readers.
 export { cohortOf, EXEC_CLASS_OF_REASON, execClassOf, type CohortInput, type CohortRow } from "./route-store.js";
@@ -62,7 +63,7 @@ function cohortsFor(store: Store, runs: readonly number[]): Map<number, CohortRe
 function classOfRun(run: Run, kept: string | null): ExecClass {
   if (kept === "model" || kept === "infrastructure") return kept;
   if (run.terminalClass != null && INFRASTRUCTURE_TERMINALS.has(run.terminalClass)) return "infrastructure";
-  if ((run.outcome === "interrupted" || run.reason === "interrupted") && run.providerStartedAt === null) return "infrastructure";
+  if (wasInterrupted(run) && run.providerStartedAt === null) return "infrastructure";
   return "model";
 }
 

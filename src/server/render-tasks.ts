@@ -3,6 +3,7 @@ import { archivedWords } from "../tidy.js";
 import { btn } from "./kit.js";
 import { whenUtc } from "../when-html.js";
 import { networkWords } from "../egress.js";
+import { wasInterrupted } from "../run-ending.js";
 import type { ReleaseView } from "../release-view.js";
 import { chainTermsLines, liveChainFromJson, releaseAsksAgainWords, releaseTermsSentence } from "../scope.js";
 import { SUBSCRIPTION_CAPABLE } from "../keys.js";
@@ -2344,7 +2345,7 @@ export function taskBodyParts(data: {
     liveRun !== undefined
       ? prop("builder", html`${liveRun.runner} · <a href="/r/${liveRun.id}">build #${liveRun.id}</a> running`)
       : data.runs[0] !== undefined
-        ? prop("last attempt", html`<a href="/r/${data.runs[0].id}">${runNoun(data.runs[0])} #${data.runs[0].id}</a> · ${data.runs[0].role === "planner" && data.runs[0].reason === "plan-drafted" ? "planned" : data.runs[0].reason === "interrupted" ? "interrupted" : data.runs[0].id === liveHistoryRunId ? "running" : data.runs[0].outcome ?? "never finished"} · ${data.runs[0].runner}`)
+        ? prop("last attempt", html`<a href="/r/${data.runs[0].id}">${runNoun(data.runs[0])} #${data.runs[0].id}</a> · ${data.runs[0].role === "planner" && data.runs[0].reason === "plan-drafted" ? "planned" : wasInterrupted(data.runs[0]) ? "interrupted" : data.runs[0].id === liveHistoryRunId ? "running" : data.runs[0].outcome ?? "never finished"} · ${data.runs[0].runner}`)
         : "";
   const queueRow =
     data.position !== null && data.position !== undefined && task.state === "queued"
@@ -2367,7 +2368,7 @@ export function taskBodyParts(data: {
   const lastRun = data.runs[0];
   if (liveRun !== undefined) facts.push({ label: "Builder", parts: [`${liveRun.runner} · `, { label: `build #${liveRun.id}`, href: `/r/${liveRun.id}` }, " running"] });
   else if (lastRun !== undefined) facts.push({ label: "Last attempt", parts: [{ label: `${runNoun(lastRun)} #${lastRun.id}`, href: `/r/${lastRun.id}` },
-    ` · ${lastRun.role === "planner" && lastRun.reason === "plan-drafted" ? "planned" : lastRun.reason === "interrupted" ? "interrupted" : lastRun.id === liveHistoryRunId ? "running" : lastRun.outcome ?? "never finished"} · ${lastRun.runner}`] });
+    ` · ${lastRun.role === "planner" && lastRun.reason === "plan-drafted" ? "planned" : wasInterrupted(lastRun) ? "interrupted" : lastRun.id === liveHistoryRunId ? "running" : lastRun.outcome ?? "never finished"} · ${lastRun.runner}`] });
   if (data.position !== null && data.position !== undefined && task.state === "queued") {
     facts.push({ label: "Queue", parts: [`${data.position.position} of ${data.position.total}${data.position.column === null ? " in the shared queue" : ` in ${data.position.column}'s queue`} · `, { label: "Reorder", href: "/tasks?view=order" }] });
   }

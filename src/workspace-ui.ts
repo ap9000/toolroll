@@ -27,6 +27,7 @@ import type { TaskControlView } from "./task-control.js";
 import { CHECK_COMMAND_CHANGED, CHECK_UNREADABLE, OPEN_RESULT, approvedCheckOf, approvedCheckStateOf, plainReasonOf, stageOfCode, taskStatusOf, workToneOf, type ChecksFact } from "./task-status.js";
 import { whenUtc } from "./when-html.js";
 import { NEEDS } from "./needs-you.js";
+import { wasInterrupted } from "./run-ending.js";
 import { html, postForm, type Html } from "./html.js";
 
 /** The Work destination's views — shortcuts over the same rows, never a
@@ -107,7 +108,7 @@ export function reviewFactsOf(retry: ReviewRetryState | null, reviewerAlive: (ru
     attempts: retry.attempts.length,
     retriesRemaining: retry.retriesRemaining,
     latestReason: retry.latest?.reason ?? null,
-    interrupted: retry.latest !== null && (retry.latest.outcome === "interrupted" || retry.latest.reason === "interrupted"),
+    interrupted: retry.latest !== null && wasInterrupted(retry.latest),
     queuedBy: retry.openRequest?.requestedBy ?? null,
     queuedOrigin: retry.openRequest?.origin ?? null,
     reviewerAlive: retry.live !== null && reviewerAlive(retry.live.runner),
