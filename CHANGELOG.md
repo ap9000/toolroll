@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.101 — 2026-11-10
+
+- **The task page is one list of steps: Plan, Approval, Build, Review, Ready.** The step happening now is open, finished steps fold to one line each, and the one thing that needs you sits in its row. The plan reads as a sheet: the goal, what will change, how it is checked and, for a release, exactly what a yes agrees to. The Approve form is in the Approval row with the plan beside it, and a refused approval says why right above the form.
+- **Watch the work from the task page.** Activity (or "Watch the work" on the Build step) opens a panel with what the agent said, each action as one quiet line (read, edited, ran a command, with its result) and the notes people sent. The message box under it follows what the attempt takes: a note it reads now, a note for when it next starts, or one plain sentence when it takes none. With no attempt running it is the task's conversation with the lead. On a wide screen the panel sits beside the steps; on a phone it opens full screen. Decisions stay on the page: no approval and no password field is ever shown in the panel.
+- **No amber.** What waits on you is marked in ink: a solid "Needs you" chip, an ink outline on the waiting panel and the one solid button. Blue still means running, green passed, red failed. If you picked your own accent colour in Settings, "Needs you" follows it.
+- **A cancelled task can no longer be approved.** Before, a page left open or `toolroll task approve` could still approve a task that had been cancelled elsewhere. Now every road refuses and says the task was cancelled, and nothing is recorded.
+
 ## 0.9.100 — 2026-11-10
 
 - **An update whose new version never starts completely is now rolled back without asking you to unload the service by hand.** When Toolroll can prove the service still loaded is the one this update installed, running its new version on this database, it stops that service itself and puts the previous version back. If anything doesn't match, nothing is stopped and the message says why.
