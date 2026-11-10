@@ -129,7 +129,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
-  checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
+  requeueEligibility, type ClosedState, checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -260,7 +260,9 @@ import { starterOf, startersFor, switchOnStarter } from "./flow-starters.js";
 type CapabilityKind = Capability["kind"];
 import {
   acquire, acquireIfReady, heartbeat, release, reap, currentClaim, DEFAULT_LEASE_MS, SYNC_MAX_AGE_MS, finalize,
+  type AcquireResult, type FenceResult,
 } from "./claim.js";
+import { moveTask } from "./task-moves.js";
 import { disposeBuildOutcome, holdStaleApproval, regateTask } from "./dispose.js";
 import {
   proposeGrant,
@@ -1929,12 +1931,9 @@ function claimCommand(
   }
 
   const ref = store.refFor(backend, id);
-  const result = acquire(store, ref.id, runner, {
-    now,
-    token,
-    ttlMs: ttl,
-    mutation: mutationFrom(flags, now),
-  });
+  // The grant and the `running` it makes are one transaction (closed-task-claims.md §3.5): nobody can close the task
+  // between them, and a refusal writes neither.
+  const result = claimAndMarkRunning(store, backend, id, ref.id, runner, { now, token, ttlMs: ttl, mutation: mutationFrom(flags, now) });
 
   if (!result.ok) {
     // Two distinct refusals: somebody HOLDS it right now, or it is
@@ -1960,22 +1959,9 @@ function claimCommand(
     if (result.reason === "watch-custody") return fail(write, json, "claim", "watch-custody", "This worker no longer holds the project; restart the watch", EXIT.refused);
     if (result.reason === "archived") return fail(write, json, "claim", "archived", `${id} is put away — restore it with \`toolroll task restore ${id}\` first`, EXIT.refused);
     if (result.reason === "draining") return fail(write, json, "claim", "draining", `Toolroll is restarting (draining): ${runner} takes no new work until it is back (by ${result.until})`, EXIT.refused, { until: result.until });
+    if (result.reason === "closed") return fail(write, json, "claim", "closed", closedClaimWords(store, id, result.state, now), EXIT.refused, { state: result.state });
+    if (result.reason === "no-task") return fail(write, json, "claim", "no-task", `no task \`${id}\``, EXIT.refused);
     return fail(write, json, "claim", result.reason, `held by ${result.by} until ${result.until}`, EXIT.refused, { holder: result.by, until: result.until });
-  }
-
-  // Taking a task is what makes it running; leaving that to the caller would
-  // let a claimed task keep showing up as queued to anything reading state.
-  // On an idempotent REPLAY the transition runs only as the ONE narrow
-  // repair (external dispatch, finding 36): the stored claim is still the
-  // live lease and the task never left queued — anything else (cancelled,
-  // done, reopened elsewhere) mutates nothing.
-  if (result.replayed === true) {
-    const task = store.getTask(id);
-    const ref = store.lookupRef(id);
-    const stillMine = ref !== null && store.currentLiveLease(ref.id, now) === result.claim.leaseId;
-    if (task !== null && task.state === "queued" && stillMine) store.setTaskState(id, "running", now);
-  } else {
-    store.setTaskState(id, "running", now);
   }
 
   return succeed(write, json, "claim", { lease: result.claim, reclaimed: result.reclaimed }, () => [
@@ -2005,22 +1991,20 @@ function leaseCommand(
   const ttl = readTtl(flags);
   if (ttl === null) return fail(write, json, name, "usage", "--ttl takes whole seconds", EXIT.usage);
 
+  // Releasing says the runner is finished with it, not that it succeeded, so a task left running is put back rather
+  // than marked done, in the release's own transaction (releaseToQueue).
   const result =
-    command === "heartbeat" ? heartbeat(store, lease, now, ttl) : release(store, lease, now);
+    command === "heartbeat" ? heartbeat(store, lease, now, ttl) : releaseToQueue(store, lease, now);
 
   if (!result.ok) {
+    if (result.reason === "closed") {
+      return fail(write, json, name, "closed", `this lease ran out and its task is ${result.state} now, so it can't be renewed; stop rather than retry`, EXIT.refused, { state: result.state });
+    }
     const message =
       result.reason === "fenced"
         ? "superseded — another runner holds this task now; stop rather than retry"
         : "no such lease";
     return fail(write, json, name, result.reason, message, EXIT.refused);
-  }
-
-  if (command === "release") {
-    const task = store.getTask(String(refExternalId(store, result.claim.taskRef)));
-    // Releasing says the runner is finished with it, not that it succeeded, so
-    // a task left running is put back rather than marked done.
-    if (task !== null && task.state === "running") store.setTaskState(task.id, "queued", now);
   }
 
   return succeed(write, json, name, { lease: result.claim }, () => [
@@ -3823,7 +3807,7 @@ async function tickCommand(
               ? "auth-expired — requeued, sign-in needed"
               : disposition.disposition === "fallback"
               ? `out of plan — moved to the next approved agent`
-              : `${disposition.failureClass}${disposition.disposition === "backoff" ? ` — retry ${disposition.strikes}/3` : disposition.disposition === "stalled" ? " — stalled" : ""}`
+              : `${disposition.failureClass}${disposition.disposition === "backoff" ? ` — retry ${disposition.strikes}/3` : disposition.disposition === "stalled" ? " — stalled" : disposition.closedState !== null ? ` — the task was already ${disposition.closedState}, so it stays ${disposition.closedState}` : ""}`
             : "fenced",
           ...(result.ok ? {} : { detail: result.message.slice(0, 200) }),
           worktree: leased.worktree.path,
@@ -12535,10 +12519,6 @@ function slug(title: string, now: Date): string {
   return words === "" ? `task-${stamp}` : `${words}-${stamp}`;
 }
 
-function refExternalId(store: Store, taskRef: number): string | null {
-  return store.externalIdFor(taskRef);
-}
-
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -14563,4 +14543,63 @@ function startServiceBeats(store: Store): ServiceBeats {
   serviceBeats.set(store, beats);
   void delivery.runNow();
   return beats;
+}
+
+/**
+ * The CLI `claim`'s grant and its `running`, one transaction (docs/plans/closed-task-claims.md §3.5). A fresh grant of
+ * a built-in task moves it to running through the narrow `claim` move; a replay of the same key repairs `running` only
+ * when the task is still queued and the replayed lease is still the live one, as before. A task of another backend is
+ * never written in the built-in table.
+ */
+function claimAndMarkRunning(
+  store: Store,
+  backend: string,
+  id: string,
+  taskRef: number,
+  runner: string,
+  options: { now: Date; token: string; ttlMs: number; mutation: ReturnType<typeof mutationFrom> },
+): AcquireResult {
+  const { now } = options;
+  return store.transact(() => {
+    const result = acquire(store, taskRef, runner, options);
+    if (!result.ok || backend !== BUILT_IN) return result;
+    if (result.replayed === true) {
+      const task = store.getTask(id);
+      const stillMine = store.currentLiveLease(taskRef, now) === result.claim.leaseId;
+      if (task !== null && task.state === "queued" && stillMine) store.setTaskState(id, "running", now);
+      return result;
+    }
+    // The grant just read this row open in this transaction, so the move cannot miss; if it ever did, throwing rolls
+    // the grant back with it.
+    if (!moveTask(store.handle, id, "claim", now)) throw new Error(`claim: ${id} could not be marked running`);
+    store.bumpWake();
+    return result;
+  });
+}
+
+/**
+ * The refusal words for a claim on a closed task: what state it is in, and only a next step that works for this task
+ * (a requeue the store would accept, a cancelled task reopened through the state verb, otherwise the task itself).
+ */
+function closedClaimWords(store: Store, id: string, state: ClosedState, now: Date): string {
+  const head = `${id} is ${state}, so it can't be claimed.`;
+  if (state === "cancelled") return `${head} To run it again, reopen it: \`toolroll task state ${id} queued\``;
+  if (requeueEligibility(store, id, now).ok) return `${head} To run it again: \`toolroll task requeue ${id}\``;
+  return `${head} See its result: \`toolroll task show ${id}\``;
+}
+
+/**
+ * `worker release`: hand the lease back and, when this release is the one that ended the claim, put a task left
+ * running back in the queue, in one transaction, so no one can claim it in between (closed-task-claims.md §5). A
+ * duplicate release changes nothing: by then another runner may hold the task.
+ */
+function releaseToQueue(store: Store, lease: string, now: Date): FenceResult {
+  return store.transact(() => {
+    const result = release(store, lease, now);
+    if (!result.ok || result.duplicate === true) return result;
+    const ref = store.refForId(result.claim.taskRef);
+    if (ref === null || ref.backend !== BUILT_IN) return result;
+    if (store.getTask(ref.externalId)?.state === "running") store.setTaskState(ref.externalId, "queued", now);
+    return result;
+  });
 }

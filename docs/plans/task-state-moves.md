@@ -66,18 +66,19 @@ From the review of version 1:
 1. **Should a claim be refused on a closed task?** `acquire` never looks at the task's state, so a claim can be
    granted on a `failed`, `done` or `cancelled` task, and `claimCommand` then writes `running` over it. Only
    `acquireIfReady` requires `queued`. Narrowing the write without deciding admission would leave a live claim on
-   a closed task. Check cleanup (`acp-check.ts`) claims this way on purpose.
+   a closed task. Check cleanup (`acp-check.ts`) claims this way on purpose. Decided and built:
+   `docs/plans/closed-task-claims.md`.
 2. **Should a late result leave a closed task alone?** `completeFenced` writes `done`/`failed` over anything. A
    from-check alone is not enough: the caller still treats the completion as accepted (records success, may
    authorise a check and a publication). Refusal has to be defined for those effects too.
 3. **Strikes used up on a closed task.** Today it marks the task `failed`, opens an incident, adds a hold and
    tells the person to retry, even if the task is already `done` or `cancelled`. Skipping all four together looks
-   right, once it is shown this can really happen.
+   right, once it is shown this can really happen. Decided and built: `docs/plans/closed-task-claims.md`.
 4. **One count for "running".** The total and the per-project rows can disagree for a task marked `running` with
    no live claim. Switching everything to live claims would drop work whose process is still alive after its
    claim expired. This needs a third fact (a live process) before the numbers can be made one.
 5. **`release` in `operate.ts`** releases the claim and then requeues in two steps; another runner can claim in
-   between.
+   between. Decided and built: `docs/plans/closed-task-claims.md`.
 
 ## Safety review (AGENTS.md)
 

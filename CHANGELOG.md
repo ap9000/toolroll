@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **A claim on a finished task is refused, and says why.** `toolroll claim` on a task that is done, failed or cancelled now answers `closed` with the task's state and a next step that works for that task (`task requeue` when a rerun would be accepted, `task state <id> queued` for a cancelled task, otherwise `task show`). Before, it took the task and marked it running again. A worker whose lease ran out can't renew it onto a task that was closed meanwhile either (`heartbeat` answers `closed`).
+- **`toolroll worker release` hands a task back in one step.** Releasing the lease and putting the task back in the queue now happen together, so another worker can no longer claim the task in between and then see it marked as waiting. Releasing the same lease twice changes nothing the second time.
+- **No false "stalled, retry it" notice for a task that is already closed.** When a build or scouting attempt uses up its retries on a task a person already marked done, failed or cancelled, the task keeps that state, and no incident, hold or notification is added. The failed attempt is still recorded.
+
 ## 0.9.99 — 2026-11-09
 
 - **A Toolroll update interrupted while the new service was starting no longer gets stuck.** Before, an update killed in that short window left new work paused until someone edited a file by hand. Running the release again now finishes the update when the new service is running, and puts the previous service back once the new one is proved gone. Nothing is stopped on a guess: a new service that is loaded but never answers is left alone, and the message names the one command that stops it.
