@@ -100,7 +100,8 @@ export const carrySealSql = (scope: string): string =>
  * SQL: a task that belongs to a release authority (its anchor, or a carried commit) dispatches only as the current
  * generation's tip while the release is open and unexpired, with the anchor's approver still an active approver who
  * can reach the project and the anchor's approval on its exact sealed digest. A task that belongs to no release passes.
- * The claim and build belts read the whole predicate (scope.ts liveReleaseOf) besides.
+ * The claim and build belts read the whole predicate (scope.ts liveReleaseOf) besides. "Open and unexpired" here is
+ * release-authority.ts releaseStateAt(a, now) === "open", written in SQL.
  */
 export const releaseStandsSql = (scope: string, now: string): string =>
   `((NOT EXISTS (SELECT 1 FROM release_authority rx WHERE rx.anchor_task = ${scope}.task_id)

@@ -28,6 +28,7 @@ import { releaseCheckScope, type Scope } from "./scope.js";
 import type { Store } from "./store.js";
 import { isVerificationReceipt, verificationEvidence } from "./verification-evidence.js";
 import { checkAttemptOf } from "./store.js";
+import { endedInterrupted } from "./run-ending.js";
 
 export type FailureClass = FailureClassName;
 export type ClassifiedFailure = { class: FailureClass; why: string };
@@ -191,7 +192,7 @@ type BuilderRun = { id: number; outcome: string | null; scopeDigest: string | nu
  * got as far as its check keeps every rule below.
  */
 export function ranNoCheck(store: Store, row: { id: number; outcome: unknown; reason: unknown; head: unknown; checkRow: unknown }): boolean {
-  if (row.outcome !== "failed" || (row.reason !== "interrupted" && row.reason !== "no-op") || row.head !== null || row.checkRow !== null) return false;
+  if (!(endedInterrupted(row) || (row.outcome === "failed" && row.reason === "no-op")) || row.head !== null || row.checkRow !== null) return false;
   if (checkAttemptOf(store, row.id) !== null) return false;
   if (store.artifactsFor(row.id).some(artifact => artifact.kind === "check-log" || isVerificationReceipt(artifact))) return false;
   return row.reason === "interrupted" || refusedBeforeAnything(store, row.id);

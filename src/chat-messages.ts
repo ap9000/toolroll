@@ -10,6 +10,7 @@
  */
 import { neverHeld, watchedPing } from "./agent-board.js";
 import { ChatCore } from "./chat-core.js";
+import { unsentPart, unsent, type ChatMessageOutcome } from "./chat-message-states.js";
 import { readChatMessageBody, readChatPart, savedChatEventBody, savedChatPart, type ChatContent, type ChatMessageBody } from "./contracts/chat-content.js";
 import { isTelegramProgressNotification, proposalTaskOf, readNotification, readNotificationReceipt } from "./notification-rows.js";
 import type { Notification, NotificationReceipt, Run, TelegramAction, TelegramBinding, TelegramConversation, TelegramConversationPart, TelegramConversationPartPlan,
@@ -91,7 +92,7 @@ function readTelegramConversation(row: Record<string, unknown>): TelegramConvers
     nextAttemptAt: text("next_at"),
     session: int("session"),
     turn: int("turn"),
-    outcome: text("result"),
+    outcome: text("result") as ChatMessageOutcome | null,
     replyMessageId: text("reply"),
     createdAt: String(row["created"]),
     startedAt: text("started"),
@@ -159,6 +160,9 @@ function readTelegramAction(row: Record<string, unknown>): TelegramAction {
     noteDigest: row["note_digest"] === null || row["note_digest"] === undefined ? null : String(row["note_digest"]),
   };
 }
+
+/** A note draft's states: `pending` and `armed` are live; the other three are final. */
+export type NoteDraftState = "pending" | "armed" | "superseded" | "consumed" | "discarded";
 
 export class ChatMessages extends ChatCore {
   createDecisionAction(
@@ -246,7 +250,7 @@ export class ChatMessages extends ChatCore {
         .get(draft.binding, draft.decision);
       if (live !== undefined) {
         if (Number(live["event"]) >= draft.updateId) return false;
-        chat.prepare("UPDATE chat_note_draft SET state = 'superseded' WHERE provider = :provider AND id = ?").run(live["id"]);
+        chat.setNoteDraftState(Number(live["id"]), ["pending", "armed"], "superseded");
       }
       chat
         .prepare(
@@ -268,9 +272,11 @@ export class ChatMessages extends ChatCore {
     });
   }
 
-  /** Move a draft between states; the caller owns the transaction story. */
-  setNoteDraftState(id: number, state: "pending" | "armed" | "superseded" | "consumed" | "discarded"): void {
-    this.prepare("UPDATE chat_note_draft SET state = ? WHERE provider = :provider AND id = ?").run(state, id);
+  /** Move a draft to `to`, only from one of the states in `from` (the check and the write are one statement). True when
+   * it moved; false when the draft was in none of them. The caller owns the transaction story. */
+  setNoteDraftState(id: number, from: readonly NoteDraftState[], to: NoteDraftState): boolean {
+    return Number(this.prepare("UPDATE chat_note_draft SET state = ? WHERE provider = :provider AND id = ? AND state IN (SELECT value FROM json_each(?))")
+      .run(to, id, JSON.stringify(from)).changes) === 1;
   }
 
   createFlowActions(at: { binding: number; chatId: string; card: number; entry: number }, actions: readonly { token: string; action: TelegramFlowAction["action"] }[], now: Date, days = 7): void {
@@ -549,11 +555,13 @@ export class ChatMessages extends ChatCore {
    * Settle a claimed row: done or failed with its outcome word, or back to
    * queued for a later attempt (a busy engine). Only the claim holder may;
    * a lapsed claim settles nothing, so a reclaimer's outcome stands.
+   * Telegram writes done here only once every part of the reply was sent
+   * or dropped; what done means on each app is in chat-message-states.ts.
    */
   finishMessage(
     id: number,
     owner: string,
-    result: { state: "done" | "failed"; outcome: string; replyMessageId?: string | null } | { state: "queued"; outcome: string; nextAttemptAt: string },
+    result: { state: "done" | "failed"; outcome: ChatMessageOutcome; replyMessageId?: string | null } | { state: "queued"; outcome: ChatMessageOutcome; nextAttemptAt: string },
     now: Date,
   ): boolean {
     const stamp = now.toISOString(), chat = this;
@@ -584,9 +592,9 @@ export class ChatMessages extends ChatCore {
     return this
       .prepare(
         `SELECT c.id, b.approver, MIN(p.created) AS since,
-           (SELECT q.problem FROM chat_part q WHERE q.provider = c.provider AND q.event = c.id AND q.state = 'pending' ORDER BY q.ordinal LIMIT 1) AS error
+           (SELECT q.problem FROM chat_part q WHERE q.provider = c.provider AND q.event = c.id AND ${unsentPart("q")} ORDER BY q.ordinal LIMIT 1) AS error
           FROM chat_event c JOIN chat_binding b ON b.provider = c.provider AND b.id = c.binding
-          JOIN chat_part p ON p.provider = c.provider AND p.event = c.id AND p.state = 'pending'
+          JOIN chat_part p ON p.provider = c.provider AND p.event = c.id AND ${unsentPart("p")}
          WHERE c.provider = :provider AND c.kind = 'message' AND c.state IN ('queued','running') AND (? IS NULL OR c.installation = ?) AND (? IS NULL OR b.approver = ?)
          GROUP BY c.id HAVING MIN(p.created) <= ? ORDER BY ${TELEGRAM_CONVERSATION_ORDER.replaceAll("e.", "c.")}`,
       )
@@ -601,7 +609,7 @@ export class ChatMessages extends ChatCore {
         `UPDATE chat_event SET next_at = ?
           WHERE provider = :provider AND kind = 'message' AND state = 'queued'
             AND (? IS NULL OR binding IN (SELECT id FROM chat_binding WHERE provider = :provider AND approver = ?))
-            AND EXISTS (SELECT 1 FROM chat_part p WHERE p.provider = chat_event.provider AND p.event = chat_event.id AND p.state = 'pending')`,
+            AND ${unsent("chat_event")}`,
       )
       .run(now.toISOString(), approver, approver);
     return Number(changes);

@@ -6,6 +6,7 @@
 import { liveReleaseOf } from "./scope.js";
 import { nightlyReleaseLines } from "./nightly-github.js";
 import { releaseAuthorityOfTask, releaseCarries, type Store } from "./store.js";
+import { releaseStateAt } from "./release-authority.js";
 
 export type LandedView = { sha: string; task: string; files: { path: string; added: number; deleted: number }[] };
 export type ReleaseView = {
@@ -42,7 +43,7 @@ export function releaseViewOf(store: Store, taskId: string, now: Date, obligatio
   return {
     kind: found.carry === null ? "anchor" : "carried",
     authority: a.id, version: a.version, pr: a.pr, state: a.state,
-    carrying: a.state === "open" && live.applies && live.ok, why: live.applies && !live.ok ? live.why : null,
+    carrying: releaseStateAt(a, now) === "open" && live.applies && live.ok, why: live.applies && !live.ok ? live.why : null,
     approver: anchor?.approvedBy ?? null, anchorTask: a.anchorTask, tipTask: a.tipTask, expiresAt: a.expiresAt,
     landed: releaseCarries(store, a.id).flatMap(carry => carry.commits.map(commit => ({ sha: commit.sha, task: carry.taskId, files: commit.files }))),
     obligations: obligations(a.id),

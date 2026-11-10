@@ -5,6 +5,7 @@ import { assignmentPresentationOf,historicalAssessmentReason,shortenedMaterialRe
 import { assignmentActionHref,assignmentStatusOf,assignmentWithEvidence } from "../assignment-ui.js";
 import { assignmentChecksForRun,type AssignmentSnapshot,owedAcceptance } from "../assignment.js";
 import { releaseCoverageOf } from "../release-coverage.js";
+import { wasInterrupted } from "../run-ending.js";
 import { type BrowserCheckItem,type BrowserNeedAction,type BrowserResultPanel,type BrowserResultView } from "../browser-workspace.js";
 import { CHECK_LEVEL_WORDS,liveQuickCommand } from "../check-levels.js";
 import { LIMITS } from "../decision.js";
@@ -1119,7 +1120,7 @@ export function runOutcomeBadge(run: Run, live: boolean): Html {
   if (!live && run.role === "planner" && run.reason === "plan-drafted") {
     return html`<span class="badge">Planned</span>`;
   }
-  if (!live && run.reason === "interrupted") return html`<span class="badge">Interrupted</span>`;
+  if (!live && wasInterrupted(run)) return html`<span class="badge">Interrupted</span>`;
   return live
     ? html`<span class="badge badge-running">Running</span>`
     : html`<span class="badge badge-${run.outcome ?? "cut"}">${sentenceCase(run.outcome ?? "never finished")}</span>`;
@@ -2543,7 +2544,7 @@ export function runAgentWords(route: RouteStamp | null | undefined): string | nu
 export function runOutcomeChip(run: Pick<Run, "outcome" | "reason" | "role">, live: boolean): Html {
   if (live) return chip("Running", "live");
   if (run.role === "planner" && run.reason === "plan-drafted") return chip("Planned", "done");
-  if (run.reason === "interrupted") return chip("Interrupted");
+  if (wasInterrupted(run)) return chip("Interrupted");
   const word = sentenceCase(run.outcome ?? "never finished");
   return chip(word, run.outcome === "built" || run.outcome === "no-change" ? "done" : run.outcome === "failed" || run.outcome === "refused" ? "failed" : "");
 }

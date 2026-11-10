@@ -9,6 +9,21 @@ import type { Store } from "./store.js";
 export type ReleaseState = "open" | "deploying" | "merge-reserved" | "merged" | "revoked" | "expired" | "superseded";
 export const LIVE_RELEASE_STATES: readonly ReleaseState[] = ["open", "deploying", "merge-reserved"];
 
+/**
+ * Whether an authority's approval has run out at `now`. Nothing writes the `expired` state: expiry is worked out from
+ * `expires_at` here, and every reader that asks whether an authority is still good asks through this (or
+ * releaseStateAt). The one SQL reader, approval-authority.ts releaseStandsSql, states the same rule in SQL.
+ */
+export function releaseExpiredAt(a: Pick<ReleaseAuthority, "state" | "expiresAt">, now: Date): boolean {
+  return a.state === "expired" || a.expiresAt <= now.toISOString();
+}
+
+/** An authority's state as read at `now`: a live one (open, deploying, merge-reserved) past its time reads as `expired`;
+ * an ended one keeps the state it ended in. */
+export function releaseStateAt(a: Pick<ReleaseAuthority, "state" | "expiresAt">, now: Date): ReleaseState {
+  return LIVE_RELEASE_STATES.includes(a.state) && releaseExpiredAt(a, now) ? "expired" : a.state;
+}
+
 /** One generation of a release a person approved: the single source of truth for it. */
 export type ReleaseAuthority = {
   id: number; repo: string; generation: number; previous: number | null; version: string; pr: number; branch: string; base: string;

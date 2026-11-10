@@ -14,6 +14,7 @@ import { readVerifiedArtifact } from "./evidence.js";
 import { failedAttemptSentence } from "./needs-you.js";
 import { projectName } from "./project.js";
 import { providerName } from "./provider-auth.js";
+import { wasInterrupted } from "./run-ending.js";
 import type { Store } from "./store.js";
 import { runActivityOf } from "./task-activity.js";
 
@@ -136,8 +137,8 @@ export function agentGroupOf(facts: AgentFacts, activityAt: string | null, now: 
     // Unread only for attempts the board saw start: a run from before it never counts as news.
     return { group: facts.seen || facts.legacy ? "idle" : "done", label };
   }
-  if (SETTLED_TASK.has(facts.taskState)) return { group: "idle", label: facts.outcome === "interrupted" ? "Stopped" : "Failed" };
-  return { group: "needs-you", label: facts.outcome === "parked" ? "Needs a decision" : facts.outcome === "interrupted" ? "Stopped" : facts.outcome === "refused" ? "Not started" : "Failed" };
+  if (SETTLED_TASK.has(facts.taskState)) return { group: "idle", label: wasInterrupted(facts) ? "Stopped" : "Failed" };
+  return { group: "needs-you", label: facts.outcome === "parked" ? "Needs a decision" : wasInterrupted(facts) ? "Stopped" : facts.outcome === "refused" ? "Not started" : "Failed" };
 }
 
 type DiffSummary = { fileCount: number; additions: number; deletions: number; files: { path: string; additions: number | null; deletions: number | null }[] };

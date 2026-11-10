@@ -7,7 +7,7 @@
  * are held here too: each way to get around them is one row.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
@@ -652,6 +652,35 @@ describe("the upgrade test on pull requests (.github/workflows/upgrade-path.yml)
     const decide = runsOf(scope).find(one => one.includes("decide"))!;
     expect(decide).toContain("script=.trusted-base/scripts/ci-upgrade-scope.mjs");
     expect(runsOf(scope).join("\n")).not.toMatch(/npm (ci|install|run)/);
+  });
+
+  // That job installs nothing, so the rule must load from a bare checkout. An import of a package anywhere in what the
+  // script loads fails the job, and a failed scope job runs the upgrade test on every pull request (it did: `yaml`).
+  test.each(["ci-upgrade-scope.mjs", "ci-scope.mjs"])("%s loads with nothing installed: only Node's own modules and its own files", script => {
+    const seen = new Set<string>();
+    const load = (file: string): void => {
+      if (seen.has(file)) return;
+      seen.add(file);
+      const source = readFileSync(join(import.meta.dirname, "..", "scripts", file), "utf8");
+      for (const [, , from] of source.matchAll(/^\s*(import|export)\b[^"'\n]*?from\s+["']([^"']+)["']/gm)) {
+        if (from!.startsWith("node:")) continue;
+        expect(from, `${file} imports ${from}`).toMatch(/^\.\/[a-z0-9-]+\.mjs$/);
+        load(from!.slice(2));
+      }
+      expect(source, `${file} loads something at run time`).not.toMatch(/\bimport\(|\brequire\(/);
+    };
+    load(script);
+    expect(seen.size).toBeGreaterThan(1);
+    // And it does: a copy of only those files runs, and answers.
+    // The real path: each script runs only when it is the file Node was started on, and compares resolved paths.
+    const bare = realpathSync(mkdtempSync(join(tmpdir(), "bare-scope-")));
+    try {
+      mkdirSync(join(bare, "scripts"));
+      for (const file of seen) writeFileSync(join(bare, "scripts", file), readFileSync(join(import.meta.dirname, "..", "scripts", file)));
+      const ran = spawnSync(process.execPath, [join(bare, "scripts", script), "nothing"], { cwd: bare, encoding: "utf8" });
+      expect(ran.stderr).not.toContain("ERR_MODULE_NOT_FOUND");
+      expect(ran.status).toBe(2);
+    } finally { rmSync(bare, { recursive: true, force: true }); }
   });
 
   test.each([

@@ -861,6 +861,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         return head !== null && head !== j.candidate.sha ? head : null;
       });
     };
+    /**
+     * Move the release back to an earlier step: write the fields the caller names (and only those), drop the named steps'
+     * intents, set the step, and save the journal. Every step-back goes through here.
+     */
+    const rewindTo = (step: ReleaseStep, fields: Partial<ReleaseJournal>, dropIntents: readonly ReleaseStep[] = []): void => {
+      Object.assign(j, fields);
+      for (const one of dropIntents) delete j.intents[one];
+      j.step = step;
+      save();
+    };
     const restart = async (head: string, updated = false) => {
       // The step this commit was at ends here: the release goes on with the new commit (and, filed again, a new task).
       mark(j.step, "failed", `${j.branch} moved to ${head.slice(0, 7)}`);
@@ -871,21 +881,18 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         const carried = await rel.carry(j.authority.id, head, randomUUID(), epoch);
         if (carried.ok) {
           const view = await rel.authority(carried.taskId);
+          // The candidate is written before the gate is read, as it always was: a gate that fails leaves it moved.
           j.candidate = { sha: head, tree };
-          j.task = { id: carried.taskId, scopeDigest: (await adapters.toolroll.gate(carried.taskId)).scopeDigest };
-          j.check = null; j.completion = null; j.landed = view?.landed ?? j.landed ?? [];
-          delete j.intents.check; delete j.intents.complete;
-          j.step = "check"; j.stopped = null; save();
+          const task = { id: carried.taskId, scopeDigest: (await adapters.toolroll.gate(carried.taskId)).scopeDigest };
+          rewindTo("check", { task, check: null, completion: null, landed: view?.landed ?? j.landed ?? [], stopped: null }, ["check", "complete"]);
           say(`  carried the approval to ${head.slice(0, 7)} (task ${carried.taskId})`);
           return;
         }
         say(`  ${head.slice(0, 7)} needs a person's approval: ${carried.message}`);
       } else say(`  ${j.branch} moved to ${head.slice(0, 7)}: filing it for approval`);
-      j.candidate = { sha: head, tree };
-      j.task = { id: gateTaskId(j.packageVersion, head), scopeDigest: null };
-      j.approval = null; j.check = null; j.completion = null; j.authority = null; j.auto = null; epoch = null;
-      delete j.intents.gate; delete j.intents.check; delete j.intents.complete;
-      j.step = "gate"; j.stopped = null; save();
+      epoch = null;
+      rewindTo("gate", { candidate: { sha: head, tree }, task: { id: gateTaskId(j.packageVersion, head), scopeDigest: null },
+        approval: null, check: null, completion: null, authority: null, auto: null, stopped: null }, ["gate", "check", "complete"]);
     };
 
     /**
@@ -893,7 +900,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
      * passing check kept) and tells the owner; the release waits at approval for a person, as without the setting.
      */
     const autoRefused = async (why: string): Promise<never> => {
-      j.auto = { state: "refused", why }; j.check = null; j.step = "approval"; save();
+      rewindTo("approval", { auto: { state: "refused", why }, check: null });
       await rel?.auto?.giveUp(j.task.id, why);
       throw new Stop("approval", `Not approved automatically: ${why}. A person approves task ${j.task.id} (\`toolroll task approve ${j.task.id} --digest ${j.task.scopeDigest}\`, or the console), then rerun \`${resume}\`.`);
     };
@@ -1154,7 +1161,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             if (j.ciAhead === true) {
               try { await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { nothing: "Nothing was approved" }); await liftCiHold(false, "Nothing was approved"); }
               catch (error) {
-                if (error instanceof Stop && error.reason === "ci-failed") { j.auto = { state: "refused", why: error.message }; j.check = null; j.step = "approval"; save(); await rel?.auto?.giveUp(j.task.id, error.message.replace(/\.$/, "")); }
+                if (error instanceof Stop && error.reason === "ci-failed") { rewindTo("approval", { auto: { state: "refused", why: error.message }, check: null }); await rel?.auto?.giveUp(j.task.id, error.message.replace(/\.$/, "")); }
                 throw error;
               }
               j.ciAhead = false; save();

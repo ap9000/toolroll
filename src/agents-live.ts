@@ -5,6 +5,7 @@
  */
 import { attemptKeyOf, agentNowForRun, openAgentQuestions } from "./agent-board.js";
 import { agentsLiveRuns, type AgentsLiveRun, type Store } from "./store.js";
+import { wasInterrupted } from "./run-ending.js";
 
 /** An ended agent stays on the grid this long, then leaves (it remains on the List). */
 export const LIVE_ENDED_KEEP_MS = 10 * 60_000;
@@ -34,15 +35,15 @@ export type AgentLiveTile = {
   taskHref: string | null;
 };
 
-const stateOf = (outcome: AgentsLiveRun["outcome"]): AgentLiveState =>
-  outcome === null ? "working" : outcome === "built" || outcome === "no-change" ? "done" : outcome === "parked" ? "parked" : outcome === "interrupted" ? "stopped" : "failed";
+const stateOf = (run: Pick<AgentsLiveRun, "outcome" | "reason">): AgentLiveState =>
+  run.outcome === null ? "working" : run.outcome === "built" || run.outcome === "no-change" ? "done" : run.outcome === "parked" ? "parked" : wasInterrupted(run) ? "stopped" : "failed";
 
 /** The grid's tiles for one viewer: `canSee` is the caller's proof (ceiling and account access) for each run. */
 export function agentsLiveOf(store: Store, now: Date, viewer: { canSee: (run: AgentsLiveRun) => boolean; localRunner: string | undefined }): AgentLiveTile[] {
   const tiles: AgentLiveTile[] = [];
   for (const run of agentsLiveRuns(store, new Date(now.getTime() - LIVE_ENDED_KEEP_MS))) {
     if (!viewer.canSee(run)) continue;
-    let state = stateOf(run.outcome);
+    let state = stateOf(run);
     let why: AgentLiveTile["why"] = null, quietSince: string | null = null;
     if (state === "working") {
       try {

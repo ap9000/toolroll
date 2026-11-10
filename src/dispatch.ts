@@ -20,6 +20,7 @@ import { failedAttemptSentence, latestFinishedAttempt } from "./needs-you.js";
 import { buildReviewOf } from "./review-switch.js";
 import { vanishedStopOf, vanishedStopSentence } from "./vanished-retry.js";
 import { routeChangeOf } from "./route-change.js";
+import { wasInterrupted } from "./run-ending.js";
 import { BUILT_IN, refArchived, parseCapabilityKey, type ChatSnapshot, type ReviewRequestOrigin, type ReviewRetryState, type Store, type TaskState } from "./store.js";
 import { shortWhen } from "./when-html.js";
 
@@ -272,7 +273,7 @@ function reviewViewOf(sourceRun: number, retry: ReviewRetryState): ReviewDispatc
     retriesRemaining: retry.retriesRemaining,
     latestRun: retry.latest?.runId ?? null,
     latestReason: retry.latest?.reason ?? null,
-    interrupted: retry.latest !== null && (retry.latest.outcome === "interrupted" || retry.latest.reason === "interrupted"),
+    interrupted: retry.latest !== null && wasInterrupted(retry.latest),
     queued: retry.openRequest === null ? null : { requestedBy: retry.openRequest.requestedBy, origin: retry.openRequest.origin },
   };
 }

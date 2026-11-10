@@ -19,6 +19,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { basename, dirname, join } from "node:path";
 import { gateWords, openGate } from "./provider-gate.mjs";
 import { passedCandidateCI, macUnitFiles } from "./release-check-ci.mjs";
+import { VERSIONED, needsUpgrade, upgradeChanges } from "./upgrade-rule.mjs";
 import { makeTempRoot, runSuite, writeNow } from "./suite-lifecycle.mjs";
 import { createHash } from "node:crypto";
 
@@ -76,10 +77,10 @@ export const MODEL = [
   /^src\/(subagents|subagent-work|task-sizing|flow-sort|flow-draft)\.ts$/,
   /^src\/(provider|provider-[a-z-]+|invoke|exec|attest|coding-provider|assignment-adapters|subscription-[a-z-]+)\.ts$/,
 ];
+// The upgrade rule lives apart (upgrade-rule.mjs) so the pull request's scope job can load it with nothing installed.
+export { needsUpgrade, upgradeChanges };
 /** Changes no test reads. */
 export const NOTHING = [/\.md$/, /^docs\//, /^evidence\//, /^design\//, /^output\//, /^LICENSE$/, /\.png$/];
-/** Where a release bumps the project's own version. */
-const VERSIONED = ["package.json", "package-lock.json"];
 /** Browser groups at once, for each journey script. */
 export const LANES = { flows: 2, app: 4 };
 
@@ -129,35 +130,6 @@ export function planFor(changed, { full: all = false, real = false, versionBumps
       ...!journeys ? [] : [realWhy === null ? "no real-model journeys (no model-facing code changed; --real runs them)" : `the real-model journeys and what they need (${realWhy})`],
     ].join("; ") + bump,
   };
-}
-
-/** Skip only paths known not to affect upgrades. Unknown runtime code runs upgrades:
- * this includes the entire store import graph, SQL-bearing modules and updaters,
- * without maintaining a second, inevitably incomplete dependency graph.
- */
-export function needsUpgrade(changed, full = false, versionBumps = []) {
-  return full || changed === null || changed.some(file => {
-    if (versionBumps.includes(file) && VERSIONED.includes(file)) return false;
-    if (/^(docs|evidence|design|output)\//.test(file) || /\.md$/.test(file) || file === "LICENSE") return false;
-    if (/\.test\.[cm]?[jt]sx?$/.test(file) || /^test\//.test(file)) return false;
-    if (/^src\/(browser|design)\//.test(file) || /\.css$/.test(file)) return false;
-    // Standalone journeys are not imported by the upgrade runner. Other scripts,
-    // including its provider gate and lifecycle helpers, conservatively run it.
-    if (/^scripts\/(app-e2e|flows-e2e|e2e-parallel)\.mjs$/.test(file)) return false;
-    return true;
-  });
-}
-
-/** NUL separators preserve filenames; failed history or untracked discovery runs upgrades. No rename pairing: a
- * file moved out of a migration path still lists its old path, so the move can't hide it. */
-export function upgradeChanges(base, readGit) {
-  if (base === null) return null;
-  try {
-    return [...new Set([
-      ...readGit("diff", "--no-renames", "--name-only", "-z", base).split("\0"),
-      ...readGit("ls-files", "--others", "--exclude-standard", "-z").split("\0"),
-    ].filter(Boolean))];
-  } catch { return null; }
 }
 
 /** Scripted failures are final; real-model runs retain their normal retry policy. `keepGoing` (a release run): a failed
