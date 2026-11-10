@@ -69,6 +69,7 @@ import { storeEvidence, readVerifiedArtifact, EVIDENCE_CAPS } from "./evidence.j
 import type { AuthorityChangeField } from "./plan.js";
 import type { ParsedReport } from "./scout-report.js";
 import { moveOnIfExhausted } from "./fallback.js";
+import { moveTask } from "./task-moves.js";
 
 
 export type Claim = {
@@ -815,11 +816,7 @@ function sealComplete(store: Store, leaseId: string, args: CompleteSeal): Comple
           null,
         );
       } else {
-        db.prepare("UPDATE task SET state = ?, updated_at = ? WHERE id = ?").run(
-          state,
-          now.toISOString(),
-          String(taskId["external_id"]),
-        );
+        moveTask(db, String(taskId["external_id"]), "complete", now, state);
       }
       return true;
     });
@@ -1093,11 +1090,9 @@ function sealInterrupted(store: Store, leaseId: string, args: InterruptedSeal): 
   if (fenced) return { ok: true as const, stopRun, requeued: false as const, fenced: true as const };
   // Back to the queue, where the stop's hold keeps it — a paused task
   // reads as queued-and-held, exactly like an operator pause.
-  const requeued = db
-    .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'")
-    .run(now.toISOString(), taskId);
+  const requeued = moveTask(db, taskId, "requeue", now);
   store.bumpWake();
-  return { ok: true as const, stopRun, requeued: Number(requeued.changes) > 0, fenced: false as const };
+  return { ok: true as const, stopRun, requeued, fenced: false as const };
 }
 
 export type InterruptedSeal = { runId: number; taskId: string; stopRun: number; message?: string; committed?: boolean; now: Date };
@@ -1127,11 +1122,9 @@ function sealHandBack(store: Store, leaseId: string, args: HandBackSeal): HandBa
   }
   store.finishRun(runId, { outcome: "failed", reason: "interrupted", now });
   if (fenced) return { ok: true as const, requeued: false, fenced: true };
-  const requeued = db
-    .prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'")
-    .run(now.toISOString(), taskId);
+  const requeued = moveTask(db, taskId, "requeue", now);
   store.bumpWake();
-  return { ok: true as const, requeued: Number(requeued.changes) > 0, fenced: false };
+  return { ok: true as const, requeued, fenced: false };
 }
 
 export type HandBackSeal = { runId: number; taskId: string; message: string; now: Date };
@@ -1247,10 +1240,7 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
       },
       now,
     );
-    db.prepare("UPDATE task SET state = 'failed', updated_at = ? WHERE id = ?").run(
-      now.toISOString(),
-      taskId,
-    );
+    moveTask(db, taskId, "exhaust", now);
     store.enqueueNotification(
       {
         source: { run: runId },
@@ -1316,7 +1306,7 @@ export type FailureSeal = {
  */
 function sealAuthExpired(store: Store, run: Run, taskId: string, now: Date): { disposition: "auth-expired"; provider: string } {
   store.finishRun(run.id, { outcome: "failed", reason: "auth-expired", now });
-  store.handle.prepare("UPDATE task SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'").run(now.toISOString(), taskId);
+  moveTask(store.handle, taskId, "requeue", now);
   pauseForAuth(store, { provider: run.provider, authMode: run.authMode ?? null, runId: run.id, taskRef: run.taskRef, now });
   store.bumpWake();
   return { disposition: "auth-expired", provider: run.provider };
@@ -1933,7 +1923,7 @@ function sealScoutFailure(store: Store, leaseId: string, args: ScoutFailureSeal)
       },
       now,
     );
-    db.prepare("UPDATE task SET state = 'failed', updated_at = ? WHERE id = ?").run(now.toISOString(), taskId);
+    moveTask(db, taskId, "exhaust", now);
     store.enqueueNotification(
       {
         source: { run: runId },
