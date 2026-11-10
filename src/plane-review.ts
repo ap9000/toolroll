@@ -30,6 +30,7 @@
 import { scanForSecrets } from "./evidence.js";
 import { scrubIntegrationText } from "./integrations.js";
 import { taskWaitSnapshot } from "./lead-status.js";
+import { wasInterrupted } from "./run-ending.js";
 import type { Store } from "./store.js";
 
 export type PlaneProblem = {
@@ -85,7 +86,7 @@ export function runCause(run: { outcome: string | null; reason: string | null; t
   if (run.check === "failed") return "check";
   if (reason === "timeout" || (run.outcome === "failed" && TIMEOUT_WORDS.test(run.handoff ?? ""))) return "timeout";
   if (reason === "no-handoff") return "no-handoff";
-  if (reason === "interrupted" || run.outcome === "interrupted") return run.stopped ? null : "orphaned";
+  if (wasInterrupted(run)) return run.stopped ? null : "orphaned";
   if (PROVIDER_REASONS.has(reason) || run.terminalClass === "transient-throttle") return "provider";
   if (run.outcome === "no-change") return "no-change";
   if (run.outcome === "failed") return "other";

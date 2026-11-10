@@ -19,6 +19,7 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, join } from "node:path";
+import { wasInterrupted } from "./run-ending.js";
 import type { SealedLedgerEntry, Store } from "./store.js";
 import type { MonitoringSettings } from "./monitoring-settings.js";
 import { COMPLETION_ACTION } from "./result-completion.js";
@@ -161,7 +162,7 @@ export function spansFor(store: Store, entries: SealedLedgerEntry[]): Record<str
       if (run === null || taskId === null || run.finishedAt === null) continue;
       const root = rootOf(taskId);
       const ref = store.refForId(run.taskRef);
-      const failed = run.outcome === "failed" || run.outcome === "refused" || run.outcome === "interrupted";
+      const failed = run.outcome === "failed" || run.outcome === "refused" || wasInterrupted(run);
       spans.push({
         traceId: hex(`standing-orders/trace/${root}`, 32), spanId: hex(`standing-orders/run/${run.id}`, 16), parentSpanId: hex(`standing-orders/task/${root}`, 16),
         name: `${run.role} · ${run.provider}`, kind: 1, startTimeUnixNano: nanos(run.startedAt), endTimeUnixNano: nanos(run.finishedAt),
